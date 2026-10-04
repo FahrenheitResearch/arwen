@@ -508,6 +508,9 @@ def build_parser():
     parser.add_argument('--io-mode', choices=('history','none'), default='history')
     parser.add_argument('--restart', type=Path)
     parser.add_argument('--health-debug', action='store_true')
+    from gpuwm.ensemble.door import add_arguments
+    add_arguments(parser)
+    parser.add_argument('--ensemble-request', default=None, help=argparse.SUPPRESS)
     parser.add_argument('--products', dest='render_products', default=None, metavar='LIST',
                         help='which product plots this run draws, in gpuwm render\'s own spelling: '
                              'a comma-separated list, `all`, or `none` for no pictures.  '
@@ -530,7 +533,7 @@ def run_wrf_forecast(directory, outdir, *, run_seconds=None, restart=None,
                      exclusive_gpu=True, rrtmg_variant=None,
                      render_products=None, render_dir=None,
                      progress_options=None, relaunched=False, allow_shared_gpu=False,
-                     output_owner=None, soil_source=None):
+                     output_owner=None, soil_source=None, ensemble_request=None):
     import os
     import subprocess
     import sys
@@ -538,6 +541,10 @@ def run_wrf_forecast(directory, outdir, *, run_seconds=None, restart=None,
     from gpuwm.stage_reuse import claim_run_output
     from gpuwm.wrfinput_door import resolve_wrfinput_run
     started = time.perf_counter()
+    from gpuwm.ensemble.door import request_for_inputs, production_run_scope
+    request = request_for_inputs(override=ensemble_request)
+    from gpuwm.ensemble.calibration_admission import refuse_native_random
+    refuse_native_random(directory)
     run = resolve_wrfinput_run(directory, rrtmg_variant=rrtmg_variant)
     if run_seconds is not None:
         wrfinput_window_seconds(run, run_seconds)
@@ -563,9 +570,8 @@ def run_wrf_forecast(directory, outdir, *, run_seconds=None, restart=None,
         # processes print to.
         missing = announce_render_readiness(DOOR, announce=not relaunched)
         if exclusive_gpu:
-            from gpuwm.supervisor import (select_gpu, preflight_exclusive_gpu,
-                                          priced_reservation_bytes, GPUFileLock)
-            gpu = select_gpu(gpu_uuid)
+            from gpuwm.supervisor import priced_reservation_bytes
+            from gpuwm.ensemble.supervised_devices import input_device_lease
             command = [sys.executable, '-m', 'gpuwm.wrfinput_forecast',
                        '--wrfinput', str(Path(directory).resolve()),
                        '--outdir', str(outdir), '--io-mode', io_mode, '--_worker',
@@ -581,6 +587,9 @@ def run_wrf_forecast(directory, outdir, *, run_seconds=None, restart=None,
                 command += ['--restart', str(Path(restart).resolve())]
             if health_debug:
                 command += ['--health-debug']
+            if request is not None:
+                import json
+                command += ['--ensemble-request', json.dumps(request.receipt())]
             # The worker is this door's real body, so a flag this door was
             # given and did not pass on is a flag that did nothing.
             if render_products is not None:
@@ -591,16 +600,14 @@ def run_wrf_forecast(directory, outdir, *, run_seconds=None, restart=None,
             urban_columns = wrfinput_urban_columns(run)
             pricing = ({} if urban_columns is None else
                        {'urban_columns': urban_columns})
-            with GPUFileLock(gpu.uuid, run_id=f'wrf-input-{os.getpid()}'):
+            with input_device_lease(request, gpu_uuid=gpu_uuid,
+                    run_id=f'wrf-input-{os.getpid()}', allow_shared_gpu=allow_shared_gpu,
+                    reservation_bytes=priced_reservation_bytes(run.experiment, **pricing)) as cuda_mask:
                 # Priced against THIS run's reservation through the same
                 # function `gpuwm run` prices from, so a co-tenant admitted
                 # at one door is admitted at the other.
-                preflight_exclusive_gpu(gpu.uuid, approved_pids={os.getpid()},
-                                        allow_shared_gpu=allow_shared_gpu,
-                                        reservation_bytes=priced_reservation_bytes(
-                                            run.experiment, **pricing))
                 return worker_exit_status(subprocess.run(
-                    command, env=dict(os.environ, CUDA_VISIBLE_DEVICES=gpu.uuid),
+                    command, env=dict(os.environ, CUDA_VISIBLE_DEVICES=cuda_mask),
                     check=False).returncode)
         if gpu_uuid is not None:
             raise ValueError('--gpu-uuid requires the default fresh worker; remove --no-supervise')
@@ -615,28 +622,26 @@ def run_wrf_forecast(directory, outdir, *, run_seconds=None, restart=None,
                                 render_dir=None if render_dir is None else io_path(render_dir),
                                 init=inputs.experiment.start_time,
                                 can_draw=missing is None)
-        first_products = arm_door_first_products(plan, outdir=worker_output, started=started)
-        try:
-            run_prepared_tree(inputs, output_directory=worker_output, io_mode=io_mode,
-                              restart=None if restart is None else io_path(restart),
-                              health_debug=health_debug,
-                              progress_options=progress_options,
-                              initialization=WrfInitialization(inputs),
-                              **({} if first_products is None
-                                 else {'first_products': first_products}))
-        except BaseException as error:
-            stop_door_renders(first_products, error)
-            raise
-        try:
-            draw_door_products(plan, first_products=first_products, door=DOOR)
-        except GoStageFailed as failure:
-            # The forecast is on disk and finished; the pictures are not.
-            # Saying so beats both alternatives: a silent 0 hides that the
-            # products this door now promises are missing, and a traceback
-            # hides the forecast.
-            print(f'{DOOR}: the forecast finished and its output is in {outdir}; '
-                  f'the render stage exited {failure.code}.', file=sys.stderr)
-            return failure.code
+        with production_run_scope(request, output_directory=worker_output):
+            first_products = arm_door_first_products(plan, outdir=worker_output, started=started)
+            try:
+                run_prepared_tree(inputs, output_directory=worker_output, io_mode=io_mode,
+                                  restart=None if restart is None else io_path(restart),
+                                  health_debug=health_debug,
+                                  progress_options=progress_options,
+                                  initialization=WrfInitialization(inputs),
+                                  **({} if first_products is None
+                                     else {'first_products': first_products}))
+            except BaseException as error:
+                stop_door_renders(first_products, error)
+                raise
+            try:
+                draw_door_products(plan, first_products=first_products, door=DOOR)
+            except GoStageFailed as failure:
+                # The forecast is on disk and finished; the pictures are not.
+                print(f'{DOOR}: the forecast finished and its output is in {outdir}; '
+                      f'the render stage exited {failure.code}.', file=sys.stderr)
+                return failure.code
         return 0
     finally:
         output_claim.close()
@@ -644,9 +649,16 @@ def run_wrf_forecast(directory, outdir, *, run_seconds=None, restart=None,
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
-    from gpuwm.provenance_gate import announce
-    announce(DOOR)
     try:
+        from gpuwm.ensemble.calibration_admission import refuse_public_arguments
+        refuse_public_arguments(args)
+        from gpuwm.provenance_gate import announce
+        announce(DOOR)
+        import json
+        from gpuwm.ensemble.door import request_for_inputs
+        request = request_for_inputs(
+            override=None if args.ensemble_request is None else json.loads(args.ensemble_request),
+            members=args.members, keep_member_files=args.keep_member_files)
         return run_wrf_forecast(args.wrfinput, args.outdir, run_seconds=args.run_seconds,
                                restart=args.restart, io_mode=args.io_mode,
                                health_debug=args.health_debug, exclusive_gpu=not args._worker,
@@ -656,7 +668,8 @@ def main(argv=None):
                                progress_options=ProgressOptions.from_args(args),
                                relaunched=args._worker,
                                allow_shared_gpu=args.allow_shared_gpu,
-                               output_owner=args._output_owner, soil_source=args.soil_source)
+                               output_owner=args._output_owner, soil_source=args.soil_source,
+                               **({} if request is None else {"ensemble_request": request.receipt()}))
     except (ValueError, OSError) as error:
         import sys
         print(f'{DOOR}: {error}', file=sys.stderr)

@@ -23,6 +23,42 @@ import json
 import sys
 
 
+def cuda_device_identity(device: int) -> dict | None:
+    """A physical card identity independent of CUDA visibility ordering.
+
+    Prefer CUDA's UUID and retain the PCI reading already used to match
+    CUDA with NVML below. PCI-only matches remain conservative across
+    hosts; container hostnames cannot establish that two cards differ.
+    Callers use this beside their existing device reading.
+    """
+    identity = {}
+    try:
+        import cupy as cp
+        value = cp.cuda.runtime.getDeviceProperties(int(device)).get("uuid")
+        if isinstance(value, bytes) and len(value) == 16:
+            value = value.hex()
+        if isinstance(value, str):
+            value = value.strip().lower().removeprefix("gpu-").replace("-", "")
+            if (len(value) == 32 and value != "0" * 32
+                    and all(char in "0123456789abcdef" for char in value)):
+                identity["uuid"] = value
+    except Exception:  # noqa: BLE001 - older runtimes may expose only PCI
+        pass
+    try:
+        import cupy as cp
+        bus_id = cp.cuda.runtime.deviceGetPCIBusId(int(device))
+        if isinstance(bus_id, bytes):
+            bus_id = bus_id.decode("ascii")
+        domain, bus, slot = str(bus_id).strip().lower().split(":")
+        slot, function = slot.split(".")
+        canonical = (f"{int(domain, 16):08x}:{int(bus, 16):02x}:"
+                     f"{int(slot, 16):02x}.{int(function, 16):x}")
+        identity["pci_bus_id"] = canonical
+    except Exception:  # noqa: BLE001 - caller reserves conservatively
+        pass
+    return identity or None
+
+
 #: What :func:`device_memory_probe_subprocess` runs in its short-lived
 #: interpreter: both device questions -- the free/total VRAM the budget
 #: subtracts from, and the local-memory profile the non-pool terms are

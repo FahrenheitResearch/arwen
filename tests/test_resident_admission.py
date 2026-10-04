@@ -584,6 +584,9 @@ def _drive_pinned_child(run_dir):
         child_config=child, parent_grid_ratio=1, i_parent_start=4,
         j_parent_start=4, max_boundary_interval_seconds=3600.0,
         accepted_parent_cadence=True, child_surface_from=None,
+        # This fixture owns no geography tree. The own-terrain default
+        # otherwise refuses before the pinned-tiling admission it exercises.
+        child_terrain="parent",
         preprocess_backend="cpu", health_interval_seconds=60.0,
         outdir=run_dir / "child-run")
     child_run._run(args, child_run._ChildProgress())

@@ -174,6 +174,7 @@ from __future__ import annotations
 
 import queue
 import threading
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -301,6 +302,19 @@ def frame_plan(state, *, include_diagnostic_pressure: bool = True,
     beyond the carrier set (see :func:`diagnostic_inventory`); fields served
     by them classify as carriers rather than as unavailable diagnostics.
     """
+    # A rank's state can be inspected from the host thread while another
+    # card is current. Frame derivation and zero-field downloads must use
+    # the state card or history setup fails on card sets that omit card 0.
+    from gpuwm.io.wrfout import _state_device_context
+
+    with _state_device_context(state):
+        return _frame_plan_on_device(
+            state, include_diagnostic_pressure=include_diagnostic_pressure,
+            extra_available=extra_available)
+
+
+def _frame_plan_on_device(state, *, include_diagnostic_pressure,
+                          extra_available) -> FramePlan:
     from gpuwm.io import wrfout
 
     fields = wrfout._device_state_frame(
@@ -363,7 +377,10 @@ def frame_plan(state, *, include_diagnostic_pressure: bool = True,
 
 def _host(value) -> np.ndarray:
     if hasattr(value, "get"):
-        value = value.get()
+        device = getattr(value, "device", None)
+        context = device if hasattr(device, "__enter__") else nullcontext()
+        with context:
+            value = value.get()
     return np.asarray(value)
 
 

@@ -18,13 +18,18 @@ and on 6,096 of 400,000 Lambert-inverse-shaped ones (WSL Ubuntu 24.04,
 glibc 2.39), and on none with ``NPY_DISABLE_CPU_FEATURES="X86_V4
 AVX512_ICL"``.
 
-These cost a Python call per element.  They are for setup-scale arrays
-(projection transforms, coefficient ladders), not per-step fields.
+The CPU preprocessing bridge calls those same C-library functions over
+disjoint ranges on its explicit Rust worker pool. This preserves the host
+math contract, including the domain handling below; it does not use the
+different portable musl implementation. An older installed bridge retains
+the scalar Python reference. These are for initialization and setup, not
+per-step fields.
 """
 
 from __future__ import annotations
 
 import math
+import ctypes
 
 import numpy as np
 
@@ -32,11 +37,76 @@ __all__ = ["exp", "log", "log10", "tan", "arctan", "arctan2", "arcsin",
            "arccos", "power"]
 
 
-def _unary(function, values):
-    array = np.asarray(values, dtype=np.float64)
+def _host_entry(pm, name):
+    try:
+        library = pm._load()
+    except FileNotFoundError:
+        # Geometry/configuration callers also use this module before
+        # preparation's native assets have been installed. Keep their
+        # original scalar math path. Other load or ABI errors are real.
+        return None
+    return getattr(library, name, None)
+
+
+def _unary(function, values, name):
+    from gpuwm.core import portable_math as pm
+    entry = _host_entry(pm, "gpuwm_host_unary_f64")
+    array = np.require(values, dtype=np.float64, requirements=["C", "A"])
+    if entry is not None:
+        pointer, size = ctypes.c_void_p, ctypes.c_size_t
+        entry.argtypes = [ctypes.c_uint32, pointer, pointer, size, size]
+        entry.restype = ctypes.c_int32
+        out = np.empty(array.shape, dtype=np.float64)
+        code = entry(pm._UNARY_CODES[name], array.ctypes.data, out.ctypes.data,
+                     array.size, pm._workers(None))
+        if code:
+            raise RuntimeError(f"native host {name} failed with code {code}")
+        return out
     flat = np.fromiter((function(float(v)) for v in array.reshape(-1)),
                        dtype=np.float64, count=array.size)
     return flat.reshape(array.shape)
+
+
+def _binary(function, left, right, name):
+    from gpuwm.core import portable_math as pm
+    entry = _host_entry(pm, "gpuwm_host_binary_f64")
+    a, b = np.asarray(left, dtype=np.float64), np.asarray(right, dtype=np.float64)
+    shape = np.broadcast_shapes(a.shape, b.shape)
+    if entry is None:
+        x, y = np.broadcast_arrays(a, b)
+        flat = np.fromiter((function(float(u), float(v)) for u, v in
+                            zip(x.reshape(-1), y.reshape(-1))),
+                           dtype=np.float64, count=x.size)
+        return flat.reshape(shape)
+    pointer, size = ctypes.c_void_p, ctypes.c_size_t
+    entry.argtypes = [ctypes.c_uint32, pointer, size, pointer, size,
+                     pointer, size, size]
+    entry.restype = ctypes.c_int32
+    out = np.empty(shape, dtype=np.float64)
+    if not out.size:
+        return out
+    workers = pm._workers(None)
+
+    def apply(x, y, target):
+        x, y = (np.require(value, dtype=np.float64, requirements=["C", "A"])
+                for value in (x, y))
+        code = entry(pm._BINARY_CODES[name], x.ctypes.data, x.size,
+                     y.ctypes.data, y.size, target.ctypes.data, target.size, workers)
+        if code:
+            raise RuntimeError(f"native host {name} failed with code {code}")
+
+    if (a.size == 1 or (a.shape == shape and a.flags.c_contiguous)) and (
+            b.size == 1 or (b.shape == shape and b.flags.c_contiguous)):
+        apply(a, b, out)
+    else:
+        # General broadcasting marshals at most one bounded block per
+        # operand, rather than allocating copies of a whole 3-D field.
+        for x, y, target in np.nditer(
+                [a, b, out], flags=["external_loop", "buffered", "zerosize_ok"],
+                op_flags=[["readonly"], ["readonly"], ["writeonly"]],
+                order="C", buffersize=1 << 16):
+            apply(x, y, target)
+    return out
 
 
 def _nan_outside(function, lower, upper):
@@ -79,23 +149,23 @@ def _tan(value):
 
 
 def exp(values) -> np.ndarray:
-    return _unary(_exp, values)
+    return _unary(_exp, values, "exp")
 
 
 def log(values) -> np.ndarray:
-    return _unary(_LOG, values)
+    return _unary(_LOG, values, "log")
 
 
 def log10(values) -> np.ndarray:
-    return _unary(_LOG10, values)
+    return _unary(_LOG10, values, "log10")
 
 
 def tan(values) -> np.ndarray:
-    return _unary(_tan, values)
+    return _unary(_tan, values, "tan")
 
 
 def arctan(values) -> np.ndarray:
-    return _unary(math.atan, values)
+    return _unary(math.atan, values, "atan")
 
 
 def arctan2(y, x) -> np.ndarray:
@@ -104,21 +174,15 @@ def arctan2(y, x) -> np.ndarray:
     :func:`math.atan2` raises for no argument, and its answers for zeros,
     infinities and NaNs are the C library's, which are NumPy's.
     """
-    a, b = np.broadcast_arrays(np.asarray(y, dtype=np.float64),
-                               np.asarray(x, dtype=np.float64))
-    flat = np.fromiter(
-        (math.atan2(float(u), float(v)) for u, v in zip(a.reshape(-1),
-                                                        b.reshape(-1))),
-        dtype=np.float64, count=a.size)
-    return flat.reshape(a.shape)
+    return _binary(math.atan2, y, x, "atan2")
 
 
 def arcsin(values) -> np.ndarray:
-    return _unary(_ASIN, values)
+    return _unary(_ASIN, values, "asin")
 
 
 def arccos(values) -> np.ndarray:
-    return _unary(_ACOS, values)
+    return _unary(_ACOS, values, "acos")
 
 
 def _pow(base, exponent):
@@ -139,10 +203,4 @@ def power(base, exponent) -> np.ndarray:
     A scalar exponent of 2 or 0.5 is NumPy's square or square root, not
     ``pow``, in NumPy's own ``**``; callers that write those keep ``**``.
     """
-    b, e = np.broadcast_arrays(np.asarray(base, dtype=np.float64),
-                               np.asarray(exponent, dtype=np.float64))
-    flat = np.fromiter(
-        (_pow(float(x), float(y)) for x, y in zip(b.reshape(-1),
-                                                  e.reshape(-1))),
-        dtype=np.float64, count=b.size)
-    return flat.reshape(b.shape)
+    return _binary(_pow, base, exponent, "pow")

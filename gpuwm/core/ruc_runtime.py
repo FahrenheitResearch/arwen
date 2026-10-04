@@ -35,11 +35,16 @@ against the byte-unmodified module.
 Where the column runs
 ---------------------
 On the CARD, in FP32.  :func:`ruc_lsm_step` runs :mod:`gpuwm.core.ruc_fused`:
-six full-width kernels per call (the WRF surface-driver seam and LSMRUC's
+six full-width kernels per deterministic call (the WRF surface-driver seam and
+LSMRUC's
 prologue, the three ``sfctmp`` stages, the epilogue with SFCDIAGS, and a
 commit that writes the fields only when no check failed), one read of the
 flag words at the end, and SFCDIAGS's two power expressions on the host,
-through glibc's ``powf`` on every host (:func:`sfcdiags_exner_powers`).  The ``sfctmp`` stages are generated from the array
+through glibc's ``powf`` on every host (:func:`sfcdiags_exner_powers`).
+Enabled ``spp_lsm=1`` uses the retained device-resident orchestration
+with the historical WRF hydraulic operator between soil-property and moisture
+transport calls; its arrays remain on the GPU. The disabled fused path is
+unchanged. The ``sfctmp`` stages are generated from the array
 orchestration by ``tools/ruc_fused/gen_sfctmp.py`` and call ``ruc.cu``'s
 leaves as device functions, so the column arithmetic has one source.
 
@@ -70,6 +75,7 @@ from collections.abc import Mapping
 
 import numpy as np
 
+from gpuwm.checkpoint_identity import LAND_SURFACE_ALGORITHM_IDENTITIES
 from gpuwm.core.noahmp_libm import powf_array
 from gpuwm.core.ruc import (RUC_DRIVER_ARW_FORCING,
                             RUC_DRIVER_COLUMN_FORCING,
@@ -285,22 +291,6 @@ RUC_RUNTIME_RESTRICTIONS: tuple[tuple[str, str, str], ...] = (
         "the_column_loop_runs_on_the_host).  flag_sm_adj stays refused for "
         "a different reason -- it is a real.exe knob, not a runtime one "
         "(see below).",
-    ),
-    (
-        "no_stochastic_perturbations",
-        "spp_lsm=0 and no rstochcol / field_sf arrays are constructed.",
-        "The SPP perturbation region is EM_CORE==1-only in LSMRUC and the "
-        "pinned object does not contain it.  spp_lsm is refused at any "
-        "other value rather than accepted and ignored.",
-    ),
-    (
-        "no_mosaic_land_use_or_soil",
-        "mosaic_lu=0, mosaic_soil=0, and landusef / soilctop / nlcat / "
-        "nscat are not carried at all.",
-        "gpuwm.core.ruc.ruc_surface_parameters is fail-closed on SOILVEGIN's "
-        "mosaic arms, and LSMRUC's irrigation block (:984-1009) is gated on "
-        "the same mosaic_lu==1, so the irrigation block is unreachable "
-        "wherever SOILVEGIN is.  Neither is transcribed.",
     ),
     (
         "p8w_is_the_layer_mid_pressure",
@@ -552,7 +542,8 @@ class RucRuntimeParameters:
                         "sha256": str(entry.get("canonical_sha256", "")),
                     }
         return {
-            "algorithm": "ruc-lsm-wrf-v4.6.1-v1",
+            # The same string the checkpoint header binds; one spelling.
+            "algorithm": LAND_SURFACE_ALGORITHM_IDENTITIES[3],
             "wrf_source": "phys/module_sf_ruclsm.F:LSMRUC + "
                           "phys/module_sf_sfcdiags_ruclsm.F:SFCDIAGS_RUCLSM",
             "dataset_identifier": self.dataset_identifier,
@@ -671,6 +662,10 @@ def ruc_lsm_step(
     mosaic_soil: int,
     flag_sm_adj: int,
     spp_lsm: int,
+    lakemodel: int = 0,
+    pattern_spp_lsm=None,
+    field_sf=None,
+    ruc_soilprop: str = "wrf_45",
 ) -> dict[str, int]:
     """One ``CASE (RUCLSMSCHEME)`` arm.  Mutates ``fields`` in place.
 
@@ -685,19 +680,14 @@ def ruc_lsm_step(
         raise ValueError("LSMRUC ktau is one-based and starts at 1")
     # Second line behind validate_run_config, at the seam that consumes each
     # value, so the registry's citation of this file is true for all four.
-    if int(mosaic_lu) != 0 or int(mosaic_soil) != 0:
-        raise ValueError(
-            f"mosaic_lu={mosaic_lu}, mosaic_soil={mosaic_soil}: SOILVEGIN's "
-            "mosaic arms are fail-closed in gpuwm.core.ruc, so LSMRUC's "
-            "irrigation block is unreachable and neither is transcribed")
-    if int(spp_lsm) != 0:
-        # :446-450 assigns rstoch from pattern_spp_lsm, which is an OPTIONAL
-        # argument present only under #if (EM_CORE==1).  spp_lsm=1 in the
-        # pinned object would dereference an absent optional.
-        raise ValueError(
-            f"spp_lsm={spp_lsm}: LSMRUC:446-450 reads pattern_spp_lsm, an "
-            "optional argument that exists only under EM_CORE==1, so a "
-            "perturbed RUC run is not expressible in the pinned object")
+    from gpuwm.core.ruc_mosaic import mosaic_option
+    mosaic_option(mosaic_lu, "mosaic_lu")
+    mosaic_option(mosaic_soil, "mosaic_soil")
+    mosaic_option(lakemodel, "lakemodel")
+    from gpuwm.core.ruc_tier import ruc_soilprop_form
+    ruc_soilprop_form(ruc_soilprop)
+    from gpuwm.core.ruc_spp import validate_spp_mode
+    enabled_spp = validate_spp_mode(spp_lsm)
     if int(flag_sm_adj) != 0:
         # Not a runtime knob at all: share/module_soil_pre.F:2063 reads it
         # inside init_soil_3_real, i.e. in real.exe.  It is refused here
@@ -715,10 +705,23 @@ def ruc_lsm_step(
             "gpuwm.ingest.ruc_soil.remap_soil_to_ruc_levels"
             "(moisture_adjustment=True)")
 
+    if enabled_spp:
+        # The retained orchestration stays on the GPU. The disabled route
+        # retains its original fused kernels and allocation inventory.
+        return _ruc_lsm_step_reference(
+            fields, atmosphere, params=params, precipitation=precipitation,
+            dt=dt, itimestep=itimestep, mosaic_lu=mosaic_lu,
+            mosaic_soil=mosaic_soil, flag_sm_adj=flag_sm_adj, spp_lsm=1,
+            lakemodel=lakemodel,
+            pattern_spp_lsm=pattern_spp_lsm, field_sf=field_sf,
+            ruc_soilprop=ruc_soilprop)
+
     from gpuwm.core.ruc_fused import step
 
     return step(fields, atmosphere, params=params, precipitation=precipitation,
-                dt=dt, itimestep=itimestep)
+                dt=dt, itimestep=itimestep, mosaic_lu=mosaic_lu,
+                mosaic_soil=mosaic_soil, lakemodel=lakemodel,
+                soilprop=ruc_soilprop)
 
 
 def _ruc_lsm_step_reference(
@@ -733,6 +736,10 @@ def _ruc_lsm_step_reference(
     mosaic_soil: int,
     flag_sm_adj: int,
     spp_lsm: int,
+    lakemodel: int = 0,
+    pattern_spp_lsm=None,
+    field_sf=None,
+    ruc_soilprop: str = "wrf_45",
 ) -> dict[str, int]:
     """One ``CASE (RUCLSMSCHEME)`` arm.  Mutates ``fields`` in place.
 
@@ -747,19 +754,14 @@ def _ruc_lsm_step_reference(
         raise ValueError("LSMRUC ktau is one-based and starts at 1")
     # Second line behind validate_run_config, at the seam that consumes each
     # value, so the registry's citation of this file is true for all four.
-    if int(mosaic_lu) != 0 or int(mosaic_soil) != 0:
-        raise ValueError(
-            f"mosaic_lu={mosaic_lu}, mosaic_soil={mosaic_soil}: SOILVEGIN's "
-            "mosaic arms are fail-closed in gpuwm.core.ruc, so LSMRUC's "
-            "irrigation block is unreachable and neither is transcribed")
-    if int(spp_lsm) != 0:
-        # :446-450 assigns rstoch from pattern_spp_lsm, which is an OPTIONAL
-        # argument present only under #if (EM_CORE==1).  spp_lsm=1 in the
-        # pinned object would dereference an absent optional.
-        raise ValueError(
-            f"spp_lsm={spp_lsm}: LSMRUC:446-450 reads pattern_spp_lsm, an "
-            "optional argument that exists only under EM_CORE==1, so a "
-            "perturbed RUC run is not expressible in the pinned object")
+    from gpuwm.core.ruc_mosaic import mosaic_option
+    mosaic_option(mosaic_lu, "mosaic_lu")
+    mosaic_option(mosaic_soil, "mosaic_soil")
+    mosaic_option(lakemodel, "lakemodel")
+    from gpuwm.core.ruc_tier import ruc_soilprop_form
+    ruc_soilprop_form(ruc_soilprop)
+    from gpuwm.core.ruc_spp import validate_spp_mode
+    enabled_spp = validate_spp_mode(spp_lsm)
     if int(flag_sm_adj) != 0:
         # Not a runtime knob at all: share/module_soil_pre.F:2063 reads it
         # inside init_soil_3_real, i.e. in real.exe.  It is refused here
@@ -854,15 +856,18 @@ def _ruc_lsm_step_reference(
     result = ruc_land_surface_step(
         values, dt=float(dt), ktau=int(itimestep), zs=params.zs,
         ivgtyp=device["ivgtyp"], isltyp=device["isltyp"],
-        myj=False, em_core=1, lakemodel=1, frpcpn=True, rdlai2d=False,
+        myj=False, em_core=1, lakemodel=lakemodel, frpcpn=True, rdlai2d=False,
         mosaic_lu=int(mosaic_lu), mosaic_soil=int(mosaic_soil),
+        landusef=fields.get("landusef"), soilctop=fields.get("soilctop"),
         iswater=params.iswater, isice=params.isice,
         xice_threshold=float(XICE_THRESHOLD),
         ilnb=int(DEFINED_ILNB), ilnb_chain=False,
         c1sn=float(C1SN), c2sn=float(C2SN),
         isncovr_opt=int(ISNCOVR_OPT),
         mminlu=params.dataset_identifier, parameters=params.bundle,
-        leaves=leaves, stages=stages, arrays=device_arrays)
+        leaves=leaves, stages=stages, arrays=device_arrays,
+        spp_lsm=spp_lsm, pattern_spp_lsm=pattern_spp_lsm, field_sf=field_sf,
+        soilprop=ruc_soilprop)
 
     for name, argument in RUC_STATE_BINDING.items():
         device[name] = cp.ascontiguousarray(
@@ -944,7 +949,7 @@ def _ruc_lsm_step_reference(
     for name, array in device_3d.items():
         fields[name][...] = array
 
-    lake = device["lakemask"] == np.float32(1.0)
+    lake = (device["lakemask"] == np.float32(1.0)) & bool(lakemodel)
     water = ((device["xland"] - np.float32(1.5) >= np.float32(0.0))
              & ~lake)
     seaice = (~water & ~lake) & (

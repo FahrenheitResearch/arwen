@@ -176,5 +176,55 @@ def mix_scalar_column(
     return qn2, dqn
 
 
+def scalar_pblmix_column(qn, dz, rho, exch_h, delt):
+    """WRF's ``scalar_pblmix`` local diffusion for one scalar column.
+
+    Transcribed from WRF v4.6.1 ``phys/module_pbl_driver.F`` routines
+    ``diff4d``, ``diff`` and ``invert`` (lines 2598-2844). WRF is public
+    domain; see ``licenses/LICENSE-WRF-public-domain.txt``. This is separate
+    from ``bl_mynn_mixscalars``: it uses MYNN's final heat diffusivity,
+    without the EDMF scalar flux, and overwrites any earlier scalar rate.
+    The bottom flux is zero and the top scalar value is prescribed.
+
+    Inputs are mass-layer arrays including the prescribed top layer.
+    ``exch_h[k]`` is the diffusivity at the lower interface of layer k.
+    Every intermediate has the source's single-precision operation order.
+    """
+    qn, dz, rho, exch_h = (np.asarray(a, dtype=np.float32)
+                           for a in (qn, dz, rho, exch_h))
+    if qn.ndim != 1 or qn.size < 2 or any(
+            a.shape != qn.shape for a in (dz, rho, exch_h)):
+        raise ValueError("scalar_pblmix requires equal columns with nz >= 2")
+    dt = F(delt)
+    nz = qn.size
+    cddz = np.zeros(nz + 1, dtype=np.float32)
+    for k in range(1, nz):
+        rhoz = F(F(F(rho[k] * dz[k - 1]) + F(rho[k - 1] * dz[k]))
+                 / F(dz[k - 1] + dz[k]))
+        cddz[k] = F(F(F(F(2.0) * rhoz) * exch_h[k])
+                      / F(dz[k] + dz[k - 1]))
+    a = np.zeros(nz, dtype=np.float32)
+    b = np.ones(nz, dtype=np.float32)
+    c = np.zeros(nz, dtype=np.float32)
+    rhs = qn.copy()
+    for k in range(nz - 1):
+        a[k] = F(F(F(-cddz[k] * dt) / dz[k]) / rho[k])
+        b[k] = F(F(1.0) + F(F(F(dt * F(cddz[k] + cddz[k + 1]))
+                                / dz[k]) / rho[k]))
+        c[k] = F(F(F(-cddz[k + 1] * dt) / dz[k]) / rho[k])
+    # WRF invert eliminates from the top before the bottom substitution.
+    # Replacing it with MYNN's tridiag2 changes FP32 rounding.
+    for k in range(nz - 2, -1, -1):
+        rhs[k] = F(rhs[k] - F(F(c[k] * rhs[k + 1]) / b[k + 1]))
+        b[k] = F(b[k] - F(F(c[k] * a[k + 1]) / b[k + 1]))
+    for k in range(1, nz):
+        rhs[k] = F(rhs[k] - F(F(a[k] * rhs[k - 1]) / b[k - 1]))
+    solved = np.asarray([F(rhs[k] / b[k]) for k in range(nz)],
+                        dtype=np.float32)
+    rate = np.asarray([F(F(solved[k] - qn[k]) / dt) for k in range(nz)],
+                      dtype=np.float32)
+    return solved, rate
+
+
 __all__ = ["QN_SOLVE_ORDER", "NONLOC", "dmp_qn_flux_column",
-           "mix_scalar_column"]
+           "mix_scalar_column", "scalar_pblmix_column"]

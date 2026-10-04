@@ -34,6 +34,7 @@ from gpuwm.hrrr_native_static import (
     verify_hrrr_native_static,
 )
 from gpuwm.ingest.cpu_backend import resolve_cpu_bridge
+from gpuwm.ingest.preprocess_backend import preprocess_math_call
 from gpuwm.ingest.hrrr import load_hrrr_native_series
 from gpuwm.ingest.hrrr_target import load_hrrr_target_domain
 from gpuwm.ingest.source_coverage import owns_source_coverage_refusal
@@ -1570,6 +1571,7 @@ def _chained_hierarchy_tail(c) -> dict[str, object]:
     return payload
 
 
+@preprocess_math_call(fixed_backend="cpu")
 def prepare_hrrr_hierarchy(
         *, root_preparation: Path, root_domain_spec: Path,
         wps_namelist: Path, namelist_input: Path,

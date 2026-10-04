@@ -117,7 +117,9 @@ def prepare_spawn_statics(child_dc, parent_node, catalog, *,
         child_dc, parent_node.cfg.grid_id, parent_node.grid)
     static_catalog = _static_catalog(catalog)
     static_fields = build_static_for_domain(
-        grid, static_catalog, child_dc.grid_id)
+        grid, static_catalog, child_dc.grid_id,
+        **({"cfg": child_dc.run}
+           if getattr(child_dc.run, "sf_lake_physics", 0) else {}))
     landuse_attrs = geog_selection_from_catalog(
         static_catalog, child_dc.grid_id).landuse_global_attrs()
     receipt: dict[str, object] = {

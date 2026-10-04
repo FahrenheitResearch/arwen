@@ -1,6 +1,6 @@
-// WRF v4.6.1 RUC LSM dominant-category surface/soil parameter setup.
-// One thread transcribes one call to module_sf_ruclsm.F:soilvegin with
-// mosaic_lu=0 and mosaic_soil=0.  Explicit round-to-nearest intrinsics keep
+// WRF v4.6.1 RUC LSM surface/soil parameter setup.
+// Public-domain WRF transcription: licenses/LICENSE-WRF-public-domain.txt.
+// One thread transcribes one call to module_sf_ruclsm.F:soilvegin.  Explicit round-to-nearest intrinsics keep
 // the operation boundaries used by WRF default REAL arithmetic.
 
 // PROVISIONAL float32 transcendentals, pending a verified glibc transcription.
@@ -135,6 +135,82 @@ real ruc_expf_rn(real value)
     return __double2float_rn(exp((double)value));
 }
 
+// >>> RUC MOSAIC SURFACE >>>
+// WRF SOILVEGIN mosaic loops. Keep ascending category accumulation and
+// the capped area; effective roughness deliberately has no area division.
+__device__ __forceinline__ void ruc_mosaic_parameters(
+    int i,int n,int nlcat,int nscat,int mosaic_lu,int mosaic_soil,
+    const float* landusef,const float* soilctop,
+    int soil,int iswater,bool rdlai2d,float factor,float incoming_znt,
+    const int* ifortbl,const float* z0tbl,const float* lemitbl,
+    const float* pctbl,const float* laitbl,const float* bb,
+    const float* drysmc,const float* hc,const float* maxsmc,
+    const float* refsmc,const float* satpsi,const float* satdk,
+    const float* wltsmc,const float* qtz,
+    float& emiss,float& pc,float& znt,float& lai,
+    float& qwrtz,float& rhocs,float& bclh,float& dqm,
+    float& ksat,float& psis,float& qmin,float& ref,float& wilt) {
+    if(mosaic_lu) {
+        float area=0.0f, rough=0.0f, leaf=0.0f;
+        emiss=pc=0.0f;
+        for(int k=0;k<nlcat;++k) {
+            float fraction=landusef[k*n+i];
+            int forest=ifortbl[k];
+            float delta=0.0f,scaled=__fmul_rn(0.8f,laitbl[k]);
+            if(forest==1) delta=fminf(0.2f,scaled);
+            if(forest==2 || forest==7) delta=fminf(0.5f,scaled);
+            if(forest==3) delta=fminf(0.45f,scaled);
+            if(forest==4) delta=fminf(0.75f,scaled);
+            if(forest==5) delta=fminf(0.86f,scaled);
+            float today_lai=k+1==iswater ? laitbl[k]:__fsub_rn(laitbl[k],__fmul_rn(delta,factor));
+            float today_znt=k+1==iswater ? incoming_znt:(forest==7 ? __fsub_rn(z0tbl[k],__fmul_rn(0.125f,factor)):z0tbl[k]);
+            float logarithm=gfk_log(__fdiv_rn(5.0f,today_znt));
+            area=__fadd_rn(area,fraction);
+            emiss=__fadd_rn(emiss,__fmul_rn(lemitbl[k],fraction));
+            rough=__fadd_rn(rough,__fdiv_rn(fraction,__fmul_rn(logarithm,logarithm)));
+            if(!rdlai2d) leaf=__fadd_rn(leaf,__fmul_rn(today_lai,fraction));
+            pc=__fadd_rn(pc,__fmul_rn(pctbl[k],fraction));
+        }
+        area=fminf(1.0f,area);
+        emiss=__fdiv_rn(emiss,area);
+        pc=__fdiv_rn(pc,area);
+        znt=__fdiv_rn(5.0f,gfk_exp(__fsqrt_rn(__fdiv_rn(1.0f,rough))));
+        if(!rdlai2d) lai=__fdiv_rn(leaf,area);
+    }
+    if(mosaic_soil) {
+        float area=0.0f;
+        qwrtz=rhocs=bclh=dqm=ksat=psis=qmin=ref=wilt=0.0f;
+        for(int k=0;k<nscat;++k) {
+            if(k==13) continue;
+            float fraction=soilctop[k*n+i];
+            area=__fadd_rn(area,fraction);
+            rhocs=__fadd_rn(rhocs,__fmul_rn(__fmul_rn(hc[k],1.0e6f),fraction));
+            bclh=__fadd_rn(bclh,__fmul_rn(bb[k],fraction));
+            dqm=__fadd_rn(dqm,__fmul_rn(__fsub_rn(maxsmc[k],drysmc[k]),fraction));
+            ksat=__fadd_rn(ksat,__fmul_rn(satdk[k],fraction));
+            psis=__fsub_rn(psis,__fmul_rn(satpsi[k],fraction));
+            qmin=__fadd_rn(qmin,__fmul_rn(drysmc[k],fraction));
+            ref=__fadd_rn(ref,__fmul_rn(refsmc[k],fraction));
+            wilt=__fadd_rn(wilt,__fmul_rn(wltsmc[k],fraction));
+            qwrtz=__fadd_rn(qwrtz,__fmul_rn(qtz[k],fraction));
+        }
+        area=fminf(1.0f,area);
+        if(area<=0.0f) {
+            int k=soil-1;
+            rhocs=__fmul_rn(hc[k],1.0e6f); bclh=bb[k];
+            dqm=__fsub_rn(maxsmc[k],drysmc[k]); ksat=satdk[k];
+            psis=-satpsi[k]; qmin=drysmc[k]; ref=refsmc[k];
+            wilt=wltsmc[k]; qwrtz=qtz[k];
+        } else {
+            rhocs=__fdiv_rn(rhocs,area); bclh=__fdiv_rn(bclh,area);
+            dqm=__fdiv_rn(dqm,area); ksat=__fdiv_rn(ksat,area);
+            psis=__fdiv_rn(psis,area); qmin=__fdiv_rn(qmin,area);
+            ref=__fdiv_rn(ref,area); wilt=__fdiv_rn(wilt,area);
+            qwrtz=__fdiv_rn(qwrtz,area);
+        }
+    }
+}
+
 extern "C" __global__
 void ruc_surface_parameters(
     const int* __restrict__ isltyp,
@@ -172,7 +248,9 @@ void ruc_surface_parameters(
     real* __restrict__ qmin_out,
     real* __restrict__ ref_out,
     real* __restrict__ wilt_out,
-    int iswater, int rdlai2d, int n)
+    int iswater, int rdlai2d, int n,
+    const float* landusef,const float* soilctop,
+    int nlcat,int nscat,int mosaic_lu,int mosaic_soil)
 {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= n) return;
@@ -237,7 +315,7 @@ void ruc_surface_parameters(
     qmin_out[idx] = 0.0f;
     ref_out[idx] = 0.0f;
     wilt_out[idx] = 0.0f;
-    if (isltyp[idx] == 14) return;
+    if (isltyp[idx] != 14) {
 
     qwrtz_out[idx] = qtz[soil_index];
     rhocs_out[idx] = __fmul_rn(hc[soil_index], 1.0e6f);
@@ -248,7 +326,17 @@ void ruc_surface_parameters(
     qmin_out[idx] = drysmc[soil_index];
     ref_out[idx] = refsmc[soil_index];
     wilt_out[idx] = wltsmc[soil_index];
+    }
+    ruc_mosaic_parameters(idx,n,nlcat,nscat,mosaic_lu,mosaic_soil,
+        landusef,soilctop,isltyp[idx],iswater,rdlai2d,factor,znt_in[idx],
+        ifortbl,z0tbl,lemitbl,pctbl,laitbl,bb,drysmc,hc,maxsmc,
+        refsmc,satpsi,satdk,wltsmc,qtz,
+        emiss_out[idx],pc_out[idx],znt_out[idx],lai_out[idx],
+        qwrtz_out[idx],rhocs_out[idx],bclh_out[idx],dqm_out[idx],
+        ksat_out[idx],psis_out[idx],qmin_out[idx],ref_out[idx],wilt_out[idx]);
+
 }
+// <<< RUC MOSAIC SURFACE <<<
 
 
 // Freezing-curve partition used on both sides of WRF's snow-free soiltemp
@@ -515,7 +603,20 @@ void ruc_soil_properties(
     real kdry = __fdiv_rn(
         __fadd_rn(__fmul_rn(0.135f, gamd), 64.7f),
         __fsub_rn(2700.0f, __fmul_rn(0.947f, gamd)));
+    // SOILPROP by WRF lineage (ruc_soilprop, gpuwm/core/ruc_tier.py).  The
+    // default is WRF v4.0-4.5 (v4.5.2 module_sf_ruclsm.F:6154, 6213-6216,
+    // 6245; the operational RAP/HRRR branch carries the same lines at 6343,
+    // 6402-6407, 6434): Johansen's kzero at every quartz fraction, and water
+    // diffusivity and conductivity normalised by the moisture above the
+    // residual, (theta - qmin)/(theta_sat - qmin).  GPUWM_SOILPROP_WRF461
+    // compiles WRF v4.6.1 (:6198-6202, 6261-6267, 6289): a 3.0 mineral
+    // conductivity below 20 percent quartz, and total moisture over porosity,
+    // which diffuses 2.5 to 8 times more water up into a dry top level.
+#ifdef GPUWM_SOILPROP_WRF461
     real mineral = qwrtz > 0.2f ? 2.0f : 3.0f;
+#else
+    real mineral = 2.0f;
+#endif
     real kas = __fmul_rn(
         ruc_powf_rn(conductivity_quartz, qwrtz),
         ruc_powf_rn(mineral, __fsub_rn(1.0f, qwrtz)));
@@ -585,21 +686,31 @@ void ruc_soil_properties(
         real ice = __fmul_rn(riw, middle_ice);
         real diffusivity = 0.0f;
         if (__fsub_rn(ws, ice) >= 0.12f) {
+#ifdef GPUWM_SOILPROP_WRF461
             real h = fmaxf(
                 0.0f,
                 __fdiv_rn(
                     __fsub_rn(__fadd_rn(middle_moisture, qmin), ice),
                     fmaxf(minimum, __fsub_rn(ws, ice))));
+            real porosity = ws;
+#else
+            real h = fmaxf(
+                0.0f,
+                __fdiv_rn(
+                    __fsub_rn(middle_moisture, ice),
+                    fmaxf(minimum, __fsub_rn(dqm, ice))));
+            real porosity = dqm;
+#endif
             real facd = 1.0f;
             if (ice != 0.0f) {
                 facd = __fsub_rn(
                     1.0f, __fdiv_rn(ice, fmaxf(minimum, middle_moisture)));
             }
-            real ame = fmaxf(minimum, __fsub_rn(ws, ice));
+            real ame = fmaxf(minimum, __fsub_rn(porosity, ice));
             diffusivity = __fmul_rn(__fmul_rn(-bclh, ksat), psis);
             diffusivity = __fdiv_rn(diffusivity, ame);
             diffusivity = __fmul_rn(
-                diffusivity, ruc_powf_rn(__fdiv_rn(ws, ame), 3.0f));
+                diffusivity, ruc_powf_rn(__fdiv_rn(porosity, ame), 3.0f));
             diffusivity = __fmul_rn(
                 diffusivity, ruc_powf_rn(h, __fadd_rn(bclh, 2.0f)));
             diffusivity = __fmul_rn(diffusivity, facd);
@@ -619,7 +730,11 @@ void ruc_soil_properties(
                 1.0f,
                 __fdiv_rn(ice, fmaxf(minimum, soilmois[index])));
         }
+#ifdef GPUWM_SOILPROP_WRF461
         real am = fmaxf(minimum, __fsub_rn(ws, ice));
+#else
+        real am = fmaxf(minimum, __fsub_rn(dqm, ice));
+#endif
         real conductivity = __fdiv_rn(ksat, am);
         real exponent = __fadd_rn(__fmul_rn(2.0f, bclh), 2.0f);
         conductivity = __fmul_rn(

@@ -444,7 +444,10 @@ def _build_footprint_statics(grid, catalog, child_dc):
                                     geog_selection_from_catalog)
 
     static_catalog = _static_catalog(catalog)
-    fields = build_static_for_domain(grid, static_catalog, child_dc.grid_id)
+    fields = build_static_for_domain(
+        grid, static_catalog, child_dc.grid_id,
+        **({"cfg": child_dc.run}
+           if getattr(child_dc.run, "sf_lake_physics", 0) else {}))
     selection = geog_selection_from_catalog(static_catalog, child_dc.grid_id)
     landuse_attrs = selection.landuse_global_attrs()
     highres = getattr(catalog, "static_highres", None)

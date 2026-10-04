@@ -113,6 +113,72 @@ __device__ void smx_tridiag2_column(
 // khdz (nz+1) + a, b, c, d, cpw, dpw (6*nz).
 #define SMX_SOLVE_SCRATCH_FLOATS(nz) ((size_t)(7) * (nz) + 1)
 
+// WRF v4.6.1 phys/module_pbl_driver.F:2598-2844, diff4d/diff/invert.
+// Public-domain WRF transcription, covered by
+// licenses/LICENSE-WRF-public-domain.txt. This is scalar_pblmix's local
+// diffusion, separate from the MYNN EDMF mixscalars solves below. Exch_h is
+// in m2/s at each layer's lower interface. Bottom flux is zero; top value
+// is prescribed. Number mixing ratios have no humidity conversion.
+extern "C" __global__
+void scalar_pblmix_columns(
+    const real* __restrict__ qn_raw,
+    const real* __restrict__ dz_raw,
+    const real* __restrict__ rho_raw,
+    const real* __restrict__ exch_h_raw,
+    const real* __restrict__ dt_raw,
+    real* __restrict__ solved_raw,
+    real* __restrict__ rate_raw,
+    real* __restrict__ scratch_raw,
+    int nz, int ncol)
+{
+    const int column = blockIdx.x * blockDim.x + threadIdx.x;
+    if (column >= ncol) return;
+    MynnColumn<const real> qn = {qn_raw + column, (size_t)ncol};
+    MynnColumn<const real> dz = {dz_raw + column, (size_t)ncol};
+    MynnColumn<const real> rho = {rho_raw + column, (size_t)ncol};
+    MynnColumn<const real> kh = {exch_h_raw + column, (size_t)ncol};
+    MynnColumn<real> solved = {solved_raw + column, (size_t)ncol};
+    MynnColumn<real> rate = {rate_raw + column, (size_t)ncol};
+    MynnColumn<real> cddz = {scratch_raw + column, (size_t)ncol};
+    MynnColumn<real> a = cddz + nz + 1;
+    MynnColumn<real> b = a + nz;
+    MynnColumn<real> c = b + nz;
+    MynnColumn<real> rhs = c + nz;
+    const real dt = dt_raw[column];
+    cddz[0] = 0.0f;
+    cddz[nz] = 0.0f;
+    for (int k = 1; k < nz; ++k) {
+        const real rhoz = SMX_DIV(
+            SMX_ADD(SMX_MUL(rho[k], dz[k - 1]),
+                    SMX_MUL(rho[k - 1], dz[k])),
+            SMX_ADD(dz[k - 1], dz[k]));
+        cddz[k] = SMX_DIV(SMX_MUL(SMX_MUL(2.0f, rhoz), kh[k]),
+                          SMX_ADD(dz[k], dz[k - 1]));
+    }
+    for (int k = 0; k < nz - 1; ++k) {
+        a[k] = SMX_DIV(SMX_DIV(SMX_MUL(-cddz[k], dt), dz[k]), rho[k]);
+        b[k] = SMX_ADD(1.0f, SMX_DIV(SMX_DIV(
+            SMX_MUL(dt, SMX_ADD(cddz[k], cddz[k + 1])), dz[k]), rho[k]));
+        c[k] = SMX_DIV(SMX_DIV(SMX_MUL(-cddz[k + 1], dt), dz[k]), rho[k]);
+        rhs[k] = qn[k];
+    }
+    a[nz - 1] = 0.0f;
+    b[nz - 1] = 1.0f;
+    c[nz - 1] = 0.0f;
+    rhs[nz - 1] = qn[nz - 1];
+    // WRF invert: top-down elimination, bottom-up substitution, division.
+    for (int k = nz - 2; k >= 0; --k) {
+        rhs[k] = SMX_SUB(rhs[k], SMX_DIV(SMX_MUL(c[k], rhs[k + 1]), b[k + 1]));
+        b[k] = SMX_SUB(b[k], SMX_DIV(SMX_MUL(c[k], a[k + 1]), b[k + 1]));
+    }
+    for (int k = 1; k < nz; ++k)
+        rhs[k] = SMX_SUB(rhs[k], SMX_DIV(SMX_MUL(a[k], rhs[k - 1]), b[k - 1]));
+    for (int k = 0; k < nz; ++k) {
+        solved[k] = SMX_DIV(rhs[k], b[k]);
+        rate[k] = SMX_DIV(SMX_SUB(solved[k], qn[k]), dt);
+    }
+}
+
 // ===========================================================================
 // One stock qn tridiagonal solve + its tendency (module_bl_mynn.F:4654-4689;
 // the :4695/:4736/:4778/:4820 blocks are the same arithmetic).  Device twin

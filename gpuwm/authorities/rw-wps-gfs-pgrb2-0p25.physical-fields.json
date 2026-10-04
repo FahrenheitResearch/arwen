@@ -1,0 +1,370 @@
+{
+  "schema": "gpuwm-native-physical-field-contract.v1",
+  "contract_id": "gfs-pgrb2-0p25-physical-fields-v1",
+  "description": "The native GFS decoder and horizontal mapper physical field contract. The decoder parameter rows are in gfs_grib2_bridge.rs. Their GRIB2 units are published by NCEP in tables 4.2-0-0, 4.2-0-1, 4.2-0-2, 4.2-0-3, 4.2-2-0 and 4.2-10-2. These are declared source semantics, never inferred from an array range.",
+  "unit_authorities": [
+    "https://www.nco.ncep.noaa.gov/pmb/docs/grib2/grib2_doc/"
+  ],
+  "vertical": {
+    "kind": "pressure_levels",
+    "units": "hPa",
+    "values": "levels_hpa",
+    "pressure_field": null
+  },
+  "arrays": {
+    "levels_hpa": {
+      "units": "hPa",
+      "dimensions": [
+        "level"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "pressure_levels_pa"
+      ],
+      "operation": "verified native decoder pressure_levels_pa divided by 100",
+      "source_units": "Pa"
+    },
+    "field__TT": {
+      "units": "K",
+      "dimensions": [
+        "level",
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "T"
+      ],
+      "operation": "native overlapping-parabolic horizontal interpolation",
+      "source_units": "K"
+    },
+    "field__RH": {
+      "units": "%",
+      "dimensions": [
+        "level",
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "RH"
+      ],
+      "operation": "native overlapping-parabolic horizontal interpolation; GFS water-relative convention retained",
+      "source_units": "%"
+    },
+    "field__GHT": {
+      "units": "m",
+      "dimensions": [
+        "level",
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "GHT"
+      ],
+      "operation": "native overlapping-parabolic horizontal interpolation; native geopotential-height numeric values retained, no division",
+      "source_units": "gpm"
+    },
+    "field__UU": {
+      "units": "m s-1",
+      "dimensions": [
+        "level",
+        "y",
+        "x_stag"
+      ],
+      "basis": "grid_x",
+      "source_fields": [
+        "U",
+        "V"
+      ],
+      "operation": "native overlapping-parabolic horizontal interpolation; earth-relative winds rotated to the target x direction",
+      "source_units": "m s-1"
+    },
+    "field__VV": {
+      "units": "m s-1",
+      "dimensions": [
+        "level",
+        "y_stag",
+        "x"
+      ],
+      "basis": "grid_y",
+      "source_fields": [
+        "U",
+        "V"
+      ],
+      "operation": "native overlapping-parabolic horizontal interpolation; earth-relative winds rotated to the target y direction",
+      "source_units": "m s-1"
+    },
+    "field__PSFC": {
+      "units": "Pa",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "PSFC"
+      ],
+      "operation": "canonical native bilinear pressure interpolation",
+      "source_units": "Pa"
+    },
+    "field__SOURCE_OROGRAPHY": {
+      "units": "m",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "SOURCE_OROGRAPHY"
+      ],
+      "operation": "native bilinear interpolation; native geopotential-height numeric values retained, no division",
+      "source_units": "gpm"
+    },
+    "field__T2": {
+      "units": "K",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "T2"
+      ],
+      "operation": "native overlapping-parabolic horizontal interpolation",
+      "source_units": "K"
+    },
+    "field__RH2": {
+      "units": "%",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "RH2"
+      ],
+      "operation": "native overlapping-parabolic horizontal interpolation; GFS water-relative convention retained",
+      "source_units": "%"
+    },
+    "field__U10": {
+      "units": "m s-1",
+      "dimensions": [
+        "y",
+        "x_stag"
+      ],
+      "basis": "grid_x",
+      "source_fields": [
+        "U10",
+        "V10"
+      ],
+      "operation": "native overlapping-parabolic horizontal interpolation; earth-relative winds rotated to the target x direction",
+      "source_units": "m s-1"
+    },
+    "field__V10": {
+      "units": "m s-1",
+      "dimensions": [
+        "y_stag",
+        "x"
+      ],
+      "basis": "grid_y",
+      "source_fields": [
+        "U10",
+        "V10"
+      ],
+      "operation": "native overlapping-parabolic horizontal interpolation; earth-relative winds rotated to the target y direction",
+      "source_units": "m s-1"
+    },
+    "field__SKINTEMP": {
+      "units": "K",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "SKINTEMP"
+      ],
+      "operation": "native WPS masked land/sea interpolation chain; source units retained",
+      "source_units": "K"
+    },
+    "field__SNOW": {
+      "units": "kg m-2",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "SNOW"
+      ],
+      "operation": "native WPS masked land/sea interpolation chain; source units retained",
+      "source_units": "kg m-2"
+    },
+    "field__SNOWH": {
+      "units": "m",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "SNOWH"
+      ],
+      "operation": "native WPS masked land/sea interpolation chain; source units retained",
+      "source_units": "m"
+    },
+    "field__XICE": {
+      "units": "1",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "XICE"
+      ],
+      "operation": "native WPS masked land/sea interpolation chain; source units retained",
+      "source_units": "1"
+    },
+    "field__LANDSEA": {
+      "units": "1",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "target LANDMASK",
+        "target lake mask"
+      ],
+      "operation": "target interpolation landmask; target lakes select land atmospheric/soil donors",
+      "source_units": "1"
+    },
+    "meta__soil_no_source_land": {
+      "units": "1",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "LANDSEA"
+      ],
+      "operation": "native masked soil interpolation had no source-land donor",
+      "source_units": "1"
+    },
+    "field__GFS_ST000010": {
+      "units": "K",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "GFS_ST000010"
+      ],
+      "operation": "native WPS masked land/sea interpolation chain; source units retained",
+      "source_units": "K"
+    },
+    "field__GFS_SM000010": {
+      "units": "m3 m-3",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "GFS_SM000010"
+      ],
+      "operation": "native WPS masked land/sea interpolation chain; source units retained",
+      "source_units": "m3 m-3"
+    },
+    "field__GFS_ST010040": {
+      "units": "K",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "GFS_ST010040"
+      ],
+      "operation": "native WPS masked land/sea interpolation chain; source units retained",
+      "source_units": "K"
+    },
+    "field__GFS_SM010040": {
+      "units": "m3 m-3",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "GFS_SM010040"
+      ],
+      "operation": "native WPS masked land/sea interpolation chain; source units retained",
+      "source_units": "m3 m-3"
+    },
+    "field__GFS_ST040100": {
+      "units": "K",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "GFS_ST040100"
+      ],
+      "operation": "native WPS masked land/sea interpolation chain; source units retained",
+      "source_units": "K"
+    },
+    "field__GFS_SM040100": {
+      "units": "m3 m-3",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "GFS_SM040100"
+      ],
+      "operation": "native WPS masked land/sea interpolation chain; source units retained",
+      "source_units": "m3 m-3"
+    },
+    "field__GFS_ST100200": {
+      "units": "K",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "GFS_ST100200"
+      ],
+      "operation": "native WPS masked land/sea interpolation chain; source units retained",
+      "source_units": "K"
+    },
+    "field__GFS_SM100200": {
+      "units": "m3 m-3",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "GFS_SM100200"
+      ],
+      "operation": "native WPS masked land/sea interpolation chain; source units retained",
+      "source_units": "m3 m-3"
+    }
+  },
+  "evidence": null,
+  "snapshot": null,
+  "refusals": {
+    "vertical": "GFS physical input vertical coordinate differs from native pressure levels",
+    "unknown_array": "GFS physical input {name} units or grid coordinates differ from the native consumer",
+    "incompatible_array": "GFS physical input {name} units or grid coordinates differ from the native consumer"
+  }
+}

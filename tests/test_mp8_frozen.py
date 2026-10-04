@@ -808,8 +808,11 @@ FROZEN_MODULE_DIGESTS = {
         # sm_89 unchanged (the compute_89 PTX with __fdiv_rn spelled '/' is
         # identical to the base's); Blackwell cards now round these quotients
         # IEEE-correctly.  Previously 5c5a7278/0258a93f.
-        'fccea5e6cce85002f494d1bfe780db12b688675e1ec21de1e64148eb0e596fef',
-        '33f7a2faee1130d26ecafaf4b00c571ee243e2c5fcdf4ec30a5d0dd9c8f8a995'),
+        # Option 2 now reaches WRF's local mixing-length law in cold and
+        # carried calls. The option-1 kernel body is unchanged; Fortran
+        # column and assembled-driver checks live in test_mynn_mixlength2.
+        'b03be073f38909a395dd1dad73e079c9dae0413e722ec3782222a194665b65b4',
+        '8771aadac8ba94ec75772d616db2acb0fd8fd768fba4b032595c3d07185fa6b2'),
     'mynn_surface': (
         # Re-pinned for A146 (a98f2482e): every float division by a compile-time
         # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
@@ -1330,6 +1333,11 @@ FROZEN_MODULE_DIGESTS = {
         'c3a2554827e7c39db269d0fa1d5ad594d1623d6974be859a1ae3a044d438951f',
         '36f7a4dccc8c66be225e16fdd6088f0fafa7a357ac1aba9b4a99f98af297c370'),
     'ruc': (
+        # 2.8.4: WRF mosaic SOILVEGIN parameters and post-SFCTMP irrigation.
+        # Twelve surface and 48 full-column WRF oracles match every bit;
+        # the mixed-grid fused checks cover all selector pairs over three
+        # steps. This pin prevents changed category order or missing root
+        # irrigation from silently changing the surface water and fluxes.
         # Re-pinned for the RUC_NZS tier ladder (lane/ruc-column-nzs, step 3
         # of 3, final): the ladder, the 161-token macro substitution that
         # uses it, and the `#elif RUC_NZS == 6` arm of the depth table.  The
@@ -1374,8 +1382,27 @@ FROZEN_MODULE_DIGESTS = {
         # d446b7462e4952416d3e21482b051823766a6f675163236686c7d9fab7fbbdb7,
         # through one extra named inversion step for this block, which is
         # what keeps "the lift changed nothing else" checkable.
-        '2b176b92364530762032a815de270373143725c553437d19207152c84213ac1f',
-        '55894935fdfde9f3ac683e2bbf151e0c20f677744b37a9a438aa61bb91635935'),
+        #
+        # 2.8.5, SOILPROP by WRF lineage (ruc_soilprop).  ruc_soil_properties
+        # compiles WRF v4.0-4.5's soil-water diffusivity and conductivity,
+        # normalised by the moisture above the residual, and mineral
+        # conductivity 2.0 at every quartz fraction (v4.5.2
+        # module_sf_ruclsm.F:6154, 6213-6216, 6245; the same lines in the
+        # operational RAP/HRRR branch); GPUWM_SOILPROP_WRF461 compiles the
+        # v4.6.1 lines this unit carried before (:6198-6202, 6261-6267,
+        # 6289), and under that define every WRF v4.6.1 column oracle still
+        # matches as before (tests/test_ruc.py, test_ruc_gpu.py,
+        # test_ruc_mosaic_gpu.py).  WHAT THE PIN PREVENTS: the v4.6.1 form
+        # returning as the default.  Measured on a 3 km October afternoon
+        # cut of an operational-HRRR start (106,671 land cells): it refills a
+        # dry top soil level from below, 0.161 to 0.187 m3/m3 in the first
+        # hour against 0.173 under this default and 0.157 in the operational
+        # model, with latent heat 207 against 186 W/m2 (operational 142).
+        # tests/test_ruc_nzs_tier.py inverts the five edits by name before
+        # its historical digest, so the lift proof above still closes.
+        # Previously 57e8c503/39d88927.
+        '844546e307b148bab0cd19dfdc786845d16d298ddd4345684c158539ca99e8d8',
+        '0af961d37134ac562ad767a392be0ffd774463aef6a19d1167611f50f800c5af'),
     'saxpy': (
         # 2.8.2: four values per thread with aligned vector loads/stores.
         # Scalar a*x+y and the default FMA policy are unchanged. The word
@@ -1543,7 +1570,7 @@ FROZEN_MODULE_DIGESTS = {
         # __fdiv_rn spelling of the other entry point (vertical_interpolate_logp).
         # Previously 339e7266/b532daea on the lane and 3efb1a82/1c882556 on
         # integrate/2.8.
-        'f945e143abb6f9d8d3808be28c397b5d989ef87fc33b81fa9873c357886f4b8b',
+        '1787bbbf3978fdcd7947054f1a66ddffe46a232cec3a41b40b562836abad176a',
         '8309d659ba4adae07848a995ffc6e9e9f76bacff38c59302ccfa96fdb0f7a95d'),
     'wsm6': (
         # Re-pinned for A146 (a98f2482e): every float division by a compile-time

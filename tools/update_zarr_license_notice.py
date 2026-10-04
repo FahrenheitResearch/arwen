@@ -58,6 +58,20 @@ def selected_packages():
     return sorted(selected.values(), key=lambda package: (package["name"], package["version"])), counts
 
 
+def notice_order(path):
+    """The order the committed notices number their texts in, on every platform.
+
+    Path objects compare case-insensitively on Windows and by code point on
+    Linux, so a bare sort numbered one tree two ways: libz-sys carries
+    src/zlib/LICENSE beside src/zlib/contrib/, and the first sorted after the
+    second on Windows and before it on Linux. The notices are generated on
+    Windows, so --check on Linux called a current notice stale and a Linux
+    regeneration renumbered texts nothing had changed. The key is the Windows
+    order, with the exact parts to settle names that differ only in case.
+    """
+    return [part.lower() for part in path.parts], path.parts
+
+
 def render(packages, counts):
     texts, rows = {}, []
     supplement_root = WORKSPACE / "additional-notices"
@@ -68,10 +82,11 @@ def render(packages, counts):
         # Include nested native-library notices as well as Rust package roots.
         # Path dependencies may have a workspace vendor directory; those crates
         # have their own resolved entry, so avoid sweeping unrelated sources.
-        files = sorted(path for path in directory.rglob("*") if path.is_file()
-                       and path.name.upper().startswith(PREFIXES)
-                       and "target" not in path.relative_to(directory).parts
-                       and ("vendor" not in path.relative_to(directory).parts or directory.is_relative_to(WORKSPACE / "vendor")))
+        files = sorted((path for path in directory.rglob("*") if path.is_file()
+                        and path.name.upper().startswith(PREFIXES)
+                        and "target" not in path.relative_to(directory).parts
+                        and ("vendor" not in path.relative_to(directory).parts or directory.is_relative_to(WORKSPACE / "vendor"))),
+                       key=notice_order)
         for supplement in supplements:
             if package["name"] in supplement["packages"]:
                 path = supplement_root / supplement["file"]

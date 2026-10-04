@@ -3423,6 +3423,13 @@ def render_main(args: argparse.Namespace) -> int:
             from gpuwm import rustwx
             from gpuwm.provenance_gate import bridge_tree_match
 
+            # The radar colour set reaches the engine by its environment
+            # name, which every renderer subprocess inherits
+            # (rustwx.renderer_env): one switch for every radar-table
+            # product, no per-product argument.
+            if getattr(args, "radar_colors", None):
+                os.environ[rustwx.RADAR_COLORS_ENV] = args.radar_colors
+
             verdict = bridge_tree_match(rustwx.find_renderer(),
                                         env_var=rustwx.RENDERER_ENV)
             # Filled by the renderer's own event stream: the range each
@@ -3678,6 +3685,15 @@ def register_cli(subparsers) -> None:
              "rustwx-render/src/theme.rs; RUSTWX_THEME is the "
              "environment spelling).  Omitted, the engine draws its own "
              "look and the PNGs are byte-identical")
+    parser.add_argument(
+        "--radar-colors", choices=("standard", "classic"), default=None,
+        help="rust engine: the colour tables the reflectivity and radial "
+             "velocity products draw with -- standard (the radar tables, "
+             "the default) or classic (the reflectivity ladder and "
+             "blue-red velocity scale before 2.8.5).  One name selects "
+             "every radar-table product; RUSTWX_RADAR_COLORS is the "
+             "environment spelling, which `gpuwm go` and `gpuwm run` "
+             "renders also read")
     parser.add_argument(
         "--section", metavar="lat,lon,lat,lon|FILE.json", default=None,
         help="rust engine: the line the vertical-section products "

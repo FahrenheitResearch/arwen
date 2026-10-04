@@ -58,16 +58,21 @@ for every directory holding a Cargo.toml; read its name, version and license
 expression; collect every LICENSE*/COPYING* file in that directory;
 deduplicate the texts by SHA-256, keeping every distinct one so that no
 copyright line is lost; then emit the inventory and the texts.  The counts in
-section 3 are what that walk returns on this tree.  That walk does NOT
+section 3 are what that walk returns on this tree for the crates section 3
+lists: the directories that hold one of its name-and-version pairs.  The
+simulated-radar closure is vendored in the same trees and has its own
+inventory and texts after section 4, so the walk finds more directories
+than section 3 counts.  That walk does NOT
 produce section 2: those notices belong to code ArWen wrote by porting, not
 to a vendored crate, so nothing in the vendor trees names them.  Section 2 is
 edited by hand and gated by tests/test_licence_notices_ship.py.
 
 The TUI's additional fourth vendor tree is resolved for the supported Linux
 and Windows targets by `python tools/update_tui_license_notice.py`. This
-refreshes section 5 in both copies while preserving sections 1 through 4.
-Pass --check to verify that both copies match the current Cargo inputs and
-vendored licence/attribution texts without changing either file.
+rewrites section 5 in both copies, from its heading to its END line, and
+keeps every other byte: sections 1 through 4 before it and the notices that
+follow it.  Pass --check to verify that both copies match the current Cargo
+inputs and vendored licence/attribution texts without changing either file.
 
 ==============================================================================
 1.  THE BUNDLE'S OWN CODE
@@ -356,6 +361,13 @@ correctly rounded tanf, atanf, atan2f, log10f, asin and acos (revision
 rw_mlexport link that library, so this notice covers them too.  Both are
 MIT; the texts follow.
 
+The CPU preprocessing bridge also compiles the pinned FP32 powf and tables
+in tools/grib1_bridge/src/glibc239_math.rs, transcribed from the same
+Arm optimized-routines implementation retained in gpuwm/core/noahmp_libm.py.
+The 2017-2018 Arm copyright and MIT grant below apply to that compiled
+copy. Its separate FP64 host-math entries call the platform C library and
+do not transcribe its implementation.
+
 Arm optimized-routines:
 
 Copyright (c) 2017-2018, Arm Limited.
@@ -411,7 +423,7 @@ SOFTWARE.
 ------------------------------------------------------------------------------
 
 264 distinct crate name-and-version pairs across
-348 vendored directories.  The
+366 vendored directories.  The
 bracketed numbers point at the licence texts reproduced in section 4; a crate
 with no number vendored no licence file of its own, and its grant is the SPDX
 expression its Cargo.toml declares.  14 crates are in that position
@@ -17530,8 +17542,8 @@ All LICENSE, LICENCE, COPYING, COPYRIGHT and NOTICE files at each
 resolved vendored package root are reproduced, deduplicated by raw SHA-256.
 The TUI itself uses the repository Apache-2.0 licence.
 
-tools/arwen-tui/Cargo.toml sha256 b9e258377aaf884b5978464b322937a71f01aab693eef2c38dd699f3785c0fe4
-tools/arwen-tui/Cargo.lock sha256 ea6bfe59f8a248d810439093841a25023f27e4830d2baf08b8313a637defdd18
+tools/arwen-tui/Cargo.toml sha256 c3139891e4652eebfa2265772f4fd3b29ad2c1c1fca7a9064e14df50002d67a4
+tools/arwen-tui/Cargo.lock sha256 bf8eb757e1c78f6da8b77adcb6f9552c2da1fe308d510058f11c6a3d4afcbe67
 x86_64-unknown-linux-gnu: 70 external packages
 x86_64-pc-windows-msvc: 67 external packages
 
@@ -21469,6 +21481,9 @@ NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
 LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+==============================================================================
+END ARWEN TUI LOCKED DEPENDENCIES AND LICENCE TEXTS
 
 
 --------------------------------------------------------------------------

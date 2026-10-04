@@ -104,7 +104,10 @@ _OUT_ISCA = ("ktop_deep", "k22_shallow", "kbcon_shallow", "ktop_shallow",
              "kbcon", "ktop")
 
 
-def _gf_module(nz: int):
+def _gf_module(nz: int, *, spp_conv: int = 0):
+    if spp_conv:
+        from gpuwm.core.spp_kernel_sources import load_spp_module
+        return load_spp_module("gf", gf_kernel_capacity(nz))
     if nz <= _GF_KMAX_DEFAULT:
         from gpuwm.core.kernels import load_module
 
@@ -337,11 +340,25 @@ class GrellFreitas:
         self._driver = None
         return 0
 
-    def __call__(self, *, atmosphere, fields, state, cfg):
+    def __call__(self, *, atmosphere, fields, state, cfg,
+                 spp_conv: int | None = None, pattern_spp_conv=None):
         import cupy as cp
+        from gpuwm.core.spp_kernel_sources import spp_flag
 
         nz, ny, nx = state.p.shape
         ncol = ny * nx
+        flag = getattr(cfg, "spp_conv", 0) if spp_conv is None else spp_conv
+        stochastic = spp_flag(flag, "spp_conv")
+        pattern = None
+        if stochastic:
+            pattern = pattern_spp_conv
+            if pattern is None and self._driver is not None:
+                pattern = getattr(self._driver, "spp_patterns", {}).get("conv")
+            if (not isinstance(pattern, cp.ndarray) or pattern.shape != (4, ny, nx)
+                    or pattern.dtype != DTYPE or pattern.device.id != state.p.device.id):
+                raise ValueError("GF SPP requires float32 pattern_spp_conv[4,ny,nx] on the state device")
+            if not bool(cp.all(cp.isfinite(pattern)).item()):
+                raise ValueError("GF SPP pattern must be finite")
 
         def cols(a):
             # Assignment into lvin packs this view without a temporary copy.
@@ -388,12 +405,16 @@ class GrellFreitas:
         # -- the outer clock when the case integrates internal substeps,
         # the same idiom as the KF adapter.
         clock_dt = DTYPE(_model_clock_dt(cfg))
-        scin = cp.zeros((ncol, len(_IN_SCA)), dtype=DTYPE)
+        scin = cp.zeros((ncol, len(_IN_SCA) + (4 if stochastic else 0)), dtype=DTYPE)
         scin[:, 0] = state.ht.reshape(ncol)
         scin[:, 1] = fields["hfx"].reshape(ncol)
         scin[:, 2] = fields["qfx"].reshape(ncol)
         scin[:, 3] = fields["xland"].reshape(ncol)
         scin[:, 4] = clock_dt
+        if stochastic:
+            # Native GFDRV clips four closure channels to [-1,1]. The
+            # enabled specialization routes them into native rand_clos.
+            scin[:, len(_IN_SCA):] = cp.clip(pattern.reshape(4, ncol).T, -1.0, 1.0)
         # slots 6/7/8 stay 0: fzu is COMPUTED, not pinned, on this path.
         dx_column = (None if self._driver is None
                      else getattr(self._driver, "gf_dx_column", None))
@@ -417,7 +438,7 @@ class GrellFreitas:
         sca = cp.empty((ncol, len(_OUT_SCA)), dtype=DTYPE)
         isc = cp.empty((ncol, len(_OUT_ISCA)), dtype=cp.int32)
 
-        module = _gf_module(nz)
+        module = _gf_module(nz, spp_conv=int(stochastic))
         fn = module.get_function("gf_gfdrv_stage")
         block = GF_BLOCK
         # The column arrays live in a global workspace sized to the threads

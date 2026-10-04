@@ -153,6 +153,23 @@ def load_ensemble_config(path: str | Path) -> EnsembleConfig:
             f"base_config {base_config} declared by {source} does not "
             "exist; the ensemble runs an existing experiment config, it "
             "does not create one")
+    # 2.8.4 refused a base config that carried an [ensemble] table: the
+    # experiment loader rejected the table as unknown.  The loader knows
+    # the table now (the gpuwm ensemble doors read it), so that refusal
+    # is kept here, by name.  Breakage it prevents: this command runs the
+    # members THIS file declares, and the base config's own table would
+    # be read and dropped.
+    try:
+        base_tables = tomllib.loads(base_config.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+        base_tables = {}        # the experiment loader says what is wrong with it
+    if "ensemble" in base_tables:
+        raise ValueError(
+            f"base_config {base_config} carries its own [ensemble] table, and "
+            f"this command runs the members {source} declares: the base "
+            "config's table would be dropped. Next: remove [ensemble] from "
+            "the base config; the overlay file is the ensemble's one "
+            "declaration.")
 
     n_members = entries["n_members"]
     if not isinstance(n_members, int) or isinstance(n_members, bool) \

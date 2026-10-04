@@ -346,6 +346,15 @@ def _height_half_from_phb(phb: np.ndarray) -> np.ndarray:
     return 0.5 * (phb[:-1] + phb[1:]) / c.G
 
 
+def _copy_setup_float32(target, source, xp, native_host=False):
+    """Fill a large explicit host state without a second cast array."""
+    if native_host and xp is np and target.size >= 16_384:
+        from gpuwm.ingest.host_arrays import copy_float32
+        if copy_float32(target, source):
+            return
+    target[...] = xp.asarray(source, dtype=np.float32)
+
+
 def _array_module_for(value):
     """Return NumPy for host setup arrays, otherwise the CUDA array module."""
     if isinstance(value, np.ndarray):
@@ -935,7 +944,7 @@ class DomainState:
             self.scratch((ny, nx), "uh_follow_window")
             self.scratch((ny, nx), "uh_spawn_window")
 
-    def load_base(self, coord: VerticalCoord, base: BaseState) -> None:
+    def load_base(self, coord: VerticalCoord, base: BaseState, *, native_host=False) -> None:
         """Copy the float64 setup-time coordinate/base arrays to device FP32."""
         xp = _state_array_module(self)
         for name in ("dnw", "rdnw", "dn", "rdn", "fnp", "fnm", "znu", "znw",
@@ -950,7 +959,7 @@ class DomainState:
                     f"base state {name} is {host.ndim}-D but the state was "
                     f"allocated for {dev.ndim}-D profiles: cfg.terrain_opt "
                     "must match the terrain_z the base state was built with")
-            dev[...] = xp.asarray(host, dtype=np.float32)
+            _copy_setup_float32(dev, host, xp, native_host)
         # Full-level coefficient DROPS, differenced once in float64 from
         # the coord's own values (see the dc3f allocation).  p_top cancels
         # out of pfd - pfu identically, so the pair needs no finalization.
@@ -967,10 +976,12 @@ class DomainState:
             # scalar is retired (None) so any consumer not yet wired for
             # terrain (Task 4) fails loudly instead of computing garbage.
             self.mub = None
-            self.mub2d[...] = xp.asarray(base.mub, dtype=np.float32)
-        self.ht[...] = (0.0 if base.terrain_z is None
-                        else xp.asarray(base.terrain_z, dtype=np.float32))
-        self.set_base_geopotential(base.phb)
+            _copy_setup_float32(self.mub2d, base.mub, xp, native_host)
+        if base.terrain_z is None:
+            self.ht[...] = 0.0
+        else:
+            _copy_setup_float32(self.ht, base.terrain_z, xp, native_host)
+        self.set_base_geopotential(base.phb, native_host=native_host)
 
         # WRF surface extrapolation weights (dyn_em module_initialize):
         # quadratic-in-eta extrapolation of half-level fields to znw[0].
@@ -985,7 +996,7 @@ class DomainState:
             self.cfn = DTYPE(1.0 + coord.fnp[-1])
             self.cfn1 = DTYPE(-coord.fnp[-1])
 
-    def set_base_geopotential(self, phb) -> None:
+    def set_base_geopotential(self, phb, *, native_host=False) -> None:
         """Install the base geopotential and everything derived from it.
 
         The sanctioned writer for ``phb``.  Besides the FP32 device copy
@@ -1030,6 +1041,10 @@ class DomainState:
                 "broadcast one column's geopotential across the domain, "
                 "and dphb_resid would then describe a profile no cell "
                 "has")
+        if native_host and xp is np and host.size >= 16_384:
+            from gpuwm.ingest.host_arrays import geopotential_cache
+            if geopotential_cache(self, host, c.G):
+                return
         stored = np.asarray(host, dtype=np.float32)
         self.phb[...] = xp.asarray(stored)
         # np.diff on the float32 view is the kernel's own subtraction.

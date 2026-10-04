@@ -73,6 +73,22 @@ def _raw(array) -> bytes:
 # The frames themselves
 # ---------------------------------------------------------------------------
 
+def test_thompson_selected_shallow_frames_bound_the_production_exports():
+    """A compiler spill above admission's tier bound would cause device OOM."""
+    import re
+    from gpuwm.core.kernels import get_kernel, module_source
+
+    for module, bound in pf.THOMPSON_SHALLOW_KERNEL_FRAMES.items():
+        symbols = re.findall(
+            r'extern\s+"C"\s+__global__\s+void\s+(\w+)\s*\(',
+            module_source(module))
+        shallow = [name for name in symbols if "_256" not in name]
+        assert shallow
+        measured = {name: int(get_kernel(module, name).attributes["local_size_bytes"])
+                    for name in shallow}
+        assert max(measured.values()) <= bound, measured
+
+
 def test_the_specialized_frames_are_what_preflight_prices():
     """Every row of the pricing model, read back off the driver."""
     from gpuwm.core.kernels import get_kernel, get_kernel_int_defines

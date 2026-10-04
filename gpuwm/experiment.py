@@ -293,6 +293,12 @@ _DOMAIN_RUN_OVERRIDES = (
     "wrf_rrtmg_compatibility", "o3input", "use_mp_re", "swrad_scat",
     "diff_6th_factor", "epssm", "spec_exp", "mp_physics", "moist",
     "moist_cq", "nest_microphysics_transition",
+    # WRF SPP consumer switches are max_domains. Each original driver
+    # owns its enabled parameter patterns and checkpoint state.
+    # spp_lsm stays tree-wide: its consumer is the land surface, which
+    # this loader keeps shared, and a per-domain row would change the
+    # registry physics every earlier preparation was bound to.
+    "spp_conv", "spp_pbl",
     "km_opt", "bl_pbl_physics", "sf_sfclay_physics", "c_s", "c_k",
     # WRF Registry.EM_COMMON:2889 declares moist_mix6_off max_domains, so it
     # is per domain here for the same reason diff_6th_factor is.
@@ -374,6 +380,8 @@ _DOMAIN_RUN_OVERRIDES = (
     # sf_urban_physics stay [shared]; every domain's RunConfig still passes
     # validate_noah_mosaic_config with them.
     "mosaic_urban_canopy",
+    # WRF Registry scopes CLM lake selection per domain.
+    "sf_lake_physics", "use_lakedepth", "lakedepth_default", "lake_min_elev",
     # WRF declares topo_wind and gwd_opt max_domains too
     # (gpuwm.core.terrain_drag); the GSL suite tapers itself with each
     # domain's grid length, so a column is the natural shape.
@@ -2459,6 +2467,26 @@ def _refuse_rebuilt_nest_noah_mosaic(domains, relocation, source) -> None:
                 "sf_surface_mosaic = 0.")
 
 
+def _refuse_rebuilt_nest_lake(domains, relocation, source) -> None:
+    """A rebuilt lake nest must not silently cold-start its heat storage."""
+    rebuilt = set()
+    if relocation is not None and getattr(relocation, "enabled", False) \
+            and (getattr(relocation, "moves", ())
+                 or getattr(relocation, "follow", None) is not None):
+        rebuilt.add(int(relocation.grid_id))
+    rebuilt.update(int(dc.grid_id) for dc in domains
+                   if getattr(dc, "follow", None) is not None
+                   or getattr(dc, "spawn", None) is not None)
+    for dc in domains:
+        if int(dc.grid_id) in rebuilt and int(getattr(dc.run, "sf_lake_physics", 0)) == 1:
+            raise ValueError(
+                f"[[domain]] grid_id = {int(dc.grid_id)} of {source} moves "
+                "or is spawned mid-run with sf_lake_physics = 1: the nest "
+                "rebuild does not carry lake water, ice, snow and sediment "
+                "heat storage. Keep this lake domain fixed and present "
+                "from the start; otherwise its lake state would be reset.")
+
+
 def _refuse_child_terrain_drag(domains, source) -> None:
     """topo_wind / gwd_opt on a child domain: refused until its statics route
     builds the orographic statistics.
@@ -3139,6 +3167,24 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         from gpuwm.ingest.soil_downscale import parse_ingest_table
         raw = dict(raw)
         parse_ingest_table(raw.pop("ingest"), source=source)
+    # Random-physics switches (SPPT, SKEBS, SPP and the perturbation
+    # selectors) are refused HERE, in the builder every config door loads
+    # through, so no route can read past them and only fail at the first
+    # physics call, after its download and its preparation on the card.
+    # The reason is the calibration one: their amplitudes have not been
+    # measured against observations.
+    from gpuwm.ensemble_admission import refuse_configured_random
+    refuse_configured_random(raw)
+    if isinstance(raw, dict) and "ensemble" in raw:
+        from gpuwm import ensemble
+        raw = dict(raw)
+        table = raw.pop("ensemble")
+        # The same boundary as gpuwm.config.load_config: a preparation-only
+        # install stages no ensemble request, and the table is the ensemble
+        # door's to validate.
+        if ensemble.request_installed():
+            from gpuwm.ensemble.request import EnsembleRequest
+            EnsembleRequest.from_mapping(table)
     # Companion tables of the ONE-FILE case schema: real, documented
     # tables that belong to other owners (gpuwm.case_data, gpuwm.fetch,
     # gpuwm.static.highres_production) and are split off by every file
@@ -4322,6 +4368,7 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     _refuse_windowed_stash_watch(domains, source)
     _refuse_moving_slope_radiation(domains, relocation, source)
     _refuse_rebuilt_nest_noah_mosaic(domains, relocation, source)
+    _refuse_rebuilt_nest_lake(domains, relocation, source)
     _refuse_child_terrain_drag(domains, source)
     from gpuwm.core.attribute_tracking import validate_attribute_domains
     validate_attribute_domains(domains, relocation)

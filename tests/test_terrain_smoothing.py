@@ -1222,6 +1222,9 @@ def test_namelist_only_native_root_hands_the_builder_its_resolved_carrier(tmp_pa
     a carrier holding only smoothing has no [static] table (KeyError)."""
     import inspect
     from tools import prepare_hrrr_wrf as prepare
-    source = inspect.getsource(prepare._prepare_from_argv)
+    # The preparation body moved into _run_configured when the argv door
+    # gained its preprocessing-math scope; both halves are read.
+    source = (inspect.getsource(prepare._prepare_from_argv)
+              + inspect.getsource(prepare._run_configured))
     assert 'json.dumps(static_highres_identity(highres), sort_keys=True)' in source
     assert 'experiment_tables["static"], sort_keys' not in source

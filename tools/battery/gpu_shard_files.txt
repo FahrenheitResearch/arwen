@@ -63,6 +63,185 @@
 # before interpreting its comparisons; no blanket bitwise WRF claim applies.
 
 # ---------------------------------------------------------------------------
+# ORDER (2.8.5): the ensemble blocks below run FIRST in the leg's one pytest
+# process.  Placed after the dycore and physics files (at 7c9883668 on
+# node-4's 16 GB RTX 5070 Ti) the card already held 8.9 GB when the 4- and
+# 10-member real-input arms started, and four of them ran out of memory
+# although each passes in an ensemble-only process.  Within the blocks the
+# native decline gate stays the first ensemble device file in this process.
+
+# THE RECIPE ENSEMBLE DOOR, end to end (2.8.5): `gpuwm ensemble CONFIG
+# --recipe time-lagged` and `--trajectories FILE`, typed as a user types
+# them, two members each, nothing mocked.  It is the only test that runs the
+# door body against real fetches, real preparations and a card: the merge
+# that left `supplement_bindings` unimported in tools/prepare_hrrr_wrf.py
+# broke every native HRRR preparation, and no CPU test reached it.  It opens
+# its device through `python -m gpuwm` subprocesses, which conftest's
+# detector cannot see, so tests/test_gpu_shard_manifest.py pins that route by
+# name.  It fetches about 4.5 GB and needs the WPS geography tree, so it
+# skips unless a leg sets GPUWM_NETWORK_TESTS=1.  NOT LISTED HERE: it is
+# marked network and slow, so this leg's marker expression deselects every
+# test in it, and a listed file that contributes no test fails the leg
+# (tools/battery/no_silent_deselection.py; the 2.8.5 gate at e2080ca9e
+# passed 6,509 of 6,509 and exited 1 on exactly that).  It is declared in
+# tools/battery/must_run_gates.txt and runs when an operator asks for the
+# live front-door check:
+#   tests/test_ensemble_recipe_door_gpu.py
+# The plain door, end to end (2.8.5, lane fix/285-ens-runcontrol): `gpuwm go
+# CONFIG --members N` typed as a user types it, nothing mocked.  It is the
+# one route where go's stage observer and the member runners meet, and
+# every door test mocked the session: the run died at its first forecast
+# step with "TypeError: 'GoChainEvents' object is not callable", after the
+# fetch and the preparation, and nothing caught it.  It also holds Ctrl-C at
+# the door to exit 130 at the next model step (it used to wait for every
+# member in flight to finish), and every map to keep its subtitle row.  Same
+# subprocess route, pin and GPUWM_NETWORK_TESTS=1 skip as the recipe door
+# above, and not listed here for the same reason:
+#   tests/test_ensemble_go_door_gpu.py
+
+# SHARD 1w0: ensemble run control on the card (2.8.5, lane
+# fix/285-ens-runcontrol).  ORDER MATTERS: these two are the first ensemble
+# device files this leg's one pytest process runs, and the native decline
+# gate is first of the two.  It runs four ordinary members after a native
+# pack, and the ordinary runner's memory gate prices the card by its free
+# bytes: after the real-input ensemble files below in one process it was
+# refused with 3.66 GiB free, and it passes alone in 56 s.  The two door
+# files above run their forecasts in `python -m gpuwm` subprocesses and
+# hold nothing in this process.  tests/test_gpu_shard_manifest.py pins the
+# order.
+# - test_ensemble_native_decline_gpu.py: a source-audit drift found while
+#   the first native pack prepared its launches used to fail an admitted
+#   run ("no retry is permitted") although no member had advanced, and a
+#   native run closed its log with "0 steps".  The gate drifts one audited
+#   Thompson kernel line on the card: the session must decline to the
+#   ordinary runner with the audit's own sentence and write the same
+#   product bytes the native pack wrote.
+# - test_ensemble_member_release_gpu.py: a finished ordinary member's
+#   state stayed on the card, so each member of a time-lagged, multi-model
+#   or --keep-member-files ensemble started 620 MB higher than the last
+#   (entry MB 0, 382, 1002, 1622 at the base), and the microphysics ring
+#   and Noah device tables grew by 27,648 B per forecast.  The pool at each
+#   member's entry must equal the second member's entry, to the byte.
+# Both read GPUWM_TEST_WRF_REAL_DIRECTORY (SHARD 1w names node-4's copy)
+# and skip without it, so the leg must export it.
+tests/test_ensemble_native_decline_gpu.py
+tests/test_ensemble_member_release_gpu.py
+
+# SHARD 1w1: members with their own sources in one native pack (2.8.5, lane
+# 283-ensemble-batch).  A time-lagged or multi-model member used to fall back
+# to the ordinary runner because the pack replicated one bootstrap into every
+# slot; the pack now takes each member's own state, boundaries, physics and
+# static surface.  The breakage this prevents is a packed member that differs
+# from the forecast it would have been alone: every state, physics and output
+# word of each member, at 2 and 4 members whose winds, skin, soil and deep
+# soil temperature differ, must equal its own ordinary run.  Runs after the
+# decline gate (SHARD 1w0) in this process: about 3 minutes cold on a 16 GB
+# card, pool peak 4.96 GB at 4 members.  Reads GPUWM_TEST_WRF_REAL_DIRECTORY
+# and the Rust renderer; no network.
+tests/test_ensemble_batch_member_sources_gpu.py
+
+# SHARD 1w: batched ensemble members on one card (2.8.5, lane
+# 283-ensemble-batch).  A native ensemble advances N members in one launch
+# through rewritten copies of the dycore and physics kernels.  These files
+# hold every batched member to the words of its own ordinary single-member
+# run: the kernel adapter and its pointer ownership, packed state, each
+# dycore stage, the moist step, physics, lateral boundaries, health counters
+# and products, at member counts from 1 to 40.  The breakage they prevent is
+# a member that differs from the forecast it would have been alone, or one
+# member's rows reaching another's.  Found by the 2.8.5 ensemble review: 105
+# ensemble test files were on no list, so these identity proofs gated
+# nothing, and 21 device tests were red at the staging tip unseen.
+# MEASURED on node-4 (RTX 5070 Ti, 16 GB) at 75950cec9, SHARD 1w, 1x and
+# 1y together in one process under the leg's marker expression, with the
+# four inputs below exported: 2,713 passed, 73 skipped by design, 0 failed
+# in 421 s with the kernel cache warm.  From an empty kernel cache the same
+# files less the two runtime-case files took 811 s at 44d5a97ce.
+tests/test_ensemble_batch_kernel.py
+tests/test_ensemble_batch_state_gpu.py
+tests/test_ensemble_batch_alias_gpu.py
+tests/test_ensemble_batch_bookkeeping_gpu.py
+tests/test_ensemble_batch_operators_gpu.py
+tests/test_ensemble_batch_fluxes_gpu.py
+tests/test_ensemble_batch_glue_gpu.py
+tests/test_ensemble_batch_diagnostics_gpu.py
+tests/test_ensemble_batch_acoustic_gpu.py
+tests/test_ensemble_batch_bigstep_gpu.py
+tests/test_ensemble_batch_boundaries_gpu.py
+tests/test_ensemble_batch_mixing_gpu.py
+tests/test_ensemble_batch_w_damping_gpu.py
+tests/test_ensemble_batch_dycore_gpu.py
+tests/test_ensemble_batch_moist_gpu.py
+tests/test_ensemble_batch_moist_bigstep_gpu.py
+tests/test_ensemble_batch_moist_diagnostics_gpu.py
+tests/test_ensemble_batch_moist_mixing_gpu.py
+tests/test_ensemble_batch_moist_dycore_gpu.py
+tests/test_ensemble_batch_perturbation_gpu.py
+tests/test_ensemble_batch_physics_gpu.py
+tests/test_ensemble_batch_health_gpu.py
+tests/test_ensemble_batch_products_gpu.py
+tests/test_ensemble_batch_product_spool_gpu.py
+tests/test_ensemble_physics_execution_gpu.py
+# The same proofs from real inputs: two full steps and Rust history bytes at
+# one and four members, member physics initialised from a WRF real.exe run
+# folder, and the production door's native and ordinary routes.  They read
+# GPUWM_TEST_WRF_REAL_DIRECTORY and SKIP without it, so the leg must export
+# it; a leg that does not is green on 8 fewer tests and nothing says so.
+# On the release card host it is the retained ensemble-test-data/wrf-real
+# directory (461 MB, README.txt beside it).  The ten-member real forecast needs more
+# than a 16 GB card and says so in its skip.  These three price the card by
+# its free bytes, so each test first returns the pool's unused blocks: in
+# one process with the rest of this shard the four-member forecast and the
+# production door were refused for memory that earlier tests had already
+# released.
+tests/test_ensemble_batch_physics_init_gpu.py
+tests/test_ensemble_batch_real_forecast_gpu.py
+tests/test_ensemble_production_forecast_gpu.py
+# The ordinary runtime under ensemble preparation: a config-driven 40 x 32
+# ERA5 case run as ordinary members (fixed clock, adaptive clock, tiles and
+# a nested child) and their simulated radar, held to the words of the
+# original runtime processors.  They read GPUWM_TEST_RUNTIME_CASE_CONFIG
+# and SKIP all 6 tests without it.  On the release card host it is the
+# retained ensemble-test-data/runtime-case/runtime-real-smoke.toml (3.4 MB of
+# ERA5 forcing; the geography is that host's WPS_GEOG tree).
+tests/test_ensemble_runtime_forecast_gpu.py
+tests/test_ensemble_simulated_radar_forecast_gpu.py
+
+# SHARD 1x: ensemble perturbations on the device (2.8.5, lane
+# 283-ens-perturb).  Recentred member fields against the native preparation
+# library, the stochastic pattern generator and its streamed restart, and
+# the SPP consumers in MYNN, RUC and Grell-Freitas against unmodified WRF
+# v4.6.1 captures.  tests/test_spp_consumers_gpu.py was red on the release
+# card when it was first run there: its per-element budget predated the
+# merge of the cold-start MYNN driver and no leg had run it since.
+# tests/test_ensemble_recenter_native_gpu.py reads
+# GPUWM_ENSEMBLE_PREPARATION_BRIDGE (the gpuwm_preprocess_cpu library; a tip
+# build's env.sh exports its path as GPUWM_CPU_PREPROCESS_BRIDGE) and skips
+# all 8 of its tests without it.  tests/test_ensemble_stochastic.py reads
+# GPUWM_STOCH_WRF_ORACLE (the compiled WRF v4.6.1 module_stoch setup and
+# update outputs) and skips 2 of its 19 tests without it; on the release card
+# host it is the retained ensemble-test-data/stochastic-oracle directory.
+tests/test_ensemble_recentered_gpu.py
+tests/test_ensemble_recenter_native_gpu.py
+tests/test_ensemble_stochastic.py
+tests/test_ensemble_stochastic_streaming_gpu.py
+tests/test_spp_consumers_gpu.py
+tests/test_ruc_spp_gpu.py
+
+# SHARD 1y: the batch line's qualification trials: acoustic Mu/W fusion,
+# member layout and the advection family dispatch.  No production door
+# reaches them (the batched moist step uses the separate launches), but
+# their source audits read the acoustic and advection kernels the dycore
+# ships, so a kernel edit turns them red.  Unlisted, that was 21 red tests
+# nobody saw: 2.8.4 gave advance_mu_th_msf two bodies in one conditional
+# block and the fusion audit counted both.  The audit's CPU half,
+# tests/test_ensemble_batch_acoustic_fusion_audit.py, is on stage 1.
+# Removing this block is an argument about the trials, made in a commit.
+tests/test_ensemble_batch_acoustic_fusion_gpu.py
+tests/test_ensemble_batch_acoustic_fusion_dycore_gpu.py
+tests/test_ensemble_batch_layout_trials_gpu.py
+tests/test_ensemble_batch_layout_dycore_gpu.py
+tests/test_ensemble_batch_advection_family_gpu.py
+
 # SHARD 1a: the WRF-parity dycore, whole-module GPU.
 #
 # Every one of these is 100% skipped on a CPU box.  They are the dynamics,
@@ -84,6 +263,8 @@ tests/test_mapped_mass_closure.py
 tests/test_tke_budget.py
 tests/test_tke_km2.py
 tests/test_periodic_face_identity.py
+# Selected shallow Thompson exports must fit their recorded local-frame
+# ceiling. Prevents pricing unused deep exports or omitting a live frame.
 tests/test_kernel_local_bounds.py
 tests/test_dycore_full.py
 
@@ -264,6 +445,8 @@ tests/test_ruc_nzs_device.py
 #   test_ruc_lsm_fused      45/45  skipped on CPU
 #   test_ruc_gpu_cache       5/5   skipped on CPU
 tests/test_ruc_sfctmp_fused.py
+# The full-width soil/snow cache allocations must match their device pricing
+# ledger at both admitted soil depths, including the output pools.
 tests/test_ruc_lsm_fused.py
 tests/test_ruc_gpu_cache.py
 
@@ -368,10 +551,19 @@ tests/test_uwpbl_ftz_wrf471_parity.py
 # is the resident-ranks lifecycle and identity file.  Both are whole-
 # module GPU, so neither is on stage 1.
 tests/test_multislab_hazards_gpu.py
+# Ineligible frame inventories must use producer-fenced DMA for every field.
+# Prevents an unpriced subset of small fields acquiring persistent snapshots.
 tests/test_ranked_domain_gpu.py
+# Delayed boundary publication must preserve every ranked carrier bit.
+# Prevents one rank crossing an absent interval or starting only after seal.
+tests/test_ranked_boundary_stream_gpu.py
 # Both grids and nest-only ranked trees must match every resident carrier
 # and cadence. Stale forcing and omitted restriction controls must diverge.
 tests/test_ranked_nesting_gpu.py
+# A writer thread starts on card 0 even when its stream belongs to card 1.
+# Resident and store-direct histories must stage and drain on their own
+# cards, including two ranks on card 1 and noncontiguous physical card sets.
+tests/test_wrfout_device_gpu.py
 
 # ---------------------------------------------------------------------------
 # The cumulus reference family occupies shard 2 at the explicit marker.
@@ -501,6 +693,9 @@ tests/test_rrtmg_legacy_device_glue.py
 tests/test_rrtmg_legacy_prep_device.py
 tests/test_rrtmg_mcica.py
 tests/test_rrtmg_lw_batched_layout.py
+# Prevent duplicate band 4/7 corrections racing on one optical-depth value:
+# count executed writers and compare poisoned chunks and tails with WRF.
+tests/test_rrtmg_lw_gpoint_ownership.py
 tests/test_rrtmg_sw_layout_identity.py
 tests/test_rrtmgp_night.py
 tests/test_rrtmgp_mcica.py
@@ -652,6 +847,19 @@ tests/test_topo_radiation.py
 # arm to its pinned distance; those need a card.  The fixture-receipt rows
 # run on stage 1 with the settings file.
 tests/test_terrain_drag_wrf471_parity.py
+# Tiled GSL tendencies must retain resident bits after the actual device
+# geography gather. Prevents wrong-column statistics and topo_wind slab
+# edges clamping a domain-interior neighbour during preparation.
+tests/test_terrain_drag_tiles_gpu.py
+# Wider resident-rank MYNN batches must preserve every carried forecast word
+# and keep separate workspaces when two ranks share a device. Prevents a
+# faster chunk policy changing the trajectory or aliasing concurrent scratch.
+tests/test_mynn_rank_chunk_policy_gpu.py
+
+# Device-rank terrain statics must preserve resident drag results across
+# uneven splits and halo seams. Prevents split forecasts changing drag
+# tendencies or losing topo_wind inputs even though column oracles pass.
+tests/test_terrain_drag_devices_gpu.py
 
 # SHARD 1r: A158, WRF's implicit-explicit vertical advection
 # (zadvect_implicit, lane 281-zadvect-implicit).  The IEVA kernels held word
@@ -705,6 +913,9 @@ tests/test_real_device_gpu.py
 tests/test_real_nextafter_gpu.py
 tests/test_real_device_math_gpu.py
 tests/test_thompson_cold_start_gpu.py
+# Bounded CUDA batches must match full-array arithmetic at chunk seams.
+# Prevents changed interpolation, stagger halos and cold-start moments.
+tests/test_bounded_cuda_preparation.py
 
 # Compiled WRF v4.7.1 dycore output-word oracles run on every cut card.
 # CPU fixture and provenance rows remain on stage 1. Bigstep belongs here,
@@ -745,6 +956,35 @@ tests/test_rk_addtend_dry_map_factors.py
 # slot pre-filled with NaN, 1e30 and a previous call's fluxes; whole-module
 # GPU.  The NumPy half is tests/test_rrtmg_sw_no_upper_flux.py on stage 1.
 tests/test_rrtmg_sw_no_upper_flux_gpu.py
+
+# Optional aerosol probe outputs must not change any forecast word when
+# omitted. Prevents the reduced allocation path altering prognostic fields,
+# aerosol tendencies, surface diagnostics or reflectivity through aliasing.
+# The memory comparison checks every retained adapter output over three
+# calls; the state tests retain the entry rewrite and compiler controls.
+tests/test_thompson_aerosol_state_gpu.py
+tests/test_thompson_aerosol_memory.py
+
+# Native packed pressure endpoints must match the CPU words and reject real
+# above-source targets on the card, preventing a CPU-only initialization fix.
+tests/test_native_pressure_top.py
+
+# MYNN option 2 and WRF scalar_pblmix: prevent wrong option dispatch,
+# CPU/CUDA arithmetic drift, partial-chunk scratch shape errors, and
+# disconnected scalar tendencies in the actual three-step RK3 path.
+tests/test_mynn_mixlength2.py
+tests/test_scalar_pblmix_gpu.py
+
+# Surface mosaics must keep WRF column words and irrigation on the device;
+# lake heat storage must survive coupled stepping and restart. The separate
+# physical two-card check also runs in multigpu_crossdevice.sh.
+tests/test_ruc_mosaic_gpu.py
+tests/test_ruc_lake_runtime.py
+
+# The full CLM lake must preserve every 300-step WRF column word and keep
+# nonlake cells unchanged; fixed-SST or lost snow/ice state fails here.
+tests/test_lake_gpu.py
+
 
 # SHARD-2-BEGIN
 tests/test_gf_deep_cuda.py

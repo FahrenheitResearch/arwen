@@ -55,7 +55,11 @@ def test_policy_import_needs_only_the_standard_library():
     assert done.returncode == 0, done.stdout + done.stderr
 
 
-def test_actual_874_by_574_geometry_keeps_science_and_moves_only_ingest_off_gpu():
+def test_actual_874_by_574_geometry_keeps_science_and_moves_only_ingest_off_gpu(monkeypatch):
+    from gpuwm.ingest import preparation_workers
+    # A wider pool must reserve its extra allocator and column scratch;
+    # otherwise this geometry is underpriced on a machine with many CPUs.
+    monkeypatch.setattr(preparation_workers, "effective_workers", lambda requested=None: 24)
     exp = experiment(874, 574)
     original = asdict(exp.root.run)
     machine = Machine(int(6.20 * GIB), 96 * GIB, device_profile=profile())
@@ -85,7 +89,14 @@ def test_actual_874_by_574_geometry_keeps_science_and_moves_only_ingest_off_gpu(
     assert cpu.ingest.host_preprocess_bytes == floor + math.ceil(
         pf.CPU_PREPARATION_ANALYSIS_MULTIPLE * analysis
         + pf.CPU_PREPARATION_ANALYSIS_MULTIPLE_PER_INTERVAL
-        * (cpu.ingest.n_forcing_times - 1) * analysis)
+        * (cpu.ingest.n_forcing_times - 1) * analysis
+        + 16 * preparation_workers.WORKER_SCRATCH_BYTES)
+    wide_host_bytes = cpu.ingest.host_preprocess_bytes
+    monkeypatch.setattr(preparation_workers, "effective_workers", lambda requested=None: 8)
+    assert cpu.ingest.host_preprocess_bytes == (
+        wide_host_bytes - 16 * preparation_workers.WORKER_SCRATCH_BYTES)
+    # The original eight-worker calibration remains smaller here than the
+    # old whole-device workspace. Extra host workers have their own price.
     assert cpu.ingest.host_preprocess_bytes < (
         cpu.ingest.alloc_estimate_bytes + cpu.ingest.boundary_frame_bytes)
     assert cuda.ingest.host_preprocess_bytes == cuda.ingest.host_preprocess_floor_bytes == 0

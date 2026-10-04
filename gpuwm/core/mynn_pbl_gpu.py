@@ -627,9 +627,13 @@ def mynn_pblh_scale_columns_cuda(
 def mynn_mixlength_default_cuda(
     values: Mapping[str, object],
     *,
+    bl_mynn_mixlength: int = 1,
     scratch=None,
 ) -> MynnMixlengthResult:
-    """Evaluate default WRF ``mym_length`` on complete device columns."""
+    """Evaluate WRF ``mym_length`` options 1 and 2 on device columns."""
+
+    if type(bl_mynn_mixlength) is not int or bl_mynn_mixlength not in (1, 2):
+        raise ValueError("MYNN mixing length requires bl_mynn_mixlength=1 or 2")
 
     missing = [name for name in MYNN_MIXLENGTH_INPUTS if name not in values]
     if missing:
@@ -669,7 +673,7 @@ def mynn_mixlength_default_cuda(
             columns["edmf_w"], columns["edmf_a"], scalars["rmo"],
             scalars["fltv"], scalars["zi"], scalars["psig_bl"],
             result.el, result.qkw, *vectors.values(),
-            np.int32(nz), np.int32(ncol),
+            np.int32(bl_mynn_mixlength), np.int32(nz), np.int32(ncol),
         ),
     )
     return result
@@ -685,10 +689,14 @@ def mynn_turbulence_default_cuda(
     values: Mapping[str, object],
     *,
     closure: float = 2.6,
+    bl_mynn_mixlength: int = 1,
+    spp_pbl: int = 0,
     scratch=None,
 ) -> MynnTurbulenceResult:
     """Evaluate default WRF ``mym_turbulence`` on complete GPU columns."""
 
+    from gpuwm.core.spp_kernel_sources import spp_flag
+    stochastic = spp_flag(spp_pbl, "spp_pbl")
     missing = [name for name in MYNN_TURBULENCE_INPUTS if name not in values]
     if missing:
         raise TypeError(
@@ -711,6 +719,10 @@ def mynn_turbulence_default_cuda(
     for name in column_names[1:]:
         columns[name] = _pair_array(values[name], (ncol, nz), name)
     interface = _pair_array(values["zw"], (ncol, nz + 1), "zw")
+    if stochastic:
+        if "rstoch" not in values:
+            raise TypeError("MYNN stochastic turbulence requires rstoch[ncol,nz]")
+        columns["rstoch"] = _pair_array(values["rstoch"], (ncol, nz), "rstoch")
     scalar_names = (
         "xland", "dx", "rmo", "flt", "fltv", "flq", "zi",
         "psig_bl", "psig_shcu",
@@ -747,7 +759,7 @@ def mynn_turbulence_default_cuda(
         "cldfra": columns["cldfra"], "edmf_w": columns["edmf_w"],
         "edmf_a": columns["edmf_a"],
         **scalars,
-    }, scratch=work)
+    }, bl_mynn_mixlength=bl_mynn_mixlength, scratch=work)
     # mynn_turbulence_default_interfaces returns before k == 0, so the surface element of all
     # nine products keeps the zero WRF gave them.  Same reasoning as above.
     products = work.one(SLOT_TURBULENCE,
@@ -775,6 +787,11 @@ def mynn_turbulence_default_cuda(
             np.int32(nz), np.int32(count),
         ),
     )
+    if stochastic:
+        from gpuwm.core.spp_kernel_sources import load_spp_module
+        load_spp_module("mynn_pbl").get_function("mynn_spp_diffusivity")(
+            (blocks,), (_TPB,),
+            (result.dfm, result.dfh, columns["rstoch"], interface, np.int32(count)))
     return result
 
 
@@ -864,8 +881,8 @@ def mynn_condensation_default_cuda(
         raise ValueError(
             "MYNN first condensation lane requires bl_mynn_cloudpdf=2"
         )
-    if spp_pbl != 0 or type(spp_pbl) is not int:
-        raise ValueError("MYNN first condensation lane requires spp_pbl=0")
+    if type(spp_pbl) is not int or spp_pbl not in (0, 1):
+        raise ValueError("MYNN condensation requires spp_pbl in {0,1}")
     column_names = (
         "dz", "th", "thl", "qw", "qv", "qc", "qi", "qs", "p", "exner",
         "tsq", "qsq", "cov", "sh", "el", "rstoch", "vt", "vq", "sgm",
@@ -895,7 +912,11 @@ def mynn_condensation_default_cuda(
         SLOT_CONDENSATION,
         ("qc_bl", "qi_bl", "cldfra", "vt", "vq", "sgm"), (ncol, nz)))
     blocks = (ncol + _TPB - 1) // _TPB
-    kernel = get_kernel("mynn_pbl", "mynn_condensation_default_columns")
+    if spp_pbl:
+        from gpuwm.core.spp_kernel_sources import load_spp_module
+        kernel = load_spp_module("mynn_pbl").get_function("mynn_condensation_default_columns")
+    else:
+        kernel = get_kernel("mynn_pbl", "mynn_condensation_default_columns")
     kernel(
         (blocks,), (_TPB,),
         (
@@ -1256,16 +1277,17 @@ def mynn_initialize_default_cuda(
 ) -> MynnInitializeResult:
     """Evaluate WRF ``mym_initialize`` on complete device columns.
 
-    Same pinned identity as the CPU reference: ``bl_mynn_mixlength=1`` and
-    ``spp_pbl=0``.  One CUDA thread owns one column, because the five-iteration
+    Same identity as the CPU reference: ``bl_mynn_mixlength=1 or 2``;
+    its initialization ignores the SPP selector in WRF. One CUDA thread owns
+    one column, because the five-iteration
     ``mym_length`` fixed point and the BouLac parcel walks are both sequential
     in the vertical.
     """
 
-    if bl_mynn_mixlength != 1 or type(bl_mynn_mixlength) is not int:
-        raise ValueError("MYNN initialize lane requires bl_mynn_mixlength=1")
-    if spp_pbl != 0 or type(spp_pbl) is not int:
-        raise ValueError("MYNN initialize lane requires spp_pbl=0")
+    if type(bl_mynn_mixlength) is not int or bl_mynn_mixlength not in (1, 2):
+        raise ValueError("MYNN initialize requires bl_mynn_mixlength=1 or 2")
+    if type(spp_pbl) is not int or spp_pbl not in (0, 1):
+        raise ValueError("MYNN initialize requires spp_pbl in {0,1}")
     if type(initialize_qke) is not bool:
         raise TypeError("initialize_qke must be a bool")
     missing = [name for name in MYNN_INITIALIZE_INPUTS if name not in values]
@@ -1320,7 +1342,7 @@ def mynn_initialize_default_cuda(
             *(getattr(result, name) for name in MYNN_INITIALIZE_OUTPUTS),
             vectors,
             np.int32(1 if initialize_qke else 0),
-            np.int32(nz), np.int32(ncol),
+            np.int32(bl_mynn_mixlength), np.int32(nz), np.int32(ncol),
         ),
     )
     return result
@@ -1370,8 +1392,8 @@ def mynn_dmp_mf_cuda(
         )
     if mix_chem is not False:
         raise ValueError("MYNN mass-flux lane requires mix_chem false")
-    if spp_pbl != 0 or type(spp_pbl) is not int:
-        raise ValueError("MYNN mass-flux lane requires spp_pbl=0")
+    if type(spp_pbl) is not int or spp_pbl not in (0, 1):
+        raise ValueError("MYNN mass-flux requires spp_pbl in {0,1}")
     missing = [name for name in MYNN_DMP_MF_INPUTS if name not in values]
     if missing:
         raise TypeError(f"missing MYNN mass-flux inputs: {', '.join(missing)}")
@@ -1667,8 +1689,8 @@ def mynn_bl_driver_cuda(
         raise ValueError("MYNN driver lane requires icloud_bl=1")
     if tke_budget != 0 or type(tke_budget) is not int:
         raise ValueError("MYNN driver lane requires tke_budget=0")
-    if spp_pbl != 0 or type(spp_pbl) is not int:
-        raise ValueError("MYNN driver lane requires spp_pbl=0")
+    if type(spp_pbl) is not int or spp_pbl not in (0, 1):
+        raise ValueError("MYNN driver requires spp_pbl in {0,1}")
     if mix_chem is not False:
         raise ValueError("MYNN driver lane requires mix_chem false")
     # W4 full admission (mf-close2, Stage B): same widening as the CPU
@@ -1734,6 +1756,12 @@ def mynn_bl_driver_cuda(
     # make the aliasing question depend on kernel internals.
     zero_layers = work.group(SLOT_ZERO_LAYER, ("zero", "snow"), (ncol, nz))
     zero_column = zero_layers["zero"]
+    if spp_pbl:
+        if "rstoch" not in values:
+            raise TypeError("MYNN stochastic driver requires rstoch[ncol,nz]")
+        rstoch = _pair_array(values["rstoch"], (ncol, nz), "rstoch")
+    else:
+        rstoch = zero_column
     kzero = zero_layers["snow"]
     zero_interface = work.one(SLOT_ZERO_FACE, (ncol, nz + 1))
     delt_column = work.one(SLOT_DELT, (ncol,))
@@ -1758,7 +1786,8 @@ def mynn_bl_driver_cuda(
         seeded = mynn_initialize_default_cuda(
             {
                 "dz": layers["dz"], "u": layers["u"], "v": layers["v"],
-                "thl": prep["thl"], "qw": prep["sqw"],
+                # module_bl_mynn.F:795 seeds with vapor, not total water.
+                "thl": prep["thl"], "qw": layers["sqv"],
                 "theta": layers["th"], "thetav": prep["thetav"],
                 "cldfra": layers["cldfra_bl"],
                 "edmf_w": zero_column, "edmf_a": zero_column,
@@ -1818,7 +1847,7 @@ def mynn_bl_driver_cuda(
             "qs": layers["sqs"] if flag_qs else kzero, "p": layers["p"],
             "exner": layers["exner"], "tsq": layers["tsq"],
             "qsq": layers["qsq"], "cov": layers["cov"], "sh": layers["sh"],
-            "el": layers["el"], "rstoch": zero_column,
+            "el": layers["el"], "rstoch": rstoch,
             "vt": zero_column, "vq": zero_column, "sgm": zero_column,
             "xland": scalars["xland"], "dx": scalars["dx"],
             "pblh": scalars["pblh"], "hfx": scalars["hfx"], "rmo": rmol,
@@ -1842,7 +1871,7 @@ def mynn_bl_driver_cuda(
             "w": layers["w"], "th": layers["th"], "thl": thl,
             "thv": thetav, "tk": layers["tk"], "qt": sqw,
             "qv": layers["sqv"], "qc": layers["sqc"],
-            "exner": layers["exner"], "rstoch": zero_column,
+            "exner": layers["exner"], "rstoch": rstoch,
             "qc_bl": qc_bl, "cldfra_bl": cldfra_bl, "vt": vt, "vq": vq,
             "sgm": sgm,
             "flt": flt, "fltv": fltv, "flq": flq,
@@ -1878,9 +1907,11 @@ def mynn_bl_driver_cuda(
             "tkeprodtd": zero_column, "xland": scalars["xland"],
             "dx": scalars["dx"], "rmo": rmol, "flt": flt, "fltv": fltv,
             "flq": flq, "zi": scalars["pblh"], "psig_bl": psig_bl,
-            "psig_shcu": psig_shcu,
+            "psig_shcu": psig_shcu, "rstoch": rstoch,
         },
         closure=closure,
+        bl_mynn_mixlength=bl_mynn_mixlength,
+        spp_pbl=spp_pbl,
         scratch=work,
     )
 

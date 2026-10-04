@@ -161,10 +161,16 @@ _PER_COLUMN_STRIDE_NAMES = frozenset((
 #: the no-``DomainState`` path used by the standalone harnesses, and the
 #: 256-byte validity words, built once per process.
 _PHYSICS_ALLOCATION_INVENTORY = {
+    # CLM lake columns (sf_lake_physics = 1): per-lake-column state and
+    # refresh scratch, bounded by the lake-column count.
+    "gpuwm/core/lake.py": {
+        "initialize_lake": 6,
+        "refresh_columns": 6,
+    },
     # Preparation seeds: candidate numbers span the grid, while rounded alt
     # and gathered scratch use at most 112 bytes per cell in one bounded chunk.
     "gpuwm/ingest/closure_device.py": {
-        "temperature": 1,
+        "temperature": 2,
         "gathered_numbers": 2,
         "_rounded_alt": 1,
         "_closure_chunk": 4,
@@ -353,14 +359,19 @@ _PHYSICS_ALLOCATION_INVENTORY = {
         'mynn_dmp_mf_cuda': 4,
     },
     'gpuwm/core/mynn_pbl_runtime.py': {
-        # One six-word int32 block per (device, stream), not per step.
+        # One growable int32 status block per (device, stream), not per step.
         '_validity_flags': 1,
         # One became three with the mixscalars landing (4a0bb3f69): the
         # qn-family output planes (five (nz, ny, nx) fields on the
         # bl_mynn_mixscalars=1 lane) and the qnbca zero column mp=28's
         # Registry package declares absent.  Entered in the same sweep as
         # the mynn_pbl_gpu row; ncol/plane-scaled, none nest-persistent.
-        'mynn_pbl_step': 3,
+        # scalar_pblmix adds one reused chunk work array (5*nz+1 floats
+        # per column), never a full-domain tridiagonal workspace. The four
+        # qn output planes reuse the existing allocation site above.
+        # preflight.mynn_scalar_transient_shapes prices the full live peak;
+        # omitting it would admit a run without space for its scalar rates.
+        'mynn_pbl_step': 4,
     },
     # Born with the mixscalars landing (4a0bb3f69) and entered in the same
     # sweep as the mynn_pbl_gpu row above: the qn-family tridiagonal
@@ -369,6 +380,10 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     'gpuwm/core/mynn_scalar_mix_gpu.py': {
         'mynn_dmp_qn_flux_columns_cuda': 2,
         'mynn_mix_scalar_columns_cuda': 3,
+        # Two chunk output buffers plus an optional standalone work buffer.
+        # Runtime passes its preallocated chunk work. No whole-domain solve
+        # buffer is permitted to hide behind this bounded-column entry.
+        'scalar_pblmix_columns_cuda': 3,
     },
     # The RUC soil-tier module allocates nothing; its columns come from
     # the caller's batch.
@@ -558,7 +573,7 @@ _PHYSICS_ALLOCATION_INVENTORY = {
         'ruc_soil_properties_cuda': 1,
         'ruc_soil_step_cuda': 6,
         'ruc_soil_temperature_step_cuda': 2,
-        'ruc_surface_parameters_cuda': 2,
+        'ruc_surface_parameters_cuda': 4,
         # Added at dd0df4e with the whole-column device path, and the one row
         # here that DOES scale with the nest: the argument is the snow-covered
         # subset of the RUC batch, so ``module_sf_ruclsm.F:2087``'s rebuild

@@ -15,6 +15,16 @@ _WRF_NAMES = {
 }
 METGRID_NUMBER_FIELDS = tuple(_WRF_NAMES)
 
+# Number mixing ratios use the same scalar transport and interpolation
+# regardless of the driving model. Units are particles per kilogram.
+CANONICAL_NUMBER_FIELDS = {
+    "cloud_droplet_number": "QNC",
+    "cloud_ice_number": "QNI",
+    "rain_number": "QNR",
+    "water_friendly_aerosol_number": "QNWFA",
+    "ice_friendly_aerosol_number": "QNIFA",
+}
+
 
 def metgrid_number_targets(cfg):
     """Resolve P_QN* membership using the shared selected WRF package.
@@ -86,6 +96,8 @@ def wif_climatology_named_by_namelist(cfg) -> bool:
     """
 
     choice = str(getattr(cfg, "mp28_aerosol_source", "auto") or "auto")
+    if bool(getattr(cfg, "use_rap_aero_icbc", False)):
+        return False
     if choice != "auto":
         # The operator's own word wins and is what the message must name;
         # the pair is not what resolved this run.

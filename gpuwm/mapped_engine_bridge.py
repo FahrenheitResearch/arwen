@@ -44,6 +44,7 @@ from gpuwm.ingest.source_coverage import \
     ForcingSeriesRefusal as _ForcingSeriesRefusal
 from gpuwm.ingest.source_coverage import \
     ScratchDiskRefusal as _ScratchDiskRefusal
+from gpuwm.ingest.memory_refusal import InitializationMemoryRefused
 
 #: Executable basename, resolved through the standard bridge-ladder
 #: shape (env override, this checkout's build, staged copies) the way
@@ -93,6 +94,9 @@ ENGINE_ENV = "GPUWM_MAPPED_ENGINE"
 #: core it may run on and keeps as many valid times in flight as memory
 #: allows (``tools/rw_wps/crates/mapped-engine/src/threads.rs``).
 ENGINE_THREADS_ENV = "GPUWM_MAPPED_ENGINE_THREADS"
+ENGINE_MEMORY_BUDGET_ENV = "GPUWM_MAPPED_ENGINE_MEMORY_BUDGET_BYTES"
+HOST_MEMORY_BUDGET_SCHEMA = "gpuwm-mapped-host-memory-budget-v1"
+NATIVE_DECODE_PROCESS_FLOOR_BYTES = 64 * 1024**2
 ENGINE_RUST = "rust"
 ENGINE_PYTHON = "python"
 ENGINES = (ENGINE_RUST, ENGINE_PYTHON)
@@ -387,6 +391,7 @@ def engine_supports(subcommand: str, source_format: str | None) -> bool:
 #: refusal with a class not in this table is itself a defect (the
 #: bridge re-raises it as ``RuntimeError`` naming the unknown class).
 REFUSAL_CLASSES: Mapping[str, type[Exception]] = {
+    "host_memory": InitializationMemoryRefused,
     # argv/contract misuse; also covers the skeleton's `usage` refusal.
     "usage": ValueError,
     # Skeleton-only: subcommand not yet implemented (lane 2 removes it).
@@ -1732,6 +1737,51 @@ def _drain_progress(stdout: str, on_progress: Callable[[dict], None] | None):
     return receipt
 
 
+def _decode_memory_receipt(stderr: str, *, budget_supported: bool) -> dict | None:
+    """Bound one native valid time from its actual inventory price.
+
+    Native per_time_bytes is 2 * decoded fields + 3 * input object bytes.
+    One time's field-parallel work holds at most one more decoded copy,
+    so ceil(1.5 * per_time_bytes) bounds its widest pool. Use whole-grid
+    prices for a possible later fallback, sum components that may coexist,
+    and keep the first process baseline outside those array prices.
+    """
+    prices = []
+    whole_prices = []
+    baseline = None
+    for line in stderr.splitlines():
+        if not line.startswith("GPUWM_PREP_THREADS "):
+            continue
+        try:
+            record = json.loads(line.split(" ", 1)[1])
+            if record.get("memory_priced") is not True:
+                return None
+            value = record["per_time_bytes"]
+            whole = record["whole_per_time_bytes"]
+        except (ValueError, KeyError, TypeError):
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            return None
+        if isinstance(whole, bool) or not isinstance(whole, int) or whole <= 0:
+            return None
+        if baseline is None:
+            resident = record.get("process_rss_bytes")
+            if isinstance(resident, bool) or not isinstance(resident, int) or resident < 1:
+                return None
+            baseline = max(NATIVE_DECODE_PROCESS_FLOOR_BYTES, resident)
+        prices.append(value)
+        whole_prices.append(max(value, whole))
+    if not prices:
+        return None
+    total = sum(whole_prices)
+    return {"schema": HOST_MEMORY_BUDGET_SCHEMA,
+            "component_per_time_bytes": prices, "per_time_bytes": sum(prices),
+            "component_whole_per_time_bytes": whole_prices, "whole_per_time_bytes": total,
+            "process_baseline_bytes": baseline,
+            "one_time_peak_bytes": baseline + (3 * total + 1) // 2,
+            "budget_supported": bool(budget_supported)}
+
+
 def run_engine(
     subcommand: str,
     *,
@@ -1749,6 +1799,7 @@ def run_engine(
     atmospheric_grids=(),
     threads: int | None = None,
     lead_batch: bool = False,
+    memory_budget_bytes: int | None = None,
 ) -> dict[str, object]:
     """Run one engine subcommand; refusals become Python exceptions.
 
@@ -1756,7 +1807,11 @@ def run_engine(
     names one; ``None`` leaves the engine to size itself from the cores it
     may run on.
 
-    Returns ``{"output", "receipt", "stdout", "command"}``.  The caller
+    Returns ``{"output", "receipt", "stdout", "command", "decode_memory"}``.
+    The memory measurement is runtime telemetry, outside frame identity.
+    ``memory_budget_bytes`` limits one later decoder's whole process and
+    requires a native binary that declares the corresponding capability.
+    The caller
     reads frames with :func:`read_frameset` (``decode``/``compose``) or
     the inspection document off stdout (``inspect``); this function does
     not choose for it, because the three subcommands have three
@@ -1772,7 +1827,10 @@ def run_engine(
     binary = Path(engine) if engine is not None else require_engine()
     grids = tuple(atmospheric_grids)
     window_enabled = False
-    if grids:
+    memory_budget_supported = False
+    if lead_batch and subcommand != "compose":
+        raise ValueError("mapped lead batches are supported only by compose")
+    if grids or lead_batch or memory_budget_bytes is not None:
         from gpuwm.ingest.atmospheric_window import WINDOW_SCHEMA
         capability = subprocess.run([str(binary), "capabilities"],
                                     capture_output=True, text=True, check=False)
@@ -1781,7 +1839,21 @@ def run_engine(
         declared = json.loads(capability.stdout)
         if declared.get("schema") != CAPABILITIES_SCHEMA:
             raise ValueError("mapped writer returned an unknown capability schema")
-        window_enabled = declared.get("features", {}).get("atmospheric_window") == WINDOW_SCHEMA
+        features = declared.get("features", {})
+        window_enabled = bool(grids) and features.get("atmospheric_window") == WINDOW_SCHEMA
+        memory_budget_supported = features.get("host_memory_budget") == HOST_MEMORY_BUDGET_SCHEMA
+        if lead_batch and features.get("lead_batch") != "gpuwm-mapped-lead-batch-v1":
+            raise EngineUnavailable(engine_remedy(
+                f"{binary} does not declare the --lead-batch capability required "
+                "for this as-posted preparation"))
+    if memory_budget_bytes is not None:
+        if (isinstance(memory_budget_bytes, bool) or not isinstance(memory_budget_bytes, int)
+                or memory_budget_bytes < 1):
+            raise ValueError("mapped decode memory budget must be positive integer bytes")
+        if not memory_budget_supported:
+            raise EngineUnavailable(
+                "mapped engine cannot enforce a chained preparation's host decode budget; "
+                "rebuild the engine from this checkout")
     output = Path(output)
     input_list = output / "inputs.txt"
     try:
@@ -1816,11 +1888,13 @@ def run_engine(
         lead_batch=lead_batch,
     )
     environment = None
-    if threads is not None:
-        if int(threads) < 1:
+    if threads is not None or memory_budget_bytes is not None:
+        if threads is not None and int(threads) < 1:
             raise ValueError(f"engine threads must be a positive count, got {threads}")
-        import os
-        environment = {**os.environ, ENGINE_THREADS_ENV: str(int(threads))}
+        from gpuwm.ingest.preparation_workers import worker_environment
+        environment = worker_environment(threads)
+        if memory_budget_bytes is not None:
+            environment[ENGINE_MEMORY_BUDGET_ENV] = str(memory_budget_bytes)
     if window_enabled:
         completed = _run_window_engine(command, grids, env=environment)
     else:
@@ -1828,6 +1902,10 @@ def run_engine(
             command, capture_output=True, text=True, check=False,
             env=environment,
         )
+    for line in (completed.stderr or "").splitlines():
+        if line.startswith("GPUWM_PREP_THREADS "):
+            from gpuwm.ingest.preparation_workers import diagnostic
+            diagnostic(line)
     if completed.returncode != 0:
         refusal = parse_refusal(completed.stderr or "")
         if refusal is None:
@@ -1845,6 +1923,8 @@ def run_engine(
         "receipt": receipt,
         "stdout": completed.stdout or "",
         "command": command,
+        "decode_memory": _decode_memory_receipt(
+            completed.stderr or "", budget_supported=memory_budget_supported),
     }
 
 

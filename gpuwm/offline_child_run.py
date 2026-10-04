@@ -1392,6 +1392,8 @@ def _initialize_child_physics(child, cfg, initial, surface, start_time, *,
     """
     from gpuwm.core.physics import initialize_physics
     from gpuwm.static.orographic import required_static_fields
+    from gpuwm.ingest.ruc_mosaic import ruc_mosaic_physics_inputs
+    from gpuwm.ingest.lake_physics import lake_physics_inputs
 
     drag_fields = required_static_fields(getattr(cfg, "topo_wind", 0),
                                         getattr(cfg, "gwd_opt", 0))
@@ -1497,7 +1499,14 @@ def _initialize_child_physics(child, cfg, initial, surface, start_time, *,
         snow_depth=fields.get("SNOWH", np.zeros_like(fields["SNOW"])),
         pblh=fields.get("PBLH", 0.0),
         radiation=radiation, radiation_start_time=start_time,
-        radiation_latitude=lat, radiation_longitude=lon, **drag_kwargs)
+        radiation_latitude=lat, radiation_longitude=lon,
+        **ruc_mosaic_physics_inputs(
+            cfg, fields if terrain_drag_static is None else terrain_drag_static,
+            landuse_attrs=identity, xice=xice,
+            processed=terrain_drag_static is None),
+        **lake_physics_inputs(
+            cfg, fields if terrain_drag_static is None else terrain_drag_static),
+        **drag_kwargs)
     # Seed time-zero surface diagnostics from the child-grid source; the
     # first model step replaces them through SFCLAY/LSM/PBL in WRF
     # ordering (same convention as the experiment path's warm seed).
@@ -3376,7 +3385,9 @@ def _run(args: argparse.Namespace,
                                        initial.valid_time,
                                        **({"terrain_drag_static": geography.fields}
                                           if geography is not None and
-                                          (cfg.topo_wind or cfg.gwd_opt) else {}))
+                                          (cfg.topo_wind or cfg.gwd_opt
+                                           or cfg.mosaic_lu or cfg.mosaic_soil
+                                           or cfg.sf_lake_physics) else {}))
     ozone_routing = _child_ozone_routing(driver)
     cp.cuda.runtime.deviceSynchronize()
     # ``[tiles]``, wired exactly the way the prepared front doors wire it

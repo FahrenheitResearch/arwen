@@ -102,12 +102,16 @@ def terrain_drag_transient_shapes(cfg: RunConfig
     under SASE also diagnoses two surface planes without changing its
     surface-layer carriers.  Topographic cold start holds three work planes
     (input statistic, zero placeholder, laplacian), while each YSU call
-    holds two output planes; their envelope is three.
+    holds two output planes.  The topo_wind=1 row-slab loader also holds
+    terrain, landmask and two coefficient outputs over its one-row context
+    on each side, so its envelope is seven context planes.
     """
     nz, ny, nx = int(cfg.nz), int(cfg.ny), int(cfg.nx)
     shapes = {}
-    if int(getattr(cfg, "topo_wind", 0) or 0):
-        shapes["terrain_drag/topo_work"] = (3, ny, nx)
+    topo = int(getattr(cfg, "topo_wind", 0) or 0)
+    if topo:
+        shapes["terrain_drag/topo_work"] = (
+            (7, ny + 2, nx) if topo == 1 else (3, ny, nx))
     option = int(getattr(cfg, "gwd_opt", 0) or 0)
     if option:
         shapes["terrain_drag/column_heights"] = (2, nz, ny, nx)

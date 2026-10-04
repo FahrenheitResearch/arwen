@@ -102,6 +102,43 @@ def test_bumping_repins_the_vendor_manifest_digest_of_the_terminal_lock(tmp_path
     assert module.VENDOR_MANIFEST not in module.bump(root, "99.0.4")
 
 
+def test_bumping_regenerates_the_binary_notice_and_then_the_zarr_notice(tmp_path):
+    """The Zarr reader's notice reproduces the binary notice whole.
+
+    The bump moves the terminal lock, the binary notice pins that lock's
+    digest, and the Zarr notice carries a copy of the binary notice. Run the
+    other way round, or not at all, the Zarr notice ships the copy from before
+    the bump: it went out through 2.8.4 with the binary notice of 2026-09-08.
+    The generators are stand-ins here; they need cargo and the vendored trees.
+    """
+    module = _load()
+    root = _copy_tree(tmp_path)
+    stub = ("import pathlib, sys\n"
+            "with open('generators.log', 'a', encoding='utf-8') as stream:\n"
+            "    stream.write(pathlib.Path(sys.argv[0]).name + '\\n')\n")
+    for relative in (module.NOTICE_TOOL, module.ZARR_NOTICE_TOOL):
+        (root / relative).parent.mkdir(parents=True, exist_ok=True)
+        (root / relative).write_bytes(stub.encode("utf-8"))
+    for relative in (*module.NOTICES, *module.ZARR_NOTICES, module.ZARR_LOCK):
+        (root / relative).parent.mkdir(parents=True, exist_ok=True)
+        (root / relative).write_bytes(b"stand-in\n")
+    log = root / "generators.log"
+
+    touched = module.bump(root, "99.0.5")
+    assert log.read_text(encoding="utf-8").split() == [
+        Path(module.NOTICE_TOOL).name, Path(module.ZARR_NOTICE_TOOL).name]
+    assert touched.index(module.NOTICES[0]) < touched.index(module.ZARR_NOTICES[0])
+    assert set(module.NOTICES) | set(module.ZARR_NOTICES) <= set(touched)
+
+    # A partial copy without the Zarr workspace has no Zarr notice to keep in step.
+    (root / module.ZARR_LOCK).unlink()
+    log.unlink()
+    touched = module.bump(root, "99.0.6")
+    assert log.read_text(encoding="utf-8").split() == [Path(module.NOTICE_TOOL).name]
+    assert set(module.NOTICES) <= set(touched)
+    assert not set(module.ZARR_NOTICES) & set(touched)
+
+
 def test_bumping_again_does_not_open_a_second_changelog_section(tmp_path):
     module = _load()
     root = _copy_tree(tmp_path)

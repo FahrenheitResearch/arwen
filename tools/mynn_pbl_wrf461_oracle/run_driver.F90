@@ -39,6 +39,7 @@ program run_mynn_bl_driver_oracle
   character(len=32), parameter :: names(ncol) = [character(len=32) :: &
       'convective_land', 'marine_cumulus', 'stable_land', 'cloudy_deep', &
       'snow_anvil']
+  character(len=32) :: mixlength_arg
   character(len=1024) :: output_path
   integer :: c, k, s, unit
 
@@ -103,7 +104,8 @@ program run_mynn_bl_driver_oracle
   logical, parameter :: flag_qnifa = .false., flag_qnbca = .false.
   logical, parameter :: flag_ozone = .false.
   integer, parameter :: tke_budget = 0, bl_mynn_cloudpdf = 2
-  integer, parameter :: bl_mynn_mixlength = 1, icloud_bl = 1
+  integer, parameter :: icloud_bl = 1
+  integer :: bl_mynn_mixlength = 1
   integer, parameter :: bl_mynn_edmf = 1, bl_mynn_edmf_mom = 1
   integer, parameter :: bl_mynn_edmf_tke = 0, bl_mynn_mixscalars = 0
   integer, parameter :: bl_mynn_output = 0, bl_mynn_cloudmix = 1
@@ -111,6 +113,8 @@ program run_mynn_bl_driver_oracle
   real, parameter :: closure = 2.6
 
   call get_command_argument(1, output_path)
+  call get_command_argument(2, mixlength_arg)
+  if (len_trim(mixlength_arg) > 0) read(mixlength_arg, *) bl_mynn_mixlength
   if (len_trim(output_path) == 0) then
     write(*, '(A)') 'usage: run_driver OUTPUT.csv'
     error stop 2

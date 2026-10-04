@@ -3,7 +3,13 @@
 
 Cargo resolves the shipped Linux and Windows targets offline. The inventory also
 includes build dependencies; it does not claim every resolved crate is linked.
-Existing bridge and first-party port notices are preserved before section 5.
+
+Only section 5 is rewritten, from its heading to its END line. Every byte
+before the heading and after the END line is kept. Until 2.8.5 everything
+from the heading to the end of the file was replaced, and the simulated-radar
+vendor notices (BowEcho, the radar volume writers, the bzip2 table grant) had been
+appended after the section: the next version bump, which runs this tool,
+would have deleted them from the notice a compiled consumer receives.
 """
 from __future__ import annotations
 
@@ -17,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TARGETS = ("x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc")
 SEPARATOR = "=" * 78
 MARKER = SEPARATOR + "\n5.  ARWEN TUI -- LOCKED DEPENDENCIES AND LICENCE TEXTS\n"
+END = SEPARATOR + "\nEND ARWEN TUI LOCKED DEPENDENCIES AND LICENCE TEXTS\n"
 COPIES = ("licenses/THIRD-PARTY-LICENSES-bridge-binaries.txt",
           "tools/rustwx/assets/basemap/THIRD-PARTY-LICENSES.txt")
 
@@ -82,14 +89,34 @@ def render_section(root: Path, packages: list[dict], counts: dict[str, int]) -> 
     return "\n".join(lines).rstrip() + "\n"
 
 
+def compose(existing: str, section: str) -> str:
+    """``existing`` with section 5 replaced by ``section`` and nothing else moved.
+
+    A notice that has no section 5 yet gains one at its end. A notice whose
+    section 5 has no END line is refused: where the section stops cannot be
+    read, and replacing through to the end of the file is how the notices
+    after it would be deleted.
+    """
+    head, heading, rest = existing.partition(MARKER)
+    after = ""
+    if heading:
+        _, end, after = rest.partition(END)
+        if not end:
+            raise SystemExit(
+                "TUI licence notice has section 5 without its END line, so where the "
+                "section stops cannot be read; rewriting from the heading to the end "
+                "of the file would delete every notice after it (the simulated-radar "
+                "vendor notices sat there). Restore the line pair\n" + END)
+    return head.rstrip() + "\n\n" + section + "\n" + END + after
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="verify without writing either copy")
     args = parser.parse_args()
     packages, counts = resolved_packages(ROOT)
-    first = (ROOT / COPIES[0]).read_text(encoding="utf-8")
-    prefix = first.split(MARKER, 1)[0].rstrip() + "\n\n"
-    expected = (prefix + render_section(ROOT, packages, counts)).encode("utf-8")
+    first = (ROOT / COPIES[0]).read_bytes().decode("utf-8")
+    expected = compose(first, render_section(ROOT, packages, counts)).encode("utf-8")
     if args.check:
         if any((ROOT / path).read_bytes() != expected for path in COPIES):
             raise SystemExit("TUI licence notices are stale; run tools/update_tui_license_notice.py")

@@ -45,7 +45,10 @@ Scope in this directory: the logf / expf / exp2f / powf cores and their data
 tables (Arm, MIT) appear in glibc_flt32.cuh, mynn_dmp_sibling.cu, mynn_pbl.cu,
 noahmp_bareflux.cu, noahmp_fluxprep.cu, noahmp_leaves.cu, noahmp_radiation.cu,
 noahmp_snow.cu, noahmp_soilwater.cu, noahmp_vegeflux.cu, noahmp_vegprecip.cu,
-noahmp_water.cu, rrtmg_lw.cu, rrtmg_sw.cu and vert_interp.cu.  The expm1f / tanhf / atanf /
+noahmp_water.cu, rrtmg_lw.cu, rrtmg_sw.cu and vert_interp.cu.  The
+wrf_vi_pressure_log helper in vert_interp.cu uses glibc_flt32.cuh's Arm
+logf tables and reproduces its range reduction and polynomial with fused
+binary64 operations.  The expm1f / tanhf / atanf /
 log10f reductions (FDLIBM, Sun Microsystems) appear in mynn_dmp_sibling.cu,
 mynn_pbl.cu, noahmp_bareflux.cu, noahmp_energy.cu, noahmp_fluxprep.cu,
 noahmp_glacier.cu, noahmp_leaves.cu, noahmp_vegeflux.cu and ruc.cu.
@@ -94,7 +97,7 @@ renamings, qualifiers, macro spellings and splitting polynomial helpers
 into sincosf_poly.h. Integration aliases and IFUNC wrappers are not copied.
 The MIT branch is elected for these parts too; the full Arm permission
 notice below and licenses/LICENSE-Arm-optimized-routines-MIT.txt apply.
-This adds one trig header to the fourteen log/exp/pow kernel files above;
+This adds one trig header to the fifteen log/exp/pow kernel files above;
 the Python log/exp/pow copy remains separate.
 
 At the vintage glibc imported -- Arm 86067a740541, 2017-08-11, taken into

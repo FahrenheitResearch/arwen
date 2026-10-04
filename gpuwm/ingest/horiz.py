@@ -1036,6 +1036,7 @@ def masked_nearest_gpu(field, latitude, longitude, target_lat, target_lon,
 _WPS_FULL_CHAIN = (
     "sixteen_pt", "four_pt", "wt_average_4pt", "wt_average_16pt", "search")
 _WPS_SNOW_CHAIN = ("four_pt", "average_4pt")
+_WPS_NUMBER_CHAIN = ("nearest_neighbor", "four_pt", "average_4pt")
 #: METGRID.TBL's SST operators, exactly as WPS runs them.
 #:
 #: ``sixteen_pt+four_pt`` with ``fill_missing=0.``, and both operators demand
@@ -1366,6 +1367,8 @@ _PARABOLIC_SCALARS = {"Z", "T", "RH", "T2", "D2", "RH2", "PMSL"}
 #: five; this table gives the regular-source pass, which every mapped
 #: profile, ERA5 and GFS reach, the same owner.  Bilinear preserves both
 #: non-negativity and compact support.
+from gpuwm.ingest.analyzed_numbers import METGRID_NUMBER_FIELDS
+
 _FOUR_PT_HYDROMETEORS = frozenset({"QC", "QR", "QI", "QS", "QG"})
 
 
@@ -1377,6 +1380,9 @@ def regular_horizontal_method(name: str, ndim: int) -> str:
     and every other 3-D field are overlapping-parabolic (``sixteen_pt``),
     and an unclassified 2-D field is bilinear.
     """
+    if name in METGRID_NUMBER_FIELDS:
+        # Operational METGRID.TBL QN* rows begin with nearest_neighbor.
+        return "nearest"
     if name in _FOUR_PT_HYDROMETEORS:
         return "bilinear"
     if name in _PARABOLIC_SCALARS or int(ndim) == 3:
@@ -1910,7 +1916,7 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
     # mapped, so a library that cannot run it is refused at the front of
     # the work with its remedy (both backends run the same Rust chain).
     masked_chain = (_masked_chain_for_backend(engine)
-                    if masked_names.intersection(source_fields) else None)
+                    if (masked_names | set(METGRID_NUMBER_FIELDS)).intersection(source_fields) else None)
     mass_coordinates: list = []
 
     def masked_target_coordinates():
@@ -2024,6 +2030,31 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                 raw, snapshot.latitude, snapshot.longitude,
                 mass_ty, mass_tx))
             operators[name] = "bilinear"
+            handled.add(name)
+            continue
+
+        if name in METGRID_NUMBER_FIELDS:
+            # Keep missing native values through WPS's neighbor fallback.
+            # Zero-filling the source first suppresses that fallback and
+            # creates aerosol-free inflow beside a missing nearest donor.
+            layers = _as_host_float64(raw)
+            target_y, target_x = masked_target_coordinates()
+            target_y = np.asarray(target_y, dtype=np.float32).astype(np.float64)
+            target_x = np.asarray(target_x, dtype=np.float32).astype(np.float64)
+            if isinstance(snapshot, WindowedAtmosphericSnapshot):
+                target_y = target_y - snapshot.window.rows[0]
+                target_x = target_x - snapshot.window.columns[0]
+            native, chain_workers = masked_chain
+            values, counts = native.wps_masked_chain(
+                layers, np.ones(layers.shape[-2:], dtype=bool), None,
+                target_y, target_x, np.ones(mass_lat.shape, dtype=bool),
+                _WPS_NUMBER_CHAIN, mode="plain", fill_value=0.0,
+                workers=chain_workers)
+            out[name] = engine.float32(values.reshape((layers.shape[0], *mass_lat.shape)))
+            operators[name] = "+".join(_WPS_NUMBER_CHAIN)
+            fills = int(np.sum(counts[:, _COUNT_SLOT["fill"]]))
+            if fills:
+                masked_repairs[name] = {"fill": fills}
             handled.add(name)
             continue
 
@@ -2194,10 +2225,34 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                 mapped_from, method=method, source_support=True)
             if name == "Z":
                 out[output_name] = (
+                    engine.divide_float32(out[output_name], 9.81)
+                    if getattr(engine, "bounded_cuda", False) else
                     _divide_float32_gpu(out[output_name], 9.81)
                     if getattr(engine, "name", None) == "cuda" else
                     out[output_name] / xp.float32(9.81))
         handled.add(name)
+
+    # Native number fields have no separate two-metre product. WPS uses
+    # their deepest layer for the surface pseudo-level. Keep source level
+    # ordering: pressure and native hybrid inventories may run oppositely.
+    for name in METGRID_NUMBER_FIELDS:
+        if name in out and name + "_SFC" not in out:
+            if name not in ("QNWFA", "QNIFA"):
+                out[name + "_SFC"] = xp.zeros_like(out[name][0])
+            elif "PRES" in out:
+                # Host arrays (the CPU and the bounded CUDA preparation)
+                # take the selection in the Rust library; a device array
+                # stays on the card.
+                from gpuwm.ingest.host_arrays import deepest_level
+                surface = deepest_level(
+                    out["PRES"], out[name],
+                    workers=getattr(engine, "host_step_workers", None))
+                if surface is None:
+                    deepest = xp.argmax(out["PRES"], axis=0)[None, ...]
+                    surface = xp.take_along_axis(out[name], deepest, axis=0)[0]
+                out[name + "_SFC"] = surface
+            else:
+                out[name + "_SFC"] = out[name][int(np.argmax(snapshot.levels_hpa))]
 
     if fractional_recovery:
         signature = (mass_lat.shape, tuple(sorted(fractional_recovery.items())))

@@ -2082,6 +2082,11 @@ class StreamedDomain:
             self.stability.begin_sweep()
         from gpuwm.core.physics_step_control import PhysicsStepControl
 
+        stochastic = getattr(state, "_ensemble_stochastic", None)
+        if stochastic is not None and stochastic.enabled:
+            from gpuwm.ensemble.stochastic_streaming import attach_stochastic_sweep_lease
+            attach_stochastic_sweep_lease(self._run, stochastic)
+
         with self.allocation_scope():
             self._run.sweep(
                 1, step_kwargs=step_kwargs, report=self.report, live_config=cfg,
@@ -2364,16 +2369,22 @@ class StreamedDomain:
                 f"diagnostic(s) ({missing_diag[:6]}) with no destination "
                 "on this state; refusing a refresh that would publish "
                 "zeros for fields the sweep computed")
+        copied_streams = {}
         for name, dst in {**live, **diag}.items():
             src = store[name]
             if tuple(dst.shape) != tuple(src.shape):
                 raise StreamingRefused(
                     f"member {name!r} is {tuple(dst.shape)} on the state "
                     f"and {tuple(src.shape)} in the store")
-            dst[...] = cp.asarray(src, dtype=dst.dtype)
+            with _array_device_scope(dst):
+                dst[...] = cp.asarray(src, dtype=dst.dtype)
+                dev = int(cp.cuda.Device().id)
+                copied_streams[dev] = cp.cuda.get_current_stream()
         if self.scalars is not None:
             _physics.set_carrier_scalars(target, self.scalars)
-        cp.cuda.Stream.null.synchronize()
+        for dev, stream in copied_streams.items():
+            with cp.cuda.Device(dev):
+                stream.synchronize()
         return len(live) + len(diag)
 
     def carrier_provenance(self) -> dict | None:
@@ -2595,6 +2606,7 @@ class StreamedDomain:
             setup=self.restart_setup(), template_state=self.template_state,
             run_trackers=run_trackers, tree_header=tree_header,
             extra_scratch_slots=extra_scratch_slots,
+            stochastic_binding=StreamedDomain._ensemble_stochastic_binding(self),
             # A device store was never page-locked and never needed to be;
             # the pinned check exists to catch a HOST store that was built
             # with plain numpy and would have streamed at a fraction of the
@@ -2625,7 +2637,15 @@ class StreamedDomain:
         return restart_stream.validate_streamed_restart(
             path, self.store, cfg, setup=self.restart_setup(),
             template_state=self.template_state, scalars=self.scalars,
-            extra_scratch_slots=extra_scratch_slots)
+            extra_scratch_slots=extra_scratch_slots,
+            stochastic_binding=StreamedDomain._ensemble_stochastic_binding(self))
+
+    def _ensemble_stochastic_binding(self):
+        binding = getattr(getattr(self, "_state", None), "_ensemble_stochastic", None)
+        if binding is None:
+            lease = getattr(getattr(self, "_run", None), "_ensemble_stochastic_lease", None)
+            binding = None if lease is None else lease.binding
+        return binding
 
     def apply_restart(self, validated):
         info = validated.apply()
@@ -2829,7 +2849,8 @@ class StreamedDomain:
             if src is None or getattr(dev, "shape", None) is None:
                 continue
             sl = self._window_slices(dev.shape, window)
-            dev[sl] = cp.asarray(src[sl])
+            with _array_device_scope(dev):
+                dev[sl] = cp.asarray(src[sl])
             copied += 1
         return copied
 
@@ -2861,7 +2882,8 @@ class StreamedDomain:
             if dst is None:
                 continue
             sl = self._window_slices(dev.shape, window)
-            dst[sl] = cp.asnumpy(dev[sl])
+            with _array_device_scope(dev):
+                dst[sl] = cp.asnumpy(dev[sl])
             copied += 1
         return copied
 
@@ -2942,7 +2964,8 @@ class StreamedDomain:
         for name in names:
             src, dst = ((store[name], live[name]) if direction == "publish"
                         else (live[name], store[name]))
-            dst[...] = _to(dst, src)
+            with _array_device_scope(dst, src):
+                dst[...] = _to(dst, src)
         return names
 
 
@@ -2956,16 +2979,31 @@ class StreamedDomain:
 TRACKER_PLANE_CARRIERS: tuple[str, ...] = (
     "scratch/up_heli_max", "scratch/uh_follow_window",
     "scratch/uh_spawn_window")
+
+
+def _array_device_scope(*arrays):
+    """Select the array's card without importing CUDA for host-only copies."""
+    from contextlib import nullcontext
+
+    for array in arrays:
+        device = getattr(array, "device", None)
+        if getattr(device, "id", None) is not None:
+            return device
+    return nullcontext()
+
+
 def _to(dst, src):
     """``src`` as something ``dst[...] =`` accepts, host or device."""
     import numpy as _np
 
     if isinstance(dst, _np.ndarray):
         get = getattr(src, "get", None)
-        return src if isinstance(src, _np.ndarray) else get()
+        with _array_device_scope(src):
+            return src if isinstance(src, _np.ndarray) else get()
     import cupy as _cp
 
-    return _cp.asarray(src)
+    with _array_device_scope(dst):
+        return _cp.asarray(src)
 
 
 def allocated_planes(state, names) -> tuple[str, ...]:
@@ -5019,8 +5057,62 @@ def _as_host_array(value):
     if type(value).__module__.split(".")[0] == "cupy":
         import cupy as cp
 
-        return cp.asnumpy(value)
+        with _array_device_scope(value):
+            return cp.asnumpy(value)
     return np.asarray(value)
+
+
+def _tile_terrain_drag_static(cfg, terrain):
+    """Neutral drag inputs for a buffer whose geography will be gathered.
+
+    These inputs only allocate the same drag arrays as the domain.  The
+    geography gather replaces every statistic and both topo coefficients,
+    including the halo, before any forecast step reads them.  In particular,
+    topo coefficients must be gathered after their domain computation: the
+    terrain laplacian must never clamp at an internal tile boundary.
+    """
+    import numpy as np
+
+    from gpuwm.static.orographic import required_static_fields
+
+    names = required_static_fields(cfg.topo_wind, cfg.gwd_opt)
+    if not names:
+        return None
+    return {"HGT_M": terrain,
+            **{name: np.zeros((int(cfg.ny), int(cfg.nx)), dtype=np.float32)
+               for name in names}}
+
+
+def _surface_tile_initialization_inputs(driver, cfg):
+    """Allocate neutral fraction carriers before the mandatory store gather.
+
+    These seeds are overwritten by the same field inventory as soil and
+    temperature before a rank or tile takes its first forecast step.
+    Category dimensions must come from the prepared domain, not a fixed
+    land-use legend, or the horizontal gather would read the wrong planes.
+    """
+    import numpy as np
+
+    extra = {}
+    # A RunConfig always carries these fields; minimal tile configs used by
+    # the terrain-drag and boundary factory tests do not, and select no RUC.
+    if int(getattr(cfg, "sf_surface_physics", 0) or 0) == 3:
+        params = getattr(driver, "ruc_params", None)
+        if params is not None:
+            extra["landuse_dataset"] = params.dataset_identifier
+        for enabled, name in ((cfg.mosaic_lu, "landusef"),
+                              (cfg.mosaic_soil, "soilctop")):
+            if not enabled:
+                continue
+            source = getattr(driver, "fields", {}).get(name)
+            if source is None:
+                raise StreamingRefused(
+                    f"RUC mosaic tile has no prepared {name} carrier; "
+                    "its category fractions would be lost at the rank boundary")
+            fractions = np.zeros((source.shape[0], cfg.ny, cfg.nx), np.float32)
+            fractions[0] = np.float32(1)
+            extra[name] = fractions
+    return extra
 
 
 def prepared_tile_state_factory(state, cfg, *, tables0=None, seed: int = 4242,
@@ -5068,8 +5160,7 @@ def prepared_tile_state_factory(state, cfg, *, tables0=None, seed: int = 4242,
     buffer that has never stepped is missing arrays the store holds and the
     inventory comparison refuses it.
     """
-    from gpuwm.ingest.lateral_bc import (attach_lateral_boundaries,
-                                         attach_streaming_lateral_boundaries)
+    from gpuwm.ingest.lateral_bc import attach_streaming_lateral_boundaries
     from tilestream import harness as _harness
 
     driver = getattr(state, "physics", None)
@@ -5085,7 +5176,7 @@ def prepared_tile_state_factory(state, cfg, *, tables0=None, seed: int = 4242,
         import numpy as np
 
         geo = _harness.neutral_geography(tile_cfg)
-        extra: dict = {}
+        extra = _surface_tile_initialization_inputs(driver, tile_cfg)
         if driver is not None:
             lat = np.asarray(geo.lat, dtype=np.float64)
             lon = np.asarray(geo.lon, dtype=np.float64)
@@ -5097,6 +5188,23 @@ def prepared_tile_state_factory(state, cfg, *, tables0=None, seed: int = 4242,
                 twin = _tile_scheme(getattr(driver, attr, None), lat, lon)
                 if twin is not None:
                     extra[key] = twin
+        if (int(getattr(tile_cfg, "topo_wind", 0))
+                or int(getattr(tile_cfg, "gwd_opt", 0))):
+            from gpuwm.static.orographic import required_static_fields
+
+            if getattr(driver, "terrain_drag", None) is None:
+                raise StreamingRefused(
+                    "terrain drag is enabled but the prepared domain has no "
+                    "terrain-drag geography to gather into its tile buffers")
+            # Construction uses neutral inputs, just like the map factors
+            # above. The geography gather replaces every resulting static
+            # coefficient/statistic before the first forecast step.
+            neutral = np.zeros((int(tile_cfg.ny), int(tile_cfg.nx)),
+                               dtype=np.float32)
+            extra["terrain_drag_static"] = {
+                "HGT_M": neutral,
+                **{name: neutral for name in required_static_fields(
+                    int(tile_cfg.topo_wind), int(tile_cfg.gwd_opt))}}
         tile, _drv = _harness.make_physics_state(
             tile_cfg, seed, geography=geo, start_time=start_time,
             coord=coord, **extra)
@@ -5120,13 +5228,11 @@ def prepared_tile_state_factory(state, cfg, *, tables0=None, seed: int = 4242,
         # the domain's real lateral forcing.
         make.primed = prime_lazy_carriers(tile, tile_cfg)
         if tables0 is not None:
-            # An unsealed preparation declares a schedule before its later
-            # intervals exist. Eager attachment would read those intervals
-            # while building the first buffer, before any model step runs.
-            if getattr(tables0.intervals, "bounds", None) is not None:
-                attach_streaming_lateral_boundaries(tile, tables0)
-            else:
-                attach_lateral_boundaries(tile, tables0)
+            # A buffer retains one interval, whether the host series is
+            # sealed or still arriving. The tile hook uses this same mirror
+            # before stepping, so constructing an eager copy first only
+            # allocated the whole series to release it again at first bind.
+            attach_streaming_lateral_boundaries(tile, tables0)
         if warmup:
             _harness.run_steps(tile, tile_cfg, int(warmup))
         return tile
@@ -5462,7 +5568,8 @@ def ranked_decision(cfg, options, *, max_map_factor=1.0):
 
 
 def ranked_domain_builder(bundle, *, clock=DERIVE_CLOCK, options, seam="zeros",
-                          check_geography=True, step_mode="threads", node=None):
+                          check_geography=True, step_mode="threads", node=None,
+                          snapshot_limits=None, mynn_column_chunks=None):
     """Build resident slabs directly from a pinned prepared store.
 
     ``node`` is the tree's :class:`gpuwm.core.model.DomainNode` for this
@@ -5500,7 +5607,8 @@ def ranked_domain_builder(bundle, *, clock=DERIVE_CLOCK, options, seam="zeros",
             geography=bundle.geography, template=bundle.template,
             boundaries=bundle.boundaries, clock=None if clock is DERIVE_CLOCK else clock,
             seam=seam, check_geography=check_geography, step_mode=step_mode,
-            nest_hook=nest_hook)
+            nest_hook=nest_hook, snapshot_limits=snapshot_limits,
+            mynn_column_chunks=mynn_column_chunks)
         try:
             stability = StreamedStability(run, cfg,
                 boundary_width=int(getattr(cfg, "spec_bdy_width", 0) or 0) or None)
@@ -8414,24 +8522,25 @@ def refresh_from_store(state, attrs, *, window=None) -> int:
                 f"store {attr!r} has shape {tuple(src.shape)}, state has "
                 f"{tuple(dst.shape)}")
         sl = window_slices(dst.shape, window)
-        if not isinstance(src, _np.ndarray):
-            dst[sl] = src[sl]                      # device-store mode
-        elif isinstance(dst, _np.ndarray):
-            dst[sl] = src[sl]                      # host stand-in (tests)
-        elif window is None:
-            # Whole-field host -> device.  ``dst[...] = host`` routes
-            # through cupy's fill and raises; ndarray.set is the documented
-            # door and needs a contiguous destination, which a whole array
-            # is.
-            dst.set(_np.ascontiguousarray(src))
-        else:
-            # Windowed host -> device.  The window view of ``dst`` is not
-            # contiguous, so it cannot take ``set``; stage the window on
-            # the device and assign device-to-device, exactly as
-            # ``StreamedDomain.sync_to_state`` does.
-            import cupy as _cp
+        with _array_device_scope(dst, src):
+            if not isinstance(src, _np.ndarray):
+                dst[sl] = src[sl]                      # device-store mode
+            elif isinstance(dst, _np.ndarray):
+                dst[sl] = src[sl]                      # host stand-in (tests)
+            elif window is None:
+                # Whole-field host -> device.  ``dst[...] = host`` routes
+                # through cupy's fill and raises; ndarray.set is the documented
+                # door and needs a contiguous destination, which a whole array
+                # is.
+                dst.set(_np.ascontiguousarray(src))
+            else:
+                # Windowed host -> device.  The window view of ``dst`` is not
+                # contiguous, so it cannot take ``set``; stage the window on
+                # the device and assign device-to-device, exactly as
+                # ``StreamedDomain.sync_to_state`` does.
+                import cupy as _cp
 
-            dst[sl] = _cp.asarray(_np.ascontiguousarray(src[sl]))
+                dst[sl] = _cp.asarray(_np.ascontiguousarray(src[sl]))
         moved += int(src[sl].nbytes if window is not None else dst.nbytes)
     return moved
 
@@ -8472,16 +8581,17 @@ def commit_to_store(state, attrs, *, window=None) -> int:
             raise StreamingRefused(
                 f"the store carries {attr!r} but the state does not")
         sl = window_slices(_np.shape(dst), window)
-        if not isinstance(dst, _np.ndarray):
-            dst[sl] = src[sl]                      # device-store mode
-        elif isinstance(src, _np.ndarray):
-            dst[sl] = src[sl]                      # host stand-in (tests)
-        elif window is None:
-            src.get(out=dst)
-        else:
-            # ``.get()`` on a device view makes its own contiguous host
-            # copy, so the strided store write is host-side numpy.
-            dst[sl] = src[sl].get()
+        with _array_device_scope(dst, src):
+            if not isinstance(dst, _np.ndarray):
+                dst[sl] = src[sl]                      # device-store mode
+            elif isinstance(src, _np.ndarray):
+                dst[sl] = src[sl]                      # host stand-in (tests)
+            elif window is None:
+                src.get(out=dst)
+            else:
+                # ``.get()`` on a device view makes its own contiguous host
+                # copy, so the strided store write is host-side numpy.
+                dst[sl] = src[sl].get()
         moved += int(dst[sl].nbytes if window is not None else dst.nbytes)
     return moved
 

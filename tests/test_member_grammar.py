@@ -186,7 +186,13 @@ def test_the_packaged_sets_declare_the_measured_control_conventions():
     for grammar_id in packaged_member_grammar_ids():
         grammar = load_member_grammar(packaged_member_grammar(grammar_id))
         control = grammar.member_for_ordinal(0)
-        assert control is not None
+        if control is None:
+            # Some publishers distribute the control separately from the
+            # encoded perturbed-member collection.
+            expected = {"ecmwf-ens-open-grib2-members-v1": 50,
+                        "rrfs-ops-subset-grib2-members-v1": 5}
+            assert len(grammar.members()) == expected[grammar_id]
+            continue
         conventions.add((
             control.verification.accepted_ensemble_types(),
             control.verification.ensemble_size == grammar.declared_member_count,

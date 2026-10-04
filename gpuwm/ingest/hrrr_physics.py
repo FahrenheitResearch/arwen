@@ -164,6 +164,8 @@ def initialize_prepared_physics(
     from gpuwm.core.diagnostics import update_diagnostics
     from gpuwm.core.landuse import initialize_landuse
     from gpuwm.core.physics import initialize_physics
+    from gpuwm.ingest.ruc_mosaic import ruc_mosaic_physics_inputs
+    from gpuwm.ingest.lake_physics import lake_physics_inputs
     from gpuwm.static.build import monthly_interp_to_date
 
     fields = _validate_prepared_surface(surface, cfg)
@@ -219,6 +221,10 @@ def initialize_prepared_physics(
         # The prepared statics carry the sub-grid orographic statistics when
         # the preparation ran with topo_wind / gwd_opt on; read only then.
         terrain_drag_static=static,
+        **lake_physics_inputs(cfg, static),
+        **ruc_mosaic_physics_inputs(
+            cfg, static, landuse_attrs=landuse_attrs, xice=fields["SEAICE"],
+            fractional_seaice=fractional_seaice),
         **({"cam_ozone": cam_ozone} if cam_ozone is not None else {}))
     driver.fields["snoalb"][...] = cp.asarray(
         noah_initial_snow_albedo(

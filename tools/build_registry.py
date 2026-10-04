@@ -80,6 +80,12 @@ from gpuwm.wrf461_compatibility import (  # noqa: E402
 # type / enum / minimum / default taken from gpuwm's own accepted sets
 # (gpuwm/config.py validate_run_config), not from WRF's wider sets.
 IMPLEMENTED: dict[str, dict] = {
+    "bl_mynn_mixlength": {
+        "type": "integer", "enum": [1, 2], "default": 1,
+        "component_id": "pbl", "read_when": {"bl_pbl_physics": 5}},
+    "scalar_pblmix": {
+        "type": "integer", "enum": [0, 1], "default": 0,
+        "component_id": "pbl", "read_when": {"bl_pbl_physics": 5}},
     # acoustic / small step
     "time_step_sound": {"type": "integer", "minimum": 2, "default": 4},
     "smdiv": {"type": "number", "minimum": 0.0, "default": 0.1},
@@ -193,6 +199,57 @@ IMPLEMENTED: dict[str, dict] = {
     "usemonalb": {"type": "boolean", "default": False},
     "rdlai2d": {"type": "boolean", "default": False},
     "opt_thcnd": {"type": "integer", "enum": [1, 2], "default": 1},
+    "sf_lake_physics": {
+        "type": "integer", "enum": [0, 1], "default": 0,
+        "per_domain": True, "component_id": "land_surface",
+        "warnings": ["Option 1 runs WRF's CLM lake column on LAKEMASK "
+                     "cells, with ten water and ten sediment layers and "
+                     "up to five snow layers. Default 0 retains prescribed "
+                     "water temperatures."]},
+    "use_lakedepth": {
+        "type": "integer", "enum": [0, 1], "default": 1,
+        "per_domain": True, "component_id": "land_surface",
+        "read_when": {"sf_lake_physics": 1},
+        "warnings": ["WRF default 1 requires input LAKE_DEPTH. Explicit 0 "
+                     "uses lakedepth_default for every lake column."]},
+    "lakedepth_default": {
+        "type": "number", "default": 50.0,
+        "per_domain": True, "component_id": "land_surface",
+        "read_when": {"sf_lake_physics": 1},
+        "warnings": ["Depth in metres used by WRF lakeini when a supplied "
+                     "depth is nonpositive or use_lakedepth=0. A nonpositive "
+                     "default uses WRF's reference layer geometry depth."]},
+    "lake_min_elev": {
+        "type": "number", "default": 5.0,
+        "per_domain": True, "component_id": "land_surface",
+        "read_when": {"sf_lake_physics": 1},
+        "warnings": ["Minimum water-cell elevation in metres used by WRF "
+                     "when the input does not provide a lake mask."]},
+    "mosaic_lu": {
+        "type": "integer", "enum": [0, 1], "default": 0,
+        "component_id": "land_surface", "read_when": {"sf_surface_physics": 3},
+        "warnings": ["RUC weighted vegetation parameters and irrigation use "
+                     "LANDUSEF. WRF's default is 0; 1 requires category fractions."]},
+    "mosaic_soil": {
+        "type": "integer", "enum": [0, 1], "default": 0,
+        "component_id": "land_surface", "read_when": {"sf_surface_physics": 3},
+        "warnings": ["RUC weighted soil parameters use SOILCTOP. WRF's default "
+                     "is 0; 1 requires category fractions."]},
+    "ruc_soilprop": {
+        "type": "string", "enum": ["wrf_45", "wrf_461"], "default": "wrf_45",
+        "component_id": "land_surface", "read_when": {"sf_surface_physics": 3},
+        "warnings": ["Selects which WRF lineage's LSMRUC SOILPROP sets soil-water "
+                     "diffusivity and hydraulic conductivity. wrf_45 (WRF v4.0-4.5, also "
+                     "the operational RAP/HRRR branch) normalises both by the moisture "
+                     "above the residual, (theta - qmin)/(theta_sat - qmin), and uses "
+                     "mineral conductivity 2.0 at every quartz fraction. wrf_461 (WRF "
+                     "v4.6.1) uses total moisture over porosity and 3.0 below 20 percent "
+                     "quartz; in dry soil its water diffusivity is 2.5 to 8 times "
+                     "larger, measured to raise a 3 km afternoon top soil level from "
+                     "0.161 to 0.187 m3/m3 in one hour from the levels below, where the "
+                     "operational model's own top level fell to 0.157. The default "
+                     "changed from the v4.6.1 form to wrf_45: every RUC configuration "
+                     "changes answers."]},
     "sf_surface_mosaic": {
         "type": "integer", "enum": [0, 1], "default": 0,
         "warnings": ["Noah only: WRF v4.7.1 lsm_mosaic tile state. "
@@ -393,7 +450,14 @@ TIGHTEN: dict[str, dict] = {
     # a pair the registry made unspellable, since one row refused it and
     # the other did not exist.
     "wif_input_opt": {"type": "integer", "enum": [0, 1], "default": 0},
-    "aer_init_opt": {"type": "integer", "enum": [0, 1], "default": 0},
+    "aer_init_opt": {"type": "integer", "enum": [0, 1, 2], "default": 0,
+                     "compatible_previous_enums": [[0, 1]]},
+    "use_rap_aero_icbc": {
+        "type": "boolean", "default": False,
+        "component_id": "microphysics",
+        "consuming_read": "gpuwm/ingest/real.py",
+        "description": "Analyzed QNWFA/QNIFA initial and lateral values with operational monthly surface emissions; mp_physics=28 only.",
+    },
     "epssm": {"type": "number", "minimum": 0.0, "maximum": 1.0,
               "default": 0.1},
     "diff_6th_factor": {"type": "number", "minimum": 0.0, "maximum": 1.0,
@@ -433,7 +497,8 @@ TIGHTEN: dict[str, dict] = {
     # degrading; 'synthetic' selects thompson_init's profile on purpose.
     "mp28_aerosol_source": {
         "type": "string",
-        "enum": ["auto", "climatology", "synthetic"],
+        "enum": list(MP28_AEROSOL_SOURCES),
+        "compatible_previous_enums": [["auto", "climatology", "synthetic"]],
         "default": "auto",
         "consuming_read": "gpuwm/ingest/real.py",
     },
@@ -765,13 +830,6 @@ UNIMPLEMENTED_LEDGER: dict[str, tuple[str, str]] = {
         "auxiliary input subsystem, an update cadence, restart position and "
         "field ownership; gpuwm writes one fixed wrfout frame per domain and "
         "reads no auxiliary input streams at all."),
-    "scalar_pblmix": (
-        "c",
-        "This mixes WRF's 4-D scalar array -- qnc/qnwfa/qnifa -- with the PBL "
-        "scheme (phys/module_pbl_driver.F:2251). gpuwm supplies no scalar "
-        "array to any PBL component and withholds those species from MYNN, so "
-        "the selector has nothing to act on. See the thompson-aerosol-mp28 "
-        "warnings for the resulting divergence."),
     "scm_force_flux": (
         "c",
         "This belongs to WRF's single-column-model forcing subsystem; gpuwm "
@@ -868,17 +926,11 @@ UNIMPLEMENTED_LEDGER: dict[str, tuple[str, str]] = {
         "Noah LSM driver only."),
     "use_aero_icbc": (
         "c",
-        "GOCART climatological 3-D aerosol IC/BC for "
-        "components.microphysics.options.thompson-aerosol-mp28. The scheme is "
-        "ported; this ingest is not -- gpuwm has no GOCART reader and no "
-        "aerosol lateral-boundary carrier, so mp_physics=28 runs on "
-        "thompson_init's synthetic profile only."),
-    "use_rap_aero_icbc": (
-        "c",
-        "The RAP-sourced variant of the GOCART climatological aerosol IC/BC "
-        "above, and blocked on the same absent reader and lateral-boundary "
-        "carrier; components.microphysics.options.thompson-aerosol-mp28 runs "
-        "thompson_init's synthetic profile only."),
+        "For components.microphysics.options.thompson-aerosol-mp28, this "
+        "namelist-only key imports through the aer_init_opt=1 / "
+        "wif_input_opt=1 pair rather than a RunConfig field of its own. "
+        "Monthly WIF and analyzed QNWFA/QNIFA initial and lateral carriers "
+        "are implemented. An unrestricted GOCART species reader is not."),
     "wif_fire_emit": (
         "c",
         "Biomass-burning aerosol emissions for Thompson-MP-Aero need a fire "
@@ -1169,8 +1221,10 @@ def _surface_coupling_warnings(registry: dict) -> None:
         "oracle replay remains explicit-only; independent source "
         "transcription probes cover the ARW seam.")
     ruc[9] = (
-        "Mosaic land-use and soil remain fail-closed at 0, spp_lsm at 0 and "
-        "flag_sm_adj at 0. Also pinned rather than configurable: "
+        "Mosaic land-use and soil accept 0/1, default 0, and read LANDUSEF "
+        "and SOILCTOP. spp_lsm accepts 0/1 and needs a member-owned SPP "
+        "pattern; flag_sm_adj remains at 0. "
+        "Also pinned rather than configurable: "
         "XICE_THRESHOLD=0.5, isncovr_opt=2, c1sn=0.026, c2sn=21.0, "
         "myj=False and rdlai2d=False. seaice_albedo_default is configurable "
         "over [0,1] and defaults to the former literal 0.65. "
@@ -1186,6 +1240,19 @@ def _surface_coupling_warnings(registry: dict) -> None:
         "writer-order tests are in tools/mynn_surface_pairing_wrf461_oracle "
         "and tests/test_mynn_surface_pairing_ownership.py.")
     ruc_option = land["ruc-lsm"]
+    for key in ("mosaic_lu", "mosaic_soil"):
+        ruc_option["constraints"]["required_settings"].pop(key, None)
+        ruc_option["constraints"].setdefault("admitted_setting_values", {})[key] = [0, 1]
+        ruc_option["constraints"].setdefault("admitted_setting_values_reasons", {})[key] = (
+            "WRF RUC SOILVEGIN selects dominant parameters at 0 and weighted "
+            "category parameters at 1; other values select neither branch")
+    ruc_option["constraints"]["required_settings"].pop("ruc_soilprop", None)
+    ruc_option["constraints"]["admitted_setting_values"]["ruc_soilprop"] = ["wrf_45", "wrf_461"]
+    ruc_option["constraints"]["admitted_setting_values_reasons"]["ruc_soilprop"] = (
+        "wrf_45 is the WRF v4.0-4.5 soil-water diffusivity over the moisture "
+        "above the residual and wrf_461 the WRF v4.6.1 form over total "
+        "porosity; the two move different water between soil levels, so no "
+        "other name can select either")
     ruc_option["constraints"]["requires_components"]["surface_layer"] = [
         "revised-mm5", "classic-mm5", "mynn"]
     ruc_option["extensions"]["mynn_surface_ownership"] = {
@@ -1201,11 +1268,22 @@ def _surface_coupling_warnings(registry: dict) -> None:
     }
 
     registry["parameters"]["spp_lsm"]["warnings"][0] = (
-        "Only spp_lsm=0 is honoured. The ARW/EM_CORE==1 surface path is "
-        "ported, but its stochastic pattern_spp_lsm and field_sf inputs are "
-        "not; enabling spp_lsm would require that separate stochastic state "
-        "and restart contract. Validation and the RUC runtime both refuse a "
-        "nonzero value.")
+        "spp_lsm=1 consumes a member-owned stochastic pattern in RUC's "
+        "historical WRF 3.9.1 hydraulic-conductivity operator. Current WRF "
+        "4.6.1 and 4.7.1 retain the arguments but omit this operator. The "
+        "ensemble provider owns its spectral restart state; ordinary "
+        "physics refuses an enabled consumer without a bound pattern.")
+    ruc_option["constraints"].setdefault("required_settings", {}).pop("spp_lsm", None)
+    ruc_option["constraints"].setdefault("admitted_setting_values", {})["spp_lsm"] = [0, 1]
+    for name, consumer, reader in (
+            ("spp_conv", "GF closure", "gpuwm/core/gf.py"),
+            ("spp_pbl", "MYNN PBL and surface", "gpuwm/core/physics.py")):
+        registry["parameters"][name] = {
+            "type": "integer", "enum": [0, 1], "per_domain": False,
+            "consuming_read": reader,
+            "warnings": [f"{name}=1 requires {consumer} and a member-owned stochastic "
+                         "pattern bound by the ensemble timestep provider. The "
+                         "provider owns the spectral restart state."]}
 
     route_text = (
         "The Noah-MP glacier refusal and sea-ice skip still apply. Its "
@@ -2321,6 +2399,12 @@ def _thompson_aerosol_mp28(registry: dict) -> None:
             "WRF qn solves, and is admitted only with bl_pbl_physics=5, "
             "mp_physics=28 and bldt=0. This is component code verification, "
             "not validation against observations.",
+            "PBL number mixing is selectable for mp_physics=28 with MYNN: "
+            "scalar_pblmix=1 applies WRF post-PBL diffusion through exch_h "
+            "to nc/ni/nwfa/nifa; bl_mynn_mixscalars=1 instead selects "
+            "MYNN scalar plume transport. Both default to 0 and require "
+            "bldt=0. WRF disables the former when the latter is active, "
+            "so selecting both is refused.",
             "MIXED NESTING uses the registered transition policy. Entry "
             "into mp_physics=28 from a non-aerosol parent requires a declared "
             "aerosol source; same-scheme nesting carries the parent state. "
@@ -3889,6 +3973,13 @@ def _consumer_rows(registry: dict) -> None:
                 "forbidden_setting_values", {})["mp28_aerosol_source"] = [
                     value for value in MP28_AEROSOL_SOURCES
                     if value != MP28_AEROSOL_SOURCE_DEFAULT_VALUE]
+            option["constraints"]["forbidden_setting_values"]["use_rap_aero_icbc"] = [True]
+            previous_forbidden = copy.deepcopy(option["constraints"]["forbidden_setting_values"])
+            previous_forbidden["mp28_aerosol_source"] = [
+                value for value in registry["parameters"]["mp28_aerosol_source"]["compatible_previous_enums"][0]
+                if value != MP28_AEROSOL_SOURCE_DEFAULT_VALUE]
+            previous_forbidden.pop("use_rap_aero_icbc", None)
+            option["compatible_previous_forbidden_settings"] = [previous_forbidden]
         if mp == 28:
             # THE ONE SPELLING of the dataset precondition, read by both
             # authorities: the run door refuses an externally forced mp=28
@@ -4519,6 +4610,13 @@ def _current_verification_scope(registry: dict) -> None:
 def build(registry: dict) -> dict:
     """Apply this pass's tables to ``registry`` in place and return it."""
     _rename_template_ids(registry)
+    # Registered source tables determine which prepared inputs each runner
+    # accepts. Carrying yesterday's registry source list omits a newly
+    # mapped source even after its decoder and forecast route are usable.
+    from gpuwm.prepared_single_domain_forecast import SUPPORTED_SOURCES as single_sources
+    from gpuwm.prepared_domain_tree_forecast import SUPPORTED_SOURCES as tree_sources
+    registry["runner_routes"]["tools.prepared_single_domain_forecast"]["source_ids"] = sorted(single_sources)
+    registry["runner_routes"]["tools.prepared_domain_tree_forecast"]["source_ids"] = sorted(tree_sources)
     _urban_component(registry)
     _surface_coupling_warnings(registry)
     _thompson_aerosol_mp28(registry)
@@ -4616,7 +4714,11 @@ def build(registry: dict) -> dict:
             "publish; the Eta layer publishes MYJ's own exchange set "
             "instead and the off option writes none of them (WRF v4.6.1 "
             "admits the same three at phys/module_physics_init.F:3837-3839)")}
-    # MYNN's closure knobs are pinned to the ported configuration; the
+    # These implemented choices no longer have a single-value constraint.
+    for name in ("bl_mynn_mixlength", "bl_mynn_mixscalars"):
+        pbl_options["mynn"]["constraints"]["required_settings"].pop(name, None)
+    pbl_options["mynn"]["parameters"]["scalar_pblmix"] = 0
+    # MYNN's remaining closure knobs are pinned to the ported configuration; the
     # required_settings rows say so machine-readably and this says why.
     pbl_options["mynn"]["constraints"]["required_settings_reasons"] = {
         name: (
@@ -5774,10 +5876,13 @@ def build(registry: dict) -> dict:
             "phys/module_bl_mynn.F:1104-1106 passes real sqs to "
             "mym_condensation when FLAG_QS is true; mynn_tendencies still "
             "receives kzero at :1240-1242, matching WRF"),
-        "withheld_aerosol_number_note": (
-            "At the default bl_mynn_mixscalars=0, MYNN does not mix "
-            "nc/nwfa/nifa. Setting bl_mynn_mixscalars=1 enables WRF's "
-            "qn solves with bl_pbl_physics=5, mp_physics=28 and bldt=0."),
+        "aerosol_number_mixing_note": (
+            "MYNN scalar plume transport is selected by bl_mynn_mixscalars=1. "
+            "WRF post-PBL local diffusion is selected by scalar_pblmix=1 "
+            "(phys/module_pbl_driver.F:2251,2641-2844). Both mix the "
+            "mp_physics=28 nc/ni/nwfa/nifa family, default to 0 and require "
+            "bldt=0. WRF's check_a_mundo disables scalar_pblmix when "
+            "bl_mynn_mixscalars=1, so that joint request is refused."),
     }
     mynn["extensions"]["radiation_cloud_merge"] = {
         "activation": "bl_pbl_physics=5 and icloud_bl>0",

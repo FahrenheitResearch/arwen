@@ -555,15 +555,19 @@ def corridor_cost(child_dc, parent_run, frame_kwargs=None,
     geometry = corridor_geometry(child_dc, parent_run,
                                  **(frame_kwargs or {}), window=window)
     cells = int(geometry["corridor_nx"]) * int(geometry["corridor_ny"])
+    lake_depth = (int(getattr(child_dc.run, "sf_lake_physics", 0)) == 1
+                  and int(getattr(child_dc.run, "use_lakedepth", 1)) == 1)
+    planes = CORRIDOR_PLANES_PER_CELL + int(lake_depth)
+    bytes_per_cell = planes * int(np.dtype(np.float64).itemsize)
     return {
         "grid_id": int(geometry["grid_id"]),
         "parent_id": int(geometry["parent_id"]),
         "corridor_nx": int(geometry["corridor_nx"]),
         "corridor_ny": int(geometry["corridor_ny"]),
         "cells": cells,
-        "planes_per_cell": CORRIDOR_PLANES_PER_CELL,
-        "bytes_per_cell": CORRIDOR_BYTES_PER_CELL,
-        "host_bytes": cells * CORRIDOR_BYTES_PER_CELL,
+        "planes_per_cell": planes,
+        "bytes_per_cell": bytes_per_cell,
+        "host_bytes": cells * bytes_per_cell,
     }
 
 
@@ -702,12 +706,14 @@ def _validate_corridor_fields(fields: Mapping[str, np.ndarray],
     ny = int(geometry["corridor_ny"])
     nx = int(geometry["corridor_nx"])
     names = set(fields)
-    if names != set(NATIVE_STATIC_REQUIRED):
+    optional = {"LAKE_DEPTH", "LAKEMASK"}
+    if (not set(NATIVE_STATIC_REQUIRED) <= names
+            or names - set(NATIVE_STATIC_REQUIRED) - optional):
         raise CorridorRefusal(
             f"statics corridor field inventory differs from the native "
             f"static contract: missing "
             f"{sorted(set(NATIVE_STATIC_REQUIRED) - names)}, unexpected "
-            f"{sorted(names - set(NATIVE_STATIC_REQUIRED))}")
+            f"{sorted(names - set(NATIVE_STATIC_REQUIRED) - optional)}")
     for name, value in fields.items():
         value = np.asarray(value)
         if name in _NATIVE_STATIC_CATEGORY_COUNT:
@@ -765,6 +771,8 @@ def build_child_statics_corridor(*, child_dc, parent_run, reference_grid,
     grid = corridor_grid(reference_grid, geometry)
     selection = geog_selection_from_catalog(
         static_catalog, int(child_dc.grid_id))
+    from .lake import with_lake_statics
+    selection = with_lake_statics(selection, child_dc.run)
     coverage: dict[str, object] = {}
     fields = build_static(grid, selection.root, selection=selection,
                           source_coverage_report=coverage)

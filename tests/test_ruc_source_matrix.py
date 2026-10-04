@@ -58,15 +58,18 @@ EXPECTED_POLICY = {
     "aifs": "layer_midpoint_samples",
     "aigefs": "layer_midpoint_samples",
     "aigfs": "layer_midpoint_samples",
+    "ecmwf-ens": "layer_midpoint_samples",
     "ecmwf-open-data": "layer_midpoint_samples",
     "era5-l137": "layer_midpoint_samples",
     "gdas": "layer_midpoint_samples",
     "gefs": "layer_midpoint_samples",
+    "hrrr-native": "node_point_samples",
     "hrrr-prs": "node_point_samples",
     "icon-d2": "node_point_samples",
     "icon-eu": "node_point_samples",
     "icon-global": "node_point_samples",
     "rap": "node_point_samples",
+    "rap-native": "node_point_samples",
     "rrfs": "node_point_samples",
 }
 

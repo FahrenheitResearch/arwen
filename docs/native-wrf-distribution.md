@@ -41,7 +41,7 @@ remain external case inputs and are SHA-bound by each adapter.
 - Windows x86-64 with PowerShell 5.1 or newer: CPU-only public CLI and pure
   Python/Rust routes. The HRRR shell pipeline is not supported on Windows.
 - Python 3.11 or newer.
-- NumPy 1.26 or newer and netCDF4 1.6 or newer.
+- NumPy 1.26 or newer, netCDF4 1.6 or newer and threadpoolctl 3.1 or newer.
 - On Linux, an NVIDIA GPU with a CUDA 12.x runtime, compatible driver, and
   `cupy-cuda12x` 13.0 or newer for the CUDA backend. ERA5, GFS, and mapped
   native setup/export can instead use the bundled Rust/NumPy CPU backend

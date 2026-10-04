@@ -8,9 +8,59 @@ from types import SimpleNamespace
 from gpuwm.core.devices import DEVICES_OFF, DevicesRefused, refuse_unrouted_devices
 
 GIB = 2**30
-# Per-rank performance storage. Requests above this cap use the direct,
-# producer-fenced output copy, preserving capacity without changing fields.
+# Optional per-rank history storage. A rank whose complete conservative
+# carrier census exceeds the cap always uses the producer-fenced direct
+# copy, including when one requested field subset would fit by itself.
 FRAME_SNAPSHOT_LIMIT_BYTES = 4 * GIB
+
+
+def _span_bytes(spans):
+    total = end = 0
+    for left, right in sorted(spans):
+        total += max(0, right - max(left, end))
+        end = max(end, right)
+    return total
+
+
+def priced_host_live_bytes(inventory, geography, boundaries=None):
+    """Unique already allocated host bytes of the supplied prepared bundle.
+
+    Store/geography arrays and materialized forcing intervals are counted;
+    no lazy interval is loaded to earn admission credit. File-backed arrays
+    are excluded because their reclaimable pages can already be included in
+    the OS available-memory reading. Aliases across both terms count once.
+    The caller caps each credit at the matching estimate term.
+    """
+    import numpy as np
+
+    def spans(arrays):
+        result = []
+        for array in arrays:
+            if not isinstance(array, np.ndarray) or not array.flags.c_contiguous:
+                continue
+            owner = array
+            while owner is not None and not isinstance(owner, np.memmap):
+                owner = getattr(owner, "base", None)
+            if isinstance(owner, np.memmap):
+                continue
+            start = int(array.__array_interface__["data"][0])
+            if array.nbytes:
+                result.append((start, start + int(array.nbytes)))
+        return result
+
+    store = spans(list((inventory or {}).values()) + list((geography or {}).values()))
+    fields = []
+    intervals = getattr(boundaries, "intervals", ())
+    if isinstance(intervals, (tuple, list)):
+        for interval in intervals:
+            for boundary in interval.fields.values():
+                for side in (boundary.west, boundary.east,
+                             boundary.south, boundary.north):
+                    fields.extend(array for _, array in side.array_items())
+    boundary = spans(fields)
+    store_bytes = _span_bytes(store)
+    return {"host_store_bytes": store_bytes,
+            "host_boundary_bytes": _span_bytes(store + boundary) - store_bytes}
 
 
 def inventory_shapes(cfg):
@@ -25,8 +75,12 @@ def inventory_shapes(cfg):
     shapes = {"state/" + key: shape
               for key, shape in pf.state_array_shapes(cfg).items()
               if key in STATE_SERIALIZED_ATTRS}
+    # Terrain drag is read-only geography, never a carrier exchanged at
+    # every step or retained in an output snapshot.  Price it in geography
+    # below, and in each rank's resident physics allocation.
     shapes.update({"driver/" + key: shape
-                   for key, shape in pf.physics_array_shapes(cfg).items()})
+                   for key, shape in pf.physics_array_shapes(cfg).items()
+                   if not key.startswith("terrain_drag/")})
     shapes.update({"scratch/" + key: shape
                    for key, shape in pf.scratch_slot_registry(cfg).items()
                    if key in SERIALIZED_SCRATCH_SLOTS or key == "refl_10cm"})
@@ -43,17 +97,73 @@ def _arrays(cfg):
             for name, shape in inventory_shapes(cfg).items()}
 
 
+def priced_template_live_bytes(template, cfg, *, device):
+    """A lower bound on the template's already allocated, priced bytes.
+
+    Only names in the resident inventories are eligible. Count overlapping
+    contiguous device spans once, so aliases cannot buy room twice. Kernel
+    tables, context memory, unpriced objects and other live allocations earn
+    no credit. The admission also caps this at its template price.
+    """
+    from gpuwm.core import preflight as pf
+
+    arrays = [getattr(template, name, None) for name in pf.state_array_shapes(cfg)]
+    scratch = getattr(template, "_scratch", {})
+    arrays.extend(scratch.get(name) for name in pf.scratch_slot_registry(cfg)
+                  if not name.startswith("lbc_"))
+    driver = getattr(template, "physics", None)
+    for path in pf.physics_array_shapes(cfg):
+        value = driver
+        for name in path.split("/"):
+            value = value.get(name) if isinstance(value, dict) else getattr(value, name, None)
+            if value is None:
+                break
+        arrays.append(value)
+    spans = []
+    for array in arrays:
+        if (getattr(getattr(array, "device", None), "id", None) != device
+                or not getattr(getattr(array, "flags", None), "c_contiguous", False)):
+            continue
+        start = getattr(getattr(array, "data", None), "ptr", None)
+        size = getattr(array, "nbytes", 0)
+        if start is not None and size > 0:
+            spans.append((int(start), int(start) + int(size)))
+    return _span_bytes(spans)
+
+
+def frame_snapshot_budget(cfg) -> int:
+    """Optional history-copy capacity shared by admission and the runtime.
+
+    A small requested frame does not prove that later frames will remain
+    small. Eligibility is fixed from the complete conservative carrier
+    inventory, so a large rank never builds a growing partial snapshot
+    cache. Its direct-copy fallback fences the next producer until DMA
+    completes. Eligible ranks keep the existing overlap capacity.
+    """
+    full_inventory_bytes = sum(prod(shape) * 4
+                               for shape in inventory_shapes(cfg).values())
+    return (FRAME_SNAPSHOT_LIMIT_BYTES
+            if full_inventory_bytes <= FRAME_SNAPSHOT_LIMIT_BYTES else 0)
+
+
 def estimate_devices(exp, *, options=None, max_map_factor=1.0,
                      forcing_intervals=None, forcing_interval_seconds=3600.0,
                      vram_gib=None, profile=None, inventory=None,
-                     geography=None, source=None, profiles=None):
+                     geography=None, source=None, profiles=None, budgets=None,
+                     streaming_boundaries=False):
     """Price rank resident envelopes, packed bands, template, and pinned host.
 
     The lazy rank APIs own halo and decomposition validation. No device is
-    opened here. Repeated ids sum all resident ranks on that card.
+    opened here. Repeated ids sum all resident ranks on that card. Optional
+    frame snapshots use only the space left by the required allocations in
+    ``budgets``; the returned rank limits also bound their runtime buffers.
+    A preparation head uses one reusable device interval while retaining
+    the complete host series as its segments arrive.
     """
     from gpuwm.core import preflight as pf
     from gpuwm.core.streaming import ranked_halo, ranked_specs
+    from gpuwm.core.mynn_pbl_scratch import (
+        mynn_pricing_rank_chunk, mynn_rank_chunk_candidates)
     from gpuwm.ingest.prepared_store import default_slab_rows
     from tilestream.harness import tile_config
     from tilestream.multigpu import seam_plan, _bands
@@ -84,20 +194,49 @@ def estimate_devices(exp, *, options=None, max_map_factor=1.0,
     cards = {dev: {"card": dev, "ranks": [], "resident_bytes": 0,
                    "seam_bytes": 0, "template_bytes": 0,
                    "frame_snapshot_bytes": 0} for dev in ids}
-    def resident(run, dev=None):
+    def resident(run, dev=None, *, tile_buffer=False, loader=False,
+                 mynn_chunk=None):
         local = replace(exp, devices=DEVICES_OFF,
                         domains=(replace(exp.root, run=run),))
         from gpuwm.boundary_fields import source_boundary_species
-        return pf.estimate_experiment(
-            local, forcing_intervals=forcing_intervals,
-            forcing_interval_seconds=forcing_interval_seconds,
-            vram_gib=vram_gib, profile=(profile if profiles is None else profiles.get(dev)),
-            boundary_species=source_boundary_species(source))
+        with mynn_pricing_rank_chunk(mynn_chunk):
+            estimate = pf.estimate_experiment(
+                local, forcing_intervals=(1 if (tile_buffer or streaming_boundaries)
+                                   else forcing_intervals),
+                forcing_interval_seconds=forcing_interval_seconds,
+                vram_gib=vram_gib, profile=(profile if profiles is None else profiles.get(dev)),
+                boundary_species=source_boundary_species(source),
+                tile_buffer=tile_buffer)
+        if loader:
+            # The store loader never attaches device lateral boundaries:
+            # its slabs only restore and initialize the cached analysis.
+            # The host series is attached to the ranks, not this template.
+            # Keep the other scratch as an upper bound for initialization.
+            estimate = replace(estimate, domains=tuple(
+                replace(domain, items=tuple(item for item in domain.items
+                                            if item.category != "lbc"))
+                for domain in estimate.domains))
+        return estimate
     arrays = []
     ranks = []
+    rank_runs = []
+    host_physics = 0
+    mynn_candidates = (mynn_rank_chunk_candidates(int(cfg.nz))
+                       if int(cfg.bl_pbl_physics) == 5 else ())
+    initial_mynn_chunk = mynn_candidates[0] if mynn_candidates else None
     for rank, (dev, spec) in enumerate(zip(ids, specs)):
         run = tile_config(cfg, spec.cnx, spec.cny)
-        estimate = resident(run, dev)
+        rank_runs.append(run)
+        if int(run.sf_surface_physics) == 3:
+            from gpuwm.core.ruc_memory import ruc_pinned_host_bytes
+            host_physics += ruc_pinned_host_bytes(
+                int(run.nx) * int(run.ny), pf.soil_layer_count(run))
+        # Start with the minimum rank workspace, or an exact operator
+        # request. A wider resident-rank width is fitted below against all
+        # required allocations on its physical card. Loader slabs retain
+        # their existing resident policy.
+        estimate = resident(run, dev, tile_buffer=True,
+                            mynn_chunk=initial_mynn_chunk)
         cards[dev]["ranks"].append(rank)
         cards[dev]["resident_bytes"] += estimate.peak_envelope_bytes
         if inventory is None:
@@ -114,16 +253,20 @@ def estimate_devices(exp, *, options=None, max_map_factor=1.0,
         ranks.append({"rank": rank, "card": dev, "compute_shape": [spec.cny, spec.cnx],
                       "interior_shape": [spec.interior_ny, spec.interior_nx],
                       "resident_bytes": estimate.peak_envelope_bytes})
-        # A frame keeps output-time device copies alive while the slabs
-        # step and their copies download to pinned host memory. Bound the
-        # lazily allocated member buffers by the entire carrier inventory,
-        # including halos and staggered faces, on each rank. Repeated ids
-        # own every rank's buffers on the same physical card.
-        snapshot = min(FRAME_SNAPSHOT_LIMIT_BYTES,
+        if initial_mynn_chunk is not None:
+            ranks[-1]["mynn_column_chunk"] = min(
+                initial_mynn_chunk, spec.cnx * spec.cny)
+        # Runtime eligibility uses this same full-rank census, including
+        # halos and staggered faces. Once eligible, the prepared inventory
+        # bounds every member a frame can ask for. An ineligible rank uses
+        # direct copies for all subsets and allocates no snapshots.
+        snapshot_budget = frame_snapshot_budget(run)
+        snapshot = min(snapshot_budget,
                        sum(prod(array.shape) * array.dtype.itemsize
                            for array in arrays[-1].values()))
         cards[dev]["frame_snapshot_bytes"] += snapshot
         ranks[-1]["frame_snapshot_bytes"] = snapshot
+        ranks[-1]["frame_snapshot_budget_bytes"] = snapshot_budget
     staging = 0
     for seam in seam_plan(specs, halo, nx=cfg.nx, ny=cfg.ny):
         _, size = _bands(seam, arrays[seam.src_gpu], arrays[seam.dst_gpu], cfg.nz,
@@ -132,15 +275,60 @@ def estimate_devices(exp, *, options=None, max_map_factor=1.0,
         # A channel owns one source send buffer and one destination receive buffer.
         cards[ids[seam.src_gpu]]["seam_bytes"] += size
         cards[ids[seam.dst_gpu]]["seam_bytes"] += size
-        if options.transport == "host" and ids[seam.src_gpu] != ids[seam.dst_gpu]:
+        # Explicit host transport allocates one pinned band per channel.
+        # CUDA's staged peer-copy path owns its staging internally; reserve
+        # the same full-band upper bound for it, including auto before peer
+        # topology is known. A peer-only request or a same-card seam needs
+        # no host staging. Omitting auto hid staged transfers from host RAM
+        # admission on cards without peer access.
+        if (options.transport in ("host", "staged", "auto")
+                and ids[seam.src_gpu] != ids[seam.dst_gpu]):
             staging += size
     rows = default_slab_rows(cfg.nx, cfg.ny)
     last = cfg.ny % rows or rows
-    template = resident(tile_config(cfg, cfg.nx, last), ids[0])
+    template = resident(tile_config(cfg, cfg.nx, last), ids[0], loader=True)
     # The retained template keeps resident arrays, not a second step envelope.
     cards[ids[0]]["template_bytes"] = template.domains[0].resident_bytes
-    loader = resident(tile_config(cfg, cfg.nx, rows), ids[0]).peak_envelope_bytes
+    loader = resident(tile_config(cfg, cfg.nx, rows), ids[0], loader=True).peak_envelope_bytes
     for row in cards.values():
+        required = sum(row[key] for key in
+                       ("resident_bytes", "seam_bytes", "template_bytes"))
+        budget = None if budgets is None else budgets.get(row["card"])
+        if budget is not None and len(mynn_candidates) > 1:
+            # Rank threads spend the same Python dispatch and validation
+            # work for every column chunk. Wider chunks reduce those gaps,
+            # but every rank on a repeated device ID retains its workspace
+            # concurrently. Fit their combined complete envelopes, including
+            # allocator headroom, before giving optional frames any room.
+            for candidate in reversed(mynn_candidates[1:]):
+                proposed = {rank: resident(
+                    rank_runs[rank], row["card"], tile_buffer=True,
+                    mynn_chunk=candidate).peak_envelope_bytes
+                    for rank in row["ranks"]}
+                candidate_resident = sum(proposed.values())
+                candidate_required = required - row["resident_bytes"] + candidate_resident
+                if max(candidate_required,
+                       loader if row["card"] == ids[0] else 0) > int(budget):
+                    continue
+                row["resident_bytes"] = candidate_resident
+                required = candidate_required
+                for rank, size in proposed.items():
+                    ranks[rank]["resident_bytes"] = size
+                    ranks[rank]["mynn_column_chunk"] = min(
+                        candidate, rank_runs[rank].nx * rank_runs[rank].ny)
+                break
+        if budget is not None:
+            # A large optional snapshot must not refuse a forecast whose
+            # state fits. The existing direct copy fences its producer, so
+            # reducing this allowance changes overlap, never frame bytes.
+            remaining = max(0, int(budget) - required)
+            for offset, rank in enumerate(row["ranks"]):
+                fair_share = remaining // (len(row["ranks"]) - offset)
+                limit = min(ranks[rank]["frame_snapshot_bytes"], fair_share)
+                ranks[rank]["frame_snapshot_bytes"] = limit
+                remaining -= limit
+            row["frame_snapshot_bytes"] = sum(
+                ranks[rank]["frame_snapshot_bytes"] for rank in row["ranks"])
         row["total_bytes"] = sum(row[key] for key in
                                  ("resident_bytes", "seam_bytes", "template_bytes",
                                   "frame_snapshot_bytes"))
@@ -163,6 +351,10 @@ def estimate_devices(exp, *, options=None, max_map_factor=1.0,
         from gpuwm.state_serialization_contract import STATE_SETUP_ARRAYS, STATE_DERIVED_SETUP_ARRAYS
         setup = {key: shape for key, shape in pf.state_array_shapes(cfg).items()
                  if key in STATE_SETUP_ARRAYS + STATE_DERIVED_SETUP_ARRAYS and len(shape) >= 2}
+        from gpuwm.core.physics_inventory import terrain_drag_array_shapes
+        # These arrays are resident physics inputs on each card and also
+        # live in the full-domain host geography gathered by every rank.
+        setup.update(terrain_drag_array_shapes(cfg))
         geo = domain_bytes(manifest(setup), cfg.nz, cfg.ny, cfg.nx)
         # The geography owners are driver._SCHEME_GEOGRAPHY, including
         # independently selected radiation components. Scheme coordinates
@@ -186,8 +378,13 @@ def estimate_devices(exp, *, options=None, max_map_factor=1.0,
     return {"options": options.to_json(), "grid": list(options.resolved_grid(cfg.nx, cfg.ny)),
             "halo": halo, "rank_shapes": ranks, "cards": list(cards.values()),
             "host_store_bytes": store + geo, "host_staging_bytes": staging,
+            "host_staging_basis": (
+                "one pinned band per explicit host channel; full-band upper "
+                "bound for CUDA staged or unresolved auto channels"),
             "host_boundary_bytes": host_boundary,
-            "host_bytes": store + geo + staging + host_boundary, "host_basis": basis}
+            "host_physics_bytes": host_physics,
+            "host_bytes": store + geo + staging + host_boundary + host_physics,
+            "host_basis": basis}
 
 
 def tree_grid_as_root(dc):
@@ -207,7 +404,8 @@ def tree_grid_as_root(dc):
 
 def estimate_devices_tree(exp, *, split_ids=None, forcing_intervals=None,
                           forcing_interval_seconds=3600.0, source=None,
-                          vram_gib=None, profile=None, profiles=None):
+                          vram_gib=None, profile=None, profiles=None,
+                          streaming_boundaries=False):
     """Price a split TREE per card: the one pricing the door and the runner share.
 
     Each split grid is priced the way a split single domain is
@@ -236,7 +434,7 @@ def estimate_devices_tree(exp, *, split_ids=None, forcing_intervals=None,
                    "frame_snapshot_bytes": 0,
                    "grids": {}} for dev in ids}
     host = {"host_store_bytes": 0, "host_staging_bytes": 0,
-            "host_boundary_bytes": 0}
+            "host_boundary_bytes": 0, "host_physics_bytes": 0}
     # Each grid is priced as a one-grid experiment, so the split it carries
     # names no domains list: a list naming another grid of the tree would
     # be refused there as a grid that experiment does not have.
@@ -251,7 +449,7 @@ def estimate_devices_tree(exp, *, split_ids=None, forcing_intervals=None,
                 local, forcing_intervals=forcing_intervals,
                 forcing_interval_seconds=forcing_interval_seconds,
                 source=source, vram_gib=vram_gib, profile=profile,
-                profiles=profiles)
+                profiles=profiles, streaming_boundaries=streaming_boundaries)
             for row in estimate["cards"]:
                 target = cards[row["card"]]
                 for key in ("resident_bytes", "seam_bytes", "template_bytes",
@@ -269,7 +467,7 @@ def estimate_devices_tree(exp, *, split_ids=None, forcing_intervals=None,
                           "host_bytes": int(estimate["host_bytes"])})
         else:
             resident = pf.estimate_experiment(
-                local, forcing_intervals=forcing_intervals,
+                local, forcing_intervals=(1 if streaming_boundaries else forcing_intervals),
                 forcing_interval_seconds=forcing_interval_seconds,
                 vram_gib=vram_gib,
                 profile=(profile if profiles is None else profiles.get(first)),
@@ -278,6 +476,10 @@ def estimate_devices_tree(exp, *, split_ids=None, forcing_intervals=None,
             cards[first]["resident_bytes"] += size
             cards[first]["total_bytes"] += size
             cards[first]["grids"][gid] = cards[first]["grids"].get(gid, 0) + size
+            if int(dc.run.sf_surface_physics) == 3:
+                from gpuwm.core.ruc_memory import ruc_pinned_host_bytes
+                host["host_physics_bytes"] += ruc_pinned_host_bytes(
+                    int(dc.run.nx) * int(dc.run.ny), pf.soil_layer_count(dc.run))
             grids.append({"grid_id": gid, "road": "resident", "card": first,
                           "total_bytes": size})
     return {"options": options.to_json(), "split_grid_ids": list(split),
@@ -316,7 +518,8 @@ def devices_gate(estimate, *, budgets=None, host_budget=None):
     lines.append(f"host: {'REFUSED' if host_over else 'PRICED'}: pinned store "
                  f"{estimate['host_store_bytes']/GIB:.2f} GiB + staging "
                  f"{estimate['host_staging_bytes']/GIB:.2f} GiB + boundary "
-                 f"{estimate['host_boundary_bytes']/GIB:.2f} GiB")
+                 f"{estimate['host_boundary_bytes']/GIB:.2f} GiB + physics mirrors "
+                 f"{estimate.get('host_physics_bytes', 0)/GIB:.2f} GiB")
     return {"verdict": "\n".join(lines), "refuse": bool(refused), "warn": False,
             "devices": estimate}
 

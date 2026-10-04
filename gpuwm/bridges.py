@@ -1694,6 +1694,31 @@ SOURCE_DECODERS = {
     "era5": "grib1_bridge",
 }
 
+#: Decoder executable -> the optional MODES it implements beyond its base
+#: contract.  A mode is a command a newer build has and an older one does
+#: not, so a decoder that speaks this release's base contract
+#: (:data:`BRIDGE_ABI_MARKERS`) can still be too old for the mode a caller
+#: needs.  Each row is the capability, declared: ``marker`` is the literal
+#: the mode compiles into the binary (checked statically, exactly like the
+#: base marker), ``command`` is what the decoder calls the mode,
+#: ``required_by`` is the option that needs it and ``label`` is how a
+#: refusal names it.  Keyed by executable, never by source, so a decoder
+#: that gains a mode is one row here and no branch in
+#: :func:`resolve_source_decoder`.
+DECODER_MODE_CONTRACTS = {
+    "hrrr_grib2_bridge": {
+        # Append-only lead admission: the decoder takes each lead as it
+        # posts instead of a complete window.
+        "as_posted": {
+            "marker": (b"--series-workers-posted WORKERS SERIES_TSV "
+                       b"OUTPUT_DIR SIGNAL_DIR ADMIT_DIR"),
+            "command": "--series-workers-posted",
+            "required_by": "--as-posted",
+            "label": "posted-mode",
+        },
+    },
+}
+
 
 class DecoderContractError(RuntimeError):
     """A decoder is installed but does not speak this release's contract.
@@ -1866,7 +1891,7 @@ def cargo_missing_refusal(artifact: str, crate_relative: str) -> str:
         f"  {cargo_activation_command()}")
 
 
-def resolve_source_decoder(source: str) -> Path:
+def resolve_source_decoder(source: str, *, mode: str | None = None) -> Path:
     """THE decoder ``source``'s preparation will launch, or a refusal.
 
     One function, called by the preparation wrapper AND by ``gpuwm
@@ -1899,6 +1924,12 @@ def resolve_source_decoder(source: str) -> Path:
     sources.  The gate lives INSIDE the resolver now -- one question,
     one answer, no second call for a caller to forget.
 
+    ``mode`` additionally requires a capability the decoder declares in
+    :data:`DECODER_MODE_CONTRACTS` (``"as_posted"`` is append-only lead
+    admission). An older decoder remains valid for its complete window
+    mode but cannot be returned for a command it does not implement, and
+    a decoder that declares no such mode is refused by name.
+
     Nothing here runs cargo, so it is safe to call from a report.
     """
 
@@ -1907,9 +1938,25 @@ def resolve_source_decoder(source: str) -> Path:
             f"no decoder is declared for source {source!r}; known: "
             f"{sorted(SOURCE_DECODERS)}")
     name = SOURCE_DECODERS[source]
+    declared = (None if mode is None
+                else DECODER_MODE_CONTRACTS.get(name, {}).get(mode))
+    if mode is not None and declared is None:
+        raise ValueError(f"no decoder mode contract is declared for {source!r} {mode!r}")
     found = find_bridge(name)
     if found is not None:
         ok, evidence = bridge_abi_matches(name, found)
+        if ok and declared is not None:
+            try:
+                ok = declared["marker"] in Path(found).read_bytes()
+            except OSError as error:
+                ok, evidence = False, (
+                    f"cannot read its {declared['label']} contract: {error}")
+            else:
+                if not ok:
+                    evidence = (
+                        f"does not implement {declared['command']}, which "
+                        f"{declared['required_by']} requires; "
+                        "rebuild it from a matching checkout")
         if ok:
             return found
         raise DecoderContractError(
@@ -2172,7 +2219,8 @@ def decode_failure_message(subject: str, stderr: str) -> str:
 
 __all__ = [
     "decode_failure_message",
-    "SOURCE_DECODERS", "resolve_source_decoder", "DecoderContractError",
+    "SOURCE_DECODERS", "DECODER_MODE_CONTRACTS", "resolve_source_decoder",
+    "DecoderContractError",
     "launchable", "native_executable_format", "quiet_loader_errors",
     "BRIDGE_ABI_MARKERS", "bridge_abi_matches",
     "CheckoutBuildStatus", "StaleCheckoutBuildError", "checkout_build_status",

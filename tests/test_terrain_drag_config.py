@@ -43,7 +43,10 @@ def test_the_fields_are_appended_last_at_wrfs_defaults():
     # The drag pair was the tail until lane/sol-hrrr-zadvect (37a99fcd4,
     # merged at dd5ded73f) appended zadvect_implicit_variant after it,
     # default "wrf_471"; the pair keeps its positional place and WRF's 0.
-    assert names[-3:] == ["topo_wind", "gwd_opt", "zadvect_implicit_variant"]
+    # 2.8.5 appends further fields after zadvect_implicit_variant
+    # (tests/test_config_freeze.py pins that tail).
+    at = names.index("topo_wind")
+    assert names[at:at + 3] == ["topo_wind", "gwd_opt", "zadvect_implicit_variant"]
     assert RunConfig.__dataclass_fields__["topo_wind"].default == 0
     assert RunConfig.__dataclass_fields__["gwd_opt"].default == 0
     assert TOPO_WIND_VALUES == (0, 1, 2) and GWD_OPT_VALUES == (0, 1, 3)

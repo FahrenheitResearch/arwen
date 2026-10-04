@@ -149,6 +149,8 @@ class GeogSelection:
     #: -- every domain without topo_wind or gwd_opt -- builds exactly the
     #: field set it always built.
     orographic: tuple[str, ...] = ()
+    #: The optional WPS depth dataset selected by the lake physics settings.
+    lake_depth: bool = False
 
     def with_orographic(self, names) -> "GeogSelection":
         """This selection, also building the named orographic fields."""
@@ -1532,6 +1534,11 @@ def build_static(
                 landuse_path=selection.path("landuse"),
                 tokens=selection.resolution_tokens, halo=halo,
                 coverage_report=source_coverage_report))
+        if selection is not None and selection.lake_depth:
+            from .lake import build_lake_fields
+            fields.update(build_lake_fields(
+                grid, geog_root, landuse_path=selection.path("landuse"),
+                halo=halo, coverage_report=source_coverage_report))
     if timing_report is not None:
         timing_report["seconds"] = time.perf_counter() - started
         timing_report["cells"] = int(grid.e_we) * int(grid.e_sn)
@@ -1817,7 +1824,7 @@ def geog_selection_from_catalog(catalog, domain_id: int) -> GeogSelection:
         domain_id=domain_id)
 
 
-def build_static_for_domain(grid, catalog, domain_id: int, *,
+def build_static_for_domain(grid, catalog, domain_id: int, *, cfg=None,
                             timing_report: MutableMapping[str, object]
                             | None = None) -> dict:
     """Build one domain's statics from the preflight catalog inventory.
@@ -1838,6 +1845,8 @@ def build_static_for_domain(grid, catalog, domain_id: int, *,
     if not isinstance(grid, ProjectedGrid):
         raise TypeError("grid must be a ProjectedGrid")
     selection = geog_selection_from_catalog(catalog, domain_id)
+    from .lake import with_lake_statics
+    selection = with_lake_statics(selection, cfg)
     geog_root = selection.root
     # known_x/known_y are part of the projected geometry: two placements of
     # a relocating nest share every other parameter (translated grids keep

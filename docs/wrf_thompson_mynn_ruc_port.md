@@ -135,9 +135,11 @@ off is rejected on this adapter because its current implementation is always
 coupled.
 
 `cu_physics=0`, `bldt=0`, `isfflx=1`, `sf_urban_physics=0`,
-`sf_surface_mosaic=0`, `mosaic_lu=0`, and `mosaic_soil=0` are direct supported
-settings.  Any nonzero urban/mosaic request or disabled surface flux request
-fails instead of being dropped.
+`sf_surface_mosaic=0` are direct supported settings. RUC's separate
+`mosaic_lu` and `mosaic_soil` switches accept 0 or 1, default 0, using the
+source category fractions. `sf_lake_physics=1` selects the CLM lake model;
+its WRF default remains 0. See `ruc-mosaic-and-clm-lake.md` for the input
+contracts and column oracles.
 
 ## Staged implementation and evidence (historical plan)
 

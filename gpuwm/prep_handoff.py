@@ -1,9 +1,10 @@
 """Preparation handoff consumption with byte-verified ensemble selection."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import json
+import shlex
 from pathlib import Path
 from typing import Mapping
 
@@ -30,6 +31,180 @@ def lead_generation(steps: list[int]) -> str:
     """
     digest = hashlib.sha256(json.dumps(list(steps)).encode("utf-8")).hexdigest()[:8]
     return f"f{steps[0]:03d}-f{steps[-1]:03d}-{digest}"
+
+
+def preparation_arguments_from_directory(root) -> list[str]:
+    """Consume a structured handoff or a verified older text handoff.
+
+    Some native container acquisitions predate structured prep arguments.
+    Their command text is already an artifact hashed by the fetch manifest.
+    Parse that bound argv without invoking a shell or inventing source flags.
+    """
+    root = Path(root).resolve()
+    structured = root / "prep-arguments.json"
+    if structured.is_file():
+        return preparation_arguments(json.loads(structured.read_text(encoding="utf-8")))
+    manifest = json.loads((root / "fetch-manifest.json").read_text(encoding="utf-8"))
+    rows = [row for row in manifest.get("files", []) if row.get("role") == "prep-command"]
+    if len(rows) != 1:
+        raise ValueError("acquisition lacks a unique bound preparation handoff")
+    row = rows[0]
+    path = (root / row["name"]).resolve()
+    if path.parent != root or not path.is_file() or _digest(path) != row.get("sha256"):
+        raise ValueError("text preparation handoff differs from its acquisition manifest")
+    text = path.read_text(encoding="utf-8").replace("\\\r\n", " ").replace("\\\n", " ")
+    tokens = shlex.split(text, comments=True, posix=True)
+    if tokens[:2] != ["gpuwm", "prep"]:
+        raise ValueError("text acquisition handoff is not a preparation argument vector")
+    argv = tokens[2:]
+    if argv.count("--source") != 1 or argv.index("--source")+1 >= len(argv):
+        raise ValueError("text preparation handoff lacks its source authority")
+    if argv[argv.index("--source")+1] != manifest.get("source"):
+        raise ValueError("text preparation handoff names a different acquisition source")
+    return preparation_arguments({"argv":argv})
+
+
+def _posted_handoff(root, trajectory=None):
+    """Validate posted authority without opening any planned source payload."""
+    from gpuwm.ensemble.recipes import SourceTrajectory
+    from gpuwm.fetch_routes import PREP_ARGUMENTS_SCHEMA
+    from gpuwm.forcing_member import member_contract
+    from gpuwm.ingest.boundary_stream import (
+        POSTING_DIRNAME, POSTING_SCHEDULE_NAME, read_replaced_json)
+    from gpuwm.source_posting import SCHEDULE_SCHEMA
+
+    root = Path(root).resolve()
+    structured = root / "prep-arguments.json"
+    if structured.is_file():
+        document = json.loads(structured.read_text(encoding="utf-8"))
+        if document.get("schema") != PREP_ARGUMENTS_SCHEMA:
+            raise ValueError("posted preparation handoff schema differs")
+        argv = document.get("argv")
+        if (not isinstance(argv, list) or not argv
+                or any(not isinstance(value, str) for value in argv)):
+            raise ValueError("posted preparation arguments must be nonempty strings")
+        argv = list(argv)
+        if document.get("as_posted") is not True or not document.get("posting"):
+            raise ValueError("posted preparation requires the acquisition's posted handoff")
+        posting = Path(document["posting"]).resolve()
+    else:
+        # Older deterministic native fetchers publish a hash-bound command.
+        # That reader performs no source-file access for a deterministic feed.
+        argv = preparation_arguments_from_directory(root)
+        posting = root / POSTING_DIRNAME
+        document = None
+    if posting.parent != root:
+        raise ValueError("posted handoff names another acquisition's posting directory")
+    schedule = read_replaced_json(posting / POSTING_SCHEDULE_NAME)
+    if schedule.get("schema") != SCHEDULE_SCHEMA or not schedule.get("leads"):
+        raise ValueError("posted handoff lacks the ordinary source posting schedule")
+
+    def moment(value):
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00").replace("_", "T"))
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+
+    selected = SourceTrajectory(str(schedule["source"]), moment(schedule["cycle"]), schedule.get("member"))
+    if trajectory is not None and (not isinstance(trajectory, SourceTrajectory) or trajectory != selected):
+        raise ValueError("posted handoff differs from the requested source trajectory")
+    if argv.count("--source") != 1 or argv.index("--source") + 1 == len(argv):
+        raise ValueError("posted handoff lacks its unique preparation source")
+    declared_source = argv[argv.index("--source") + 1]
+    if document is not None:
+        if (document.get("source") != selected.source or document.get("member") != selected.member
+                or moment(document.get("cycle")) != selected.cycle
+                or declared_source != document.get("prep_source", selected.source)):
+            raise ValueError("posted handoff source, cycle or member differs from its source schedule")
+    elif declared_source != selected.source:
+        raise ValueError("posted native command source differs from its source schedule")
+    if "--cycle" in argv and moment(argv[argv.index("--cycle") + 1]) != selected.cycle:
+        raise ValueError("posted native command cycle differs from its source schedule")
+    contract = member_contract(selected.source, selected.member)
+    if contract is not None:
+        adapter, grammar, member = contract
+        if document is None or document.get("member_set") != adapter.member_set:
+            raise ValueError("posted ensemble handoff lacks its registered member grammar")
+        verification = document.get("member_verification")
+        if verification is not None and verification != {"set": adapter.member_set, "member": member}:
+            raise ValueError("posted ensemble verification names another grammar or member")
+        spec = document.get("member_prep")
+        if verification is None and spec is None:
+            raise ValueError("posted ensemble handoff lacks native member verification or selection")
+        if argv.count("--input-list") != 1 or argv.index("--input-list") + 1 == len(argv):
+            raise ValueError("posted ensemble handoff needs one planned input list")
+        if spec is not None:
+            required = {"set", "member", "cycle", "steps", "inputs", "output", "input_list_after"}
+            leads = [int(row["lead"]) for row in schedule["leads"]]
+            if (not isinstance(spec, dict) or not required <= spec.keys()
+                    or spec["set"] != adapter.member_set or spec["member"] != member
+                    or moment(spec["cycle"]) != selected.cycle or spec["steps"] != leads):
+                raise ValueError("posted native member selection differs from its frozen lead/source plan")
+    elif document is not None and any(document.get(key) is not None for key in
+                                     ("member_prep", "member_verification", "member_set")):
+        raise ValueError("deterministic posted source cannot declare ensemble member selection")
+    if "--as-posted" in argv:
+        if argv.count("--as-posted") != 1 or Path(argv[argv.index("--as-posted") + 1]).resolve() != posting:
+            raise ValueError("posted preparation argv names another posting plan")
+    else:
+        argv.extend(("--as-posted", str(posting)))
+    return document, argv, schedule, selected, contract
+
+
+def posted_preparation_arguments_from_directory(root, *, trajectory=None) -> list[str]:
+    """Read the actual posted handoff without requiring future member files.
+
+    The ordinary mapped producer calls :func:`verify_posted_member_batch`
+    before decoding every ready batch. This only defers when native member
+    selection and byte verification happen; it never drops that work.
+    """
+    return _posted_handoff(root, trajectory)[1]
+
+
+def verify_posted_member_batch(root, *, leads, primary_files, trajectory=None):
+    """Run ordinary native member work on exactly the already-ready batch.
+
+    A handoff requiring a member tree still performs ordinary native staging
+    for these leads. The mapped decoder may consume the original planned
+    paths only after proving their bytes equal that selected staged tree.
+    """
+    document, argv, schedule, selected, contract = _posted_handoff(root, trajectory)
+    requested = tuple(sorted(set(int(value) for value in leads)))
+    planned = {int(row["lead"]) for row in schedule["leads"]}
+    if not requested or not set(requested) <= planned:
+        raise ValueError("posted member batch contains an unplanned lead")
+    if contract is None:
+        return None
+    adapter, grammar, member = contract
+    files = tuple(Path(path).resolve() for path in primary_files)
+    if not files or len(set(files)) != len(files):
+        raise ValueError("posted member batch needs distinct actual primary files")
+    input_list = Path(argv[argv.index("--input-list") + 1])
+    listed = {Path(line).resolve() for line in input_list.read_text(encoding="utf-8").splitlines()
+              if line.strip()}
+    if not set(files) <= listed:
+        raise ValueError("posted member batch reads a primary absent from its acquisition input plan")
+    before = {str(path): _digest(path) for path in files}
+    selected_files = None
+    if document.get("member_prep") is not None:
+        # Reuse the one native staging/verification door with only this ready
+        # lead set. Its generation name remains create-only and hash-bound.
+        narrowed = dict(document, member_prep={**document["member_prep"], "steps": list(requested)})
+        staged_argv = preparation_arguments(narrowed)
+        staged_list = Path(staged_argv[staged_argv.index("--input-list") + 1])
+        selected_files = tuple(Path(line).resolve() for line in
+                               staged_list.read_text(encoding="utf-8").splitlines() if line.strip())
+        if sorted(_digest(path) for path in selected_files) != sorted(before.values()):
+            raise ValueError("posted primary bytes differ from the ordinary selected member batch")
+    else:
+        for path in files:
+            member_prep.verify_member_file(grammar, member, path)
+    if {str(path): _digest(path) for path in files} != before:
+        raise ValueError("posted member bytes changed during native verification")
+    return {"schema": "gpuwm-posted-member-batch.v1", "source": selected.source,
+            "cycle": selected.cycle.isoformat(), "member": member,
+            "grammar_sha256": packaged_member_grammar_sha256(adapter.member_set),
+            "leads": list(requested), "files": before,
+            "selected_files": None if selected_files is None else
+                {str(path): _digest(path) for path in selected_files}}
 
 
 def preparation_arguments(handoff: Mapping[str, object]) -> list[str]:

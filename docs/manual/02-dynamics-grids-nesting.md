@@ -7,17 +7,17 @@ Runge-Kutta outer integration wrapping split-explicit acoustic steps
 (forward-backward horizontal, implicit vertical, recoupled to the large step), on a
 hybrid terrain-following dry-mass vertical coordinate, FP32 on CUDA
 [docs/gpuwm-project-history.md:65; README.md, current release scope]. The RK stage table is a
-config-visible knob (`rk_ord`, default 3) [docs/public/CONFIGURATION.md:756].
+config-visible knob (`rk_ord`, default 3) [docs/public/CONFIGURATION.md:770].
 
 Advection is WRF's stencils, hardcoded where WRF hardcodes behavior: horizontal
 momentum is the WRF flux5 (5th-order) stencil, vertical momentum and scalars the
 flux3 (3rd-order) stencil (`gpuwm/core/kernels/advection.cu`)
-[docs/public/CONFIGURATION.md:730-731]. Transported-scalar stencils are fixed
+[docs/public/CONFIGURATION.md:771-772]. Transported-scalar stencils are fixed
 5th/3rd order, so the importer accepts only the Registry default
 `h_sca_adv_order = 5`; the configurable `h_sca_adv_order` (legacy default 2) feeds
-the geopotential equation only [docs/public/CONFIGURATION.md:424]. Moist transport
+the geopotential equation only [docs/public/CONFIGURATION.md:427]. Moist transport
 runs WRF option 1 (positive-definite limiter) with `scalar_adv_opt` required to
-match [docs/public/CONFIGURATION.md:425, 762].
+match [docs/public/CONFIGURATION.md:428, 776].
 
 Lateral boundaries use specified/relaxation zones with Davies-style weighting;
 `spec_bdy_width` defaults to 5 and must be at least `spec_zone + relax_zone`
@@ -31,7 +31,7 @@ reference. This is recorded as a documentation gap, not a claim.
 
 `hybrid_opt` supports 0/1 (sigma, `B(eta)=eta`) and 2 (WRF cubic-B hybrid); anything
 else is refused by name. The importer and the domain wizard default to 2 with
-`etac = 0.2` [docs/public/CONFIGURATION.md:140-141; gpuwm/namelist_import.py:3011-3012;
+`etac = 0.2` [docs/public/CONFIGURATION.md:155-156; gpuwm/namelist_import.py:3011-3012;
 gpuwm/domain_wizard.py:867]. That `etac` is the value asked for, not always the
 value run: at `hybrid_opt = 2` the cubic orders a column only while its surface
 pressure stays above a floor set by `etac` and `p_top` (46408 Pa, about 6082 m of
@@ -103,14 +103,14 @@ as an experimental path: it runs, it is stamped as experimental in the run's own
 provenance, and one-way consumers refuse a feedback-modified parent. It feeds back
 dynamic state only, where WRF also feeds back hundreds of masked land-surface
 fields, so it is not a WRF-equivalent claim [README.md, current release scope;
-docs/public/CONFIGURATION.md:87-88]. `smooth_option` admits 0 only (the parent
+docs/public/CONFIGURATION.md:112-113]. `smooth_option` admits 0 only (the parent
 smoother acts only under two-way feedback). No receipt, gate, or measurement exists
 yet for the two-way path beyond its stamping; treat it accordingly.
 
 Execution walks parent before child on a flat integer-tick schedule so no
 floating-point clock drift can reorder coupling; child timestep derives exactly as
 `dt_child = dt_parent / parent_time_step_ratio`
-[docs/gpuwm-project-history.md:75; docs/public/CONFIGURATION.md:135].
+[docs/gpuwm-project-history.md:75; docs/public/CONFIGURATION.md:207].
 Parent-to-child initialization uses WRF's SINT interpolation family with
 stagger-aware geometry; lateral forcing is stored as value/tendency tables in WRF
 `bdy_interp1` form [docs/gpuwm-project-history.md:77]. All 128 WRF boundary tables
@@ -267,7 +267,7 @@ one line naming the ratio and the limit, and reported by the preflight checker
 `gpuwm check` (section 8.5) as what the run will do. A config that writes
 `mix_isotropic = 0` keeps it, in the danger zone
 too, and gets the advisory carrying the override state
-[docs/public/LES.md:430-442; docs/public/CONFIGURATION.md:394]. Because
+[docs/public/LES.md:430-442; docs/public/CONFIGURATION.md:409]. Because
 `mix_isotropic` is inside the restart fingerprint, a checkpoint written under the
 old anisotropic default does not bit-continue under the auto-selected isotropic
 form. A guard test fails if any shipped config arrives on the exposed path, and the

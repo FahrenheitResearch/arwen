@@ -80,7 +80,7 @@ def test_ruc_surface_cuda_rejects_shape_category_and_option_drift():
             "shdmin", "shdmax", "vegfrac", "znt_before", "lai_before"
         )),
     )
-    with pytest.raises(ValueError, match="mosaic_lu=0"):
+    with pytest.raises(ValueError, match="requires landusef"):
         ruc_surface_parameters_cuda(*inputs, mosaic_lu=1)
     with pytest.raises(ValueError, match="expected"):
         ruc_surface_parameters_cuda(inputs[0], inputs[1][:-1], *inputs[2:])
@@ -1155,6 +1155,8 @@ def test_snow_preparation_kernel_is_insensitive_to_fma_contraction():
         + "\n"
         + (kernels / "common.cuh").read_text()
         + "\n"
+        + (kernels / "glibc_flt32.cuh").read_text()
+        + "\n"
         + (kernels / "ruc.cu").read_text()
     )
     variants = {}
@@ -1854,6 +1856,8 @@ def test_ruc_snow_temperature_cuda_has_no_unpinned_contraction():
         "\n".join(f"#define {k} {float(v)!r}f" for k, v in CUDA_DEFINES.items())
         + "\n"
         + (kernels / "common.cuh").read_text()
+        + "\n"
+        + (kernels / "glibc_flt32.cuh").read_text()
         + "\n"
         + (kernels / "ruc.cu").read_text()
     )

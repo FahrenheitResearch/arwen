@@ -211,7 +211,8 @@ def lead_urls(window: Window, lead: int, endpoint: str, *,
             urls.append(rung.url(obj.key) if obj.key else obj.url)
             suffix = _idx_suffix(plan, obj.role) if with_index else None
             if suffix and obj.key:
-                urls.append(rung.url(f"{obj.key}{suffix}"))
+                index_key = getattr(obj, "index_key", None) or f"{obj.key}{suffix}"
+                urls.append(rung.url(index_key))
         return tuple(urls)
     urls = list(fetch.cycle_probe_urls(window.source, window.cycle, lead,
                                        transport=endpoint))

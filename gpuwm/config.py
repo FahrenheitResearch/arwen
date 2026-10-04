@@ -291,15 +291,10 @@ class RunConfig:
     usemonalb: bool = False
     rdlai2d: bool = False
     opt_thcnd: int = 1
-    # MYNN EDMF PBL option identity.  Each default is the value the ported
-    # solver was validated at against the byte-unmodified module_bl_mynn.F,
-    # and each is the ONLY value gpuwm honours: the driver raises rather than
-    # approximating an unported branch (gpuwm/core/mynn_pbl.py:mynn_bl_driver).
-    # They are configuration fields rather than constants because the physics
-    # registry publishes them as knobs, RunConfig is what carries a knob into
-    # a run, and restart identity binds the whole config -- so a future lane
-    # that widens one of these identities changes a default here and the
-    # change is visible in every receipt.
+    # MYNN EDMF options. Mixing length accepts 1 and 2; scalar plume mixing
+    # accepts 0 and 1. The remaining knobs retain the WRF configuration
+    # recorded by MYNN_PBL_OPTION_IDENTITY. Every choice reaches the driver
+    # by name and binds restart identity.
     bl_mynn_closure: float = 2.6
     bl_mynn_cloudpdf: int = 2
     bl_mynn_mixlength: int = 1
@@ -348,14 +343,11 @@ class RunConfig:
     soiltstep: float = 0.0
     noahmp_output: int = 1
     noahmp_acc_dt: float = 0.0
-    # RUC option identity.  WRF's own namelist names verbatim:
-    # mosaic_lu/mosaic_soil/flag_sm_adj from Registry.EM_COMMON:2535-2537 and
-    # spp_lsm from Registry/registry.stoch:241.  Each default is the only
-    # value gpuwm honours; RUC_OPTION_IDENTITY_EVIDENCE says what pins it and
-    # validate_run_config refuses anything else before a run starts.  Read by
-    # gpuwm/core/physics.py:_run_ruc, which forwards all four to
-    # gpuwm/core/ruc_runtime.py so the refusal for an unported branch comes
-    # from the seam that would have had to implement it.
+    # RUC's weighted category parameters, Registry.EM_COMMON:2535-2537.
+    # WRF defaults both switches to zero. At one the runtime consumes the
+    # full LANDUSEF / SOILCTOP category fractions, including irrigation.
+    # flag_sm_adj stays pinned by RUC_OPTION_IDENTITY_EVIDENCE.  spp_lsm
+    # (Registry/registry.stoch:241) is validated by validate_spp_config.
     mosaic_lu: int = 0
     mosaic_soil: int = 0
     flag_sm_adj: int = 0
@@ -445,19 +437,17 @@ class RunConfig:
     # declares it ``derived`` (real.exe sets it from use_aero_icbc /
     # use_rap_aero_icbc), not ``namelist``: 0 = no IC/BC aerosol, 1 = climo,
     # 2 = first guess.  ArWen exposes it as a settable field ONLY so that a
-    # request for 1 or 2 is refused by name instead of being unrepresentable
-    # and therefore silently ignored.  0 is the only implemented value:
-    # 1 and 2 both read WIF fields real.exe interpolated from metgrid, and
-    # ArWen ports the CLIMATOLOGY branch (1) and takes it BY DEFAULT on
+    # request can be checked against the selected source. ArWen ports
+    # the CLIMATOLOGY branch (1) and takes it BY DEFAULT on
     # real data through mp28_aerosol_source='auto'; this field stays at
     # WRF's Registry default because the prepared-forecast runner
     # compares the switch rows for exact equality.  2 (first guess) has
-    # no ArWen source and refuses by name.
+    # requires an explicit analyzed-aerosol selection.
     aer_init_opt: int = 0
     # wif_input_opt -- Registry/registry.new3d_wif:17, default 0.
     # 0 = do not process the Water/Ice Friendly aerosol input from metgrid;
     # 1 = use_wif_input; 2 = use_wif_input_bc, which additionally allocates
-    # the black-carbon scalar qnbca.  ArWen implements neither: there is no
+    # the black-carbon scalar qnbca.
     # 1 is ported as the climatology pair with aer_init_opt=1 and is the
     # default real-data route via mp28_aerosol_source='auto'; 2 wants the
     # nbca species, which does not exist in the port, and fails closed.
@@ -917,6 +907,32 @@ class RunConfig:
     #: Both retain the declared lower-w-boundary unit correction.
     zadvect_implicit_variant: str = "wrf_471"
 
+    # WRF's post-PBL scalar diffusion, separate from MYNN plume transport.
+    scalar_pblmix: int = 0
+
+    # Operational namelist spelling for analyzed water/ice-friendly number
+    # mixing ratios. The ingest is generic and reads canonical source rows.
+    use_rap_aero_icbc: bool = False
+
+    # WRF CLM lake model. Registry default 0 preserves prescribed water
+    # temperature; option 1 evolves lake water, sediment, ice and snow.
+    sf_lake_physics: int = 0
+    use_lakedepth: int = 1
+    lakedepth_default: float = 50.0
+    lake_min_elev: float = 5.0
+    # Appended to preserve positional construction. Enabled WRF parameter
+    # consumers require member-owned patterns before physics runs.
+    spp_conv: int = 0
+    spp_pbl: int = 0
+    #: Which WRF lineage's LSMRUC SOILPROP sets soil-water diffusivity and
+    #: hydraulic conductivity (gpuwm.core.ruc_tier.RUC_SOILPROP_FORMS).
+    #: ``wrf_45`` (WRF v4.0-4.5 and the operational RAP/HRRR branch):
+    #: normalised by the moisture above the residual.  ``wrf_461`` (WRF
+    #: v4.6.1): total moisture over porosity, 2.5 to 8 times the water
+    #: diffusivity in dry soil, measured to wet a dry top soil level from
+    #: below by +0.026 m3/m3 in one afternoon hour.  Appended last.
+    ruc_soilprop: str = "wrf_45"
+
 
 #: The Noah-MP option identity gpuwm admits, field -> the only accepted
 #: value, with what pins it.  ``validate_run_config`` refuses anything else
@@ -1010,12 +1026,10 @@ NOAHMP_OPTION_IDENTITY: dict[str, object] = {
 #: The MYNN PBL option identity gpuwm admits, field -> the only accepted
 #: value.  ``validate_run_config`` refuses anything else *before* a run
 #: starts, so the driver's own refusal is a second line rather than the
-#: first: a user who asks for bl_mynn_mixlength=2 must be told at
-#: configuration time, not three hours into a forecast.
+#: first. Options with multiple implemented values are validated below.
 MYNN_PBL_OPTION_IDENTITY: dict[str, object] = {
     "bl_mynn_closure": 2.6,
     "bl_mynn_cloudpdf": 2,
-    "bl_mynn_mixlength": 1,
     "bl_mynn_edmf": 1,
     "bl_mynn_edmf_mom": 1,
     "bl_mynn_edmf_tke": 0,
@@ -1037,29 +1051,17 @@ MYNN_PBL_OPTION_IDENTITY: dict[str, object] = {
 #: :func:`gpuwm.core.physics.PhysicsDriver._run_ruc` reads every one off the
 #: configuration by name so the registry's citation of that file is true.
 #:
-#: RUC's namelist surface is small -- three knobs in
-#: ``Registry.EM_COMMON:2535-2537`` and one in ``Registry/registry.stoch:241``
-#: -- and none of the four has a validated nonzero value.  That makes the
-#: interesting restrictions the ones with no namelist field at all, which is
-#: why :data:`gpuwm.core.ruc_runtime.RUC_RUNTIME_RESTRICTIONS` exists and is
-#: published beside this table rather than instead of it.
+#: The mosaic switches are validated separately as 0/1, and spp_lsm by
+#: validate_spp_config. The remaining control needs soil-adjustment input
+#: state the runtime does not carry. Other restrictions are in
+#: RUC_RUNTIME_RESTRICTIONS.
 RUC_OPTION_IDENTITY_EVIDENCE: dict[str, tuple[object, str]] = {
-    "mosaic_lu": (0, "dead-proved; gpuwm.core.ruc.ruc_surface_parameters is "
-                     "fail-closed on SOILVEGIN's mosaic arms, and LSMRUC's "
-                     "irrigation block (:984-1009) is gated on the same "
-                     "mosaic_lu==1, so it is unreachable wherever SOILVEGIN "
-                     "is"),
-    "mosaic_soil": (0, "dead-proved with mosaic_lu=0; the soilctop/nscat "
-                       "mosaic soil arm of SOILVEGIN is the other half of "
-                       "the same refusal"),
     "flag_sm_adj": (0, "no consumer; share/module_soil_pre.F:2063 reads this "
                        "inside init_soil_ruc, i.e. in real.exe, to adjust a "
                        "Noah-derived RUC soil state.  gpuwm has no RUC soil "
                        "ingest for it to adjust, so the knob is pinned at 0 "
                        "to keep it that way rather than accepted and "
                        "ignored"),
-    "spp_lsm": (0, "not ported; the ARW path needs pattern_spp_lsm and "
-                   "field_sf stochastic inputs plus their restart contract"),
 }
 
 #: The enforced form of the table above: field -> the only accepted value.
@@ -1067,6 +1069,25 @@ RUC_OPTION_IDENTITY: dict[str, object] = {
     name: value for name, (value, _why) in
     RUC_OPTION_IDENTITY_EVIDENCE.items()
 }
+
+
+def validate_spp_config(cfg) -> None:
+    """Require an actual physics consumer for each requested SPP pattern."""
+    consumers = {
+        "spp_conv": (("cu_physics", 3),),
+        "spp_pbl": (("bl_pbl_physics", 5), ("sf_sfclay_physics", 5)),
+        "spp_lsm": (("sf_surface_physics", 3),),
+    }
+    for name, required in consumers.items():
+        value = getattr(cfg, name)
+        if type(value) is not int or value not in (0, 1):
+            raise ValueError(f"{name} must be integer 0 or 1, got {value!r}")
+        if value:
+            for selector, expected in required:
+                if getattr(cfg, selector) != expected:
+                    raise ValueError(
+                        f"{name}=1 requires {selector}={expected}; the selected "
+                        "scheme has no consumer for this parameter pattern")
 
 
 # --------------------------------------------------------------------------
@@ -1979,14 +2000,14 @@ MP28_AEROSOL_LATERAL_FORCING_PRECONDITION = (
 #: p3-cuda-20260829).  "reference" is the CPU float32 transcription.
 P3_BACKENDS = ("cuda", "fused", "reference")
 
-#: The three values of :attr:`RunConfig.mp28_aerosol_source`.
+#: The supported values of :attr:`RunConfig.mp28_aerosol_source`.
 #:
 #: ``auto`` is the default and does the correct thing without being asked.
 #: The other two exist because a default that cannot be pinned is a default
 #: nobody can reproduce: ``climatology`` refuses rather than degrades, and
 #: ``synthetic`` is how an idealized or deliberately data-free run NAMES the
 #: fallback instead of arriving at it by accident.
-MP28_AEROSOL_SOURCES = ("auto", "climatology", "synthetic")
+MP28_AEROSOL_SOURCES = ("auto", "climatology", "synthetic", "analysis")
 
 #: The only implemented value of each mp=28 aerosol-source selector, and the
 #: named capability a user would need for anything else.  Read by
@@ -1997,11 +2018,10 @@ MP28_AEROSOL_SOURCE_OPTIONS: dict[str, tuple[int, str, str]] = {
     "aer_init_opt": (
         0,
         "Registry/Registry.EM_COMMON:2656",
-        "aer_init_opt=2 is real.exe's FIRST-GUESS branch: it consumes "
-        "water/ice-friendly aerosol arrays interpolated from a metgrid WIF "
-        "stream carried by the driving model itself "
-        "(dyn_em/module_initialize_real.F:2327-2732 3-D, :4499-4653 2-D), "
-        "which no ArWen input source provides; the CLIMATOLOGY branch "
+        "aer_init_opt=2 is real.exe's FIRST-GUESS WIF branch and requires an "
+        "explicit analyzed selection (mp28_aerosol_source='analysis' or "
+        "use_rap_aero_icbc=true), with both metgrid QNWFA/QNIFA fields on every frame; "
+        "otherwise an absent pair could silently take climatology. The CLIMATOLOGY branch "
         "(aer_init_opt=1 with wif_input_opt=1) IS ported "
         "(gpuwm/ingest/wif_climatology.py) and is what a real-data mp=28 "
         "run does by default",
@@ -2034,8 +2054,8 @@ def validate_aerosol_source_options(cfg: RunConfig) -> None:
     :attr:`RunConfig.mp28_aerosol_source`, and ``(1, 1)`` remains the
     namelist-level way to demand the same thing.
 
-    What is still refused, and why each: ``aer_init_opt=2`` (real.exe's
-    first-guess WIF stream -- no ArWen source carries one), and
+    ``aer_init_opt=2`` requires an explicit analyzed source selection so
+    missing QNWFA/QNIFA cannot silently take climatology. Still refused is
     ``wif_input_opt=2`` (allocates qnbca, a species the port does not have).
     Those are unimplemented capabilities, not defaults, so they refuse by
     name rather than being reinterpreted.  Everything asked here is a
@@ -2049,6 +2069,8 @@ def validate_aerosol_source_options(cfg: RunConfig) -> None:
     something under mp=28 ride silently into an mp=28 restart or nest.
     """
     source = str(getattr(cfg, "mp28_aerosol_source", "auto") or "auto")
+    if bool(cfg.use_rap_aero_icbc) and int(cfg.mp_physics) != 28:
+        raise ValueError("use_rap_aero_icbc requires mp_physics=28; other schemes carry no QNWFA/QNIFA to initialize or force")
     if source not in MP28_AEROSOL_SOURCES:
         raise ValueError(
             f"mp28_aerosol_source={source!r} is not one of "
@@ -2056,9 +2078,17 @@ def validate_aerosol_source_options(cfg: RunConfig) -> None:
             "monthly WIF aerosol climatology when it resolves and announces "
             "the synthetic fallback by name when it does not, 'climatology' "
             "refuses rather than falling back, and 'synthetic' selects the "
-            "fallback deliberately")
+            "fallback deliberately; 'analysis' requires both analyzed "
+            "aerosol fields on every forcing frame")
     selected = (int(cfg.aer_init_opt), int(cfg.wif_input_opt))
     path = str(getattr(cfg, "wif_climatology_path", "") or "")
+    analyzed = bool(cfg.use_rap_aero_icbc) or source == "analysis"
+    if analyzed:
+        if source not in ("auto", "analysis") or (path and not cfg.use_rap_aero_icbc):
+            raise ValueError("analyzed aerosol IC/BC cannot also select climatology or synthetic aerosol")
+        if selected[0] not in (0, 1, 2) or selected[1] not in (0, 1):
+            raise ValueError("analyzed aerosol IC/BC requires aer_init_opt in 0,1,2 and wif_input_opt in 0,1; black carbon input is not implemented")
+        return
     if selected == (1, 1):
         # The namelist spelling of mp28_aerosol_source='climatology' --
         # real.exe's use_aero_icbc=.true. state.  It no longer requires an
@@ -2114,9 +2144,14 @@ def mp28_aerosol_lateral_forcing_precondition(cfg) -> str | None:
     """
     if int(getattr(cfg, "mp_physics", 0)) != 28:
         return None
-    if not bool(getattr(cfg, "specified", False)):
+    surface_from_monthly = bool(getattr(cfg, "use_rap_aero_icbc", False))
+    if not bool(getattr(cfg, "specified", False)) and not surface_from_monthly:
         return None
     source = str(getattr(cfg, "mp28_aerosol_source", "auto") or "auto")
+    if source == "analysis" and not surface_from_monthly:
+        # Presence is checked against every decoded frame at initialization.
+        # A climatology install cannot establish that analyzed pair.
+        return None
     if source == "synthetic":
         return None
     from gpuwm.ingest.wif_climatology import (
@@ -2139,6 +2174,13 @@ def mp28_aerosol_lateral_forcing_precondition(cfg) -> str | None:
         return str(named)
     if resolution.resolved:
         return None
+    if surface_from_monthly:
+        return ("use_rap_aero_icbc keeps analyzed three-dimensional aerosol, but its "
+                "operational two-dimensional surface emission needs the monthly WIF "
+                "dataset. Stage it with gpuwm fetch-tables --wif or set "
+                "wif_climatology_path; substituting an analyzed surface number "
+                "would change the emission source. Searched: "
+                + ", ".join(resolution.candidates) + ".")
     return (MP28_AEROSOL_LATERAL_FORCING_PRECONDITION
             + " Searched: " + ", ".join(resolution.candidates) + ".")
 
@@ -2518,6 +2560,23 @@ def load_config(path: str | Path, *, accept_epssm_auto: bool = False,
     raw = tomllib.load(io.BytesIO(authority.payload))
     known_tables = (_KNOWN_TABLES + (_CHILD_STATIC_TABLE,) if child_static
                     else _KNOWN_TABLES)
+    # The loader's own refusals, before any door acts on this file.
+    # Random-physics switches have no observation-calibrated amplitude.
+    from gpuwm.ensemble_admission import (
+        OVERLAY_MARKERS, overlay_table_refusal, refuse_configured_random,
+        table_not_honoured)
+    refuse_configured_random(raw)
+    if "ensemble" in raw:
+        # No door that loads a RunConfig opens an ensemble session: the
+        # legacy case runners and the downscaled child integrate one
+        # forecast.  2.8.4 refused the table here as unknown.  An
+        # experiment config may carry it now, so here it is refused by
+        # name instead of read and dropped.
+        table = raw["ensemble"]
+        markers = OVERLAY_MARKERS & set(table) if isinstance(table, dict) else ()
+        raise ValueError(
+            overlay_table_refusal(markers) if markers else table_not_honoured(
+                f"config file {path}", "a [grid]/[dynamics]/[run] config"))
     unknown_tables = [name for name in raw if name not in known_tables]
     if unknown_tables:
         hint = ""
@@ -4297,6 +4356,33 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
                 f"identity; gpuwm implements {name}={admitted!r} only, and "
                 "no nearby branch is substituted for an unported one."
             )
+    if type(cfg.bl_mynn_mixlength) is not int or cfg.bl_mynn_mixlength not in (1, 2):
+        raise ValueError(
+            "bl_mynn_mixlength must be 1 or 2; other WRF mixing-length "
+            "branches have no implementation in the column solver.")
+    if type(cfg.scalar_pblmix) is not int or cfg.scalar_pblmix not in (0, 1):
+        raise ValueError(
+            f"scalar_pblmix={cfg.scalar_pblmix!r} must be the integer 0 "
+            "(off) or 1 (scalar diffusion): the PBL driver diffuses the "
+            "scalars only for exactly 1, so any other value would run "
+            "without the mixing its configuration names.")
+    if cfg.scalar_pblmix == 1:
+        if cfg.bl_mynn_mixscalars == 1:
+            raise ValueError(
+                "scalar_pblmix=1 and bl_mynn_mixscalars=1 cannot be combined: "
+                "WRF disables scalar_pblmix for MYNN scalar plume mixing "
+                "(module_check_a_mundo.F:2497-2511). Select one mixing path.")
+        if cfg.bl_pbl_physics != 5 or cfg.mp_physics != 28:
+            raise NotImplementedError(
+                "scalar_pblmix=1 requires bl_pbl_physics=5 and mp_physics=28; "
+                "the implemented coupling reads MYNN exch_h and the "
+                "Thompson aerosol scalar fields nc/ni/nwfa/nifa.")
+        if cfg.bldt != 0.0:
+            raise NotImplementedError(
+                "scalar_pblmix=1 requires bldt=0: scalar tendencies are "
+                "recomputed every step and are not stored in the restart "
+                "tendency manifest; a restart between PBL calls would "
+                "otherwise drop them.")
     # W4 full admission (mf-close2 Stage B): bl_mynn_mixscalars leaves the
     # single-value identity table and is admitted at {0,1}.  The 1 arm is
     # pinned to the combo the anchored oracle fixture family
@@ -4369,6 +4455,66 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             f"({evidence}), and no nearby branch is substituted for an "
             "unported one."
         )
+    if type(cfg.sf_lake_physics) is not int or cfg.sf_lake_physics not in (0, 1):
+        raise ValueError(
+            f"sf_lake_physics={cfg.sf_lake_physics!r} must be the integer 0 "
+            "(off) or 1 (the WRF CLM lake model, the one lake scheme "
+            "ported): the lake call, its static fields and its restart "
+            "storage are selected only for exactly 1, so any other value "
+            "would leave the lake columns without the lake physics its "
+            "configuration names.")
+    if cfg.sf_lake_physics and cfg.sf_surface_physics not in (2, 3, 4):
+        raise ValueError(
+            "sf_lake_physics=1 requires an active land-surface driver "
+            "(sf_surface_physics=2, 3 or 4): the lake call consumes its "
+            "surface state and accumulated precipitation")
+    if type(cfg.use_lakedepth) is not int or cfg.use_lakedepth not in (0, 1):
+        raise ValueError(
+            f"use_lakedepth={cfg.use_lakedepth!r} must be the integer 0 "
+            "(lakedepth_default everywhere) or 1 (the LAKE_DEPTH "
+            "bathymetry): WRF defines no other depth rule, and the static "
+            "preparation reads bathymetry only for exactly 1, so another "
+            "value would start the lakes at depths its configuration does "
+            "not name.")
+    if (isinstance(cfg.lakedepth_default, bool)
+            or not isinstance(cfg.lakedepth_default, (int, float))
+            or not math.isfinite(cfg.lakedepth_default)):
+        raise ValueError(
+            f"lakedepth_default={cfg.lakedepth_default!r} must be a finite "
+            "depth in metres: it is the depth of every lake column without "
+            "bathymetry, and a depth that is not a finite number makes "
+            "that column's layer thicknesses, and so its temperatures, "
+            "not finite.")
+    if (isinstance(cfg.lake_min_elev, bool)
+            or not isinstance(cfg.lake_min_elev, (int, float))
+            or not math.isfinite(cfg.lake_min_elev)):
+        raise ValueError(
+            f"lake_min_elev={cfg.lake_min_elev!r} must be a finite "
+            "elevation in metres: without a lake mask the lake columns are "
+            "the water and ice columns at or above it, and a threshold "
+            "that is not a finite number selects none of them, or every "
+            "one with the ocean among them.")
+    if cfg.ruc_soilprop not in ("wrf_45", "wrf_461"):
+        raise ValueError(
+            f"ruc_soilprop={cfg.ruc_soilprop!r} must be 'wrf_45' (the WRF "
+            "v4.0-4.5 soil-water diffusivity over the moisture above the "
+            "residual) or 'wrf_461' (the WRF v4.6.1 form over total "
+            "porosity): the two move different water between soil levels, "
+            "so an unknown name cannot select either.")
+    for name in ("mosaic_lu", "mosaic_soil"):
+        value = getattr(cfg, name)
+        if type(value) is not int or value not in (0, 1):
+            raise ValueError(
+                f"{name}={value!r} must be the integer 0 (dominant "
+                "category) or 1 (fractional mosaic): the RUC drivers mix "
+                "by category fraction for any nonzero value, so another "
+                "value would replace the dominant-category surface "
+                "parameters under a selector WRF does not define.")
+        if value and cfg.sf_surface_physics != 3:
+            raise ValueError(
+                f"{name}=1 requires sf_surface_physics=3: only RUC reads "
+                "these weighted land and soil parameters")
+    validate_spp_config(cfg)
     for name, (admitted, evidence) in RUC_OPTION_IDENTITY_EVIDENCE.items():
         value = getattr(cfg, name)
         if type(value) is not type(admitted) or value != admitted:

@@ -884,7 +884,7 @@ fn fit_text_to_width(text: &str, max_width: u32, scale: u32, bold: bool) -> (Str
 /// be chosen by catalog position, not by which thread arrived first.
 fn warn_subtitle_truncated(slot: &str, full: &str, fitted: &str) {
     crate::advisory::advise_once(
-        format!("subtitle-truncated\u{1}{slot}\u{1}{full}"),
+        crate::advisory::subtitle_truncated_key(slot, full),
         format!(
             "warning: the {slot} subtitle does not fit the plot width and was \
              drawn as {fitted:?}; the full text is {full:?} -- widen the image \

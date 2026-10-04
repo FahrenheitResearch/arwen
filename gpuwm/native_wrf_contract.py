@@ -421,6 +421,7 @@ def validate_native_static_fields(
     # a cache without them is every other domain's, unchanged.
     retained = (NATIVE_STATIC_REQUIRED
                 | (_NATIVE_STATIC_GEOMETRY & set(fields))
+                | ({"LAKE_DEPTH", "LAKEMASK"} & set(fields))
                 | (set(OROGRAPHIC_ROWS) & set(fields)))
     result = {
         name: np.asarray(fields[name], dtype=np.float64)
@@ -443,6 +444,8 @@ def validate_native_static_fields(
         "SINALPHA": (ny, nx),
         "COSALPHA": (ny, nx),
         **{name: (ny, nx) for name in OROGRAPHIC_ROWS},
+        "LAKE_DEPTH": (ny, nx),
+        "LAKEMASK": (ny, nx),
     }
     for name, value in result.items():
         expected = expected_shapes[name]

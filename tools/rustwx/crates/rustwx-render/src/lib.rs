@@ -15,6 +15,7 @@ mod panel;
 mod presentation;
 mod projected_map;
 mod projection;
+pub mod radar_tables;
 mod rasterize;
 mod render;
 mod request;
@@ -84,6 +85,10 @@ pub use weather::{
 };
 
 pub use crate::color::Rgba;
+pub use crate::radar_tables::{
+    RADAR_COLORS_ENV, RadarColorSet, RadarTable, active_radar_color_set,
+    install_radar_color_set, radar_color_set_from_env,
+};
 pub use crate::colorbar::{legend_color_at_rel, legend_tick_rel};
 use crate::colormap::Extend;
 pub use crate::colormap::{

@@ -85,6 +85,9 @@ SILENT_FLOOR_SECONDS = 120.0
 SEAL_ONLY_PROOF_KEYS = frozenset({
     "prepared_cache", "export", "initialization_artifacts",
     "timing_seconds", "proof_content_sha256", "boundary_stream",
+    # Runtime telemetry completes only after every forcing time is built.
+    # It changes no array, scientific setting or cache identity.
+    "preparation_parallelism", "forcing_stage_timings",
     # A domain tree's one-shot artifact tree and its companion WRF
     # hierarchy are written at the seal.  No single-domain proof carries
     # these keys, so a single domain's contract is unchanged.  A tree's
@@ -1123,22 +1126,28 @@ CHAINED_HEADROOM = 0.10
 _GIB = float(1 << 30)
 
 
-def producer_device_bytes(backend: str) -> int | None:
+def producer_device_bytes(backend: str, *, selection=None) -> int | None:
     """What a CUDA producer holds right after building one forcing time.
 
     The CuPy pool keeps the blocks a build used, so its total after the
-    start time is built is that build's device footprint.  ``None`` for a
-    host producer.
+    start time is built is that build's device footprint. Chunked preparation
+    also reserves its admitted peak: the next hour may require a larger
+    chunk than the initial state's measured pool. ``None`` for a host producer.
     """
 
     if str(backend) != "cuda":
         return None
+    bound = None
+    if isinstance(selection, Mapping) and selection.get("chunking"):
+        fit = selection.get("device_fit") or {}
+        if fit.get("need_bytes") is not None:
+            bound = int(fit["need_bytes"])
     try:
         import cupy
 
-        return int(cupy.get_default_memory_pool().total_bytes())
+        return max(int(cupy.get_default_memory_pool().total_bytes()), bound or 0)
     except Exception:  # noqa: BLE001 - no device, nothing to measure
-        return None
+        return bound
 
 
 def _measure_card() -> tuple[int, int] | None:
@@ -1198,10 +1207,24 @@ def chained_admission(*, experiment, backend: str,
     the producer beside it.
     """
 
+    ranked = getattr(getattr(experiment, "devices", None), "enabled", False)
+    ranked_price = None
+    if ranked:
+        from gpuwm.core.devices_memory import estimate_devices, estimate_devices_tree
+
+        price = (estimate_devices_tree if len(experiment.domains) > 1
+                 else estimate_devices)
+        ranked_price = price(experiment, streaming_boundaries=True, source=source)
+    host_terms = ({} if ranked_price is None else {
+        # The usual head/series estimate does not include the pinned store,
+        # geography and seam staging held by a ranked forecast.
+        "forecast_store_host_bytes": int(ranked_price["host_store_bytes"])
+                                     + int(ranked_price["host_staging_bytes"]),
+    })
     if str(backend) != "cuda":
         # The card is not shared; host RAM is, and write_head prices it
         # for every backend (host_admission).
-        return {"admitted": True, "device": "host",
+        return {"admitted": True, "device": "host", **host_terms,
                 "reason": "the producer prepares on the host, so the "
                           "forecast's card is not shared"}
     from gpuwm.core.preflight import EXTERNAL_MARGIN_BYTES, admission_estimate
@@ -1209,11 +1232,25 @@ def chained_admission(*, experiment, backend: str,
     pricing = {"source": source}
     if urban_columns is not None:
         pricing["urban_columns"] = urban_columns
-    forecast_bytes = int(admission_estimate(
-        experiment, **pricing).peak_envelope_bytes)
+    if ranked_price is None:
+        forecast_bytes = int(admission_estimate(
+            experiment, **pricing).peak_envelope_bytes)
+        producer_card = None
+    else:
+        producer_card = int(experiment.devices.device_ids()[0])
+        if card is None:
+            try:
+                import cupy
+
+                producer_card = int(cupy.cuda.Device().id)
+            except Exception:  # noqa: BLE001 - measurement below refuses
+                pass
+        forecast_bytes = next((int(row["total_bytes"])
+                               for row in ranked_price["cards"]
+                               if int(row["card"]) == producer_card), 0)
     card = _measure_card() if card is None else card
     if card is None or device_bytes is None:
-        return {"admitted": False, "device": "cuda",
+        return {"admitted": False, "device": "cuda", **host_terms,
                 "forecast_bytes": forecast_bytes,
                 "reason": ("chained preparation not admitted: the producer "
                            "prepares on the GPU and its memory could not be "
@@ -1226,6 +1263,8 @@ def chained_admission(*, experiment, backend: str,
     return {
         "admitted": admitted, "device": "cuda",
         "forecast_bytes": forecast_bytes, "producer_bytes": int(device_bytes),
+        **host_terms,
+        **({} if producer_card is None else {"producer_card": producer_card}),
         "budget_bytes": budget,
         "reason": (
             f"forecast {forecast_bytes / _GIB:.2f} GiB + preparation "
@@ -1343,7 +1382,10 @@ def forecast_host_bytes(*, head_payload_bytes: int,
 
 def host_admission(*, forecast_bytes: int | None,
                    producer_bytes: int | None = None,
-                   available_bytes: int | None = None) -> dict:
+                   available_bytes: int | None = None,
+                   producer_peak_bytes: int | None = None,
+                   producer_peak_required: bool = False,
+                   producer_decode_bytes: int | None = 0) -> dict:
     """Whether the machine's RAM holds a forecast beside its producer.
 
     Before chaining, host RAM held the preparation and then the forecast;
@@ -1354,7 +1396,10 @@ def host_admission(*, forecast_bytes: int | None,
     available right after the start time was built, so everything the
     producer keeps is already out of it; ``producer_bytes`` is what the
     producer's builds take on top of that (its measured peak resident
-    size less its resident size now); ``forecast_bytes`` is what the
+    size less its resident size now). A bounded host-retained producer
+    also supplies its priced absolute ``producer_peak_bytes``: the larger
+    of that future bound and the observed peak is reduced by current RSS,
+    whose bytes are already excluded from available RAM. ``forecast_bytes`` is what the
     forecast process holds in host RAM (:func:`forecast_host_bytes`), or
     ``None`` when it could not be priced.  Admitted with 10% of the
     available RAM left over, otherwise the tree is published at its seal
@@ -1363,15 +1408,33 @@ def host_admission(*, forecast_bytes: int | None,
 
     available = (_host_available() if available_bytes is None
                  else int(available_bytes))
-    if producer_bytes is None:
+    memory = None
+    if producer_bytes is None or producer_peak_bytes is not None:
         memory = process_memory_bytes()
         producer_bytes = (None if memory is None
-                          else max(0, memory[1] - memory[0]))
+                          else max(0, memory[1], int(producer_peak_bytes or 0)) - memory[0])
+        if producer_bytes is not None:
+            producer_bytes = max(0, producer_bytes)
+    if producer_peak_required and producer_peak_bytes is None:
+        producer_bytes = None
+    # A later posted source can launch a separate native decoder. Its RSS
+    # is absent from this process's VmHWM. Although decode precedes REAL,
+    # boundaries and source metadata can remain from earlier builds. Keep
+    # the parent growth allowance beside the whole child reservation.
+    if producer_decode_bytes is None:
+        producer_bytes = None
+    elif producer_bytes is not None:
+        producer_bytes = int(producer_bytes) + max(0, int(producer_decode_bytes))
     if available is None or producer_bytes is None or forecast_bytes is None:
         return {"admitted": False, "memory": "host",
                 "forecast_host_bytes": (None if forecast_bytes is None
                                         else int(forecast_bytes)),
-                "reason": ("chained preparation not admitted: this "
+                "producer_decode_host_bytes": producer_decode_bytes,
+                "reason": ("chained preparation not admitted: the future source "
+                           "decoder's host peak has no measured, enforceable native "
+                           "budget; the forecast starts after preparation"
+                           if producer_decode_bytes is None else
+                           "chained preparation not admitted: this "
                            "machine's available RAM, the producer's own "
                            "or the forecast's could not be measured, so a "
                            "forecast beside it could run the machine out "
@@ -1383,6 +1446,12 @@ def host_admission(*, forecast_bytes: int | None,
         "admitted": admitted, "memory": "host",
         "forecast_host_bytes": int(forecast_bytes),
         "producer_host_bytes": int(producer_bytes),
+        "producer_decode_host_bytes": int(producer_decode_bytes),
+        **({} if producer_peak_bytes is None else {
+            "producer_priced_peak_bytes": int(producer_peak_bytes),
+            "producer_resident_bytes": int(memory[0]),
+            "producer_observed_peak_bytes": int(memory[1]),
+        }),
         "host_budget_bytes": budget,
         "reason": (
             f"forecast {forecast_bytes / _GIB:.2f} GiB + preparation "
@@ -1757,6 +1826,12 @@ class PreparedTreeWriter:
                  publish: Callable[[Path, Path], None] | None = None,
                  proof_name: str = PROOF_NAME):
         from gpuwm.ingest.prepared_cache import PreparedCacheStream
+        from gpuwm.ensemble.posted_preparation import (
+            current_posted_domain, bind_current_prepared_identity)
+        member_source = current_posted_domain()
+        if member_source is not None:
+            identity = bind_current_prepared_identity(identity)
+            self._posted_member_source = member_source
 
         self.staging = Path(staging)
         self.output_root = Path(output_root)
@@ -1792,6 +1867,10 @@ class PreparedTreeWriter:
         #: The last lead a source wait ended on, with when it was first
         #: seen posted, so a consumer closing its own wait can say so.
         self._arrived: dict | None = None
+        # Only selected native physical providers populate these. Ordinary
+        # heads and segment bytes omit the entire optional binding.
+        self._physical_receipts = None
+        self._physical_seen = {}
 
     def waiting_for_source(self, waiting_for: Mapping[str, object]) -> None:
         """Say on the heartbeat that this producer waits for a source lead.
@@ -1853,7 +1932,8 @@ class PreparedTreeWriter:
     def admit(self, *, experiment, backend: str,
               device_bytes: int | None = None,
               card: tuple[int, int] | None = None,
-              source=None, urban_columns=None) -> dict:
+              source=None, urban_columns=None, preprocess_selection=None,
+              future_decode_host_bytes: int | None = 0) -> dict:
         """Admit the forecast and this producer on one machine, or decline.
 
         The breakage this prevents is both processes out of memory mid-run:
@@ -1880,6 +1960,42 @@ class PreparedTreeWriter:
             experiment=experiment, backend=backend,
             device_bytes=device_bytes, card=card, source=source,
             urban_columns=urban_columns)
+        decision["producer_decode_host_bytes"] = future_decode_host_bytes
+        if (backend == "cuda" and isinstance(preprocess_selection, Mapping)
+                and preprocess_selection.get("chunking")):
+            host_fit = preprocess_selection.get("host_fit") or {}
+            decision["producer_host_peak_bytes"] = host_fit.get("producer_peak_bytes")
+            decision["producer_host_peak_required"] = True
+            # Chunked preparation releases its pool between batches. The
+            # forecast must leave room for the next batch even when those
+            # bytes are free at the instant it queries the card.
+            decision["producer_reserve_bytes"] = producer_device_bytes(
+                backend, selection=preprocess_selection)
+            if "producer_card" not in decision:
+                try:
+                    import cupy
+
+                    decision["producer_card"] = int(cupy.cuda.Device().id)
+                except Exception:  # noqa: BLE001 - admission already refused
+                    pass
+            if "producer_card" in decision:
+                from gpuwm.core.device_probe import cuda_device_identity
+
+                identity = cuda_device_identity(decision["producer_card"])
+                decision["producer_device_identity"] = identity
+            if (decision.get("producer_reserve_bytes") is not None
+                    and "producer_card" in decision):
+                # A forecast may select its cards or host store after this
+                # preparation starts. Publish the bounded producer contract;
+                # the consumer prices its actual road before allocating.
+                decision["configured_forecast_admitted"] = decision["admitted"]
+                decision["configured_forecast_reason"] = decision["reason"]
+                decision["admitted"] = True
+                decision["consumer_admission_required"] = True
+                decision["reason"] = (
+                    "bounded preparation publishes its head; the forecast "
+                    "admits its selected cards and store while reserving "
+                    "the producer's next batch")
         if self.chained and not decision["admitted"]:
             self.decline_chaining(decision["reason"])
         self._decision = {"chained": self.chained, **decision}
@@ -1893,7 +2009,8 @@ class PreparedTreeWriter:
                    tree: Mapping[str, object] | None = None,
                    extra_head_payload_bytes: int = 0,
                    seal_completes: Sequence[str] = (),
-                   as_posted: Mapping[str, object] | None = None) -> str:
+                   as_posted: Mapping[str, object] | None = None,
+                   ensemble_physical: Mapping[str, object] | None = None) -> str:
         """Write everything the start time makes; publish it when chained.
 
         ``lbc`` is ``{"spec_bdy_width", "spec_zone", "relax_zone",
@@ -1935,6 +2052,22 @@ class PreparedTreeWriter:
         the head binds the plan's digest instead.
         """
 
+        physical_block = None
+        if ensemble_physical is not None:
+            from gpuwm.ensemble import physical_boundary
+            physical_block = physical_boundary.make_head(dict(ensemble_physical), lbc["schedule"])
+            initial = physical_block["initial_receipt"]
+            source = self._cache.identity.get("source_identity", {})
+            if source.get("ensemble_posted_physical_input") != initial["binding"]:
+                raise ValueError("prepared identity does not bind its initial physical member input")
+            metadata = dict(metadata or {})
+            if physical_boundary.KEY in metadata or physical_boundary.KEY in seal_completes:
+                raise ValueError("physical boundary metadata belongs to its checked native writer")
+            metadata[physical_boundary.KEY] = physical_boundary.head_catalog(physical_block)
+            seal_completes = (*seal_completes, physical_boundary.KEY)
+            self._physical_seen = {0: initial}
+        elif self._physical_receipts is not None:
+            raise ValueError("native physical receipts require their provider head binding")
         stray = sorted(set(proof_head) & SEAL_ONLY_PROOF_KEYS)
         if stray:
             raise ValueError(f"the head proof carries seal-only keys {stray}")
@@ -2071,7 +2204,16 @@ class PreparedTreeWriter:
                 interval_host_bytes=(None if forcing is None
                                      else forcing.interval_host_bytes),
                 intervals=len(lbc["schedule"]))
-            host = {**host_admission(forecast_bytes=forecast["total_bytes"]),
+            store_bytes = int(self._decision.get("forecast_store_host_bytes", 0))
+            if store_bytes:
+                forecast["store_and_staging_bytes"] = store_bytes
+                if forecast["total_bytes"] is not None:
+                    forecast["total_bytes"] += store_bytes
+            host = {**host_admission(
+                forecast_bytes=forecast["total_bytes"],
+                producer_peak_bytes=self._decision.get("producer_host_peak_bytes"),
+                producer_peak_required=self._decision.get("producer_host_peak_required", False),
+                producer_decode_bytes=self._decision.get("producer_decode_host_bytes", 0)),
                     "forecast_host_parts": forecast}
             if not host["admitted"]:
                 self.decline_chaining(host["reason"])
@@ -2094,6 +2236,8 @@ class PreparedTreeWriter:
         # Added only as posted, by the same rule.
         if posted_block is not None:
             basis["as_posted"] = posted_block
+        if physical_block is not None:
+            basis["ensemble_physical"] = physical_block
         head = {
             "schema": HEAD_SCHEMA,
             "basis": basis,
@@ -2155,6 +2299,14 @@ class PreparedTreeWriter:
     #: An as-posted preparation's posted-lead markers by lead, as it reads
     #: them (:meth:`bind_posted_leads`); ``None`` for any other head.
     _posted_markers: Mapping[int, Mapping[str, object]] | None = None
+
+    def bind_physical_receipts(self, receipts: Mapping[int, Mapping[str, object]]) -> None:
+        """Observe the full immutable binding of every native forcing knot."""
+        if self.head is not None:
+            raise RuntimeError("physical receipt ownership must be bound before the prepared head")
+        if not isinstance(receipts, Mapping):
+            raise TypeError("physical receipts must be indexed by native forcing knot")
+        self._physical_receipts = receipts
 
     def bind_posted_leads(self, markers: Mapping[int, Mapping[str, object]]
                           ) -> None:
@@ -2274,6 +2426,23 @@ class PreparedTreeWriter:
                         "head did not bind")
             leads = records.get("posted_leads")
             decoded = records.get("decoded_leads")
+        physical = self.head["basis"].get("ensemble_physical")
+        physical_records = None
+        if physical is not None:
+            from gpuwm.ensemble import physical_boundary
+            if relay_marker is None or self._physical_receipts is not None:
+                physical_records = physical_boundary.segment_records(
+                    physical, int(index), self._physical_receipts or {}, self._physical_seen)
+                if relay_marker is not None and "ensemble_physical" in relay_marker:
+                    relayed = physical_boundary.validate_segment(
+                        physical, int(index), relay_marker["ensemble_physical"], self._physical_seen)
+                    if relayed != physical_records:
+                        raise BoundaryStreamError("relayed physical endpoints differ from this member's native inputs")
+            else:
+                physical_records = physical_boundary.validate_segment(
+                    physical, int(index), relay_marker.get("ensemble_physical"), self._physical_seen)
+        elif relay_marker is not None and "ensemble_physical" in relay_marker:
+            raise BoundaryStreamError("relayed physical boundary inputs have no matching provider head")
         segment = self._cache.write_segment(int(index), interval)
         marker = {
             "schema": SEGMENT_SCHEMA,
@@ -2286,6 +2455,18 @@ class PreparedTreeWriter:
         if decoded is not None:
             # Only for a head that holds a decoded document's rows.
             marker["decoded_leads"] = decoded
+        if physical_records is not None:
+            marker["ensemble_physical"] = physical_records
+        member_source = getattr(self, "_posted_member_source", None)
+        if member_source is not None:
+            from gpuwm.ensemble.posted_preparation import (
+                posted_binding_from_identity, validate_posted_member_segment)
+            bound = member_source.bind_segment(int(index))
+            if relay_marker is not None and relay_marker.get("ensemble_member_input") != bound:
+                raise BoundaryStreamError("relayed member segment differs from the consumed native member inputs")
+            validate_posted_member_segment(bound,
+                posted_binding_from_identity(self._cache.identity), index=int(index))
+            marker["ensemble_member_input"] = bound
         _write_json_atomic(segment_marker_path(self.root, index), marker)
         self._segments_written += 1
         return marker
@@ -2341,7 +2522,8 @@ class PreparedTreeWriter:
                    manifest_sha256: str | None = None,
                    completed_metadata: Mapping[str, object] | None
                    = None,
-                   document_sha256: Mapping[str, str] | None = None) -> dict:
+                   document_sha256: Mapping[str, str] | None = None,
+                   physical_provider_seal: Mapping[str, object] | None = None) -> dict:
         """Write ``header.json``; return the one-shot writer's receipt.
 
         ``identity`` is the one-shot identity an as-posted head's seal
@@ -2356,6 +2538,24 @@ class PreparedTreeWriter:
 
         # Named only when a route completes metadata at its seal, so every
         # other head seals with the call it always made.
+        physical = (self.head or {}).get("basis", {}).get("ensemble_physical")
+        if physical is not None:
+            from gpuwm.ensemble import physical_boundary
+            if physical_provider_seal is None:
+                raise ValueError("physical member inputs must verify every source seal before cache completion")
+            completed_metadata = dict(completed_metadata or {})
+            if physical_boundary.KEY in completed_metadata:
+                raise ValueError("physical boundary completion belongs to its checked native writer")
+            completed_metadata[physical_boundary.KEY] = physical_boundary.complete_catalog(
+                physical, self._physical_seen, physical_provider_seal)
+        elif physical_provider_seal is not None:
+            raise ValueError("a physical provider seal has no matching prepared head")
+        member_source = getattr(self, "_posted_member_source", None)
+        if member_source is not None:
+            from gpuwm.ensemble.posted_preparation import bind_current_prepared_identity
+            member_source.seal()
+            if identity is not None:
+                identity = bind_current_prepared_identity(identity)
         completes = ({} if completed_metadata is None
                      else {"completed_metadata": completed_metadata})
         if identity is None:
@@ -3358,6 +3558,12 @@ class StreamedIntervals(Sequence):
             self.start_time = start_time.replace(tzinfo=timezone.utc)
         self.head_sha256 = str(head["head_sha256"])
         cache = head["basis"]["cache"]
+        from gpuwm.ensemble.posted_preparation import (
+            posted_binding_from_identity, validate_posted_member_head)
+        member_binding = posted_binding_from_identity(cache.get("identity", {}))
+        if member_binding is not None:
+            validate_posted_member_head(member_binding, identity=cache["identity"])
+            self._posted_member_binding = member_binding
         lbc = cache.get("lbc")
         if not isinstance(lbc, dict) or not lbc.get("schedule"):
             raise BoundaryStreamError(
@@ -3373,6 +3579,12 @@ class StreamedIntervals(Sequence):
         self._clock = clock
         self._loaded: dict[int, object] = {}
         self._markers: dict[int, dict] = {}
+        self._physical_seen = {}
+        physical = head["basis"].get("ensemble_physical")
+        if physical is not None:
+            from gpuwm.ensemble import physical_boundary
+            physical_boundary.validate_head(physical, lbc["schedule"])
+            self._physical_seen[0] = physical["initial_receipt"]
         self._lock = threading.RLock()
         #: One entry per wait the run actually took: (index, seconds).
         self.waits: list[tuple[int, float]] = []
@@ -3535,6 +3747,22 @@ class StreamedIntervals(Sequence):
                 != list(self.bounds[k]):
             raise BoundaryStreamError(
                 f"segment {k} bounds differ from the head's schedule")
+        physical = self.head["basis"].get("ensemble_physical")
+        if physical is not None:
+            from gpuwm.ensemble import physical_boundary
+            try:
+                physical_boundary.validate_segment(physical, k, marker.get("ensemble_physical"),
+                                                   self._physical_seen)
+            except (ValueError, KeyError, TypeError) as error:
+                raise BoundaryStreamError(f"segment {k} physical source binding failed: {error}") from error
+        elif "ensemble_physical" in marker:
+            raise BoundaryStreamError("segment carries physical inputs its prepared head did not bind")
+        member_binding = getattr(self, "_posted_member_binding", None)
+        if member_binding is not None:
+            from gpuwm.ensemble.posted_preparation import validate_posted_member_segment
+            validate_posted_member_segment(marker.get("ensemble_member_input"), member_binding, index=k)
+        elif marker.get("ensemble_member_input") is not None:
+            raise BoundaryStreamError("segment carries member physical inputs its prepared head did not bind")
         self._markers[k] = marker
         return marker
 
@@ -4110,6 +4338,21 @@ def verify_seal(root, *, head: Mapping[str, object],
         raise BoundaryStreamError(f"{cache_path} has no sealed header")
     arrays = dict(cache["arrays"])
     payload = int(cache["payload_bytes"])
+    physical = head["basis"].get("ensemble_physical")
+    physical_seen = {}
+    if physical is not None:
+        from gpuwm.ensemble import physical_boundary
+        try:
+            physical_boundary.validate_head(physical, cache["lbc"]["schedule"])
+            if (cache["metadata"].get("user", {}).get(physical_boundary.KEY)
+                    != physical_boundary.head_catalog(physical)):
+                raise ValueError("physical head cache metadata differs from its provider binding")
+            if (cache["identity"].get("source_identity", {}).get("ensemble_posted_physical_input")
+                    != physical["initial_receipt"]["binding"]):
+                raise ValueError("physical initial input differs from its prepared identity")
+            physical_seen[0] = physical["initial_receipt"]
+        except (ValueError, KeyError, TypeError) as error:
+            raise BoundaryStreamError(f"physical source head verification failed: {error}") from error
     for k in range(len(cache["lbc"]["schedule"])):
         marker = _read_json(segment_marker_path(root, k))
         if not isinstance(marker, dict) \
@@ -4118,6 +4361,13 @@ def verify_seal(root, *, head: Mapping[str, object],
         if consumed and k in consumed and consumed[k] != marker:
             raise BoundaryStreamError(
                 f"segment {k} changed after the forecast consumed it")
+        if physical is not None:
+            try:
+                physical_boundary.validate_segment(physical, k, marker.get("ensemble_physical"), physical_seen)
+            except (ValueError, KeyError, TypeError) as error:
+                raise BoundaryStreamError(f"physical source segment {k} verification failed: {error}") from error
+        elif "ensemble_physical" in marker:
+            raise BoundaryStreamError("sealed segment carries physical inputs absent from its prepared head")
         arrays.update(marker["arrays"])
         payload += int(marker["payload_bytes"])
     if header.get("arrays") != arrays or int(header.get("payload_bytes", -1)) \
@@ -4130,6 +4380,12 @@ def verify_seal(root, *, head: Mapping[str, object],
     content = hashlib.sha256(_canonical(basis).encode("utf-8")).hexdigest()
     if content != header.get("content_sha256"):
         raise BoundaryStreamError("the sealed header fails its content digest")
+    if physical is not None:
+        try:
+            physical_boundary.validate_catalog(physical,
+                header["metadata"].get("user", {}).get(physical_boundary.KEY), physical_seen)
+        except (ValueError, KeyError, TypeError) as error:
+            raise BoundaryStreamError(f"physical source seal verification failed: {error}") from error
     as_posted = None
     if head["basis"].get("as_posted") is not None:
         as_posted = verify_as_posted_seal(root, head=head, proof=proof,

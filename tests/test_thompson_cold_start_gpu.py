@@ -258,7 +258,12 @@ def test_refusal_order_and_counts_span_chunks(monkeypatch, missing_temperature):
     assert str(actual.value) == str(expected.value)
 
 
-def test_nan_aerosol_preserves_the_table_refusal():
+def test_nan_aerosol_is_refused_by_name_on_host_and_device():
+    """The device says the host's sentence: the field, the cells, the row.
+
+    Both used to raise NumPy's ``IndexError: index 9223372036854775807 is
+    out of bounds for axis 0 with size 15``, the device by copying it.
+    """
     cp = _cupy()
     from gpuwm.ingest.real import _thompson_cold_start_moment_closure as host
     from gpuwm.ingest.closure_device import thompson_cold_start_moment_closure as device
@@ -270,11 +275,45 @@ def test_nan_aerosol_preserves_the_table_refusal():
     alt = np.ones(1, dtype=np.float32)
     aerosol = np.full(1, np.nan, dtype=np.float32)
     with np.errstate(all="ignore"):
-        with pytest.raises(IndexError) as expected:
+        with pytest.raises(ValueError, match="1 cloudy cell.*QNWFA") as expected:
             host(h, np, cfg, alt, aerosol_number=aerosol)
-        with pytest.raises(IndexError) as actual:
+        with pytest.raises(ValueError) as actual:
             device(d, cp, cfg, alt, aerosol_number=aerosol)
     assert str(actual.value) == str(expected.value)
+    assert "out of bounds" not in str(actual.value)
+
+
+def test_a_nan_droplet_number_at_the_entry_block_is_refused_by_name(monkeypatch):
+    """Infinite inverse density under cloud water: zero density, NaN number.
+
+    The host mirror failed with ``IndexError: index -9223372036854775808
+    is out of bounds for axis 0 with size 16``; the device reached the same
+    mirror.  Two offending cells sit in different two-cell chunks, so the
+    device must count the whole domain, as the host does, and publish
+    nothing.
+    """
+    cp = _cupy()
+    from gpuwm.ingest.real import _thompson_cold_start_moment_closure as host
+    from gpuwm.ingest.closure_device import thompson_cold_start_moment_closure as device
+    monkeypatch.setattr("gpuwm.ingest.closure_device.COLD_START_CHUNK_CELLS", 2)
+    h = SimpleNamespace(**{k: np.zeros(6, dtype=np.float32)
+                           for k in ("qc", "qr", "qi", "nc", "nr", "ni")})
+    h.qc[:] = 1e-4
+    d = SimpleNamespace(**{k: cp.asarray(v) for k, v in vars(h).items()})
+    cfg = SimpleNamespace(mp_physics=28)
+    alt = np.ones(6, dtype=np.float32)
+    alt[[1, 4]] = np.inf
+    aerosol = np.full(6, 1.0e8, dtype=np.float32)
+    land = np.ones(6, dtype=np.float32)
+    with np.errstate(all="ignore"):
+        with pytest.raises(ValueError, match="2 cloudy cell.*entry block") as expected:
+            host(h, np, cfg, alt, aerosol_number=aerosol, landmask=land)
+        with pytest.raises(ValueError) as actual:
+            device(d, cp, cfg, alt, aerosol_number=aerosol, landmask=land,
+                   chunk_cells=2)
+    assert str(actual.value) == str(expected.value)
+    assert "out of bounds" not in str(actual.value)
+    assert not cp.asnumpy(d.nc).any() and not h.nc.any()
 
 
 def test_all_seeded_cloud_scratch_fits_the_preparation_allowance():

@@ -4,9 +4,11 @@
 //! therefore wear the field's own operational ladder -- reflectivity on the
 //! NWS dBZ steps, precipitation on the QPF steps -- which
 //! `rustwx_products::viewer::operational_style_for_store_variable` already
-//! resolves from the stored variable's selector.  This module holds only
-//! the scales for quantities the catalog has no ladder for, because they
-//! are not weather variables:
+//! resolves from the stored variable's selector.  This module holds the
+//! radar moment scales (reflectivity, radial velocity and the
+//! dual-polarization moments, on `rustwx_render::RadarTable`), and the
+//! scales for quantities the catalog has no ladder for, because they are
+//! not weather variables:
 //!
 //! * **spread** -- a standard deviation.  Deliberately never the field's
 //!   own ladder: a 6 dBZ spread painted on the NWS reflectivity table
@@ -20,7 +22,9 @@
 //!   per column), where a continuous ramp implies a precision the integers
 //!   do not have.
 
-use rustwx_render::{Color, ColorScale, DiscreteColorScale, ExtendMode};
+use rustwx_render::{
+    Color, ColorScale, DiscreteColorScale, ExtendMode, RadarColorSet, RadarTable,
+};
 
 /// `magma`, 9 stops, dark for no spread through bright for a lot.
 const SPREAD_COLORS: [[u8; 3]; 9] = [
@@ -119,11 +123,42 @@ pub fn count_scale(max_count: usize) -> ColorScale {
     })
 }
 
-/// Radial velocity: a symmetric diverging scale about zero.
+/// Radial velocity, m/s: a symmetric scale about zero on the radar velocity
+/// table (`RadarTable::RadialVelocity`, transcribed from BowEcho): greens
+/// toward the radar, reds away, a narrow dark grey band either side of
+/// zero. 240 bins over `-half_range..half_range`, so zero is always a bin
+/// edge.
 ///
 /// Symmetric on purpose -- an inbound/outbound couplet is the signal, and
 /// a scale whose zero is not the colour break hides it.
+///
+/// The `classic` radar colour set (`rw_wrfbatch --radar-colors classic`,
+/// `RUSTWX_RADAR_COLORS`, `[simulated_radar] color_tables`) selects
+/// [`classic_radial_velocity_scale`] instead.
 pub fn radial_velocity_scale(half_range: f64) -> ColorScale {
+    radial_velocity_scale_for(rustwx_render::active_radar_color_set(), half_range)
+}
+
+/// The radial velocity scale of one radar colour set.
+pub fn radial_velocity_scale_for(set: RadarColorSet, half_range: f64) -> ColorScale {
+    match set {
+        RadarColorSet::Standard => {
+            let half_range = sane_half_range(half_range);
+            ColorScale::Discrete(RadarTable::RadialVelocity.scale(
+                -half_range,
+                half_range,
+                half_range / 120.0,
+                ExtendMode::Both,
+                None,
+            ))
+        }
+        RadarColorSet::Classic => classic_radial_velocity_scale(half_range),
+    }
+}
+
+/// The blue-red velocity scale radial velocity wore before the radar
+/// velocity table, kept selectable by name (`radial_velocity_classic`).
+pub fn classic_radial_velocity_scale(half_range: f64) -> ColorScale {
     const COLORS: [[u8; 3]; 10] = [
         [5, 48, 97],
         [33, 102, 172],
@@ -136,11 +171,7 @@ pub fn radial_velocity_scale(half_range: f64) -> ColorScale {
         [178, 24, 43],
         [103, 0, 31],
     ];
-    let half_range = if half_range.is_finite() && half_range > 0.0 {
-        half_range
-    } else {
-        30.0
-    };
+    let half_range = sane_half_range(half_range);
     let steps = COLORS.len();
     let levels: Vec<f64> = (0..=steps)
         .map(|index| -half_range + 2.0 * half_range * index as f64 / steps as f64)
@@ -166,6 +197,84 @@ pub fn reflectivity_scale() -> ColorScale {
         rustwx_core::FieldSelector::entire_atmosphere(
             rustwx_core::CanonicalField::CompositeReflectivity),
     )
+}
+
+/// Differential reflectivity (ZDR), dB, -4..8 in 0.1 dB bins.
+pub fn differential_reflectivity_scale() -> ColorScale {
+    ColorScale::Discrete(RadarTable::DifferentialReflectivity.scale(
+        -4.0,
+        8.0,
+        0.1,
+        ExtendMode::Both,
+        None,
+    ))
+}
+
+/// Correlation coefficient (CC, rhoHV), unitless, 0.2..1.05 in 0.005 bins.
+pub fn correlation_coefficient_scale() -> ColorScale {
+    ColorScale::Discrete(RadarTable::CorrelationCoefficient.scale(
+        0.2,
+        1.05,
+        0.005,
+        ExtendMode::Both,
+        None,
+    ))
+}
+
+/// Specific differential phase (KDP), deg/km, -1..7 in 0.05 bins.
+pub fn specific_differential_phase_scale() -> ColorScale {
+    ColorScale::Discrete(RadarTable::SpecificDifferentialPhase.scale(
+        -1.0,
+        7.0,
+        0.05,
+        ExtendMode::Both,
+        None,
+    ))
+}
+
+/// Differential phase (PHIDP), degrees, 0..360 in 1 degree bins.
+pub fn differential_phase_scale() -> ColorScale {
+    ColorScale::Discrete(RadarTable::DifferentialPhase.scale(
+        0.0,
+        360.0,
+        1.0,
+        ExtendMode::Max,
+        None,
+    ))
+}
+
+/// Every radar moment scale by name. `reflectivity` and `velocity` are the
+/// product names and follow the active radar colour set; the table names
+/// (`radar_reflectivity`, `reflectivity_classic`, `radar_velocity`,
+/// `radial_velocity_classic`) always mean that table. `half_range` sizes the
+/// velocity scales.
+pub fn radar_scale_named(name: &str, half_range: f64) -> Option<ColorScale> {
+    use rustwx_products::plot_design::reflectivity_dbz_scale_for;
+    Some(match name {
+        "reflectivity" => reflectivity_scale(),
+        "radar_reflectivity" => {
+            ColorScale::Discrete(reflectivity_dbz_scale_for(RadarColorSet::Standard))
+        }
+        "reflectivity_classic" => {
+            ColorScale::Discrete(reflectivity_dbz_scale_for(RadarColorSet::Classic))
+        }
+        "velocity" => radial_velocity_scale(half_range),
+        "radar_velocity" => radial_velocity_scale_for(RadarColorSet::Standard, half_range),
+        "radial_velocity_classic" => radial_velocity_scale_for(RadarColorSet::Classic, half_range),
+        "zdr" | "differential_reflectivity" => differential_reflectivity_scale(),
+        "rhohv" | "correlation_coefficient" => correlation_coefficient_scale(),
+        "kdp" | "specific_differential_phase" => specific_differential_phase_scale(),
+        "phidp" | "differential_phase" => differential_phase_scale(),
+        _ => return None,
+    })
+}
+
+fn sane_half_range(half_range: f64) -> f64 {
+    if half_range.is_finite() && half_range > 0.0 {
+        half_range
+    } else {
+        30.0
+    }
 }
 
 fn ramp(stops: &[[u8; 3]], fraction: f64) -> Color {
@@ -220,6 +329,44 @@ mod tests {
         levels_and_colors_agree(&count_scale(4), "count");
         levels_and_colors_agree(&radial_velocity_scale(30.0), "radial velocity");
         levels_and_colors_agree(&reflectivity_scale(), "reflectivity");
+        for name in [
+            "reflectivity",
+            "radar_reflectivity",
+            "reflectivity_classic",
+            "velocity",
+            "radar_velocity",
+            "radial_velocity_classic",
+            "zdr",
+            "rhohv",
+            "kdp",
+            "phidp",
+        ] {
+            let scale = radar_scale_named(name, 60.0).expect(name);
+            levels_and_colors_agree(&scale, name);
+        }
+        assert!(radar_scale_named("unknown", 60.0).is_none());
+    }
+
+    #[test]
+    fn the_radar_tables_are_the_defaults_and_the_old_ones_stay_selectable() {
+        let velocity = discrete(&radial_velocity_scale_for(RadarColorSet::Standard, 60.0));
+        let classic = discrete(&radial_velocity_scale_for(RadarColorSet::Classic, 60.0));
+        assert_ne!(velocity.colors, classic.colors);
+        assert_eq!(classic.colors.len(), 10, "the classic blue-red scale is unchanged");
+        let inbound = velocity.colors[velocity.levels.iter().position(|l| *l == -20.0).unwrap()];
+        let outbound = velocity.colors[velocity.levels.iter().position(|l| *l == 20.0).unwrap()];
+        assert!(inbound.g > inbound.r && outbound.r > outbound.g);
+        let reflectivity = discrete(&radar_scale_named("radar_reflectivity", 60.0).unwrap());
+        let classic = discrete(&radar_scale_named("reflectivity_classic", 60.0).unwrap());
+        assert_eq!(classic.levels.last().copied(), Some(70.0));
+        assert_eq!(classic.colors.len(), 12, "the classic ladder is unchanged");
+        assert_eq!(reflectivity.levels.last().copied(), Some(85.0));
+        // With no set selected the product names draw the standard tables.
+        assert_eq!(
+            discrete(&radar_scale_named("velocity", 60.0).unwrap()).colors,
+            velocity.colors
+        );
+        assert_eq!(discrete(&reflectivity_scale()).colors, reflectivity.colors);
     }
 
     #[test]

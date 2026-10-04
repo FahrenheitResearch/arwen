@@ -526,6 +526,8 @@ def prepare_low_water(config_path: str, *, verbose=print):
     cfg = dc.run
     grid = experiment_grid(exp, data)
     geog_selection = GeogSelection.from_case_data(data, domain_id=dc.grid_id)
+    from gpuwm.static.lake import with_lake_statics
+    geog_selection = with_lake_statics(geog_selection, cfg)
     catalog = build_input_catalog(data)
     snapshots = forcing_snapshots(data, catalog)
     times = forcing_schedule(exp, data, snapshots)
@@ -646,6 +648,8 @@ def prepare_low_water(config_path: str, *, verbose=print):
         islake=int(landuse_attrs["ISLAKE"]),
         isice=int(landuse_attrs["ISICE"]),
         soil_temperature=soil.soil_temperature)
+    from gpuwm.ingest.ruc_mosaic import ruc_mosaic_physics_inputs
+    from gpuwm.ingest.lake_physics import lake_physics_inputs
     driver = initialize_physics(
         state, cfg, landuse=landuse, tsk=soil.tsk,
         soil_temperature=soil.soil_temperature,
@@ -656,7 +660,10 @@ def prepare_low_water(config_path: str, *, verbose=print):
         xice=soil.xice, snow=soil.snow_water, snow_depth=soil.snow_depth,
         sst=soil_fields.get("SST", soil.tsk),
         radiation=radiation, radiation_start_time=start_time,
-        radiation_latitude=lat, radiation_longitude=lon)
+        radiation_latitude=lat, radiation_longitude=lon,
+        **ruc_mosaic_physics_inputs(
+            cfg, static, landuse_attrs=landuse_attrs, xice=soil.xice),
+        **lake_physics_inputs(cfg, static))
     driver.fields["snoalb"][...] = cp.asarray(
         noah_initial_snow_albedo(static["SNOALB"], static["LU_INDEX"],
                                  driver.noah_params, rdmaxalb=cfg.rdmaxalb),
@@ -889,6 +896,8 @@ def prepare_slabbed(config_path: str, *, rows_per_slab: int = 64,
     cfg = dc.run
     grid = experiment_grid(exp, data)
     geog_selection = GeogSelection.from_case_data(data, domain_id=dc.grid_id)
+    from gpuwm.static.lake import with_lake_statics
+    geog_selection = with_lake_statics(geog_selection, cfg)
     catalog = build_input_catalog(data)
     snapshots = forcing_snapshots(data, catalog)
     times = forcing_schedule(exp, data, snapshots)
@@ -1038,6 +1047,8 @@ def prepare_slabbed(config_path: str, *, rows_per_slab: int = 64,
         islake=int(landuse_attrs["ISLAKE"]),
         isice=int(landuse_attrs["ISICE"]),
         soil_temperature=soil.soil_temperature)
+    from gpuwm.ingest.ruc_mosaic import ruc_mosaic_physics_inputs
+    from gpuwm.ingest.lake_physics import lake_physics_inputs
     driver = initialize_physics(
         state, cfg, landuse=landuse, tsk=soil.tsk,
         soil_temperature=soil.soil_temperature,
@@ -1048,7 +1059,10 @@ def prepare_slabbed(config_path: str, *, rows_per_slab: int = 64,
         xice=soil.xice, snow=soil.snow_water, snow_depth=soil.snow_depth,
         sst=soil_fields.get("SST", soil.tsk),
         radiation=radiation, radiation_start_time=start_time,
-        radiation_latitude=lat, radiation_longitude=lon)
+        radiation_latitude=lat, radiation_longitude=lon,
+        **ruc_mosaic_physics_inputs(
+            cfg, static, landuse_attrs=landuse_attrs, xice=soil.xice),
+        **lake_physics_inputs(cfg, static))
     driver.fields["snoalb"][...] = cp.asarray(
         noah_initial_snow_albedo(static["SNOALB"], static["LU_INDEX"],
                                  driver.noah_params, rdmaxalb=cfg.rdmaxalb),

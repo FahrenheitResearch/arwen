@@ -869,6 +869,14 @@ _PATH_OPTIONS = ("--store-root", "--out-dir", "--overlays", "--annotate")
 #: Environment names whose value is a path the renderer opens.
 _PATH_ENV = ("RUSTWX_BASEMAP_DIR", "RUSTWX_ASSETS_DIR", "RUSTWX_THEME")
 
+#: The renderer's radar colour set, by environment: ``standard`` (the radar
+#: tables) or ``classic`` (the reflectivity ladder and blue-red velocity
+#: scale before 2.8.5). Every Rust door that draws a radar-table product
+#: reads it (``rustwx_render::RADAR_COLORS_ENV``); ``gpuwm render
+#: --radar-colors`` sets it for the renders it starts.
+RADAR_COLORS_ENV = "RUSTWX_RADAR_COLORS"
+RADAR_COLOR_SETS = ("standard", "classic")
+
 
 def _names_a_file(value: str) -> bool:
     """A theme spelled as a file rather than one of the built-in names."""
@@ -1613,6 +1621,89 @@ def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
         section=section, isotherms=isotherms,
         section_across_km=section_across_km, section_size=section_size,
         section_top_km=section_top_km, fills=fills)
+
+
+RESIDENT_ENSEMBLE_ABI = (
+    "gpuwm-rw-wrfbatch-resident-ensemble-v2\tCDF5\tmean\tspread\tmin\tmax\tprobability\tpaintball\tpostage\tfraction\ttyped-diagnostic\tRENDERED\tFAILED")
+
+
+def run_ensemble_product_renderer(renderer: Path, product_frame: Path, *,
+                                  out_dir: Path, fields=(), domain="d01",
+                                  width=1200, height=900, source_label="ArWen",
+                                  products=("mean", "spread", "min", "max", "prob", "paintball", "postage")):
+    """Draw pre-reduced resident probability planes without member histories.
+
+    The native mode reads the ensemble CDF5 contract directly. It never
+    imports a fabricated WRF frame or recalculates ensemble reductions.
+    """
+    probe = subprocess.run([str(renderer), "--ensemble-products-abi"],
+                           capture_output=True, text=True, timeout=_PROBE_TIMEOUT_S,
+                           env=renderer_env())
+    if probe.returncode or probe.stdout.strip() != RESIDENT_ENSEMBLE_ABI:
+        raise RuntimeError("the Rust renderer lacks the resident ensemble product contract; build rw_wrfbatch from this source tree")
+    command = [str(renderer), "--ensemble-products", str(product_frame),
+               "--out-dir", str(out_dir), "--domain", str(domain),
+               "--width", str(width), "--height", str(height),
+               "--source-label", str(source_label), "--products", ",".join(products)]
+    if fields:
+        command.extend(("--fields", ",".join(fields)))
+    child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             text=True, env=renderer_env())
+    try:
+        stdout, stderr = child.communicate()
+        result = subprocess.CompletedProcess(command, child.returncode, stdout, stderr)
+    finally:
+        if child.poll() is None:
+            child.terminate()
+            try:
+                child.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()
+    relay_native_warnings(result.stderr)
+    written = [Path(line.split("\t", 1)[1]) for line in result.stdout.splitlines()
+               if line.startswith("RENDERED\t")]
+    failures = [line.split("\t", 1)[1] for line in result.stderr.splitlines()
+                if line.startswith("FAILED\t")]
+    if result.returncode and not failures:
+        failures.append((result.stderr.strip().splitlines() or
+                         [f"renderer exited {result.returncode}"])[-1])
+    if failures:
+        raise RuntimeError("; ".join(failures))
+    if not written or any(not path.is_file() for path in written):
+        raise RuntimeError("resident probability render completed without all reported map files")
+    return written, result.stdout
+
+
+def read_ensemble_diagnostic_rows(renderer: Path, path: Path, field: str, *, row: int, rows: int):
+    """Read one bounded diagnostic slab through the Rust typed decoder.
+
+    The native path transports float32 words directly. Numeric promotion
+    would change NaN payloads and cannot serve member diagnostic replay.
+    """
+    import json
+    import tempfile
+    import numpy as np
+    with tempfile.TemporaryDirectory(prefix="gpuwm-ensemble-read-") as directory:
+        output = Path(directory) / "words.bin"
+        command = [str(renderer), "--ensemble-diagnostic-dump", str(path),
+                   "--field", str(field), "--row", str(row), "--rows", str(rows),
+                   "--output", str(output)]
+        result = subprocess.run(command, capture_output=True, text=True,
+                                timeout=900, env=renderer_env())
+        if result.returncode:
+            raise RuntimeError(result.stderr.strip() or "Rust ensemble diagnostic read failed")
+        record = json.loads(result.stdout)
+        if (record.get("schema") != "gpuwm-ensemble-diagnostic-dump.v1"
+                or record.get("dtype") != "<f4" or record.get("row") != row
+                or record.get("rows") != rows or len(record.get("shape", ())) != 3):
+            raise RuntimeError("Rust ensemble diagnostic read returned an incompatible slab contract")
+        shape = tuple(record["shape"])
+        if shape[1] != rows or any(not isinstance(n, int) or n < 1 for n in shape):
+            raise RuntimeError("Rust ensemble diagnostic slab has invalid dimensions")
+        if output.stat().st_size != int(np.prod(shape)) * 4:
+            raise RuntimeError("Rust ensemble diagnostic read returned an incomplete stored-word slab")
+        return np.fromfile(output, dtype="<f4").reshape(shape)
 
 
 def run_renderer_series(renderer: Path, wrfouts, *, store_root: Path,

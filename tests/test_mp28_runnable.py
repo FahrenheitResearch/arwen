@@ -917,7 +917,7 @@ def test_every_wrf_mp28_aerosol_namelist_key_is_answered():
     from gpuwm.namelist_import import _MP28_AEROSOL_NAMELIST_KEYS
 
     assert set(_MP28_AEROSOL_NAMELIST_KEYS["physics"]) == {
-        "use_rap_aero_icbc", "qna_update", "scalar_pblmix",
+        "qna_update", "scalar_pblmix",
         "grav_settling", "wif_fire_emit", "wif_fire_inj", "dust_emis"}
     # ANSWERED IS NOT REFUSED.  The WIF key triple left this table when the
     # ingest landed a front door: `use_aero_icbc` (&physics) and
@@ -1473,9 +1473,7 @@ def test_the_import_receipt_names_the_aerosol_source_where_a_user_sees_it(
 
 @pytest.mark.parametrize("section,key,value", [
     ("physics", "use_aero_icbc", ".true."),
-    ("physics", "use_rap_aero_icbc", ".true."),
     ("physics", "qna_update", ".true."),
-    ("physics", "scalar_pblmix", "1"),
     ("physics", "grav_settling", "1"),
     ("physics", "wif_fire_emit", "1"),
     ("physics", "wif_fire_inj", "1"),

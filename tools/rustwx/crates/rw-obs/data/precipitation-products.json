@@ -1,0 +1,13 @@
+{
+  "schema": "gpuwm-obs.precipitation-products.v1",
+  "reference": "https://www.nssl.noaa.gov/projects/mrms/operational/tables.php",
+  "products": [
+    {"name":"MultiSensor_QPE_01H_Pass2_00.00","source":"mrms","discipline":209,"category":6,"parameter":37,"center":161,"level_type":102,"level_value":0.0,"units":"mm","accumulation_seconds":3600,"missing_values":[-1.0,-3.0]},
+    {"name":"MultiSensor_QPE_03H_Pass2_00.00","source":"mrms","discipline":209,"category":6,"parameter":38,"center":161,"level_type":102,"level_value":0.0,"units":"mm","accumulation_seconds":10800,"missing_values":[-1.0,-3.0]},
+    {"name":"MultiSensor_QPE_06H_Pass2_00.00","source":"mrms","discipline":209,"category":6,"parameter":39,"center":161,"level_type":102,"level_value":0.0,"units":"mm","accumulation_seconds":21600,"missing_values":[-1.0,-3.0]},
+    {"name":"MultiSensor_QPE_12H_Pass2_00.00","source":"mrms","discipline":209,"category":6,"parameter":40,"center":161,"level_type":102,"level_value":0.0,"units":"mm","accumulation_seconds":43200,"missing_values":[-1.0,-3.0]},
+    {"name":"MultiSensor_QPE_24H_Pass2_00.00","source":"mrms","discipline":209,"category":6,"parameter":41,"center":161,"level_type":102,"level_value":0.0,"units":"mm","accumulation_seconds":86400,"missing_values":[-1.0,-3.0]},
+    {"name":"MultiSensor_QPE_48H_Pass2_00.00","source":"mrms","discipline":209,"category":6,"parameter":42,"center":161,"level_type":102,"level_value":0.0,"units":"mm","accumulation_seconds":172800,"missing_values":[-1.0,-3.0]},
+    {"name":"MultiSensor_QPE_72H_Pass2_00.00","source":"mrms","discipline":209,"category":6,"parameter":43,"center":161,"level_type":102,"level_value":0.0,"units":"mm","accumulation_seconds":259200,"missing_values":[-1.0,-3.0]}
+  ]
+}

@@ -32,6 +32,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from gpuwm import runtime_manifest  # noqa: E402
+from gpuwm.ingest.preprocess_backend import preprocess_math_call
 from gpuwm.aerosol_source_receipt import (  # noqa: E402
     AEROSOL_SOURCE_KEY,
     aerosol_source_report_entry,
@@ -1939,6 +1940,8 @@ _PROFILE_SWITCH_HOMES = MappingProxyType({
     "diff_6th_slopeopt": "shared",
     "epssm": "shared",
     "km_opt": "shared",
+    "mosaic_lu": "shared",
+    "mosaic_soil": "shared",
     "moist": "shared",
     "moist_cq": "shared",
     "morr_rimed_ice": "shared",
@@ -1954,6 +1957,7 @@ _PROFILE_SWITCH_HOMES = MappingProxyType({
     # Every template declares the urban component (none = 0) since the
     # urban canopy models joined the registry.
     "sf_urban_physics": "shared",
+    "scalar_pblmix": "shared",
     "terrain_opt": "shared",
     "top_lid": "shared",
     "wrf_rrtmg_compatibility": "shared",
@@ -2875,6 +2879,7 @@ def _compact_boundary_static(static, run_cfg, *, width):
     }
 
 
+@preprocess_math_call
 def _initialize_boundary_sides(
         compact_mets, run_cfg, static_sides, eta, *, p_top, width,
         preprocess_backend="cuda", preprocess_workers=None,
@@ -3106,25 +3111,39 @@ def _native_boundary_species():
     return source_boundary_species("hrrr")
 
 
+@preprocess_math_call
 def _initialize_state(
         snapshot, dc, grid, static, eta, mapping_report, *,
         p_top, column_workers=1, surface_fallback_radius: int = 8,
         preprocess_backend="cuda", state_backend="cuda",
-        sfcp_to_sfcp=True, water_temperature_statics=None):
+        sfcp_to_sfcp=True, water_temperature_statics=None,
+        physical_input=None, physical_output=None):
     """Full-domain f00/reference initialization with split timing."""
     from gpuwm.core.grid import make_vertical_coord
     from gpuwm.ingest.real import initialize_real
 
-    met, horizontal_seconds = _map_snapshot(
-        snapshot, grid, static, mapping_report,
-        surface_fallback_radius=surface_fallback_radius,
-        preprocess_backend=preprocess_backend)
-    if water_temperature_statics is not None:
+    if physical_input is None:
+        met, horizontal_seconds = _map_snapshot(
+            snapshot, grid, static, mapping_report,
+            surface_fallback_radius=surface_fallback_radius,
+            preprocess_backend=preprocess_backend)
+    else:
+        started = time.perf_counter()
+        met = physical_input.read(0)
+        if met.valid_time != snapshot.valid_time:
+            raise ValueError("physical start snapshot valid time differs from the native source")
+        from gpuwm.ensemble.hrrr_physical_contract import validate_hrrr_physical_snapshot
+        validate_hrrr_physical_snapshot(met)
+        horizontal_seconds = time.perf_counter() - started
+        mapping_report.update(_physical_mapping_receipt(physical_input, preprocess_backend))
+    if water_temperature_statics is not None and physical_input is None:
         from gpuwm.ingest.cpu_backend import host_step_workers
         from gpuwm.ingest.water_temperature import assemble_horizontal_water_temperature
         met = assemble_horizontal_water_temperature(
             met, water_temperature_statics,
             workers=host_step_workers(preprocess_backend))
+    if physical_output is not None:
+        physical_output.write(met)
     started = time.perf_counter()
     coord = make_vertical_coord(
         dc.run.nz, hybrid_opt=dc.run.hybrid_opt, etac=dc.run.etac,
@@ -3144,6 +3163,48 @@ def _initialize_state(
         cosa=static["COSALPHA"])
     return (result, met, horizontal_seconds, time.perf_counter() - started,
             state_timing)
+
+
+def _physical_mapping_receipt(store, preprocess):
+    """The mapping authority belongs to a verified native physical store."""
+    from gpuwm.ensemble.physical_store import digest_file
+    return {"policy": "sealed native physical snapshot input",
+            "physical_store_sha256": digest_file(store.manifest_path),
+            "preprocess_backend": preprocess.receipt()}
+
+
+def _overlay_acquirer(acquire, hours, overlay, binding, *, workers,
+                      physical_input=None):
+    """Apply source-grid overlays only before the first native mapping.
+
+    A physical input has already passed physical_input_binding, including
+    equality of the requested overlay bytes and source policy. Its mapped
+    fields therefore carry that application and must not be overlaid again.
+    """
+    if overlay is None or physical_input is not None:
+        return acquire, None
+    from gpuwm.ingest.water_overlay import overlay_snapshot_sequence
+
+    class ForcingSequence:
+        def __len__(self):
+            return len(hours)
+
+        def __getitem__(self, index):
+            return acquire(hours[index])
+
+    sequence = overlay_snapshot_sequence(
+        ForcingSequence(), overlay, binding=binding, workers=workers)
+    return lambda hour: sequence[hours.index(hour)], sequence
+
+
+def _verify_preparation_overlay(sequence, *, physical_input, binding):
+    from gpuwm.ingest.water_overlay import (
+        WaterOverlayError, overlay_file_identity, verify_overlay_sequence)
+    result = verify_overlay_sequence(sequence)
+    if physical_input is not None and binding is not None:
+        if overlay_file_identity(binding["path"]) != binding:
+            raise WaterOverlayError("water-temperature overlay bytes changed during physical replay")
+    return result
 
 
 class _LbcPayloadDigest:
@@ -3566,13 +3627,95 @@ def _seal_posted_bridge(args, *, admitter, pipeline_producer, source_window,
     return pipeline_report, source_hash_receipt
 
 
+def _posted_bundle_plan(args, *, chain, requested_cycle, source_forecast_hours,
+                        model_forcing_hours, preprocess_receipt, source_identity,
+                        posted_leads, metadata):
+    """Publish the ordinary fixed authorities once, before a physical capture."""
+    from gpuwm.hrrr_prepared_bundle import publish_hrrr_bundle_head
+    from gpuwm.ingest.boundary_stream import input_plan
+    root = Path(chain["output_root"]).resolve()
+    def optional_path(key):
+        value = chain.get(key)
+        return None if value is None else Path(value)
+    bundle = publish_hrrr_bundle_head(
+        output_root=root, prepared_cache=root / CHAINED_CACHE_NAME,
+        static_cache=Path(chain["static_cache"]),
+        static_receipt=Path(chain["static_receipt"]),
+        geometry_receipt=Path(chain["geometry_receipt"]),
+        bridge_manifest=args.bridge / "SHA256SUMS",
+        namelist_input=args.namelist_input,
+        wps_namelist=optional_path("wps_namelist"),
+        source_manifest=Path(chain["source_manifest"]),
+        experiment_config=Path(chain["experiment_config"]),
+        source_cycle=requested_cycle,
+        source_forecast_hours=source_forecast_hours,
+        model_forcing_hours=model_forcing_hours,
+        preprocessing=_strict_json(preprocess_receipt),
+        source_identity=source_identity,
+        physics_profile=chain.get("physics_profile"),
+        cache_user_metadata=metadata,
+        expert_acknowledgements=tuple(chain.get("acknowledgements") or ()),
+        domain_spec=optional_path("domain_spec"), as_posted=True)
+    plan = input_plan(
+        bundle["manifest"], lead_role_prefix=POSTED_NATIVE_LEAD_ROLE_PREFIX,
+        route_table_sha256=posted_leads.route_table_sha256(),
+        derived_roles=POSTED_NATIVE_DERIVED_ROLES)
+    return bundle, plan
+
+
+class _PostedHrrrCapture:
+    """Capture a native knot only after its ordinary lead evidence is ready."""
+    def __init__(self, stream, *, cycle, source_forecast_hours, admitter, decoded_records):
+        self.stream = stream
+        self.cycle = cycle
+        self.source_forecast_hours = tuple(source_forecast_hours)
+        self.admitter = admitter
+        self.decoded_records = decoded_records
+
+    def write(self, snapshot):
+        from gpuwm.ingest.boundary_stream import (
+            posted_lead_marker_sha256, decoded_lead_record_sha256)
+        seconds = (snapshot.valid_time - self.cycle).total_seconds()
+        lead = int(seconds // 3600)
+        if seconds != lead * 3600 or lead not in self.source_forecast_hours:
+            raise ValueError("captured physical time is outside the native posted source plan")
+        if lead not in self.admitter.markers or lead not in self.decoded_records:
+            raise ValueError("physical capture requires actual posted and decoded native lead evidence")
+        return self.stream.publish(snapshot,
+            posted_leads={str(lead): posted_lead_marker_sha256(self.admitter.markers[lead])},
+            decoded_leads={str(lead): decoded_lead_record_sha256(self.decoded_records[lead])})
+
+    def seal(self):
+        return self.stream.seal()
+
+
+def _complete_posted_head_receipts(bundle, *, metadata, preprocess_receipt):
+    """Fill observed preparation receipts before the ordinary head is hashed.
+
+    Physical capture needs the fixed input plan before real initialization.
+    The vertical route and soil outcomes become known during that call. They
+    belong in the subsequently published proof, not in the fixed input plan.
+    """
+    from gpuwm.hrrr_prepared_bundle import _canonical
+    from gpuwm.ingest.prepared_cache import SOIL_PREPARATION_RECEIPTS
+    proof = bundle["proof_head"]
+    observed = _strict_json(preprocess_receipt)
+    proof["preprocessing"] = observed
+    proof["preprocessing_receipt_sha256"] = hashlib.sha256(
+        _canonical(observed).encode("utf-8")).hexdigest()
+    for key in SOIL_PREPARATION_RECEIPTS:
+        if key in metadata:
+            proof[key] = metadata[key]
+
+
 def _write_posted_head(
         args, *, chain, exp, dc, grid, static, soil_mesh, admitter,
         producer, posted_leads, decoded_records, timing, make_identity,
         requested_cycle, source_forecast_hours, model_forcing_hours,
         requested_hours, initial_snapshot, root_result, root_met,
         mapping_reports, boundary_sides, preprocess_receipt,
-        source_identity):
+        source_identity, posted_bundle=None, ensemble_physical=None,
+        physical_receipts=None, shared_source=None, reused_surface=None):
     """Publish an as-posted native preparation's head (A136 L7c (b)).
 
     Written once the start state exists and the first boundary lead is
@@ -3588,9 +3731,9 @@ def _write_posted_head(
     """
 
     from gpuwm.hrrr_prepared_bundle import (
-        AS_POSTED_SEAL_KEYS, HrrrBundleError, publish_hrrr_bundle_head)
+        AS_POSTED_SEAL_KEYS, HrrrBundleError)
     from gpuwm.ingest.boundary_stream import (
-        PreparedTreeWriter, as_posted_placeholder, input_plan,
+        PreparedTreeWriter, as_posted_placeholder,
         input_plan_sha256)
     from gpuwm.ingest.hrrr_physics import resolve_prepared_noah_surface
     from gpuwm.ingest.preprocess_backend import preprocess_reports_identity
@@ -3598,12 +3741,14 @@ def _write_posted_head(
 
     started = time.perf_counter()
     start_leads = tuple(source_forecast_hours[:2])
-    start_markers = {lead: _await_admitted(admitter, producer, lead)
-                     for lead in start_leads}
+    start_records = ({"start_markers": {
+        lead: _await_admitted(admitter, producer, lead) for lead in start_leads}}
+        if shared_source is None else {"start_marker_sha256":
+            dict(shared_source.posted["start_marker_sha256"])})
     timing["posted_head_start_leads_wait"] = time.perf_counter() - started
 
     root_surface = resolve_prepared_noah_surface(
-        root_met, dc.run, static, soil_mesh=soil_mesh)
+        root_met, dc.run, static, soil_mesh=soil_mesh, surface=reused_surface)
     soil_temperature_repair = soil_temperature_repair_proof(root_surface, grid)
     start_key = f"f{source_forecast_hours[0]:02d}"
     metadata = {
@@ -3624,40 +3769,26 @@ def _write_posted_head(
     }
     root = Path(chain["output_root"]).resolve()
 
-    def optional_path(key):
-        value = chain.get(key)
-        return None if value is None else Path(value)
-
     try:
-        head_bundle = publish_hrrr_bundle_head(
-            output_root=root, prepared_cache=root / CHAINED_CACHE_NAME,
-            static_cache=Path(chain["static_cache"]),
-            static_receipt=Path(chain["static_receipt"]),
-            geometry_receipt=Path(chain["geometry_receipt"]),
-            bridge_manifest=args.bridge / "SHA256SUMS",
-            namelist_input=args.namelist_input,
-            wps_namelist=optional_path("wps_namelist"),
-            source_manifest=Path(chain["source_manifest"]),
-            experiment_config=Path(chain["experiment_config"]),
-            source_cycle=requested_cycle,
-            source_forecast_hours=source_forecast_hours,
-            model_forcing_hours=model_forcing_hours,
-            preprocessing=_strict_json(preprocess_receipt),
-            source_identity=source_identity,
-            physics_profile=chain.get("physics_profile"),
-            cache_user_metadata=metadata,
-            expert_acknowledgements=tuple(chain.get("acknowledgements") or ()),
-            domain_spec=optional_path("domain_spec"), as_posted=True)
+        if posted_bundle is None:
+            head_bundle, plan = _posted_bundle_plan(
+                args, chain=chain, requested_cycle=requested_cycle,
+                source_forecast_hours=source_forecast_hours,
+                model_forcing_hours=model_forcing_hours,
+                preprocess_receipt=preprocess_receipt, source_identity=source_identity,
+                posted_leads=posted_leads, metadata=metadata)
+        else:
+            head_bundle, plan = posted_bundle
+            _complete_posted_head_receipts(head_bundle, metadata=metadata,
+                                          preprocess_receipt=preprocess_receipt)
     except HrrrBundleError as error:
+        if posted_bundle is not None or ensemble_physical is not None:
+            raise
         print("prepare: chained preparation not used: the portable bundle's "
               f"head could not be published ({error}); the forecast starts "
               "after preparation", file=sys.stderr, flush=True)
         return None, None, None, root_surface, soil_temperature_repair
 
-    plan = input_plan(
-        head_bundle["manifest"], lead_role_prefix=POSTED_NATIVE_LEAD_ROLE_PREFIX,
-        route_table_sha256=posted_leads.route_table_sha256(),
-        derived_roles=POSTED_NATIVE_DERIVED_ROLES)
     placeholder = as_posted_placeholder(input_plan_sha256(plan))
     identity = make_identity(placeholder, placeholder)
     writer = PreparedTreeWriter(
@@ -3670,8 +3801,11 @@ def _write_posted_head(
         if backend == "cuda" else None)
     writer.admit(experiment=exp, backend=backend, device_bytes=device_bytes,
                  source="hrrr")
-    writer.bind_posted_leads(admitter.markers)
-    writer.bind_decoded_leads(decoded_records)
+    if shared_source is None:
+        writer.bind_posted_leads(admitter.markers)
+        writer.bind_decoded_leads(decoded_records)
+    if physical_receipts is not None:
+        writer.bind_physical_receipts(physical_receipts)
     bridge_relative = (Path(args.bridge).resolve() / "SHA256SUMS").relative_to(
         root).as_posix()
     source_relative = Path(chain["source_manifest"]).resolve().relative_to(
@@ -3687,9 +3821,11 @@ def _write_posted_head(
         proof_head=head_bundle["proof_head"], input_manifest_sha256=None,
         forcing=_interval_host_pricing(boundary_sides),
         seal_completes=CHAINED_SEAL_COMPLETES,
+        **({"ensemble_physical": ensemble_physical}
+           if ensemble_physical is not None else {}),
         as_posted={
             "input_plan": plan,
-            "start_markers": start_markers,
+            **start_records,
             "forcing_leads": list(source_forecast_hours),
             "seal_authored_proof_keys": AS_POSTED_SEAL_KEYS,
             "manifest_path": "source-input-manifest.json",
@@ -3760,7 +3896,8 @@ def _publish_chained_proof(writer, args, *, chain, report, configured_run,
         report, selected_backend=requested["preprocess_backend"],
         requested_preprocess_workers=requested["preprocess_workers"],
         requested_pipeline_workers=requested["pipeline_workers"],
-        final_hour=int(report["model_forcing_hours"][-1]))
+        final_hour=int(report["model_forcing_hours"][-1]),
+        reused_posted_source=getattr(args, "physical_input_provider", None) is not None)
     _validated_physics_receipt(
         report, requested_profile=chain.get("physics_profile"),
         expected_selection=configured_run)
@@ -3910,6 +4047,9 @@ def _require_preprocess_receipt(
     _carry_vertical_routes(expected, actual, context)
     if expected["backend"] == "cpu":
         expected.pop("workers")
+        # Worker-share and host-headroom telemetry, measured per job.
+        expected.pop("parallelism", None)
+        actual.pop("parallelism", None)
         observed_workers = actual.pop("workers", None)
         if observed_workers != expected_native_workers:
             raise RuntimeError(
@@ -3996,6 +4136,7 @@ def native_preparation_price(run_cfg, *, forcing_times, prepare_workers):
         boundary_workers=workers)
 
 
+@preprocess_math_call(options_parameter="args")
 def run(args):
     from gpuwm.ingest.cpu_backend import host_step_workers
 
@@ -4071,8 +4212,7 @@ def run(args):
             require_native_pressure_field(case_policy, bridge_root=args.bridge)
     trace_gas_overrides = ({"co2": declared_case.co2_vmr}
         if declared_case is not None and declared_case.co2_vmr is not None else None)
-    from gpuwm.ingest.water_overlay import (
-        load_bound_water_overlay, overlay_snapshot_sequence, verify_overlay_sequence)
+    from gpuwm.ingest.water_overlay import load_bound_water_overlay
     water_overlay, water_overlay_binding = load_bound_water_overlay(
         None if declared_case is None else declared_case.water_temperature_overlay)
     from gpuwm.static.highres_production import (resolve_static_highres, static_highres_identity)
@@ -4156,6 +4296,82 @@ def run(args):
 
     if static_highres is not None:
         source_identity["static_highres"] = static_highres_identity(static_highres)
+    physical_input = None
+    physical_output = None
+    physical_provider = None
+    shared_posted = None
+    physical_receipts = {}
+    posted_bundle = None
+    physical_output_receipt = None
+    physical_input_path = getattr(args, "physical_input_store", None)
+    physical_output_path = getattr(args, "physical_output_store", None)
+    physical_provider_path = getattr(args, "physical_input_provider", None)
+    physical_member_index = getattr(args, "physical_member_index", None)
+    physical_requested = any(path is not None for path in (
+        physical_input_path, physical_output_path, physical_provider_path))
+    ordinary_physical_source_identity = dict(source_identity) if physical_requested else None
+    if (physical_provider_path is None) != (physical_member_index is None):
+        raise ValueError("physical-input-provider and physical-member-index must be supplied together")
+    if physical_provider_path is not None:
+        if args.as_posted is None or physical_input_path is not None or physical_output_path is not None:
+            raise ValueError("a posted provider requires --as-posted and cannot also capture or replay a sealed physical store")
+        from gpuwm.ensemble.posted_physical import PostedPhysicalProvider
+        physical_provider = PostedPhysicalProvider.open(
+            physical_provider_path, cpu_bridge=args.cpu_preprocess_bridge,
+            workers=host_step_workers(preprocess))
+        from tools.hrrr_posted_reuse import SharedPostedHrrr
+        shared_posted = SharedPostedHrrr(
+            physical_provider.source_context(physical_member_index),
+            cycle=requested_cycle, source_forecast_hours=source_forecast_hours)
+        from gpuwm.ensemble.posted_native import checked_source_inputs
+        shared_posted.checked = checked_source_inputs(
+            shared_posted.context, source="hrrr",
+            experiment_config=shared_posted.context.prepared_root / "experiment.toml",
+            wps_namelist=shared_posted.context.prepared_root / "namelist.wps",
+            physics_profile=args.physics_profile, expert_acknowledgements=tuple(args.ack),
+            history_interval_seconds=history_interval_seconds)
+    if physical_input_path is not None and args.as_posted is not None:
+        raise ValueError("sealed physical input cannot replace an as-posted provider")
+    if physical_requested:
+        if (not args.prepare_only
+                or (args.prepared_cache is not None and args.prepared_cache.exists())):
+            raise ValueError("physical input/output requires a fresh native preparation")
+        from gpuwm.ensemble.physical_store import (
+            NativePhysicalStore, physical_input_binding, physical_static_identity)
+        physical_static = physical_static_identity(static, attrs=attrs)
+        if physical_input_path is not None:
+            physical_input = NativePhysicalStore(physical_input_path)
+            from gpuwm.ensemble.hrrr_physical_contract import validate_hrrr_physical_field_contract
+            validate_hrrr_physical_field_contract(physical_input.require_field_contract(), physical_input.document["grid"])
+            expected_times = tuple(model_start_time + timedelta(hours=hour)
+                                   for hour in model_forcing_hours)
+            if physical_input.times != expected_times:
+                raise ValueError("physical input must provide every native forcing valid time exactly")
+            source_identity["ensemble_physical_input"] = physical_input_binding(
+                physical_input, grid, dc.run, source_identity,
+                input_manifest_sha256=args.source_manifest_sha256,
+                static_identity=physical_static)
+        if physical_output_path is not None and args.as_posted is None:
+            from gpuwm.native_wrf_contract import native_geometry_contract
+            from gpuwm.ensemble.hrrr_physical_contract import hrrr_physical_field_contract
+            from gpuwm.ingest import water_temperature
+            geometry = native_geometry_contract(grid, dc.run)
+            evidence = {
+                "native_mapper": source_identity["source_sha256"]["gpuwm/ingest/hrrr.py"],
+                "raw_source_manifest": args.source_manifest_sha256,
+                "water_temperature_assembly": _sha256(Path(water_temperature.__file__)),
+                "target_static_cache": _sha256(args.static_cache),
+            }
+            if args.pipeline_decoder is not None:
+                evidence["native_decoder_executable"] = _sha256(args.pipeline_decoder)
+            else:
+                evidence["sealed_native_bridge_manifest"] = _sha256(args.bridge / "SHA256SUMS")
+            physical_output = NativePhysicalStore(
+                physical_output_path, grid_identity=geometry,
+                source_identity={**source_identity,
+                                 "input_manifest_sha256": args.source_manifest_sha256,
+                                 "static_identity": physical_static},
+                field_contract=hrrr_physical_field_contract(geometry, evidence=evidence))
     namelist_sha256 = _sha256(args.namelist_input)
     prepared_cache_receipt = None
     prepared_cache_identity = None
@@ -4327,6 +4543,10 @@ def run(args):
             "prepared_cache_content_sha256": restored.receipt[
                 "content_sha256"],
         })
+    elif shared_posted is not None:
+        posted_leads = shared_posted
+        available_hours = requested_hours
+        acquire_snapshot = shared_posted.acquire
     elif args.pipeline_series is not None and args.as_posted is not None:
         # AS POSTED (A136 L7c (b)): no lead is hashed up front.  Each is
         # admitted to the decoder once its posted marker is there and its
@@ -4380,7 +4600,7 @@ def run(args):
             admitted(source_hour)
             root = pipeline_producer.wait_hour(source_hour)
             decoded_records[source_hour] = _decoded_lead_record(
-                root, source_hour)
+                root, source_hour, workers=host_step_workers(preprocess))
             return load_hrrr_pipeline_ready_window(root, source_hour)
     elif args.pipeline_series is not None:
         from tools.hrrr_pipeline import (
@@ -4430,27 +4650,81 @@ def run(args):
             # Every hour is consumed exactly once, and mapped only then: a
             # long window's leads mapped at once exceed the ordinary open
             # file limit (_SealedBridgeLeads).
+            if physical_input is not None:
+                return SimpleNamespace(valid_time=physical_input.times[hour])
             return sealed_leads.take(hour)
+        if physical_input is not None or physical_output is not None:
+            pipeline_report = {
+                "operation": "reused_sealed_native_bridge",
+                "bridge_manifest_sha256": args.manifest_sha256,
+                "workers": {"requested": str(args.pipeline_workers).strip().lower(),
+                            "selected": 0, "operation": "reused_sealed_native_bridge"}}
+
+    if args.as_posted is not None and physical_requested:
+        if chain is None or posted_leads is None:
+            raise ValueError("posted physical preparation requires the ordinary portable posted head")
+        if water_overlay is not None:
+            raise ValueError("a declared whole-window water overlay cannot publish a posted native head")
+        posted_bundle = _posted_bundle_plan(
+            args, chain=chain, requested_cycle=requested_cycle,
+            source_forecast_hours=source_forecast_hours,
+            model_forcing_hours=model_forcing_hours,
+            preprocess_receipt=preprocess_receipt, source_identity=source_identity,
+            posted_leads=posted_leads, metadata={})
+        from gpuwm.ingest.boundary_stream import input_plan_sha256, as_posted_placeholder
+        from gpuwm.ensemble.posted_physical import PostedPhysicalStream, posted_source_identity
+        posted_plan = posted_bundle[1]
+        posted_digest = input_plan_sha256(posted_plan)
+        if physical_output_path is not None:
+            from datetime import timezone
+            from gpuwm.ensemble.recipes import SourceTrajectory
+            from gpuwm.native_wrf_contract import native_geometry_contract
+            from gpuwm.ensemble.hrrr_physical_contract import hrrr_physical_field_contract
+            from gpuwm.ingest import water_temperature
+            geometry = native_geometry_contract(grid, dc.run)
+            captured_identity = posted_source_identity(
+                {**source_identity, "input_manifest_sha256": as_posted_placeholder(posted_digest),
+                 "static_identity": physical_static}, input_plan=posted_plan)
+            contract = hrrr_physical_field_contract(geometry, evidence={
+                "native_mapper": source_identity["source_sha256"]["gpuwm/ingest/hrrr.py"],
+                "ordinary_source_input_plan": posted_digest,
+                "native_decoder_executable": _sha256(args.pipeline_decoder),
+                "water_temperature_assembly": _sha256(Path(water_temperature.__file__)),
+                "target_static_cache": _sha256(args.static_cache)})
+            stream = PostedPhysicalStream.create(
+                physical_output_path,
+                trajectory=SourceTrajectory("hrrr", requested_cycle.replace(tzinfo=timezone.utc), None),
+                valid_times=tuple((model_start_time + timedelta(hours=hour)).replace(tzinfo=timezone.utc)
+                                  for hour in requested_hours),
+                grid_identity=geometry, source_identity=captured_identity,
+                field_contract=contract, input_plan_sha256=posted_digest)
+            physical_output = _PostedHrrrCapture(
+                stream, cycle=requested_cycle, source_forecast_hours=source_forecast_hours,
+                admitter=admitter, decoded_records=decoded_records)
+
+    def resolve_physical_hour(hour, valid_time):
+        if physical_provider is None:
+            return physical_input
+        from gpuwm.ensemble.posted_physical import bind_posted_physical_input
+        from gpuwm.ensemble.hrrr_physical_contract import validate_hrrr_physical_field_contract
+        store, receipt = physical_provider.resolve(physical_member_index, valid_time)
+        validate_hrrr_physical_field_contract(store.require_field_contract(), store.document["grid"])
+        binding = bind_posted_physical_input(
+            store, receipt, provider_plan=physical_provider.plan,
+            member_index=physical_member_index, valid_time=valid_time, grid=grid, cfg=dc.run,
+            source_identity={**ordinary_physical_source_identity,
+                             "input_manifest_sha256": as_posted_placeholder(posted_digest)},
+            input_plan=posted_plan, static_identity=physical_static)
+        physical_receipts[hour] = binding
+        if hour == 0:
+            source_identity["ensemble_posted_physical_input"] = binding
+        return store
 
     overlay_series = None
     if not restore_cached and water_overlay is not None:
-        # Keep the existing one-hour loader lifetime in both pipeline and
-        # sealed-file modes. The wrapper retains receipts, never weather arrays.
-        raw_acquire = acquire_snapshot
-
-        class ForcingSequence:
-            def __len__(self):
-                return len(requested_hours)
-
-            def __getitem__(self, index):
-                return raw_acquire(requested_hours[index])
-
-        overlay_series = overlay_snapshot_sequence(
-            ForcingSequence(), water_overlay, binding=water_overlay_binding,
-            workers=host_step_workers(preprocess))
-
-        def acquire_snapshot(hour):
-            return overlay_series[requested_hours.index(hour)]
+        acquire_snapshot, overlay_series = _overlay_acquirer(
+            acquire_snapshot, requested_hours, water_overlay, water_overlay_binding,
+            workers=host_step_workers(preprocess), physical_input=physical_input)
 
     if not restore_cached:
         from gpuwm.ingest.boundary_stream import say_prepared_sealed
@@ -4488,6 +4762,13 @@ def run(args):
             f00_preprocess = preprocess_backend_for_workers(
                 f00_native_workers)
             f00_job_started = time.perf_counter()
+            initial_physical = resolve_physical_hour(0, snapshot.valid_time)
+            if shared_posted is not None:
+                from gpuwm.ensemble.posted_native import shared_surface
+                base_store, _ = shared_posted.context.physical_stream.require(
+                    shared_posted.context.physical_stream.times[0])
+                root_surface = shared_surface(shared_posted.checked,
+                    base_met=base_store.read(0), member_met=initial_physical.read(0))
             with _prep_step(args, "root_initialize",
                             label="Initialize the start state"):
                 result, met, horizontal, vertical, state_timing = _initialize_state(
@@ -4499,7 +4780,8 @@ def run(args):
                         target.surface_fallback_radius_cells),
                     preprocess_backend=f00_preprocess,
                     state_backend=(
-                        "preprocess" if args.prepare_only else "cuda"))
+                        "preprocess" if args.prepare_only else "cuda"),
+                    physical_input=initial_physical, physical_output=physical_output)
             f00_job_finished = time.perf_counter()
             if not preprocess_is_cuda:
                 preprocess_worker_budget.record(
@@ -4556,7 +4838,7 @@ def run(args):
             })
 
             completed_hours = {0}
-            if chain is not None and admitter is not None:
+            if chain is not None and (admitter is not None or shared_posted is not None):
                 (writer, lbc_digest, posted_identity, root_surface,
                  soil_temperature_repair) = _write_posted_head(
                     args, chain=chain, exp=exp, dc=dc, grid=grid,
@@ -4573,7 +4855,16 @@ def run(args):
                     mapping_reports=mapping_reports,
                     boundary_sides=boundary_sides_by_hour[0],
                     preprocess_receipt=preprocess_receipt,
-                    source_identity=source_identity)
+                    source_identity=source_identity, posted_bundle=posted_bundle,
+                    ensemble_physical=(None if physical_provider is None else {
+                        "provider_plan": physical_provider.plan,
+                        "member_index": physical_member_index,
+                        "initial_receipt": physical_receipts[0]}),
+                    physical_receipts=(physical_receipts if physical_provider is not None else None),
+                    shared_source=shared_posted, reused_surface=root_surface)
+                if shared_posted is not None:
+                    from gpuwm.ensemble.posted_native import writer_source_wait
+                    physical_provider.set_wait_observer(writer_source_wait(writer))
             elif chain is not None:
                 (writer, lbc_digest, prepared_cache_identity, root_surface,
                  soil_temperature_repair, pipeline_report) = _write_chained_head(
@@ -4609,7 +4900,11 @@ def run(args):
                         start_seconds=float(k * 3600),
                         end_seconds=float((k + 1) * 3600))
                     lbc_digest.add(k, interval)
-                    writer.write_segment(k, interval)
+                    if shared_posted is None:
+                        writer.write_segment(k, interval)
+                    else:
+                        from gpuwm.ensemble.posted_native import relay_source_segment
+                        relay_source_segment(shared_posted.context, k, writer, interval)
                     del interval, boundary_sides_by_hour[k]
                     next_segment[0] = k + 1
 
@@ -4621,11 +4916,41 @@ def run(args):
                 ready_wait = time.perf_counter() - ready_started
                 mapping = {}
                 mapping_started = time.perf_counter()
-                compact, horizontal = _map_boundary_snapshot(
-                    hour_snapshot, boundary_targets, mapping,
-                    surface_fallback_radius=(
-                        target.surface_fallback_radius_cells),
-                    preprocess_backend=hour_preprocess)
+                hour_physical = resolve_physical_hour(hour, hour_snapshot.valid_time)
+                if hour_physical is not None:
+                    met = hour_physical.read(0 if physical_provider is not None else hour)
+                    if met.valid_time != hour_snapshot.valid_time:
+                        raise ValueError("physical boundary valid time differs from the native source")
+                    from gpuwm.ensemble.hrrr_physical_contract import validate_hrrr_physical_snapshot
+                    validate_hrrr_physical_snapshot(met)
+                    compact = _compact_boundary_inputs(met, dc, width=width)
+                    mapping.update(_physical_mapping_receipt(hour_physical, hour_preprocess))
+                    if physical_output is not None:
+                        physical_output.write(met)
+                    del met
+                    horizontal = time.perf_counter() - mapping_started
+                else:
+                    compact, horizontal = _map_boundary_snapshot(
+                        hour_snapshot, boundary_targets, mapping,
+                        surface_fallback_radius=(
+                            target.surface_fallback_radius_cells),
+                        preprocess_backend=hour_preprocess)
+                    if physical_output is not None:
+                        # Capture is observational: the ordinary boundary strips
+                        # above remain the exact arrays the initializer consumes.
+                        # The full map is made only when explicitly requested.
+                        capture_mapping = {}
+                        met, capture_seconds = _map_snapshot(
+                            hour_snapshot, grid, static, capture_mapping,
+                            surface_fallback_radius=target.surface_fallback_radius_cells,
+                            preprocess_backend=hour_preprocess)
+                        from gpuwm.ingest.water_temperature import assemble_horizontal_water_temperature
+                        met = assemble_horizontal_water_temperature(
+                            met, water_statics, workers=host_step_workers(hour_preprocess))
+                        physical_output.write(met)
+                        mapping["physical_capture"] = capture_mapping
+                        mapping["physical_capture_seconds"] = capture_seconds
+                        del met
                 mapping_finished = time.perf_counter()
                 if not preprocess_is_cuda:
                     preprocess_worker_budget.record(
@@ -4880,7 +5205,10 @@ def run(args):
                         start_seconds=float((hour - 1) * 3600),
                         end_seconds=float(hour * 3600)))
             last_valid_time = valid_time_by_hour[requested_hours[-1]]
-            if admitter is not None:
+            if shared_posted is not None:
+                pipeline_report, source_hash_receipt = shared_posted.seal(args)
+                prepared_cache_identity = make_prepared_cache_identity(args.manifest_sha256)
+            elif admitter is not None:
                 # Every lead is decoded: the source manifest is authored
                 # from the leads' markers and the bridge sealed, and the
                 # one-shot identity of those bytes is what the seal writes.
@@ -4913,9 +5241,10 @@ def run(args):
         timing["all_root_lbc_bound_seconds_from_startup"] = (
             time.perf_counter() - total_started)
 
-        verify_overlay_sequence(overlay_series)
+        _verify_preparation_overlay(overlay_series, physical_input=physical_input,
+                                    binding=water_overlay_binding)
         posted_proof = None
-        if writer is not None and admitter is not None:
+        if writer is not None and (admitter is not None or shared_posted is not None):
             try:
                 from gpuwm.hrrr_prepared_bundle import seal_hrrr_posted_inputs
 
@@ -4925,11 +5254,13 @@ def run(args):
                     bridge_manifest=args.bridge / "SHA256SUMS",
                     source_manifest=Path(args.source_manifest))
                 window = set(source_forecast_hours)
+                source_markers = (admitter.markers if shared_posted is None else shared_posted.markers)
+                source_decoded = (decoded_records if shared_posted is None else shared_posted.decoded)
                 writer.write_posted_leads(
-                    {lead: marker for lead, marker in admitter.markers.items()
+                    {lead: marker for lead, marker in source_markers.items()
                      if lead in window},
                     route_table_sha256=posted_leads.route_table_sha256(),
-                    decoded=decoded_records)
+                    decoded=source_decoded)
                 prepared_cache_receipt = _seal_chained_cache(
                     writer, timing=timing, mapping_reports=mapping_reports,
                     last_valid_time=last_valid_time,
@@ -4937,7 +5268,9 @@ def run(args):
                     manifest_sha256=posted_inputs["input_manifest_sha256"],
                     document_sha256={
                         "bridge_manifest_sha256": args.manifest_sha256,
-                        "source_manifest_sha256": args.source_manifest_sha256})
+                        "source_manifest_sha256": args.source_manifest_sha256},
+                    **({"physical_provider_seal": physical_provider.seal()}
+                       if physical_provider is not None else {}))
                 posted_proof = {
                     **posted_inputs,
                     "posting": {"as_posted": True,
@@ -5029,6 +5362,8 @@ def run(args):
             timing["write_prepared_state_and_all_lbc_cache"] = (
                 time.perf_counter() - started)
 
+    if physical_output is not None:
+        physical_output_receipt = physical_output.seal()
     if root_result is None or root_met is None or initial_snapshot is None:
         raise AssertionError("benchmark preparation produced no initial state")
     if (last_valid_time - initial_snapshot.valid_time).total_seconds() \
@@ -5042,7 +5377,8 @@ def run(args):
             root_result.state, exp.root.run,
             getattr(root_result, "hydrometeor_initialization", None)))
 
-    verify_overlay_sequence(overlay_series)
+    _verify_preparation_overlay(overlay_series, physical_input=physical_input,
+                                binding=water_overlay_binding)
     if args.prepare_only:
         if prepared_cache_receipt is None:
             raise RuntimeError("prepare-only completed without a cache receipt")
@@ -5096,6 +5432,8 @@ def run(args):
                 "lbc_payload_sha256": lbc_payload_sha256,
             },
             "prepared_cache": prepared_cache_receipt,
+            **({"physical_output_store": physical_output_receipt}
+               if physical_output_receipt is not None else {}),
             "physics": physics_profile,
             "memory": {
                 "gpu_peak_used_bytes_observed": setup_gpu_peak_used,
@@ -5681,6 +6019,14 @@ def _parse_args(argv=None):
     parser.add_argument("--source-manifest-sha256")
     parser.add_argument("--static-cache", type=Path, required=True)
     parser.add_argument("--static-receipt", type=Path, required=True)
+    parser.add_argument("--physical-input-provider", type=Path,
+                        help="posted native physical provider with a frozen member plan")
+    parser.add_argument("--physical-member-index", type=int,
+                        help="original recipe member index in the posted provider")
+    parser.add_argument("--physical-input-store", type=Path,
+                        help="sealed native physical snapshots for this complete forcing window")
+    parser.add_argument("--physical-output-store", type=Path,
+                        help="capture mapped native physical snapshots before real initialization")
     parser.add_argument(
         "--domain-spec", type=Path,
         help=("strict gpuwm-hrrr-target-domain-v1 JSON; omission retains "
@@ -5775,6 +6121,9 @@ def _parse_args(argv=None):
         }
         if args.as_posted is not None:
             required.pop("source_manifest_sha256")
+        if args.physical_input_provider is not None:
+            required.pop("pipeline_decoder")
+            required.pop("pipeline_signals")
         missing = [key for key, value in required.items() if value is None]
         if missing:
             parser.error(f"pipeline mode is missing: {missing}")

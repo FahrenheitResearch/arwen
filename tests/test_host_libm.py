@@ -109,3 +109,77 @@ def test_outside_the_domain_the_answers_are_numpys():
             host_libm.power(np.array([0.0, -2.0, 1e300]),
                             np.array([-1.0, 0.5, 2.5])),
             np.power(np.array([0.0, -2.0, 1e300]), np.array([-1.0, 0.5, 2.5])))
+
+
+@pytest.mark.parametrize("workers", [1, 8, 32])
+def test_native_host_math_preserves_scalar_bits_and_special_values(workers):
+    from gpuwm.core import portable_math as pm
+    library = pm._load()
+    if not hasattr(library, "gpuwm_host_binary_f64"):
+        pytest.skip("CPU bridge predates the separate host-libm ABI")
+    rng = np.random.default_rng(719)
+    values = rng.uniform(-700, 700, 65_539)
+    specials = np.array([
+        0, 0x8000000000000000, 1, 0x8000000000000001,
+        0x7ff0000000000000, 0xfff0000000000000,
+        0x7ff8000000000042, 0xfff8000000000019,
+        0x7ff0000000000031, 0xfff0000000000027,
+    ], dtype=np.uint64).view(np.float64)
+    values[:len(specials)] = specials
+    references = (
+        (host_libm.exp, host_libm._exp), (host_libm.log, host_libm._LOG),
+        (host_libm.log10, host_libm._LOG10), (host_libm.tan, host_libm._tan),
+        (host_libm.arctan, math.atan), (host_libm.arcsin, host_libm._ASIN),
+        (host_libm.arccos, host_libm._ACOS),
+    )
+    with pm.worker_limit(workers):
+        for function, reference in references:
+            expected = np.array([reference(float(value)) for value in values])
+            assert function(values).tobytes() == expected.tobytes(), function.__name__
+        bases = rng.integers(0, np.iinfo(np.uint64).max, 65_539, dtype=np.uint64).view(np.float64)
+        exponents = rng.uniform(-4, 4, bases.size)
+        bases[:len(specials)] = specials
+        for power in (-3.0, -0.5, 0.0, 0.5, 2.0, 3.0, np.inf, -np.inf, np.nan):
+            exponents[:len(specials)] = power
+            expected = np.array([host_libm._pow(float(x), float(y))
+                                 for x, y in zip(bases, exponents)])
+            assert host_libm.power(bases, exponents).tobytes() == expected.tobytes()
+        for y, x in ((values, 0.0), (values, values[::-1])):
+            a, b = np.broadcast_arrays(y, x)
+            expected = np.array([math.atan2(float(u), float(v))
+                                 for u, v in zip(a.flat, b.flat)])
+            assert host_libm.arctan2(y, x).tobytes() == expected.tobytes()
+
+
+def test_native_host_math_broadcast_blocks_and_older_bridge_fallback(monkeypatch):
+    from gpuwm.core import portable_math as pm
+    base = np.linspace(0.01, 10, 513 * 257).reshape(513, 257)[:, ::2]
+    exponents = np.linspace(-0.75, 1.25, base.shape[1])
+    expected = np.array([host_libm._pow(float(x), float(y)) for x, y in
+                         zip(base.flat, np.broadcast_to(exponents, base.shape).flat)]).reshape(base.shape)
+    assert host_libm.power(base, exponents).tobytes() == expected.tobytes()
+    assert host_libm.power(np.empty((0, 3)), 2).shape == (0, 3)
+    unaligned = np.ndarray((1003,), dtype=np.float64,
+                           buffer=bytearray(1003 * 8 + 1), offset=1)
+    unaligned[:] = np.linspace(0.01, 1.0, 1003)
+    assert not unaligned.flags.aligned
+    assert host_libm.exp(unaligned).tobytes() == np.array([math.exp(x) for x in unaligned]).tobytes()
+    assert host_libm.power(unaligned, 0.7159).tobytes() == np.array([math.pow(x, 0.7159) for x in unaligned]).tobytes()
+    monkeypatch.setattr(pm, "_load", lambda: None)
+    assert host_libm.power(base, exponents).tobytes() == expected.tobytes()
+    assert host_libm.exp(np.array([1.0, 2.0])).tobytes() == np.array([math.exp(1), math.exp(2)]).tobytes()
+
+
+def test_geometry_callers_keep_reference_without_native_assets(monkeypatch):
+    from gpuwm.core import portable_math as pm
+    def absent():
+        raise FileNotFoundError("CPU bridge is not installed")
+    monkeypatch.setattr(pm, "_load", absent)
+    values = np.array([0.1, 1.0, 2.0])
+    assert host_libm.log(values).tobytes() == np.array([math.log(x) for x in values]).tobytes()
+    assert host_libm.power(values, 0.7159).tobytes() == np.array([math.pow(x, 0.7159) for x in values]).tobytes()
+    def broken():
+        raise OSError("native ABI cannot be loaded")
+    monkeypatch.setattr(pm, "_load", broken)
+    with pytest.raises(OSError, match="native ABI"):
+        host_libm.power(values, 0.7159)

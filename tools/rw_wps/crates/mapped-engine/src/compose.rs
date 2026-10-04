@@ -1223,12 +1223,11 @@ pub fn run_compose(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> 
     // How many valid times are in flight is not announced: the progress
     // stream is part of the byte-identity gate (docs/dev/decode-vendor-
     // design.md, "THE GATE") and must not change with the worker count.
-    let lanes = if stream.times_are_independent() {
-        crate::threads::lanes(
-            stream.per_time_bytes(), &stream.field_bytes(), stream.held_bytes(), source_keys.len())
-    } else {
-        1
-    };
+    // Shared-object streams remain serial but still recheck retained donor
+    // memory before dispatch. A forced single lane is not an admission bypass.
+    let admitted_times = if stream.times_are_independent() { source_keys.len() } else { 1 };
+    let lanes = crate::threads::lanes(
+        stream.per_time_bytes(), &stream.field_bytes(), stream.held_bytes(), admitted_times)?;
     let document = if lanes > 1 {
         let first = std::sync::Mutex::new(stream.take_first());
         let stream = &stream;

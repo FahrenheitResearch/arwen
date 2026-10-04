@@ -353,9 +353,12 @@ def build_routes(inventory: dict, capture: NvrtcCapture) -> dict:
 
     # R1 -- the production loader.  No option tuple appears here; the loader
     # owns it.
-    r1_site, r1_options = _site_options(
+    r1_site = ri.find_site(
         inventory, file="gpuwm/core/kernels/__init__.py",
         constructor_kind="cupy.RawModule", enclosing="load_module")
+    # Options now depend on the named module. Read the same selector the
+    # production loader uses; an expression in the inventory is not empty.
+    r1_options = list(gpuwm_kernels.module_options("ftz_probe"))
     capture.label = "R1"
     r1_module = gpuwm_kernels.load_module("ftz_probe")
     routes["R1"] = {

@@ -349,6 +349,9 @@ class PreparedTileMemory:
                 "template_resident_bytes": template.resident_bytes,
                 "loader_pool_peak_bytes": slab.resident_bytes + slab.transient_bytes,
                 "k_tables_bytes": pf.k_distribution_bytes(),
+                "physics_tables_bytes": (pf.thompson_coefficient_bytes(
+                    int(self.cfg.mp_physics) == 28)
+                    if int(self.cfg.mp_physics) in (8, 28) else 0),
                 "cuda_context_bytes": self.profile.cuda_context_bytes,
                 "local_memory_bytes": pf.kernel_local_memory_bytes(exp, profile=self.profile),
                 "unmodelled_bytes": pf.ENVELOPE_UNMODELLED_BYTES,
@@ -519,9 +522,10 @@ class PreparedTileMemory:
     def vram_bytes(self, window_cells, nbuffers, shape=None):
         from gpuwm.core import preflight as pf
         fixed = self.fixed_terms()
+        tables = fixed["k_tables_bytes"] + fixed["physics_tables_bytes"]
         pool = (int(nbuffers) * self.buffer_bytes(window_cells, shape)
-                + fixed["template_resident_bytes"] + fixed["k_tables_bytes"])
-        pool = max(pool, fixed["loader_pool_peak_bytes"] + fixed["k_tables_bytes"])
+                + fixed["template_resident_bytes"] + tables)
+        pool = max(pool, fixed["loader_pool_peak_bytes"] + tables)
         return (math.ceil(self.pool_headroom * pool)
                 + fixed["cuda_context_bytes"] + fixed["local_memory_bytes"]
                 + fixed["unmodelled_bytes"] + self.device_store_bytes())
@@ -544,8 +548,9 @@ class PreparedTileMemory:
         per_buffer = sum(buffer.values())
         nbuffers = int(nbuffers)
         buffers = nbuffers * per_buffer
-        pool = buffers + fixed["template_resident_bytes"] + fixed["k_tables_bytes"]
-        loader_peak = fixed["loader_pool_peak_bytes"] + fixed["k_tables_bytes"]
+        tables = fixed["k_tables_bytes"] + fixed["physics_tables_bytes"]
+        pool = buffers + fixed["template_resident_bytes"] + tables
+        loader_peak = fixed["loader_pool_peak_bytes"] + tables
         pool_priced = max(pool, loader_peak)
         pool_with_headroom = math.ceil(self.pool_headroom * pool_priced)
         itemized = self._domain(nx, ny, tile_buffer=True)
@@ -573,6 +578,7 @@ class PreparedTileMemory:
             "buffers_bytes": buffers,
             "fixed/template_resident_bytes": fixed["template_resident_bytes"],
             "fixed/k_tables_bytes": fixed["k_tables_bytes"],
+            "fixed/physics_tables_bytes": fixed["physics_tables_bytes"],
             "fixed/loader_pool_peak_bytes": fixed["loader_pool_peak_bytes"],
             "pool_bytes": pool_priced,
             "pool_basis": ("the buffers plus the retained template and the k-tables"
@@ -595,7 +601,8 @@ class PreparedTileMemory:
         from gpuwm.core import preflight as pf
         f = self.fixed_terms()
         return (math.ceil(self.pool_headroom * (
-                    f["template_resident_bytes"] + f["k_tables_bytes"]))
+                    f["template_resident_bytes"] + f["k_tables_bytes"]
+                    + f["physics_tables_bytes"]))
                 + f["cuda_context_bytes"] + f["local_memory_bytes"]
                 + f["unmodelled_bytes"])
 

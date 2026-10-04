@@ -207,16 +207,16 @@ def test_output_road_frames_without_a_drain(grid, buffered):
     import cupy as cp
     from gpuwm.core import dycore, streaming
     from gpuwm.core.devices import DeviceOptions
-    from tilestream.ranks_gate import config, fixture, make_ranked
+    from tilestream.ranks_gate import config, fixture
     cfg = config(96, 80, 12)
     state, bundle = fixture(cfg)
     count = grid[0] * grid[1]
     options = DeviceOptions(count=count, grid=grid, ids=(0,) * count)
-    streamed = make_ranked(bundle, cfg, streaming.ranked_decision(cfg, options),
-                           options, None, "threads")
+    streamed = streaming.ranked_domain_builder(
+        bundle, clock=None, options=options,
+        snapshot_limits=None if buffered else (1,) * count)(
+            None, cfg, streaming.ranked_decision(cfg, options))
     run = streamed.tiled_run
-    if not buffered:
-        run._snapshot_limit = 1
     take = streaming.streamed_store_inventory()
     keys = ["state/thp", "state/u", "state/p"]
     reset = "state/qv"
@@ -242,6 +242,58 @@ def test_output_road_frames_without_a_drain(grid, buffered):
         else:
             assert report["fallback_downloads"] == count * 2
             assert report["frame_snapshot_bytes"] == 0
+        joined = run.store
+        for name, array in take(state).items():
+            assert cp.asnumpy(array).tobytes() == joined[name].tobytes(), name
+    finally:
+        run.close()
+
+
+@pytest.mark.parametrize("grid", [(1, 2), (2, 2)])
+def test_zero_snapshot_policy_fences_even_a_small_requested_subset(grid, monkeypatch):
+    """A rank priced without snapshots cannot allocate one for a small frame.
+
+    Force the shared policy's oversized-inventory decision on a small real
+    domain. The requested subset fits the unchanged performance cap, so the
+    old request-only decision would allocate storage and fail this test.
+    Stepping immediately after the download exercises its producer fence.
+    """
+    import cupy as cp
+    from gpuwm.core import devices_memory, dycore, streaming
+    from gpuwm.core.devices import DeviceOptions
+    from tilestream.ranks_gate import config, fixture, make_ranked
+
+    cfg = config(96, 80, 12)
+    state, bundle = fixture(cfg)
+    count = grid[0] * grid[1]
+    options = DeviceOptions(count=count, grid=grid, ids=(0,) * count)
+    monkeypatch.setattr(devices_memory, "frame_snapshot_budget", lambda _cfg: 0)
+    streamed = make_ranked(bundle, cfg, streaming.ranked_decision(cfg, options),
+                           options, None, "threads")
+    run = streamed.tiled_run
+    take = streaming.streamed_store_inventory()
+    keys = ["state/thp"]
+    try:
+        assert run._snapshot_budgets == [0] * count
+        assert run._snapshot_limit == devices_memory.FRAME_SNAPSHOT_LIMIT_BYTES
+        assert all(0 < take(tile, keys)[keys[0]].nbytes < run._snapshot_limit
+                   for tile in run.tiles)
+        for _ in range(2):
+            dycore.step(state, cfg)
+            run.sweep(1)
+            expected = cp.asnumpy(take(state)[keys[0]]).tobytes()
+            assert run.download(keys) == keys
+            pending = run.pending_downloads()
+            # No host wait before issuing the next numerical step.
+            run.sweep(1)
+            dycore.step(state, cfg)
+            run.wait_downloads(pending)
+            assert run.raw_store[keys[0]].tobytes() == expected
+        report = run.output_report
+        assert report["frame_snapshot_bytes"] == 0
+        assert all(not snapshots for snapshots in run._frame_snapshots)
+        assert report["fallback_downloads"] == 2 * count
+        assert report["full_drains"] == 0 and report["full_gathers"] == 0
         joined = run.store
         for name, array in take(state).items():
             assert cp.asnumpy(array).tobytes() == joined[name].tobytes(), name

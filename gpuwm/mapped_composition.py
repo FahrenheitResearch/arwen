@@ -1141,6 +1141,9 @@ class MappedSourceBundle:
     #: Primary records read through ``mapping.record_aliases``, counted
     #: per field they answer; ``None`` when none were.
     record_aliases: Mapping[str, int] | None = None
+    #: Runtime allocation telemetry, excluded from composition/cache identity.
+    native_decode_memory: Mapping[str, object] | None = dataclass_field(default=None, compare=False)
+    _native_decode_control: dict | None = dataclass_field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         # A streamed frameset is NOT tupled here: `tuple()` would read
@@ -1217,6 +1220,23 @@ class MappedSourceBundle:
         release = getattr(self.frames, "close", None)
         if release is not None:
             release()
+
+    def future_decode_host_bytes(self) -> int | None:
+        control = self._native_decode_control
+        if control is None or not control.get("pending"):
+            return 0
+        price = self.native_decode_memory
+        if not isinstance(price, Mapping) or not price.get("budget_supported"):
+            return None
+        peak = price.get("one_time_peak_bytes")
+        return peak if isinstance(peak, int) and not isinstance(peak, bool) and peak > 0 else None
+
+    def limit_future_decode(self, budget_bytes: int) -> None:
+        """Cap an initially uncapped reader's later whole-grid fallback."""
+        if self._native_decode_control is not None:
+            if isinstance(budget_bytes, bool) or not isinstance(budget_bytes, int) or budget_bytes < 1:
+                raise ValueError("future decode budget must be positive integer bytes")
+            self._native_decode_control["budget_bytes"] = budget_bytes
 
 
 def _frame_summary(frames) -> tuple[tuple[object, tuple[str, ...], str], ...]:
@@ -1699,6 +1719,7 @@ def _compose_through_engine(
     atmospheric_grids=(),
     workers: int | None = None,
     lead_batch: bool = False,
+    memory_budget_bytes: int | None = None,
 ) -> MappedSourceBundle:
     """Compose on the Rust engine, keeping every policy check on this side.
 
@@ -1740,7 +1761,7 @@ def _compose_through_engine(
     try:
         directory = Path(work.name) / "composed"
         try:
-            mapped_engine_bridge.run_engine(
+            execution = mapped_engine_bridge.run_engine(
                 "compose",
                 mapping=mapping_path,
                 files=primary,
@@ -1755,15 +1776,19 @@ def _compose_through_engine(
                 atmospheric_grids=atmospheric_grids,
                 threads=workers,
                 lead_batch=lead_batch,
+                **({} if memory_budget_bytes is None else {
+                    "memory_budget_bytes": memory_budget_bytes}),
             )
         except ScratchDiskRefusal as refusal:
             raise scratch_disk_refusal(refusal, scratch_base) from refusal
         evidence = mapped_engine_bridge.read_composition_evidence(directory)
+        decode_control = {"budget_bytes": memory_budget_bytes,
+                          "pending": bool(atmospheric_grids)}
         def full_fallback():
             # Re-read the same sealed source through the unchanged full writer
             # only if a later consumer needs donors beyond the proven window.
             # The new bundle revalidates all source/composition identities.
-            return _compose_through_engine(
+            full = _compose_through_engine(
                 engine=engine, mapping_path=mapping_path, composition_path=composition_path,
                 manifest_path=manifest_path, manifest_sha256=manifest_sha256,
                 primary=primary, supplements=supplements, provenance=provenance,
@@ -1771,11 +1796,14 @@ def _compose_through_engine(
                 terrain_spec=terrain_spec, decoders=decoders, snapshots=snapshots,
                 before=before, member=member, member_identity=member_identity,
                 scratch_destination=scratch_destination, workers=workers,
-                lead_batch=lead_batch).frames
+                lead_batch=lead_batch,
+                memory_budget_bytes=decode_control["budget_bytes"]).frames
+            decode_control["pending"] = False
+            return full
         frames = mapped_engine_bridge.open_frameset(
             directory, retain=work,
             **({"full_fallback": full_fallback} if atmospheric_grids else {}))
-        return _composed_bundle_from_frames(
+        bundle = _composed_bundle_from_frames(
             frames=frames,
             evidence=evidence,
             engine_name=mapped_engine_bridge.ENGINE_NAME,
@@ -1794,6 +1822,9 @@ def _compose_through_engine(
             supplements=supplements,
             provenance=provenance,
         )
+        return _dataclass_replace(bundle, native_decode_memory=(
+            execution.get("decode_memory") if isinstance(execution, Mapping) else None),
+            _native_decode_control=decode_control)
     except BaseException:
         work.cleanup()
         raise
@@ -1947,6 +1978,7 @@ def decode_composed_source(
     atmospheric_grids=(),
     workers: int | None = None,
     lead_batch: bool = False,
+    memory_budget_bytes: int | None = None,
 ) -> MappedSourceBundle:
     """Decode a complete mapped source with scientifically sourced terrain.
 
@@ -2173,6 +2205,12 @@ def decode_composed_source(
     ):
         _require_authority_snapshot(snapshot)
     before = {str(path): snapshots[path].sha256 for path in authorities}
+    if memory_budget_bytes is not None and engine_binary is None:
+        from gpuwm.ingest.memory_refusal import InitializationMemoryRefused
+
+        raise InitializationMemoryRefused(
+            "the live preparation's future decode requires the native host-memory budget; "
+            "the Python decoder cannot enforce that reservation")
     if engine_binary is not None:
         return _compose_through_engine(
             engine=engine_binary,
@@ -2198,6 +2236,7 @@ def decode_composed_source(
             atmospheric_grids=atmospheric_grids,
             workers=workers,
             lead_batch=lead_batch,
+            memory_budget_bytes=memory_budget_bytes,
         )
     combined = _decode_partition(
         _partition_mapping(mapping, terrain_only=False), primary, decoders,

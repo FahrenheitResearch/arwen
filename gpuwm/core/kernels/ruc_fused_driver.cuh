@@ -505,7 +505,9 @@ extern "C" __global__ void ruc_driver_prologue(
     const float* refsmc, const float* satpsi, const float* satdk,
     const float* wltsmc, const float* qtz, const float* tbq,
     int n,int ktau,float dt,int iswater,int isice,int nv,int ns,
-    float icealbedo,float cn) {
+    float icealbedo,float cn,
+    const float* landusef,const float* soilctop,int nlcat,int nscat,
+    int mosaic_lu,int mosaic_soil,int lakemodel) {
     int i=blockIdx.x*blockDim.x+threadIdx.x;
     if(i>=n) return;
     D_DECLARE_SCRATCH
@@ -577,6 +579,7 @@ extern "C" __global__ void ruc_driver_prologue(
     if(forest==3) delta=d_min(0.45f,scaled);
     if(forest==4) delta=d_min(0.75f,scaled);
     if(forest==5) delta=d_min(0.86f,scaled);
+    float incoming_znt=D_F(znt);
     D_F(lai)=veg==iswater ? laitbl[veg-1]:B(laitbl[veg-1],M(delta,factor));
     if(veg!=iswater) D_F(znt)=forest==7 ? B(z0tbl[veg-1],M(0.125f,factor)):z0tbl[veg-1];
     D_F(emissl)=lemitbl[veg-1]; D_F(pc)=pctbl[veg-1];
@@ -587,13 +590,20 @@ extern "C" __global__ void ruc_driver_prologue(
         D_F(ksat)=satdk[soil-1]; D_F(psis)=-satpsi[soil-1];
         D_F(qmin)=drysmc[soil-1]; D_F(ref)=refsmc[soil-1]; D_F(wilt)=wltsmc[soil-1];
     }
+    ruc_mosaic_parameters(i,n,nlcat,nscat,mosaic_lu,mosaic_soil,
+        landusef,soilctop,soil,iswater,false,factor,incoming_znt,
+        ifortbl,z0tbl,lemitbl,pctbl,laitbl,bb,drysmc,hc,maxsmc,
+        refsmc,satpsi,satdk,wltsmc,qtz,
+        D_F(emissl),D_F(pc),D_F(znt),D_F(lai),D_F(qwrtz),
+        D_F(rhocs),D_F(bclh),D_F(dqm),D_F(ksat),D_F(psis),
+        D_F(qmin),D_F(ref),D_F(wilt));
     bool forested=forest>2;
     D_F(meltfactor)=forested ? 2.0f:0.85f;
     integer[3*n+i]=4;
     for(int k=1;k<RUC_NZS;++k) if(ruc_soil_layer_depth[k]>=(forested ? 0.4f:1.1f)) {
         integer[3*n+i]=k+1; break;
     }
-    bool lake=D_F(lakemask)==1.0f;
+    bool lake=lakemodel==1 && D_F(lakemask)==1.0f;
     bool water=B(D_F(xland),1.5f)>=0.0f && !lake;
     bool land=!(B(D_F(xland),1.5f)>=0.0f || lake);
     bool ice=land && D_F(xice)>=0.5f;
@@ -680,7 +690,8 @@ __device__ __forceinline__ float d_saturation(float pressure,float temperature) 
 extern "C" __global__ void ruc_driver_epilogue(
     const unsigned long long* sp,const unsigned long long* op,
     const int* integer,const bool* run,unsigned* flags,
-    const float* tbq,const float* lemitbl,const float* half,float dt,int n) {
+    const float* tbq,const float* lemitbl,const float* half,float dt,int n,
+    const float* landusef,int mosaic_lu,int crop,int natural) {
     int i=blockIdx.x*blockDim.x+threadIdx.x;
     if(i>=n) return;
     D_DECLARE_SCRATCH
@@ -700,6 +711,20 @@ extern "C" __global__ void ruc_driver_epilogue(
         FROM(lmavail,mavail); FROM(smelt,smelt); FROM(runoff1,runoff1);
         FROM(runoff2,runoff2); FROM(infiltr,infiltr); FROM(qfx,eeta);
         FROM(lh,qfx); FROM(hfx,hfx); FROM(s,s);
+        // WRF LSMRUC:985-1009, after SFCTMP and before soil diagnostics.
+        if(mosaic_lu) {
+            float croparea=landusef[(crop-1)*n+i];
+            float naturalarea=landusef[(natural-1)*n+i];
+            float factor=d_max(0.0f,d_min(1.0f,Q(B(D_F(vegfra),D_F(shdmin)),d_max(1.0f,B(D_F(shdmax),D_F(shdmin))))));
+            if((croparea>0.0f || naturalarea>0.0f) && factor>0.75f) {
+                float cropsm=B(M(1.1f,D_F(wilt)),D_F(qmin));
+                float cropfr=d_min(1.0f,A(croparea,M(0.4f,naturalarea)));
+                for(int k=0;k<integer[3*n+i];++k) {
+                    float newsm=A(M(cropsm,cropfr),M(B(1.0f,cropfr),D_P(soilm1d,k)));
+                    if(D_P(soilm1d,k)<newsm) D_P(soilm1d,k)=newsm;
+                }
+            }
+        }
         float available=0.0f,maximum=0.0f;
         for(int k=0;k<RUC_NZS-1;++k) {
             float thickness=B(half[k+1],half[k]);

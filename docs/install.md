@@ -408,7 +408,7 @@ python tools/smoke_rw_wps_cpu_install.py \
   --receipt /tmp/rw-wps-clean-cpu-install.json
 ```
 
-The smoke command installs only NumPy and netCDF4, extracts with traversal and
+The smoke command installs only NumPy, netCDF4 and threadpoolctl, extracts with traversal and
 non-regular-entry checks, invokes `install.sh --skip-gpu`, runs the public CLI
 from outside the checkout, and retains a receipt. Supply `--wheelhouse DIR`
 for an offline dependency install.
@@ -417,7 +417,7 @@ After extracting an archive into a new directory:
 
 ```bash
 python -m venv /opt/rw-wps-venv
-/opt/rw-wps-venv/bin/python -m pip install 'numpy>=1.26' 'netCDF4>=1.6'
+/opt/rw-wps-venv/bin/python -m pip install 'numpy>=1.26' 'netCDF4>=1.6' 'threadpoolctl>=3.1'
 
 GPUWM_PYTHON=/opt/rw-wps-venv/bin/python ./install.sh --skip-gpu
 ./bin/rw-wps --version
@@ -488,8 +488,8 @@ python tools/smoke_rw_wps_cpu_install.py `
 ```
 
 The smoke extracts only regular ZIP entries beneath one root, rejects path
-traversal and case-insensitive duplicate paths, installs only NumPy and
-netCDF4, and proves CuPy and Matplotlib are absent. Manual installation is:
+traversal and case-insensitive duplicate paths, installs only NumPy,
+netCDF4 and threadpoolctl, and proves CuPy and Matplotlib are absent. Manual installation is:
 
 ```powershell
 $env:GPUWM_PYTHON = "C:\absolute\venv\Scripts\python.exe"

@@ -1,0 +1,143 @@
+{
+  "operator_id": "wrf-v3.9.1-ruc-hydraulic-spp-v1",
+  "current_sha256": "3265f810d08dcbddfaf198371dc7f652e78e8d3a788f703a515c555a3bbb2a12",
+  "historical_sha256": "834833a79a7a57a4e436a038f3019ce2b5a998141cc5bb9cd39cf2d83ec4d786",
+  "overlay_sha256": "153532d89bdea62b0de423e88e871072b4de6764fdb5cbe512d2a578761c596a",
+  "operator": "if (spp_lsm==1) then \n         DO K=1,NZS !lala\n            fieldcol_sf(k)=hydro(k)*rstochcol(k)\n            hydro(k)=hydro(k)*(1+rstochcol(k))\n         ENDDO\n         ENDIF\n",
+  "compiler": "GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+  "table_sha256": {
+    "SOILPARM.TBL": "efa3e1ad5dc6bd64665fcf8a2336ea4e4a2ca7fc8190a9305d363a4b13b2045b",
+    "VEGPARM.TBL": "4612c5c2d7e5398ae925ff363634ff98d6587a4aaa7440eaf1bbcc248dad6090",
+    "GENPARM.TBL": "b8d1829a745cb266a9e253e2ea13f2ae2493f05c1c40c62d785c794d4ee30a9a"
+  },
+  "records": [
+    {
+      "variant": "current",
+      "stage": "soil",
+      "label": "off",
+      "mode": 0,
+      "file": "current-soil-off.csv",
+      "sha256": "e691addf1cda795d9031d99bb0e4849521f0da066569a6a354dfa72bcb40a4ae"
+    },
+    {
+      "variant": "current",
+      "stage": "snowsoil",
+      "label": "off",
+      "mode": 0,
+      "file": "current-snowsoil-off.csv",
+      "sha256": "6da22347ccd99eb73d48d8147c83d69bb7802fa2668ab03237b171efa23f4992"
+    },
+    {
+      "variant": "hydraulic_overlay",
+      "stage": "soil",
+      "label": "off",
+      "mode": 0,
+      "file": "hydraulic_overlay-soil-off.csv",
+      "sha256": "e691addf1cda795d9031d99bb0e4849521f0da066569a6a354dfa72bcb40a4ae"
+    },
+    {
+      "variant": "hydraulic_overlay",
+      "stage": "soil",
+      "label": "zero",
+      "mode": 1,
+      "file": "hydraulic_overlay-soil-zero.csv",
+      "sha256": "c29bc817ec32887d171032c0026b159c3d1c7c5af2504cbdfac870c43e36de62"
+    },
+    {
+      "variant": "hydraulic_overlay",
+      "stage": "soil",
+      "label": "minus09",
+      "mode": 1,
+      "file": "hydraulic_overlay-soil-minus09.csv",
+      "sha256": "7bbef98ae402e891571b8682e64648b7ff4838d0e7a1509fcb9d70eb1251267b"
+    },
+    {
+      "variant": "hydraulic_overlay",
+      "stage": "soil",
+      "label": "minus03",
+      "mode": 1,
+      "file": "hydraulic_overlay-soil-minus03.csv",
+      "sha256": "0a3a9fb06b67df63ac69074c1df9021255a2225ea61b7a1ca39b3707e48b3fe0"
+    },
+    {
+      "variant": "hydraulic_overlay",
+      "stage": "soil",
+      "label": "plus03",
+      "mode": 1,
+      "file": "hydraulic_overlay-soil-plus03.csv",
+      "sha256": "173a63b6e07f58fbac0b5a7c177ce2990fb3023c5d9d69c67673167cd23abd0d"
+    },
+    {
+      "variant": "hydraulic_overlay",
+      "stage": "soil",
+      "label": "plus09",
+      "mode": 1,
+      "file": "hydraulic_overlay-soil-plus09.csv",
+      "sha256": "824eeb415a15e9d7f3f9864c45f1842fdb8405f75841242f291b43c828ab5443"
+    },
+    {
+      "variant": "hydraulic_overlay",
+      "stage": "soil",
+      "label": "depth",
+      "mode": 1,
+      "file": "hydraulic_overlay-soil-depth.csv",
+      "sha256": "2e34e176e1b09175d36340d9e5635031de66fb0b380bfcdb13037eca7092d383"
+    },
+    {
+      "variant": "hydraulic_overlay",
+      "stage": "snowsoil",
+      "label": "off",
+      "mode": 0,
+      "file": "hydraulic_overlay-snowsoil-off.csv",
+      "sha256": "6da22347ccd99eb73d48d8147c83d69bb7802fa2668ab03237b171efa23f4992"
+    },
+    {
+      "variant": "hydraulic_overlay",
+      "stage": "snowsoil",
+      "label": "zero",
+      "mode": 1,
+      "file": "hydraulic_overlay-snowsoil-zero.csv",
+      "sha256": "e4aeaf9770c83b051f0619958c1d9d254c77229cbcb8601c6877feda3c92ac29"
+    },
+    {
+      "variant": "hydraulic_overlay",
+      "stage": "snowsoil",
+      "label": "minus09",
+      "mode": 1,
+      "file": "hydraulic_overlay-snowsoil-minus09.csv",
+      "sha256": "cdd5479cb05b6699d1310f0747c8dd2db1c18e26d1d850a0e4b3f40a5bac2c2e"
+    },
+    {
+      "variant": "hydraulic_overlay",
+      "stage": "snowsoil",
+      "label": "minus03",
+      "mode": 1,
+      "file": "hydraulic_overlay-snowsoil-minus03.csv",
+      "sha256": "9366761c8396ee57ad0f28621a8b9ba9ba2acc3d2d2e0f0f3ecb844fba150946"
+    },
+    {
+      "variant": "hydraulic_overlay",
+      "stage": "snowsoil",
+      "label": "plus03",
+      "mode": 1,
+      "file": "hydraulic_overlay-snowsoil-plus03.csv",
+      "sha256": "3dfaeea9fbd61a987f000f1afb716a4b4a9d7463d698b52b1dd65d84f0efa65a"
+    },
+    {
+      "variant": "hydraulic_overlay",
+      "stage": "snowsoil",
+      "label": "plus09",
+      "mode": 1,
+      "file": "hydraulic_overlay-snowsoil-plus09.csv",
+      "sha256": "4c9df0a1ca2d6cdfad3094bbf158501eb3bc6e048b035a8a588882745a5249a2"
+    },
+    {
+      "variant": "hydraulic_overlay",
+      "stage": "snowsoil",
+      "label": "depth",
+      "mode": 1,
+      "file": "hydraulic_overlay-snowsoil-depth.csv",
+      "sha256": "be5750a5163583558e6135c305fef58c25b97c2b0ea385c2a4a11fd7b5fa0e14"
+    }
+  ]
+}

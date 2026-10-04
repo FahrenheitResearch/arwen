@@ -50,6 +50,28 @@ def _frozen_constructors():
 def test_new_fields_are_reviewed_defaults_appended_last():
     """New fields remain appended, preserving positional construction."""
     names = [f.name for f in dataclasses.fields(RunConfig)]
+    # The RUC SOILPROP lineage, appended at its WRF v4.0-4.5 form: a
+    # non-RUC case never reads it, every RUC configuration changes answers
+    # (CHANGELOG).
+    assert names.pop() == "ruc_soilprop"
+    assert RunConfig.__dataclass_fields__["ruc_soilprop"].default == "wrf_45"
+    # The WRF SPP consumer switches, appended off: an enabled value needs a
+    # member-owned pattern, so every earlier configuration is unchanged.
+    assert names[-2:] == ["spp_conv", "spp_pbl"]
+    assert RunConfig.__dataclass_fields__["spp_conv"].default == 0
+    assert RunConfig.__dataclass_fields__["spp_pbl"].default == 0
+    names = names[:-2]
+    assert names[-4:] == ["sf_lake_physics", "use_lakedepth", "lakedepth_default", "lake_min_elev"]
+    assert RunConfig.__dataclass_fields__["sf_lake_physics"].default == 0
+    assert RunConfig.__dataclass_fields__["use_lakedepth"].default == 1
+    assert RunConfig.__dataclass_fields__["lakedepth_default"].default == 50.0
+    assert RunConfig.__dataclass_fields__["lake_min_elev"].default == 5.0
+    names = names[:-4]
+    assert names.pop() == "use_rap_aero_icbc"
+    assert RunConfig.__dataclass_fields__["use_rap_aero_icbc"].default is False
+    # Appended without shifting positional construction; off preserves old runs.
+    assert names.pop() == "scalar_pblmix"
+    assert RunConfig.__dataclass_fields__["scalar_pblmix"].default == 0
     # The numerical-generation selector preserves the existing WRF 4.7.1
     # operator at its default and appends without moving any old argument.
     assert names[-1] == "zadvect_implicit_variant"
@@ -554,13 +576,23 @@ def test_every_existing_legacy_toml_resolves_identically():
             "tests/data/config_freeze_golden.json consciously.")
         cfg = load_config(path)
         actual = dataclasses.asdict(cfg)
+        assert actual.pop("use_rap_aero_icbc") is False
         assert actual.pop("diff_opt") == 2
+        assert actual.pop("scalar_pblmix") == 0
         assert actual.pop("mix_full_fields") is True
         assert actual.pop("adaptive_nest_lattice") is False
         assert actual.pop("zadvect_implicit") == 0
         assert actual.pop("w_crit_cfl") == 1.0
         assert actual.pop("topo_wind") == 0 and actual.pop("gwd_opt") == 0
         assert actual.pop("zadvect_implicit_variant") == "wrf_471"
+        assert actual.pop("sf_lake_physics") == 0
+        assert actual.pop("use_lakedepth") == 1
+        assert actual.pop("lakedepth_default") == 50.0
+        assert actual.pop("lake_min_elev") == 5.0
+        assert actual.pop("spp_conv") == 0 and actual.pop("spp_pbl") == 0
+        # The RUC SOILPROP lineage changed its default: a non-RUC case
+        # never reads it; a RUC case changes answers (CHANGELOG).
+        assert actual.pop("ruc_soilprop") == "wrf_45"
         assert _pop_topo_radiation_defaults(actual)
         # These legacy files omit CQ. Its default-on defect fix is the
         # only approved change from the recorded field dictionary.
@@ -576,13 +608,23 @@ def test_frozen_case_constructed_configs_resolve_identically():
         cfg = ctor()
         assert key in GOLDEN, key
         actual = dataclasses.asdict(cfg)
+        assert actual.pop("use_rap_aero_icbc") is False
         assert actual.pop("diff_opt") == 2
+        assert actual.pop("scalar_pblmix") == 0
         assert actual.pop("mix_full_fields") is True
         assert actual.pop("adaptive_nest_lattice") is False
         assert actual.pop("zadvect_implicit") == 0
         assert actual.pop("w_crit_cfl") == 1.0
         assert actual.pop("topo_wind") == 0 and actual.pop("gwd_opt") == 0
         assert actual.pop("zadvect_implicit_variant") == "wrf_471"
+        assert actual.pop("sf_lake_physics") == 0
+        assert actual.pop("use_lakedepth") == 1
+        assert actual.pop("lakedepth_default") == 50.0
+        assert actual.pop("lake_min_elev") == 5.0
+        assert actual.pop("spp_conv") == 0 and actual.pop("spp_pbl") == 0
+        # The RUC SOILPROP lineage changed its default: a non-RUC case
+        # never reads it; a RUC case changes answers (CHANGELOG).
+        assert actual.pop("ruc_soilprop") == "wrf_45"
         assert _pop_topo_radiation_defaults(actual)
         # The constructors omit CQ too. Dry cases remain numerically
         # unchanged because their qv=None bypass does no CQ work.

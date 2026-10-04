@@ -43,6 +43,7 @@ from gpuwm.case_data import (PerDomainSourceOrography, SourceOrography,
                              resolve_source_orography)
 from gpuwm.core import constants as c
 from gpuwm.core import portable_math as pm
+from gpuwm.ingest.preprocess_backend import preprocess_math_call
 from gpuwm.core.diagnostics import update_diagnostics
 from gpuwm.core.grid import (BaseState, VerticalCoord,
                             hybrid_column_ordering_refusal,
@@ -911,6 +912,26 @@ def _prepare_child_input_on_grid(
         preprocess_workers: int | None = None,
         cpu_bridge: Path | str | None = None,
 ) -> PreparedChildInput:
+    from gpuwm.ensemble.runtime_preparation import current_runtime_preparation
+    source = current_runtime_preparation()
+    if source is not None:
+        return source.prepare_child_input(child_dc, grid, catalog, source_orography,
+            preprocess_backend=preprocess_backend, preprocess_workers=preprocess_workers,
+            cpu_bridge=cpu_bridge, build=lambda: _prepare_child_input_on_grid_uncached(
+                child_dc, grid, catalog, source_orography, preprocess_backend,
+                preprocess_workers, cpu_bridge))
+    return _prepare_child_input_on_grid_uncached(child_dc, grid, catalog,
+        source_orography, preprocess_backend, preprocess_workers, cpu_bridge)
+
+
+@preprocess_math_call
+def _prepare_child_input_on_grid_uncached(
+        child_dc: DomainConfig, grid: LambertGrid, catalog,
+        source_orography: SourceOrographyDeclaration | None = None,
+        preprocess_backend: str | object = "cuda",
+        preprocess_workers: int | None = None,
+        cpu_bridge: Path | str | None = None,
+) -> PreparedChildInput:
     from gpuwm.ingest.preprocess_backend import resolve_preprocess_backend
 
     started = time.perf_counter()
@@ -926,6 +947,13 @@ def _prepare_child_input_on_grid(
     preprocess = resolve_preprocess_backend(
         preprocess_backend, workers=preprocess_workers,
         cpu_bridge=cpu_bridge, reason=root_selection.get("reason"))
+    if requested == "cuda" and root_selection.get("chunking"):
+        from gpuwm.ingest.bounded_cuda import BoundedCudaPreprocessBackend
+        preprocess = BoundedCudaPreprocessBackend(
+            device_budget_bytes=root_selection["chunking"]["device_pool_budget_bytes"],
+            source_staging_bytes=root_selection["chunking"].get("source_staging_bytes", 0),
+            host_workers=getattr(preprocess, "host_workers", preprocess_workers))
+        preprocess.selection = root_selection
     cfg = child_dc.run
     if not cfg.moist:
         raise ValueError("ERA5-direct child initialization requires moist=True")
@@ -935,7 +963,8 @@ def _prepare_child_input_on_grid(
 
     static_catalog = _static_catalog(catalog)
     static_fields = build_static_for_domain(
-        grid, static_catalog, child_dc.grid_id)
+        grid, static_catalog, child_dc.grid_id,
+        **({"cfg": cfg} if getattr(cfg, "sf_lake_physics", 0) else {}))
     source = _initial_snapshot(catalog, child_dc.start_time)
     has_invariant = "SOILGEO" in tuple(getattr(catalog, "inventory", ()))
     catalog_declaration = _catalog_source_declaration(catalog)
@@ -1164,6 +1193,7 @@ def _assert_prepared_grid_matches_parent(
             f"the live parent: {drift}")
 
 
+@preprocess_math_call(prepared_parameter="prepared")
 def finalize_prepared_child(
         prepared: PreparedChildInput, parent_node: DomainNode,
         vertical: VerticalConfig, *, scratch_arena=None,
@@ -1197,6 +1227,15 @@ def finalize_prepared_child(
     grid = prepared.grid
     static_fields = prepared.static_fields
     horizontal = prepared.horizontal
+    from gpuwm.ensemble.posted_preparation import (
+        current_posted_preparation, replace_current_native_snapshot)
+    if current_posted_preparation() is not None:
+        horizontal = replace_current_native_snapshot(horizontal, grid=grid, cfg=cfg,
+            static_fields=static_fields, landuse_attrs=prepared.landuse_attrs,
+            domain_id=child_dc.grid_id, metadata={
+                "declared_orography": prepared.declared_orography,
+                "preprocessing": prepared.preprocess_receipt,
+                "water_temperature_policy": prepared.water_temperature_policy})
     coord = _shared_vertical_coord(vertical, cfg.nz)
     init_kwargs = dict(
         source_orography=prepared.declared_orography, p_top=vertical.p_top,

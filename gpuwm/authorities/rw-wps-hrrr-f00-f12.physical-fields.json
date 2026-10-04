@@ -1,0 +1,701 @@
+{
+  "schema": "gpuwm-native-physical-field-contract.v1",
+  "contract_id": "hrrr-f00-f12-physical-fields-v1",
+  "description": "The native HRRR mapper physical units and target-grid semantics. Parameter units follow the NCEP GRIB2 tables for disciplines 0, 2 and 10. HGT is geopotential height, expressed in metres as in the CF canonical unit. No geopotential-to-height or geopotential-to-geometric-height conversion is performed by the native HRRR route. The levels_hpa member holds hybrid model indices, so this contract declares it dimensionless. The parameter table names the standard current GRIB2 identifiers, with no unit conversion in the native bridge. Its source gate also owns explicit aliases: earlier QI 0/6/0, and PMSL 0/3/192 or 0/3/198 only for originating center 7. These aliases retain the declared canonical quantity. Source authority: tools/grib1_bridge/src/bin/hrrr_grib2_bridge.rs.",
+  "unit_authorities": [
+    "https://www.nco.ncep.noaa.gov/pmb/docs/grib2/grib2_doc/grib2_table4-2-0-1.shtml",
+    "https://www.nco.ncep.noaa.gov/pmb/docs/grib2/grib2_doc/grib2_table4-2-0-3.shtml",
+    "https://www.nco.ncep.noaa.gov/pmb/docs/grib2/grib2_doc/grib2_table4-2-2-0.shtml",
+    "https://www.nco.ncep.noaa.gov/pmb/docs/grib2/grib2_doc/grib2_table4-2-10-2.shtml"
+  ],
+  "parameters": {
+    "PRES": [
+      [
+        0,
+        3,
+        0
+      ],
+      "Pa"
+    ],
+    "PSFC": [
+      [
+        0,
+        3,
+        0
+      ],
+      "Pa"
+    ],
+    "PMSL": [
+      [
+        0,
+        3,
+        1
+      ],
+      "Pa"
+    ],
+    "TT": [
+      [
+        0,
+        0,
+        0
+      ],
+      "K"
+    ],
+    "T2": [
+      [
+        0,
+        0,
+        0
+      ],
+      "K"
+    ],
+    "SKINTEMP": [
+      [
+        0,
+        0,
+        0
+      ],
+      "K"
+    ],
+    "SOILT": [
+      [
+        2,
+        0,
+        2
+      ],
+      "K"
+    ],
+    "SPFH": [
+      [
+        0,
+        1,
+        0
+      ],
+      "kg kg-1"
+    ],
+    "Q2": [
+      [
+        0,
+        1,
+        0
+      ],
+      "kg kg-1"
+    ],
+    "QC": [
+      [
+        0,
+        1,
+        22
+      ],
+      "kg kg-1"
+    ],
+    "QI": [
+      [
+        0,
+        1,
+        82
+      ],
+      "kg kg-1"
+    ],
+    "QR": [
+      [
+        0,
+        1,
+        24
+      ],
+      "kg kg-1"
+    ],
+    "QS": [
+      [
+        0,
+        1,
+        25
+      ],
+      "kg kg-1"
+    ],
+    "QG": [
+      [
+        0,
+        1,
+        32
+      ],
+      "kg kg-1"
+    ],
+    "HGT": [
+      [
+        0,
+        3,
+        5
+      ],
+      "m"
+    ],
+    "SOILHGT": [
+      [
+        0,
+        3,
+        5
+      ],
+      "m"
+    ],
+    "U_MASS": [
+      [
+        0,
+        2,
+        2
+      ],
+      "m s-1"
+    ],
+    "V_MASS": [
+      [
+        0,
+        2,
+        3
+      ],
+      "m s-1"
+    ],
+    "U10_MASS": [
+      [
+        0,
+        2,
+        2
+      ],
+      "m s-1"
+    ],
+    "V10_MASS": [
+      [
+        0,
+        2,
+        3
+      ],
+      "m s-1"
+    ],
+    "SNOW": [
+      [
+        0,
+        1,
+        13
+      ],
+      "kg m-2"
+    ],
+    "SNOWH": [
+      [
+        0,
+        1,
+        11
+      ],
+      "m"
+    ],
+    "SOILW": [
+      [
+        2,
+        0,
+        192
+      ],
+      "1"
+    ],
+    "LANDSEA": [
+      [
+        2,
+        0,
+        0
+      ],
+      "1"
+    ],
+    "XICE": [
+      [
+        10,
+        2,
+        0
+      ],
+      "1"
+    ]
+  },
+  "vertical": {
+    "kind": "hybrid_model_levels",
+    "units": "1",
+    "values": "levels_hpa",
+    "pressure_field": "field__PRES"
+  },
+  "arrays": {
+    "levels_hpa": {
+      "units": "1",
+      "dimensions": [
+        "level"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "GRIB2:hybrid-level-index"
+      ],
+      "operation": "HRRR native hybrid model indices 1 through 50; physical pressure is field__PRES in Pa, not this index."
+    },
+    "field__PRES": {
+      "units": "Pa",
+      "dimensions": [
+        "level",
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "PRES"
+      ],
+      "operation": "Native overlapping-parabolic interpolation in HRRR projection coordinates; source units unchanged."
+    },
+    "field__TT": {
+      "units": "K",
+      "dimensions": [
+        "level",
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "TT"
+      ],
+      "operation": "Native overlapping-parabolic interpolation in HRRR projection coordinates; source units unchanged."
+    },
+    "field__SPFH": {
+      "units": "kg kg-1",
+      "dimensions": [
+        "level",
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "SPFH"
+      ],
+      "operation": "Native overlapping-parabolic interpolation in HRRR projection coordinates; source units unchanged. Specific humidity is retained; no separate RH mapping occurs."
+    },
+    "field__PSFC": {
+      "units": "Pa",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "PSFC"
+      ],
+      "operation": "Native overlapping-parabolic interpolation in HRRR projection coordinates; source units unchanged."
+    },
+    "field__SKINTEMP": {
+      "units": "K",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "SKINTEMP"
+      ],
+      "operation": "Native overlapping-parabolic interpolation in HRRR projection coordinates; source units unchanged."
+    },
+    "field__SNOW": {
+      "units": "kg m-2",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "SNOW"
+      ],
+      "operation": "Native overlapping-parabolic interpolation in HRRR projection coordinates; source units unchanged. Water-equivalent snow mass per area; no conversion to snow depth."
+    },
+    "field__SNOWH": {
+      "units": "m",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "SNOWH"
+      ],
+      "operation": "Native overlapping-parabolic interpolation in HRRR projection coordinates; source units unchanged."
+    },
+    "field__T2": {
+      "units": "K",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "T2"
+      ],
+      "operation": "Native overlapping-parabolic interpolation in HRRR projection coordinates; source units unchanged."
+    },
+    "field__Q2": {
+      "units": "kg kg-1",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "Q2"
+      ],
+      "operation": "Native overlapping-parabolic interpolation in HRRR projection coordinates; source units unchanged. Specific humidity at 2 m, not relative humidity or mixing ratio."
+    },
+    "field__PMSL": {
+      "units": "Pa",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "PMSL"
+      ],
+      "operation": "Native overlapping-parabolic interpolation in HRRR projection coordinates; source units unchanged."
+    },
+    "field__HGT": {
+      "units": "m",
+      "dimensions": [
+        "level",
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "HGT"
+      ],
+      "operation": "Native overlapping-parabolic interpolation in HRRR projection coordinates; source units unchanged. Geopotential height in metres; no conversion to geometric height. GHT and SOURCE_OROGRAPHY are mapper aliases."
+    },
+    "field__GHT": {
+      "units": "m",
+      "dimensions": [
+        "level",
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "HGT"
+      ],
+      "operation": "Native overlapping-parabolic interpolation in HRRR projection coordinates; source units unchanged. Geopotential height in metres; no conversion to geometric height. GHT and SOURCE_OROGRAPHY are mapper aliases."
+    },
+    "field__SOILHGT": {
+      "units": "m",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "SOILHGT"
+      ],
+      "operation": "Native overlapping-parabolic interpolation in HRRR projection coordinates; source units unchanged. Geopotential height in metres; no conversion to geometric height. GHT and SOURCE_OROGRAPHY are mapper aliases."
+    },
+    "field__SOURCE_OROGRAPHY": {
+      "units": "m",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "SOILHGT"
+      ],
+      "operation": "Native overlapping-parabolic interpolation in HRRR projection coordinates; source units unchanged. Geopotential height in metres; no conversion to geometric height. GHT and SOURCE_OROGRAPHY are mapper aliases."
+    },
+    "field__QC": {
+      "units": "kg kg-1",
+      "dimensions": [
+        "level",
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "QC"
+      ],
+      "operation": "Native bilinear interpolation of hydrometeor mass mixing ratio; source units unchanged. QI admits the native bridge's earlier HRRR CICE 0/6/0 alias when CIMIXR is absent."
+    },
+    "field__QI": {
+      "units": "kg kg-1",
+      "dimensions": [
+        "level",
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "QI"
+      ],
+      "operation": "Native bilinear interpolation of hydrometeor mass mixing ratio; source units unchanged. QI admits the native bridge's earlier HRRR CICE 0/6/0 alias when CIMIXR is absent."
+    },
+    "field__QR": {
+      "units": "kg kg-1",
+      "dimensions": [
+        "level",
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "QR"
+      ],
+      "operation": "Native bilinear interpolation of hydrometeor mass mixing ratio; source units unchanged. QI admits the native bridge's earlier HRRR CICE 0/6/0 alias when CIMIXR is absent."
+    },
+    "field__QS": {
+      "units": "kg kg-1",
+      "dimensions": [
+        "level",
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "QS"
+      ],
+      "operation": "Native bilinear interpolation of hydrometeor mass mixing ratio; source units unchanged. QI admits the native bridge's earlier HRRR CICE 0/6/0 alias when CIMIXR is absent."
+    },
+    "field__QG": {
+      "units": "kg kg-1",
+      "dimensions": [
+        "level",
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "QG"
+      ],
+      "operation": "Native bilinear interpolation of hydrometeor mass mixing ratio; source units unchanged. QI admits the native bridge's earlier HRRR CICE 0/6/0 alias when CIMIXR is absent."
+    },
+    "field__UU": {
+      "units": "m s-1",
+      "dimensions": [
+        "level",
+        "y",
+        "x_stag"
+      ],
+      "basis": "grid_x",
+      "source_fields": [
+        "U_MASS",
+        "V_MASS"
+      ],
+      "operation": "Rotate source HRRR grid-relative vectors to earth basis at source mass points, interpolate both components to the target face with the native parabolic operator, then rotate into the target Lambert grid basis; no change of speed units."
+    },
+    "field__VV": {
+      "units": "m s-1",
+      "dimensions": [
+        "level",
+        "y_stag",
+        "x"
+      ],
+      "basis": "grid_y",
+      "source_fields": [
+        "U_MASS",
+        "V_MASS"
+      ],
+      "operation": "Rotate source HRRR grid-relative vectors to earth basis at source mass points, interpolate both components to the target face with the native parabolic operator, then rotate into the target Lambert grid basis; no change of speed units."
+    },
+    "field__U10": {
+      "units": "m s-1",
+      "dimensions": [
+        "y",
+        "x_stag"
+      ],
+      "basis": "grid_x",
+      "source_fields": [
+        "U10_MASS",
+        "V10_MASS"
+      ],
+      "operation": "Rotate source HRRR grid-relative vectors to earth basis at source mass points, interpolate both components to the target face with the native parabolic operator, then rotate into the target Lambert grid basis; no change of speed units."
+    },
+    "field__V10": {
+      "units": "m s-1",
+      "dimensions": [
+        "y_stag",
+        "x"
+      ],
+      "basis": "grid_y",
+      "source_fields": [
+        "U10_MASS",
+        "V10_MASS"
+      ],
+      "operation": "Rotate source HRRR grid-relative vectors to earth basis at source mass points, interpolate both components to the target face with the native parabolic operator, then rotate into the target Lambert grid basis; no change of speed units."
+    },
+    "field__SOILT": {
+      "units": "K",
+      "dimensions": [
+        "soil_level",
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "SOILT",
+        "LANDSEA",
+        "static:LANDMASK"
+      ],
+      "operation": "Native land-masked convex bilinear interpolation with verified nearest-land fallback; soil depths are [0,0.01,0.04,0.10,0.30,0.60,1.0,1.6,3.0] m. Target water receives SKINTEMP. SOILW is a volumetric fraction, including frozen water; no density conversion."
+    },
+    "field__SOILW": {
+      "units": "1",
+      "dimensions": [
+        "soil_level",
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "SOILW",
+        "LANDSEA",
+        "static:LANDMASK"
+      ],
+      "operation": "Native land-masked convex bilinear interpolation with verified nearest-land fallback; soil depths are [0,0.01,0.04,0.10,0.30,0.60,1.0,1.6,3.0] m. Target water receives unit volumetric moisture. SOILW is a volumetric fraction, including frozen water; no density conversion."
+    },
+    "field__LANDSEA": {
+      "units": "1",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "static:LANDMASK"
+      ],
+      "operation": "Actual target static land mask, 0 for water and 1 for land; not the diagnostic nearest source mask."
+    },
+    "field__SOURCE_LANDSEA": {
+      "units": "1",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "LANDSEA"
+      ],
+      "operation": "Nearest source land mask, 0 for water and 1 for land."
+    },
+    "field__XICE": {
+      "units": "1",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "XICE"
+      ],
+      "operation": "Nearest source ice-cover fraction; no percent scaling."
+    },
+    "meta__water_temperature": {
+      "units": "K",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "SKINTEMP",
+        "water_temperature_receipt"
+      ],
+      "operation": "Finished common water-temperature assembly in kelvin, according to the bound water policy and actual provider receipt."
+    },
+    "meta__water_temperature_source": {
+      "units": "1",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "water_temperature_receipt"
+      ],
+      "operation": "Dimensionless provider IDs from gpuwm.ingest.water_temperature.SOURCE_NAMES; categorical, not a temperature."
+    }
+  },
+  "evidence": {
+    "required": [
+      "native_mapper",
+      "water_temperature_assembly"
+    ],
+    "any_of": [
+      [
+        "raw_source_manifest",
+        "ordinary_source_input_plan"
+      ],
+      [
+        "native_decoder_executable",
+        "sealed_native_bridge_manifest"
+      ]
+    ],
+    "table_digests": {
+      "hrrr_parameter_contract": "parameters"
+    }
+  },
+  "snapshot": {
+    "levels": [
+      1.0,
+      2.0,
+      3.0,
+      4.0,
+      5.0,
+      6.0,
+      7.0,
+      8.0,
+      9.0,
+      10.0,
+      11.0,
+      12.0,
+      13.0,
+      14.0,
+      15.0,
+      16.0,
+      17.0,
+      18.0,
+      19.0,
+      20.0,
+      21.0,
+      22.0,
+      23.0,
+      24.0,
+      25.0,
+      26.0,
+      27.0,
+      28.0,
+      29.0,
+      30.0,
+      31.0,
+      32.0,
+      33.0,
+      34.0,
+      35.0,
+      36.0,
+      37.0,
+      38.0,
+      39.0,
+      40.0,
+      41.0,
+      42.0,
+      43.0,
+      44.0,
+      45.0,
+      46.0,
+      47.0,
+      48.0,
+      49.0,
+      50.0
+    ],
+    "leading_axis_length": {
+      "SOILT": 9,
+      "SOILW": 9
+    }
+  },
+  "refusals": {
+    "evidence_type": "HRRR physical fields require native mapping evidence",
+    "evidence_missing": "HRRR physical fields require their mapper, source, water and decoder authorities",
+    "vertical": "native HRRR physical input needs dimensionless hybrid indices and full pressure in Pa",
+    "unknown_array": "native HRRR physical input has no verified mapping for {name}",
+    "incompatible_array": "native HRRR physical input {name} has incompatible {attribute}",
+    "snapshot_levels": "native HRRR physical input hybrid indices must remain exactly 1 through 50",
+    "snapshot_leading_axis": "native HRRR physical input {name} must retain its nine native soil depths"
+  }
+}

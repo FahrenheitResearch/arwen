@@ -2079,7 +2079,8 @@ def _capsule_headline(payload: dict | None) -> str:
 def _worker_command(
         config_path: Path, config_payload: Path, outdir: Path, *,
         restart: Path | None, health_debug: bool,
-        preprocess_backend: str | None = None) -> list[str]:
+        preprocess_backend: str | None = None, members: int | None = None,
+        keep_member_files: bool | None = None) -> list[str]:
     command = [sys.executable, "-m", "gpuwm.supervisor", "worker",
                "--config", str(config_path),
                "--config-payload", str(config_payload),
@@ -2090,6 +2091,10 @@ def _worker_command(
         command.append("--health-debug")
     if preprocess_backend is not None:
         command.extend(("--preprocess-backend", preprocess_backend))
+    if members is not None:
+        command.extend(("--members", str(members)))
+    if keep_member_files:
+        command.append("--keep-member-files")
     return command
 
 
@@ -2289,7 +2294,8 @@ def supervise_experiment(
         lock_path: str | Path | None = None,
         directory_hash: str | None = None,
         on_progress: Callable[[Heartbeat], None] | None = None,
-        preprocess_backend: str | None = None) -> SupervisorResult:
+        preprocess_backend: str | None = None, members: int | None = None,
+        keep_member_files: bool | None = None) -> SupervisorResult:
     """Run an experiment under exclusive-GPU fresh-process supervision.
 
     ``preprocess_backend`` (``gpuwm run --preprocess-backend``) reaches
@@ -2313,6 +2319,9 @@ def supervise_experiment(
 
     config_authority = read_config_authority(config_path)
     config_bytes = config_authority.payload
+    from gpuwm.ensemble.door import request_for_payload
+    ensemble_request = request_for_payload(config_bytes, members=members,
+                                          keep_member_files=keep_member_files)
     digest = hashlib.sha256(config_bytes).hexdigest()
     inputs = resolved_input_hashes(
         config_path, directory_hash=directory_hash,
@@ -2325,7 +2334,15 @@ def supervise_experiment(
             config_path, config_bytes=config_bytes, input_hashes=inputs,
             snapshot_root=authority_root)
     config_payload = _capture_config_payload(outdir, run_id, config_bytes)
-    gpu = select_gpu(gpu_uuid)
+    if ensemble_request is None:
+        gpu = select_gpu(gpu_uuid)
+        locked_gpus, cuda_mask = (gpu,), gpu.uuid
+    else:
+        from gpuwm.ensemble.supervised_devices import plan_ensemble_devices
+        lease = plan_ensemble_devices(ensemble_request, query_gpus(),
+            requested_uuid=gpu_uuid, visibility=os.environ.get("CUDA_VISIBLE_DEVICES"))
+        locked_gpus, cuda_mask = lease.locked, lease.cuda_mask
+        gpu = locked_gpus[0]
     checkpoint = (None if restart is None
                   else validate_manifest_checkpoint(restart))
     heartbeat_path = outdir / HEARTBEAT_NAME
@@ -2336,24 +2353,31 @@ def supervise_experiment(
 
     reservation_bytes = priced_reservation_bytes(config_path)
 
-    with GPUFileLock(gpu.uuid, path=lock_path, run_id=run_id):
+    with contextlib.ExitStack() as gpu_locks:
+        for selected_gpu in sorted(locked_gpus, key=lambda item: item.uuid):
+            path = lock_path if len(locked_gpus) == 1 else None
+            if lock_path is not None and len(locked_gpus) > 1:
+                path = Path(lock_path).with_name(Path(lock_path).name + "." + selected_gpu.uuid)
+            gpu_locks.enter_context(GPUFileLock(selected_gpu.uuid, path=path, run_id=run_id))
         # The admission decision is taken ONCE, here, before the first
         # worker exists.  It used to sit inside the recovery loop, where a
         # co-tenant that appeared mid-run could refuse a run that had
         # already produced output.
-        preflight_exclusive_gpu(
-            gpu.uuid, approved_pids={os.getpid()},
-            allow_shared_gpu=allow_shared_gpu,
-            reservation_bytes=reservation_bytes)
+        for selected_gpu in locked_gpus:
+            preflight_exclusive_gpu(
+                selected_gpu.uuid, approved_pids={os.getpid()},
+                allow_shared_gpu=allow_shared_gpu,
+                reservation_bytes=reservation_bytes)
         while True:
             if attempts:
                 # A recovery attempt re-measures the device, so a co-tenant
                 # that appeared between attempts is still named; it can
                 # never re-refuse the run.
-                preflight_exclusive_gpu(
-                    gpu.uuid, approved_pids={os.getpid()},
-                    allow_shared_gpu=allow_shared_gpu,
-                    reservation_bytes=reservation_bytes, decide=False)
+                for selected_gpu in locked_gpus:
+                    preflight_exclusive_gpu(
+                        selected_gpu.uuid, approved_pids={os.getpid()},
+                        allow_shared_gpu=allow_shared_gpu,
+                        reservation_bytes=reservation_bytes, decide=False)
             attempts += 1
             # Every fresh process gets fresh preparation and step clocks.  A
             # recovery launch can never inherit the dead worker's stale age or
@@ -2371,7 +2395,7 @@ def supervise_experiment(
                 # process-local device ordinal 0.  Mask before Popen so
                 # logical device 0 is the selected UUID before any CUDA import
                 # or context can exist in the fresh worker.
-                "CUDA_VISIBLE_DEVICES": gpu.uuid,
+                "CUDA_VISIBLE_DEVICES": cuda_mask,
                 "GPUWM_RUN_ID": run_id,
                 "GPUWM_CONFIG_DIGEST": digest,
                 "GPUWM_STARTED_AT_UTC": started_at,
@@ -2388,7 +2412,8 @@ def supervise_experiment(
             command = _worker_command(
                 config_path, config_payload, outdir, restart=checkpoint,
                 health_debug=health_debug,
-                preprocess_backend=preprocess_backend)
+                preprocess_backend=preprocess_backend, members=members,
+                keep_member_files=keep_member_files)
             with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
                 process = subprocess.Popen(
                     command, cwd=Path(__file__).resolve().parents[1], env=env,
@@ -2664,8 +2689,14 @@ def _success_output(summary, *, progress_callback=None) -> dict[str, Any]:
     if not frames:
         frames = runtime._frame_records(
             summary.wrfout_paths, progress_callback=progress_callback)
-    return {"frames": frames,
-            "trajectory_digest": summary.trajectory_digest}
+    output = {"frames": frames,
+              "trajectory_digest": summary.trajectory_digest}
+    ensemble = getattr(summary, "ensemble_manifest", None)
+    if ensemble is not None:
+        output["ensemble_manifest"] = {
+            "path": str(ensemble),
+            "sha256": summary.ensemble_manifest_sha256}
+    return output
 
 
 def _success_receipts(outdir: Path, summary) -> dict[str, Any]:
@@ -2753,9 +2784,14 @@ def _worker_main(args: argparse.Namespace) -> int:
             from dataclasses import replace
             data = replace(data, preprocess_backend=pinned_backend)
         progress.preparing("prepare-case")
-        summary = runtime.run_experiment(
-            exp, data, outdir, restart=args.restart,
-            progress_callback=progress, health_debug=args.health_debug)
+        from gpuwm.ensemble.door import request_for_payload, production_run_scope
+        request = request_for_payload(config_bytes,
+            members=getattr(args, "members", None),
+            keep_member_files=getattr(args, "keep_member_files", None))
+        with production_run_scope(request, output_directory=outdir):
+            summary = runtime.run_experiment(
+                exp, data, outdir, restart=args.restart,
+                progress_callback=progress, health_debug=args.health_debug)
         # The durable success receipt DETERMINISM.md section 7 records as
         # missing: the failure path has carried the input hashes and the GPU
         # identity all along, and a run that succeeded left only a heartbeat.
@@ -2817,6 +2853,16 @@ def register_cli(subparsers: argparse._SubParsersAction,
     if run is None:
         raise ValueError(
             f"register_cli requires the existing {command!r} parser")
+    from gpuwm.ensemble.door import add_arguments, add_recipe_arguments
+    add_arguments(run)
+    if command == "run":
+        # Only the door that starts a run takes a member-source recipe.
+        # Breakage it prevents: ``resume`` and ``branch`` continue ONE
+        # checkpointed trajectory and read neither flag, so registered
+        # there they were parsed, dropped, and the run continued as N
+        # copies of that trajectory under a command line asking for a
+        # time-lagged or multi-model ensemble.
+        add_recipe_arguments(run)
     run.add_argument(
         "--no-supervise", action="store_true",
         help="run the experiment in this process (escape hatch; disables "
@@ -2884,7 +2930,9 @@ def supervise_from_cli(args: argparse.Namespace) -> int:
             health_debug=args.health_debug,
             directory_hash=getattr(args, "directory_input_hash", None),
             on_progress=progress,
-            preprocess_backend=getattr(args, "preprocess_backend", None))
+            preprocess_backend=getattr(args, "preprocess_backend", None),
+            members=getattr(args, "members", None),
+            keep_member_files=getattr(args, "keep_member_files", None))
     transition_receipt, _ = _current_transition_receipt(
         args.outdir, result.run_id, result.heartbeat.config_digest)
     heartbeat = result.heartbeat
@@ -2940,6 +2988,8 @@ def _parser() -> argparse.ArgumentParser:
     worker.add_argument("--health-debug", action="store_true")
     worker.add_argument("--preprocess-backend", choices=("cuda", "cpu", "auto"),
                         default=None)
+    from gpuwm.ensemble.door import add_arguments
+    add_arguments(worker)
     return parser
 
 

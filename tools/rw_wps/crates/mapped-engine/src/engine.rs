@@ -65,7 +65,9 @@ pub fn run_capabilities() -> Value {
         "schema": crate::CAPABILITIES_SCHEMA,
         "engine": {"name": crate::ENGINE_NAME, "version": crate::ENGINE_VERSION},
         "frameset_schema": crate::FRAMESET_SCHEMA,
-        "features": {"atmospheric_window": crate::window::SCHEMA},
+        "features": {"atmospheric_window": crate::window::SCHEMA,
+                     "lead_batch": "gpuwm-mapped-lead-batch-v1",
+                     "host_memory_budget": crate::threads::MEMORY_BUDGET_SCHEMA},
         // Per subcommand, the mapped source formats it decodes in
         // process.  An empty list means the subcommand is declared by
         // the contract and refuses `not_implemented` in this build.
@@ -679,11 +681,8 @@ const INVENTORY_STAGED_BYTES: u64 = 64 * 1024 * 1024;
 /// parsed after another, on one core -- before a single field was
 /// decoded.  The floor still governs a box that cannot report its
 /// memory, and a batch still runs on at most the pool's width at once.
-fn inventory_budget() -> u64 {
-    let share = crate::threads::available_memory().map_or(0, |bytes| {
-        (bytes as f64 * crate::threads::MEMORY_SHARE / 4.0) as u64
-    });
-    INVENTORY_STAGED_BYTES.max(share)
+fn inventory_budget() -> Result<u64> {
+    Ok(crate::threads::usable_budget(0)?.map_or(INVENTORY_STAGED_BYTES, |bytes| bytes / 4))
 }
 
 /// How many of `sizes` the next inventory batch admits under `budget`.
@@ -739,8 +738,13 @@ fn inventory_objects(
         .collect();
     let mut inventories: Vec<ObjectInventory> = Vec::with_capacity(files.len());
     let mut start = 0usize;
-    let budget = inventory_budget();
     while start < files.len() {
+        let budget = inventory_budget()?;
+        if sizes[start] > budget {
+            return Err(crate::refusal::host_memory(format!(
+                "inventory of {} needs a staged object of {} bytes, but its usable staging budget is {budget} bytes; refusing before reading it",
+                files[start], sizes[start])));
+        }
         let end = start + inventory_batch_len(&sizes[start..], budget);
         let batch = &files[start..end];
         let slots: Vec<Result<ObjectInventory>> = crate::threads::install(|| {
@@ -949,6 +953,7 @@ impl<'a> DecodeStream<'a> {
         keep_whole: &std::collections::BTreeSet<String>,
     ) -> Result<Self> {
         let format = mapping.format()?.to_owned();
+        crate::threads::require_priced_format(&format)?;
         if format != "grib2" {
             let collection = decode_collection(mapping, files, progress)?;
             return Ok(Self::whole(mapping, collection));
@@ -1067,7 +1072,8 @@ impl<'a> DecodeStream<'a> {
         // narrowing only after it was measured to hold more, not less
         // (`threads::admit_width`).
         let estimate = stream.first_time_estimate();
-        crate::threads::admit_width(stream.price(&estimate), &estimate);
+        let whole_estimate = stream.first_time_estimate_on(false);
+        crate::threads::admit_width(stream.price(&estimate), &estimate, stream.price(&whole_estimate))?;
         // The first valid time establishes the header every cross-time
         // check and every join plan reads: the grid, the vertical ladder,
         // the fingerprint and the decoded field inventory.  It is kept
@@ -1290,7 +1296,7 @@ impl<'a> DecodeStream<'a> {
         let StreamKind::Sliced { plan, .. } = &self.kind else {
             return 0;
         };
-        let decoded: u64 = field_bytes.iter().sum();
+        let decoded = field_bytes.iter().copied().fold(0u64, u64::saturating_add);
         let object = plan
             .iter()
             .map(|object| std::fs::metadata(&object.source).map(|meta| meta.len()).unwrap_or(0))
@@ -1356,6 +1362,10 @@ impl<'a> DecodeStream<'a> {
     /// over the granted window for a field decoded over it and over the
     /// whole grid otherwise, as the decode will unpack them.
     pub fn first_time_estimate(&self) -> Vec<u64> {
+        self.first_time_estimate_on(true)
+    }
+
+    fn first_time_estimate_on(&self, windowed: bool) -> Vec<u64> {
         let StreamKind::Sliced { plan, .. } = &self.kind else {
             return Vec::new();
         };
@@ -1365,7 +1375,7 @@ impl<'a> DecodeStream<'a> {
         let window = self
             .decode_window
             .as_ref()
-            .filter(|_| self.completion_watch.is_empty())
+            .filter(|_| windowed && self.completion_watch.is_empty())
             .map(|window| {
                 ((window.rows[1] - window.rows[0]) * (window.columns[1] - window.columns[0])) as u64
             });
@@ -2044,12 +2054,9 @@ pub fn run_decode(invocation: &Invocation, progress: &mut dyn FnMut(Value)) -> R
     let decode_window = stream.decode_window().cloned();
     // Several valid times at once when every one decodes on its own
     // (see `compose::run_compose`), still written one at a time.
-    let lanes = if stream.times_are_independent() {
-        crate::threads::lanes(
-            stream.per_time_bytes(), &stream.field_bytes(), stream.held_bytes(), stream.keys().len())
-    } else {
-        1
-    };
+    let admitted_times = if stream.times_are_independent() { stream.keys().len() } else { 1 };
+    let lanes = crate::threads::lanes(
+        stream.per_time_bytes(), &stream.field_bytes(), stream.held_bytes(), admitted_times)?;
     let document = if lanes > 1 {
         let first = std::sync::Mutex::new(stream.take_first());
         let stream = &stream;

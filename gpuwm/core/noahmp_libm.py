@@ -574,6 +574,53 @@ def _flat_blocks(array: np.ndarray, shape: tuple, size: int):
 
 
 def powf_array(x, y) -> np.ndarray:
+    """The pinned FP32 power over arrays on the explicit Rust worker pool.
+
+    Arithmetic, including zero and special operands, is in Rust. Each
+    worker retains only scalar scratch, and array broadcasting is marshalled
+    in bounded blocks. Older staged libraries keep the same reference bits.
+    """
+    from gpuwm.core import portable_math as pm
+    library = pm._load()
+    entry = getattr(library, "gpuwm_glibc239_powf_array_f32", None)
+    if entry is None:
+        return _powf_array_reference(x, y)
+    import ctypes
+    pointer, size = ctypes.c_void_p, ctypes.c_size_t
+    entry.argtypes = [pointer, pointer, pointer, size, size, size, size]
+    entry.restype = ctypes.c_int32
+    base = np.asarray(x, dtype=np.float32)
+    exponent = np.asarray(y, dtype=np.float32)
+    shape = np.broadcast_shapes(base.shape, exponent.shape)
+    out = np.empty(shape, dtype=np.float32)
+    if not out.size:
+        return out
+    workers = pm._workers(None)
+
+    def apply(left, right, target):
+        left = np.ascontiguousarray(left, dtype=np.float32)
+        right = np.ascontiguousarray(right, dtype=np.float32)
+        code = entry(pointer(left.ctypes.data), pointer(right.ctypes.data),
+                     pointer(target.ctypes.data), target.size,
+                     left.size, right.size, workers)
+        if code:
+            raise RuntimeError(f"native pinned FP32 power failed with code {code}")
+
+    if (base.size == 1 or (base.shape == shape and base.flags.c_contiguous)) and (
+            exponent.size == 1 or (exponent.shape == shape and exponent.flags.c_contiguous)):
+        apply(base, exponent, out)
+        return out
+    block = min(_POWF_ARRAY_BLOCK, out.size)
+    base_block = _flat_blocks(base, shape, block)
+    exponent_block = _flat_blocks(exponent, shape, block)
+    flat_out = out.reshape(-1)
+    for start in range(0, out.size, block):
+        stop = min(start + block, out.size)
+        apply(base_block(start, stop), exponent_block(start, stop), flat_out[start:stop])
+    return out
+
+
+def _powf_array_reference(x, y) -> np.ndarray:
     """:func:`powf` over NumPy arrays, the same bits element for element.
 
     NumPy's own float32 ``power`` is whatever the host provides: the MSVC

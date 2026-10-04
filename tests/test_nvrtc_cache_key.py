@@ -77,6 +77,12 @@ _ALLOWED = {
     "gpuwm/nvrtc_cache_key.py": None,
     "gpuwm/certify/compile_platform.py": '("", ',
     "gpuwm/core/device_probe.py": '("", ',
+    # The batched mixing proof reads the scalar smag2d PTX and names the
+    # program after sha256(source + every option), the defence RawModule
+    # itself uses: two option sets never share a program name, so the
+    # ComputeCache cannot answer one with the other's entry.  Only that
+    # exact spelling is admitted; a fixed name here is the A160 exposure.
+    "gpuwm/ensemble/batch_mixing.py": '(source, name=key + ".cu", ',
 }
 
 

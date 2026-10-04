@@ -3,6 +3,21 @@ from datetime import datetime, timezone
 
 import pytest
 
+
+def test_capability_serializer_reads_immutable_dataclass_fields_without_deepcopy():
+    from dataclasses import dataclass
+    from types import MappingProxyType
+    from gpuwm.background_contract import _plain
+    @dataclass(frozen=True)
+    class FileRule:
+        roles: object
+    original = FileRule(MappingProxyType({"fields": ("temperature", "pressure"),
+                                         "defaults": MappingProxyType({"cycle": 0})}))
+    actual = _plain(original)
+    assert actual == {"roles": {"fields": ["temperature", "pressure"], "defaults": {"cycle": 0}}}
+    actual["roles"]["defaults"]["cycle"] = 12
+    assert original.roles["defaults"]["cycle"] == 0
+
 from gpuwm.background_contract import capability, catalog, from_record, plan
 from gpuwm.da.background import plan_background_cycle
 from gpuwm.fetch import gfs_forecast_hours

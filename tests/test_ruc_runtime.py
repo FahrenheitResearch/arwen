@@ -124,7 +124,8 @@ def _build(*, nx: int = 8, ny: int = 6, nz: int = 40, vegtyp: int = _GRASSLAND,
            frozen: bool = False, dt: float = 12.0, radiation=None,
            ra_physics: int = 0, radt_minutes: float = 12.0,
            mp_physics: int = 6, sf_sfclay_physics: int = 1,
-           bl_pbl_physics: int = 1, nzs: int = _NSOIL):
+           bl_pbl_physics: int = 1, nzs: int = _NSOIL,
+           ruc_soilprop: str = "wrf_45"):
     """One RUC forecast configuration.
 
     ``nzs`` defaults to :data:`_NSOIL`, which is what keeps every caller in
@@ -150,7 +151,8 @@ def _build(*, nx: int = 8, ny: int = 6, nz: int = 40, vegtyp: int = _GRASSLAND,
                     sf_sfclay_physics=sf_sfclay_physics,
                     sf_surface_physics=3, num_soil_layers=nzs,
                     bl_pbl_physics=bl_pbl_physics, bldt=0.0,
-                    ra_physics=ra_physics, radt_minutes=radt_minutes)
+                    ra_physics=ra_physics, radt_minutes=radt_minutes,
+                    ruc_soilprop=ruc_soilprop)
 
     def theta(z):
         z = np.asarray(z, np.float64)
@@ -769,8 +771,9 @@ def test_water_columns_take_the_water_arm_and_sea_ice_takes_its_own():
 
 
 @requires_gpu
-def test_lakemask_bypasses_ruc_while_a_neighboring_land_column_runs():
-    """WRF's EM_CORE lake GOTO leaves the RUC column state untouched."""
+@pytest.mark.parametrize("lakemodel", [0, 1])
+def test_lakemask_bypass_requires_enabled_lake_model(lakemodel):
+    """The WRF lake GOTO needs both the model selector and lake mask."""
     from gpuwm.core import physics
     from gpuwm.core.ruc_runtime import ruc_lsm_step
     from gpuwm.core.surface_forcing import SurfacePrecipitationForcing
@@ -788,15 +791,20 @@ def test_lakemask_bypasses_ruc_while_a_neighboring_land_column_runs():
         precipitation=SurfacePrecipitationForcing.from_fields(driver.fields),
         dt=cfg.dt, itimestep=1, mosaic_lu=cfg.mosaic_lu,
         mosaic_soil=cfg.mosaic_soil, flag_sm_adj=cfg.flag_sm_adj,
-        spp_lsm=cfg.spp_lsm)
+        spp_lsm=cfg.spp_lsm, lakemodel=lakemodel)
 
-    for name in names:
-        cp.testing.assert_array_equal(
-            driver.fields[name][..., 0, 0], before[name][..., 0, 0])
+    if lakemodel:
+        for name in names:
+            cp.testing.assert_array_equal(
+                driver.fields[name][..., 0, 0], before[name][..., 0, 0])
+    else:
+        assert any(not bool(cp.array_equal(
+            driver.fields[name][..., 0, 0], before[name][..., 0, 0]))
+                   for name in names)
     assert any(not bool(cp.array_equal(
         driver.fields[name][..., 0, 1], before[name][..., 0, 1]))
                for name in names)
-    assert census == {"land": 7, "water": 0, "lake": 1, "sea_ice": 0}
+    assert census == {"land": 8 - lakemodel, "water": 0, "lake": lakemodel, "sea_ice": 0}
 
 
 @requires_gpu
@@ -1035,7 +1043,12 @@ def test_udrunoff_is_zero_because_no_level_oversaturates_and_can_be_nonzero():
     # rather than by a remembered constant.
     saturated = _maxsmc(_LOAM)
     assert 0.44 < saturated < 0.46, saturated
-    state, cfg, driver = _build(nx=6, ny=4, nz=20, soil_moisture=saturated)
+    # The witness column runs v4.6.1's SOILPROP, on which it was measured.
+    # MEASURED under the default wrf_45 lineage: this saturated column
+    # leaves runoff2 at exactly zero in every land cell, so the accumulator
+    # under test would never be written.  The wiring is the same for both.
+    state, cfg, driver = _build(nx=6, ny=4, nz=20, soil_moisture=saturated,
+                                ruc_soilprop="wrf_461")
     step(state, cfg)
 
     runoff2 = _land(cp.asnumpy(driver.fields["ruc_runoff2"]), cfg)
@@ -1344,7 +1357,13 @@ def test_a_frozen_soil_carrier_perturbation_also_breaks_the_next_step(
     from gpuwm.core.dycore import step
 
     def frozen():
-        return _build(nx=6, ny=4, nz=20, frozen=True, soil_moisture=0.30)
+        # KEEPFR3DFLAG reaches 1 only where soil temperature and moisture
+        # both rise in a step (:2742-2744).  The 16 witness cells were
+        # measured on v4.6.1's SOILPROP.  MEASURED under the default wrf_45
+        # lineage: no cell of this grid reaches 1 in six steps, so the
+        # carrier would never be read.  The round trip is the same for both.
+        return _build(nx=6, ny=4, nz=20, frozen=True, soil_moisture=0.30,
+                      ruc_soilprop="wrf_461")
 
     state, cfg, driver = frozen()
     for _ in range(6):

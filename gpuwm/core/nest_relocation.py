@@ -1416,6 +1416,9 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
     if dycore_state_workspace is not None:
         extra["dycore_state_workspace"] = dycore_state_workspace
 
+    from gpuwm.ensemble.runtime_context import (current_member_reconstruction_owner,
+                                                bind_reconstructed_member_node)
+    member_pattern_owner = current_member_reconstruction_owner(child_node.state)
     used_steady = _device_used_bytes()
     if staging == "host":
         # The off-parent refusal, evaluated while the outgoing child is
@@ -1540,6 +1543,7 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
     coupler_receipt = child_node.coupler.relocate()
     if reconstruction is not None:
         reconstruction.commit(child_node)
+    bind_reconstructed_member_node(child_node, previous_owner=member_pattern_owner)
 
     # ---- the subtree: the ground moved under every descendant ----------
     # Ordered parent-first (descendant_regroundings appends before it

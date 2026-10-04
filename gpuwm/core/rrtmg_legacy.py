@@ -118,7 +118,7 @@ from __future__ import annotations
 from gpuwm.core.device_cache import cuda_cache
 
 from datetime import datetime, timedelta
-from functools import partial
+from functools import lru_cache, partial
 from pathlib import Path
 
 import numpy as np
@@ -609,6 +609,20 @@ def _r512(nbytes):
     return (int(nbytes) + 511) & ~511
 
 
+@lru_cache(maxsize=1)
+def legacy_shortwave_constant_bytes():
+    """The three persistent CudaSW uploads, including pool rounding.
+
+    The packed coefficient array, g-point band indices and three band
+    metadata rows remain resident through both radiation spectra. This
+    uses the runtime's table packer without constructing a CUDA engine.
+    """
+    tables = _sw_tables()
+    packed, _ = _sw._pack_cuda_tables(tables)
+    return (_r512(packed.nbytes) + _r512(np.asarray(tables.ngb).size * 4)
+            + _r512(3 * _sw.NBNDSW * 4))
+
+
 def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
                                 ncol_day=None, lw_coefficients=None,
                                 longwave=True, shortwave=True,
@@ -623,10 +637,9 @@ def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
     pass-throughs that stay alive as engine inputs.  The LW and SW
     pipelines run sequentially per adapter chunk with chunk storage freed
     in between, so the estimate is the max over the four allocation
-    phases (LW generate, LW engine, SW generate, SW engine).  The CudaSW
-    instance constants (uploaded at adapter construction) and the tiny
-    host->device cldfra staging are not included, mirroring the engines'
-    own gates.  ``ncol_day`` bounds the SW day-column count (default:
+    phases (LW generate, LW engine, SW generate, SW engine). Both engines'
+    immutable coefficients remain resident across those phases and are
+    added once outside the maximum. ``ncol_day`` bounds the SW day-column count (default:
     ``ncol``, the preflight upper bound).
 
     Whole-call result storage and the reusable ozone grid are priced
@@ -652,8 +665,10 @@ def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
         nlay_sw, resident_threads=resident_threads), max(nday, 0))
     f = 4
     estimate = 0
+    constants = legacy_shortwave_constant_bytes() if shortwave else 0
     if longwave:
         C = lw_coefficients if lw_coefficients is not None else _lw_coeffs()
+        constants += _lw.lw_batched_const_bytes(C)
 
         s_mcl = _r512(nc_lw * _lw.NGPTLW * nlay_lw * f)
         s_nl = _r512(nc_lw * nlay_lw * f)
@@ -670,8 +685,8 @@ def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
                   + _mcica.mcica_device_vram_bytes(
                       min(nc_lw, _mcica.MCICA_DEVICE_COLUMN_CHUNK),
                       nlay_lw, _lw.NGPTLW))
-        lw_eng = (held_lw + _lw.lw_batched_vram_bytes(nc_lw, nlay_lw, mcica_layout="column")
-                  + _lw.lw_batched_const_bytes(C))
+        lw_eng = held_lw + _lw.lw_batched_vram_bytes(
+            nc_lw, nlay_lw, mcica_layout="column")
         estimate = max(lw_gen, lw_eng)
 
     if shortwave and nc_sw:
@@ -694,7 +709,7 @@ def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
     # SWDOWN is allocated after the engines and does not raise this peak.
     result_bytes = 2 * _r512(nz * ncol * f) + 3 * _r512(ncol * f)
     ozone_bytes = _r512(nz * ncol * f) if int(o3input) == 2 else 0
-    return estimate + result_bytes + ozone_bytes
+    return estimate + result_bytes + ozone_bytes + constants
 
 
 # ---------------------------------------------------------------------------

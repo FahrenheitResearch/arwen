@@ -89,6 +89,11 @@ gfortran -o run_driver stub_wrf.o module_bl_mynn_common.o \
 ./run_tendencies_mf tendencies-mf.csv
 ./run_stfunc stfunc.csv
 ./run_driver driver.csv
+# The second option uses the same unmodified WRF modules and column inputs.
+./run_mixlength mixlength2.csv 2
+./run_initialize initialize2.csv 2
+./run_turbulence turbulence2.csv 2
+./run_driver driver2.csv 2
 python3 "${script_dir}/validate_oracle.py" pbl-level2.csv
 python3 "${script_dir}/validate_pblh_oracle.py" pblh-scale.csv
 python3 "${script_dir}/validate_mixlength_oracle.py" mixlength.csv
@@ -128,5 +133,6 @@ sha256sum "${common_source}" "${pbl_source}" \
     pbl-level2.csv pblh-scale.csv mixlength.csv turbulence.csv predict.csv \
     condensation.csv esat-blend.csv tendencies-nomf.csv initialize.csv \
     dmp-mf.csv tendencies-mf.csv stfunc.csv driver.csv \
+    mixlength2.csv initialize2.csv turbulence2.csv driver2.csv \
     > oracle-sha256sums.txt
 gfortran --version | head -1 > compiler.txt

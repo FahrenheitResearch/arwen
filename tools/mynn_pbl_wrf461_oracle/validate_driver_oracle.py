@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """Compare the assembled CPU MYNN PBL driver with the official WRF CSV.
 
-Unlike the leaf validators this one does not assert bitwise equality on every
-field.  The warm step is bitwise everywhere; the cold step is bitwise on three
-of five columns, and the two deep-cloud columns carry an open, named residue. See
-``ULP_BUDGET`` for the measurement and what has been ruled out.
+Both cold and warm calls are bitwise against WRF. The cold call must pass
+vapor sqv, not total water sqw, into mym_initialize's qw argument.
 """
 
 from __future__ import annotations
@@ -57,49 +55,8 @@ PROFILE_OUTPUTS = (
 SCALAR_OUTPUTS = ("pblh", "rmol", "maxwidth", "maxmf", "ztop_plume")
 INT_OUTPUTS = ("kpbl", "ktop_plume")
 
-#: Measured FP32 ULP budgets.  Anything absent must be bitwise (budget 0).
-#:
-#: Step 2 -- the warm start, which is what a running model spends all its time
-#: doing -- is bitwise on every field of every column, and so are three of the
-#: five columns on step 1.  The residue below lives in the two deep-cloud
-#: columns, ``cloudy_deep`` and ``snow_anvil``, on the cold start, and it is
-#: an *open* defect, not a transcendental floor:
-#:
-#: * ``pblh``, ``kpbl``, ``rmol``, ``qc_bl``, ``qi_bl``, ``cldfra_bl``,
-#:   ``maxwidth``, ``maxmf``, ``ztop_plume``, ``ktop_plume`` and ``dozone``
-#:   are bitwise on that column too;
-#: * the divergence appears first in ``el``/``sh``/``sm``, i.e. in
-#:   ``mym_turbulence``'s output, at 1.6e-3 relative, and everything
-#:   downstream inherits it;
-#: * a standalone Fortran reproduction of the driver body
-#:   (``get_pblh`` + ``scale_aware`` + ``mym_initialize`` + ``mym_condensation``
-#:   + ``DMP_mf`` + ``mym_turbulence``, same inputs, same order) agrees with
-#:   this port bit for bit on all four original columns -- including ``el``, ``sm``,
-#:   ``sh``, ``dfm`` and ``dfh`` on ``cloudy_deep``.
-#:
-#: So neither the leaves nor the assembly as this port sequences them can
-#: account for it: something the real ``mynn_bl_driver`` does on the cold-start
-#: path is not reproduced, and it only shows on the column carrying resolved
-#: condensate.  These numbers are the measured worst case across both columns
-#: so a regression
-#: still trips; they are not a licence.
-ULP_BUDGET: dict[tuple[int, str], int] = {
-    (1, "rublten"): 34917581,
-    (1, "rvblten"): 34571878,
-    (1, "rthblten"): 1867304141,
-    (1, "rqvblten"): 1670853428,
-    (1, "rqcblten"): 15629004,
-    (1, "rqiblten"): 5420692,
-    (1, "exch_h"): 5165997,
-    (1, "exch_m"): 5169200,
-    (1, "qke"): 1413755,
-    (1, "tsq"): 3387398,
-    (1, "qsq"): 21682734,
-    (1, "cov"): 2782383,
-    (1, "el"): 25193,
-    (1, "sh"): 3346336,
-    (1, "sm"): 2120151,
-}
+#: The resolved cold-cloud initialization defect no longer needs a tolerance.
+ULP_BUDGET: dict[tuple[int, str], int] = {}
 
 
 def _ulp(got: np.ndarray, want: np.ndarray) -> int:

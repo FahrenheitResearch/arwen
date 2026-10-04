@@ -2201,6 +2201,96 @@ __device__ void mynn_boulac_elblavg(
     }
 }
 
+// WRF v4.6.1 module_bl_mynn.F:2100-2232 mym_length CASE(2).
+// See licenses/LICENSE-WRF-public-domain.txt. Ugrid, Uonset, cldavg and the
+// stable-branch elb are source temporaries that never reach an output.
+__device__ void mynn_mym_length_local_column(
+    MynnColumn<const real> dz, MynnColumn<const real> zw,
+    MynnColumn<const real> qke, MynnColumn<const real> dtv,
+    MynnColumn<const real> edmf_w, MynnColumn<const real> edmf_a,
+    real rmo, real fltv, real zi, real psig_bl,
+    MynnColumn<real> el, MynnColumn<real> qkw, MynnColumn<real> qtke, int nz)
+{
+    const real gtr = MYNN_DIV(9.81f, 300.0f);
+    const real onethird = MYNN_DIV(1.0f, 3.0f);
+    real zi2 = mynn_max2(zi, 300.0f);
+    real h1 = mynn_min2(mynn_max2(MYNN_MUL(0.3f, zi2), 300.0f), 600.0f);
+    real h2 = MYNN_MUL(h1, 0.5f);
+    qtke[0] = mynn_max2(MYNN_MUL(0.5f, qke[0]), MYNN_MUL(0.5f, 1.0e-3f));
+    qkw[0] = sqrtf(mynn_max2(qke[0], 1.0e-3f));
+    for (int k = 1; k < nz; ++k) {
+        real afk = MYNN_DIV(dz[k], MYNN_ADD(dz[k], dz[k - 1]));
+        real abk = MYNN_SUB(1.0f, afk);
+        qkw[k] = sqrtf(mynn_max2(MYNN_ADD(
+            MYNN_MUL(qke[k], abk), MYNN_MUL(qke[k - 1], afk)), 1.0e-3f));
+        qtke[k] = MYNN_MUL(0.5f, MYNN_MUL(qkw[k], qkw[k]));
+    }
+    real elt = 1.0e-5f, vsc_sum = 1.0e-5f;
+    real pblh_plus_ent = mynn_max2(MYNN_ADD(zi, h1), 100.0f);
+    for (int k = 1; k < nz && zw[k] <= pblh_plus_ent; ++k) {
+        real dzk = MYNN_MUL(0.5f, MYNN_ADD(dz[k], dz[k - 1]));
+        real qdz = MYNN_MUL(mynn_min2(mynn_max2(qkw[k], 0.03f), 30.0f), dzk);
+        elt = MYNN_ADD(elt, MYNN_MUL(qdz, zw[k]));
+        vsc_sum = MYNN_ADD(vsc_sum, qdz);
+    }
+    elt = mynn_min2(mynn_max2(MYNN_DIV(MYNN_MUL(0.22f, elt), vsc_sum),
+                              10.0f), 400.0f);
+    real vsc = mynn_powf(MYNN_MUL(MYNN_MUL(gtr, elt), mynn_max2(fltv, 0.0f)),
+                         onethird);
+    el[0] = 0.0f;
+    for (int k = 1; k < nz; ++k) {
+        real zwk = zw[k];
+        real dzk = MYNN_MUL(0.5f, MYNN_ADD(dz[k], dz[k - 1]));
+        real wstar = MYNN_MUL(1.25f, mynn_powf(
+            MYNN_MUL(MYNN_MUL(gtr, zi), mynn_max2(fltv, 1.0e-4f)), onethird));
+        real weight = MYNN_ADD(MYNN_MUL(0.5f, mynn_tanhf(
+            MYNN_DIV(MYNN_SUB(zwk, MYNN_ADD(zi2, h1)), h2))), 0.5f);
+        real elb_mf, elf;
+        if (dtv[k] > 0.0f) {
+            real bv = mynn_max2(sqrtf(MYNN_MUL(gtr, dtv[k])), 0.001f);
+            real numerator = mynn_max2(MYNN_MUL(0.30f, qkw[k]),
+                MYNN_MUL(MYNN_MUL(50.0f, edmf_a[k - 1]), edmf_w[k - 1]));
+            elb_mf = MYNN_MUL(MYNN_DIV(numerator, bv), MYNN_ADD(1.0f,
+                MYNN_MUL(2.0f, sqrtf(MYNN_DIV(vsc, MYNN_MUL(bv, elt))))));
+            real tau = mynn_min2(mynn_max2(
+                MYNN_DIV(MYNN_MUL(1000.0f, wstar), 9.81f), 30.0f), 150.0f);
+            tau = MYNN_ADD(MYNN_MUL(tau, MYNN_SUB(1.0f, weight)),
+                           MYNN_MUL(50.0f, weight));
+            elf = mynn_min2(mynn_max2(
+                MYNN_MUL(tau, sqrtf(mynn_min2(qtke[k], 40.0f))),
+                MYNN_DIV(MYNN_MUL(MYNN_MUL(50.0f, edmf_a[k]), edmf_w[k]), bv)),
+                zwk);
+        } else {
+            real tau = mynn_min2(mynn_max2(
+                MYNN_DIV(MYNN_MUL(1000.0f, wstar), 9.81f), 50.0f), 200.0f);
+            tau = MYNN_ADD(MYNN_MUL(tau, MYNN_SUB(1.0f, weight)),
+                MYNN_MUL(mynn_max2(100.0f, MYNN_MUL(dzk, 0.25f)), weight));
+            elf = mynn_min2(MYNN_MUL(tau, sqrtf(mynn_min2(qtke[k], 40.0f))), zwk);
+            elb_mf = elf;
+        }
+        elf = MYNN_DIV(elf, MYNN_ADD(1.0f, MYNN_DIV(elf, 800.0f)));
+        elb_mf = mynn_max2(elb_mf, 0.01f);
+        real els;
+        if (rmo > 0.0f) {
+            els = MYNN_DIV(MYNN_MUL(0.4f, zwk), MYNN_ADD(1.0f,
+                MYNN_MUL(3.5f, mynn_min2(MYNN_MUL(zwk, rmo), 1.0f))));
+        } else {
+            els = MYNN_MUL(MYNN_MUL(0.4f, zwk), mynn_powf(MYNN_SUB(1.0f,
+                MYNN_MUL(MYNN_MUL(5.0f, zwk), rmo)), 0.2f));
+        }
+        real els2 = MYNN_MUL(els, els);
+        real value = sqrtf(MYNN_DIV(els2, MYNN_ADD(MYNN_ADD(1.0f,
+            MYNN_DIV(els2, MYNN_MUL(elt, elt))),
+            MYNN_DIV(els2, MYNN_MUL(elb_mf, elb_mf)))));
+        value = MYNN_ADD(MYNN_MUL(value, MYNN_SUB(1.0f, weight)),
+                         MYNN_MUL(elf, weight));
+        real el_les = mynn_min2(MYNN_DIV(els,
+            MYNN_ADD(1.0f, MYNN_DIV(els, 12.0f))), elb_mf);
+        el[k] = MYNN_ADD(MYNN_MUL(value, psig_bl),
+                         MYNN_MUL(MYNN_SUB(1.0f, psig_bl), el_les));
+    }
+}
+
 // module_bl_mynn.F:1999-2098 mym_length CASE(1) for one column.  xland, dx,
 // flt, flq, vt, vq, cldfra_bl1D and rstoch_col reach the Fortran but CASE(1)
 // never reads them; dtv(kts) is likewise never read.
@@ -2213,8 +2303,13 @@ __device__ void mynn_mym_length_column(
     real psig_bl, MynnColumn<real> el, MynnColumn<real> qkw,
     MynnColumn<real> qtke, MynnColumn<real> thetaw,
     MynnColumn<real> elblavg, MynnColumn<real> dlu,
-    MynnColumn<real> dld, int nz)
+    MynnColumn<real> dld, int nz, int mixlength)
 {
+    if (mixlength == 2) {
+        mynn_mym_length_local_column(dz, zw, qke, dtv, edmf_w, edmf_a,
+            rmo, fltv, zi, psig_bl, el, qkw, qtke, nz);
+        return;
+    }
     const real gtr = MYNN_DIV(9.81f, 300.0f);
     real ugrid = sqrtf(MYNN_ADD(MYNN_MUL(u[0], u[0]), MYNN_MUL(v[0], v[0])));
     real wt_u = MYNN_SUB(1.0f, mynn_min2(
@@ -2302,7 +2397,7 @@ void mynn_mixlength_default_columns(
     real* __restrict__ qkw_raw, real* __restrict__ qtke_raw,
     real* __restrict__ thetaw_raw, real* __restrict__ elblavg_raw,
     real* __restrict__ dlu_raw, real* __restrict__ dld_raw,
-    int nz, int ncol)
+    int mixlength, int nz, int ncol)
 {
     int column = blockIdx.x * blockDim.x + threadIdx.x;
     if (column >= ncol) return;
@@ -2327,7 +2422,7 @@ void mynn_mixlength_default_columns(
         qke + base, dtv + base, theta + base, edmf_w + base, edmf_a + base,
         rmo[column], fltv[column], zi[column], psig_bl[column], el + base,
         qkw + base, qtke + base, thetaw + base, elblavg + base,
-        dlu + base, dld + base, nz);
+        dlu + base, dld + base, nz, mixlength);
 }
 
 // module_bl_mynn.F:1766-1820 mym_level2 for one column.  The Fortran loop runs
@@ -2443,7 +2538,7 @@ void mynn_initialize_default_columns(
     real* __restrict__ tsq_o_raw, real* __restrict__ qsq_o_raw,
     real* __restrict__ cov_o_raw, real* __restrict__ sm_o_raw,
     real* __restrict__ sh_o_raw, real* __restrict__ scratch_raw,
-    int initialize_qke, int nz, int ncol)
+    int initialize_qke, int mixlength, int nz, int ncol)
 {
     int column = blockIdx.x * blockDim.x + threadIdx.x;
     if (column >= ncol) return;
@@ -2552,7 +2647,8 @@ void mynn_initialize_default_columns(
         mynn_mym_length_column(dz + base, zw + zbase, u + base, v + base,
                                qke, dtv, theta + base, edmf_w + base,
                                edmf_a + base, rmoc, 0.0f, zic, psig,
-                               el, qkw, qtke, thetaw, elblavg, dlu, dld, nz);
+                               el, qkw, qtke, thetaw, elblavg, dlu, dld, nz,
+                               mixlength);
         for (int k = 1; k < nz; ++k) {
             real elq = MYNN_MUL(el[k], qkw[k]);
             pdk[k] = MYNN_MUL(elq, MYNN_ADD(MYNN_MUL(sm[k], gm[k]),

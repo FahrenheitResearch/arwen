@@ -1490,6 +1490,7 @@ _IMPORT_NAME = {
     "netcdf4": "netCDF4",
     "matplotlib": "matplotlib",
     "jsonschema": "jsonschema",
+    "threadpoolctl": "threadpoolctl",
     "pytest": "pytest",
     "pytest-xdist": "xdist",
     "psutil": "psutil",

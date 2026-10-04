@@ -23,6 +23,8 @@ grib-core = { path = "vendor/grib-core", default-features = false, features = ["
 # A pure Rust port of musl's libm, for the portable transcendentals in
 # src/portable_math.rs: the same bits on every CPU and C library.
 libm = "0.2.16"
+rayon = "1"
+sha2 = "0.10"
 
 # See tools/rustwx/Cargo.toml for the reasoning: these artifacts are
 # package data in a platform wheel measured against PyPI's 100 MB cap,

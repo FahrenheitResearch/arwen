@@ -87,7 +87,9 @@ ROUTE_TABLE_SHA256 = (
     # Moved by A173: every row's cadences list is retired (it refused
     # spacings the publisher posts and the decode takes, naming no
     # breakage), and cadence_note states the grammar that replaces it.
-    "1164db39f71e3f5e87ce8c67340bfbfdfcee8e5dd4f914ee0f1e21e15e5f07ed"
+    # Native-level atmosphere and analysis-soil routes are table entries,
+    # merged with the ecmwf-ens and rrfs-ens input-ensemble rows.
+    "cce7886d37985e2557ddb67bf779b79e8bea7e2b3da9775d8d187a7dc18f2f61"
 )
 
 #: Sources whose acquisition predates the route table and keeps its own
@@ -176,6 +178,10 @@ class FileRow:
     #: proxy served with HTTP 200, and it is declared rather than guessed
     #: from a suffix because ``gec00.t00z.pgrb2a.0p50.f000`` has none.
     magic: str
+    #: A JSON-lines index selecting a member from a multi-member object.
+    #: The byte ranges are copied unchanged, then verified by Rust inventory.
+    member_index: Mapping[str, object] | None = None
+    index_suffix_replaces: str | None = None
 
 
 @dataclass(frozen=True)
@@ -332,6 +338,10 @@ def _file_row(raw: Mapping[str, object]) -> FileRow:
         idx_sidecar=(str(raw["idx_sidecar"]) if raw.get("idx_sidecar")
                      else None),
         magic=str(raw.get("magic", "GRIB")),
+        member_index=(MappingProxyType(dict(raw["member_index"]))
+                      if raw.get("member_index") else None),
+        index_suffix_replaces=(str(raw["index_suffix_replaces"])
+                               if raw.get("index_suffix_replaces") else None),
     )
 
 
@@ -1554,7 +1564,7 @@ def resolve_member(route: Route, member: str | None) -> tuple[str, str]:
         listed = tuple(known)
         raise ValueError(
             f"--member {name}: --source {route.source_id} publishes "
-            f"{listed[0]} (the control) and {listed[1]}..{listed[-1]} -- "
+            f"{listed[0]}..{listed[-1]} -- "
             f"{len(listed)} members in all.")
     return name, known[name]
 
@@ -1583,6 +1593,9 @@ class PlannedObject:
     lead: int | None
     idx_url: str | None
     key: str = ""
+    member_index: Mapping[str, object] | None = None
+    member_ordinal: int | None = None
+    index_key: str | None = None
 
     def urls(self, ladder: Sequence[Endpoint]) -> tuple[str, ...]:
         if not self.key:
@@ -1781,6 +1794,15 @@ def resolve_request(source: str, *, cycle: datetime, hours: int,
     ladder = endpoint_ladder(route, cycle, host=host, now=now)
     chosen = ladder[0]
     member_name, member_token = resolve_member(route, member)
+    member_ordinal = None
+    if any(row.member_index is not None for row in files):
+        from gpuwm.member_grammar import load_member_grammar
+        from gpuwm.source_authorities import packaged_member_grammar
+        grammar_id = source_adapters.get_source_adapter(route.source_id).member_set
+        if grammar_id is None:
+            raise ValueError("Indexed member fetch needs a byte-verification member grammar")
+        member_ordinal = load_member_grammar(
+            packaged_member_grammar(grammar_id)).member(member_name).ordinal
 
     context = _cycle_context(cycle)
     context["MEMBER"] = member_token
@@ -1807,11 +1829,20 @@ def resolve_request(source: str, *, cycle: datetime, hours: int,
                 continue
             seen.add(key)
             relpath = _relpath(route, key)
+            if row.member_index is not None:
+                relpath = f"members/{member_name}/{relpath}"
+            index_base = key
+            if row.index_suffix_replaces:
+                if not key.endswith(row.index_suffix_replaces):
+                    raise ValueError(f"Index suffix does not match object key {key}")
+                index_base = key[:-len(row.index_suffix_replaces)]
+            index_key = f"{index_base}{row.idx_sidecar}" if row.idx_sidecar else None
             objects.append(PlannedObject(
                 name=relpath, url=chosen.url(key), relpath=relpath,
                 role=row.role, lead=lead, key=key,
-                idx_url=(chosen.url(f"{key}{row.idx_sidecar}")
-                         if row.idx_sidecar else None)))
+                idx_url=chosen.url(index_key) if index_key else None,
+                member_index=row.member_index, member_ordinal=member_ordinal,
+                index_key=index_key))
             by_role.setdefault(row.role, []).append(
                 (lead if lead is not None else -1, relpath))
 
@@ -2113,6 +2144,12 @@ def _download_along_ladder(plan: FetchPlan, obj: PlannedObject, dest: Path, *,
 
     def transfer(endpoint: Endpoint) -> dict:
         url = endpoint.url(obj.key) if obj.key else obj.url
+        if obj.member_index is not None:
+            from gpuwm.member_index import download_indexed_member
+            return download_indexed_member(
+                url, endpoint.url(obj.index_key), dest,
+                declaration=obj.member_index, member_ordinal=obj.member_ordinal,
+                source=plan.source_id, member=plan.member, opener=opener)
         return fetch(url, dest, magic=magic, opener=opener)
 
     endpoint, entry = fetch_endpoints.ask_along_ladder(

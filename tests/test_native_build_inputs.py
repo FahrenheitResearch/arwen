@@ -66,6 +66,8 @@ def _outside_references() -> dict[str, set[str]]:
             candidates += [posixpath.join(directory, match) for match in
                            re.findall(r'path\s*=\s*"([^"]+)"', text)]
         if name.endswith(".rs"):
+            candidates += [posixpath.join(directory, item) for item in
+                           re.findall(r'#\[path\s*=\s*"([^"]+)"\]', text)]
             for body in re.findall(r"include_(?:str|bytes)!\s*\((.*?)\)\s*[;,)]",
                                    text, re.S):
                 literals = re.findall(r'"([^"]*)"', body)
@@ -93,6 +95,11 @@ def test_every_bundled_crate_declares_its_build_inputs():
         declared = bridge_assets.NATIVE_BUILD_INPUTS.get(artifact.crate)
         assert declared, (artifact.name, artifact.crate)
         assert declared[0] == artifact.crate
+
+
+def test_shared_preparation_resources_follow_native_dependency_closures():
+    for crate in ("tools/grib1_bridge", "tools/rw_wps", "tools/rustwx", "tools/zarr_bridge"):
+        assert "tools/preparation_resources.rs" in bridge_assets.NATIVE_BUILD_INPUTS[crate]
 
 
 def test_the_table_covers_every_outside_input_the_sources_reach():

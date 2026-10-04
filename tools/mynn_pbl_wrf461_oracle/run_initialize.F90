@@ -9,7 +9,9 @@ program run_mynn_initialize_oracle
   character(len=32), parameter :: names(ncase) = [character(len=32) :: &
       'stable_land', 'convective_land', 'restart_water', 'edmf_active', &
       'calm_weak_ust']
+  character(len=32) :: mixlength_arg
   character(len=1024) :: output_path
+  integer :: bl_mynn_mixlength = 1
   integer :: c, k, unit, spp_pbl, init_flag
   real :: dz(nz), zw(nz+1), u(nz), v(nz), thl(nz), qw(nz)
   real :: theta(nz), thetav(nz), cldfra(nz), edmf_w(nz), edmf_a(nz)
@@ -20,6 +22,8 @@ program run_mynn_initialize_oracle
   logical :: initialize_qke
 
   call get_command_argument(1, output_path)
+  call get_command_argument(2, mixlength_arg)
+  if (len_trim(mixlength_arg) > 0) read(mixlength_arg, *) bl_mynn_mixlength
   if (len_trim(output_path) == 0) then
     write(*, '(A)') 'usage: run_initialize OUTPUT.csv'
     error stop 2
@@ -125,7 +129,7 @@ program run_mynn_initialize_oracle
 
     call mym_initialize(kts, kte, xland, dz, dx, zw, u, v, thl, qw, &
         zi, theta, thetav, sh, sm, ust, rmo, el, qke, tsq, qsq, cov, &
-        psig_bl, cldfra, 1, edmf_w, edmf_a, initialize_qke, &
+        psig_bl, cldfra, bl_mynn_mixlength, edmf_w, edmf_a, initialize_qke, &
         spp_pbl, rstoch)
 
     init_flag = 0

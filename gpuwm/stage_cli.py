@@ -1109,6 +1109,19 @@ def sim_main(args) -> int:
     from gpuwm.explain import explain_enabled, render
 
     try:
+        from gpuwm.ensemble.calibration_admission import (
+            refuse_public_arguments, refuse_unopened_table)
+        try:
+            refuse_public_arguments(args)
+            # This stage runs the one forecast its prepared bundle holds
+            # and opens no ensemble session.  2.8.4 refused an [ensemble]
+            # table here; reading it and running one forecast would drop
+            # the table without a word.
+            refuse_unopened_table(getattr(args, "experiment_config", None),
+                                  door="gpuwm sim")
+        except ValueError as refusal:
+            # Before the bundle is opened or a run folder is claimed.
+            raise StageRefusal(str(refusal)) from refusal
         try:
             bundle = resolve_bundle(args.prepared_root)
         except StageRefusal:

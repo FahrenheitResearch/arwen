@@ -22,7 +22,7 @@ import pytest
 from gpuwm.experiment import build_experiment
 from gpuwm.namelist_import import (NamelistRefusal, import_namelists,
                                    namelist_refusals, parse_namelist_text)
-from tests.test_namelist_import import INPUT_TEXT, WPS_TEXT, _pair
+from test_namelist_import import INPUT_TEXT, WPS_TEXT, _pair
 
 
 def _with(physics="", domains="", time_control="", dynamics="",
@@ -54,7 +54,7 @@ def _domains(text):
 # ---------------------------------------------------------------------------
 
 def test_every_refusal_of_a_pair_is_named_in_one_error(tmp_path):
-    inp = _with(physics=" sf_lake_physics = 1, 1,\n shcu_physics = 1, 1,\n",
+    inp = _with(physics=" sf_lake_physics = 2, 2,\n shcu_physics = 1, 1,\n",
                 domains=" interp_method_type = 1,\n",
                 time_control=" history_frobnicate = 1,\n",
                 dynamics=" rk_ord = 2,\n")
@@ -69,18 +69,18 @@ def test_every_refusal_of_a_pair_is_named_in_one_error(tmp_path):
 
 
 def test_one_refusal_is_raised_unchanged(tmp_path):
-    inp = _with(physics=" sf_lake_physics = 1, 1,\n")
+    inp = _with(physics=" sf_lake_physics = 2, 2,\n")
     with pytest.raises(NamelistRefusal) as caught:
         _import(tmp_path, inp)
     assert str(caught.value).startswith(
-        "&physics sf_lake_physics = [1, 1]: gpuwm implements "
-        "sf_lake_physics = 0 only")
+        "&physics sf_lake_physics = [2, 2]: must be integer "
+        "0 (off) or 1 (CLM lake)")
     assert caught.value.keys == (("physics", "sf_lake_physics"),)
 
 
 def test_a_refused_required_selector_does_not_hide_the_rest(tmp_path):
     """mp_physics is required; its refusal used to end the check."""
-    inp = _with(physics=" sf_lake_physics = 1, 1,\n",
+    inp = _with(physics=" sf_lake_physics = 2, 2,\n",
                 replace=((" mp_physics = 55, 55,", " mp_physics = 3, 3,"),))
     problems = namelist_refusals(parse_namelist_text(WPS_TEXT),
                                  parse_namelist_text(inp))
@@ -192,7 +192,7 @@ def test_the_clock_writes_on_the_begin_lattice_and_stops_after_end():
 
 def test_the_adaptive_clock_lands_on_the_first_windowed_frame():
     """An adaptive root steps onto history_begin, as onto any alarm."""
-    from tests.test_adaptive_clock_driver import TICK_DEN, _driver, _tree
+    from test_adaptive_clock_driver import TICK_DEN, _driver, _tree
 
     model = _tree(root_dt_s=30, history_s=3600)
     root = model.root.clock
@@ -204,7 +204,7 @@ def test_the_adaptive_clock_lands_on_the_first_windowed_frame():
 
 
 def test_the_adaptive_clock_does_not_land_on_frames_past_history_end():
-    from tests.test_adaptive_clock_driver import TICK_DEN, _driver, _tree
+    from test_adaptive_clock_driver import TICK_DEN, _driver, _tree
 
     model = _tree(root_dt_s=30, history_s=10)
     root = model.root.clock
@@ -369,7 +369,7 @@ def test_every_rule_carries_its_measured_reach(contract):
         assert row["kind"] in ("int", "float", "bool", "str"), (group, key)
     keys = contract["sections"]
     assert keys["dynamics"]["keys"]["gwd_opt"]["reach"] == "max_dom"
-    assert keys["physics"]["keys"]["sf_lake_physics"]["reach"] == "all"
+    assert keys["physics"]["keys"]["sf_lake_physics"]["reach"] == "max_dom"
     assert keys["physics"]["keys"]["use_mp_re"]["reach"] == "first"
     # &fdda is read whole, and its nudging selectors still refuse.
     assert keys["fdda"]["any_key"] is True

@@ -73,6 +73,9 @@ def test_off_does_not_read_count_or_change_checkpoint_identity():
     # whose defaults the same echo drops for the same reason.
     before.pop("diff_opt")
     before.pop("mix_full_fields")
+    # The CLM lake quartet appended later is dropped by the same echo when off.
+    for name in ("sf_lake_physics", "use_lakedepth", "lakedepth_default", "lake_min_elev"):
+        before.pop(name)
     assert _configuration_digest_values(asdict(cfg)) == _configuration_digest_values(before)
     assert _mosaic_checkpoint_config(asdict(cfg)) == before
     _require_config_match(before, cfg, "old checkpoint")

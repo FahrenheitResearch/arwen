@@ -1664,7 +1664,7 @@ def card_local_memory_profile(
     return MEASURED_LOCAL_MEMORY_PROFILE
 
 
-def local_memory_profile_from_device(cp) -> DeviceLocalMemoryProfile:
+def local_memory_profile_from_device(cp, *, device_id: int = 0) -> DeviceLocalMemoryProfile:
     """Read the profile off the attached device: its name, shader census,
     default stack limit and compile platform.
 
@@ -1679,7 +1679,9 @@ def local_memory_profile_from_device(cp) -> DeviceLocalMemoryProfile:
     # ``gpuwm multi-run`` masks one physical UUID into each check process;
     # CUDA ordinal 0 is therefore the selected logical device, not a claim
     # that every run belongs on the machine's physical index zero.
-    props = cp.cuda.runtime.getDeviceProperties(0)
+    # Ensemble packing samples each physical card in its active Device
+    # context. The existing masked single-card callers keep ordinal zero.
+    props = cp.cuda.runtime.getDeviceProperties(device_id)
     name = props["name"]
     stack_limit = int(cp.cuda.runtime.deviceGetLimit(0))
     return DeviceLocalMemoryProfile(
@@ -1764,6 +1766,16 @@ def read_compile_platform() -> tuple[str, str] | None:
 #: under-pricing is what put a run 1,630 MiB over; the bound is stated, not
 #: silently tightened.
 KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
+    # The ensemble member bookkeeping, the stochastic pattern generator and
+    # the RUC hydraulic SPP operator, read 2026-10-03 on RTX 5090 /
+    # NVRTC 13.4.92: 0 B each (no kernel of the three holds a local array).
+    "ensemble_bookkeeping": 0,
+    "ensemble_stochastic": 0,
+    "ruc_spp": 0,
+    # Production lake loader, measured 2026-10-03: step 14,224 B on
+    # RTX 5090 / NVRTC 13.4.92 and 14,400 B on RTX PRO 6000 / 12.8.93.
+    # Init is 4,720 B on both; charge the larger measured step frame.
+    "lake": 14400,
     # Test-only math grading unit, read on sm_89 and sm_120, NVRTC 13.4.59.
     "portable_libm64_grade": 48,
     # Added with this box's recording at 0 B. 'ntiedtke' is what
@@ -2293,6 +2305,19 @@ LEVEL_SPECIALIZED_KERNEL_FRAMES: dict[str, LevelSpecializedFrame] = {
     "wdm6_refl": LevelSpecializedFrame(
         "wdm6_refl", "REFL_KMAX", 256, 63, alignment_bytes=16),
 }
+
+# The launchers select only 64-level fallout variants at nz <= 64.
+# The full module ceilings remain in KERNEL_MAX_LOCAL_SIZE_BYTES for
+# deeper runs and the compilation census. Charging a loaded but unlaunched
+# 256-level variant reserved memory the driver never allocates. Measured
+# through the production loader on RTX 4090: the maximum over every plain
+# and 64-level export is 2,816 / 2,304 bytes. The classic value also matches
+# the earlier RTX 5090 recording in kernel_frame_recordings.py.
+THOMPSON_SHALLOW_KERNEL_FRAMES = {
+    "thompson": 2816,
+    "thompson_aerosol_sed": 2304,
+}
+THOMPSON_SHALLOW_LEVELS = 64
 
 for _spec in LEVEL_SPECIALIZED_KERNEL_FRAMES.values():
     if (_spec.frame_bytes(_spec.unspecialized_levels)
@@ -3015,6 +3040,8 @@ def domain_kernel_modules(dc: DomainConfig, *,
         modules.add("terrain_drag_composed")
     if int(getattr(dc.run, "zadvect_implicit", 0) or 0) > 0:
         modules.add("ieva")                    # A158, gpuwm/core/ieva.py
+    if int(getattr(dc.run, "sf_lake_physics", 0)) == 1:
+        modules.add("lake")
     mp_physics = int(dc.run.mp_physics)
     if (mp_physics and mp_physics not in _REFLECTIVITY_MICROPHYSICS
             and mp_physics not in _SELF_REFLECTIVITY_MICROPHYSICS):
@@ -3177,6 +3204,12 @@ def kernel_local_frame_bytes(
         frame = IEVA_TIER_FRAME.frame_bytes(ieva_level_tier(int(dc.run.nz)))
         if frame > frames.get(IEVA_TIER_FRAME.module, -1):
             frames[IEVA_TIER_FRAME.module] = frame
+    for module, shallow_frame in THOMPSON_SHALLOW_KERNEL_FRAMES.items():
+        selected_levels = [int(dc.run.nz) for dc in exp.domains
+                           if module in domain_kernel_modules(
+                               dc, prices_refl=prices_refl)]
+        if selected_levels and max(selected_levels) <= THOMPSON_SHALLOW_LEVELS:
+            frames[module] = shallow_frame
     return frames
 
 
@@ -3989,7 +4022,8 @@ def physics_field_names_2d(cfg: RunConfig | None = None) -> tuple[str, ...]:
 
 
 def physics_array_shapes(cfg: RunConfig, *, cam_ozone: bool = False,
-                         urban_columns: int | None = None
+                         urban_columns: int | None = None,
+                         lake_columns: int | None = None
                          ) -> dict[str, tuple[int, ...]]:
     """``PhysicsDriver`` persistents per selected scheme (physics.py).
 
@@ -4026,6 +4060,37 @@ def physics_array_shapes(cfg: RunConfig, *, cam_ozone: bool = False,
     n_soil = soil_layer_count(cfg)
     for name in ("smois", "tslb", "sh2o", "smcrel"):
         shapes[f"fields/{name}"] = (n_soil, ny, nx)
+    if int(cfg.sf_surface_physics) == 3:
+        # Configuration-only estimates allow the largest supported RUC
+        # tables (USGS-RUC 28 and STAS-RUC 19). Actual category arrays keep
+        # their source dimensions, so this is a conservative bound.
+        if cfg.mosaic_lu:
+            shapes["fields/landusef"] = (28, ny, nx)
+        if cfg.mosaic_soil:
+            shapes["fields/soilctop"] = (19, ny, nx)
+    if int(getattr(cfg, "sf_lake_physics", 0)) == 1:
+        from gpuwm.core.lake_schema import (
+            LAKE_STATE_WORDS, LAKE_STATIC_WORDS,
+            LAKE_FORCING_WORDS, LAKE_OUTPUT_WORDS)
+        count = ny * nx if lake_columns is None else int(lake_columns)
+        if not 0 <= count <= ny * nx:
+            raise ValueError("lake_columns must lie within the domain")
+        # Restart/rank carriers retain horizontal axes; only computation
+        # uses the sparse lake-column work arrays.
+        shapes["fields/lake_columns"] = (LAKE_STATE_WORDS, ny, nx)
+        shapes["fields/lake_static"] = (LAKE_STATIC_WORDS, ny, nx)
+        shapes["fields/lake_latitude"] = s2
+        shapes["lake/indices"] = (count,)
+        shapes["lake/columns"] = (LAKE_STATE_WORDS, count)
+        shapes["lake/static"] = (LAKE_STATIC_WORDS, count)
+        shapes["lake/latitude"] = (count,)
+        shapes["lake/forcing"] = (LAKE_FORCING_WORDS, count)
+        shapes["lake/outputs"] = (LAKE_OUTPUT_WORDS, count)
+        shapes["lake/errors"] = (count,)
+        # Bound library workspace for indexed horizontal gathers even when
+        # an out buffer is supplied; this also covers the smaller init seed.
+        shapes["lake/gather_work"] = (LAKE_STATE_WORDS, count)
+        shapes["lake/precipitation"] = s2
     if int(getattr(cfg, "sf_surface_mosaic", 0)) == 1:
         from gpuwm.core.noah_mosaic import mosaic_array_shapes
         for name, (shape, dtype) in mosaic_array_shapes(
@@ -4588,44 +4653,32 @@ def scratch_slot_registry(cfg: RunConfig, *,
         #       rc/nc/the ncten limiter/the terminal clamp are all formed
         #       on.  Distinct from mp_thompson_frozen_reference_density,
         #       which the saturation adjustment OVERWRITES mid-call.
-        #   nwfa_entry_m3/nifa_entry_m3 -- the per-m3 entry aerosol of
-        #       :1805-1812, consumed by scavenging, iceDeMott and iceKoop.
         #   tau1_density           -- the REFRESHED density of :3193.
         #   nwfa_work_m3           -- the :3211 working CCN snapshot, which
-        #       is a genuinely different quantity from nwfa_entry_m3 (no
-        #       9999E6 ceiling, tau+1 density) and feeds activ_ncloud only.
+        #       has no 9999E6 ceiling, uses tau+1 density and feeds
+        #       activ_ncloud only.
         #   qc_entry               -- frozen qc1d, required by the ncten
         #       balance limiter (:2996-3019), which needs BOTH the entry and
         #       the post-source cloud mass.
         #   ni_entry               -- frozen ni1d, credited to ncten by the
         #       cloud-ice melt branch of the final phase cleanup (:3943-3966).
-        #   rc_entry/nc_entry_m3/nu_c_entry/l_qc_entry -- the outputs of the
-        #       entry droplet-distribution diagnosis (:1826-1848), whose
-        #       in-place side effect (zeroing qc1d/nc1d on the qc <= R1
-        #       branch, :1844-1845) is what makes state.nc a legitimate
-        #       "entry number" for every later kernel.
         #   condensation_rate      -- prw_vcd, held so rain evaporation can
         #       reproduce the :3502 gate that suppresses evaporation in a
         #       cell that just condensed.
         #
-        # nu_c_entry / l_qc_entry are int32; every other row is float32.
-        # Both are 4 bytes per element, so the byte estimate is unchanged by
-        # the dtype and the registry keeps storing shapes only.
+        # The entry aerosol and droplet-distribution launchers also expose
+        # six optional probe outputs. The forecast does not consume those
+        # arrays, so it requests no storage for them. Their state-updating
+        # operations still run before every later consumer.
         slots.update(
             mp_thompson_aero_ncten=m,
             mp_thompson_aero_nwfaten=m,
             mp_thompson_aero_nifaten=m,
             mp_thompson_aero_entry_density=m,
-            mp_thompson_aero_nwfa_entry_m3=m,
-            mp_thompson_aero_nifa_entry_m3=m,
             mp_thompson_aero_tau1_density=m,
             mp_thompson_aero_nwfa_work_m3=m,
             mp_thompson_aero_qc_entry=m,
             mp_thompson_aero_ni_entry=m,
-            mp_thompson_aero_rc_entry=m,
-            mp_thompson_aero_nc_entry_m3=m,
-            mp_thompson_aero_nu_c_entry=m,
-            mp_thompson_aero_l_qc_entry=m,
             mp_thompson_aero_condensation_rate=m,
         )
     if cfg.mp_physics == 9:
@@ -5337,16 +5390,10 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
          "mp_thompson_aero_nwfaten",
          "mp_thompson_aero_nifaten",
          "mp_thompson_aero_entry_density",
-         "mp_thompson_aero_nwfa_entry_m3",
-         "mp_thompson_aero_nifa_entry_m3",
          "mp_thompson_aero_tau1_density",
          "mp_thompson_aero_nwfa_work_m3",
          "mp_thompson_aero_qc_entry",
          "mp_thompson_aero_ni_entry",
-         "mp_thompson_aero_rc_entry",
-         "mp_thompson_aero_nc_entry_m3",
-         "mp_thompson_aero_nu_c_entry",
-         "mp_thompson_aero_l_qc_entry",
          "mp_thompson_aero_condensation_rate"),
         "write_before_read",
         "gpuwm/core/thompson_aerosol_state.py:"
@@ -6162,13 +6209,68 @@ def atmosphere_transient_shapes(cfg: RunConfig, *, cam_ozone: bool = False
     return {"atmosphere/theta": m, "atmosphere/temperature": m,
             "atmosphere/pressure": m, "atmosphere/exner": m,
             "atmosphere/u": m, "atmosphere/v": m, "atmosphere/dz": m,
+            "atmosphere/rho": m,
             "atmosphere/p_interface": fl, "atmosphere/z_interface": fl}
 
 
-#: PBL schemes that allocate the raw YSU-shaped output bundle.  MYNN
-#: fills the same dict of names through its own launcher; SASE does not
-#: -- it hands its rates straight to the coupling helper.
-_YSU_OUTPUT_BUNDLE_SCHEMES = (1, 5)
+#: Only YSU allocates this raw output bundle. MYNN returns six views of
+#: the already priced ``mynn_pbl_out_*`` scratch and writes its diagnostics
+#: into the already priced driver fields. Charging the YSU bundle to MYNN
+#: counted those arrays twice and added YSU-only diagnostics it never owns.
+_YSU_OUTPUT_BUNDLE_SCHEMES = (1,)
+
+
+def mynn_mixscalars_memory_items(cfg: RunConfig, *, tile_buffer: bool = False
+                                ) -> tuple[MemoryItem, ...]:
+    """Conditional qn storage outside the always-on MYNN scratch arena.
+
+    The previous four coupled scalars remain held by ``self.tendencies``
+    until composition (physics.py:_compose_tendencies). During replacement,
+    four raw rates, four new coupled fields and the mass field coexist:
+    thirteen volume fields including the previous four. This also bounds
+    the earlier mass-expression temporaries, before new coupled fields exist.
+
+    The chunk term bounds the wider DMP phase, including five previous
+    chunk tendencies kept by the wrapper's old ``out`` dict. The subsequent
+    five scalar solves need fewer bytes, including both returned qn2 arrays
+    during assignment and their (7*nz+1)-wide solve scratch. Summing this
+    chunk ceiling beside the full coupling peak is conservative; the two
+    phases are sequential. Probe-only export_sink copies are not forecast
+    allocations. Owners: mynn_pbl_runtime.py, mynn_pbl_gpu.py and
+    mynn_scalar_mix_gpu.py.
+    """
+    if int(cfg.bl_pbl_physics) != 5 or int(cfg.bl_mynn_mixscalars) != 1:
+        return ()
+    from gpuwm.core.mynn_pbl import DMP_NUP
+    from gpuwm.core.mynn_scalar_mix import QN_SOLVE_ORDER
+
+    nz, ny, nx = int(cfg.nz), int(cfg.ny), int(cfg.nx)
+    chunk = min(nx * ny, mynn_pbl_column_chunk(cfg, tile_buffer=tile_buffer))
+    mass = (nz, ny, nx)
+    prefix = "mynn_mixscalars/"
+    items = [MemoryItem(prefix + "held_" + name, "physics", mass, 4)
+             for name in ("nc", "ni", "nwfa", "nifa")]
+    for family in ("raw_", "coupled_"):
+        items.extend(MemoryItem(prefix + family + name, "transient", mass, 4)
+                     for name in ("nc", "ni", "nwfa", "nifa"))
+    items.append(MemoryItem(prefix + "coupling_mass", "transient", mass, 4))
+    shapes = {}
+    for species in QN_SOLVE_ORDER:
+        shapes["input_" + species] = (chunk, nz)
+        shapes["previous_tendency_" + species] = (chunk, nz)
+        shapes["flux_" + species] = (chunk, nz + 1)
+    shapes.update(
+        plume_area=(chunk, nz + 1, DMP_NUP),
+        plume_velocity_copy=(chunk, nz + 1, DMP_NUP),
+        plume_area_copy=(chunk, nz + 1, DMP_NUP),
+        plume_entrainment_copy=(chunk, nz, DMP_NUP),
+        flux_workspace=(chunk, (nz + 1) * DMP_NUP),
+        plume_weight=(chunk,), plume_limiter=(chunk,))
+    items.extend(MemoryItem(prefix + name, "transient", shape, 4)
+                 for name, shape in shapes.items())
+    items.append(MemoryItem(prefix + "plume_active", "transient",
+                            (chunk,), 4, "int32"))
+    return tuple(items)
 
 
 def ysu_output_transient_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
@@ -6191,6 +6293,27 @@ def ysu_output_transient_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
     shapes = {f"ysu_output/{name}": m for name in _YSU_3D}
     shapes.update({f"ysu_output/{name}": s2 for name in _YSU_2D})
     return shapes
+
+
+def mynn_scalar_transient_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
+    """Peak live FP32 storage added by MYNN ``scalar_pblmix=1``.
+
+    The local solve keeps four raw grid rates and the previous four coupled
+    rates alive. Its chunk adds 5*nz+1 work values, two current outputs,
+    one packed input and one time step per column, plus the scalar time-step
+    input. Outputs are dropped after scatter before the next species.
+    Coupling can keep old and new four-field
+    coupled banks beside the four raw rates and its mass coefficient.
+    Charge the larger phase, rather than summing nonconcurrent phases.
+    The scalar-off estimate is unchanged.
+    """
+    if int(cfg.bl_pbl_physics) != 5 or int(cfg.scalar_pblmix) != 1:
+        return {}
+    nz, columns = int(cfg.nz), int(cfg.ny) * int(cfg.nx)
+    chunk = mynn_pbl_column_chunk(cfg)
+    solve = 8 * nz * columns + (8 * nz + 2) * chunk + 1
+    coupling = 13 * nz * columns
+    return {"mynn_scalar/local_diffusion_peak": (max(solve, coupling),)}
 
 
 #: PBL schemes that allocate the Shin-Hong per-call output bundle
@@ -6526,6 +6649,8 @@ def estimate_domain(dc: DomainConfig, *, spec_bdy_width: int | None = None,
         items += _nest_items(shapes, nest_slot_dtypes(dc, width, parent))
     items += _items("transient", atmosphere_transient_shapes(run, cam_ozone=cam_ozone))
     items += _items("transient", ysu_output_transient_shapes(run))
+    items += _items("transient", mynn_scalar_transient_shapes(run))
+    items += mynn_mixscalars_memory_items(run, tile_buffer=tile_buffer)
     from gpuwm.core.physics_inventory import terrain_drag_transient_shapes
     items += _items("transient", terrain_drag_transient_shapes(run))
     items += _items("transient", shinhong_output_transient_shapes(run))
@@ -6534,6 +6659,16 @@ def estimate_domain(dc: DomainConfig, *, spec_bdy_width: int | None = None,
     items += _items("transient", noahmp_lsm_transient_shapes(run),
                     itemsize=1)
     items += _items("physics", noahmp_lsm_cache_shapes(run), itemsize=1)
+    if int(run.sf_surface_physics) == 3:
+        # The RUC fused driver and generated soil/snow/sea-ice solver keep
+        # their own slabs outside DomainState.scratch. Omitting them hides
+        # more than a GiB on a wide rank. Price their GPU-censused shape
+        # inventory, including per-allocation pool rounding.
+        from gpuwm.core.ruc_memory import ruc_runtime_memory_bytes
+        for name, size in ruc_runtime_memory_bytes(
+                int(run.nx) * int(run.ny), soil_layer_count(run)).items():
+            category = "transient" if name == "sfctmp_outputs" else "physics"
+            items.append(MemoryItem("ruc/" + name, category, (size,), 1))
     items += tuple(MemoryItem(name, "transient", shape, size)
                    for name, (shape, size)
                    in rrtmgp_column_shapes(
@@ -6607,6 +6742,10 @@ class ExperimentMemoryEstimate:
     # Included in non_pool_device_bytes, but bounded by grid column counts.
     # Keep it separate for fixed-floor diagnostics, not a second admission.
     column_workspace_bytes: int = 0
+    # Immutable microphysics coefficients uploaded once per device, not
+    # once per domain. Separate from radiation's shared k-tables so a
+    # legacy radiation workspace is never mistaken for a fixed floor.
+    physics_tables_bytes: int = 0
 
     @property
     def fixed_envelope_bytes(self) -> int:
@@ -6618,7 +6757,8 @@ class ExperimentMemoryEstimate:
         Pure-legacy call workspaces can scale with columns and are excluded.
         No forecast or admission number changes when this diagnostic is read.
         """
-        fixed_pool = self.k_tables_bytes + (self.workspace_bytes if self.k_tables_bytes else 0)
+        fixed_pool = (self.k_tables_bytes + self.physics_tables_bytes
+                      + (self.workspace_bytes if self.k_tables_bytes else 0))
         return machine_peak_envelope_bytes(
             alloc_estimate_bytes=math.ceil(self.headroom * fixed_pool),
             non_pool_bytes=self.non_pool_device_bytes - self.column_workspace_bytes,
@@ -6634,7 +6774,7 @@ class ExperimentMemoryEstimate:
         if self.uses_shared_dycore_state_workspace:
             per_domain -= self.dycore_state_request_bytes
             per_domain += self.dycore_state_workspace_bytes
-        return per_domain + self.k_tables_bytes
+        return per_domain + self.k_tables_bytes + self.physics_tables_bytes
 
     @property
     def dycore_state_request_bytes(self) -> int:
@@ -7028,16 +7168,13 @@ CPU_PREPARATION_ANALYSIS_MULTIPLE_PER_INTERVAL = 0.3
 #: and NetCDF writer); ``tests/test_cpu_preparation_host_ram.py`` carries
 #: every case.  The multiples put the estimate at or above the highest
 #: peak seen for each case, which moved by up to 6% between repeated runs
-#: of one configuration.  Every case ran eight preparation threads, the
-#: most a CPU preparation starts on its own
-#: (``gpuwm.ingest.cpu_backend.AUTOMATIC_PREPARATION_WORKERS``): the peak
-#: grows with the thread count, and at 32 and 64 threads on a 64-vCPU
-#: host the 744x594x49 case peaked above its estimate
-#: (``MEASURED_CPU_PREPARATION_WORKER_COUNTS`` in that test file).
+#: of one configuration. Every case ran eight preparation threads. Wider
+#: pools add 32 MiB per extra worker for allocator and column scratch,
+#: covering the saved 16/32/64-worker process-tree peaks in that test file.
 CPU_PREPARATION_PEAK_BASIS = (
     "measured on real GFS preparations at 3 km, 474x380 to 902x720, 49 to "
-    "96 levels, 3 to 25 forcing times, with the eight worker threads a CPU "
-    "preparation starts at most unless --preprocess-workers names more: "
+    "96 levels, 3 to 25 forcing times, with eight worker threads, plus "
+    "32 MiB allocator and column scratch per worker above eight: "
     "the floor came to 0.74 to 0.89 of "
     "the peak and the estimate to 1.01 to 1.11; for nested trees of 2 and "
     "3 domains the floor came to 0.68 to 0.94 of the measured peak and "
@@ -7286,20 +7423,25 @@ class IngestMemoryEstimate:
             return 0
         intervals = max(0, int(self.n_forcing_times) - 1)
         root_analysis = self.category_bytes("analysis")
+        from gpuwm.ingest.preparation_workers import effective_workers, WORKER_SCRATCH_BYTES
+        # The original peak calibration used eight workers. Wider pools
+        # reserve allocator/column scratch per extra worker instead of
+        # imposing a machine-wide eight-thread ceiling.
+        worker_bytes = max(0, effective_workers() - 8) * WORKER_SCRATCH_BYTES
         interval_bytes = (CPU_PREPARATION_ANALYSIS_MULTIPLE_PER_INTERVAL
                           * intervals * root_analysis)
         if not self.nest_analysis_bytes:
             return math.ceil(
                 self.host_preprocess_floor_bytes
                 + CPU_PREPARATION_ANALYSIS_MULTIPLE * root_analysis
-                + interval_bytes)
+                + interval_bytes + worker_bytes)
         active_analysis = max(root_analysis, self.widest_nest_analysis_bytes)
         tree_peak = (
             self.host_preprocess_floor_bytes
             + CPU_PREPARATION_TREE_ACTIVE_ANALYSIS_MULTIPLE * active_analysis
             + CPU_PREPARATION_RETAINED_NEST_ANALYSIS_MULTIPLE
             * (self.nest_analysis_bytes - self.widest_nest_analysis_bytes))
-        return math.ceil(tree_peak + interval_bytes)
+        return math.ceil(tree_peak + interval_bytes + worker_bytes)
 
     @property
     def host_peak_estimate_bytes(self) -> int | None:
@@ -8179,6 +8321,29 @@ def estimate_devices(exp, **kwargs):
     return estimate(exp, **kwargs)
 
 
+@lru_cache(maxsize=2)
+def thompson_coefficient_bytes(aerosol: bool = False) -> int:
+    """Exact immutable device-table allocations, without loading an asset.
+
+    Both Thompson variants upload the complete classic float64 contract.
+    The aerosol variant adds CCN activation and the small derived arrays;
+    its droplet-evaporation table aliases the classic owner and adds zero.
+    Round each allocation to the device pool's 512-byte quantum.
+    """
+    from gpuwm.core.thompson_contract import (
+        AUXILIARY_TABLE_RECORDS, GENERATED_TABLE_FILES)
+
+    records = tuple(record for group in GENERATED_TABLE_FILES.values()
+                    for record in group) + AUXILIARY_TABLE_RECORDS
+    sizes = [record.payload_bytes for record in records]
+    if aerosol:
+        from gpuwm.core.thompson_aerosol_contract import (
+            CCN_ACTIVATION_VALUES, derived_constant_arrays)
+        sizes.append(CCN_ACTIVATION_VALUES * 8)
+        sizes.extend(array.size * 8 for array in derived_constant_arrays().values())
+    return sum(((int(size) + 511) // 512) * 512 for size in sizes)
+
+
 def estimate_experiment(
         exp: ExperimentConfig, *,
         column_chunk: int | None = None,
@@ -8189,6 +8354,7 @@ def estimate_experiment(
         profile: DeviceLocalMemoryProfile | None = None,
         boundary_species=(),
         urban_columns=None,
+        tile_buffer: bool = False,
 ) -> ExperimentMemoryEstimate:
     """Sum the per-domain itemizations; count the lru_cache-shared
     k-distribution tables ONCE (rrtmgp.py:324/:436 -- baseline behavior,
@@ -8199,10 +8365,16 @@ def estimate_experiment(
     MEASURED budget (free VRAM at startup minus the configured reserve --
     never nominal 32 GiB).
 
+    ``tile_buffer`` prices the MYNN workspace a prepared tile or device
+    rank actually allocates. The loader's retained template is a resident
+    domain and keeps the default False.
+
     ``urban_columns`` maps grid id to the domain's urban column count, the
     prepared doors' reading of their land cover
     (:func:`gpuwm.core.urban_state.prepared_urban_columns`); a domain it
-    does not name is priced at every column urban (A176)."""
+    does not name is priced at every column urban (A176). ``tile_buffer``
+    prices the workspace policy used by ``prepared_tile_state_factory``;
+    permanently resident device ranks use that factory too."""
     column_chunk = (exp.column_chunk if column_chunk is None
                     else column_chunk)
     if (isinstance(column_chunk, bool)
@@ -8230,6 +8402,7 @@ def estimate_experiment(
             boundary_species=(boundary_species if dc.parent_id == 0 else ()),
             p_top=exp.vertical.p_top,
             column_chunk=column_chunk,
+            tile_buffer=tile_buffer,
             urban_columns=(urban_columns or {}).get(int(dc.grid_id)))
         for dc in exp.domains)
     from gpuwm.physics_compat import RRTMG_VARIANT_LEGACY, rrtmg_variant
@@ -8335,6 +8508,10 @@ def estimate_experiment(
         column_workspace_bytes=column_workspace_bytes(
             exp, profile=(card_local_memory_profile(vram_gib)
                           if profile is None else profile)),
+        physics_tables_bytes=(thompson_coefficient_bytes(
+            any(int(dc.run.mp_physics) == 28 for dc in exp.domains))
+            if any(int(dc.run.mp_physics) in (8, 28) for dc in exp.domains)
+            else 0),
     )
 
 
@@ -10043,6 +10220,7 @@ def _required_memory_without_kernels(exp, args, *,
         "transient_peak_bytes": estimate.transient_peak_bytes,
         "workspace_bytes": estimate.workspace_bytes,
         "k_tables_bytes": estimate.k_tables_bytes,
+        "physics_tables_bytes": estimate.physics_tables_bytes,
         "alloc_estimate_bytes": estimate.alloc_estimate_bytes,
         "resident_forecast_peak_envelope_bytes": estimate.peak_envelope_bytes,
         "bem_column_workspace_basis": _check_bem_basis(
@@ -10382,6 +10560,11 @@ def check_main(args) -> int:
         profiles = (None if measured is None else
                     {int(dev): profile_from_device_probe(row)
                      for dev, row in measured["cards"].items()})
+        declared_budget = args.budget_gib if args.budget_gib is not None else declared_free_gib
+        budgets = ({dev: int(declared_budget * GIB) for dev in exp.devices.device_ids()}
+                   if declared_budget is not None else None if measured is None else
+                   {int(dev): int(row["free_bytes"])
+                    for dev, row in measured["cards"].items()})
         if len(exp.domains) > 1:
             # A split tree: each grid on the cards it runs on, the pricing
             # the `gpuwm go` gate and the tree runner use.
@@ -10394,12 +10577,8 @@ def check_main(args) -> int:
             estimate = estimate_devices(
                 exp, forcing_intervals=forcing_intervals,
                 forcing_interval_seconds=forcing_interval, vram_gib=card_total_gib,
-                profile=profile, source=priced_boundary_source, profiles=profiles)
-        declared_budget = args.budget_gib if args.budget_gib is not None else declared_free_gib
-        budgets = ({dev: int(declared_budget * GIB) for dev in exp.devices.device_ids()}
-                   if declared_budget is not None else None if measured is None else
-                   {int(dev): int(row["free_bytes"])
-                    for dev, row in measured["cards"].items()})
+                profile=profile, source=priced_boundary_source, profiles=profiles,
+                budgets=budgets)
         gate = devices_gate(estimate, budgets=budgets, host_budget=host_available_bytes())
         if prepared is None:
             include_preparation(
@@ -10838,6 +11017,7 @@ def check_main(args) -> int:
                                      "nest", "diagnostic", "sase", "transient")},
                 } for d in estimate.domains},
             "k_tables_bytes": estimate.k_tables_bytes,
+            "physics_tables_bytes": estimate.physics_tables_bytes,
             "workspace_bytes": estimate.workspace_bytes,
             "scratch_arena_bytes": estimate.scratch_arena_bytes,
             "scratch_arena_request_bytes":

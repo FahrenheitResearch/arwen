@@ -135,4 +135,42 @@ def mynn_dmp_qn_flux_columns_cuda(
     return s_awqn
 
 
-__all__ = ["mynn_mix_scalar_columns_cuda", "mynn_dmp_qn_flux_columns_cuda"]
+def scalar_pblmix_columns_cuda(qn, dz, rho, exch_h, delt, *, scratch=None):
+    """WRF ``diff4d`` local scalar diffusion, in level-major column batches.
+
+    Arrays have shape ``(ncol, nz)`` and include the prescribed top layer.
+    ``exch_h`` is MYNN's output diffusivity (m2/s), at each layer's lower
+    interface. Scalar number mixing ratios are passed without the humidity
+    conversion applied to water species. Returns the solved number mixing
+    ratio and its rate per second; the caller performs dry-mass coupling.
+    Scratch is ``(ncol, 5*nz+1)`` FP32, so callers can reuse it per chunk.
+    """
+    import cupy as cp
+
+    qn = cp.asfortranarray(cp.asarray(qn, dtype=DTYPE))
+    if qn.ndim != 2 or qn.shape[1] < 2:
+        raise ValueError("scalar_pblmix requires (ncol, nz) with nz >= 2")
+    ncol, nz = qn.shape
+    dz = _device_2d(cp, dz, qn.shape, "dz")
+    rho = _device_2d(cp, rho, qn.shape, "rho")
+    exch_h = _device_2d(cp, exch_h, qn.shape, "exch_h")
+    delt = cp.ascontiguousarray(cp.broadcast_to(
+        cp.asarray(delt, dtype=DTYPE), (ncol,)))
+    solved = cp.empty(qn.shape, dtype=DTYPE, order="F")
+    rate = cp.empty(qn.shape, dtype=DTYPE, order="F")
+    if scratch is None:
+        scratch = cp.empty((ncol, 5 * nz + 1), dtype=DTYPE, order="F")
+    elif (scratch.shape != (ncol, 5 * nz + 1)
+          or scratch.dtype != DTYPE or not scratch.flags.f_contiguous):
+        raise ValueError("scalar_pblmix scratch must be FP32 Fortran-order "
+                         "with shape (ncol, 5*nz+1)")
+    get_kernel("mynn_scalar_mix", "scalar_pblmix_columns")(
+        ((ncol + _TPB - 1) // _TPB,), (_TPB,),
+        (qn, dz, rho, exch_h, delt, solved, rate, scratch,
+         np.int32(nz), np.int32(ncol)),
+    )
+    return solved, rate
+
+
+__all__ = ["mynn_mix_scalar_columns_cuda", "mynn_dmp_qn_flux_columns_cuda",
+           "scalar_pblmix_columns_cuda"]

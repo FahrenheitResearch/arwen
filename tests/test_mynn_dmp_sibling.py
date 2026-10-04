@@ -1,9 +1,10 @@
 """The DMP sibling preserves its historical source and tagged exports.
 
-The ordinary mixing-length entry point now calls the rounded shared helper.
+The ordinary mixing-length entry point now calls the rounded shared helper
+with options 1 and 2, and initialization forwards the selected option.
 The sibling is still used only for its DMP exports. Its stripped source
 digest is re-pinned for the level-major layout, and every byte outside that
-one entry point must agree with the active source. Numerical DMP controls
+mixing-length changes must agree with the active source. Numerical DMP controls
 cover the actual default and scalar-mixing paths.
 """
 
@@ -45,8 +46,33 @@ def test_historical_sibling_source_pin_unchanged():
     assert hashlib.sha256(_historical_source().encode()).hexdigest() == _FROZEN_SHA256
 
 
-def test_only_the_ordinary_length_entry_differs_from_the_sibling():
-    assert _without_length_entry(_read("mynn_pbl.cu")) == _without_length_entry(
+def _without_local_length_option(source):
+    start = source.index("// WRF v4.6.1 module_bl_mynn.F:2100-2232")
+    end = source.index("// module_bl_mynn.F:1999-2098", start)
+    source = source[:start] + source[end:]
+    edits = (
+        ("MynnColumn<real> dld, int nz, int mixlength)",
+         "MynnColumn<real> dld, int nz)"),
+        ("    if (mixlength == 2) {\n"
+         "        mynn_mym_length_local_column(dz, zw, qke, dtv, edmf_w, edmf_a,\n"
+         "            rmo, fltv, zi, psig_bl, el, qkw, qtke, nz);\n"
+         "        return;\n    }\n", ""),
+        ("int initialize_qke, int mixlength, int nz, int ncol)",
+         "int initialize_qke, int nz, int ncol)"),
+        ("el, qkw, qtke, thetaw, elblavg, dlu, dld, nz,\n"
+         "                               mixlength);",
+         "el, qkw, qtke, thetaw, elblavg, dlu, dld, nz);"),
+    )
+    for current, historical in edits:
+        assert source.count(current) == 1, current
+        source = source.replace(current, historical)
+    return source
+
+
+def test_only_mixing_length_entries_differ_from_the_sibling():
+    # Do not let the new length option silently alter DMP scalar fluxes.
+    assert _without_local_length_option(_without_length_entry(
+        _read("mynn_pbl.cu"))) == _without_length_entry(
         _historical_source())
 
 

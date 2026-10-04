@@ -427,7 +427,7 @@ def test_a_source_that_normalizes_its_inputs_whole_does_not_prepare_as_posted():
 def test_the_sources_that_prepare_as_they_post_are_the_rolling_rows():
     # The CHANGELOG's as-posted row names these doors' sources; the rest say
     # why they wait for the whole window, and in their row's own words.
-    for source in ("gfs", "hrrr-prs", "rap", "rrfs", "icon-eu", "gem-gdps"):
+    for source in ("gfs", "hrrr", "hrrr-prs", "rap", "rrfs", "icon-eu", "gem-gdps"):
         assert source_cli.prepares_as_posted(source), source
     assert ("does not post lead by lead (its posting shape is whole_cycle)"
             in source_cli.as_posted_refusal("aifs"))
@@ -436,7 +436,7 @@ def test_the_sources_that_prepare_as_they_post_are_the_rolling_rows():
     assert ("declares no posting row"
             in source_cli.as_posted_refusal("era5-l137"))
     assert ("prepares a whole fetched window"
-            in source_cli.as_posted_refusal("hrrr"))
+            in source_cli.as_posted_refusal("era5"))
 
 
 # ---------------------------------------------------------------------------

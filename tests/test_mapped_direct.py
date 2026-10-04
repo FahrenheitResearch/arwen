@@ -129,13 +129,6 @@ def _experiment(domain_count: int, *, nz: int = 49, run_seconds: int = 3600,
             "vertical ladder is missing",
         ),
         (
-            _target_mapping(require_lateral_boundaries=False),
-            _experiment(1),
-            3600,
-            False,
-            "lateral boundar",
-        ),
-        (
             _target_mapping(boundary_interval_seconds=10_800),
             _experiment(1),
             3600,
@@ -857,6 +850,48 @@ def test_prepare_threads_the_output_root_into_the_compose_scratch(
         Path(args["output_root"]).resolve())
 
 
+def test_separate_analysis_keeps_boundary_zero_and_uses_donor_aerosols(monkeypatch, tmp_path):
+    # Replacing forcing[0] would interpolate from the analysis toward the next
+    # boundary product. The first boundary must remain that product's f00.
+    from contextlib import contextmanager
+    import gpuwm.initial_source as initial_source
+
+    args, calls, expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=1, backend="cpu")
+    expected.exp.root.run.use_rap_aero_icbc = True
+    args["initial_inputs"] = tmp_path / "initial.json"
+    monkeypatch.setattr(initial_source, "read_initial_inputs", lambda _: {})
+    donor_result = SimpleNamespace(state=_State())
+    calls_to_initializer = []
+    original = mapped_direct.initialize_real
+
+    def initialize(met, *positional, **kwargs):
+        calls_to_initializer.append(kwargs)
+        if "aerosol_snapshot" in kwargs:
+            assert kwargs["aerosol_snapshot"] is expected.mets[0]
+            return donor_result
+        return original(met, *positional, **kwargs)
+
+    monkeypatch.setattr(mapped_direct, "initialize_real", initialize)
+
+    @contextmanager
+    def analysis(*_, **kwargs):
+        assert kwargs["valid_time"] == expected.exp.start_time
+        yield initial_source.InitialAnalysis(
+            expected.snapshots[0], expected.mapping,
+            expected.bundle.soil_layer_contract,
+            {"source": "distinct-analysis"}, {"request.json": b"bound donor"})
+
+    monkeypatch.setattr(initial_source, "decode_initial_analysis", analysis)
+    proof = mapped_direct.prepare_mapped_wrf(**args)
+    assert calls["frames"]["added"] == [result.state for result in expected.results]
+    assert calls["cache_stream"]["head"]["initial_result"] is donor_result
+    assert proof["initial_source"]["source"] == "distinct-analysis"
+    assert proof["initial_source"]["aerosol_source"] == "boundary-analysis"
+    assert calls_to_initializer[1]["aerosol_snapshot"] is expected.mets[0]
+    assert (args["output_root"] / "source-evidence" / "initial" / "request.json").read_bytes() == b"bound donor"
+
+
 def test_the_chained_admission_is_priced_with_the_mapping_it_prepares_from(
     monkeypatch,
     tmp_path,
@@ -1305,13 +1340,6 @@ def test_mapped_hierarchy_preserves_five_minute_offsets_end_to_end(
             1,
             3600,
             49,
-            {"require_lateral_boundaries": False},
-            "lateral boundar",
-        ),
-        (
-            1,
-            3600,
-            49,
             {"boundary_interval_seconds": 10_800},
             "boundary.*interval|cadence",
         ),
@@ -1345,6 +1373,32 @@ def test_invalid_target_contract_stops_before_static_or_preprocessing(
     assert calls["initialize"] == 0
     assert not calls["hierarchy"]
     assert not calls["single_export"]
+    assert not args["output_root"].exists()
+
+
+def test_analysis_capable_mapping_prepares_a_complete_forcing_window(monkeypatch, tmp_path):
+    """A decode profile accepting one analysis can also supply a forecast window."""
+    args, calls, _expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=1, backend="cpu",
+        mapping_updates={"require_lateral_boundaries": False})
+    proof = mapped_direct.prepare_mapped_wrf(**args)
+    assert calls["initialize"] == 2
+    contract = mapped_direct._validate_target_contract(
+        _expected.mapping, _expected.exp, 3600, hierarchy=False)
+    assert contract["require_lateral_boundaries"] is True
+    assert proof["boundary_interval_seconds"] == 3600
+
+
+def test_analysis_capable_mapping_refuses_one_time_as_forecast_forcing(monkeypatch, tmp_path):
+    """One analysis supplies no second boundary state, regardless of decoder policy."""
+    from gpuwm.ingest.source_coverage import ForcingSeriesRefusal
+    args, calls, expected = _install_prepare_fakes(
+        monkeypatch, tmp_path, domain_count=1, backend="cpu",
+        mapping_updates={"require_lateral_boundaries": False})
+    expected.bundle.regular_snapshots = lambda: expected.snapshots[:1]
+    with pytest.raises(ForcingSeriesRefusal, match="requires at least two forcing times"):
+        mapped_direct.prepare_mapped_wrf(**args)
+    assert calls["build_static"] == calls["interpolate"] == calls["initialize"] == 0
     assert not args["output_root"].exists()
 
 

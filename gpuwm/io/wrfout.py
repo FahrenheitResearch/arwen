@@ -14,7 +14,7 @@ CPU-importable.
 """
 from __future__ import annotations
 from collections.abc import Mapping
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import partial
@@ -682,6 +682,24 @@ def _driver_refreshes_psfc(state) -> bool:
         getattr(physics, "surface_enabled", False))
 
 
+def _state_device_context(state):
+    """Select the state card without requiring CUDA for host-only templates."""
+    device = getattr(getattr(state, "mup", None), "device", None)
+    return device if getattr(device, "id", None) is not None else nullcontext()
+
+
+def _domain_output_device(state):
+    """A host shell keeps its run's card even after its arrays are freed."""
+    streamed = getattr(state, "_streamed_domain", None)
+    run = getattr(streamed, "_run", None)
+    devices = getattr(run, "devices", ())
+    if devices:
+        return int(devices[0])
+    if getattr(run, "_device_id", None) is not None:
+        return int(run._device_id)
+    return getattr(getattr(getattr(state, "mup", None), "device", None), "id", None)
+
+
 def state_frame(
         state, *, include_diagnostic_pressure: bool = False
 ) -> dict[str, np.ndarray]:
@@ -702,58 +720,59 @@ def state_frame(
     """
     import cupy as cp  # deferred: the writer itself stays CPU-importable
 
-    ny, nx = state.mup.shape
-    phb = cp.asnumpy(state.phb)
-    if phb.ndim == 1:                     # flat base state: broadcast column
-        phb = np.ascontiguousarray(
-            np.broadcast_to(phb[:, None, None], (phb.size, ny, nx)))
-    fields = {
-        "T": (cp.asnumpy(state.thp) if _WRF_EXACT
-              else cp.asnumpy(state.total_theta()) - np.float32(300.0)),
-        **{name: cp.asnumpy(getattr(state, attribute))
-           for name, attribute in CORE_DIRECT_STATE_FIELDS.items()},
-        "PHB": phb,
-        "MUB": cp.asnumpy(state.mub2d),
-        "HGT": cp.asnumpy(state.ht),
-    }
-    if include_diagnostic_pressure:
-        pb = state.pb
-        pb3 = pb if pb.ndim == 3 else pb[:, None, None]
-        fields["P"] = cp.asnumpy(state.p_perturbation if DIAGNOSTICS_ENABLED
-                                 else state.p - pb3)
-        # Broadcast on the host: a state prepared on the CPU carries numpy
-        # arrays, and cp.broadcast_to refuses those where cp.asnumpy does
-        # not.  Same bytes for a device state.
-        fields["PB"] = np.ascontiguousarray(
-            np.broadcast_to(cp.asnumpy(pb3), tuple(state.p.shape)))
-        if _driver_refreshes_psfc(state):
-            fields["PSFC"] = cp.asnumpy(state.physics.fields["psfc"])
-        elif getattr(state, "p_top", None) is not None:
-            # Without a physics driver, diagnose PSFC the way WRF's
-            # phy_prep extrapolates the full (moist) pressure to the
-            # surface in z (module_big_step_utilities_em.F:5566-5578).
-            # The previous dry form (total_mu + p_top) understates a
-            # moist column's PSFC by the column water weight.
-            from gpuwm.core import constants as c
-            phb3 = (state.phb[:, None, None]
-                    if state.phb.ndim == 1 else state.phb)
-            z_if = (phb3 + state.php) / np.float32(c.G)
-            z_mid = 0.5 * (z_if[:-1] + z_if[1:])
-            w1 = (z_if[0] - z_mid[1]) / (z_mid[0] - z_mid[1])
-            fields["PSFC"] = cp.asnumpy(
-                w1 * state.p[0] + (1.0 - w1) * state.p[1])
-    if state.qv is not None:
-        fields.update({name: cp.asnumpy(getattr(state, attribute))
-                       for name, attribute in MOISTURE_STATE_FIELDS.items()})
-    for name, array in _live_state_history_fields(state).items():
-        if isinstance(array, np.ndarray):
-            fields[name] = np.array(array, copy=True, order="C")
-        else:
-            fields[name] = cp.asnumpy(array)
-    if getattr(state, "physics", None) is not None:
-        fields.update({name: cp.asnumpy(array)
-                       for name, array in state.physics.output_fields().items()})
-    return fields
+    with _state_device_context(state):
+        ny, nx = state.mup.shape
+        phb = cp.asnumpy(state.phb)
+        if phb.ndim == 1:                     # flat base state: broadcast column
+            phb = np.ascontiguousarray(
+                np.broadcast_to(phb[:, None, None], (phb.size, ny, nx)))
+        fields = {
+            "T": (cp.asnumpy(state.thp) if _WRF_EXACT
+                  else cp.asnumpy(state.total_theta()) - np.float32(300.0)),
+            **{name: cp.asnumpy(getattr(state, attribute))
+               for name, attribute in CORE_DIRECT_STATE_FIELDS.items()},
+            "PHB": phb,
+            "MUB": cp.asnumpy(state.mub2d),
+            "HGT": cp.asnumpy(state.ht),
+        }
+        if include_diagnostic_pressure:
+            pb = state.pb
+            pb3 = pb if pb.ndim == 3 else pb[:, None, None]
+            fields["P"] = cp.asnumpy(state.p_perturbation if DIAGNOSTICS_ENABLED
+                                     else state.p - pb3)
+            # Broadcast on the host: a state prepared on the CPU carries numpy
+            # arrays, and cp.broadcast_to refuses those where cp.asnumpy does
+            # not.  Same bytes for a device state.
+            fields["PB"] = np.ascontiguousarray(
+                np.broadcast_to(cp.asnumpy(pb3), tuple(state.p.shape)))
+            if _driver_refreshes_psfc(state):
+                fields["PSFC"] = cp.asnumpy(state.physics.fields["psfc"])
+            elif getattr(state, "p_top", None) is not None:
+                # Without a physics driver, diagnose PSFC the way WRF's
+                # phy_prep extrapolates the full (moist) pressure to the
+                # surface in z (module_big_step_utilities_em.F:5566-5578).
+                # The previous dry form (total_mu + p_top) understates a
+                # moist column's PSFC by the column water weight.
+                from gpuwm.core import constants as c
+                phb3 = (state.phb[:, None, None]
+                        if state.phb.ndim == 1 else state.phb)
+                z_if = (phb3 + state.php) / np.float32(c.G)
+                z_mid = 0.5 * (z_if[:-1] + z_if[1:])
+                w1 = (z_if[0] - z_mid[1]) / (z_mid[0] - z_mid[1])
+                fields["PSFC"] = cp.asnumpy(
+                    w1 * state.p[0] + (1.0 - w1) * state.p[1])
+        if state.qv is not None:
+            fields.update({name: cp.asnumpy(getattr(state, attribute))
+                           for name, attribute in MOISTURE_STATE_FIELDS.items()})
+        for name, array in _live_state_history_fields(state).items():
+            if isinstance(array, np.ndarray):
+                fields[name] = np.array(array, copy=True, order="C")
+            else:
+                fields[name] = cp.asnumpy(array)
+        if getattr(state, "physics", None) is not None:
+            fields.update({name: cp.asnumpy(array)
+                           for name, array in state.physics.output_fields().items()})
+        return fields
 
 
 def _validation_reader(path):
@@ -1499,40 +1518,41 @@ def _device_state_frame(state, *, include_diagnostic_pressure: bool = True):
     """Build the standard frame as live device arrays for side-stream D2H."""
     import cupy as cp
 
-    ny, nx = state.mup.shape
-    phb = state.phb
-    if phb.ndim == 1:
-        phb = cp.broadcast_to(phb[:, None, None], (phb.size, ny, nx))
-    fields = {
-        "T": (state.thp if _WRF_EXACT
-              else state.total_theta() - cp.float32(300.0)),
-        **{name: getattr(state, attribute)
-           for name, attribute in CORE_DIRECT_STATE_FIELDS.items()},
-        "PHB": phb, "MUB": state.mub2d, "HGT": state.ht,
-    }
-    if include_diagnostic_pressure:
-        pb = state.pb
-        pb3 = pb if pb.ndim == 3 else pb[:, None, None]
-        fields["P"] = (state.p_perturbation if DIAGNOSTICS_ENABLED
-                       else state.p - pb3)
-        fields["PB"] = cp.broadcast_to(pb3, state.p.shape)
-        if _driver_refreshes_psfc(state):
-            fields["PSFC"] = state.physics.fields["psfc"]
-        elif getattr(state, "p_top", None) is not None:
-            from gpuwm.core import constants as c
-            phb3 = (state.phb[:, None, None]
-                    if state.phb.ndim == 1 else state.phb)
-            z_if = (phb3 + state.php) / cp.float32(c.G)
-            z_mid = 0.5 * (z_if[:-1] + z_if[1:])
-            w1 = (z_if[0] - z_mid[1]) / (z_mid[0] - z_mid[1])
-            fields["PSFC"] = w1 * state.p[0] + (1.0 - w1) * state.p[1]
-    if state.qv is not None:
-        fields.update({name: getattr(state, attribute)
-                       for name, attribute in MOISTURE_STATE_FIELDS.items()})
-    fields.update(_live_state_history_fields(state))
-    if getattr(state, "physics", None) is not None:
-        fields.update(state.physics.output_fields())
-    return fields
+    with _state_device_context(state):
+        ny, nx = state.mup.shape
+        phb = state.phb
+        if phb.ndim == 1:
+            phb = cp.broadcast_to(phb[:, None, None], (phb.size, ny, nx))
+        fields = {
+            "T": (state.thp if _WRF_EXACT
+                  else state.total_theta() - cp.float32(300.0)),
+            **{name: getattr(state, attribute)
+               for name, attribute in CORE_DIRECT_STATE_FIELDS.items()},
+            "PHB": phb, "MUB": state.mub2d, "HGT": state.ht,
+        }
+        if include_diagnostic_pressure:
+            pb = state.pb
+            pb3 = pb if pb.ndim == 3 else pb[:, None, None]
+            fields["P"] = (state.p_perturbation if DIAGNOSTICS_ENABLED
+                           else state.p - pb3)
+            fields["PB"] = cp.broadcast_to(pb3, state.p.shape)
+            if _driver_refreshes_psfc(state):
+                fields["PSFC"] = state.physics.fields["psfc"]
+            elif getattr(state, "p_top", None) is not None:
+                from gpuwm.core import constants as c
+                phb3 = (state.phb[:, None, None]
+                        if state.phb.ndim == 1 else state.phb)
+                z_if = (phb3 + state.php) / cp.float32(c.G)
+                z_mid = 0.5 * (z_if[:-1] + z_if[1:])
+                w1 = (z_if[0] - z_mid[1]) / (z_mid[0] - z_mid[1])
+                fields["PSFC"] = w1 * state.p[0] + (1.0 - w1) * state.p[1]
+        if state.qv is not None:
+            fields.update({name: getattr(state, attribute)
+                           for name, attribute in MOISTURE_STATE_FIELDS.items()})
+        fields.update(_live_state_history_fields(state))
+        if getattr(state, "physics", None) is not None:
+            fields.update(state.physics.output_fields())
+        return fields
 
 
 @dataclass
@@ -1649,6 +1669,7 @@ class AsyncDomainWrfoutWriter:
     #: defaults for the same ``object.__new__`` shells as above.
     _pending_bytes = 0
     _identity_bytes = 0
+    _device = None
 
     @staticmethod
     def _new_ticket_queue() -> queue.Queue:
@@ -1660,7 +1681,7 @@ class AsyncDomainWrfoutWriter:
 
     def __init__(self, *, nx, ny, nz, dx, dy, title, global_attrs,
                  abort_event=None, soil_layers=None, grid_id=None,
-                 landing_observer=None, history_selection=None):
+                 landing_observer=None, history_selection=None, device=None):
         import cupy as cp
 
         #: Which domain this writer is, and who to tell when one of its
@@ -1681,7 +1702,9 @@ class AsyncDomainWrfoutWriter:
         self.dx, self.dy = float(dx), float(dy)
         self.title = title
         self.global_attrs = dict(global_attrs)
-        self.stream = cp.cuda.Stream(non_blocking=True)
+        self._device = cp.cuda.Device(device)
+        with self._device:
+            self.stream = cp.cuda.Stream(non_blocking=True)
         self._queue = self._new_ticket_queue()
         self._condition = threading.Condition()
         self._pending = 0
@@ -1696,6 +1719,10 @@ class AsyncDomainWrfoutWriter:
             target=self._worker, name=f"gpuwm-wrfout-{id(self):x}",
             daemon=True)
         self._thread.start()
+
+    def _device_context(self):
+        # CPU-only writer shells have no CUDA owner. Real writers always do.
+        return self._device if self._device is not None else nullcontext()
 
     @property
     def pending(self) -> int:
@@ -1865,79 +1892,89 @@ class AsyncDomainWrfoutWriter:
         """
         import cupy as cp
 
-        if self._closed:
-            raise RuntimeError("cannot submit to a closed wrfout writer")
-        self._raise_failure()
-        producer = cp.cuda.get_current_stream()
-        if frame is not None:
-            if state is not None:
-                raise ValueError(
-                    "submit() was given both a prepared host frame and a "
-                    "device state; they are two different domains' worth of "
-                    "numbers and there is no rule for which wins.  A "
-                    "streamed domain passes state=None.")
-            self._admit_host_frame(path, valid_time, frame,
-                                   extra_fields=extra_fields,
-                                   refl_field=refl_field, producer=producer,
-                                   global_attrs=global_attrs)
-            return
-        device_fields = _device_state_frame(
-            state, include_diagnostic_pressure=True)
-        if refl_field is not None:
-            device_fields["REFL_10CM"] = refl_field
-        # The [output] selection, resolved BEFORE the staging loop below
-        # so a dropped field costs no D2H at all -- see _history_plan.
-        produced = list(device_fields)
-        produced.extend(name for name in (extra_fields or ())
-                        if name not in device_fields)
-        keep, history_attrs = self._history_plan(produced)
-        ready = cp.cuda.Event()
-        ready.record(producer)
-        self.stream.wait_event(ready)
+        # A caller can finish another rank with a different card current.
+        # Stream entry does not select its card in CuPy.
+        with self._device_context():
+            if self._closed:
+                raise RuntimeError("cannot submit to a closed wrfout writer")
+            self._raise_failure()
+            producer = cp.cuda.get_current_stream()
+            try:
+                if frame is not None:
+                    if state is not None:
+                        raise ValueError(
+                            "submit() was given both a prepared host frame and a "
+                            "device state; they are two different domains' worth of "
+                            "numbers and there is no rule for which wins.  A "
+                            "streamed domain passes state=None.")
+                    self._admit_host_frame(path, valid_time, frame,
+                                           extra_fields=extra_fields,
+                                           refl_field=refl_field, producer=producer,
+                                           global_attrs=global_attrs)
+                    return
+                device_fields = _device_state_frame(
+                    state, include_diagnostic_pressure=True)
+                if refl_field is not None:
+                    device_fields["REFL_10CM"] = refl_field
+                # The [output] selection, resolved BEFORE the staging loop below
+                # so a dropped field costs no D2H at all -- see _history_plan.
+                produced = list(device_fields)
+                produced.extend(name for name in (extra_fields or ())
+                                if name not in device_fields)
+                keep, history_attrs = self._history_plan(produced)
+                ready = cp.cuda.Event()
+                ready.record(producer)
+                self.stream.wait_event(ready)
 
-        host_fields: dict[str, np.ndarray] = {}
-        device_refs: list[object] = []
-        pinned_refs: list[object] = []
-        with self.stream:
-            for name, value in device_fields.items():
-                if name not in keep:
-                    continue
-                if isinstance(value, np.ndarray):
-                    # Already on host: staging it through the device would
-                    # be a pure bounce (measured ~1.8 GiB of cached device
-                    # staging across the initial frames).  np.array preserves
-                    # a scalar P_TOP's 0-D shape; np.ascontiguousarray would
-                    # silently promote it to (1,) and give it a vertical dim.
-                    host_fields[name] = np.array(
-                        value, copy=True, order="C", subok=False)
-                    continue
-                array = cp.ascontiguousarray(value)
-                memory = cp.cuda.alloc_pinned_memory(int(array.nbytes))
-                host = np.frombuffer(memory, dtype=array.dtype,
-                                     count=array.size).reshape(array.shape)
-                array.get(out=host, stream=self.stream, blocking=False)
-                host_fields[name] = host
-                device_refs.append(array)
-                pinned_refs.append(memory)
-            for name, value in (extra_fields or {}).items():
-                # Prognostic/state-derived fields win (notably child HGT,
-                # which is blended while static HGT_M remains unblended).
-                if name not in host_fields and name in keep:
-                    host_fields[name] = np.ascontiguousarray(value)
-            done = cp.cuda.Event()
-            done.record(self.stream)
-        # The next mutation on the producing stream waits for the snapshot,
-        # while the host remains free to write another domain/file.
-        producer.wait_event(done)
-        ticket = _AsyncFrame(
-            path=Path(path),
-            time_str=valid_time.strftime("%Y-%m-%d_%H:%M:%S"),
-            fields=host_fields, event=done,
-            device_refs=tuple(device_refs),
-            pinned_refs=tuple(pinned_refs),
-            valid_time=valid_time,
-            global_attrs=self._frame_attrs(global_attrs, history_attrs))
-        self._admit(ticket)
+                host_fields: dict[str, np.ndarray] = {}
+                device_refs: list[object] = []
+                pinned_refs: list[object] = []
+                with self.stream:
+                    for name, value in device_fields.items():
+                        if name not in keep:
+                            continue
+                        if isinstance(value, np.ndarray):
+                            # Already on host: staging it through the device would
+                            # be a pure bounce (measured ~1.8 GiB of cached device
+                            # staging across the initial frames).  np.array preserves
+                            # a scalar P_TOP's 0-D shape; np.ascontiguousarray would
+                            # silently promote it to (1,) and give it a vertical dim.
+                            host_fields[name] = np.array(
+                                value, copy=True, order="C", subok=False)
+                            continue
+                        array = cp.ascontiguousarray(value)
+                        memory = cp.cuda.alloc_pinned_memory(int(array.nbytes))
+                        host = np.frombuffer(memory, dtype=array.dtype,
+                                             count=array.size).reshape(array.shape)
+                        array.get(out=host, stream=self.stream, blocking=False)
+                        host_fields[name] = host
+                        device_refs.append(array)
+                        pinned_refs.append(memory)
+                    for name, value in (extra_fields or {}).items():
+                        # Prognostic/state-derived fields win (notably child HGT,
+                        # which is blended while static HGT_M remains unblended).
+                        if name not in host_fields and name in keep:
+                            host_fields[name] = np.ascontiguousarray(value)
+                    done = cp.cuda.Event()
+                    done.record(self.stream)
+                # The next mutation on the producing stream waits for the snapshot,
+                # while the host remains free to write another domain/file.
+                producer.wait_event(done)
+                ticket = _AsyncFrame(
+                    path=Path(path),
+                    time_str=valid_time.strftime("%Y-%m-%d_%H:%M:%S"),
+                    fields=host_fields, event=done,
+                    device_refs=tuple(device_refs),
+                    pinned_refs=tuple(pinned_refs),
+                    valid_time=valid_time,
+                    global_attrs=self._frame_attrs(global_attrs, history_attrs))
+                self._admit(ticket)
+            finally:
+                # CuPy stream contexts restore their context stack, which can
+                # differ from a producer selected with Stream.use(). Keep the
+                # caller on the stream that waits for this frame's snapshot.
+                producer.use()
+
 
     def _admit_host_frame(self, path, valid_time, frame, *, extra_fields,
                           refl_field, producer, global_attrs=None) -> None:
@@ -2033,6 +2070,12 @@ class AsyncDomainWrfoutWriter:
         return host
 
     def _worker(self) -> None:
+        # CUDA current devices are thread-local. A new writer thread starts
+        # on card 0 even when its stream and buffers belong to another card.
+        with self._device_context():
+            self._worker_on_device()
+
+    def _worker_on_device(self) -> None:
         if not hasattr(self, "_completed_records"):
             self._completed_records = []
         while True:
@@ -2353,6 +2396,7 @@ class PerDomainWrfoutWriters:
         #: Every final pathname THIS writer set has published, which is
         #: what the duplicate-valid-time guard in submit() is scoped to.
         self._published_paths = set()
+        self._captured_paths = []
         self._abort_event = threading.Event()
         self._output_observer = None
         self._simulated_radar = None
@@ -2382,7 +2426,8 @@ class PerDomainWrfoutWriters:
                     simulation_start_time=start_time),
                 abort_event=self._abort_event,
                 grid_id=node.cfg.grid_id,
-                history_selection=self._selection_for(node.cfg))
+                history_selection=self._selection_for(node.cfg),
+                device=_domain_output_device(node.state))
         self.last_durable_wrfout = None
         if simulated_radar is not None and simulated_radar.enabled:
             from gpuwm.simulated_radar import LiveSimulatedRadar
@@ -2484,6 +2529,11 @@ class PerDomainWrfoutWriters:
         return tuple(ret)
 
     @property
+    def captured_paths(self) -> tuple[Path, ...]:
+        """Logical history cadence captured without claiming member files."""
+        return tuple(getattr(self, "_captured_paths", ()))
+
+    @property
     def completed_records(self):
         ret = list(getattr(self, "_archived_records", ()))
         for gid in sorted(self._writers):
@@ -2536,7 +2586,8 @@ class PerDomainWrfoutWriters:
             # wrote it: no output_committed events for those frames.
             landing_observer=(self._notify_output if self._simulated_radar is not None
                               else None),
-            history_selection=self._selection_for(node.cfg))
+            history_selection=self._selection_for(node.cfg),
+            device=_domain_output_device(node.state))
 
     def remove_domain(self, grid_id: int) -> None:
         """Drain and close one retired episode without losing its paths."""
@@ -2636,6 +2687,23 @@ class PerDomainWrfoutWriters:
                 "frame. (A frame left by a PREVIOUS run at this path is "
                 "replaced as it always has been.)")
         self._published_paths.add(path)
+        from gpuwm.ensemble.runtime_context import current_capture
+        capture = current_capture()
+        if capture is not None:
+            metadata = self._metadata_by_grid_id[node.cfg.grid_id]
+            with self._write_beat(f"ensemble-history-d{int(node.cfg.grid_id):02d}",
+                                  capture.work_bytes(metadata)):
+                capture.submit(
+                    state=node.state,
+                    streamed=getattr(node.state, "_streamed_domain", None),
+                    metadata=metadata,
+                    refl_field=refl_field, valid_time=valid_time,
+                    grid_id=node.cfg.grid_id, episode=episode, clock=node.clock)
+            if not hasattr(self, "_captured_paths"):
+                self._captured_paths = []
+            self._captured_paths.append(path)
+            if not capture.keep_member_files:
+                return
         writer = self._writers[node.cfg.grid_id]
         # CARRIER PROVENANCE, snapshotted per frame.  Each valid time is
         # its own file, and the snapshot rides the ticket rather than the

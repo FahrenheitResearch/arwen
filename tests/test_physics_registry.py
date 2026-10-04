@@ -2807,7 +2807,7 @@ def test_the_aerosol_roadmap_knobs_are_published_and_stay_unsettable():
 
     for name in (
         "num_wif_levels", "use_aero_icbc",
-        "use_rap_aero_icbc", "qna_update", "scalar_pblmix",
+        "qna_update",
         "grav_settling", "dust_emis", "wif_fire_emit", "wif_fire_inj",
         "progn", "naer",
     ):
@@ -2981,7 +2981,7 @@ def test_the_published_mp28_evidence_agrees_between_registry_and_docs():
         encoding="utf-8")
     for name in (
         "use_aero_icbc", "use_rap_aero_icbc", "wif_input_opt",
-        "num_wif_levels", "qna_update", "scalar_pblmix", "grav_settling",
+        "num_wif_levels", "qna_update", "grav_settling",
         "dust_emis", "wif_fire_emit", "wif_fire_inj",
     ):
         assert f"`{name}`" in knobs, (

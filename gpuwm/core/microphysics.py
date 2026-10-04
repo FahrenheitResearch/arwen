@@ -81,6 +81,7 @@ bitwise unchanged.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import weakref
 
 import cupy as cp
 import numpy as np
@@ -189,15 +190,20 @@ def _ring_guard_slices(state: DomainState, cfg: RunConfig):
 #: ``mp_ring_copy``).
 _RING_TPB = 256
 _RING_MAX_X_BLOCKS = 64
-#: Device descriptor tables by their exact contents.  A table is a pure
-#: function of its key (addresses and extents), so a hit is always the
-#: right table; persistent state and scratch keep their addresses from
-#: call to call, so a run uploads each of its two tables once.  Entries are
-#: never evicted: a CUDA graph that captured a ring launch (the tiled
-#: runner's --graph path) replays with the table's address baked in, so a
-#: table must outlive every graph that may hold it.  A table is 72 bytes
-#: per ring section, a few kilobytes per domain.
-_RING_TABLES: dict[tuple, cp.ndarray] = {}
+#: Device descriptor tables by the state whose arrays they address, then by
+#: their exact contents.  A table is a pure function of its key (addresses
+#: and extents), so a hit is always the right table; persistent state and
+#: scratch keep their addresses from call to call, so a run uploads each of
+#: its two tables once.  A table lives exactly as long as its state: a CUDA
+#: graph that captured a ring launch (the tiled runner's --graph path)
+#: replays with the table's address baked in, and with the state's own
+#: array addresses baked in too, so no graph that can still replay outlives
+#: the tables it holds.  Tables used to be kept for the whole process, and
+#: every forecast run in one process (each member of an ensemble) left its
+#: tables behind for the next (tests/test_ensemble_member_release_gpu.py).
+#: A table is 72 bytes per ring section, a few kilobytes per domain.
+_RING_TABLES: "weakref.WeakKeyDictionary[DomainState, dict[tuple, cp.ndarray]]" = \
+    weakref.WeakKeyDictionary()
 
 
 def _ring_row(arr, slc, buf):
@@ -222,8 +228,11 @@ def _ring_row(arr, slc, buf):
             nlev, j0, nj, i0, ni, nx, ny * nx)
 
 
-def _launch_ring_rows(rows, *, direction: int) -> bool:
+def _launch_ring_rows(rows, *, direction: int, owner) -> bool:
     """Gather (0) or scatter/zero (1) every described section in one launch.
+
+    ``owner`` is the state whose arrays the rows address; its table is kept
+    while that state lives (see ``_RING_TABLES``).
 
     Returns False, launching nothing, when the table is not resident yet and
     the current stream is capturing a CUDA graph: uploading it would be a
@@ -233,12 +242,13 @@ def _launch_ring_rows(rows, *, direction: int) -> bool:
     if not rows:
         return True
     key = tuple(rows)
-    table = _RING_TABLES.get(key)
+    tables = _RING_TABLES.get(owner)
+    table = None if tables is None else tables.get(key)
     if table is None:
         if cp.cuda.get_current_stream().is_capturing():
             return False
         table = cp.asarray(np.asarray(rows, dtype=np.int64).reshape(-1))
-        _RING_TABLES[key] = table
+        _RING_TABLES.setdefault(owner, {})[key] = table
     count = max(r[2] * r[4] * r[6] for r in rows)
     blocks_x = min((count + _RING_TPB - 1) // _RING_TPB, _RING_MAX_X_BLOCKS)
     get_kernel("microphysics_validation", "mp_ring_copy")(
@@ -285,7 +295,7 @@ def _capture_spec_zone_ring(state: DomainState, slices):
         if arr is not None:
             snap(arr, slot)
             captured_slots.add(slot)
-    if not _launch_ring_rows(fused, direction=0):
+    if not _launch_ring_rows(fused, direction=0, owner=state):
         for buf, part in deferred:
             buf[...] = part
     return saved, captured_slots
@@ -339,7 +349,7 @@ def _restore_spec_zone_ring(state: DomainState, slices, saved,
     if state.h_diabatic is not None:
         for slc in slices:
             put(state.h_diabatic, slc, None)
-    if not _launch_ring_rows(fused, direction=1):
+    if not _launch_ring_rows(fused, direction=1, owner=state):
         for arr, slc, buf in deferred:
             plain(arr, slc, buf)
 

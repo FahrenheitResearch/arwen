@@ -28,6 +28,9 @@ use crate::error::{Result, StaticError};
 pub(crate) fn orographic_real(
     tile: &crate::geog::GeogWindow, vals: &[f32], x: f32, y: f32, op: InterpOp,
 ) -> f32 {
+    if let InterpOp::SearchDepth(depth) = op {
+        return search_real(tile, vals, x, y, depth);
+    }
     let (sx,sy,ex,ey)=(tile.x0,tile.y0,tile.x1(),tile.y1());
     let (mut ix,mut jx,mut iy,mut jy)=(x.floor() as i64,x.ceil() as i64,
                                     y.floor() as i64,y.ceil() as i64);
@@ -66,6 +69,50 @@ pub enum InterpOp {
     Average16Pt,
     SixteenPt,
     Search,
+    SearchDepth(u32),
+}
+
+/// WPS v4.6.0 interp_module.F:search_extrap, default REAL, no source mask.
+/// The queue depth is updated between sibling inserts in the Fortran body;
+/// retaining that order matters for bounded search(n). The upstream notice
+/// is retained in licenses/LICENSE-WRF-public-domain.txt.
+pub(crate) fn search_real(
+    tile: &crate::geog::GeogWindow, vals: &[f32], x: f32, y: f32, depth_limit: u32,
+) -> f32 {
+    let (sx, sy, ex, ey) = (tile.x0, tile.y0, tile.x1(), tile.y1());
+    let (ic, jc) = (x.round() as i64, y.round() as i64);
+    if ic < sx || ic > ex || jc < sy || jc > ey { return f32::NAN; }
+    let offset = |i: i64, j: i64| (j-sy) as usize*tile.nx+(i-sx) as usize;
+    let valid = |i: i64, j: i64| !vals[offset(i,j)].is_nan();
+    let mut queue = VecDeque::from([(ic, jc, 0u32)]);
+    let mut seen = HashSet::from([(ic, jc)]);
+    let mut found = None;
+    while found.is_none() {
+        let Some((i, j, mut depth)) = queue.pop_front() else { break; };
+        if valid(i,j) { found = Some((i,j)); }
+        for (ii,jj) in [(i-1,j),(i+1,j),(i,j-1),(i,j+1)] {
+            if ii >= sx && ii <= ex && jj >= sy && jj <= ey
+                && !seen.contains(&(ii,jj)) && depth < depth_limit {
+                depth += 1;
+                queue.push_back((ii,jj,depth));
+                seen.insert((ii,jj));
+            }
+        }
+    }
+    let Some((mut bi, mut bj)) = found else { return f32::NAN; };
+    let distance = |i: i64, j: i64| {
+        let dx = i as f32-x;
+        let dy = j as f32-y;
+        dx*dx+dy*dy
+    };
+    let mut best = distance(bi,bj);
+    for (i,j,_) in queue {
+        if valid(i,j) {
+            let candidate = distance(i,j);
+            if candidate < best { best=candidate; bi=i; bj=j; }
+        }
+    }
+    vals[offset(bi,bj)]
 }
 
 /// Window view for the interpolators (borrowed, row-major).
@@ -336,6 +383,7 @@ fn apply(op: InterpOp, win: &WindowView<'_>, xi: f64, yi: f64) -> f64 {
         InterpOp::Average16Pt => average_16pt(win, xi, yi),
         InterpOp::SixteenPt => sixteen_pt(win, xi, yi),
         InterpOp::Search => search_nearest(win, xi, yi),
+        InterpOp::SearchDepth(_) => f64::NAN,
     }
 }
 
@@ -364,6 +412,44 @@ pub fn interp_one(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bounded_search_matches_unmodified_wps_fortran() {
+        use crate::geog::{GeogIndex,GeogWindow};
+        let index=GeogIndex::parse(&std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("golden/orographic/index")).unwrap();
+        let mut tile=GeogWindow{index,x0:1,y0:1,first_plane:0,nz:1,ny:11,nx:11,
+            raw:vec![0;121],coverage:None};
+        tile.index.tile_x=11;
+        tile.index.tile_y=11;
+        let expected=include_bytes!("../golden/orographic/search-real.bin");
+        let x=[6.0,6.4,5.5,1.0,11.0,0.49,6.0,6.0];
+        let y=[6.0,6.4,6.5,1.0,11.0,6.0,0.49,11.51];
+        let mut n=0;
+        for pattern in 0..8 {
+            let mut values=vec![f32::NAN;121];
+            let mut put=|i:usize,j:usize,v:f32| {values[(j-1)*11+i-1]=v;};
+            match pattern {
+                0 => for j in 1..=11 {for i in 1..=11 {put(i,j,(100*j+i) as f32);}},
+                1 => put(7,6,17.0),
+                2 => put(6,7,27.0),
+                3 => put(6,8,37.0),
+                4 => put(4,6,47.0),
+                5 => {put(5,6,15.0);put(7,6,17.0);put(6,5,25.0);put(6,7,27.0);},
+                7 => {put(5,5,11.0);put(7,7,33.0);put(9,6,22.0);},
+                _ => (),
+            }
+            for depth in [0,1,2,3,4,5,8] {
+                for k in 0..x.len() {
+                    let want=f32::from_le_bytes(expected[n*4..(n+1)*4].try_into().unwrap());
+                    let got=super::search_real(&tile,&values,x[k],y[k],depth);
+                    if want == -9999.0 {assert!(got.is_nan(),"pattern{pattern} depth{depth} point{k}");}
+                    else {assert_eq!(got.to_bits(),want.to_bits(),"pattern{pattern} depth{depth} point{k}");}
+                    n+=1;
+                }
+            }
+        }
+        assert_eq!(n*4,expected.len());
+    }
     #[test]
     fn orographic_interpolation_matches_wps_real_oracle() {
         use crate::geog::{GeogIndex,GeogWindow};

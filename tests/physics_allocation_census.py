@@ -258,6 +258,49 @@ def census() -> dict[str, dict]:
     return report
 
 
+def scalar_pblmix_census() -> dict[str, list]:
+    """Record the actual local scalar launcher's allocation shapes.
+
+    Construction alone cannot see this opt-in step workspace. Exercise the
+    real launcher on the same allocation-counting CuPy stand-in, once with
+    caller-owned work and once without, so unpriced output or work growth
+    fails before it can overrun a card. Kernel arithmetic is checked by the
+    separate Fortran and GPU oracles.
+    """
+    import cupy as cp
+    from gpuwm.core import mynn_scalar_mix_gpu
+
+    ncol, nz = 7, 50
+    column = cp.ones((ncol, nz), dtype=cp.float32, order="F")
+    scratch = cp.empty((ncol, 5 * nz + 1), dtype=cp.float32, order="F")
+    original = cp.empty
+    allocated = []
+
+    def record(shape, *args, **kwargs):
+        result = original(shape, *args, **kwargs)
+        allocated.append([list(result.shape), int(result.nbytes)])
+        return result
+
+    cp.empty = record
+    kernel_lookup = mynn_scalar_mix_gpu.get_kernel
+    # The context-owned kernel cache needs a real CUDA context. As in the
+    # constructor census, launch no arithmetic; only allocation is counted.
+    mynn_scalar_mix_gpu.get_kernel = lambda *args, **kwargs: _Launch()
+    try:
+        mynn_scalar_mix_gpu.scalar_pblmix_columns_cuda(
+            column, column, column, column, 15.0, scratch=scratch)
+        runtime = list(allocated)
+        allocated.clear()
+        mynn_scalar_mix_gpu.scalar_pblmix_columns_cuda(
+            column, column, column, column, 15.0)
+        standalone = list(allocated)
+    finally:
+        cp.empty = original
+        mynn_scalar_mix_gpu.get_kernel = kernel_lookup
+    return {"runtime": runtime, "standalone": standalone}
+
+
 if __name__ == "__main__":
     install_numpy_cupy()
-    json.dump(census(), sys.stdout)
+    json.dump(scalar_pblmix_census() if "--scalar-pblmix" in sys.argv
+              else census(), sys.stdout)

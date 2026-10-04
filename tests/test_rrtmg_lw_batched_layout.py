@@ -131,7 +131,15 @@ def test_gpoint_band_helpers_preserve_standalone_statements():
             "TAUGB_PROLOGUE", "TAUGB_GPOINT_PROLOGUE").replace(
             "for (int ig = 1; ig <= ng%d; ++ig)" % band,
             "for (int ig = gpoint; ig <= ng%d; ig += 16)" % band)
-        assert body("rlw_gband%d" % band) == expected
+        actual = body("rlw_gband%d" % band)
+        # The fixed upper-atmosphere products keep their WRF arithmetic;
+        # only their owning g-point may perform the read/modify/write.
+        corrected = {4: range(8, 15), 7: range(6, 12)}
+        for point in corrected.get(band, ()):
+            owner = "if (gpoint == %d) " % point
+            assert actual.count(owner) == 1, (band, point)
+            actual = actual.replace(owner, "", 1)
+        assert actual == expected
 
 
 def test_prol_gpoint_arithmetic_and_accum_order_unchanged():

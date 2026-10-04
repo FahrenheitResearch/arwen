@@ -699,7 +699,7 @@ def run_metem_forecast(directory, outdir, *, run_seconds=None, restart=None,
                        exclusive_gpu=True, rrtmg_variant=None, vertical_grid=None,
                        render_products=None, render_dir=None, progress_options=None,
                        relaunched=False, vertical_levels=None, allow_shared_gpu=False,
-                       output_owner=None):
+                       output_owner=None, ensemble_request=None):
     import os
     import subprocess
     import sys
@@ -708,6 +708,10 @@ def run_metem_forecast(directory, outdir, *, run_seconds=None, restart=None,
     from gpuwm.stage_reuse import claim_run_output
     from gpuwm.wrfinput_forecast import announce_wrf_substitutions, worker_exit_status
     started = time.perf_counter()
+    from gpuwm.ensemble.door import request_for_inputs, production_run_scope
+    request = request_for_inputs(override=ensemble_request)
+    from gpuwm.ensemble.calibration_admission import refuse_native_random
+    refuse_native_random(directory)
     run = resolve_metem_run(directory, rrtmg_variant=rrtmg_variant)
     # PLAN REVIEW, and it happens HERE.  Both of these used to fire inside
     # the spawned worker, after select_gpu, after the GPU file lock and
@@ -742,9 +746,8 @@ def run_metem_forecast(directory, outdir, *, run_seconds=None, restart=None,
         # has already printed the pair at plan review.
         missing = announce_render_readiness(DOOR, announce=not relaunched)
         if exclusive_gpu:
-            from gpuwm.supervisor import (select_gpu, preflight_exclusive_gpu,
-                                          priced_reservation_bytes, GPUFileLock)
-            gpu = select_gpu(gpu_uuid)
+            from gpuwm.supervisor import priced_reservation_bytes
+            from gpuwm.ensemble.supervised_devices import input_device_lease
             command = [sys.executable,'-m','gpuwm.metem_forecast','--met-em',str(Path(directory).resolve()),
                        '--outdir',str(outdir),'--io-mode',io_mode,'--_worker',
                        '--_output-owner',output_claim.token]
@@ -754,23 +757,25 @@ def run_metem_forecast(directory, outdir, *, run_seconds=None, restart=None,
             if run_seconds is not None: command += ['--run-seconds',str(run_seconds)]
             if restart is not None: command += ['--restart',str(Path(restart).resolve())]
             if health_debug: command += ['--health-debug']
+            if request is not None:
+                import json
+                command += ['--ensemble-request', json.dumps(request.receipt())]
             # Carried to the child, which is where the run actually happens:
             # a product or progress flag dropped here is a flag that did
             # nothing on the supervised path people use by default.
             if render_products is not None: command += ['--products',str(render_products)]
             if render_dir is not None: command += ['--render-dir',str(Path(render_dir).resolve())]
             command += ProgressOptions.worker_flags(progress_options)
-            with GPUFileLock(gpu.uuid, run_id=f'metgrid-{os.getpid()}'):
+            with input_device_lease(request, gpu_uuid=gpu_uuid,
+                    run_id=f'metgrid-{os.getpid()}', allow_shared_gpu=allow_shared_gpu,
+                    reservation_bytes=priced_reservation_bytes(run.experiment)) as cuda_mask:
                 # The card is priced against THIS run's reservation, from the
                 # experiment the door has already resolved and through the
                 # same function `gpuwm run` prices from, so a co-tenant that
                 # fits beside this run is admitted at both doors and one that
                 # does not is refused at both.
-                preflight_exclusive_gpu(gpu.uuid, approved_pids={os.getpid()},
-                                        allow_shared_gpu=allow_shared_gpu,
-                                        reservation_bytes=priced_reservation_bytes(run.experiment))
                 return worker_exit_status(subprocess.run(command,
-                    env=dict(os.environ,CUDA_VISIBLE_DEVICES=gpu.uuid),check=False).returncode)
+                    env=dict(os.environ,CUDA_VISIBLE_DEVICES=cuda_mask),check=False).returncode)
         if gpu_uuid is not None:
             raise ValueError('--gpu-uuid requires the default fresh worker; remove --no-supervise')
         from gpuwm.go_cli import GoStageFailed
@@ -784,22 +789,23 @@ def run_metem_forecast(directory, outdir, *, run_seconds=None, restart=None,
         plan = door_render_plan(worker_output, render_products=render_products,
                                 render_dir=None if render_dir is None else io_path(render_dir),
                                 init=inputs.experiment.start_time, can_draw=missing is None)
-        first_products = arm_door_first_products(plan, outdir=worker_output, started=started)
-        try:
-            run_prepared_tree(inputs,output_directory=worker_output,io_mode=io_mode,
-                restart=None if restart is None else io_path(restart),
-                health_debug=health_debug,progress_options=progress_options,
-                initialization=MetemInitialization(inputs),
-                **({} if first_products is None else {'first_products': first_products}))
-        except BaseException as error:
-            stop_door_renders(first_products, error)
-            raise
-        try:
-            draw_door_products(plan, first_products=first_products, door=DOOR)
-        except GoStageFailed as failure:
-            print(f'{DOOR}: the forecast finished and its output is in {outdir}; '
-                  f'the render stage exited {failure.code}.', file=sys.stderr)
-            return failure.code
+        with production_run_scope(request, output_directory=worker_output):
+            first_products = arm_door_first_products(plan, outdir=worker_output, started=started)
+            try:
+                run_prepared_tree(inputs,output_directory=worker_output,io_mode=io_mode,
+                    restart=None if restart is None else io_path(restart),
+                    health_debug=health_debug,progress_options=progress_options,
+                    initialization=MetemInitialization(inputs),
+                    **({} if first_products is None else {'first_products': first_products}))
+            except BaseException as error:
+                stop_door_renders(first_products, error)
+                raise
+            try:
+                draw_door_products(plan, first_products=first_products, door=DOOR)
+            except GoStageFailed as failure:
+                print(f'{DOOR}: the forecast finished and its output is in {outdir}; '
+                      f'the render stage exited {failure.code}.', file=sys.stderr)
+                return failure.code
         return 0
     finally:
         output_claim.close()
@@ -831,6 +837,9 @@ def build_parser():
     parser.add_argument('--restart',type=Path)
     parser.add_argument('--io-mode',choices=('history','none'),default='history')
     parser.add_argument('--health-debug',action='store_true')
+    from gpuwm.ensemble.door import add_arguments
+    add_arguments(parser)
+    parser.add_argument('--ensemble-request',default=None,help=argparse.SUPPRESS)
     parser.add_argument('--products',dest='render_products',default=None,metavar='LIST',
         help="which product plots this run draws, in gpuwm render's own spelling: a "
              'comma-separated list, `all`, or `none` for no pictures.  Absent draws the '
@@ -848,16 +857,24 @@ def build_parser():
 def main(argv=None):
     import sys
     args = build_parser().parse_args(argv)
-    from gpuwm.provenance_gate import announce
-    announce(DOOR)
     try:
+        from gpuwm.ensemble.calibration_admission import refuse_public_arguments
+        refuse_public_arguments(args)
+        from gpuwm.provenance_gate import announce
+        announce(DOOR)
+        import json
+        from gpuwm.ensemble.door import request_for_inputs
+        request = request_for_inputs(
+            override=None if args.ensemble_request is None else json.loads(args.ensemble_request),
+            members=args.members, keep_member_files=args.keep_member_files)
         return run_metem_forecast(args.met_em,args.outdir,run_seconds=args.run_seconds,
             restart=args.restart,io_mode=args.io_mode,health_debug=args.health_debug,
             exclusive_gpu=not args._worker,rrtmg_variant=args.rrtmg_variant,vertical_grid=args.vertical_grid,
             render_products=args.render_products,render_dir=args.render_dir,
             progress_options=ProgressOptions.from_args(args),relaunched=args._worker,
             vertical_levels=args.vertical_levels,allow_shared_gpu=args.allow_shared_gpu,
-            output_owner=args._output_owner)
+            output_owner=args._output_owner,
+            **({} if request is None else {"ensemble_request": request.receipt()}))
     except (ValueError,OSError) as error:
         print(f'{DOOR}: {error}',file=sys.stderr)
         return 2

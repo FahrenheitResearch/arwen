@@ -136,6 +136,20 @@ run mgphys_negative    "$PY" -m tilestream.test_mgphys --skip-correctness
 run mgphys_geography_1v2 "$PY" -m tilestream.test_mgphys --geography \
     --skip-correctness --skip-negative
 
+# Actual resident-rank constructor and coupled surface stepping. Prevents
+# losing category fractions or lake heat storage at a physical card seam.
+mkdir -p "$OUT/tmp"
+run ruc_lake_resident_ranks env TMPDIR="$OUT/tmp" "$PY" -m pytest -q \
+    tests/test_ruc_lake_runtime.py::test_ruc_lake_two_resident_ranks_match_unsplit_model \
+    --basetemp="$OUT/tmp/ruc-lake-ranks"
+
+# A nonzero-card history stream used from the writer thread's default
+# card 0 killed the first frame. This includes resident and store-direct
+# writes, then the next download through the borrowed-store guard. With
+# two cards, card 1 alone and two ranks on card 1 execute; three or four
+# cards also execute the distinct and noncontiguous physical card sets.
+run history_device "$PY" -m pytest -q -rA tests/test_wrfout_device_gpu.py
+
 echo "=============================================================" \
     | tee -a "$OUT/RUNLOG"
 echo "BATTERY TOTALS: $PASS passed, $FAIL failed, $SKIP skipped" \

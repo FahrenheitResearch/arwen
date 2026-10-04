@@ -457,6 +457,50 @@ def make_droplet_number(q_cloud_m3, qnwfa_m3, xland) -> np.ndarray:
     return qnc.astype(np.float32)
 
 
+def cold_start_aerosol_row_refusal(cells: int) -> str:
+    """The cold start's refusal of a per-volume aerosol number that is NaN.
+
+    :func:`make_droplet_number` picks the droplet gamma-table row from the
+    aerosol number (``nu_c``, :9146-9147).  ``NINT`` of a NaN has no row:
+    on x86 the NumPy mirror turned it into ``INT64_MIN`` and failed with
+    ``IndexError: index 9223372036854775807 is out of bounds for axis 0
+    with size 15``, which names neither the field nor the cells, and the
+    native and device closures repeated that text.  Every cold-start
+    closure (the native CPU cells, the NumPy reference, the device
+    kernels) raises this sentence instead, as a ``ValueError`` with the
+    cell count, before any number is written.
+    """
+    return (
+        "mp_physics=28 cold start: "
+        f"{int(cells)} cloudy cell(s) have a water-friendly aerosol number "
+        "per volume (QNWFA times density) that is not a number, and "
+        "real.exe's make_DropletNumber picks its droplet gamma-table row "
+        "from that number (nu_c = NINT(2.5E10/q_nwfa)), so no droplet "
+        "number can be seeded there; the analyzed aerosol number, or the "
+        "inverse density under it, is not a state the scheme can start "
+        "from")
+
+
+def cold_start_droplet_row_refusal(cells: int) -> str:
+    """The cold start's refusal of a seeded droplet number that is NaN.
+
+    :func:`cloud_number_m3` picks the entry block's gamma-table row from
+    the droplet number (``nu_c``, :1832).  A seeded number that is NaN at
+    the entry block (the density formed there is zero or not finite) used
+    to fail in the NumPy mirror with ``IndexError: index
+    -9223372036854775808 is out of bounds for axis 0 with size 16``.
+    """
+    return (
+        "mp_physics=28 cold start: "
+        f"{int(cells)} cloudy cell(s) reach Thompson's entry block with a "
+        "droplet number per volume that is not a number (the density "
+        "formed from the inverse density there is zero or not finite), "
+        "and the entry block picks its gamma-table row from that number "
+        "(nu_c = MIN(15, NINT(1000.E6/nc) + 2)), so the droplet number "
+        "cannot be closed there; the analyzed qc and inverse density are "
+        "not a state the scheme can start from")
+
+
 #: Source of :func:`make_rain_number`, :func:`make_ice_number` and of the
 #: real-data cold start's rain and ice numbers (``gpuwm.ingest.real``),
 #: read on a node from the same WRF v4.7.1 tree as
@@ -681,6 +725,8 @@ __all__ = [
     "THOMPSON_ENTRY_AUTHORITY",
     "THOMPSON_ENTRY_SOURCE",
     "cloud_number_m3",
+    "cold_start_aerosol_row_refusal",
+    "cold_start_droplet_row_refusal",
     "droplet_mean_diameter_m",
     "ice_mean_diameter_m",
     "ice_number_m3",

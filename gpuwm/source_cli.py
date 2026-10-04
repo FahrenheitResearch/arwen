@@ -167,6 +167,10 @@ def _parser(*, prog: str = "gpuwm-wrf-init", add_help: bool = True,
         ),
     )
     parser.add_argument("--source", metavar="MODEL", help="native source adapter id")
+    parser.add_argument(
+        "--initial-inputs", type=Path, metavar="JSON",
+        help="separate packaged analysis inventory for the initial state; "
+             "--source continues to supply every lateral boundary frame")
     mapped = parser.add_argument_group("declarative mapped-source adapter")
     mapped.add_argument(
         "--source-format",
@@ -431,6 +435,16 @@ def _parser(*, prog: str = "gpuwm-wrf-init", add_help: bool = True,
               "(masked soil, snow, skin temperature and sea ice), default "
               "every CPU"))
     preprocessing.add_argument("--cpu-preprocess-bridge", type=Path)
+    preprocessing.add_argument("--physical-input-store", type=Path,
+                               help="sealed native physical snapshots on the target grid")
+    preprocessing.add_argument("--physical-input-provider", type=Path,
+                               help="posted native physical provider with a frozen member plan")
+    preprocessing.add_argument("--physical-member-index", type=int,
+                               help="original recipe member index in the posted provider")
+    preprocessing.add_argument("--physical-output-store", type=Path,
+                               help="capture native mapped snapshots before real initialization")
+    preprocessing.add_argument("--physical-base-prepared", type=Path,
+                               help="HRRR base preparation whose sealed bridge can be reused")
     era5 = parser.add_argument_group("ERA5 combined-GRIB1 adapter")
     era5.add_argument("--grib", type=Path, help="combined ERA5 GRIB1 series")
     era5.add_argument("--vtable", type=Path, help="ERA5 GRIB1 Vtable")
@@ -747,6 +761,8 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
             "--output-root": args.output_root,
         }
         errors = [flag for flag, value in required.items() if value is None]
+        if getattr(args, "as_posted", None) is not None:
+            errors.append("--as-posted requires the native HRRR root producer; hierarchy export consumes its sealed root")
         unused = {
             "--source-root": args.source_root,
             "--static-cache": args.static_cache,
@@ -821,13 +837,17 @@ def _required_hrrr_args(args: argparse.Namespace) -> list[str]:
 
     required = {
         "--source-root": args.source_root,
-        "--source-sha256s": args.source_sha256s,
-        "--source-sha256s-sha256": args.source_sha256s_sha256,
         "--namelist-input": args.namelist_input,
         "--valid-time": args.valid_time,
         "--output-root": args.output_root,
     }
+    posting = getattr(args, "as_posted", None)
+    if posting is None:
+        required.update({"--source-sha256s": args.source_sha256s,
+                         "--source-sha256s-sha256": args.source_sha256s_sha256})
     errors = [flag for flag, value in required.items() if value is None]
+    if posting is not None and (args.source_sha256s is not None or args.source_sha256s_sha256 is not None):
+        errors.append("--as-posted HRRR preparation writes its source manifest at the seal; omit the final source manifest binding")
     if args.extend_root_preparation is not None \
             and not args.sealed_prepared_cache:
         errors.append(
@@ -1144,6 +1164,9 @@ def _required_gfs_args(args: argparse.Namespace) -> list[str]:
         errors.append(
             "--as-posted prepares a window whose seal writes the input "
             "manifest; it takes no --source-manifest pair")
+    if getattr(args, "physical_input_store", None) is not None:
+        if getattr(args, "as_posted", None) is not None:
+            errors.append("a sealed physical input store requires a complete GFS window; use a posted provider with --as-posted")
     if (args.static_input is None) != (args.static_receipt is None):
         errors.append(
             "--static-input and --static-receipt must be supplied together")
@@ -1634,6 +1657,8 @@ def _required_mapped_args(args: argparse.Namespace) -> list[str]:
             }
         )
     errors = [flag for flag, value in required.items() if not value]
+    if (args.static_input is None) != (args.static_receipt is None):
+        errors.append("--static-input and --static-receipt must be supplied together")
     if (not args.mapped_inputs) == (args.input_list is None):
         # Two transports for one ordered file set: the repeated flag, or
         # the list file that says the same thing inside the Windows 32 KB
@@ -1701,7 +1726,6 @@ def _required_mapped_args(args: argparse.Namespace) -> list[str]:
         "--forecast-start-hour": args.forecast_start_hour,
         "--forecast-end-hour": args.forecast_end_hour,
         "--static-cache": args.static_cache,
-        "--static-receipt": args.static_receipt,
         "--domain-spec": args.domain_spec,
         "--namelist-input": args.namelist_input,
         "--stock-wrf-namelist-input": args.stock_wrf_namelist_input,
@@ -1713,7 +1737,6 @@ def _required_mapped_args(args: argparse.Namespace) -> list[str]:
         "--child-workers": args.child_workers,
         "--root-preparation": args.root_preparation,
         "--grib": args.grib,
-        "--static-input": args.static_input,
         "--source-orography": args.source_orography,
         "--source-orography-variable": args.source_orography_variable,
         "--domain-source-orography": args.domain_source_orography,
@@ -1790,6 +1813,14 @@ def _required_mapped_args(args: argparse.Namespace) -> list[str]:
 
 
 def _hrrr_command(args: argparse.Namespace) -> list[str]:
+    physical_options = [(flag, getattr(args, attr, None)) for flag, attr in (
+        ("--physical-input-store", "physical_input_store"),
+        ("--physical-input-provider", "physical_input_provider"),
+        ("--physical-member-index", "physical_member_index"),
+        ("--physical-output-store", "physical_output_store"),
+        ("--physical-base-prepared", "physical_base_prepared"))]
+    if args.root_preparation is not None and any(path is not None for _, path in physical_options):
+        raise ValueError("native physical stores require single-domain HRRR preparation")
     if args.root_preparation is not None:
         command = [
             sys.executable,
@@ -1852,8 +1883,9 @@ def _hrrr_command(args: argparse.Namespace) -> list[str]:
         sys.executable,
         str(tools / "prepare_hrrr_wrf.py"),
         "--source-root", str(args.source_root),
-        "--source-manifest", str(args.source_sha256s),
-        "--source-manifest-sha256", str(args.source_sha256s_sha256),
+        *(["--as-posted", str(args.as_posted)] if getattr(args, "as_posted", None) is not None else
+          ["--source-manifest", str(args.source_sha256s),
+           "--source-manifest-sha256", str(args.source_sha256s_sha256)]),
         "--namelist-input", str(args.namelist_input),
         "--cycle", str(args.valid_time),
         "--output-root", str(args.output_root),
@@ -1906,6 +1938,9 @@ def _hrrr_command(args: argparse.Namespace) -> list[str]:
         command.extend(("--ack", acknowledgement))
     for binding in getattr(args, "supplement", ()) or ():
         command.extend(("--supplement", binding))
+    for flag, path in physical_options:
+        if path is not None:
+            command.extend((flag, str(path)))
     return command
 
 
@@ -1980,8 +2015,6 @@ def _gfs_command(args: argparse.Namespace) -> list[str]:
         str(args.gfs_series),
         "--cycle",
         str(args.cycle),
-        "--bridge",
-        str(args.bridge),
         "--wps-namelist",
         str(args.wps_namelist),
         "--experiment-config",
@@ -1990,6 +2023,8 @@ def _gfs_command(args: argparse.Namespace) -> list[str]:
         "--output-root",
         str(args.output_root),
     ]
+    if args.bridge is not None:
+        command.extend(("--bridge", str(args.bridge)))
     if args.physics_profile is not None:
         # Passed only when the caller NAMED one.  Substituting the WSM6
         # default here made "no profile given" indistinguishable from
@@ -2007,6 +2042,13 @@ def _gfs_command(args: argparse.Namespace) -> list[str]:
     if args.static_input is not None:
         command.extend(("--static-input", str(args.static_input)))
         command.extend(("--static-receipt", str(args.static_receipt)))
+    for flag, attr in (("--physical-input-store", "physical_input_store"),
+                       ("--physical-input-provider", "physical_input_provider"),
+                       ("--physical-member-index", "physical_member_index"),
+                       ("--physical-output-store", "physical_output_store")):
+        path = getattr(args, attr, None)
+        if path is not None:
+            command.extend((flag, str(path)))
     _append_preprocess_options(command, args)
     reason = getattr(args, "preprocess_backend_reason", None)
     if reason is not None:
@@ -2096,6 +2138,8 @@ def _mapped_command(args: argparse.Namespace) -> list[str]:
     ]
     export_mode = ("off" if args.no_stock_wrf_export
                    else getattr(args, "stock_wrf_export", None))
+    if getattr(args, "initial_inputs", None) is not None:
+        command.extend(("--initial-inputs", str(args.initial_inputs)))
     if export_mode is not None:
         command.extend(("--stock-wrf-export", export_mode))
     if args.input_list is not None:
@@ -2134,6 +2178,16 @@ def _mapped_command(args: argparse.Namespace) -> list[str]:
             )
         )
     _append_preprocess_options(command, args)
+    if args.static_input is not None:
+        command.extend(("--static-input", str(args.static_input),
+                        "--static-receipt", str(args.static_receipt)))
+    for flag, attr in (("--physical-input-store", "physical_input_store"),
+                       ("--physical-input-provider", "physical_input_provider"),
+                       ("--physical-member-index", "physical_member_index"),
+                       ("--physical-output-store", "physical_output_store")):
+        path = getattr(args, attr, None)
+        if path is not None:
+            command.extend((flag, str(path)))
     if args.hierarchy_workers is not None:
         command.extend(
             (
@@ -2415,8 +2469,58 @@ def main(argv: list[str] | None = None) -> int:
 
 
 @dataclass(frozen=True)
+class SharedGeography:
+    """How one preparation implementation takes, and builds, prebuilt geography.
+
+    Several preparations of one target (the members of an ensemble) share
+    the geography that does not depend on the source. ``cache_option`` and
+    ``receipt_option`` are the options the implementation's command reads a
+    prebuilt pair through. The pair is built by exactly one producer when
+    the row names one: ``command(option, cache, receipt)`` returns the
+    argument vector of the implementation's own geography executable, and
+    ``fields(wps, geog, grid, cfg, highres)`` returns the baseline
+    ``(fields, origin receipt, land-use attributes)`` in process, before
+    the high-resolution overlay. A row with neither takes a caller's pair
+    and builds none.
+    """
+
+    cache_option: str
+    receipt_option: str = "--static-receipt"
+    #: Options the command prefers over a prebuilt pair. They leave the
+    #: command when the pair is supplied, or the pair would be ignored.
+    superseded_options: tuple[str, ...] = ()
+    command: Callable | None = None
+    fields: Callable | None = None
+
+    def __post_init__(self) -> None:
+        if self.command is not None and self.fields is not None:
+            raise ValueError("a shared geography row names at most one producer")
+
+    @property
+    def builds(self) -> bool:
+        return self.command is not None or self.fields is not None
+
+
+@dataclass(frozen=True)
+class RoleKeyedManifest:
+    """A native input manifest that lists its payload files by role.
+
+    ``lead_role_prefix`` marks the roles that are one forecast lead's
+    payload; every other role is a derived or control file. The source
+    and cycle sit under the manifest's ``source`` table.
+    """
+
+    schema: str
+    lead_role_prefix: str
+
+
+@dataclass(frozen=True)
 class PreparationRunner:
-    """One preparation implementation and its automatic launch contract."""
+    """One preparation implementation and its automatic launch contract.
+
+    Everything a generic door needs to know about an implementation is a
+    field here, so a door reads the row and never the implementation's name.
+    """
 
     required: Callable
     command: Callable
@@ -2425,6 +2529,31 @@ class PreparationRunner:
     local_inventory: Callable | None = None
     hierarchy_schema: str | None = None
     corridor_stage: str | None = None
+    #: How a refusal names this implementation to a person.
+    title: str | None = None
+    #: Takes ``--as-posted``: it waits for each lead's posted marker,
+    #: decodes lead batches as they arrive and writes the input manifest at
+    #: its seal (DESIGN A136 2.4 and L3 (ii)).  An implementation without
+    #: it reads a whole fetched window.
+    as_posted: bool = False
+    #: Takes the native physical store options (a sealed input store, a
+    #: posted provider with its member index, an output store).
+    physical_stores: bool = False
+    #: Takes ``--physical-base-prepared``: a base preparation's sealed
+    #: decode can be reused by a member.
+    physical_base_prepared: bool = False
+    #: With a posted physical provider the member reads fields the ordinary
+    #: producer already decoded, so its command launches no decoder and the
+    #: door resolves none.
+    provider_supplies_decode: bool = False
+    #: Decodes through a mapping, a composition and an ordered input list:
+    #: the arguments a fetch handoff carries, so a caller holding the
+    #: handoff can decode the source in process.
+    composition_inputs: bool = False
+    #: Prebuilt geography shared by several preparations of one target.
+    shared_geography: SharedGeography | None = None
+    #: The role-keyed input manifest this implementation's acquisition writes.
+    input_manifest: RoleKeyedManifest | None = None
 
     def moving_statics(self) -> dict[str, str | None]:
         """The hierarchy representation this implementation can produce.
@@ -2445,12 +2574,11 @@ class PreparationRunner:
                           "corridors or use preparation that builds them"}
 
 
-#: The preparation runners that take ``--as-posted``: they wait for each
-#: lead's posted marker, decode lead batches as they arrive and write the
-#: input manifest at their seal (DESIGN A136 2.4): the GFS bridge, and the
-#: mapped engine (``mapped_direct --as-posted``, A136 L3 (ii)).  Every other
-#: runner reads a whole fetched window.
-AS_POSTED_RUNNERS = frozenset({"gfs_pgrb2_0p25_v1", "mapped_composition_v1"})
+def as_posted_runners() -> frozenset[str]:
+    """The preparation implementations whose row declares ``as_posted``."""
+
+    return frozenset(name for name, row in preparation_runners().items()
+                     if row.as_posted)
 
 
 def as_posted_refusal(source: str) -> str | None:
@@ -2471,7 +2599,7 @@ def as_posted_refusal(source: str) -> str | None:
         adapter = get_source_adapter(source)
     except (KeyError, ValueError):
         return f"{source} is not a registered source"
-    if adapter.runner not in AS_POSTED_RUNNERS:
+    if adapter.runner not in as_posted_runners():
         return f"--source {source} prepares a whole fetched window"
     from gpuwm.source_posting import posting
 
@@ -2514,15 +2642,30 @@ def preparation_runners() -> dict[str, PreparationRunner]:
         "hrrr_f00_f12_v1": PreparationRunner(
             _required_hrrr_args, _hrrr_command, "prepared:hrrr",
             hierarchy_schema="gpuwm-native-hrrr-hierarchy-direct-v1",
-            corridor_stage="gpuwm.hrrr_hierarchy_direct"),
+            corridor_stage="gpuwm.hrrr_hierarchy_direct",
+            title="native HRRR", as_posted=True,
+            physical_stores=True, physical_base_prepared=True,
+            # The wrapper gives --geog-root precedence over a prebuilt
+            # pair, and its catalog metadata is already sealed by the
+            # builder, so the option leaves the command with the pair.
+            shared_geography=SharedGeography(
+                "--static-cache", superseded_options=("--geog-root",),
+                command=_hrrr_geography_command)),
         "era5_combined_grib1_v1": PreparationRunner(
             _required_era5_args, _era5_command, "experiment",
             hierarchy_schema="gpuwm-era5-native-hierarchy-proof-v1",
-            corridor_stage="gpuwm.era5_direct"),
+            corridor_stage="gpuwm.era5_direct",
+            shared_geography=SharedGeography("--static-input")),
         "gfs_pgrb2_0p25_v1": PreparationRunner(
             _required_gfs_args, _gfs_command, "prepared:go",
             hierarchy_schema="gpuwm-gfs-native-hierarchy-proof-v2",
-            corridor_stage="rw-wps preparation: gpuwm.source_cli (gpuwm.gfs_direct)"),
+            corridor_stage="rw-wps preparation: gpuwm.source_cli (gpuwm.gfs_direct)",
+            title="GFS", as_posted=True, physical_stores=True,
+            provider_supplies_decode=True,
+            shared_geography=SharedGeography(
+                "--static-input", fields=_gfs_geography_fields),
+            input_manifest=RoleKeyedManifest(
+                "gpuwm-gfs-direct-input-manifest-v1", "grib-f")),
         "twentycrv3_member_grib2_v1": PreparationRunner(
             _required_twentycr_args, _twentycr_command, "prepared:staged",
             "member_manifest", discover_20crv3_grib2,
@@ -2531,8 +2674,119 @@ def preparation_runners() -> dict[str, PreparationRunner]:
         "mapped_composition_v1": PreparationRunner(
             _required_mapped_args, _mapped_command, "prepared:staged",
             "prep_handoff", hierarchy_schema="gpuwm-mapped-native-hierarchy-proof-v1",
-            corridor_stage="gpuwm.mapped_direct"),
+            corridor_stage="gpuwm.mapped_direct",
+            title="mapped-source", as_posted=True, physical_stores=True,
+            composition_inputs=True,
+            shared_geography=SharedGeography(
+                "--static-input", fields=_mapped_geography_fields)),
     }
+
+
+def role_keyed_input_manifest(schema: object) -> RoleKeyedManifest | None:
+    """The role-keyed manifest declaration that names ``schema``, if any."""
+
+    for row in preparation_runners().values():
+        if row.input_manifest is not None and row.input_manifest.schema == schema:
+            return row.input_manifest
+    return None
+
+
+def _one_of(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " or " + names[-1]
+
+
+#: The options that select a native physical store, by argparse name.
+_PHYSICAL_OPTIONS = ("physical_input_store", "physical_input_provider",
+                     "physical_member_index", "physical_output_store",
+                     "physical_base_prepared")
+
+
+def physical_option_refusal(args: argparse.Namespace, runner_id: str | None, *,
+                            runners: dict[str, PreparationRunner] | None = None,
+                            ) -> str | None:
+    """Why ``runner_id`` cannot take the physical options selected, or ``None``.
+
+    Read from the runner table. Breakage it prevents: a physical store
+    option handed to an implementation whose command does not read it would
+    be dropped without a word, and the member would be prepared from the
+    ordinary decode while its receipt named a physical store.
+    """
+
+    if all(getattr(args, name, None) is None for name in _PHYSICAL_OPTIONS):
+        return None
+    runners = preparation_runners() if runners is None else runners
+    row = runners.get(runner_id)
+
+    def titles(capability: str) -> str:
+        return _one_of([value.title or name for name, value in runners.items()
+                        if getattr(value, capability)])
+
+    if row is None or not row.physical_stores:
+        return f"physical stores require {titles('physical_stores')} preparation"
+    if (getattr(args, "physical_base_prepared", None) is not None
+            and not row.physical_base_prepared):
+        return ("physical-base-prepared is used only by the "
+                f"{titles('physical_base_prepared')} route")
+    return None
+
+
+def shared_geography_target(config, wps):
+    """The target an in-process geography producer builds for.
+
+    ``(experiment, grid, run configuration, high-resolution table)`` from
+    the exact experiment config and WPS namelist a preparation is given.
+    """
+
+    from gpuwm.era5_direct import load_era5_adapter_config
+    from gpuwm.native_wrf_contract import validate_native_lambert_contracts
+    from gpuwm.static.highres_production import load_static_highres
+
+    experiment, _ = load_era5_adapter_config(Path(config))
+    grid = validate_native_lambert_contracts(
+        experiment, Path(wps), source_name="shared native geography")[0]
+    return experiment, grid, experiment.root.run, load_static_highres(config)
+
+
+def _hrrr_geography_command(option: Callable, cache: Path, receipt: Path) -> list[str]:
+    # The same executable the HRRR wrapper calls before decode.  Its
+    # highres/date/smoothing receipt is also the wrapper's original
+    # authority, and the wrapper verifies and reuses an identical carrier.
+    tools = Path(__file__).resolve().parent.parent / "tools"
+    target = option("--domain-spec")
+    if target is None:
+        raise ValueError("automatic HRRR geography requires its actual target-domain authority")
+    extra: list[str] = []
+    config = option("--experiment-config")
+    if config is not None:
+        from gpuwm.experiment import load_experiment
+        extra = ["--experiment-config", config, "--case-date",
+                 load_experiment(config).start_time.date().isoformat()]
+    return [sys.executable, str(tools / "hrrr_build_native_static.py"),
+            "--geog-root", option("--geog-root"), "--domain-spec", target,
+            "--output", str(cache), "--receipt", str(receipt), *extra]
+
+
+def _gfs_geography_fields(wps: Path, geog: Path, grid, cfg, highres):
+    from gpuwm.era5_direct import _static_from_geog
+
+    return _static_from_geog(wps, geog, grid, cfg, static_highres=highres)
+
+
+def _mapped_geography_fields(wps: Path, geog: Path, grid, cfg, highres):
+    from types import SimpleNamespace
+
+    from gpuwm.static.build import GeogSelection, build_static
+    from gpuwm.static.orographic import with_terrain_drag_statics
+    from gpuwm.static.terrain_smoothing import smoothing_receipt
+
+    selection = GeogSelection.from_case_data(SimpleNamespace(
+        wps_namelist=wps, geog_root=geog, static_highres=highres), 1)
+    fields = build_static(
+        grid, geog, selection=with_terrain_drag_statics(selection, cfg))
+    landuse = selection.landuse_global_attrs()
+    smoothing = smoothing_receipt(highres)
+    origin = {"terrain_smoothing": smoothing} if smoothing else {}
+    return fields, origin, landuse
 
 
 def source_preparation_outputs(source: str) -> dict[str, str | None] | None:
@@ -2775,6 +3029,17 @@ def dispatch(args: argparse.Namespace, *,
     except ValueError as exc:
         parser.error(str(exc))
 
+    if (args.physical_input_provider is None) != (args.physical_member_index is None):
+        parser.error("physical-input-provider and physical-member-index must be supplied together")
+    if args.physical_input_provider is not None:
+        if args.physical_input_store is not None or args.physical_base_prepared is not None:
+            parser.error("a posted physical provider cannot be combined with a sealed physical input or base preparation")
+        if args.as_posted is None:
+            parser.error("physical-input-provider requires --as-posted")
+    physical_refusal = physical_option_refusal(args, adapter.runner)
+    if physical_refusal is not None:
+        parser.error(physical_refusal)
+
     if adapter.runner != "hrrr_f00_f12_v1" and (
             args.sealed_prepared_cache
             or args.extend_root_preparation is not None):
@@ -2783,6 +3048,13 @@ def dispatch(args: argparse.Namespace, *,
             "--extend-root-preparation are only used by --source hrrr",
             file=sys.stderr,
         )
+        return EXIT_USAGE
+
+    if (getattr(args, "initial_inputs", None) is not None
+            and adapter.packaged_profile is None and adapter.source_id != "mapped"):
+        print("--initial-inputs requires the mapped preparation route so both "
+              "source mappings and their clocks are bound in the prepared evidence",
+              file=sys.stderr)
         return EXIT_USAGE
 
     if not adapter.runnable:
@@ -2888,11 +3160,13 @@ def dispatch(args: argparse.Namespace, *,
             else None
         ),
     }.get(adapter.runner)
+    provider_decoded = (args.physical_input_provider is not None
+                        and runners[adapter.runner].provider_supplies_decode)
     authoring_twentycr = (
         adapter.runner == "twentycrv3_member_grib2_v1" and args.author_only
     )
     try:
-        if not authoring_twentycr and bridge_variable is not None:
+        if not authoring_twentycr and not provider_decoded and bridge_variable is not None:
             args.bridge = _distribution_decoder(
                 args.bridge,
                 bridge_variable,
@@ -3054,7 +3328,7 @@ def dispatch(args: argparse.Namespace, *,
         "era5_combined_grib1_v1": "era5",
         "gfs_pgrb2_0p25_v1": "gfs",
     }.get(adapter.runner)
-    if args.bridge is None and ladder_bridge_source is not None:
+    if args.bridge is None and ladder_bridge_source is not None and not provider_decoded:
         from gpuwm import bridges
 
         try:
@@ -3297,6 +3571,11 @@ redirect_adapter_output = command_output.redirect_adapter_output
 
 
 def _run_adapter_command(command):
+    if "--preprocess-workers" in command:
+        from gpuwm.ingest.preparation_workers import worker_environment
+        requested = int(command[command.index("--preprocess-workers") + 1])
+        return command_output.run_adapter_command(
+            command, env=worker_environment(requested))
     return command_output.run_adapter_command(command)
 
 

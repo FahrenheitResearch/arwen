@@ -377,7 +377,17 @@ pub struct OrographicField {
     pub path: PathBuf,
     pub gcell: bool,
     pub masked_water: bool,
+    #[serde(default)]
+    pub masked_land: bool,
+    #[serde(default = "default_gcell_ratio")]
+    pub gcell_ratio: f32,
+    #[serde(default)]
+    pub search_depth: Option<u32>,
+    #[serde(default)]
+    pub fill_missing: f64,
 }
+
+fn default_gcell_ratio() -> f32 { 4.0 }
 
 /// The orographic fields to build, and the land-use dataset whose mask the
 /// `masked = water` rows read (the same dataset `build_static` reads).
@@ -405,7 +415,7 @@ pub fn build_orographic_with_sampler(
     request: &OrographicRequest,
 ) -> Result<FieldSet> {
     let mut set = FieldSet::default();
-    let masked = request.fields.iter().any(|f| f.masked_water);
+    let masked = request.fields.iter().any(|f| f.masked_water || f.masked_land);
     let (water, active_e) = if masked {
         let Some(path) = request.landuse.as_ref() else {
             return Err(StaticError::Invalid(
@@ -449,23 +459,39 @@ pub fn build_orographic_with_sampler(
         let win = dom.window(&ds, 3)?;
         let receipt = dom.require_source_coverage(&ds, &win, &field.name)?;
         set.coverage_reports.insert(field.name.clone(), receipt);
-        let seq: &[InterpOp] = if field.gcell {
-            &[InterpOp::FourPt, InterpOp::Average4Pt]
+        if field.masked_water && field.masked_land {
+            return Err(StaticError::Invalid(format!(
+                "field '{}' masks both land and water, leaving no active cells", field.name)));
+        }
+        if !field.gcell_ratio.is_finite() || field.gcell_ratio < 0.0
+            || !field.fill_missing.is_finite() {
+            return Err(StaticError::Invalid(format!(
+                "field '{}' has invalid interpolation operands", field.name)));
+        }
+        let seq: Vec<InterpOp> = if let Some(depth) = field.search_depth {
+            vec![InterpOp::SearchDepth(depth)]
+        } else if field.gcell {
+            vec![InterpOp::FourPt, InterpOp::Average4Pt]
         } else {
-            &[InterpOp::Average4Pt]
+            vec![InterpOp::Average4Pt]
         };
+        let water_active = active_e.as_ref().map(|a|
+            a.iter().map(|&v| !v).collect::<Vec<bool>>());
         let active = if field.masked_water {
             active_e.as_deref()
+        } else if field.masked_land {
+            water_active.as_deref()
         } else {
             None
         };
         let plane =
-            dom.orographic_continuous(&ds, &win, 0, seq, 0.0, field.gcell, active)?;
+            dom.continuous_wps(&ds, &win, 0, &seq, field.fill_missing,
+                               field.gcell, active, field.gcell_ratio)?;
         let mut cropped = crop_grid(dom, &plane);
-        if field.masked_water {
+        if field.masked_water || field.masked_land {
             for (value, &w) in cropped.data.iter_mut().zip(&water) {
-                if w {
-                    *value = 0.0;
+                if (field.masked_water && w) || (field.masked_land && !w) {
+                    *value = field.fill_missing;
                 }
             }
         }

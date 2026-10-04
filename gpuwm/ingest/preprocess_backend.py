@@ -10,8 +10,8 @@ vector and humidity transforms.
 The masked surface fields (soil moisture and temperature, snow, skin
 temperature, sea ice) take WPS metgrid's masked chain in float64 in the
 same Rust library under BOTH backends, parallel across target cells: the
-CPU backend on its own library and worker count (at most eight threads
-when none was given), the CUDA backend on the library the resolution
+CPU backend on its own library and CPU/memory worker budget, the CUDA
+backend on the library the resolution
 ladder picks and its host workers, every CPU the process may use when
 none were given (:meth:`CudaPreprocessBackend.wps_masked_chain_engine`).  Each receipt
 names that library as ``masked_surface_chain``.
@@ -20,9 +20,12 @@ names that library as ``masked_surface_chain``.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import wraps
 import gc
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -48,8 +51,69 @@ from gpuwm.ingest.cpu_backend import (
 PREPROCESS_IMPLEMENTATION_SCHEMA = "gpuwm-preprocess-implementation-v2"
 PSFC_MAPPING_POLICY = "canonical-f32-coordinate-f64-bilinear-single-round-v1"
 VERTICAL_STENCIL_POLICY = "wrf-v4.6.1-strict-fp32-zap-close-levels-v1"
+VERTICAL_ENDPOINT_POLICY = "native-pressure-top-colocation-four-fp32-epsilon-v1"
+
+
+@contextmanager
+def preprocessing_math_scope(backend, *, cpu_bridge=None, workers=None):
+    """Bind host setup math to an actual selected CPU preparation library."""
+    from gpuwm.core import portable_math
+    selected = None
+    publish = False
+    if isinstance(backend, ParallelCpuPreprocessBackend):
+        selected = backend._native.path
+        publish = getattr(backend, "_explicit_math_selection", False)
+        if workers is None:
+            workers = getattr(backend, "host_step_workers", None)
+    elif isinstance(backend, str) and backend.strip().lower() == "cpu":
+        selected = cpu_bridge
+        publish = selected is not None
+    cap = None
+    if selected is not None:
+        # The preparation package's own CPU budget (affinity and every cgroup
+        # quota).  gpuwm.live_products answers the same question for live
+        # frames, but the standalone preparation wheel does not carry it.
+        cap = min(available_cpu_count(), automatic_workers() if workers is None else portable_math._positive_workers(workers))
+    with portable_math.cpu_bridge_scope(selected, publish_selection=publish, worker_cap=cap):
+        yield
+
+
+def preprocess_math_call(function=None, *, prepared_parameter=None, options_parameter=None,
+                         fixed_backend=None):
+    """Keep a preparation's selected library across its original host setup."""
+    if function is None:
+        return lambda original: preprocess_math_call(original, prepared_parameter=prepared_parameter,
+            options_parameter=options_parameter, fixed_backend=fixed_backend)
+    signature = inspect.signature(function)
+    @wraps(function)
+    def selected(*args, **kwargs):
+        bound = signature.bind(*args, **kwargs)
+        bridge = bound.arguments.get("cpu_bridge", bound.arguments.get("cpu_preprocess_bridge"))
+        workers = bound.arguments.get("column_workers")
+        if workers is None:
+            workers = bound.arguments.get("preprocess_workers")
+        if options_parameter is not None:
+            options = bound.arguments[options_parameter]
+            backend = getattr(options, "preprocess_backend", None)
+            bridge = getattr(options, "cpu_preprocess_bridge", None)
+            workers = getattr(options, "preprocess_workers", None)
+        elif prepared_parameter is not None:
+            backend = bound.arguments[prepared_parameter].preprocess_backend
+        else:
+            parameter = signature.parameters.get("preprocess_backend")
+            backend = bound.arguments.get("preprocess_backend", fixed_backend if parameter is None else parameter.default)
+        with preprocessing_math_scope(backend, cpu_bridge=bridge, workers=workers):
+            return function(*args, **kwargs)
+    return selected
 
 _COMMON_IMPLEMENTATION_SOURCES = (
+    "gpuwm/core/host_libm.py",
+    "gpuwm/core/noahmp_libm.py",
+    "gpuwm/core/thompson_entry.py",
+    "gpuwm/core/state.py",
+    "gpuwm/ingest/cold_start_cpu.py",
+    "gpuwm/ingest/host_arrays.py",
+    "gpuwm/ingest/preparation_fingerprints.py",
     "gpuwm/ingest/horiz.py",
     "gpuwm/ingest/preprocess_backend.py",
     "gpuwm/ingest/interpolation_support.py",
@@ -87,6 +151,7 @@ def _implementation_tree(backend: str) -> dict[str, object]:
         # fused horizontal step, initialize_real's column work and the
         # Thompson cold-start closure, with the libm twins they include.
         names.extend(("gpuwm/core/kernels/horizontal.cu",
+                      "gpuwm/ingest/bounded_cuda.py",
                       "gpuwm/ingest/real_device.py",
                       "gpuwm/core/kernels/real_init.cu",
                       "gpuwm/core/kernels/real_init_common.cuh",
@@ -126,6 +191,8 @@ def _shared_contracts() -> dict[str, object]:
             "policy": VERTICAL_STENCIL_POLICY,
             "zap_close_levels_pa": 500.0,
             "predicate": "separation < zap_close_levels",
+            "top_endpoint_policy": VERTICAL_ENDPOINT_POLICY,
+            "top_endpoint_relative_roundoff": 4.0 * float(np.finfo(np.float32).eps),
         },
     }
 
@@ -154,6 +221,9 @@ def _selection_block(backend) -> dict[str, object]:
 #: CUDA pairs in the A136 L7a proof), so a cache could not be recognised
 #: as the same preparation on another run, box or worker count.
 PREPROCESS_RECEIPT_MEASUREMENTS = MappingProxyType({
+    "selection.chunking": "device staging budget and byte-neutral kernel batch sizes",
+    "selection.host_fit": "host-retained preparation envelope against available RAM",
+    "parallelism": "requested and effective native workers and host CPU limits",
     "selection.device_fit": (
         "the preparation's device price against the card's measured "
         "free and total bytes"),
@@ -423,7 +493,7 @@ class ParallelCpuPreprocessBackend:
     """Production adapter for the deterministic packaged Rust CPU bridge."""
 
     name = "cpu"
-    implementation = "rust-scoped-threads-fp32-v1"
+    implementation = "rust-parallel-fp32-v1"
     array_module = np
 
     def __init__(self, *, workers: int | None = None,
@@ -434,8 +504,11 @@ class ParallelCpuPreprocessBackend:
             raise TypeError("workers must be an integer")
         if workers is not None and int(workers) < 1:
             raise ValueError("workers must be positive")
-        self.workers = None if workers is None else int(workers)
+        from gpuwm.ingest.preparation_workers import effective_workers
+        self.requested_workers = None if workers is None else int(workers)
+        self.workers = effective_workers(workers)
         self._native = CpuPreprocessBackend(bridge)
+        self._explicit_math_selection = bridge is not None
         self._vertical_routes: list[dict[str, object]] = []
         #: How :func:`resolve_preprocess_backend` chose this backend;
         #: ``None`` for one constructed directly.
@@ -497,8 +570,7 @@ class ParallelCpuPreprocessBackend:
     @property
     def host_step_workers(self) -> int:
         """The threads every Rust host step of this backend runs on: its
-        own worker count, or the automatic count (at most eight) when none
-        was given."""
+        own worker count, or the available CPU/memory budget."""
 
         return (self.workers if self.workers is not None
                 else automatic_workers())
@@ -522,6 +594,7 @@ class ParallelCpuPreprocessBackend:
         slot.selection = (None if self.selection is None
                           else dict(self.selection))
         slot._vertical_routes = self._vertical_routes
+        slot._explicit_math_selection = self._explicit_math_selection
         return slot
 
     def wps_masked_chain_engine(self):
@@ -529,7 +602,7 @@ class ParallelCpuPreprocessBackend:
 
         This backend's own library, so an explicit ``cpu_bridge`` reaches
         the masked fields too, and its own worker count (the automatic
-        count, at most eight, when none was given, as for every thread the
+        count when none was given, as for every thread the
         CPU preparation starts on its own).  A library without the chain
         is refused by name with the remedy.
         """
@@ -541,9 +614,9 @@ class ParallelCpuPreprocessBackend:
     def rotate_earth_to_grid(*args):
         return _rotate_earth_to_grid_cpu(*args)
 
-    @staticmethod
-    def era5_rh_to_water(*args):
-        return _era5_rh_to_water_cpu(*args)
+    def era5_rh_to_water(self, *args):
+        with preprocessing_math_scope(self):
+            return _era5_rh_to_water_cpu(*args)
 
     def prepare_wrf_vertical(self, source_pressure, surface_pressure,
                              target_pressure):
@@ -570,12 +643,33 @@ class ParallelCpuPreprocessBackend:
         preparation proof) carries what actually ran.
         """
 
+        from gpuwm.core import portable_math
+        binding = portable_math.current_cpu_bridge_binding()
+        math_selection = {}
+        if binding is not None and binding.publish_selection:
+            if binding.path != self._native.path.resolve():
+                raise ValueError("CPU preprocessing receipt differs from its active host setup math library")
+            math_selection = {"host_setup_math": {
+                "implementation": portable_math.implementation(),
+                "bridge": {"name": binding.path.name, "sha256": _sha256(binding.path)},
+                "dispatcher_sha256": _sha256(Path(portable_math.__file__)),
+                "portable_math_generation": (portable_math.PORTABLE_MATH_VERSION if binding.library is not None else None)}}
+        from gpuwm.ingest.preparation_workers import worker_receipt
+        native = getattr(getattr(self._native, "_library", None), "gpuwm_preprocess_cpu_parallelism", None)
+        native_effective = None
+        if native is not None:
+            import ctypes
+            native.argtypes = [ctypes.c_size_t]
+            native.restype = ctypes.c_size_t
+            native_effective = int(native(self.host_step_workers))
         return {
             "schema": PREPROCESS_IMPLEMENTATION_SCHEMA,
             "backend": self.name,
             "implementation": self.implementation,
+            **math_selection,
             "workers": self.workers if self.workers is not None else "auto",
             "host_cpu_count": os.cpu_count(),
+            "parallelism": worker_receipt(self.requested_workers, native_effective=native_effective),
             "bridge": {
                 "name": self._native.path.name,
                 "sha256": _sha256(self._native.path),
@@ -708,7 +802,8 @@ class CudaPreprocessBackend:
         what actually ran.
         """
 
-        cp = self.array_module
+        from gpuwm.ingest.horiz import _cupy
+        cp = _cupy()
         return {
             "schema": PREPROCESS_IMPLEMENTATION_SCHEMA,
             "backend": self.name,
@@ -765,7 +860,8 @@ def _checked_workers(workers):
         raise TypeError("workers must be an integer")
     if workers is not None and int(workers) < 1:
         raise ValueError("workers must be positive")
-    return None if workers is None else int(workers)
+    from gpuwm.ingest.preparation_workers import effective_workers
+    return None if workers is None else effective_workers(workers)
 
 
 def _gpu_runtime_installed() -> bool:
@@ -1212,7 +1308,19 @@ def admit_preparation(backend, price, *, workers=None, probe=None):
     """Weigh a resolved backend against its preparation's device price.
 
     The decision every CUDA preparation door takes BEFORE its first device
-    allocation.  A CPU backend passes untouched.  A CUDA backend chosen by
+    allocation. Mapped preparation keeps completed arrays on the host and
+    stages bounded CUDA batches when the whole build exceeds a 1 GiB pool.
+    This leaves the card available for a concurrent forecast. Its receipt
+    reserves the batch peak so a forecast can start beside later forcing hours.
+    The bounded batches retain the whole array envelope in host RAM. A host
+    that cannot hold that envelope keeps the full-device preparation when
+    the whole build fits the card's free memory (2.8.4 ran every such
+    preparation there, and it retains nothing on the host), recorded in
+    ``host_fit`` with ``fits: False`` and the route taken. The host refusal
+    stands where neither the host nor the card holds the build, and where a
+    bounded backend was already admitted on a decoded price, because a
+    chained forecast may have reserved only that backend's batch.
+    A CPU backend passes untouched. A CUDA backend chosen by
     ``auto`` that does not fit the card's free memory becomes the CPU
     backend, with one line and the reason in its receipt; a CUDA backend
     the caller named is refused with :class:`PreparationDeviceRefused`,
@@ -1243,6 +1351,105 @@ def admit_preparation(backend, price, *, workers=None, probe=None):
     selection = dict(getattr(backend, "selection", None) or {})
     free, total, _reading = _device_reading(backend, probe)
     fit = preparation_device_fit(price, free, total)
+    context = int(price.terms.get("cuda_context", 0))
+    if (price.route == "mapped" and free is not None
+            and (int(price.need_bytes) > min(int(free), 1024**3 + context)
+                 or getattr(backend, "bounded_cuda", False))):
+        from gpuwm.ingest.bounded_cuda import BoundedCudaPreprocessBackend
+        source_staging = int(getattr(price, "chunk_source_bytes", 0))
+        minimum = max(256 * 1024**2, int(getattr(price, "chunk_minimum_bytes", 0)))
+        budget = min(1024**3, max(0, int(free) - context - 256 * 1024**2))
+        if budget >= minimum:
+            from gpuwm.ingest.preparation_workers import host_available_bytes
+            from gpuwm.ingest.memory_refusal import InitializationMemoryRefused
+            from gpuwm.ingest.boundary_stream import process_memory_bytes
+            from gpuwm.ingest.preparation_price import PREPARATION_FLOOR_BASIS
+            host_available = host_available_bytes()
+            host_need = max(0, int(price.need_bytes) - context)
+            is_floor = price.basis == PREPARATION_FLOOR_BASIS
+            previous_host = selection.get("host_fit") or {}
+            baseline = (previous_host.get("producer_rss_bytes")
+                        if not previous_host.get("price_is_floor", True) else None)
+            if baseline is None:
+                process_memory = process_memory_bytes()
+                baseline = None if process_memory is None else int(process_memory[0])
+            host_fit = {
+                "need_bytes": host_need, "available_bytes": host_available,
+                "fits": None if host_available is None else host_need <= host_available,
+                "price_is_floor": is_floor, "producer_rss_bytes": baseline,
+                "producer_peak_bytes": None if baseline is None else baseline + host_need,
+                "basis": "whole-build array envelope retained on host; decoded source is already resident"}
+            if host_available is not None and host_need > host_available:
+                # A bounded backend admitted on a decoded price is a
+                # published contract: a chained forecast may hold the card
+                # against that backend's one batch, so the whole build
+                # cannot move onto the card under it.
+                bounded_on_decoded_price = (
+                    getattr(backend, "bounded_cuda", False)
+                    and not previous_host.get("price_is_floor", True))
+                if (int(price.need_bytes) > int(free)
+                        or bounded_on_decoded_price):
+                    raise InitializationMemoryRefused(
+                        "Bounded CUDA preparation retains its state and working fields in host RAM: "
+                        f"the array envelope needs {_gib(host_need)} and {_gib(host_available)} is available. "
+                        "Starting would exhaust host memory before the prepared state can be sealed. "
+                        "Free host memory or use a host with more available RAM.")
+                # The whole build fits the card and the host cannot retain
+                # it: the full-device preparation, which holds its arrays
+                # on the card and needs no host envelope.  Refusing here
+                # refused single-card runs 2.8.4 prepared (a 700x600x50
+                # mapped build priced at 14.3 GiB on a 22 GiB card beside
+                # 6 GiB of host RAM).
+                route = ("full-device preparation: the host cannot retain "
+                         "the bounded batches' array envelope and the whole "
+                         "build fits the card's free memory")
+                if getattr(backend, "bounded_cuda", False):
+                    backend = CudaPreprocessBackend(
+                        host_workers=getattr(backend, "host_workers", workers))
+                if (selection.get("host_fit") or {}).get("route") != route:
+                    import sys
+                    print("CUDA preparation: the host has "
+                          f"{_gib(host_available)} available for the "
+                          f"{_gib(host_need)} bounded batches would retain "
+                          "there, and the whole build "
+                          f"({_gib(price.need_bytes)}) fits the card's "
+                          f"{_gib(free)} free; preparing on the card",
+                          file=sys.stderr)
+                selection.pop("chunking", None)
+                backend.selection = dict(
+                    selection, device_fit=fit,
+                    host_fit=dict(host_fit, route=route))
+                return backend
+            if not getattr(backend, "bounded_cuda", False):
+                backend = BoundedCudaPreprocessBackend(
+                    device_budget_bytes=budget,
+                    source_staging_bytes=source_staging,
+                    host_workers=getattr(backend, "host_workers", workers))
+            else:
+                backend.device_budget_bytes = budget
+                backend.source_staging_bytes = source_staging
+                backend.chunk_cells = max(1, (budget - source_staging) // 1024)
+            fit = dict(fit, unchunked_need_bytes=int(price.need_bytes),
+                       unchunked=price.record(), need_bytes=budget + context,
+                       terms={"staging_pool": budget, "cuda_context": context},
+                       phase="bounded CUDA batches",
+                       phases={"bounded CUDA batches": budget + context},
+                       basis="bounded kernel batches with host-retained completed arrays",
+                       fits=True)
+            backend.selection = dict(selection, device_fit=fit, host_fit=host_fit, chunking={
+                "schema": "gpuwm-cuda-preparation-chunks-v1",
+                "device_pool_budget_bytes": budget,
+                "source_staging_bytes": source_staging,
+                "minimum_batch_bytes": minimum,
+                "chunk_cells": backend.chunk_cells,
+                "retained_arrays": "host",
+                "operators": "unchanged CUDA kernels; complete vertical columns"})
+            if not selection.get("chunking"):
+                import sys
+                print(f"CUDA preparation: staging at most {_gib(budget)} on the card; "
+                      "completed arrays stay on the host "
+                      f"(whole-build estimate {_gib(price.need_bytes)})", file=sys.stderr)
+            return backend
     if free is None or int(price.need_bytes) <= int(free):
         backend.selection = dict(selection, device_fit=fit)
         return backend
@@ -1349,7 +1556,11 @@ def release_backend_memory(backend) -> None:
     # a side effect on code that never asked for one.
     pools = []
     if getattr(backend, "name", None) == "cuda":
-        module = backend.array_module
+        if getattr(backend, "bounded_cuda", False):
+            from gpuwm.ingest.horiz import _cupy
+            module = _cupy()
+        else:
+            module = backend.array_module
         pools = [getattr(module, accessor, None)
                  for accessor in ("get_default_memory_pool",
                                   "get_default_pinned_memory_pool")]

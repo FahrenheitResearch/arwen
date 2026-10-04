@@ -159,6 +159,10 @@ struct Args {
     /// import so a typo is refused before a file is opened.  `None` is
     /// the renderer's own look, byte-identical to every earlier build.
     theme: Option<rustwx_render::RenderTheme>,
+    /// `--radar-colors standard|classic`: the tables the reflectivity and
+    /// radial velocity products draw with.  The flag outranks
+    /// RUSTWX_RADAR_COLORS; absent both it is `standard`.
+    radar_colors: rustwx_render::RadarColorSet,
     /// `--section lat,lon,lat,lon | FILE.json`: the line every `xsec:`
     /// product is cut along; required when one is requested.
     section: Option<section::SectionLine>,
@@ -199,7 +203,8 @@ struct Args {
 fn usage() -> &'static str {
     "usage: rw_wrfbatch --store-root DIR --out-dir DIR [--products all|SLUGS] \
 [--frames all|N] [--width N] [--height N] [--heavy] [--streamlines|--barbs] \
-[--source-label TEXT] [--theme NAME|FILE.json] [--section lat,lon,lat,lon|FILE.json] \
+[--source-label TEXT] [--theme NAME|FILE.json] [--radar-colors standard|classic] \
+[--section lat,lon,lat,lon|FILE.json] \
 [--section-across KM] [--isotherms L,L,...[@H]] [--section-top-km N] \
 [--section-size WxH] [--section-reference-km N] \
 [--mesh-grid FILE.nc] [--mesh-reference DIR|FILE] [--mesh-labels A,B] [--mesh-bounds W,E,S,N] \
@@ -652,6 +657,7 @@ fn parse_args() -> Result<Invocation, CliError> {
     let mut overlays_path: Option<PathBuf> = None;
     let mut annotate_path: Option<PathBuf> = None;
     let mut theme_spec: Option<String> = None;
+    let mut radar_colors_spec: Option<String> = None;
     let mut section_spec: Option<String> = None;
     let mut section_across_km: Option<f64> = None;
     let mut isotherms_spec: Option<String> = None;
@@ -736,6 +742,15 @@ fn parse_args() -> Result<Invocation, CliError> {
                     return Err(CliError::Usage("--theme must not be blank".to_string()));
                 }
                 theme_spec = Some(value);
+            }
+            // The radar colour set: `standard` (the radar tables) or
+            // `classic` (the reflectivity ladder and blue-red velocity scale
+            // they replaced).  One name selects every radar-table product.
+            "--radar-colors" => {
+                radar_colors_spec = Some(
+                    raw.next()
+                        .ok_or("--radar-colors requires standard or classic")?,
+                );
             }
             // The section line and its dressing, for the `xsec:` family.
             "--section" => {
@@ -902,6 +917,11 @@ fn parse_args() -> Result<Invocation, CliError> {
         .map(|spec| rustwx_render::RenderTheme::resolve(&spec))
         .transpose()
         .map_err(CliError::Usage)?;
+    let radar_colors = match radar_colors_spec {
+        Some(name) => rustwx_render::RadarColorSet::parse(&name)
+            .map_err(|error| CliError::Usage(format!("--radar-colors: {error}")))?,
+        None => rustwx_render::radar_color_set_from_env().map_err(CliError::Usage)?,
+    };
     let section = section_spec
         .as_deref()
         .map(section::SectionLine::parse)
@@ -933,6 +953,7 @@ fn parse_args() -> Result<Invocation, CliError> {
             .transpose()
             .map_err(CliError::Usage)?,
         theme,
+        radar_colors,
         section,
         section_across_km,
         isotherms,
@@ -1177,6 +1198,9 @@ fn run(args: Args) -> Result<(), String> {
         }
     };
     println!("THEME {theme_name}");
+    // Selected before the first product resolves its scale, so one run
+    // draws one radar look.
+    rustwx_render::install_radar_color_set(args.radar_colors)?;
     // The section crate draws its own text; a theme with fonts hands it the
     // same bytes so one theme names the type on every surface.
     {
@@ -2487,6 +2511,7 @@ mod tests {
             overlays: None,
             annotations: None,
             theme: None,
+            radar_colors: rustwx_render::RadarColorSet::Standard,
             section: None,
             section_across_km: None,
             isotherms: section::Isotherms::default(),
@@ -2953,6 +2978,9 @@ fn dispatch() -> Result<(), CliError> {
 
 fn main() -> ExitCode {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
+    if let Some(result) = rw_wrfbatch::ensemble_products::try_cli(&std::env::args().skip(1).collect::<Vec<_>>()) {
+        return match result { Ok(()) => ExitCode::SUCCESS, Err(message) => { eprintln!("FAILED\t{message}"); ExitCode::FAILURE } };
+    }
     if let Some(result) = store_render::try_cli(&std::env::args().skip(1).collect::<Vec<_>>()) {
         return match result { Ok(()) => ExitCode::SUCCESS, Err(message) => { eprintln!("{message}"); ExitCode::FAILURE } };
     }

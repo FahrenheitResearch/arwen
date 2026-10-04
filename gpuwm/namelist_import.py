@@ -55,7 +55,7 @@ Keys the core pins where WRF has options are validated against the
 pinned value and refused otherwise (``rk_ord = 3``,
 ``h_mom_adv_order = 5``, ``v_mom_adv_order = v_sca_adv_order = 3``,
 ``momentum_adv_opt = 1``, ``swint_opt = 0``, ``use_mp_re = 1``, the
-MYNN/Noah-MP/RUC option identities, all &stoch selectors off, no FDDA
+MYNN/Noah-MP/RUC option identities, supported &stoch controls, no FDDA
 nudging) -- never silently reinterpreted.
 
 Scheme-generation hazard (closed 2026-08-30): WRF v4.8.0 rebinds
@@ -633,10 +633,6 @@ _MP_MAP = {
 #: given a different model than the one they wrote down.
 _MP28_AEROSOL_NAMELIST_KEYS: dict[str, dict[str, str]] = {
     "physics": {
-        "use_rap_aero_icbc":
-            "the same missing aerosol IC/BC ingest as use_aero_icbc, "
-            "RAP-sourced variant (share/module_check_a_mundo.F:2477-2495 "
-            "pairs the two)",
         "qna_update":
             "no aerosol IC/BC lane exists to update from; the knob only "
             "means anything alongside use_aero_icbc",
@@ -834,6 +830,11 @@ INPUT_SECTIONS = ("time_control", "domains", "physics", "fdda", "dynamics",
 #: GRIB2 and quilt-server keys have no gpuwm counterpart.
 WPS_DROPPED_SECTIONS = ("ungrib", "metgrid", *WPS_AUXILIARY_SECTIONS)
 INPUT_DROPPED_SECTIONS = ("fdda", "grib2", "namelist_quilt")
+STOCH_SELECTORS = frozenset({
+    "rand_perturb", "skebs", "sppt", "spp", "spp_conv", "spp_pbl", "spp_lsm",
+    "stoch_force_opt", "multi_perturb", "perturb_bdy", "perturb_chem_bdy",
+    "pert_cld3", "pert_deng", "pert_farms", "pert_mynn", "pert_noah", "pert_thom",
+})
 #: WRF's numbered auxiliary input/history stream keys, recorded and dropped.
 AUX_STREAM_KEY = re.compile(r"^aux(hist|input)\d+_")
 
@@ -843,7 +844,6 @@ PHYSICS_PINS: tuple[tuple[str, int, str], ...] = (
     ("swint_opt", 0,
      "shortwave interpolation between radt calls is not "
      "implemented; radiation is recomputed on the radt cadence"),
-    ("sf_lake_physics", 0, "no lake model is implemented"),
     ("shcu_physics", 0,
      "no shallow-cumulus scheme is implemented"),
     ("kf_edrates", 0,
@@ -904,6 +904,12 @@ DYNAMICS_REQUIRED_VALUES: dict[str, tuple[object, str]] = {
 #: by the translation below and exported by gpuwm.namelist_contract,
 #: so the site checks an upload against the rule the engine runs.
 PHYSICS_CHOICES: dict[str, tuple[tuple[int, ...], str]] = {
+    "bl_mynn_mixlength": ((1, 2),
+     'must be 1 or 2 (the implemented WRF MYNN mixing-length branches).'),
+    "scalar_pblmix": ((0, 1),
+     'must be 0 (off) or 1 (WRF post-PBL scalar diffusion).'),
+    "bl_mynn_mixscalars": ((0, 1),
+     'must be 0 (off) or 1 (MYNN scalar plume transport).'),
     "no_mp_heating": ((0, 1),
      'must be 0 (microphysics latent heating on, the WRF default) '
      'or 1 (heating off, '
@@ -2050,27 +2056,6 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
             f"Noah-MP option identity ({evidence})")
     noahmp.finish()
 
-    # ---- &stoch: every stochastic scheme must be off --------------------
-    # Seed/ensemble bookkeeping keys are inert once every selector is 0
-    # (WRF reads iseed_* only inside an enabled scheme) and drop; any
-    # nonzero selector is a hard error -- no stochastic physics is
-    # implemented.
-    for key in sorted(stoch.entries):
-        values = stoch.take(key)
-        if key.startswith("iseed") or key in ("nens",):
-            drop("stoch", key, values,
-                 "stochastic seed/ensemble bookkeeping is inert with "
-                 "every &stoch selector off")
-            continue
-        if any(bool(value) for value in values):
-            raise _err(
-                "stoch", key, values,
-                "stochastic physics (SPP/SPPT/SKEBS/rand_perturb) is not "
-                "implemented; every &stoch selector must be 0/.false..")
-        fix("stoch", key, values, 0,
-            "no stochastic physics is implemented; validated off")
-    stoch.finish()
-
     # ---- &share ---------------------------------------------------------
     wrf_core = share.scalar("wrf_core", "ARW")
     if str(wrf_core).upper() != "ARW":
@@ -2082,6 +2067,14 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                    "must be an integer in [1, 21] (WRF's compiled "
                    "max_domains default); refusing to expand per-domain "
                    "arrays for an implausible domain count.")
+    # Validate the domain count before expanding any stochastic arrays.
+    # A coefficient does not enable a scheme. The disabled route retains
+    # its original output bytes; active controls bind a complete provider.
+    from gpuwm.namelist_stochastic import import_stochastic_section, SEED_NOTICE
+    stochastic_controls, stochastic_flags = import_stochastic_section(stoch,
+        max_dom=max_dom, fix=fix, drop=drop, error=_err)
+    if stochastic_controls is not None:
+        notices.append(SEED_NOTICE)
     wps_max_dom = share.scalar("max_dom")
     if wps_max_dom is not None and wps_max_dom != max_dom:
         raise ValueError(
@@ -3137,6 +3130,22 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                        "tendency clamp in K/s (WRF Registry default 10.0).")
     ysu_topdown_pblmix = _optional_scalar_int(
         "ysu_topdown_pblmix", *PHYSICS_CHOICES["ysu_topdown_pblmix"])
+    def _optional_mynn_choice(key):
+        values = ph.take(key)
+        if values is None:
+            return None
+        allowed, why = PHYSICS_CHOICES[key]
+        if any(type(value) is not int or value not in allowed for value in values):
+            raise _err("physics", key, values, why)
+        if len(set(values)) != 1:
+            raise _err("physics", key, values,
+                       "is a shared setting in gpuwm; differing domain "
+                       "values would silently change the selected physics.")
+        return values[0]
+
+    bl_mynn_mixlength = _optional_mynn_choice("bl_mynn_mixlength")
+    scalar_pblmix = _optional_mynn_choice("scalar_pblmix")
+    bl_mynn_mixscalars = _optional_mynn_choice("bl_mynn_mixscalars")
     isfflx = _optional_scalar_int(
         "isfflx", *PHYSICS_CHOICES["isfflx"])
     if isfflx == 1:
@@ -3185,6 +3194,34 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
             raise _err("physics", key, raw,
                        f"gpuwm implements {key} = {pin} only ({why}).")
         fix("physics", key, raw, pin, why)
+    lake_raw = ph.take("sf_lake_physics")
+    lake_column = [0] * max_dom
+    if lake_raw is not None:
+        for value in lake_raw[:max_dom]:
+            if type(value) is not int or value not in (0, 1):
+                raise _err("physics", "sf_lake_physics", lake_raw,
+                           "must be integer 0 (off) or 1 (CLM lake).")
+        lake_column[:min(max_dom, len(lake_raw))] = lake_raw[:max_dom]
+        fix("physics", "sf_lake_physics", lake_raw, lake_column,
+            "WRF per-domain selector; an omitted domain retains default 0")
+    lake_settings = {"sf_lake_physics": lake_column}
+    for key, default in (("use_lakedepth", 1), ("lakedepth_default", 50.0),
+                         ("lake_min_elev", 5.0)):
+        raw = ph.take(key)
+        column = [default] * max_dom
+        if raw is not None:
+            for index, value in enumerate(raw[:max_dom]):
+                if key == "use_lakedepth":
+                    if type(value) is not int or value not in (0, 1):
+                        raise _err("physics", key, raw, "must be integer 0 or 1.")
+                elif (isinstance(value, bool) or not isinstance(value, (int, float))
+                      or not math.isfinite(value)):
+                    raise _err("physics", key, raw,
+                               "must be finite in metres.")
+                column[index] = value
+            fix("physics", key, raw, column,
+                f"WRF per-domain lake setting; omitted domains retain {default}")
+        lake_settings[key] = column
     # ---- slope-dependent shortwave and terrain shadowing ---------------
     # WRF's &physics slope_rad and topo_shading are max_domains columns
     # (Registry.EM_COMMON; an omitted tail keeps the Registry default 0)
@@ -3376,6 +3413,15 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
     # (:2735-2736), and wif_input_opt=1 without use_aero_icbc allocates
     # the WIF arrays with nothing to fill them.
     _aero_icbc_values = ph.take("use_aero_icbc")
+    _rap_aero_values = ph.take("use_rap_aero_icbc")
+    analyzed_aerosol_imported = False
+    if _rap_aero_values is not None:
+        if mp_physics != 28:
+            drop("physics", "use_rap_aero_icbc", _rap_aero_values,
+                 "inert: analyzed water/ice-friendly aerosols require mp_physics=28")
+        else:
+            analyzed_aerosol_imported = bool(_uniform(
+                "physics", "use_rap_aero_icbc", list(_rap_aero_values)))
     _aero_icbc = False
     if _aero_icbc_values is not None:
         if mp_physics != 28:
@@ -3408,7 +3454,11 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
     # written below, so the run-door clause can be appended to it once
     # &bdy_control has been parsed (the clause is about ``specified``).
     _mp28_fallback_row: int | None = None
-    if mp_physics == 28 and (_aero_icbc or _wif_selected):
+    if analyzed_aerosol_imported:
+        defaults_applied.append(AppliedDefault(
+            key="mp28 aerosol initial state", value="analyzed aerosol IC/BC",
+            reason="use_rap_aero_icbc selects QNWFA/QNIFA from the driving analysis on every initial and boundary frame; missing fields refuse instead of substituting climatology"))
+    elif mp_physics == 28 and (_aero_icbc or _wif_selected):
         if not (_aero_icbc and _wif_selected):
             raise _err(
                 "physics", "use_aero_icbc",
@@ -3984,6 +4034,7 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
             raise _err("physics", key, raw,
                        "the arm is not transcribed, the setting would be ignored")
         fix("physics", key, raw, default, "the unported arm is disabled")
+    ruc_mosaic_settings = {}
     for key in ("sf_surface_mosaic", "mosaic_lu", "mosaic_soil"):
         values = ph.take(key)
         if key == "sf_surface_mosaic":
@@ -3997,13 +4048,19 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                      "Noah mosaic off (WRF default); sf_surface_mosaic = 1 "
                      "runs Noah land-use tiles"))
             continue
-        if values is not None and any(int(value) != 0 for value in values):
+        value = 0 if values is None else values[0]
+        if type(value) is not int or value not in (0, 1):
+            raise _err("physics", key, values,
+                       "WRF declares a run-wide integer switch, 0 or 1.")
+        if value and sfsfc != 3:
             raise _err(
                 "physics", key, values,
-                "mosaic land/soil physics is not implemented; the target "
-                "suite requires this option off (0).")
-        fix("physics", key, values, 0,
-            "mosaic land/soil physics is not implemented; validated off")
+                "RUC mosaic requires sf_surface_physics=3; other land "
+                "models do not consume these weighted parameters.")
+        ruc_mosaic_settings[key] = value
+        fix("physics", key, values, value,
+            "WRF run-wide integer: reads the first value; RUC weighted "
+            "land and soil parameters, off by default")
     mosaic_cat_values = ph.take("mosaic_cat")
     mosaic_cat = 3 if mosaic_cat_values is None else mosaic_cat_values[0]
     from types import SimpleNamespace
@@ -4647,6 +4704,20 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         else [False] + [True] * (max_dom - 1)
     bdy.finish()
 
+    if stochastic_controls is not None:
+        from types import SimpleNamespace
+        from gpuwm.config import validate_spp_config
+        for n in range(max_dom):
+            current_flags = {key: column[n] for key, column in stochastic_flags.items()}
+            try:
+                validate_spp_config(SimpleNamespace(**current_flags,
+                    cu_physics=cu[n], bl_pbl_physics=bl_pbl_col[n],
+                    sf_sfclay_physics=sfclay, sf_surface_physics=sfsfc))
+            except ValueError as problem:
+                key = next((key for key in stochastic_flags if key in str(problem)), "spp")
+                raise _err("stoch", key, current_flags[key] if key in current_flags else 1,
+                    str(problem)) from problem
+
     # ---- emit the resolved TOML ------------------------------------------
     if name is None:
         name = f"wrf_{start_time:%Y%m%d%H}_{max_dom}dom"
@@ -4783,6 +4854,8 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
             "aer_init_opt = 1",
             f"wif_input_opt = {WIF_INPUT_OPT_CLIMATOLOGY}",
         ]
+    if analyzed_aerosol_imported:
+        lines += ["use_rap_aero_icbc = true", "mp28_aerosol_source = \"analysis\""]
     # Supplied-only knobs (knob-parity lane): each maps 1:1 onto a
     # consumed RunConfig field whose default equals the WRF Registry
     # default, so absence emits nothing and the established imports stay
@@ -4814,15 +4887,30 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
     ]
     for key, value in urban_settings.items():
         lines.append(f"{key} = {value}")
+    for key, column in stochastic_flags.items():
+        if column[0]:
+            lines.append(f"{key} = {column[0]}")
     if resolved_soil_layers != 4:
         lines.append(f"num_soil_layers = {resolved_soil_layers}")
     if sf_surface_mosaic == 1:
         lines += ["sf_surface_mosaic = 1", f"mosaic_cat = {mosaic_cat}"]
+    if lake_column[0]:
+        lines.append(f"sf_lake_physics = {lake_column[0]}")
+    for key, default in (("use_lakedepth", 1), ("lakedepth_default", 50.0),
+                         ("lake_min_elev", 5.0)):
+        if lake_settings[key][0] != default:
+            lines.append(f"{key} = {_fmt(lake_settings[key][0])}")
+    for key, value in ruc_mosaic_settings.items():
+        if value:
+            lines.append(f"{key} = {value}")
     if canopy_column is not None and canopy_column[0] != "dominant":
         lines.append(f"mosaic_urban_canopy = {_fmt(canopy_column[0])}")
     for key, value in (("no_mp_heating", no_mp_heating),
                        ("mp_tend_lim", mp_tend_lim),
                        ("ysu_topdown_pblmix", ysu_topdown_pblmix),
+                       ("bl_mynn_mixlength", bl_mynn_mixlength),
+                       ("scalar_pblmix", scalar_pblmix),
+                       ("bl_mynn_mixscalars", bl_mynn_mixscalars),
                        ("isfflx", isfflx),
                        ("isftcflx", isftcflx),
                        ("iz0tlnd", iz0tlnd),
@@ -4909,6 +4997,9 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         ]
         if moist_column[n] != moist_column[0]:
             lines.append(f"moist = {_fmt(moist_column[n])}")
+        for key, column in stochastic_flags.items():
+            if column[n] != column[0]:
+                lines.append(f"{key} = {column[n]}")
         if not terrain_smoothing.is_default:
             lines.append(static_inline(terrain_smoothing))
         if is_root:
@@ -4998,6 +5089,9 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                 f"ra_sw_physics = {sw}", f'ra_rrtmg_variant = "{variant}"',
                 f'wrf_rrtmg_compatibility = "{compatibility_col[n]}"',
             ]
+        for key, column in lake_settings.items():
+            if column[n] != column[0]:
+                lines.append(f"{key} = {_fmt(column[n])}")
         if radt[n] > 0.0:
             lines.append(f"radt = {_fmt(radt[n])}")
         else:
@@ -5046,6 +5140,18 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         # not by writing a value into a receipt this importer has always
         # reproduced byte for byte.
         lines.append(f"diff_6th_factor = {_fmt(diff_6th_factor[n])}")
+    if stochastic_controls is not None:
+        # WRF nens is a seed label. An imported stochastic run contains
+        # one forecast unless its explicit engine member count is changed.
+        lines += ["", "[ensemble]", "members = 1"]
+        def stochastic_table(path, values):
+            lines.extend(("", "[" + path + "]"))
+            lines.extend(f"{key} = {_fmt(value)}" for key, value in values.items()
+                         if not isinstance(value, dict))
+            for key, value in values.items():
+                if isinstance(value, dict):
+                    stochastic_table(path + "." + key, value)
+        stochastic_table("ensemble.stochastic", stochastic_controls)
     if static_landcover is not None:
         block_lines, notice = _static_landcover_block(
             static_landcover, cache_root=static_cache_root,

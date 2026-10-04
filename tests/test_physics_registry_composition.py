@@ -213,3 +213,73 @@ def test_historical_maturity_aliases_cannot_bypass_composition_checks():
         for option in component["options"].values():
             option["maturity"] = aliases.get(option["maturity"], option["maturity"])
     assert blast_radius.evaluate(registry) == current
+
+
+def test_selected_tuple_membership_matches_the_cartesian_reference():
+    """Avoid millions of startup tuples without weakening expert admission."""
+    import itertools
+    import random
+    from gpuwm.physics_compat import _tree_tuple_registry_governance, PhysicsCapabilityError
+
+    def reference(registry, selected, modes):
+        normal, expert = set(), {}
+        key = lambda value: tuple(sorted(value.items()))
+        for route in registry["runner_routes"].values():
+            if route["implemented"] is not True or route["mode"] not in modes:
+                continue
+            sets = {name: set(registry["components"][name]["options"])
+                    for name in route["allowed_component_overrides"]}
+            for name, values in route["allowed_component_options"].items():
+                sets.setdefault(name, set()).update(values)
+            for kind in ("source", "expert"):
+                for template_id in route[f"{kind}_template_ids"]["source"]:
+                    base = registry["templates"][template_id]["components"]
+                    candidates = [dict(base)]
+                    for name, values in sets.items():
+                        choices = values | ({base[name]} if isinstance(base.get(name), str) else set())
+                        candidates = [{**item, name: value} for item in candidates for value in choices]
+                    for candidate in candidates:
+                        if kind == "source":
+                            normal.add(key(candidate))
+                        else:
+                            expert.setdefault(key(candidate), set()).add(route["expert_acknowledgement_id"])
+        wanted = key(selected)
+        if wanted in normal:
+            return "registry-reachable", None
+        if wanted in expert:
+            acknowledgements = sorted(expert[wanted])
+            if len(acknowledgements) > 1:
+                return "error", acknowledgements
+            return "registry-expert-template", acknowledgements[0]
+        return "outside-registry-declared-reachability", "outside"
+
+    rng = random.Random(294)
+    for _ in range(24):
+        components = {name: {"options": {option: {"implemented": True}
+                       for option in rng.sample(["zero", "one"], rng.randrange(3))}}
+                      for name in ("a", "b", "c")}
+        templates = {f"t{i}": {"components": {name: rng.choice(["own", "zero", "one"])
+                     for name in ("a", "b", "c") if rng.randrange(3)}} for i in range(3)}
+        routes = {}
+        for i in range(3):
+            routes[f"r{i}"] = {
+                "implemented": bool(rng.randrange(4)), "mode": rng.choice(["fixed", "tree"]),
+                "allowed_component_overrides": [name for name in components if rng.randrange(2)],
+                "allowed_component_options": {name: rng.sample(list(spec["options"]),
+                    rng.randrange(len(spec["options"]) + 1)) for name, spec in components.items()
+                    if rng.randrange(2)},
+                "source_template_ids": {"source": rng.sample(list(templates), rng.randrange(3))},
+                "expert_template_ids": {"source": rng.sample(list(templates), rng.randrange(3))},
+                "expert_acknowledgement_id": f"ack{i % 2}",
+            }
+        registry = {"components": components, "templates": templates, "runner_routes": routes,
+                    "authority": {"unnamed_tree_outside_reachability_acknowledgement_id": "outside"}}
+        for values in itertools.product([None, "own", "zero", "one", "missing"], repeat=3):
+            selected = {name: value for name, value in zip(components, values) if value is not None}
+            for modes in (("tree",), ("tree", "fixed")):
+                expected = reference(registry, selected, modes)
+                if expected[0] == "error":
+                    with pytest.raises(PhysicsCapabilityError, match="ambiguous acknowledgements"):
+                        _tree_tuple_registry_governance(registry, selected, route_modes=modes)
+                else:
+                    assert _tree_tuple_registry_governance(registry, selected, route_modes=modes) == expected

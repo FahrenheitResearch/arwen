@@ -91,6 +91,8 @@ fn process(request: Request) -> Result<PathBuf, String> {
         return Err("unsupported simulated radar request schema".into());
     }
     request.config.validate()?;
+    // One request draws one radar look, selected before the first PPI.
+    rustwx_render::install_radar_color_set(request.config.color_set()?)?;
     // Reject impossible scans before even hashing the history tape.
     request.config.check_memory(0)?;
     if request.history_paths.is_empty() {
@@ -425,6 +427,8 @@ fn run() -> Result<(), String> {
             "resource_estimate_schema":resources::SCHEMA,
             "input_validation":"full-columns/v1",
             "memory_policy":"checked-estimate-within-host-and-cgroup-headroom/v1",
+            "ppi_fields":ppi::PPI_FIELDS,
+            "color_tables":rustwx_render::RadarColorSet::NAMES,
             "site_count_cap":null
         }));
         return Ok(());
@@ -505,6 +509,17 @@ fn main() -> std::process::ExitCode {
         Err(error) => {
             eprintln!("{error}");
             std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn ppi_fields_carry_the_manifest_field_names() {
+        for &field in crate::ppi::PPI_FIELDS {
+            let drawn = crate::ppi::drawn_field(field);
+            assert_eq!(crate::field_name(&drawn.moment), field);
         }
     }
 }

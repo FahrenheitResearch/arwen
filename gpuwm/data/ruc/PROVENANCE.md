@@ -558,11 +558,19 @@ them as such.  `:1109-1141` (`wb`, `waterbudget`, `acwaterbudget`) and
 **ARW additions after the historical driver fixture.**  The `EM_CORE==1`
 precipitation partition (`:618-652`) and lake bypass are transcribed in the
 forecast path and independently checked by the surface-forcing source probe.
+The bypass follows WRF's `:824` test, `lakemodel==1 .and. lakemask==1`: with
+`sf_lake_physics = 0` a `LAKEMASK = 1` column runs the water branch, and only
+`sf_lake_physics = 1` hands it to the CLM lake model.
 The old whole-driver fixture remains an explicit `em_core=0` replay because
-that is how it was compiled. SPP is still absent because its stochastic
-`pattern_spp_lsm`/`field_sf` state is not ported. `mosaic_lu==1` is rejected,
-so the irrigation block at `:984-1009` -- gated on the same flag that
-`ruc_surface_parameters` is fail-closed on -- is unreachable. `myj=.true.` is
+that is how it was compiled. `spp_lsm = 1` is transcribed
+(`gpuwm/core/ruc_spp.py`, graded against `spp_oracle/` by
+`tests/test_ruc_spp.py`): the forecast path takes a member-owned
+`pattern_spp_lsm`/`field_sf` pair from the ensemble provider, and an enabled
+consumer with no pattern is refused. `mosaic_lu` and `mosaic_soil` accept 0 or 1:
+`ruc_surface_parameters` and `gpuwm/core/ruc_mosaic.py` transcribe the
+weighted `LANDUSEF`/`SOILCTOP` parameters and the irrigation block at
+`:984-1009`, graded against `oracle/mosaic_surface.csv` and
+`oracle/mosaic_driver.csv` (`tests/test_ruc_mosaic.py`). `myj=.true.` is
 rejected because `ruc_soil_step` and `ruc_snow_soil_step` are, which makes
 `:681-682` unreachable; that arm is transcribed but carries a comment saying
 it is unverified.

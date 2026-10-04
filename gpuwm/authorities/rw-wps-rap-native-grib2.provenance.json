@@ -1,0 +1,24 @@
+{
+ "schema": "gpuwm-rap-native-in-band-terrain-provenance-v1",
+ "source": "NOAA RAP awp130bgrb, 13 km CONUS Lambert, 50 native hybrid levels",
+ "field": "terrain_height",
+ "selector": {
+  "format": "grib2",
+  "discipline": 0,
+  "category": 3,
+  "parameter": 5,
+  "level_type": 1,
+  "level_value": 0
+ },
+ "time_policy": "decoded at every valid time and required invariant",
+ "member_policy": "RAP is deterministic; no member identity exists",
+ "input_identity": "dynamic file paths and SHA-256 values are owned by gpuwm-mapped-composition-inputs-v1",
+ "source_evidence": [
+  "https://nomads.ncep.noaa.gov/pub/data/nccf/com/rap/prod/rap.20261002/rap.t18z.awp130bgrbf00.grib2.idx",
+  "https://www.nco.ncep.noaa.gov/pmb/products/rap/rap.t00z.awp130bgrbf00.grib2.shtml"
+ ],
+ "aerosol_semantics": "NOAA operational HRRR parm/conus/hrrr_vtable declares QNWFA and QNIFA in kg-1 on hybrid surface 105, using NCEP local parameters 0/13/193 and 0/13/192. These records retain PMTF/PMTC display labels in public indexes; the operational Vtable, not those particulate-mass labels, owns their number-per-mass meaning.",
+ "aerosol_semantics_source": "https://raw.githubusercontent.com/NOAA-EMC/HRRR/develop/parm/conus/hrrr_vtable",
+ "aerosol_missing_policy": "NOAA operational HRRR parm/conus/hrrr_METGRID.TBL declares nearest_neighbor+four_pt+average_4pt with fill_missing=0 for QNWFA and QNIFA. Source masks remain intact until the horizontal interpolation chain exhausts its finite neighboring donors; only then is a missing target filled with zero.",
+ "aerosol_missing_policy_source": "https://raw.githubusercontent.com/NOAA-EMC/HRRR/develop/parm/conus/hrrr_METGRID.TBL"
+}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -45,6 +46,7 @@ from gpuwm.ingest.boundary_stream import (
     prepared_head_urban_columns,
     producer_device_bytes,
     remove_unfinished_tree,
+    input_plan_sha256,
 )
 from gpuwm.ingest.prepared_cache import (
     prepared_cache_identity,
@@ -53,6 +55,7 @@ from gpuwm.ingest.memory_refusal import InitializationMemoryRefused
 from gpuwm.ingest.preparation_price import (
     price_forcing_preparation, price_preparation_floor)
 from gpuwm.ingest.preprocess_backend import (
+    preprocess_math_call,
     admit_preparation,
     preprocess_identity,
     release_backend_memory,
@@ -62,6 +65,7 @@ from gpuwm.ingest.real import initialize_real
 from gpuwm.ingest.soil import (
     door_reconciled_soil_category, soil_temperature_repair_proof)
 from gpuwm.ingest.source_coverage import (
+    ForcingSeriesRefusal,
     PreparationRefusal,
     RunInputRefusal,
     VerticalLadderRefusal,
@@ -178,7 +182,8 @@ def _forcing_valid_times(snapshots) -> tuple:
     return tuple(snapshot.valid_time for snapshot in snapshots)
 
 
-def _source_top_pressure_pa(snapshots, count: int | None = None) -> float:
+def _source_top_pressure_pa(snapshots, count: int | None = None, *,
+                            mapping_contract=None) -> float:
     """The highest source level the whole forcing series reaches, in Pa.
 
     Read from the pressure field alone where the series can do that:
@@ -191,12 +196,26 @@ def _source_top_pressure_pa(snapshots, count: int | None = None) -> float:
     count = len(snapshots) if count is None else int(count)
     levels = getattr(snapshots, "source_pressure_hpa", None)
     if levels is None:
-        return max(
+        mass_top = max(
             float(np.min(snapshots[index].levels_hpa) * 100.0)
             for index in range(count))
-    return max(
-        float(np.min(levels(index)) * 100.0)
-        for index in range(count))
+    else:
+        mass_top = max(
+            float(np.min(levels(index)) * 100.0)
+            for index in range(count))
+    # Native files publish mass levels, while p_top is the interface
+    # bounding the top layer.  Comparing those unlike coordinates refuses
+    # a run on the source's own ladder.  The mapped table supplies the
+    # interface; the interpolation operator separately enforces every
+    # target mass level's support in the decoded source column.
+    vertical = (mapping_contract or {}).get("coordinates", {}).get("vertical", {})
+    model_top = vertical.get("model_top_pressure_pa")
+    if model_top is None:
+        return mass_top
+    model_top = float(model_top)
+    if not np.isfinite(model_top) or model_top <= 0.0 or model_top > mass_top:
+        raise ValueError("native model-top interface must be positive and above its decoded mass levels")
+    return model_top
 
 
 def _file_receipt(path: Path) -> dict[str, object]:
@@ -417,11 +436,10 @@ def _validate_target_contract(
                 "1.0 (surface) to 0.0 (top), strictly decreasing, with "
                 "p_top in pascals inside the source atmosphere."),
         ) from error
-    if target["require_lateral_boundaries"] is not True:
-        raise ValueError(
-            "mapped direct export requires a target contract with lateral "
-            "boundaries"
-        )
+    # A mapping may decode an isolated analysis as well as a forcing series.
+    # Its decode-time minimum does not prohibit forecasting from a complete
+    # series. This operation checks the actual times, coverage and cadence
+    # before static preparation and always records its boundary requirement.
     if boundary_interval_seconds is not None or not before_decode:
         if (isinstance(boundary_interval_seconds, bool)
                 or not isinstance(boundary_interval_seconds, int)
@@ -664,7 +682,8 @@ class _PostedMappedSource:
 
     def __init__(self, *, posting, input_manifest, composition, mapping,
                  primary, supplements, provenance, contributing, decoders,
-                 grids, workers, output_root, source_format):
+                 grids, workers, output_root, source_format,
+                 physical_members=False):
         from gpuwm.ingest.boundary_stream import (
             POSTING_SCHEDULE_NAME, PostedLeads)
         from gpuwm.mapped_composition import PostedFrames
@@ -693,6 +712,7 @@ class _PostedMappedSource:
             raise ValueError(f"{schedule_path} schedules no lead")
         self.leads = tuple(int(row["lead"]) for row in rows)
         self.valid_times = tuple(_naive_time(row["valid_time"]) for row in rows)
+        self.schedule = schedule
         self.posted = PostedLeads(self.posting, source=str(schedule["source"]),
                                   cycle=str(schedule["cycle"]))
         self.composition = Path(composition)
@@ -707,6 +727,7 @@ class _PostedMappedSource:
         self.workers = workers
         self.output_root = Path(output_root)
         self.source_format = str(source_format)
+        self.physical_members = physical_members
         #: Every marker read, by lead (what segments bind).
         self.markers: dict[int, dict] = {}
         #: A posted object's lead, or ``None`` for one every batch reads.
@@ -724,7 +745,9 @@ class _PostedMappedSource:
         self.batches: list = []
         self.batch_leads: list[tuple[int, ...]] = []
         self.decode_seconds = 0.0
+        self.decode_memory_budget_bytes: int | None = None
         self._where: dict[int, tuple] = {}
+        self._physical_evidence: dict[int, dict] = {}
         self._next = 0
         self._scratch = self.output_root.parent / (
             f".posted-{uuid.uuid4().hex[:8]}")
@@ -887,6 +910,12 @@ class _PostedMappedSource:
         again = 1 if self._needs_first_lead(set(leads)) else 0
         primary, supplements = self._batch_inventory(
             {*leads, *self.leads[:again]})
+        member_verification = None
+        if getattr(self, "physical_members", False):
+            from gpuwm.prep_handoff import verify_posted_member_batch
+            member_verification = verify_posted_member_batch(
+                self.fetch_root, leads=(*self.leads[:again], *leads),
+                primary_files=primary, trajectory=self.physical_trajectory())
         started = time.perf_counter()
         self._scratch.mkdir(parents=True, exist_ok=True)
         authored = author_input_manifest(
@@ -925,6 +954,8 @@ class _PostedMappedSource:
             # over the planned times (prepare_mapped_wrf) and each batch's
             # times are held to them below.
             lead_batch=True,
+            **({} if self.decode_memory_budget_bytes is None else {
+                "memory_budget_bytes": self.decode_memory_budget_bytes}),
         )
         frames = bundle.frames
         decoded = tuple(getattr(frames, "valid_times", None)
@@ -949,6 +980,20 @@ class _PostedMappedSource:
         self.batches.append(bundle)
         self.batch_leads.append(tuple(leads))
         self.decode_seconds += time.perf_counter() - started
+        # Bind each physical knot to the actual ordinary batch decode. The
+        # batch receipt is complete even while later raw leads are absent.
+        from gpuwm.ingest.boundary_stream import posted_lead_marker_sha256
+        evidence = {"input_manifest_sha256": str(authored["manifest"]["sha256"]),
+                    "bundle": bundle,
+                    "member_verification": member_verification,
+                    "primary_rows": tuple(((manifest_path.parent / row["path"]).resolve(),
+                                           row["sha256"]) for row in manifest["primary_files"]),
+                    "posted_leads": {str(lead): posted_lead_marker_sha256(self.markers[lead])
+                                     for lead in (*self.leads[:again], *leads)}}
+        if getattr(self, "physical_members", False):
+            evidence["verified_trajectory"] = self.physical_trajectory().identity
+        for index in range(start, end + 1):
+            self.__dict__.setdefault("_physical_evidence", {})[index] = evidence
 
     def _locate(self, index: int):
         self.through(int(index))
@@ -958,12 +1003,90 @@ class _PostedMappedSource:
     def decoded_count(self) -> int:
         return self._next
 
+    def future_decode_host_bytes(self) -> int | None:
+        """One native batch's priced peak while a forecast holds the head.
+
+        A later batch may use the entire input grid even when the target
+        is small. Its native inventory price, not target array geometry,
+        reserves the child. The same bytes become its whole-process cap.
+        """
+        if self._next >= len(self.leads):
+            remaining = [getattr(batch, "future_decode_host_bytes", lambda: 0)()
+                         for batch in self.batches]
+            return None if None in remaining else max(remaining, default=0)
+        prices = [getattr(batch, "native_decode_memory", None) for batch in self.batches]
+        if not prices or any(not isinstance(price, Mapping)
+                             or not price.get("budget_supported")
+                             or not isinstance(price.get("one_time_peak_bytes"), int)
+                             or price["one_time_peak_bytes"] <= 0 for price in prices):
+            return None
+        return max(int(price["one_time_peak_bytes"]) for price in prices)
+
+    def limit_future_decode(self, budget_bytes: int) -> None:
+        self.decode_memory_budget_bytes = budget_bytes
+        for batch in self.batches:
+            limit = getattr(batch, "limit_future_decode", None)
+            if limit is not None:
+                limit(budget_bytes)
+
     def regular_snapshots(self):
         from gpuwm.mapped_composition import _RegularSnapshots
 
         return _RegularSnapshots(SimpleNamespace(
             frames=self.frames,
             soil_layer_contract=self.batches[0].soil_layer_contract))
+
+    def physical_trajectory(self):
+        """The byte-verified route's canonical source, cycle and member."""
+        from datetime import datetime, timedelta, timezone
+        from gpuwm.ensemble.recipes import SourceTrajectory
+        cycle = datetime.fromisoformat(str(self.schedule["cycle"]).replace("Z", "+00:00"))
+        if cycle.tzinfo is None:
+            cycle = cycle.replace(tzinfo=timezone.utc)
+        trajectory = SourceTrajectory(str(self.schedule["source"]), cycle,
+                                      self.schedule.get("member"))
+        for lead, marker in self.markers.items():
+            recorded = SourceTrajectory(str(marker["source"]),
+                _naive_time(marker["cycle"]).replace(tzinfo=timezone.utc),
+                marker.get("member"))
+            position = self.leads.index(lead)
+            if (recorded != trajectory
+                    or _naive_time(marker["valid_time"]) != self.valid_times[position]
+                    or self.valid_times[position] != _naive_time(cycle) + timedelta(hours=lead)):
+                raise ValueError("mapped physical lead differs from its posted source trajectory")
+        return trajectory
+
+    def physical_evidence(self, index):
+        self.through(index)
+        trajectory = self.physical_trajectory()
+        from gpuwm.ingest.boundary_stream import posted_lead_marker_sha256
+        evidence = self._physical_evidence[index]
+        raw = evidence["posted_leads"]
+        if any(posted_lead_marker_sha256(self.markers[int(lead)]) != digest
+               for lead, digest in raw.items()):
+            raise ValueError("mapped physical raw marker changed after its batch was decoded")
+        if _naive_time(self.frames.header(index).source_cycle) != _naive_time(trajectory.cycle):
+            raise ValueError("mapped physical decoded source cycle differs from the posted trajectory")
+        if evidence.get("verified_trajectory") != trajectory.identity:
+            from gpuwm.forcing_member import member_contract
+            from gpuwm.member_prep import verify_member_file
+            contract = member_contract(trajectory.source, trajectory.member)
+            for path, digest in evidence["primary_rows"]:
+                if _sha256(path) != digest:
+                    raise ValueError("mapped physical primary bytes changed after their batch decode")
+                if contract is not None:
+                    _adapter, grammar, member = contract
+                    verify_member_file(grammar, member, path)
+                    if _sha256(path) != digest:
+                        raise ValueError("mapped physical member bytes changed during native verification")
+            evidence["verified_trajectory"] = trajectory.identity
+        decoded_digest = hashlib.sha256(_canonical({
+            "input_manifest_sha256": evidence["input_manifest_sha256"],
+            "composition_receipt_sha256": composition_receipt_identity_sha256(
+                mapped_composition_receipt(evidence["bundle"])),
+            "member_verification": evidence.get("member_verification"),
+        }).encode()).hexdigest()
+        return {"posted_leads": raw, "decoded_leads": {str(self.leads[index]): decoded_digest}}
 
     # -- the seal --------------------------------------------------------
 
@@ -1079,7 +1202,9 @@ def _require_source_top(exp, cfg, source_top_pressure_pa: float,
 def _seal_posted_mapped(posted_source, *, writer, plan, mapping_contract,
                         snapshots, exp, cfg, source_identity,
                         static_cache_sha256, namelist_sha256,
-                        forcing_identity, experiment_config=None) -> dict:
+                        forcing_identity, experiment_config=None,
+                        physical_provider_seal=None,
+                        identity_builder=None) -> dict:
     """What an as-posted mapped seal writes (DESIGN A136 2.4 item 6).
 
     The window's input manifest through the one-shot author, refused
@@ -1089,6 +1214,9 @@ def _seal_posted_mapped(posted_source, *, writer, plan, mapping_contract,
     checked as the head checked its first leads; the one-shot identity,
     which the writer holds to the head's (only the manifest and receipt
     digests move); and the record of the leads consumed.
+
+    A hierarchy supplies its ordinary root artifact identity builder. The
+    same source checks then precede sealing the root's streamed cache.
     """
 
     from gpuwm.ingest.boundary_stream import (
@@ -1114,7 +1242,8 @@ def _seal_posted_mapped(posted_source, *, writer, plan, mapping_contract,
     ladder = decoded_vertical_ladder(whole, mapping_contract)
     if ladder is not None:
         _announce_vertical_ladder(ladder)
-    _require_source_top(exp, cfg, _source_top_pressure_pa(snapshots),
+    _require_source_top(exp, cfg, _source_top_pressure_pa(
+        snapshots, mapping_contract=mapping_contract),
                         experiment_config)
     sealed_source_identity = {
         **source_identity,
@@ -1122,24 +1251,32 @@ def _seal_posted_mapped(posted_source, *, writer, plan, mapping_contract,
         "composition_receipt_sha256": composition_receipt_identity_sha256(
             receipt),
     }
-    identity = prepared_cache_identity(
-        bridge_manifest_sha256=digest,
-        source_manifest_sha256=digest,
-        static_cache_sha256=static_cache_sha256,
-        namelist_sha256=namelist_sha256,
-        domain_config=exp.root,
-        **forcing_identity,
-        source_identity=sealed_source_identity,
-    )
+    if identity_builder is None:
+        identity = prepared_cache_identity(
+            bridge_manifest_sha256=digest,
+            source_manifest_sha256=digest,
+            static_cache_sha256=static_cache_sha256,
+            namelist_sha256=namelist_sha256,
+            domain_config=exp.root,
+            **forcing_identity,
+            source_identity=sealed_source_identity,
+        )
+    else:
+        identity = identity_builder(sealed_source_identity, digest)
     _copy_bound_authority(
         path, writer.root / "source-evidence" / "input-manifest.json", digest)
     writer.write_posted_leads(posted_source.markers,
                               route_table_sha256=route_table_sha256)
     cache_receipt = dict(writer.seal_cache(identity=identity,
-                                           manifest_sha256=digest))
+        manifest_sha256=digest,
+        **({"physical_provider_seal": physical_provider_seal}
+           if physical_provider_seal is not None else {})))
     return {
         "cache_receipt": cache_receipt,
+        "identity": identity,
         "bundle": whole,
+        "source_identity": sealed_source_identity,
+        "manifest_sha256": digest,
         "proof": {
             "source_composition": receipt,
             **({"source_vertical_ladder": ladder}
@@ -1153,6 +1290,7 @@ def _seal_posted_mapped(posted_source, *, writer, plan, mapping_contract,
     }
 
 
+@preprocess_math_call
 def prepare_mapped_wrf(
     *,
     composition: str | Path,
@@ -1181,9 +1319,14 @@ def prepare_mapped_wrf(
     stock_wrf_export: str = "optional",
     statics_corridor=None,
     as_posted: str | Path | None = None,
+    initial_inputs: str | Path | None = None,
     _source_manifest: str | Path | None = None,
     _source_manifest_sha256: str | None = None,
     _source_adapter: str = "rw-wps-mapped-composition-v2",
+    physical_input_store: str | Path | None = None,
+    physical_output_store: str | Path | None = None,
+    physical_input_provider=None,
+    physical_member_index: int | None = None,
 ) -> dict[str, object]:
     """Build native WRF inputs from one complete mapped-source composition.
 
@@ -1298,6 +1441,20 @@ def prepare_mapped_wrf(
         mapping,
         _raw=_load_json_bytes(mapping_snapshot.data, "mapping", mapping),
     )
+    physical_provider = None
+    if physical_input_provider is not None:
+        from gpuwm.ensemble.posted_physical import PostedPhysicalProvider
+        if as_posted is None:
+            raise ValueError("posted physical providers require an as-posted preparation")
+        if physical_input_store is not None or physical_output_store is not None:
+            raise ValueError("a posted physical consumer cannot also capture or read a complete physical store")
+        if type(physical_member_index) is not int or physical_member_index < 0:
+            raise ValueError("a posted physical provider requires the original member index")
+        physical_provider = (physical_input_provider if isinstance(physical_input_provider, PostedPhysicalProvider)
+                             else PostedPhysicalProvider.open(physical_input_provider,
+                                  cpu_bridge=cpu_preprocess_bridge, workers=preprocess_workers or 1))
+    elif physical_member_index is not None:
+        raise ValueError("physical_member_index requires a posted physical provider")
     # The decoder role set is the union across the primary's format and
     # every contributing source's format.  Only the format key is probed
     # here; ``decode_composed_source`` fully validates each contributing
@@ -1315,7 +1472,7 @@ def prepare_mapped_wrf(
     # one the engine can read: a union with one unported format in it is
     # a Python-engine job whole, because half a composition decoded by
     # each engine would be one frameset with two provenances.
-    if all(
+    if physical_provider is None and all(
         _mapped_engine_choice(
             grib1_bridge=grib1_bridge,
             grib2_inventory=grib2_inventory,
@@ -1333,7 +1490,7 @@ def prepare_mapped_wrf(
 
         engine_binary = require_engine()
     try:
-        decoders = _decoder_inventory(
+        decoders = {} if physical_provider is not None else _decoder_inventory(
             sorted(decode_formats),
             grib1_bridge=grib1_bridge,
             grib2_inventory=grib2_inventory,
@@ -1443,6 +1600,8 @@ def prepare_mapped_wrf(
     if cpu_bridge is not None:
         run_control_before["cpu_preprocess_bridge"] = _file_receipt(cpu_bridge)
 
+    from gpuwm.ingest.preparation_workers import configure_preparation_workers
+    worker_policy = configure_preparation_workers(preprocess_workers)
     exp = load_experiment(experiment_config)
     # THE FLOOR, BEFORE THE DECODE (A98).  The backend is resolved here,
     # weighed against the lower bound the domains alone set: an explicit
@@ -1472,14 +1631,24 @@ def prepare_mapped_wrf(
     initial_perturbation = deferred_initial_perturbation(
         exp, "mapped-adapter prepared-cache")
     hierarchy = len(exp.domains) > 1
-    if as_posted is not None and hierarchy:
-        # Refused by name: every child's identity binds the input manifest
-        # and the composition receipt, which an as-posted head does not
-        # have yet, so a tree cannot seal byte-equal to its one-shot.
-        raise ValueError(
-            "an as-posted mapped preparation prepares a single domain; a "
-            "domain tree binds the window's input manifest into every "
-            "child, which does not exist until the last lead posts")
+    initial_request = None
+    if initial_inputs is not None:
+        # The independent start must be applied to every child before a tree
+        # can use it. Refuse a tree here instead of silently starting children
+        # from the boundary product while their parent uses the analysis.
+        if hierarchy or as_posted is not None:
+            raise ValueError("separate initial inputs currently require a complete "
+                             "single-domain forcing window; a tree needs the "
+                             "analysis propagated into each child's initial state")
+        if physical_input_store is not None or physical_input_provider is not None:
+            # A physical member store replaces every knot's interpolated
+            # state, the start included, so the separate analysis would be
+            # read and then silently discarded.
+            raise ValueError("separate initial inputs cannot be combined with a "
+                             "physical member input; the member store already "
+                             "carries the initial state")
+        from gpuwm.initial_source import read_initial_inputs
+        initial_request = read_initial_inputs(initial_inputs)
     # A domain tree is published through staging deeper than its
     # output root; refused here, the first point this door knows it
     # prepares a tree, before any source is decoded.  A single-domain
@@ -1515,6 +1684,26 @@ def prepare_mapped_wrf(
         before_decode=True,
     )
     cfg = exp.root.run
+
+    # A physical source replacement enters before native real initialization,
+    # at both the initial state and every future boundary knot.
+    physical_input = physical_output = None
+    if physical_input_store is not None or physical_input_provider is not None:
+        from gpuwm.ensemble.posted_preparation import require_exclusive_native_consumer
+        require_exclusive_native_consumer(physical_input_store=physical_input_store,
+                                         physical_input_provider=physical_input_provider)
+    if physical_provider is not None:
+        if hierarchy:
+            raise ValueError("posted physical providers require a single-domain as-posted preparation")
+    if physical_input_store is not None or physical_output_store is not None:
+        from gpuwm.ensemble.physical_store import NativePhysicalStore
+        if hierarchy or physical_input_store is not None and as_posted is not None:
+            raise ValueError(
+                "sealed physical stores currently describe a complete single-domain "
+                "forcing window; a hierarchy or an unsealed as-posted head needs "
+                "domain-local stores and its own final source identity")
+        if physical_input_store is not None:
+            physical_input = NativePhysicalStore(physical_input_store)
     physics_selection = None
     if not hierarchy:
         from gpuwm.physics_compat import (
@@ -1554,8 +1743,11 @@ def prepare_mapped_wrf(
     )
 
     posted_source = None
-    with prep_stage("source_decode", label="Decode and compose source",
-                    backend="rust" if engine_binary is not None else "python"):
+    with prep_stage("root_initialize" if physical_provider is not None else "source_decode",
+                    label=("Initialize member from shared source" if physical_provider is not None
+                           else "Decode and compose source"),
+                    backend=(str(preprocess.receipt()["backend"]) if physical_provider is not None
+                             else "rust" if engine_binary is not None else "python")):
         decode_started = time.perf_counter()
         if as_posted is not None:
             posted_source = _PostedMappedSource(
@@ -1564,7 +1756,29 @@ def prepare_mapped_wrf(
                 supplements=supplements, provenance=provenance,
                 contributing=contributing, decoders=decoders, grids=grids,
                 workers=preprocess_workers, output_root=output_root,
-                source_format=str(mapping_contract["format"]))
+                source_format=str(mapping_contract["format"]),
+                **({"physical_members": True} if physical_output_store is not None
+                   or physical_provider is not None else {}))
+            if physical_provider is not None:
+                # The pinned ordinary source has already decoded, mapped and
+                # initialized its base. Reconstruct its acquisition plan here
+                # without reading future raw files or repeating that work.
+                posted_source._read_plan()
+                from gpuwm.ensemble.mapped_posted_reuse import (
+                    prepare_posted_mapped_member, shared_input_plan)
+                shared_plan = shared_input_plan(physical_provider.source_context(physical_member_index), posted_source,
+                    mapping=mapping, composition=composition, primary=primary,
+                    supplements=supplements, provenance=provenance, contributing=contributing)
+                return prepare_posted_mapped_member(physical_provider, physical_member_index,
+                    posted_plan=shared_plan, mapping_contract=mapping_contract,
+                    mapping=mapping, composition=composition,
+                    experiment_config=experiment_config, wps_namelist=wps_namelist,
+                    output_root=output_root, preprocess=preprocess,
+                    preprocess_workers=preprocess_workers, run_control_before=run_control_before,
+                    stock_wrf_export=stock_wrf_export, physics_selection=physics_selection,
+                    source_adapter=_source_adapter, case_policy=case_policy,
+                    water_overlay_binding=water_overlay_binding,
+                    static_input=prebuilt_static, static_receipt=prebuilt_receipt)
             try:
                 bundle = posted_source.start()
             except BaseException:
@@ -1632,6 +1846,9 @@ def prepare_mapped_wrf(
                                           binding=water_overlay_binding,
                                           workers=preprocess_workers)
     times = _forcing_valid_times(snapshots)
+    if len(times) < 2:
+        raise ForcingSeriesRefusal(
+            "mapped forecast preparation requires at least two forcing times")
     if not times or times[0] != exp.start_time:
         raise ValueError(
             f"mapped forcing must begin at {exp.start_time}, got {times[:1]}"
@@ -1661,7 +1878,7 @@ def prepare_mapped_wrf(
     # checks the whole window again (_check_posted_top).
     source_top_pressure_pa = _source_top_pressure_pa(
         snapshots, count=None if posted_source is None
-        else posted_source.decoded_count)
+        else posted_source.decoded_count, mapping_contract=mapping_contract)
     if hierarchy:
         grids = validate_native_lambert_contracts(
             exp,
@@ -1718,8 +1935,9 @@ def prepare_mapped_wrf(
     cfg = exp.root.run
 
     # Priced from the decoded composition, before the first device
-    # allocation: auto prepares on the CPU when the card cannot hold it,
-    # and an explicit cuda that cannot fit is refused by name (A65).  A
+    # allocation: a large CUDA build stages bounded batches while completed
+    # arrays stay on the host. A card that cannot hold one batch retains the
+    # named CPU fallback or refusal. A
     # backend already on the CPU is not priced.  The card is read again
     # here: the decode took minutes and the card may be shared.
     preprocess = admit_preparation(
@@ -1729,6 +1947,10 @@ def prepare_mapped_wrf(
             boundary_species=mapping_boundary_species(mapping_contract)),
         workers=preprocess_workers)
     preprocess_receipt = preprocess.receipt()
+    posted_plan = (None if posted_source is None else _posted_input_plan(
+        posted_source, mapping=mapping, composition=composition,
+        primary=primary, supplements=supplements,
+        provenance=provenance, decoders=decoders))
     # CHAINED TREES.  A tree's children need only the start time and the
     # root's initial state, so a tree is chained exactly like a single
     # domain, on either backend: the start time first, the children into
@@ -1737,7 +1959,7 @@ def prepare_mapped_wrf(
     # re-reads each from the head, boundary_stream.TreeStartStates), so a
     # later forcing time is built on the card with nothing under it, as in
     # the start-last order the unchained tree keeps.
-    chain_tree = hierarchy and chained_enabled()
+    chain_tree = hierarchy and (posted_source is not None or chained_enabled())
     # The same declared policy reaches the root and every child catalog.
     water_statics = WaterTemperatureStatics.for_route(
         route=_WATER_ROUTE, policy=case_policy["water_temperature_policy"],
@@ -1768,6 +1990,10 @@ def prepare_mapped_wrf(
         # had already been fetched.
         initial_result = None
         initial_met = None
+        initial_source_receipt = None
+        initial_source_evidence = None
+        initial_soil_contract = bundle.soil_layer_contract
+        initial_soil_mesh = None
         forcing = StateBoundaryFrames(
             spec_bdy_width=cfg.spec_bdy_width,
             spec_zone=cfg.spec_zone, relax_zone=cfg.relax_zone)
@@ -1789,22 +2015,115 @@ def prepare_mapped_wrf(
         # blended toward the source's once, before the first
         # initialization reads it.  Off, this does nothing.
         terrain_blend = RootTerrainBlend(exp, static, route="mapped")
+        if physical_output_store is not None or physical_input is not None:
+            from gpuwm.native_wrf_contract import native_geometry_contract
+            from gpuwm.ensemble.mapped_physical_contract import (
+                mapped_physical_field_contract, require_mapped_physical_field_contract)
+            physical_source_identity = {
+                    "adapter": _source_adapter,
+                    "mapping_sha256": bundle.mapping_sha256,
+                    "composition_sha256": bundle.composition_sha256,
+                    "input_manifest_sha256": (posted_plan["placeholder"] if posted_plan is not None
+                                              else source_manifest_sha256 or bundle.input_manifest_sha256),
+                    "composition_receipt_sha256": (posted_plan["placeholder"] if posted_plan is not None
+                                                   else receipt_identity_sha256),
+                    "preparation_case_policy": case_policy,
+                    "water_temperature_overlay": water_overlay_binding,
+                    **({"static_highres": static_highres_identity(static_highres)}
+                       if static_highres is not None else {})}
+            physical_geometry = native_geometry_contract(grid, cfg)
+            expected_physical_fields = mapped_physical_field_contract(
+                physical_geometry, mapping_path=mapping, composition_path=composition,
+                source_identity=physical_source_identity,
+                extra_evidence={("raw_input_plan" if posted_plan is not None else "raw_source_manifest"):
+                                (input_plan_sha256(posted_plan["plan"]) if posted_plan is not None
+                                 else physical_source_identity["input_manifest_sha256"]),
+                                **{"native_decoder_"+key: value for key, value in bundle.decoder_sha256.items()}})
+            if physical_output_store is not None and posted_source is None:
+                physical_output = NativePhysicalStore(
+                    physical_output_store, grid_identity=physical_geometry,
+                    source_identity=physical_source_identity, field_contract=expected_physical_fields)
+        if physical_input is not None:
+            from gpuwm.native_wrf_contract import native_geometry_contract
+            if physical_input.document["grid"] != native_geometry_contract(grid, cfg):
+                raise ValueError("physical input geometry differs from native preparation geometry")
+            if tuple(physical_input.times) != tuple(times):
+                raise ValueError("physical input valid times differ from the full initial/boundary window")
+            require_mapped_physical_field_contract(physical_input, expected_physical_fields)
+        forcing_timings = []
 
-        def build_forcing_time(index):
+        def build_forcing_time(index, *, source_override=None, aerosol_snapshot=None):
+            nonlocal physical_output
             # One forcing time's build, unchanged: interpolate, initialize,
             # attach the map factors.  The single-domain route calls it start
             # first (gpuwm.ingest.boundary_stream), as does a chained
             # hierarchy; an unchained hierarchy keeps the start time last.
-            source = snapshots[index]
+            build_started = time.perf_counter()
+            source = snapshots[index] if source_override is None else source_override
+            timing = {"forcing_index": index, "valid_time": str(source.valid_time)}
+            horizontal_started = time.perf_counter()
             # Metgrid classifies masked-field TARGET cells by the model
             # (geogrid) landmask; the mapped lane declares it like the ERA5
             # lanes so soil, skin, snow, and physics share one surface.
-            met = interpolate_era5_to_lambert(
-                source, grid, backend=preprocess,
-                target_landmask=np.asarray(static["LANDMASK"]) >= 0.5,
-                water_temperature_statics=water_statics)
+            if physical_input is None:
+                met = interpolate_era5_to_lambert(
+                    source, grid, backend=preprocess,
+                    target_landmask=np.asarray(static["LANDMASK"]) >= 0.5,
+                    water_temperature_statics=water_statics)
+            else:
+                if source_override is not None:
+                    # The member's captured fields would silently replace
+                    # the separately decoded initial analysis.
+                    raise ValueError("member physical input cannot replace a separate "
+                                     "initial analysis source")
+                met = physical_input.read(index)
+            timing["horizontal_seconds"] = time.perf_counter() - horizontal_started
+            column_timing = {}
             terrain_blend.before_initialize(
                 met.fields.get("SOURCE_OROGRAPHY"))
+            if physical_output_store is not None:
+                from gpuwm.ensemble.physical_store import physical_static_identity
+                from gpuwm.native_wrf_contract import NATIVE_LANDUSE_IDENTITY
+                actual_static = physical_static_identity(
+                    native_static_export_fields(static, grid), NATIVE_LANDUSE_IDENTITY)
+            if physical_output_store is not None and posted_source is not None:
+                from datetime import timezone
+                from gpuwm.ensemble.posted_physical import PostedPhysicalStream, posted_source_identity
+                if physical_output is None:
+                    physical_output = PostedPhysicalStream.create(
+                        physical_output_store, trajectory=posted_source.physical_trajectory(),
+                        valid_times=tuple(value.replace(tzinfo=timezone.utc) for value in times),
+                        grid_identity=physical_geometry,
+                        source_identity=posted_source_identity(
+                            {**physical_source_identity, "static_identity": actual_static},
+                            input_plan=posted_plan["plan"]),
+                        field_contract=expected_physical_fields,
+                        input_plan_sha256=input_plan_sha256(posted_plan["plan"]))
+                physical_output.publish(met, **posted_source.physical_evidence(index))
+            elif physical_output is not None:
+                if index == 0:
+                    from gpuwm.ensemble.physical_store import physical_static_identity
+                    from gpuwm.native_wrf_contract import NATIVE_LANDUSE_IDENTITY
+                    physical_output.document["source"]["static_identity"] = physical_static_identity(
+                        native_static_export_fields(static, grid), NATIVE_LANDUSE_IDENTITY)
+                physical_output.write(met)
+            from gpuwm.ensemble.posted_preparation import (
+                current_posted_preparation, replace_current_native_snapshot)
+            if current_posted_preparation() is not None:
+                member_plan = (None if posted_source is None else _posted_input_plan(
+                    posted_source, mapping=mapping, composition=composition,
+                    primary=primary, supplements=supplements, provenance=provenance,
+                    decoders=decoders))
+                met = replace_current_native_snapshot(met, grid=grid, cfg=cfg,
+                    static_fields=static, landuse_attrs=selection.landuse_global_attrs(),
+                    domain_id=exp.root.grid_id, metadata={
+                        "bundle": bundle, "mapping_path": mapping, "composition_path": composition,
+                        "source_manifest_sha256": source_manifest_sha256,
+                        "input_manifest": input_manifest, "posted_plan": member_plan,
+                        "source_snapshot": source, "source_adapter": _source_adapter,
+                        "preprocessing": preprocess_identity(preprocess_receipt),
+                        "preparation_case_policy": case_policy,
+                        "water_temperature_overlay": water_overlay_binding})
             initialized = initialize_real(
                 met, cfg, coord, static["HGT_M"], grid=grid,
                 landmask=static["LANDMASK"],
@@ -1813,8 +2132,12 @@ def prepare_mapped_wrf(
                 state_backend="preprocess",
                 # Only the start time's result is kept below; every later
                 # time contributes its state to the boundaries.
-                boundary_only=index != 0,
+                boundary_only=(index != 0 or (
+                    initial_request is not None and source_override is None)),
                 boundary_species=boundary_species,
+                timing_report=column_timing,
+                **({"aerosol_snapshot": aerosol_snapshot}
+                   if aerosol_snapshot is not None else {}),
                 # THE FRONT DOOR for the mp=28 aerosol default is the "grid="
                 # above (lane/static-dataset-door), and it is the SAME door the
                 # other ten real routes now use.
@@ -1847,6 +2170,9 @@ def prepare_mapped_wrf(
                 mapfac_m, mapfac_u, mapfac_v, coriolis_f, coriolis_e,
                 sina=rotation_sin, cosa=rotation_cos,
             )
+            timing["column_stages_seconds"] = column_timing
+            timing["total_seconds"] = time.perf_counter() - build_started
+            forcing_timings.append(timing)
             return met, initialized
 
         if hierarchy and not chain_tree:
@@ -1868,6 +2194,48 @@ def prepare_mapped_wrf(
             # as soon as its two times exist.
             initial_met, initial_result = build_forcing_time(0)
             forcing.add_state(initial_result.state, index=0)
+            if initial_request is not None:
+                from gpuwm.initial_source import decode_initial_analysis
+                boundary_head_backend = preprocess
+                boundary_head_preprocessing = copy.deepcopy(preprocess.receipt())
+                aerosol_met = (initial_met if cfg.use_rap_aero_icbc else None)
+                initial_met = None
+                del initial_result
+                release_backend_memory(preprocess)
+                try:
+                    with decode_initial_analysis(
+                            initial_request, output_parent=output_root.parent,
+                            grids=grids, valid_time=exp.start_time,
+                            workers=preprocess_workers, decoders=decoders) as analysis:
+                        _require_source_top(
+                            exp, cfg, _source_top_pressure_pa(
+                                (analysis.snapshot,), mapping_contract=analysis.mapping),
+                            experiment_config)
+                        # Re-read free memory while the aerosol donor is still
+                        # held, and price the second source before mapping it.
+                        preprocess = admit_preparation(
+                            preprocess,
+                            lambda: price_forcing_preparation(
+                                "mapped", exp, (analysis.snapshot,),
+                                boundary_species=boundary_species),
+                            workers=preprocess_workers)
+                        preprocess_receipt = preprocess.receipt()
+                        initial_met, initial_result = build_forcing_time(
+                            0, source_override=analysis.snapshot,
+                            aerosol_snapshot=aerosol_met)
+                        initial_soil_contract = analysis.soil_layer_contract
+                        initial_soil_mesh = soil_mesh_plan_from_case(
+                            analysis.snapshot, grid, experiment_config)
+                        initial_source_receipt = {
+                            **analysis.receipt,
+                            "boundary_head_preprocessing": boundary_head_preprocessing,
+                            "aerosol_source": ("boundary-analysis" if aerosol_met is not None
+                                               else "initial-analysis"),
+                        }
+                        initial_source_evidence = analysis.evidence
+                finally:
+                    aerosol_met = None
+                    release_backend_memory(boundary_head_backend)
             boundaries = None
         # No lake skin override: the masked=both SKINTEMP chain with
         # static-landmask targets already yields water-source skin at lakes,
@@ -1890,7 +2258,7 @@ def prepare_mapped_wrf(
                 static, initial_met.fields, selection.landuse_global_attrs(),
                 route="mapped source"),
             deep_soil_temperature=static["TMN"],
-            soil_layer_contract=bundle.soil_layer_contract,
+            soil_layer_contract=initial_soil_contract,
             landmask=static["LANDMASK"],
             # Land the source holds no land for takes the column the
             # router builds (gpuwm/ingest/soil.py: island_soil_columns).
@@ -1904,8 +2272,9 @@ def prepare_mapped_wrf(
             # deep temperature: a mapped source's mesh can be coarser than this
             # grid, and where it is, the soil state gets the target grid's own
             # soil texture instead of the source cell's average.
-            soil_mesh=soil_mesh_plan_from_case(
-                snapshots[0], grid, experiment_config),
+            soil_mesh=(initial_soil_mesh if initial_request is not None
+                       else soil_mesh_plan_from_case(
+                           snapshots[0], grid, experiment_config)),
             route=_WATER_ROUTE,
         )
         soil_temperature_repair = soil_temperature_repair_proof(soil, grid)
@@ -1926,6 +2295,9 @@ def prepare_mapped_wrf(
         wrf_path = staging / "wrf-native-input"
         evidence_path = staging / "source-evidence"
         evidence_path.mkdir()
+        if initial_source_evidence is not None:
+            from gpuwm.initial_source import write_initial_evidence
+            write_initial_evidence(evidence_path, initial_source_evidence)
         # The USER-FACING manifest: the route's own sealed document when
         # the route bridged one in, otherwise the composition manifest
         # itself.  The evidence copy, the identity chain and the proof
@@ -1938,16 +2310,11 @@ def prepare_mapped_wrf(
         published_manifest_sha256 = (
             bundle.input_manifest_sha256 if source_manifest_sha256 is None
             else source_manifest_sha256)
-        posted_plan = None
         if posted_source is not None:
             # The manifest the seal will write, with every planned lead
             # object's size and digest not known yet; the head binds its
             # plan, and each digest the manifest carries is this plan's
             # placeholder until the seal (boundary_stream.input_plan).
-            posted_plan = _posted_input_plan(
-                posted_source, mapping=mapping, composition=composition,
-                primary=primary, supplements=supplements,
-                provenance=provenance, decoders=decoders)
             published_manifest_sha256 = receipt_identity_sha256 = (
                 posted_plan["placeholder"])
         for source, name, digest in (
@@ -2027,7 +2394,20 @@ def prepare_mapped_wrf(
             "preprocessing": preprocess_identity(preprocess_receipt),
             "preparation_case_policy": case_policy,
             "water_temperature_overlay": water_overlay_binding,
+            **({"initial_source": initial_source_receipt}
+               if initial_source_receipt is not None else {}),
         }
+        if physical_input is not None:
+            from gpuwm.ensemble.physical_store import physical_input_binding, physical_static_identity
+            from gpuwm.native_wrf_contract import NATIVE_LANDUSE_IDENTITY
+            source_identity["ensemble_physical_input"] = physical_input_binding(
+                physical_input, grid, cfg, source_identity,
+                input_manifest_sha256=published_manifest_sha256,
+                static_identity=physical_static_identity(
+                    native_static_export_fields(static, grid), NATIVE_LANDUSE_IDENTITY))
+        from gpuwm.ensemble.posted_preparation import bind_current_source_identity
+        source_identity = bind_current_source_identity(source_identity,
+            domain_id=exp.root.grid_id)
         forcing_identity = (
             {"forcing_hours": tuple(
                 value // 3600 for value in forcing_seconds)}
@@ -2068,6 +2448,7 @@ def prepare_mapped_wrf(
                 verify_overlay_sequence=verify_overlay_sequence,
                 initial_perturbation=initial_perturbation,
                 mapping_contract=mapping_contract,
+                posted_source=posted_source, posted_plan=posted_plan,
             )
             # The chained tree owns the start state from here and releases
             # it at its head; these names would keep it resident.
@@ -2268,6 +2649,8 @@ def prepare_mapped_wrf(
         # differs from this head anywhere else.
         proof_head = {
             "schema": PROOF_SCHEMA,
+            **({"initial_source": initial_source_receipt}
+               if initial_source_receipt is not None else {}),
             "status": "READY_NOT_YET_STOCK_WRF_GATED",
             "stock_wrf_export": stock_wrf_export,
             "vertical_coordinate": _vertical_coordinate_receipt(
@@ -2335,7 +2718,12 @@ def prepare_mapped_wrf(
         # producer only when both fit (boundary_stream.chained_admission).
         writer.admit(
             experiment=exp, backend=str(preprocess_receipt["backend"]),
-            device_bytes=producer_device_bytes(str(preprocess_receipt["backend"])),
+            device_bytes=producer_device_bytes(str(preprocess_receipt["backend"]),
+                                               selection=preprocess_receipt.get("selection")),
+            preprocess_selection=preprocess_receipt.get("selection"),
+            future_decode_host_bytes=(getattr(bundle, "future_decode_host_bytes", lambda: 0)()
+                                      if posted_source is None else
+                                      posted_source.future_decode_host_bytes()),
             source=mapping_contract,
             urban_columns=prepared_head_urban_columns(exp, static))
         as_posted_head = None
@@ -2387,6 +2775,11 @@ def prepare_mapped_wrf(
                 # segment binds the markers of the leads it spans.
                 posted_source.posted.writer = writer
                 writer.bind_posted_leads(posted_source.markers)
+            if writer.chained:
+                future = bundle if posted_source is None else posted_source
+                future_bytes = getattr(future, "future_decode_host_bytes", lambda: 0)()
+                if future_bytes:
+                    future.limit_future_decode(future_bytes)
         head_seconds = time.perf_counter() - head_started
         # The start state has done its work: it is in the head.
         del initial_result, initial_met
@@ -2465,6 +2858,8 @@ def prepare_mapped_wrf(
             raise ValueError("mapped run-control bytes changed during preparation")
         proof = {
             **proof_head,
+            "preparation_parallelism": worker_policy,
+            "forcing_stage_timings": forcing_timings,
             # As posted, the leads the preparation waited for (DESIGN A136
             # 2.4 item 6); a preparation of a complete window has none.
             **({"posting": posted_proof.get("posting")}
@@ -2489,6 +2884,8 @@ def prepare_mapped_wrf(
             _canonical(proof).encode("utf-8")
         ).hexdigest()
         writer.publish(proof)
+        if physical_output is not None:
+            physical_output.seal()
         # The composed frame stream is spent: every valid time has been
         # interpolated and the tree is published, so the engine scratch
         # it streamed from goes now rather than at collection.
@@ -2543,7 +2940,10 @@ def _prepare_chained_mapped_tree(c) -> dict[str, object]:
         selected_workers = 8 if backend == "cpu" else 1
     namelist_sha256 = _sha256(c.experiment_config)
     manifest_sha256 = c.published_manifest_sha256
-    receipt_sha256 = composition_receipt_identity_sha256(c.composition_receipt)
+    posted = c.posted_source
+    receipt_sha256 = (c.source_identity["composition_receipt_sha256"]
+        if posted is not None else
+        composition_receipt_identity_sha256(c.composition_receipt))
     initialize_seconds = c.initialize_seconds
     # The forcing axis under its own name, as the unchained proof spells
     # it (the proof inventory gate reads the key by that name).
@@ -2680,13 +3080,31 @@ def _prepare_chained_mapped_tree(c) -> dict[str, object]:
             **({"statics_corridor": dict(tree_head.statics_corridor_receipt)}
                if tree_head.statics_corridor_receipt is not None else {}),
         }
+        as_posted_head = None
+        if posted is not None:
+            for key in _AS_POSTED_SEAL_KEYS:
+                proof_head.pop(key, None)
+            as_posted_head = {
+                "input_plan": c.posted_plan["plan"],
+                "start_markers": dict(posted.markers),
+                "forcing_leads": posted.leads,
+                "seal_authored_proof_keys": _AS_POSTED_SEAL_KEYS,
+                "manifest_path": "source-evidence/input-manifest.json",
+                "lead_role_prefix": "",
+                "manifest_bound_identity_keys": _AS_POSTED_MANIFEST_BOUND,
+                "fixed_rows": c.posted_plan["fixed_rows"],
+                "proof_manifest_key": _AS_POSTED_PROOF_MANIFEST_KEY,
+                "posted_user_metadata": ("composition_receipt_sha256",),
+            }
         # One machine, one card: a forecast started on this head beside
         # its producer is admitted only when both fit, priced with the
         # hydrometeor boundary tables this mapping publishes, as the
         # single domain is.
         writer.admit(
             experiment=exp, backend=backend,
-            device_bytes=producer_device_bytes(backend),
+            device_bytes=producer_device_bytes(backend, selection=c.preprocess_receipt.get("selection")),
+            preprocess_selection=c.preprocess_receipt.get("selection"),
+            future_decode_host_bytes=getattr(c.bundle, "future_decode_host_bytes", lambda: 0)(),
             source=c.mapping_contract,
             urban_columns=prepared_head_urban_columns(
                 exp, c.static, child_results=tree_head.child_results))
@@ -2706,8 +3124,10 @@ def _prepare_chained_mapped_tree(c) -> dict[str, object]:
                     "fields": c.forcing.inventory,
                 },
                 proof_head=proof_head,
-                input_manifest_sha256=manifest_sha256,
+                input_manifest_sha256=(None if posted is not None
+                                       else manifest_sha256),
                 forcing=c.forcing,
+                as_posted=as_posted_head,
                 tree=domain_tree_head_fields(
                     [f"d{int(domain.grid_id):02d}" for domain in exp.domains],
                     root_cache=cache_name,
@@ -2722,6 +3142,12 @@ def _prepare_chained_mapped_tree(c) -> dict[str, object]:
                         "payload_bytes"]) for build in child_builds),
             )
         head_seconds = time.perf_counter() - head_started
+        if posted is not None:
+            posted.posted.writer = writer
+            writer.bind_posted_leads(posted.markers)
+        future_bytes = getattr(c.bundle, "future_decode_host_bytes", lambda: 0)()
+        if writer.chained and future_bytes:
+            c.bundle.limit_future_decode(future_bytes)
         # Every start state is in the head now: the root's in its streamed
         # cache, each child's in hierarchy-head/domains/dNN.  None stays
         # resident while the later times are built (on the card that is the
@@ -2746,15 +3172,53 @@ def _prepare_chained_mapped_tree(c) -> dict[str, object]:
                 forcing=c.forcing, times=c.times,
                 release=lambda: release_backend_memory(c.preprocess))
         initialize_seconds += time.perf_counter() - boundaries_started
+        root_identity = binding.identity
+        posted_proof = {}
+        decode_seconds = c.decode_seconds
         with prep_stage("prepared_cache", label="Seal prepared cache"):
-            root_content_sha256 = str(writer.seal_cache()["content_sha256"])
+            if posted is None:
+                root_content_sha256 = str(writer.seal_cache()["content_sha256"])
+            else:
+                def identity_builder(source, digest):
+                    return root_domain_artifact_binding(
+                        exp=exp, static_cache_sha256=root_static_receipt["sha256"],
+                        bridge_manifest_sha256=digest,
+                        source_manifest_sha256=digest,
+                        namelist_sha256=namelist_sha256,
+                        **tree_head.forcing_identity,
+                        source_identity=tree_head.bound_source_identity(source),
+                        valid_time=exp.start_time,
+                        root_metadata={"composition_receipt_sha256":
+                            source["composition_receipt_sha256"],
+                            "mapped_target_contract": c.target_contract}).identity
+                sealed = _seal_posted_mapped(posted, writer=writer,
+                    plan=c.posted_plan, mapping_contract=c.mapping_contract,
+                    snapshots=c.snapshots, exp=exp, cfg=cfg,
+                    source_identity=tree_identity,
+                    static_cache_sha256=root_static_receipt["sha256"],
+                    namelist_sha256=namelist_sha256,
+                    forcing_identity=tree_head.forcing_identity,
+                    experiment_config=c.experiment_config,
+                    identity_builder=identity_builder)
+                manifest_sha256 = sealed["manifest_sha256"]
+                tree_identity = sealed["source_identity"]
+                root_metadata = {"composition_receipt_sha256":
+                    tree_identity["composition_receipt_sha256"],
+                    "mapped_target_contract": c.target_contract}
+                input_provenance = {**input_provenance,
+                    "input_manifest_sha256": manifest_sha256}
+                root_identity = sealed["identity"]
+                root_content_sha256 = str(sealed["cache_receipt"]["content_sha256"])
+                posted_proof = sealed["proof"]
+                decode_seconds = posted.decode_seconds
+                initialize_seconds -= decode_seconds - c.decode_seconds
         hierarchy_seal_started = time.perf_counter()
         with prep_stage("tree_start_states",
                         label="Re-read start states from the head"):
             (root_result, root_met, boundaries,
              tree_head.child_results) = start_states.reread(
                 writer.root, exp=exp, grids=c.grids,
-                root_identity=binding.identity,
+                root_identity=root_identity,
                 root_content_sha256=root_content_sha256)
         hierarchy_result = seal_regular_source_hierarchy(
             tree_head,
@@ -2786,7 +3250,10 @@ def _prepare_chained_mapped_tree(c) -> dict[str, object]:
                 "head's, which were computed from the same initial states")
         start_states.require_sealed_is_head(
             hierarchy_result.hierarchy.artifacts.receipt,
-            root_content_sha256=root_content_sha256)
+            root_content_sha256=root_content_sha256,
+            **({} if posted is None else {"as_posted": {
+                "root": writer.root, "head": writer.head,
+                "manifest_sha256": manifest_sha256}}))
         c.verify_overlay_sequence(c.snapshots)
         run_control_after = {
             "wps_namelist": _file_receipt(c.wps_namelist),
@@ -2801,6 +3268,7 @@ def _prepare_chained_mapped_tree(c) -> dict[str, object]:
             )
         proof = {
             **proof_head,
+            **posted_proof,
             "artifact_receipt": dict(
                 hierarchy_result.hierarchy.artifacts.receipt
             ),
@@ -2817,7 +3285,7 @@ def _prepare_chained_mapped_tree(c) -> dict[str, object]:
             "boundary_stream": writer.boundary_stream_proof(),
             "timing_seconds": {
                 "static_root": c.static_seconds,
-                "decode_and_compose": c.decode_seconds,
+                "decode_and_compose": decode_seconds,
                 "initialize_all_root_times": initialize_seconds,
                 **dict(hierarchy_result.hierarchy.timings_seconds),
                 "hierarchy_call_wall": hierarchy_seconds,
@@ -2842,6 +3310,8 @@ def _prepare_chained_mapped_tree(c) -> dict[str, object]:
     # interpolated and the tree is sealed, so the engine scratch it
     # streamed from goes now rather than at collection.
     bundle.close()
+    if posted is not None:
+        posted.close()
     return proof
 
 
@@ -2920,6 +3390,7 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--input-manifest", type=Path, required=True)
+    parser.add_argument("--initial-inputs", type=Path)
     parser.add_argument("--input-manifest-sha256")
     parser.add_argument(
         "--as-posted", type=Path, default=None, metavar="POSTING_DIR",
@@ -2959,6 +3430,14 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--experiment-config", type=Path, required=True)
     parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--physical-input-store", type=Path,
+                        help="sealed native physical fields to initialize, with base and donor identity")
+    parser.add_argument("--physical-output-store", type=Path,
+                        help="capture native mapped physical fields before real initialization")
+    parser.add_argument("--physical-input-provider", type=Path,
+                        help="posted native physical provider with a frozen source and member plan")
+    parser.add_argument("--physical-member-index", type=int,
+                        help="original recipe member index resolved by the posted physical provider")
     parser.add_argument(
         "--preprocess-backend", choices=("cuda", "cpu", "auto"),
         default="auto",
@@ -3189,6 +3668,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             contributing_mappings=contributing,
             input_manifest=args.input_manifest,
             input_manifest_sha256=args.input_manifest_sha256,
+            **({"initial_inputs": args.initial_inputs}
+               if args.initial_inputs is not None else {}),
             # Named only as posted, so every other call is what it was.
             **({"as_posted": args.as_posted}
                if args.as_posted is not None else {}),
@@ -3201,6 +3682,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             static_receipt=args.static_receipt,
             experiment_config=args.experiment_config,
             output_root=args.output_root,
+            **({"physical_input_store": args.physical_input_store}
+               if args.physical_input_store is not None else {}),
+            **({"physical_output_store": args.physical_output_store}
+               if args.physical_output_store is not None else {}),
+            **({"physical_input_provider": args.physical_input_provider}
+               if args.physical_input_provider is not None else {}),
+            **({"physical_member_index": args.physical_member_index}
+               if args.physical_member_index is not None else {}),
             preprocess_backend=args.preprocess_backend,
             preprocess_workers=args.preprocess_workers,
             cpu_preprocess_bridge=args.cpu_preprocess_bridge,

@@ -47,6 +47,7 @@ from gpuwm.hrrr_prepared_bundle import (
     EXPERIMENT_CONFIG_NAME as PORTABLE_EXPERIMENT_CONFIG_NAME,
     HrrrBundleError, publish_hrrr_prepared_bundle)
 from gpuwm.namelist_seal import namelist_extension_invariant
+from gpuwm.ingest.preprocess_backend import preprocessing_math_scope
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -116,6 +117,64 @@ def _link_file_create(source: Path, destination: Path) -> None:
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     link_or_copy_verified(source, destination)
+
+
+def _reuse_physical_base_bridge(base: Path, destination: Path, *,
+                                source_manifest_sha256: str,
+                                static_cache: Path) -> str:
+    """Reuse the base's sealed native authority without decoding GRIB again."""
+    base = Path(base).resolve()
+    header = json.loads((base / "native/prepared-cache/header.json").read_text(encoding="utf-8"))
+    identity = header["identity"]
+    from gpuwm.ingest.prepared_cache import PreparedCacheReader
+    PreparedCacheReader(base / "native/prepared-cache", expected_identity=identity)
+    if identity["source_manifest_sha256"] != source_manifest_sha256.lower():
+        raise ValueError("physical base preparation uses a different source manifest")
+    if identity["static_cache_sha256"] != _sha256(static_cache):
+        raise ValueError("physical base preparation uses different native static fields")
+    bridge = base / "native/native-bridge"
+    observed = _sha256(bridge / "SHA256SUMS")
+    if observed != identity["bridge_manifest_sha256"]:
+        raise ValueError("physical base bridge manifest differs from its prepared identity")
+    paths = list(bridge.rglob("*"))
+    for path in paths:
+        if path.is_symlink():
+            raise ValueError("physical base bridge may not contain symbolic links")
+    _verify_manifest_payloads(bridge, _manifest_entries(bridge / "SHA256SUMS"))
+    for path in paths:
+        if path.is_file():
+            _link_file_create(path, destination / path.relative_to(bridge))
+    return observed
+
+
+def _reuse_posted_static(args, output):
+    """Reuse the original checked source geography for a provider member."""
+    from gpuwm.ensemble.posted_physical import PostedPhysicalProvider
+    from gpuwm.ensemble.posted_native import checked_source_inputs, copy_common_artifacts
+    provider = PostedPhysicalProvider.open(args.physical_input_provider)
+    context = provider.source_context(args.physical_member_index)
+    checked = checked_source_inputs(
+        context, source="hrrr", experiment_config=context.prepared_root / "experiment.toml",
+        wps_namelist=context.prepared_root / "namelist.wps",
+        physics_profile=args.physics_profile, expert_acknowledgements=tuple(args.ack),
+        history_interval_seconds=args.history_interval_seconds)
+    receipt_path = context.prepared_root / "native-static-receipt.json"
+    expected = context.source_plan["manifest"]["files"]["static_receipt"]["sha256"]
+    if _sha256(receipt_path) != expected:
+        raise ValueError("shared HRRR static receipt changed after its source head")
+    if args.static_cache is not None and _sha256(args.static_cache) != checked.cache_identity["static_cache_sha256"]:
+        raise ValueError("posted member requested different static bytes from its checked source")
+    if args.geog_root is not None:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        if Path(receipt["geog_root"]).resolve() != args.geog_root.resolve():
+            raise ValueError("posted member requested a different geography root from its checked source")
+    copied = copy_common_artifacts(context, checked, output,
+                                   geometry_name="native-geometry-receipt.json")
+    geometry = copied["geometry"]["path"]
+    receipt = output / "native-static-receipt.json"
+    _link_file_create(receipt_path, receipt)
+    context.verify()
+    return copied["static"]["path"], receipt, geometry
 
 
 def _manifest_entries(path: Path) -> dict[str, str]:
@@ -485,7 +544,7 @@ def _stage_environment() -> dict[str, str]:
 BRIDGE_CRATE = REPO / "tools" / "grib1_bridge"
 
 
-def _decoder(env: dict[str, str]) -> Path:
+def _decoder(env: dict[str, str], *, as_posted: bool = False) -> Path:
     """The HRRR decoder this preparation will launch.
 
     This used to resolve exactly one path --
@@ -525,8 +584,9 @@ def _decoder(env: dict[str, str]) -> Path:
     # through to anything -- least of all to a build, which would answer
     # a question about one exact file by producing a different one.
     overridden = bool(os.environ.get(bridges.BRIDGE_ENV["hrrr_grib2_bridge"]))
+    mode = {"mode": "as_posted"} if as_posted else {}
     try:
-        return bridges.resolve_source_decoder("hrrr")
+        return bridges.resolve_source_decoder("hrrr", **mode)
     except FileNotFoundError:
         if overridden or not BRIDGE_CRATE.is_dir():
             raise
@@ -537,7 +597,7 @@ def _decoder(env: dict[str, str]) -> Path:
         "cargo", "build", "--release", "--locked", "--offline",
         "--bin", "hrrr_grib2_bridge",
     ], env, cwd=BRIDGE_CRATE)
-    return bridges.resolve_source_decoder("hrrr")
+    return bridges.resolve_source_decoder("hrrr", **mode)
 
 
 #: The dispositions :func:`_stock_wrf_export` can RETURN.  "REFUSED" left
@@ -728,7 +788,8 @@ def _validated_worker_receipts(
         preparation_report: dict[str, object], *, selected_backend: str,
         requested_preprocess_workers: int | None,
         requested_pipeline_workers: str,
-        final_hour: int) -> tuple[dict, dict, dict]:
+        final_hour: int, reused_physical_base: bool = False,
+        reused_posted_source: bool = False) -> tuple[dict, dict, dict]:
     """Validate the public CPU budget and independent decoder receipt."""
 
     try:
@@ -827,6 +888,15 @@ def _validated_worker_receipts(
     selected_pipeline_workers = (
         pipeline_worker_receipt.get("selected")
         if isinstance(pipeline_worker_receipt, dict) else None)
+    if reused_physical_base or reused_posted_source:
+        operation = ("reused_posted_native_source" if reused_posted_source
+                     else "reused_sealed_native_bridge")
+        if (not isinstance(pipeline_worker_receipt, dict)
+                or pipeline_worker_receipt.get("operation") != operation
+                or pipeline_worker_receipt.get("selected") != 0
+                or pipeline_worker_receipt.get("requested") != str(requested_pipeline_workers).strip().lower()):
+            raise RuntimeError("physical input did not attest its native source reuse")
+        return (preprocess_receipt, preprocess_worker_budget, pipeline_worker_receipt)
     if (not isinstance(pipeline_worker_receipt, dict)
             or pipeline_worker_receipt.get("requested")
             != str(requested_pipeline_workers).strip().lower()
@@ -1529,6 +1599,16 @@ def _parser() -> argparse.ArgumentParser:
     static.add_argument("--geog-root", type=Path)
     static.add_argument("--static-cache", type=Path)
     parser.add_argument("--static-receipt", type=Path)
+    parser.add_argument("--physical-input-store", type=Path,
+                        help="sealed native physical input for the complete forcing window")
+    parser.add_argument("--physical-input-provider", type=Path,
+                        help="posted native physical provider with a frozen member plan")
+    parser.add_argument("--physical-member-index", type=int,
+                        help="original recipe member index in the posted provider")
+    parser.add_argument("--physical-output-store", type=Path,
+                        help="capture mapped physical snapshots before initialization")
+    parser.add_argument("--physical-base-prepared", type=Path,
+                        help="reuse the sealed native bridge from this physical input's base preparation")
     parser.add_argument("--domain-spec", type=Path)
     parser.add_argument("--experiment-config", type=Path)
     parser.add_argument("--namelist-input", type=Path, required=True)
@@ -1682,7 +1762,11 @@ def _chains(args) -> bool:
 
     from gpuwm.ingest.boundary_stream import chained_enabled, forecast_installed
 
-    return (not args.sealed_prepared_cache and chained_enabled()
+    return (not args.sealed_prepared_cache
+            and getattr(args, "physical_input_store", None) is None
+            and (getattr(args, "physical_output_store", None) is None
+                 or getattr(args, "as_posted", None) is not None)
+            and chained_enabled()
             and forecast_installed())
 
 
@@ -1744,6 +1828,20 @@ def _as_posted_refusal(args) -> str | None:
 
 def _prepare_from_argv(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if (args.physical_input_provider is None) != (args.physical_member_index is None):
+        raise ValueError("physical-input-provider and physical-member-index must be supplied together")
+    if args.physical_input_provider is not None:
+        if (args.as_posted is None or args.physical_input_store is not None
+                or args.physical_base_prepared is not None or args.physical_output_store is not None):
+            raise ValueError("posted physical input requires --as-posted and no sealed input or base preparation")
+    if args.physical_input_store is not None and args.as_posted is not None:
+        raise ValueError("sealed physical input cannot replace an as-posted provider")
+    if any(value is not None for value in (args.physical_input_store, args.physical_output_store, args.physical_input_provider)):
+        if args.sealed_prepared_cache or args.extend_root_preparation is not None:
+            raise ValueError("physical input preparation cannot extend a sealed forcing prefix")
+    if (args.physical_base_prepared is not None
+            and args.physical_input_store is None and args.physical_output_store is None):
+        raise ValueError("physical-base-prepared requires physical-input-store or physical-output-store")
     refusal = _as_posted_refusal(args)
     if refusal is not None:
         raise ValueError(refusal)
@@ -1752,6 +1850,12 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
         if not path.is_file():
             raise FileNotFoundError(f"declared PMSL donor is missing: {path}")
     _configured_defaults(args)
+    with preprocessing_math_scope(args.preprocess_backend, cpu_bridge=args.cpu_preprocess_bridge,
+                                  workers=args.preprocess_workers):
+        return _run_configured(args)
+
+
+def _run_configured(args):
     explain.set_explain(explain.explain_enabled(args))
     cycle, _legacy = resolve_cycle_flags(
         args.cycle, args.valid_time,
@@ -1789,7 +1893,9 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
         physics_profile=args.physics_profile, acknowledgements=tuple(args.ack),
         history_interval_seconds=args.history_interval_seconds)
     from gpuwm.case_data import optional_case_data_from_tables
-    from gpuwm.ingest.native_supplements import native_pressure_policy, require_native_pressure_field
+    from gpuwm.ingest.native_supplements import (native_pressure_policy,
+                                                 require_native_pressure_field,
+                                                 supplement_bindings)
     companion_source = args.experiment_config or args.namelist_input
     declared_case = optional_case_data_from_tables(
         experiment_tables, source=str(companion_source), base_dir=Path(companion_source).parent)
@@ -1847,7 +1953,8 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
     if output.exists():
         raise FileExistsError(f"refusing existing output root: {output}")
     env = _stage_environment()
-    decoder = _decoder(env)
+    decoder = (None if args.physical_input_provider is not None or args.physical_base_prepared is not None
+               else _decoder(env, **({"as_posted": True} if as_posted else {})))
     started = time.perf_counter()
     if args.sealed_prepared_cache:
         observed_manifest = _sha256(source_manifest)
@@ -1890,6 +1997,9 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
             "--case-date", model_start_time.date().isoformat()]
     else:
         static_arguments = []
+    if (configured.root.run.sf_lake_physics == 1
+            and configured.root.run.use_lakedepth == 1):
+        static_arguments.append("--lake-depth")
     static_domain_arguments = ([] if args.domain_spec is None else [
         "--domain-spec", str(args.domain_spec.resolve())])
     geometry_receipt = output / "native-geometry-receipt.json"
@@ -1898,7 +2008,9 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
     # the run's stream.  Without them a single-domain HRRR run page showed
     # only the stage for the whole preparation.
     with prep_stage("root_static", label="Prepare root static fields"):
-        if args.geog_root is not None:
+        if args.physical_input_provider is not None:
+            static_cache, static_receipt, geometry_receipt = _reuse_posted_static(args, output)
+        elif args.geog_root is not None:
             static_cache = output / "native-static.npz"
             static_receipt = output / "native-static-receipt.json"
             _run([
@@ -1972,7 +2084,8 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
         ]
         if args.domain_spec is not None:
             geometry_command.extend(("--domain-spec", str(args.domain_spec.resolve())))
-        _run(geometry_command, env)
+        if args.physical_input_provider is None:
+            _run(geometry_command, env)
     static_seconds = time.perf_counter() - started
 
     native = output / "native"
@@ -2003,7 +2116,7 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
         "--forecast-start-hour", str(source_forecast_hours[0]),
         "--forecast-end-hour", str(source_forecast_hours[-1]),
         "--pipeline-series", str(series),
-        "--pipeline-decoder", str(decoder),
+        *(("--pipeline-decoder", str(decoder)) if decoder is not None else ()),
         "--pipeline-signals", str(native / "pipeline-signals"),
         "--pipeline-workers", str(args.pipeline_workers),
         "--source-root", str(source_root),
@@ -2042,8 +2155,25 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
         benchmark.extend((
             "--cpu-preprocess-bridge",
             str(args.cpu_preprocess_bridge.resolve())))
+    for flag, path in (("--physical-input-store", args.physical_input_store),
+                       ("--physical-input-provider", args.physical_input_provider),
+                       ("--physical-output-store", args.physical_output_store)):
+        if path is not None:
+            benchmark.extend((flag, str(path.resolve())))
+    if args.physical_member_index is not None:
+        benchmark.extend(("--physical-member-index", str(args.physical_member_index)))
     if args.domain_spec is not None:
         benchmark.extend(("--domain-spec", str(args.domain_spec.resolve())))
+    if args.physical_base_prepared is not None:
+        bridge_sha = _reuse_physical_base_bridge(
+            args.physical_base_prepared, native / "native-bridge",
+            source_manifest_sha256=args.source_manifest_sha256,
+            static_cache=static_cache)
+        for flag in ("--pipeline-series", "--pipeline-decoder", "--pipeline-signals"):
+            if flag in benchmark:
+                index = benchmark.index(flag)
+                del benchmark[index:index + 2]
+        benchmark.extend(("--manifest-sha256", bridge_sha))
     chained = _chains(args)
     if chained:
         # The authorities the portable proof binds, so the preparation
@@ -2100,7 +2230,9 @@ def _prepare_from_argv(argv: list[str] | None = None) -> int:
          selected_backend=args.preprocess_backend,
          requested_preprocess_workers=args.preprocess_workers,
          requested_pipeline_workers=args.pipeline_workers,
-         final_hour=final_hour)
+         final_hour=final_hour,
+         reused_physical_base=args.physical_base_prepared is not None,
+         reused_posted_source=args.physical_input_provider is not None)
     physics_receipt = _validated_physics_receipt(
         preparation_report, requested_profile=args.physics_profile,
         expected_selection=configured.root.run)

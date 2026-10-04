@@ -1096,6 +1096,8 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
     _validate_supplied_physics_fields(restored.raw, cfg, restored.global_attributes)
     import cupy as cp
     from gpuwm.core.physics import initialize_physics
+    from gpuwm.ingest.ruc_mosaic import wrfinput_ruc_mosaic_inputs
+    from gpuwm.ingest.lake_physics import wrfinput_lake_physics_inputs
 
     raw = restored.raw
     xice = _first(raw, ALIASES["XICE"])
@@ -1135,6 +1137,8 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
         radiation_start_time=radiation_start_time,
         radiation_latitude=radiation_latitude,
         radiation_longitude=radiation_longitude,
+        **wrfinput_ruc_mosaic_inputs(restored, cfg),
+        **wrfinput_lake_physics_inputs(restored, cfg),
         # The file's own urban fraction reaches urban_var_init, which keeps
         # a value in (0, 1] and takes the table's otherwise
         # (module_sf_urban.F:2767-2777).  Passed only to an urban run.

@@ -270,6 +270,13 @@ def _value_rules() -> dict[tuple[str, str], dict]:
     for key, values in maps:
         rule("physics", key, values,
              f"no ratified gpuwm mapping (implemented: {values}).")
+    rule("physics", "sf_lake_physics", [0, 1],
+         "must be integer 0 (off) or 1 (CLM lake).")
+    rule("physics", "use_lakedepth", [0, 1],
+         "must be integer 0 (constant depth) or 1 (input bathymetry).")
+    for key in ("mosaic_lu", "mosaic_soil"):
+        rule("physics", key, [0, 1],
+             "must be 0 or 1; nonzero requires RUC land surface.", scalar=True)
     for key, pin, why in ni.PHYSICS_PINS:
         rule("physics", key, [pin], f"gpuwm implements {key} = {pin} only "
                                     f"({why}).")
@@ -580,9 +587,17 @@ def build_namelist_contract() -> dict:
 
     asked, records = _probe_vocabulary()
     rules = _value_rules()
+    registry = wrf_namelist_keys()
+    from gpuwm.namelist_stochastic import SUPPORTED_SELECTORS
+    for key in ni.STOCH_SELECTORS:
+        row = registry[("stoch", key)]
+        rules[("stoch", key)] = {
+            "values": ([0, 1] if key in SUPPORTED_SELECTORS else
+                       [False] if row["type"] == "logical" else [0]),
+            "scalar": False, "why": ("supported stochastic selector; domain forcing, physics consumer and parameter pairings remain importer checks"
+                if key in SUPPORTED_SELECTORS else "selected stochastic consumer is not implemented")}
     _measure_rules(rules)
     required = _measure_required()
-    registry = wrf_namelist_keys()
     sections = {}
     for file_name, groups, dropped in (
             ("namelist.wps", ni.WPS_SECTIONS, ni.WPS_DROPPED_SECTIONS),
@@ -604,13 +619,12 @@ def build_namelist_contract() -> dict:
                     "why": "WRF's numbered auxiliary stream keys are "
                            "recorded and dropped"})
             if group == "stoch":
-                # Every stochastic selector must be off; seeds are inert.
-                entry["any_key"] = True
-                entry["zero_unless"] = {
-                    "regex": r"^(iseed|nens$)",
-                    "why": "stochastic physics (SPP/SPPT/SKEBS/"
-                           "rand_perturb) is not implemented; every &stoch "
-                           "selector must be 0/.false."}
+                # Registered parameters are inert when their consumer is off.
+                # Active parameter pairings remain the importer's authority.
+                for section, key in registry:
+                    if section == group:
+                        keys.setdefault(key, {"values": None, "scalar": False,
+                                              "why": None, "required": False})
             sections[group] = entry
     # Where WRF declares each key the importer reads somewhere: a key found
     # in the wrong group can then be named with the group to move it to.

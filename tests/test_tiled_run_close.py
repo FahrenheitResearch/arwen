@@ -18,15 +18,31 @@ def run_stub(monkeypatch, *, failing=False):
     run = object.__new__(TiledRun)
     log = []
     failure = [failing]
+    current = [0]
+    class Device:
+        def __init__(self, device):
+            self.id = device
+        def __enter__(self):
+            self.previous = current[0]
+            current[0] = self.id
+            return self
+        def __exit__(self, *exc):
+            current[0] = self.previous
     class Stream:
         def __init__(self, name):
             self.name = name
         def synchronize(self):
+            assert current[0] == 1, "stream synchronization used the caller's card"
             log.append(self.name)
             if failure[0]:
                 raise RuntimeError("drain failed")
+    def synchronize_device():
+        assert current[0] == 1, "the stream owner card was not synchronized"
+        log.append("device")
     monkeypatch.setitem(sys.modules, "cupy", SimpleNamespace(cuda=SimpleNamespace(
-        runtime=SimpleNamespace(deviceSynchronize=lambda: log.append("device")))))
+        Device=Device, runtime=SimpleNamespace(
+            deviceSynchronize=synchronize_device, getDevice=lambda: current[0]))))
+    run._device_id = 1
     run._pending = True
     run._closed = False
     run._streams = [Stream("compute")]
@@ -59,6 +75,7 @@ def test_close_drains_all_streams_and_releases_closure_owners(monkeypatch):
     original = store["carrier"].copy()
     run.close()
     assert log == ["compute", "copy-in", "copy-out", "device"]
+    assert sys.modules["cupy"].cuda.runtime.getDevice() == 0
     assert run.closed and not run._pending
     gc.collect()
     assert all(ref() is None for ref in refs)
@@ -75,6 +92,7 @@ def test_failed_drain_keeps_every_owner_live_and_can_retry(monkeypatch):
     store = run._home
     with pytest.raises(RuntimeError, match="drain failed"):
         run.close()
+    assert sys.modules["cupy"].cuda.runtime.getDevice() == 0
     assert not run.closed and run._pending
     assert run._home is store
     assert all(ref() is not None for ref in refs)
@@ -90,6 +108,30 @@ def test_close_drains_when_failed_sweep_never_marked_pending(monkeypatch):
     run.close()
     assert log == ["compute", "copy-in", "copy-out", "device"]
     assert run.closed and all(ref() is None for ref in refs)
+
+
+def test_compute_wait_uses_owner_card_and_restores_caller(monkeypatch):
+    """A store reader on card 0 must wait the tile's card-1 stream."""
+    run, log, _, _ = run_stub(monkeypatch)
+    run.sync_compute()
+    assert log == ["compute"]
+    assert sys.modules["cupy"].cuda.runtime.getDevice() == 0
+    assert run._pending
+
+
+def test_sweep_uses_owner_card_and_restores_caller(monkeypatch):
+    """Re-entering saved tile streams from a different card must not fail."""
+    from gpuwm.core import dycore
+
+    run, log, _, _ = run_stub(monkeypatch)
+    def sweep(*args):
+        assert sys.modules["cupy"].cuda.runtime.getDevice() == 1
+        log.append("sweep")
+    run._sweep = sweep
+    monkeypatch.setattr(dycore, "finish_wrf_cfl_domain_step", lambda *a, **kw: None)
+    run.sweep()
+    assert log == ["sweep"]
+    assert sys.modules["cupy"].cuda.runtime.getDevice() == 0
 
 
 @pytest.mark.parametrize("operation", ["store", "sweep", "reseed", "sync"])

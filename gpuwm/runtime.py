@@ -72,7 +72,7 @@ from gpuwm.ingest.preprocess_backend import (
     CudaPreprocessBackend,
     release_backend_memory,
 )
-from gpuwm.ingest.real import initialize_real
+from gpuwm.ingest.real import initialize_real, surface_fields_to_device
 from gpuwm.ingest.ruc_soil import preprocess_land_surface_soil
 from gpuwm.moisture_floor_receipt import (
     MOISTURE_FLOOR_BY_DOMAIN_KEY, moisture_floor_block,
@@ -83,6 +83,10 @@ from gpuwm.static.build import (GeogSelection, build_static,
                                 monthly_interp_to_date)
 from gpuwm.static.lambert import grids_from_projection_config
 from gpuwm.static.orographic import with_terrain_drag_statics
+from gpuwm.ensemble.runtime_preparation import (
+    current_runtime_preparation as _runtime_preparation_source,
+    runtime_input_catalog as _runtime_input_catalog,
+)
 
 
 #: ``mp_physics`` values whose microphysics call stages a scheme-native
@@ -239,6 +243,8 @@ class ExperimentRunSummary:
     #: AFTER this one, so what the run route recorded and did not hand
     #: back was replaced rather than kept.
     moisture_floor_receipts: Mapping[str, object] | None = None
+    ensemble_manifest: Path | None = None
+    ensemble_manifest_sha256: str | None = None
 
 
 #: Environment switch that turns the trajectory-digest instrumentation off.
@@ -673,6 +679,15 @@ def experiment_grid(exp: ExperimentConfig, data: CaseDataConfig):
 # ---------------------------------------------------------------------------
 
 def forcing_snapshots(data: CaseDataConfig, input_catalog=None) -> dict:
+    source = _runtime_preparation_source()
+    if source is None:
+        return _forcing_snapshots(data, input_catalog)
+    catalog = _runtime_input_catalog(data) if input_catalog is None else input_catalog
+    return source.forcing_snapshots(data, catalog,
+        build=lambda: _forcing_snapshots(data, catalog))
+
+
+def _forcing_snapshots(data: CaseDataConfig, input_catalog=None) -> dict:
     """Decode forcing under one input catalog's valid-time authority.
 
     The catalog is built here when a caller has not already built it.  Runtime
@@ -683,7 +698,7 @@ def forcing_snapshots(data: CaseDataConfig, input_catalog=None) -> dict:
     if input_catalog is None:
         from gpuwm.ingest.preflight import build_input_catalog
 
-        input_catalog = build_input_catalog(data)
+        input_catalog = _runtime_input_catalog(data)
 
     forcing_hashes = {
         Path(record.path).resolve(): record.sha256
@@ -936,6 +951,8 @@ def _initialize_real_case_physics(
     from gpuwm.core.diagnostics import update_diagnostics
     from gpuwm.core.landuse import initialize_landuse
     from gpuwm.core.physics import initialize_physics
+    from gpuwm.ingest.ruc_mosaic import ruc_mosaic_physics_inputs
+    from gpuwm.ingest.lake_physics import lake_physics_inputs
 
     # WRF interpolates GREENFRAC/LAI to the run date
     # (module_initialize_real.F:1322-1335, mid-month anchors); shdmin/
@@ -981,6 +998,9 @@ def _initialize_real_case_physics(
         radiation_start_time=start_time, radiation_latitude=lat,
         radiation_longitude=lon,
         terrain_drag_static=static,
+        **lake_physics_inputs(cfg, static),
+        **ruc_mosaic_physics_inputs(
+            cfg, static, landuse_attrs=landuse_attrs, xice=soil.xice),
         **({"cam_ozone": cam_ozone} if cam_ozone is not None else {}))
     import cupy as cp
     driver.fields["snoalb"][...] = cp.asarray(
@@ -1024,6 +1044,19 @@ def _initialize_real_case_physics(
 
 
 def case_static_fields(grid, geog_root, *, selection: GeogSelection,
+                       static_highres=None, domain_id: int = 1,
+                       case_date=None) -> dict:
+    source = _runtime_preparation_source()
+    if source is None:
+        return _case_static_fields(grid, geog_root, selection=selection,
+            static_highres=static_highres, domain_id=domain_id, case_date=case_date)
+    return source.static_fields(grid, geog_root, selection=selection,
+        static_highres=static_highres, domain_id=domain_id, case_date=case_date,
+        build=lambda: _case_static_fields(grid, geog_root, selection=selection,
+            static_highres=static_highres, domain_id=domain_id, case_date=case_date))
+
+
+def _case_static_fields(grid, geog_root, *, selection: GeogSelection,
                        static_highres=None, domain_id: int = 1,
                        case_date=None) -> dict:
     """One domain's static fields as this route will integrate them.
@@ -1372,6 +1405,16 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
                 soil.snow_water, dtype=np.float64, copy=True),
             forcing_times=times, geog_selection=geog_selection,
             store_input=inputs)
+    source = _runtime_preparation_source()
+    if source is not None:
+        source.capture_root_inputs(cfg=cfg, vertical=vertical, times=times,
+            initial_result=initial_result, met=initial_met, soil=soil,
+            soil_fields=soil_fields, reconciled_soil_type=reconciled_soil_type,
+            boundaries=boundaries, landuse_attrs=landuse_attrs,
+            trace_gas_overrides=trace_gas_overrides,
+            radiation_column_chunk=radiation_column_chunk,
+            constant_glw_wm2=constant_glw_wm2, cam_ozone=cam_ozone,
+            preprocess_backend=release_backend.name)
     _initialize_real_case_physics(
         initial_result, cfg, initial_met, soil, soil_fields, static,
         landuse_attrs, grid, start_time, vertical=vertical,
@@ -1397,6 +1440,30 @@ def prepare_root_experiment_case(exp: ExperimentConfig,
                                  dycore_state_workspace=None,
                                  store_request=None
                                  ) -> PreparedRealCase:
+    source = _runtime_preparation_source()
+    if source is None:
+        return _prepare_root_experiment_case(exp, data, input_catalog=input_catalog,
+            forcing_by_time=forcing_by_time, scratch_arena=scratch_arena,
+            dycore_state_workspace=dycore_state_workspace, store_request=store_request)
+    catalog = _runtime_input_catalog(data) if input_catalog is None else input_catalog
+    grid = (experiment_grid(exp, data) if len(exp.domains) == 1 else grids_from_projection_config(exp)[0])
+    selection = GeogSelection.from_case_data(data, domain_id=exp.root.grid_id)
+    return source.prepare_root(exp, data, grid=grid, selection=selection, catalog=catalog,
+        scratch_arena=scratch_arena, dycore_state_workspace=dycore_state_workspace,
+        store_request=store_request,
+        build=lambda: _prepare_root_experiment_case(exp, data, input_catalog=catalog,
+            forcing_by_time=forcing_by_time, scratch_arena=scratch_arena,
+            dycore_state_workspace=dycore_state_workspace, store_request=store_request))
+
+
+def _prepare_root_experiment_case(exp: ExperimentConfig,
+                                 data: CaseDataConfig, *,
+                                 input_catalog=None,
+                                 forcing_by_time=None,
+                                 scratch_arena=None,
+                                 dycore_state_workspace=None,
+                                 store_request=None
+                                 ) -> PreparedRealCase:
     """Prepare the root domain of a single- or multi-domain experiment."""
     dc = exp.root
     cfg = dc.run
@@ -1409,7 +1476,7 @@ def prepare_root_experiment_case(exp: ExperimentConfig,
         data, domain_id=dc.grid_id)
     from gpuwm.ingest.preflight import build_input_catalog
 
-    catalog = (build_input_catalog(data) if input_catalog is None
+    catalog = (_runtime_input_catalog(data) if input_catalog is None
                else input_catalog)
     snapshots = (forcing_snapshots(data, catalog)
                  if forcing_by_time is None else forcing_by_time)
@@ -1571,7 +1638,9 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
     state = initialized.state
     static = initialized.static_fields
     soil = initialized.soil
-    met0 = initialized.horizontal.fields
+    # A shared child input retains host words. Keep the fresh initializer's
+    # original field precision while restoring those words on this card.
+    met0 = surface_fields_to_device(initialized.horizontal, cp, preserve_dtype=True)
     real = initialized.real
 
     update_diagnostics(state, cfg.hypsometric_opt)
@@ -1601,7 +1670,9 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
         # disagreeing column from its soil temperature, then its SST.
         soil_temperature=soil.soil_temperature)
     from gpuwm.core.cam_ozone import cam_ozone_setup
+    from gpuwm.ingest.ruc_mosaic import ruc_mosaic_physics_inputs
     cam = cam_ozone_setup(exp=exp, dc=dc, grid=initialized.grid)
+    from gpuwm.ingest.lake_physics import lake_physics_inputs
     driver = initialize_physics(
         state, cfg, cam_ozone=cam, landuse=landuse, tsk=soil.tsk,
         soil_temperature=soil.soil_temperature,
@@ -1612,7 +1683,10 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
         xice=soil.xice, snow=soil.snow_water, snow_depth=soil.snow_depth,
         glw=declared_constant_glw(exp),
         radiation=radiation, radiation_start_time=exp.start_time,
-        radiation_latitude=lat, radiation_longitude=lon)
+        radiation_latitude=lat, radiation_longitude=lon,
+        **lake_physics_inputs(cfg, static),
+        **ruc_mosaic_physics_inputs(
+            cfg, static, landuse_attrs=landuse_attrs, xice=soil.xice))
     driver.fields["snoalb"][...] = cp.asarray(
         noah_initial_snow_albedo(
             static["SNOALB"], static["LU_INDEX"], driver.noah_params,
@@ -1750,7 +1824,9 @@ def rebuild_child_driver_from_land_state(*, exp: ExperimentConfig,
         isice=int(attrs["ISICE"]),
         soil_temperature=land.get("tslb"))
     from gpuwm.core.cam_ozone import cam_ozone_setup
+    from gpuwm.ingest.ruc_mosaic import ruc_mosaic_physics_inputs
     cam = cam_ozone_setup(exp=exp, dc=child_dc, grid=grid)
+    from gpuwm.ingest.lake_physics import lake_physics_inputs
     driver = initialize_physics(
         state, cfg, landuse=landuse,
         tsk=land.get("tsk", 300.0),
@@ -1764,7 +1840,10 @@ def rebuild_child_driver_from_land_state(*, exp: ExperimentConfig,
         sst=land.get("tsk"),
         glw=declared_constant_glw(exp),
         cam_ozone=cam, radiation=radiation, radiation_start_time=exp.start_time,
-        radiation_latitude=lat, radiation_longitude=lon)
+        radiation_latitude=lat, radiation_longitude=lon,
+        **lake_physics_inputs(cfg, static),
+        **ruc_mosaic_physics_inputs(
+            cfg, static, landuse_attrs=attrs, xice=land.get("xice", 0.0)))
     from gpuwm.core.cam_ozone import configure_cam_ozone
     configure_cam_ozone(state, cfg, exp=exp, dc=child_dc, grid=grid)
     driver.fields["snoalb"][...] = cp.asarray(
@@ -2692,6 +2771,9 @@ def build_prepared_tree_descendant_regrounder(exp, *, model, corridors,
         # ground moved; `plan` does.  See the plan-override comment in
         # RealRelocationChildPreparer.__call__.
         preparer._plan_override = plan
+        from gpuwm.ensemble.runtime_context import (current_member_reconstruction_owner,
+                                                    bind_reconstructed_member_node)
+        member_pattern_owner = current_member_reconstruction_owner(node.state)
         factory = getattr(reground, "streamed_reconstruction_factory", None)
         reconstruction = (factory(node, initializer=initializer, preparer=preparer)
                           if callable(factory) and getattr(node.state, "_streamed_domain", None) is not None
@@ -2787,6 +2869,7 @@ def build_prepared_tree_descendant_regrounder(exp, *, model, corridors,
         after_move = getattr(preparer, "after_move", None)
         if callable(after_move):
             after_move(node)
+        bind_reconstructed_member_node(node, previous_owner=member_pattern_owner)
         return {
             "statics": statics_builder.source_label,
             "static_fields": CORRIDOR_REBUILT_STATICS,
@@ -3033,6 +3116,8 @@ def _retarget_tree_schedule(model, active_exp: ExperimentConfig,
         node.clock = new
         if old is None:
             refresh_model_time(node.state, new)
+        from gpuwm.ensemble.runtime_context import bind_reconstructed_member_node
+        bind_reconstructed_member_node(node)
     model.schedule = schedule
 
 
@@ -3083,6 +3168,8 @@ def _attach_spawned_children(model, active_exp, record, writers,
         model.nodes_by_grid_id = MappingProxyType(nodes)
         prepared = preparer.prepared_by_grid_id[gid]
         model._prepared_by_grid_id[gid] = prepared
+        from gpuwm.ensemble.runtime_context import bind_reconstructed_member_node
+        bind_reconstructed_member_node(node, prepared_case=prepared)
         if writers is not None:
             episodes = record.get("episode_by_grid_id", {})
             episode = int(episodes.get(str(gid), episodes.get(gid, 0)))
@@ -3991,12 +4078,27 @@ def _global_wrf_attrs(
 def write_case_output(prepared, output_dir: Path, valid_time: datetime, *,
                       start_time: datetime, title: str, domain_id: int = 1,
                       expect_refl_10cm: bool = True,
-                      feedback=None, history_selection=None) -> Path:
+                      feedback=None, history_selection=None) -> Path | None:
     from gpuwm.io.wrfout import (WrfoutWriter, state_frame,
                                  wrfout_filename)
 
     state = prepared.initial_result.state
     streamed = getattr(state, "_streamed_domain", None)
+    from gpuwm.ensemble.runtime_context import current_capture
+    capture = current_capture()
+    captured_refl = None
+    if capture is not None:
+        if (expect_refl_10cm
+                and prepared.cfg.mp_physics in REFL_10CM_MICROPHYSICS
+                and state.qv is not None):
+            from gpuwm.core.refl import consume_refl_10cm
+            captured_refl = consume_refl_10cm(state)
+        capture.submit(
+            state=state, streamed=streamed,
+            metadata=_metadata_frame(prepared.grid, prepared.static_fields),
+            refl_field=captured_refl, valid_time=valid_time, grid_id=domain_id)
+        if not capture.keep_member_files:
+            return None
     if streamed is None:
         # Output observes the completed state without re-diagnosing it.
         frame = state_frame(state, include_diagnostic_pressure=True)
@@ -4004,6 +4106,13 @@ def write_case_output(prepared, output_dir: Path, valid_time: datetime, *,
         # The same StoreFrame used by the tree writer. Its arrays remain
         # valid until the next sweep; this writer closes synchronously.
         frame = streamed.history_fields()
+        if (capture is None and expect_refl_10cm
+                and prepared.cfg.mp_physics in REFL_10CM_MICROPHYSICS
+                and state.qv is not None):
+            # The field is already in StoreFrame. Retire the domain handoff
+            # once, just as the tree route does, before the next due sweep.
+            from gpuwm.core.refl import consume_refl_10cm
+            consume_refl_10cm(state)
     frame.update(_metadata_frame(prepared.grid, prepared.static_fields))
     if streamed is None:
         import cupy as cp
@@ -4015,7 +4124,8 @@ def write_case_output(prepared, output_dir: Path, valid_time: datetime, *,
         # the output-due microphysics call from its prepared p/post-call T.
         # Missing or double-consumed handoffs are cadence bugs and fail loud.
         from gpuwm.core.refl import consume_refl_10cm
-        frame["REFL_10CM"] = cp.asnumpy(consume_refl_10cm(state))
+        frame["REFL_10CM"] = cp.asnumpy(
+            consume_refl_10cm(state) if capture is None else captured_refl)
     from gpuwm.io.history_selection import resolve
 
     frame, history_attrs = resolve(history_selection, None).apply(frame)
@@ -4441,6 +4551,9 @@ def integrate_prepared_case(
     # configured WRF STEPRA calendar on those internal steps.  A positive
     # configured bldt keeps the driver's WRF STEPBL calendar (see helper).
     apply_single_domain_pbl_cadence(state.physics, integration_cfg)
+    from gpuwm.ensemble.runtime_context import bind_current_member_state
+    bind_current_member_state(prepared_case=prepared, state=state,
+                              cfg=integration_cfg, grid=prepared.grid)
     if restart_write_steps is not None:
         # THE CHECKPOINT'S QUESTION, ASKED BEFORE STEP 0.  A run that will
         # write checkpoints must be able to NAME its physics setup, and
@@ -4475,23 +4588,35 @@ def integrate_prepared_case(
     swdown_peak_time = start_time
     start_outer_step = 0
     last_checkpoint = None
+    from gpuwm.ensemble.runtime_counters import fixed_counter_observer_for_current
+    counters = fixed_counter_observer_for_current(prepared, stepper,
+        start_time=start_time, domain_id=domain_id, run_seconds=run_seconds,
+        outer_steps=outer_steps, output_outer_steps=output_outer_steps,
+        history_begin_step=history_begin_step, history_end_step=history_end_step,
+        write_final_output=write_final_output)
+    if counters is not None and restart_path is None:
+        counters.observe()
     if restart_path is None and history_begin_step == 0:
         # No microphysics call precedes the cold-start frame, so there is no
         # WRF-arranged post-call reflectivity field to consume.
         _preparation_progress(progress_callback, "cold-start-wrfout")
-        outputs.append(write_case_output(
+        output_path = write_case_output(
             prepared, output_dir, start_time, start_time=start_time,
             title=output_title, domain_id=domain_id,
             expect_refl_10cm=False, feedback=feedback,
-            history_selection=history_selection))
-        _output_committed(progress_callback, domain_id=domain_id,
-                          valid_time=start_time, path=outputs[-1])
+            history_selection=history_selection)
+        if output_path is not None:
+            outputs.append(output_path)
+            _output_committed(progress_callback, domain_id=domain_id,
+                              valid_time=start_time, path=output_path)
         # WRF resets the nwp_diagnostics running maxima each history
         # interval (module_diag_nwp.F:246-269); gpuwm's ratified placement
         # is immediately after the frame is durable.
         from gpuwm.core.uh_diag import reset_up_heli_max
         reset_up_heli_max(state)
         _reset_streamed_up_heli_max(stepper if streamed else None)
+        if counters is not None:
+            counters.history_consumed(start_time)
     elif restart_path is not None:
         _preparation_progress(progress_callback, "validate-checkpoint")
         last_checkpoint = validate_manifest_checkpoint(restart_path)
@@ -4534,6 +4659,8 @@ def integrate_prepared_case(
             swdown_peak_time = datetime.fromisoformat(
                 trackers["swdown_peak_time"])
         surface_forcing_updates = domain_call_counts(stepper, state)["radiation"]
+        if counters is not None:
+            counters.observe()
     _preparation_progress(progress_callback, "initial-health-gate")
     if health_armed or restart_path is None:
         health.require_healthy(phase="initialized-or-restored")
@@ -4570,6 +4697,8 @@ def integrate_prepared_case(
             if health_debug and phase_hook_supported:
                 step_kwargs["phase_observer"] = health.phase_observer
             stepper(state, integration_cfg, **step_kwargs)
+            if counters is not None:
+                counters.observe()
             # Validator cadence (controller amendment, 2026-07-16): the
             # measured full-validation cost is 5.00% of step wall vs the
             # plan's <=2% gate, so the pre-registered remedy applies --
@@ -4681,17 +4810,21 @@ def integrate_prepared_case(
                               history_begin_outer_step=history_begin_step,
                               history_end_outer_step=history_end_step):
             valid = start_time + timedelta(seconds=(outer_step + 1) * cfg.dt)
-            outputs.append(write_case_output(
+            output_path = write_case_output(
                 prepared, output_dir, valid, start_time=start_time,
                 title=output_title, domain_id=domain_id,
-                feedback=feedback, history_selection=history_selection))
-            _output_committed(progress_callback, domain_id=domain_id,
-                              valid_time=valid, path=outputs[-1])
+                feedback=feedback, history_selection=history_selection)
+            if output_path is not None:
+                outputs.append(output_path)
+                _output_committed(progress_callback, domain_id=domain_id,
+                                  valid_time=valid, path=output_path)
             # History-interval reset of the UP_HELI_MAX window (the frame
             # above snapshotted the accumulator synchronously).
             from gpuwm.core.uh_diag import reset_up_heli_max
             reset_up_heli_max(state)
             _reset_streamed_up_heli_max(stepper if streamed else None)
+            if counters is not None:
+                counters.history_consumed(valid)
         if (restart_write_steps is not None
                 and (outer_step + 1) % restart_write_steps == 0):
             valid = start_time + timedelta(seconds=(outer_step + 1) * cfg.dt)
@@ -5098,7 +5231,7 @@ def _terrain_clock_for_case(exp, data, acoustic, terrain, grids, reach):
 
     if not acoustic or not getattr(data, "forcing", None):
         return exp, ()
-    catalog = build_input_catalog(data)
+    catalog = _runtime_input_catalog(data)
     window = forcing_window(forcing_snapshots(data, catalog),
                             exp.start_time, exp.run_seconds)
     starts = {}
@@ -5163,6 +5296,12 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
     runs the extracted prepare/integrate pipeline with every input and
     policy drawn from the config pair.
     """
+    from gpuwm.ensemble.runtime_context import current_session
+    ensemble = current_session()
+    if ensemble is not None:
+        return ensemble.run_experiment(run_experiment, exp, data,
+            output_directory=outdir, restart=restart,
+            progress_callback=progress_callback, health_debug=health_debug)
     from gpuwm.io.wrfout import quarantine_orphan_wrfouts
     from gpuwm.core.devices import refuse_unrouted_devices
     refuse_unrouted_devices(exp, "gpuwm run")
@@ -5331,7 +5470,7 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
             _streaming.admit_resident_road(
                 exp, single_decision, machine=admission_machine,
                 what="this run, held resident on the card")
-        catalog = build_input_catalog(data)
+        catalog = _runtime_input_catalog(data)
         snapshots = forcing_snapshots(data, catalog)
         times = forcing_schedule(exp, data, snapshots)
         store_direct = single_decision.stream and single_decision.store == "host"
@@ -5604,6 +5743,8 @@ def _run_built_experiment(exp, data, outdir, model, *, restart=None,
               f"policy state from {Path(restart).name}")
     _write_initial_perturbation_receipt(
         outdir, exp, getattr(model, "_initial_perturbation_receipts", ()))
+    from gpuwm.ensemble.runtime_context import bind_current_member_model
+    bind_current_member_model(model)
     restart_info = None
     lifecycle_episodes: dict[int, int] = {}
     if restart is not None:
@@ -5757,6 +5898,14 @@ def _run_built_experiment(exp, data, outdir, model, *, restart=None,
             # "prepared forecast: "), so the receipt's own tag is the one
             # thing not to repeat.
             print(f"  {streaming_report['summary']}")
+        from gpuwm.ensemble.runtime_context import current_capture, observe_current_counters
+        committed_progress = progress_callback
+        if current_capture() is not None:
+            observe_current_counters(model, start_time=exp.start_time)
+            def committed_progress(**event):
+                observe_current_counters(model, start_time=exp.start_time)
+                if progress_callback is not None:
+                    progress_callback(**event)
         if already_complete:
             # Not a skipped run: the restore above put the finished state
             # back in memory, and everything below -- drain, digest,
@@ -5771,7 +5920,7 @@ def _run_built_experiment(exp, data, outdir, model, *, restart=None,
             execute_experiment(
                 model, history_handler=history_handler,
                 restart_handler=restart_handler,
-                progress_callback=progress_callback,
+                progress_callback=committed_progress,
                 health_debug=health_debug,
                 relocation_runner=relocation_runner,
                 steppers=steppers, experiment=exp)
@@ -5789,7 +5938,7 @@ def _run_built_experiment(exp, data, outdir, model, *, restart=None,
                         exp, data, model, outdir)),
                 history_handler=history_handler,
                 restart_handler=restart_handler,
-                progress_callback=progress_callback,
+                progress_callback=committed_progress,
                 health_debug=health_debug,
                 steppers=steppers)
         _finalizing_progress(progress_callback, "drain-history-writers")

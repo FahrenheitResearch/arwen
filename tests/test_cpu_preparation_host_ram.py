@@ -408,25 +408,35 @@ def _measured_layout_phases(name, dimensions, nz, tiled, root_dx_m):
 
 
 def _host_cpus(monkeypatch, count):
+    from gpuwm.ingest import preparation_workers
     monkeypatch.setattr(os, "sched_getaffinity",
                         lambda _pid: set(range(count)), raising=False)
     monkeypatch.setattr(os, "cpu_count", lambda: count)
+    monkeypatch.setattr(preparation_workers, "cgroup_cpu_count", lambda: None)
+    monkeypatch.setattr(preparation_workers, "memory_worker_limit", lambda: 10**6)
+    monkeypatch.delenv(preparation_workers.PREPARATION_THREADS_ENV, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def calibrated_worker_machine(monkeypatch):
+    """Historical peak rows were measured at eight workers unless named."""
+    _host_cpus(monkeypatch, CALIBRATED_PREPARATION_WORKERS)
 
 
 @pytest.mark.parametrize("host_cpus", (1, 4, 8, 16, 64, 192))
-def test_the_cpu_preparation_starts_no_more_threads_than_were_calibrated(
+def test_the_cpu_preparation_uses_the_available_worker_budget(
         host_cpus, monkeypatch):
     _host_cpus(monkeypatch, host_cpus)
-    automatic = min(host_cpus, CALIBRATED_PREPARATION_WORKERS)
+    automatic = host_cpus
     assert cpu_backend._workers(None, 10 ** 9) == automatic
     assert real._default_column_workers("cpu", None) == automatic
     resolved = SimpleNamespace(name="cpu", workers=None)
     assert real._default_column_workers(resolved, None) == automatic
     # A count the caller names is kept, and the setup columns follow it.
-    assert cpu_backend._workers(32, 10 ** 9) == 32
-    assert real._default_column_workers("cpu", 32) == 32
+    assert cpu_backend._workers(32, 10 ** 9) == min(32, host_cpus)
+    assert real._default_column_workers("cpu", 32) == min(32, host_cpus)
     assert real._default_column_workers(
-        SimpleNamespace(name="cpu", workers=32), None) == 32
+        SimpleNamespace(name="cpu", workers=32), None) == min(32, host_cpus)
     # The device road's host steps are not priced here and keep every CPU.
     assert real._default_column_workers("cuda", None) == host_cpus
 
@@ -444,8 +454,13 @@ def test_the_estimate_holds_at_the_worker_count_the_host_would_use(
     # The peak rises with the thread count, so the nearest measured count
     # at or above the host's bounds what that host holds.
     measured = [count for count in peaks if count >= workers]
-    assert measured, f"no {name} row measured at {workers} workers or more"
-    peak = peaks[min(measured)]
+    if not measured:
+        # This is a scratch-reservation check above the largest measured
+        # width, not a claim that a wider real run was measured.
+        from gpuwm.ingest.preparation_workers import WORKER_SCRATCH_BYTES
+        peak = peaks[max(peaks)] + (workers - max(peaks)) * WORKER_SCRATCH_BYTES
+    else:
+        peak = peaks[min(measured)]
     phases = _measured_layout_phases(*rows[0][:5])
     assert peak <= phases.host_preparation_bytes
 

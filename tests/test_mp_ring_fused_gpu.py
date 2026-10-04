@@ -173,9 +173,9 @@ def test_fused_ring_guard_is_one_launch_each_way(monkeypatch):
     launches = []
     real = mp._launch_ring_rows
 
-    def counting(rows, *, direction):
+    def counting(rows, *, direction, **options):
         launches.append((direction, len(rows)))
-        return real(rows, direction=direction)
+        return real(rows, direction=direction, **options)
 
     monkeypatch.setattr(mp, "_launch_ring_rows", counting)
     nz, ny, nx, sz = 6, 10, 12, 1
@@ -260,3 +260,44 @@ def test_ring_guard_inside_a_cuda_graph_capture(warm):
                getattr(reference, k, None) if k in names
                else reference.existing_scratch(k))
         assert cp.asnumpy(got).tobytes() == cp.asnumpy(ref).tobytes(), k
+
+
+@requires_gpu
+def test_ring_tables_are_released_with_their_state():
+    """A state's descriptor tables go when the state goes.
+
+    The tables were kept for the whole process, so every forecast run in one
+    process (each member of an ensemble) left its tables on the card for the
+    next. A later state with the same shapes uploads its own.
+    """
+    import gc
+    import weakref
+
+    import cupy as cp
+
+    from gpuwm.core import microphysics as mp
+    from gpuwm.core.physics_inventory import spec_zone_ring_slices
+
+    nz, ny, nx, sz = 4, 9, 10, 1
+    slices = spec_zone_ring_slices(ny, nx, sz)
+    rng = np.random.default_rng(23)
+    pool = cp.get_default_memory_pool()
+
+    def forecast():
+        fields = {n: cp.asarray(_random_bits(rng, (nz, ny, nx))) for n in ("qv", "qc")}
+        state = _State(cp, fields, {"mp_rainnc": cp.asarray(_random_bits(rng, (ny, nx)))},
+                       cp.asarray(_random_bits(rng, (nz, ny, nx))))
+        saved, captured = _fused_capture(mp, state, slices, ("qv", "qc"), ("mp_rainnc",))
+        _fused_restore(mp, state, slices, saved, captured, ("mp_rainnc",))
+        assert len(mp._RING_TABLES[state]) == 2, "one table each way"
+        return weakref.ref(state)
+
+    cp.cuda.Device().synchronize()
+    before, held = int(pool.used_bytes()), len(mp._RING_TABLES)
+    for _ in range(3):
+        owner = forecast()
+        gc.collect()
+        cp.cuda.Device().synchronize()
+        assert owner() is None
+        assert len(mp._RING_TABLES) == held
+        assert int(pool.used_bytes()) == before

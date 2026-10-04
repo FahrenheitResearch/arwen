@@ -64,9 +64,9 @@ FORCING_SERIES_REMEDY = (
     "one is a lateral boundary, so a bounded run needs at least two on a "
     "single uniform cadence -- `gpuwm domain` prints the acquisition step "
     "for the window it sized, and `gpuwm prep --show-source NAME` names "
-    "the products every one of those times must carry.  A single time can "
-    "only be run with lateral boundaries switched off in the target "
-    "contract, which is an idealized case, not a forecast."
+    "the products every one of those times must carry. A single analysis "
+    "may instead be supplied to mapped preparation with --initial-inputs; "
+    "its primary forcing window still needs at least two times."
 )
 
 

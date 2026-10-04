@@ -3720,6 +3720,7 @@ _GPU_PREFLIGHTED = set()
 
 
 def _gpu_source():
+    import re
     import glob as _glob
     import os as _os
     kdir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
@@ -3749,6 +3750,11 @@ def _gpu_source():
             ghelper = ghelper.replace(
                 "for (int ig = 1; ig <= ng%d; ++ig)" % band,
                 "for (int ig = gpoint; ig <= ng%d; ig += 16)" % band)
+            # Fixed-index corrections are read/modify/writes. Only the
+            # thread that produced that g-point may apply its correction.
+            ghelper = re.sub(
+                r"(?m)^([ \t]*)(TAUG\(gs \+ ([0-9]+)\) = [^\n]+;)$",
+                r"\1if (gpoint == \3) \2", ghelper)
             part = part[:end] + "\n" + helper + "\n" + ghelper + part[end:]
         parts[index] = part
     return "\n".join(parts)

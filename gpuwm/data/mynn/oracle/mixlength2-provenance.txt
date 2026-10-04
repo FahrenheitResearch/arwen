@@ -1,0 +1,15 @@
+WRF v4.6.1, GNU Fortran 13.3.0, Ubuntu 24.04
+Compile: gfortran -O0 -cpp -ffree-form -ffree-line-length-none
+Source hashes below use LF newlines; the older README source hashes use CRLF.
+For each harness: ./run_NAME NAME2.csv 2
+
+b36c8b935cd9c8265359e78dbe8db285d99e992c7cab29917b5fca9d57d49452  module_bl_mynn.F
+ba3e6909447408210fce490e95bdf2decc1e205d3446ddc5c715277d2b23924c  module_bl_mynn_common.F
+bcb631f227ef746db1bd3b5838f8a2b78dcf5aac81d845c3f1da8bc888cba579  run_mixlength.F90
+fb6fc6ba0db8ef5e1a8ecbd1b3d9843c310d7f332b42122277a0a62dc01fbe78  run_initialize.F90
+1f85ac39ef01dd068eb8f5a8641dcb7095c2600458959700d4d024596664bacb  run_turbulence.F90
+3ccf196d6733ea53beef3ff3690731435563125426376e2721b06131e07ef126  run_driver.F90
+985ce157863190db4296e04553e0f51d48fb94d2abcf71409fcde7cb67a115c3  mixlength2.csv
+eabd3205eac101783e44354e08cc8dcb22fac1c76e8ef8348342e5fcf4e51678  initialize2.csv
+4703fe659b736485f08a30fe2f14d207868e7cdb5225d055577b866c09c2addf  turbulence2.csv
+7cda6537392e1e36983b9aa50ffa568f9c9b6a1637d6ff8ff880494765b8703f  driver2.csv

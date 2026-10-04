@@ -67,7 +67,11 @@ def test_cuda_initial_numbers_match_wrf_authority_with_supplied_surface(mp, monk
     kw = dict(source_orography=orography, analyzed_species=())
     supplied = initialize_real(snapshot, cfg, coord, terrain,
         analyzed_number_fields=METGRID_NUMBER_FIELDS, **kw)
-    absent = initialize_real(snapshot, cfg, coord, terrain, **kw)
+    # "Absent" is declared, as in the CPU twin: left unsaid,
+    # analyzed_number_fields now takes every number field the snapshot
+    # carries (the native analysis door), and this fixture carries them all.
+    absent = initialize_real(snapshot, cfg, coord, terrain,
+                             analyzed_number_fields=(), **kw)
     # What the package transports is not what the run filled.  This
     # fixture names an explicit mp=28 aerosol source, so the table's two
     # analyzed aerosol rows are binned by request and nwfa/nifa stay at

@@ -134,7 +134,7 @@ _PHYSICS_STATE_KEYS = {
         # real.exe derive aer_init_opt and interpolate QNWFA/QNIFA from
         # metgrid (dyn_em/module_initialize_real.F:2325-2732), so it
         # changes what an export must have initialized.
-        "use_aero_icbc",
+        "use_aero_icbc", "use_rap_aero_icbc",
     },
     # wif_input_opt lives in &domains, not &physics
     # (Registry/registry.new3d_wif:17 declares it namelist,domains), and it

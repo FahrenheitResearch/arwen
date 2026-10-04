@@ -42,6 +42,16 @@ def drop_default_diffusion_selectors(values: dict) -> None:
         values.pop("diff_opt", None)
         values.pop("mix_full_fields", None)
 
+
+def drop_default_spp_selectors(values: dict) -> None:
+    """Keep newly added SPP selectors absent when disabled.
+
+    spp_lsm predates the SPP consumer port and must keep its existing echo.
+    """
+    for name in ("spp_conv", "spp_pbl"):
+        if values.get(name, 0) == 0:
+            values.pop(name, None)
+
 #: THE table of output-only RunConfig switches: each one decides what a
 #: forecast WRITES, never what it integrates, so it may differ between
 #: the run that wrote a checkpoint and the run that resumes it, and
@@ -220,7 +230,19 @@ NOAH_MOSAIC_ALGORITHM_IDENTITY = "noah-mosaic-wrf-v4.7.1-v1"
 LAND_SURFACE_ALGORITHM_IDENTITIES = {
     0: "disabled",
     2: "noah-lsm-v2-post-sflx-chs2-source-water-lake-skin",
-    3: "ruc-lsm-wrf-v4.6.1-v1",
+    # v2 (2.8.5): a LAKEMASK column is bypassed only when the lake model is
+    # selected (module_sf_ruclsm.F:824, lakemodel==1 .and. lakemask==1).
+    # v1 bypassed every LAKEMASK column, so with sf_lake_physics = 0 a lake
+    # column was never advanced; it now runs RUC's water branch.  That
+    # changes the surface state and fluxes of every RUC run with lake
+    # cells, so a v1 checkpoint may not continue under v2.
+    # v3 (2.8.5): SOILPROP's soil-water diffusivity and conductivity take
+    # the WRF v4.0-4.5 normalisation by default (ruc_soilprop = "wrf_45",
+    # gpuwm/core/ruc_tier.py); v2 ran the v4.6.1 form over total porosity,
+    # which moves 2.5 to 8 times more water up into a dry top soil level.
+    # That changes the soil water and surface fluxes of every RUC run, so
+    # a v2 checkpoint may not continue under v3.
+    3: "ruc-lsm-wrf-v4.6.1-v3-soilprop-by-lineage",
     4: "noahmp-lsm-wrf-v4.6.1-v1",
 }
 PBL_ALGORITHM_IDENTITIES = {

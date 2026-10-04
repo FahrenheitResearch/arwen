@@ -699,14 +699,18 @@ def test_the_cooper_launcher_inventory_matches_the_frozen_cuda_source():
     A future kernel that grows a Cooper term, or a launcher rename, must
     update ``COOPER_BEARING_CLASSIC_LAUNCHERS`` or fail here.
     """
+    import re
     from gpuwm.core.thompson_aerosol import COOPER_BEARING_CLASSIC_KERNELS
 
     source = (_REPO / "gpuwm" / "core" / "kernels" / "thompson.cu").read_text(
         encoding="utf-8")
     lines = source.splitlines()
-    starts = [(i, line.split("void ", 1)[1].split("(", 1)[0])
-              for i, line in enumerate(lines)
-              if line.startswith('extern "C" __global__ void ')]
+    # Launch-bound qualifiers and multiline declarations must not hide a
+    # Cooper-bearing kernel from the source inventory.
+    starts = [(source.count("\n", 0, match.start()), match.group(1))
+              for match in re.finditer(
+                  r'^\s*extern\s+"C"\s+__global__\b[^{};]*?\bvoid\s+(\w+)\s*\(',
+                  source, re.MULTILINE)]
     owner_of = {}
     for index, (line_no, name) in enumerate(starts):
         end = starts[index + 1][0] if index + 1 < len(starts) else len(lines)

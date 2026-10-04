@@ -312,29 +312,21 @@ the 481,133-byte CSV SHA-256
 
 Result, measured and not rounded off:
 
-- **step 2, the warm start, is bitwise on every field of every column** —
+- **step 2, the warm start, is bitwise on every field of every column**:
   all 19 profiles the driver writes back, `pblh`, `rmol`, `maxwidth`,
   `maxmf`, `ztop_plume`, and both integer indices;
-- step 1 is bitwise on three of the five columns;
-- the two deep-cloud columns, `cloudy_deep` and `snow_anvil`, carry an
-  **open residue**. They are still bitwise on `pblh`, `kpbl`, `rmol`,
-  `qc_bl`, `qi_bl`,
-  `cldfra_bl`, `maxwidth`, `maxmf`, `ztop_plume`, `ktop_plume` and
-  `dozone`; the divergence first appears in `el`/`sh`/`sm`, i.e. in
-  `mym_turbulence`'s output, at 1.6e-3 relative, and everything
-  downstream inherits it.
+- **step 1, the cold start, is bitwise on all five columns** as well.
 
-That residue is not a transcendental floor and is not accounted for. A
-standalone Fortran reproduction of the driver body — `get_pblh`,
-`scale_aware`, `mym_initialize`, `mym_condensation`, `DMP_mf`,
-`mym_turbulence`, same inputs, same order — agrees with the port bit for
-bit on all four original columns, including `el`, `sm`, `sh`, `dfm` and `dfh` on
-`cloudy_deep`. So neither the leaves nor the sequencing as the port
-implements it can explain it: something the real `mynn_bl_driver` does on
-the cold-start path is not being reproduced, and it only surfaces on the
-columns carrying resolved condensate. The budgets in
-`tools/mynn_pbl_wrf461_oracle/validate_driver_oracle.py` are the measured
-worst case so a regression still trips; they are not permission.
+The cold start used to carry a residue on the two deep-cloud columns,
+`cloudy_deep` and `snow_anvil`: `el`/`sh`/`sm` diverged at 1.6e-3 relative
+out of `mym_turbulence` and everything downstream inherited it. The cause
+was the port's cold-start call, which handed `mym_initialize` total water
+`sqw` where `mynn_bl_driver` hands it vapor `sqv`, so it surfaced only on
+columns carrying resolved condensate. The call now passes vapor, the
+measured ULP budgets in
+`tools/mynn_pbl_wrf461_oracle/validate_driver_oracle.py` are retired
+(`ULP_BUDGET` is empty, so every field must be bitwise), and
+`tests/test_mynn_pbl.py` holds both steps to exact equality.
 
 `driver.csv` is the first fixture in this directory that exercises the
 scheme end to end. The runtime and GPU-driver gates consume this fixture;

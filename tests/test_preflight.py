@@ -1273,16 +1273,10 @@ def test_mp28_scratch_registry_is_complete():
         "mp_thompson_aero_nwfaten",
         "mp_thompson_aero_nifaten",
         "mp_thompson_aero_entry_density",
-        "mp_thompson_aero_nwfa_entry_m3",
-        "mp_thompson_aero_nifa_entry_m3",
         "mp_thompson_aero_tau1_density",
         "mp_thompson_aero_nwfa_work_m3",
         "mp_thompson_aero_qc_entry",
         "mp_thompson_aero_ni_entry",
-        "mp_thompson_aero_rc_entry",
-        "mp_thompson_aero_nc_entry_m3",
-        "mp_thompson_aero_nu_c_entry",
-        "mp_thompson_aero_l_qc_entry",
         "mp_thompson_aero_condensation_rate",
     )}
     assert aerosol.items() <= slots.items()
@@ -2940,13 +2934,14 @@ def test_estimate_domain_itemization_pins(exp1):
         "scratch": 596974580,
         "lbc": 67091504,
         "nest": 0,
-        "transient": 441262500,
+        # _prepare_atmosphere also allocates rho: 4*49*200*250 bytes.
+        "transient": 451062500,
     }
     assert d01.resident_bytes == sum(
         v for c, v in by_cat.items() if c != "transient")
     assert d01.resident_bytes == 1513530992
     assert est.resident_bytes == d01.resident_bytes + est.k_tables_bytes
-    assert d01.transient_bytes == 441262500
+    assert d01.transient_bytes == 451062500
 
 
 @requires_4dom_inputs

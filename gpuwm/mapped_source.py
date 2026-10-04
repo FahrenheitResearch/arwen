@@ -1311,11 +1311,17 @@ def load_mapping(
             "kind", "selector", "units", "positive", "levels", "era_ladders",
             "hybrid_a", "hybrid_b", "interface_levels",
             "hybrid_a_field", "hybrid_b_field", "surface_pressure_field",
+            "model_top_pressure_pa",
         },
         required={"kind", "units"},
     )
     if vertical["kind"] not in _VERTICAL_KINDS:
         raise ValueError(f"unsupported vertical kind {vertical['kind']!r}")
+    if "model_top_pressure_pa" in vertical:
+        if vertical["kind"] not in {"model_level", "hybrid_sigma_pressure"}:
+            raise ValueError("model_top_pressure_pa requires a native model-level coordinate")
+        if _number(vertical["model_top_pressure_pa"], "vertical.model_top_pressure_pa") <= 0.0:
+            raise ValueError("vertical.model_top_pressure_pa must be positive")
     _string(vertical["units"], "vertical.units")
     if vertical.get("positive") not in {None, "up", "down"}:
         raise ValueError("vertical.positive must be 'up' or 'down'")
@@ -1610,11 +1616,14 @@ def load_mapping(
                 f"fields.{name} value missing policy",
             )
         elif missing["kind"] == "preserve_mask":
+            from gpuwm.ingest.analyzed_numbers import CANONICAL_NUMBER_FIELDS
             if (field["location"] != "soil"
-                    and name not in MASKED_WATER_STATE_FIELDS):
+                    and name not in MASKED_WATER_STATE_FIELDS
+                    and name not in CANONICAL_NUMBER_FIELDS):
                 raise ValueError(
                     f"fields.{name} preserve_mask is currently restricted to "
                     "soil fields repaired by the land/water-aware initializer "
+                    "and analyzed number fields repaired by the metgrid interpolation chain "
                     "and the water-state fields read over water only ("
                     + ", ".join(sorted(MASKED_WATER_STATE_FIELDS)) + ")"
                 )
@@ -6111,8 +6120,12 @@ def _materialize_frames(
         str(item["name"]) for item in mapping["target"]["required_fields"]
     }
     completed_names = _completed_fields(mapping)
-    finite_required = required_names - {
-        "soil_temperature", "volumetric_soil_moisture",
+    # Required presence and a source mask are compatible: fields with a
+    # declared downstream mask repair must retain holes until that repair.
+    finite_required = {
+        name for name in required_names
+        if name not in {"soil_temperature", "volumetric_soil_moisture"}
+        and mapping["fields"][name]["missing"]["kind"] != "preserve_mask"
     }
     # Fields declared ``time_binding: cycle_invariant`` were already
     # proven byte-invariant and bound to every dependent valid time by
@@ -7308,6 +7321,12 @@ def _regular_snapshot_field_items(frame, pressure, *, soil_land_repair,
             pressure = None
         yield legacy, values
         del values
+    from gpuwm.ingest.analyzed_numbers import CANONICAL_NUMBER_FIELDS
+    for name, legacy in CANONICAL_NUMBER_FIELDS.items():
+        if name in canonical:
+            if canonical[name].units != "kg-1":
+                raise ValueError(f"{name} must carry number mixing ratio units kg-1")
+            yield legacy, np.asarray(canonical[name].values, dtype=np.float64)
     soil_t = np.asarray(
         canonical["soil_temperature"].values, dtype=np.float64,
     )

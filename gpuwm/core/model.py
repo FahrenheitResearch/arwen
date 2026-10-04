@@ -463,7 +463,8 @@ def restart_identity_payload(exp) -> dict:
     """
 
     from gpuwm.experiment import experiment_config_document
-    from gpuwm.checkpoint_identity import drop_default_diffusion_selectors
+    from gpuwm.checkpoint_identity import (
+        drop_default_diffusion_selectors, drop_default_spp_selectors)
     experiment = _jsonable(experiment_config_document(exp))
     # The new attribute follower is an explicitly selected trajectory policy.
     # Bind its source, reduction, direction and movement controls while keeping
@@ -586,6 +587,7 @@ def restart_identity_payload(exp) -> dict:
         domain.pop("output", None)
         run = domain.get("run", {})
         drop_default_diffusion_selectors(run)
+        drop_default_spp_selectors(run)
         for name in RESTART_TOLERATED_RUN_FIELDS:
             run.pop(name, None)
         # ``eta_levels`` on the absent-stays-absent convention of the
@@ -685,6 +687,10 @@ def restart_identity_payload(exp) -> dict:
         # An absent key and the default describe the original clock.
         if not run.get("adaptive_nest_lattice", False):
             run.pop("adaptive_nest_lattice", None)
+        if not run.get("use_rap_aero_icbc", False):
+            # The absent selector read no analyzed donor and no operational
+            # surface source. Keep older default restart identities intact.
+            run.pop("use_rap_aero_icbc", None)
         # WRF's slope_rad / topo_shading / shadlen, absent-stays-absent:
         # off, none of the three is read, so every fingerprint written
         # before they existed keeps its value; a domain that turns the
@@ -701,9 +707,19 @@ def restart_identity_payload(exp) -> dict:
             run.pop("zadvect_implicit", None)
         if run.get("zadvect_implicit_variant", "wrf_471") == "wrf_471":
             run.pop("zadvect_implicit_variant", None)
+        # ... and the RUC SOILPROP lineage, omitted at its wrf_45 default so
+        # a non-RUC run's fingerprint does not move; the wrf_461 name is
+        # bound because its soil water differs.
+        if run.get("ruc_soilprop", "wrf_45") == "wrf_45":
+            run.pop("ruc_soilprop", None)
         # ... and w_damp measured from Courant 1, WRF's default (A165).
         if float(run.get("w_crit_cfl", 1.0)) == 1.0:
             run.pop("w_crit_cfl", None)
+        if not run.get("sf_lake_physics", 0):
+            run.pop("sf_lake_physics", None)
+            run.pop("use_lakedepth", None)
+            run.pop("lakedepth_default", None)
+            run.pop("lake_min_elev", None)
         # Noah mosaic, absent-stays-absent: off (WRF's default), no tile is
         # integrated and none of the three keys is read, so every
         # fingerprint written before mosaic existed keeps its value.  On,
@@ -724,6 +740,9 @@ def restart_identity_payload(exp) -> dict:
         for name in ("topo_wind", "gwd_opt"):
             if not run.get(name, 0):
                 run.pop(name, None)
+        # Off, post-PBL scalar diffusion preserves pre-option fingerprints.
+        if not run.get("scalar_pblmix", 0):
+            run.pop("scalar_pblmix", None)
     return experiment
 
 
@@ -904,7 +923,7 @@ def build_experiment(exp, case_data) -> ExperimentState:
     # command that holds the run, whose stderr is a person's terminal.
     with prep_stage("source_decode", label="Read the starting data",
                     stderr=False):
-        catalog = build_input_catalog(case_data)
+        catalog = runtime._runtime_input_catalog(case_data)
         # THE COORDINATE, BEFORE ANY OTHER READ OF THE EXPERIMENT.  This route
         # holds the experiment for the whole run -- the root below, every
         # child, and every spawn and relocation that reads exp.vertical later
@@ -1742,6 +1761,8 @@ def execute_experiment(
             # are seeded before the route attaches their steppers.
             from gpuwm.core.streaming import reattach_rebuilt_domain
             reattach_rebuilt_domain(rebound, node)
+        from gpuwm.ensemble.runtime_context import bind_reconstructed_member_node
+        bind_reconstructed_member_node(node, prepared_case=prepared)
         if validate_state:
             from gpuwm.core.health import health_validator_for_domain
             validators[grid_id] = health_validator_for_domain(model, node)

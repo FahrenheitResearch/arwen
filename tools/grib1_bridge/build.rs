@@ -20,6 +20,7 @@
 use std::process::Command;
 
 fn main() {
+    println!("cargo:rerun-if-changed=../preparation_resources.rs");
     println!("cargo:rerun-if-env-changed=GPUWM_BRIDGE_SOURCE_REV");
     let rev = std::env::var("GPUWM_BRIDGE_SOURCE_REV")
         .ok()
@@ -80,7 +81,7 @@ fn head_of_clean_checkout() -> Option<String> {
     // Tracked modifications under this workspace mean the binary is not
     // HEAD, whatever HEAD says.  Untracked files (target/, dist output)
     // do not enter the build of tracked sources and are ignored.
-    let dirty = git(&["status", "--porcelain", "-uno", "--", "."])?;
+    let dirty = git(&["status", "--porcelain", "-uno", "--", ".", "../preparation_resources.rs"])?;
     if !dirty.is_empty() {
         return None;
     }

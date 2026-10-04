@@ -157,8 +157,11 @@ def test_forecast_store_and_stepper_wiring(exp, monkeypatch):
         assert cfg is exp.root.run and options is split.devices
         assert max_map_factor == 1.7
         return decision
-    def builder(given, *, clock, options, seam="zeros", check_geography=True, step_mode="threads"):
+    def builder(given, *, clock, options, seam="zeros", check_geography=True,
+                step_mode="threads", snapshot_limits=None, mynn_column_chunks=None):
         assert given is bundle and clock is node.clock and options is split.devices
+        assert snapshot_limits is None
+        assert mynn_column_chunks is None
         return lambda state, cfg, selected: stepper
     def make(state, cfg, *, decision, build):
         # The template the store road holds, as steppers_for_tree passes
@@ -215,6 +218,59 @@ def test_per_card_admission(rank_api):
                                 vram_gib=96, forcing_intervals=18, source="hrrr")
     assert devices_gate(repeated, budgets={0: 96 * GIB})["refuse"]
     assert repeated["cards"][0]["resident_bytes"] == sum(row["resident_bytes"] for row in price["cards"])
+
+
+def test_rank_admission_uses_tile_mynn_workspace(exp, rank_api, monkeypatch):
+    """The priced chunk must be the one the rank factory makes it walk."""
+    from gpuwm.core import preflight as pf
+    from gpuwm.core import mynn_pbl_scratch as mynn
+    from gpuwm.core.devices_memory import estimate_devices
+    from tilestream.harness import tile_config
+
+    monkeypatch.delenv(mynn.MYNN_PBL_COLUMN_CHUNK_ENV, raising=False)
+    monkeypatch.setattr(mynn, "_PINNED", None)
+    monkeypatch.setattr(mynn, "_RESOLVED", {})
+    monkeypatch.setattr(mynn, "resolve_mynn_column_chunk", lambda nz: 98304)
+    run = replace(exp.root.run, nx=800, ny=600, nz=50,
+                  bl_pbl_physics=5, sf_sfclay_physics=5)
+    split = replace(exp, domains=(replace(exp.root, run=run),),
+                    devices=DeviceOptions(count=2))
+    price = estimate_devices(split, vram_gib=96)
+    for rank in price["rank_shapes"]:
+        ny, nx = rank["compute_shape"]
+        local = replace(split, devices=DEVICES_OFF,
+                        domains=(replace(split.root, run=tile_config(run, nx, ny)),))
+        tile = pf.estimate_experiment(local, vram_gib=96, tile_buffer=True,
+                                      forcing_intervals=1)
+        resident = pf.estimate_experiment(local, vram_gib=96)
+        assert rank["resident_bytes"] == tile.peak_envelope_bytes
+        assert resident.peak_envelope_bytes > tile.peak_envelope_bytes
+        assert pf.mynn_pbl_column_chunk(local.root.run, tile_buffer=True) == 8192
+        assert pf.mynn_pbl_column_chunk(local.root.run) == 98304
+
+
+def test_rank_forcing_and_loader_prices_do_not_retain_the_host_series(exp, rank_api):
+    """Charging host forcing to every rank/template refused fitting runs."""
+    from gpuwm.core import preflight as pf
+    from gpuwm.core.devices_memory import estimate_devices
+    from gpuwm.ingest.prepared_store import default_slab_rows
+    from tilestream.harness import tile_config
+
+    cfg = replace(exp.root.run, nx=300, ny=220, specified=True,
+                  spec_zone=1, relax_zone=4, spec_bdy_width=5)
+    split = replace(exp, domains=(replace(exp.root, run=cfg),),
+                    devices=DeviceOptions(count=2))
+    one = estimate_devices(split, forcing_intervals=1)
+    six = estimate_devices(split, forcing_intervals=6)
+    assert one["cards"] == six["cards"]
+    assert six["host_boundary_bytes"] == 6 * one["host_boundary_bytes"]
+    rows = default_slab_rows(cfg.nx, cfg.ny)
+    local = replace(split, devices=DEVICES_OFF, domains=(replace(
+        split.root, run=tile_config(cfg, cfg.nx, cfg.ny % rows or rows)),))
+    priced = pf.estimate_experiment(local, forcing_intervals=6).domains[0]
+    assert six["cards"][0]["template_bytes"] == (
+        priced.resident_bytes - priced.category_bytes("lbc"))
+    assert priced.category_bytes("lbc") > 0
 
 
 def test_route_admission_calls(exp, tmp_path):
@@ -404,13 +460,158 @@ def test_frame_snapshots_price_halos_and_repeated_cards(exp, rank_api):
                                        for r in price["cards"]})["refuse"]
 
 
-def test_frame_snapshot_limit_bounds_each_rank(exp, rank_api, monkeypatch):
+def test_ineligible_ranks_never_price_partial_snapshots(exp, rank_api, monkeypatch):
     from gpuwm.core import devices_memory as memory
     monkeypatch.setattr(memory, "FRAME_SNAPSHOT_LIMIT_BYTES", 1000)
     split = replace(exp, devices=DeviceOptions(count=2, ids=(0, 0)))
     price = memory.estimate_devices(split)
-    assert [rank["frame_snapshot_bytes"] for rank in price["rank_shapes"]] == [1000, 1000]
-    assert price["cards"][0]["frame_snapshot_bytes"] == 2000
+    assert [rank["frame_snapshot_bytes"] for rank in price["rank_shapes"]] == [0, 0]
+    assert [rank["frame_snapshot_budget_bytes"] for rank in price["rank_shapes"]] == [0, 0]
+    assert price["cards"][0]["frame_snapshot_bytes"] == 0
+
+
+@pytest.mark.parametrize("ids", [(0, 1), (0, 0)])
+def test_snapshot_allowance_uses_only_room_after_required_storage(exp, rank_api, ids):
+    """Optional frame overlap must not refuse a fitting resident state."""
+    from gpuwm.core.devices_memory import estimate_devices, devices_gate
+
+    split = replace(exp, devices=DeviceOptions(count=2, ids=ids))
+    full = estimate_devices(split)
+    required = {row["card"]: row["total_bytes"] - row["frame_snapshot_bytes"]
+                for row in full["cards"]}
+    budgets = {dev: size + 1001 for dev, size in required.items()}
+    tight = estimate_devices(split, budgets=budgets)
+    assert not devices_gate(tight, budgets=budgets)["refuse"]
+    for row in tight["cards"]:
+        assert row["frame_snapshot_bytes"] == 1001
+        assert row["total_bytes"] == budgets[row["card"]]
+        assert sum(tight["rank_shapes"][rank]["frame_snapshot_bytes"]
+                   for rank in row["ranks"]) == 1001
+    exact = estimate_devices(split, budgets=required)
+    assert all(row["frame_snapshot_bytes"] == 0 for row in exact["rank_shapes"])
+    assert not devices_gate(exact, budgets=required)["refuse"]
+    short = {dev: size - 1 for dev, size in required.items()}
+    refused = estimate_devices(split, budgets=short)
+    assert devices_gate(refused, budgets=short)["refuse"]
+    assert all(row["frame_snapshot_bytes"] == 0 for row in refused["rank_shapes"])
+
+
+def test_admitted_snapshot_limits_reach_the_rank_builder(exp, monkeypatch):
+    """Reverting this handoff would allocate the old 4 GiB after admission."""
+    from gpuwm import prepared_single_domain_forecast as forecast
+    from gpuwm.core import streaming
+
+    split = replace(exp, devices=DeviceOptions(count=2))
+    built = []
+    def builder(bundle, **kwargs):
+        built.append(kwargs)
+        return object()
+    monkeypatch.setattr(streaming, "ranked_domain_builder", builder)
+    monkeypatch.setattr(streaming, "ranked_decision", lambda *a, **kw:
+                        SimpleNamespace(halo=1))
+    monkeypatch.setattr(streaming, "make_stepper", lambda *a, **kw:
+                        SimpleNamespace(tiled_run=SimpleNamespace(
+                            transport_report={"path": "host"})))
+    node = SimpleNamespace(cfg=split.root, state=SimpleNamespace(), clock=object())
+    forecast._devices_stepper(
+        SimpleNamespace(geography={}), node, split, {},
+        admission={"rank_shapes": [{"frame_snapshot_bytes": 123},
+                                    {"frame_snapshot_bytes": 0}]})
+    assert built[0]["snapshot_limits"] == (123, 0)
+
+
+def test_template_memory_credit_counts_only_priced_unique_device_spans(exp):
+    """Alias or unrelated live bytes must not turn a real overrun into a fit."""
+    from gpuwm.core.devices_memory import priced_template_live_bytes
+
+    def array(pointer, size, device=0, contiguous=True):
+        return SimpleNamespace(data=SimpleNamespace(ptr=pointer), nbytes=size,
+                               device=SimpleNamespace(id=device),
+                               flags=SimpleNamespace(c_contiguous=contiguous))
+    template = SimpleNamespace(
+        u=array(100, 100), v=array(150, 100),
+        thp=array(300, 100, device=1), phi=array(500, 100, contiguous=False),
+        unknown=array(700, 10000), _scratch={"unknown": array(20000, 10000)})
+    assert priced_template_live_bytes(template, exp.root.run, device=0) == 150
+    assert priced_template_live_bytes(template, exp.root.run, device=1) == 100
+
+
+def test_host_bundle_credit_deduplicates_aliases_and_does_not_load_or_credit_files(tmp_path):
+    """Credit only allocated bundle bytes, never reclaimable mappings or future input."""
+    from gpuwm.core.devices_memory import priced_host_live_bytes
+
+    values = np.arange(40, dtype=np.uint8)
+    tendency = np.ones(8, dtype=np.uint8)
+    mapped = np.memmap(tmp_path / "mapped.bin", mode="w+", dtype=np.uint8, shape=(64,))
+    side = SimpleNamespace(array_items=lambda: (("value", values[24:]),
+                                                ("tendency", tendency)))
+    boundary = SimpleNamespace(**{name: side for name in ("west", "east", "south", "north")})
+    interval = SimpleNamespace(fields={"u": boundary}, unpriced=np.ones(100))
+    store = {"a": values[:16], "alias": values[8:24]}
+    geography = {"b": values[20:32], "strided": values[::2], "file": mapped[:32]}
+    result = priced_host_live_bytes(
+        store, geography, SimpleNamespace(intervals=(interval, interval)))
+    assert result == {"host_store_bytes": 32, "host_boundary_bytes": 16}
+    class Lazy:
+        def __iter__(self):
+            raise AssertionError("admission must not read future forcing")
+    assert priced_host_live_bytes(store, geography, SimpleNamespace(intervals=Lazy())) == {
+        "host_store_bytes": 32, "host_boundary_bytes": 0}
+
+
+def test_post_loader_admission_credits_only_the_priced_template(exp, monkeypatch):
+    """Retained template and host bundle are paid once; unrelated allocations stay paid."""
+    import sys
+    from gpuwm import prepared_single_domain_forecast as forecast
+    from gpuwm.core import devices_memory, preflight as pf, resident_admission
+
+    class Card:
+        def __init__(self, device):
+            self.device = device
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+    runtime = SimpleNamespace(
+        getDeviceCount=lambda: 2,
+        getDeviceProperties=lambda _: {"name": b"test", "multiProcessorCount": 1,
+                                      "maxThreadsPerMultiProcessor": 32},
+        deviceGetLimit=lambda _: 1024)
+    monkeypatch.setitem(sys.modules, "cupy", SimpleNamespace(
+        cuda=SimpleNamespace(Device=Card, runtime=runtime),
+        get_default_memory_pool=lambda: SimpleNamespace(free_bytes=lambda: 100)))
+    monkeypatch.setattr(pf, "device_free_and_total_bytes", lambda _: (700, 1000))
+    monkeypatch.setattr(pf, "read_compile_platform", lambda: None)
+    monkeypatch.setattr(pf, "host_available_bytes", lambda: 60)
+    monkeypatch.setattr(resident_admission, "device_free_bytes", lambda: 800)
+    monkeypatch.setattr(devices_memory, "priced_template_live_bytes", lambda *a, **k: 200)
+    sampled = []
+    def estimate(*args, budgets, **kwargs):
+        sampled.append(dict(budgets))
+        return {"cards": [{"card": dev, "resident_bytes": 650, "seam_bytes": 0,
+                           "template_bytes": 150 if dev == 0 else 0,
+                           "frame_snapshot_bytes": 0,
+                           "total_bytes": 800 if dev == 0 else 650}
+                          for dev in (0, 1)],
+                "host_store_bytes": 200, "host_staging_bytes": 40,
+                "host_boundary_bytes": 50, "host_bytes": 290}
+    monkeypatch.setattr(pf, "estimate_devices", estimate)
+    split = replace(exp, devices=DeviceOptions(count=2))
+    forcing = np.ones(10, dtype=np.float64)
+    side = SimpleNamespace(array_items=lambda: (("value", forcing),))
+    boundary = SimpleNamespace(**{name: side for name in ("west", "east", "south", "north")})
+    result = forecast._admit_devices_forecast(
+        split, exp.root.run, geography={"g": np.ones(20, np.float32)},
+        inventory={"a": np.ones(32, np.float32)}, forcing_intervals=1, template=object(),
+        boundaries=SimpleNamespace(intervals=(SimpleNamespace(fields={"u": boundary}),)))
+    assert sampled == [{0: 800, 1: 800}, {0: 950, 1: 800}]
+    assert result["budget_terms"][0] == {
+        "device_free_bytes": 700, "reusable_pool_bytes": 100,
+        "template_live_credit_bytes": 150, "budget_bytes": 950}
+    assert result["budget_terms"][1]["template_live_credit_bytes"] == 0
+    assert result["host_budget_terms"] == {
+        "available_bytes": 60, "store_live_credit_bytes": 200,
+        "boundary_live_credit_bytes": 50, "budget_bytes": 310}
 
 
 def test_boundary_frame_and_host_budget_refusals(exp, rank_api):

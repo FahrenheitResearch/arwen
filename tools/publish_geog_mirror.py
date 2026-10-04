@@ -96,6 +96,10 @@ _PROVENANCE = {
         "datasets under one parent); required by the `gpuwm mesh` door "
         "only",
         _SOILGRIDS),
+    "lake_depth": (
+        "30-arc-second lake depth for optional CLM lake physics",
+        "distributed for WPS by NCAR; the download index does not state "
+        "an ultimate source or a separate redistribution licence"),
 }
 
 

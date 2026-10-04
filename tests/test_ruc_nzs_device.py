@@ -88,9 +88,11 @@ def forced_nine_level_tier(monkeypatch):
     """
     real = ruc_tier.ruc_module_defines
 
-    def always_specialize(nzs: int) -> tuple[tuple[str, int], ...]:
-        real(nzs)                       # keep the admitted-set refusal
-        return (("RUC_NZS", int(nzs)),)
+    def always_specialize(nzs: int, soilprop: str = "wrf_45"
+                          ) -> tuple[tuple[str, int], ...]:
+        # keep the admitted-set refusals; the lineage define rides along
+        lineage = real(nzs, soilprop)
+        return (("RUC_NZS", int(nzs)),) + lineage
 
     monkeypatch.setattr(ruc_tier, "ruc_module_defines", always_specialize)
     return always_specialize

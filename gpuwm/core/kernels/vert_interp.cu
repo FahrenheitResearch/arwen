@@ -268,6 +268,7 @@ void wrf_real_vertical_interpolate(const real* __restrict__ field,
     // Once assembled, pressure coordinates can hold their own logarithms.
     // Only the bottom pressure is still needed by the extrapolation branch.
     real bottom_pressure = ox[0];
+    real top_pressure = ox[count - 1];
     real* x = ox;
     for (int m = 0; m < count; ++m)
         // Production log arguments are pressures, normal by construction.
@@ -277,6 +278,12 @@ void wrf_real_vertical_interpolate(const real* __restrict__ field,
     real previous_target = __int_as_float(0x7f800000);
     for (int kt = 0; kt < ntarget; ++kt) {
         real pt = target_p[(size_t)kt * ncolumn + c];
+        // Co-locate serialized native-coordinate endpoint roundoff, as
+        // the Rust CPU operator does.  2^-21 is four FP32 epsilons.
+        // Targets beyond this bound are still refused by the launcher.
+        if (pt < top_pressure && __fsub_rn(top_pressure, pt)
+                <= __fmul_rn(4.76837158203125e-7f, fabsf(top_pressure)))
+            pt = top_pressure;
         real xt = interp_in_logp ? wrf_vi_pressure_log(pt) : pt;
         int found = -1;
         // Descending targets cannot return to an earlier bracket. Reset

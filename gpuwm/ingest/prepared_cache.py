@@ -22,6 +22,7 @@ No pickle or object arrays are accepted.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, fields as dataclass_fields
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -254,6 +255,8 @@ DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
     # non-default value against an older header is refused, as it must be:
     # that tree has no orographic statistics.
     "run.topo_wind", "run.gwd_opt",
+    # CLM lake off is the prescribed-water state in older prepared files.
+    "run.sf_lake_physics", "run.use_lakedepth", "run.lakedepth_default", "run.lake_min_elev",
     # ---------------------------------------------------------------
     # The 80 other RunConfig fields that joined after the identity
     # header (1c6290410, 2026-07-19, which bound asdict(DomainConfig)
@@ -274,7 +277,7 @@ DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
     # arrived with the aerosol pair (0ebda6608); preparation reads it
     # only on initialize_real's mp=28 arm.
     "run.wdm6_hail_opt", "run.wdm6_ccn_conc",
-    "run.aer_init_opt", "run.wif_input_opt",
+    "run.aer_init_opt", "run.wif_input_opt", "run.use_rap_aero_icbc",
     # (b) READ BY PREPARATION, DEFAULT IS THE PRE-FIELD BEHAVIOUR:
     # num_soil_layers (61903f124) defaults to Noah's four layers, the
     # only count preparation produced before the field; the count is
@@ -291,7 +294,7 @@ DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
     # MYNN PBL (e65b3ce31):
     "run.bl_mynn_closure", "run.bl_mynn_cloudpdf", "run.bl_mynn_mixlength",
     "run.bl_mynn_edmf", "run.bl_mynn_edmf_mom", "run.bl_mynn_edmf_tke",
-    "run.bl_mynn_mixscalars", "run.bl_mynn_cloudmix", "run.bl_mynn_mixqt",
+    "run.bl_mynn_mixscalars", "run.scalar_pblmix", "run.bl_mynn_cloudmix", "run.bl_mynn_mixqt",
     "run.bl_mynn_output", "run.bl_mynn_tkeadvect", "run.icloud_bl",
     # MM5/MYNN surface layer (76cd7f18b):
     "run.isftcflx", "run.iz0tlnd",
@@ -305,8 +308,9 @@ DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
     "run.opt_irr", "run.opt_irrm", "run.opt_infdv", "run.opt_tdrn",
     "run.soiltstep", "run.noahmp_output", "run.noahmp_acc_dt",
     # RUC (6153ea505); flag_sm_adj is documented as not applied by
-    # ingest/ruc_soil.py, and RUC_OPTION_IDENTITY_EVIDENCE admits only 0:
+    # ingest/ruc_soil.py. Disabled stochastic consumers preserve old inputs:
     "run.flag_sm_adj", "run.mosaic_lu", "run.mosaic_soil", "run.spp_lsm",
+    "run.spp_conv", "run.spp_pbl",
     # Radiation (61903f124, 986db3bf2, 33694a95b, 8c0211eb0); rdmaxalb
     # is read at RESTORE by initialize_prepared_physics from the cached
     # static SNOALB, never at write:
@@ -610,6 +614,9 @@ PREPARATION_INERT_RUN_FIELDS = frozenset({
     # it, so one prepared bundle serves both variants. Checkpoints still
     # bind the variant because switching it changes their trajectory.
     "run.zadvect_implicit_variant",
+    # Only LSMRUC's SOILPROP reads the soil-water lineage
+    # (core/ruc_tier.py); preparation computes no diffusivity from it.
+    "run.ruc_soilprop",
     "run.inflow_perturbation",
     "run.inflow_perturbation_seed",
     "run.inflow_perturbation_amplitude_scale",
@@ -972,7 +979,7 @@ def _array_sha256(array: np.ndarray) -> str:
     digest.update(b";")
     digest.update(_canonical(list(array.shape)).encode("ascii"))
     digest.update(b";")
-    digest.update(array.tobytes(order="C"))
+    digest.update(memoryview(array.reshape(-1).view(np.uint8)))
     return digest.hexdigest()
 
 
@@ -1030,6 +1037,73 @@ class _BundleWriter:
         # copied rather than retried as a link.
         self.copying = False
         self._pending_reuse_bytes = 0
+        self._batch = None
+
+    @contextmanager
+    def immutable_batch(self):
+        """Batch a caller-owned interval in which none of its arrays mutate.
+
+        Outside this explicit scope, add() still finishes its snapshot
+        before returning. Native jobs finish before scope exit and before
+        any header or boundary marker can be published.
+        """
+        from gpuwm.ingest.prepared_writer import batch_budget, native_writer
+        if self._batch is not None:
+            raise RuntimeError("prepared-array batches cannot nest")
+        entry = native_writer()
+        if entry is None:
+            yield
+            return
+        workers, budget = batch_budget()
+        self._batch = {"entry": entry, "workers": workers, "budget": budget,
+                       "bytes": 0, "jobs": []}
+        try:
+            yield
+            self._flush_batch()
+        finally:
+            self._batch = None
+
+    def _flush_batch(self):
+        from gpuwm.ingest.prepared_writer import write_arrays
+        batch = self._batch
+        jobs = batch["jobs"]
+        if not jobs:
+            return
+        arrays = [(partial, array) for _key, _path, partial, array in jobs]
+        hashes = write_arrays(batch["entry"], arrays, workers=batch["workers"])
+        try:
+            for (key, path, partial, array), digest in zip(jobs, hashes):
+                _replace_file(partial, path)
+                self.manifest[key] = {
+                    "file": path.name, "shape": list(array.shape),
+                    "dtype": str(array.dtype), "nbytes": int(array.nbytes),
+                    "sha256": digest,
+                }
+                self.payload_bytes += int(array.nbytes)
+        finally:
+            # Successful native writes created these exact private paths.
+            # Renamed ones no longer exist; an interrupted publication
+            # removes only the remaining files owned by this batch.
+            for _key, _path, partial, _array in jobs:
+                partial.unlink(missing_ok=True)
+            batch["jobs"] = []
+            batch["bytes"] = 0
+
+    def _add_batched(self, key, value):
+        batch = self._batch
+        if any(job[0] == key for job in batch["jobs"]):
+            raise ValueError(f"invalid or duplicate prepared-cache key {key!r}")
+        expected = getattr(value, "nbytes", None)
+        if batch["jobs"] and (expected is None
+                or batch["bytes"] + int(expected) > batch["budget"]
+                or len(batch["jobs"]) >= batch["workers"]):
+            self._flush_batch()
+        array = _host(value)
+        filename = f"a{len(self.manifest) + len(batch['jobs']):05d}.npy"
+        path = self.temporary / filename
+        partial = path.with_name(filename + ".tmp")
+        batch["jobs"].append((key, path, partial, array))
+        batch["bytes"] += int(array.nbytes)
 
     def expect_reuse(self, reader: "PreparedCacheReader", keys) -> None:
         """Declare the payloads :meth:`link_verified` is about to place.
@@ -1045,6 +1119,9 @@ class _BundleWriter:
     def add(self, key: str, value) -> None:
         if not isinstance(key, str) or not key or key in self.manifest:
             raise ValueError(f"invalid or duplicate prepared-cache key {key!r}")
+        if self._batch is not None:
+            self._add_batched(key, value)
+            return
         array = _host(value)
         # Cache payload names are deliberately compact.  Prepared caches sit
         # below several transaction-owned hierarchy staging directories, so a
@@ -1653,44 +1730,45 @@ class PreparedCacheStream:
             raise RuntimeError("the prepared-cache head is written once")
         self.directory.mkdir(parents=True, exist_ok=True)
         writer = self._writer
-        state_names = []
-        for name in STATE_SERIALIZED_ATTRS:
-            value = getattr(initial_result.state, name, None)
-            if value is not None:
-                writer.add(f"state/{name}", value)
-                state_names.append(name)
-        coord_arrays = []
-        for field in dataclass_fields(initial_result.coord):
-            value = getattr(initial_result.coord, field.name)
-            if isinstance(value, np.ndarray):
-                writer.add(f"coord/{field.name}", value)
-                coord_arrays.append(field.name)
-        base_arrays = []
-        for field in dataclass_fields(initial_result.base):
-            value = getattr(initial_result.base, field.name)
-            if isinstance(value, np.ndarray):
-                writer.add(f"base/{field.name}", value)
-                base_arrays.append(field.name)
-        writer.add("result/surface_pressure", initial_result.surface_pressure)
-        writer.add("result/surface_qv", initial_result.surface_qv)
+        with writer.immutable_batch():
+            state_names = []
+            for name in STATE_SERIALIZED_ATTRS:
+                value = getattr(initial_result.state, name, None)
+                if value is not None:
+                    writer.add(f"state/{name}", value)
+                    state_names.append(name)
+            coord_arrays = []
+            for field in dataclass_fields(initial_result.coord):
+                value = getattr(initial_result.coord, field.name)
+                if isinstance(value, np.ndarray):
+                    writer.add(f"coord/{field.name}", value)
+                    coord_arrays.append(field.name)
+            base_arrays = []
+            for field in dataclass_fields(initial_result.base):
+                value = getattr(initial_result.base, field.name)
+                if isinstance(value, np.ndarray):
+                    writer.add(f"base/{field.name}", value)
+                    base_arrays.append(field.name)
+            writer.add("result/surface_pressure", initial_result.surface_pressure)
+            writer.add("result/surface_qv", initial_result.surface_qv)
 
-        met_names = _prepared_met_names(met, surface=surface)
-        for name in met_names:
-            writer.add(f"met/{name}", met.fields[name])
+            met_names = _prepared_met_names(met, surface=surface)
+            for name in met_names:
+                writer.add(f"met/{name}", met.fields[name])
 
-        surface_names = []
-        if surface is not None:
-            if not isinstance(surface, Mapping):
-                raise TypeError("canonical prepared surface must be a mapping")
-            missing_surface = sorted(
-                _CANONICAL_SURFACE_REQUIRED - set(surface))
-            if missing_surface:
-                raise KeyError(
-                    "canonical prepared surface is missing "
-                    f"{missing_surface}")
-            surface_names = sorted(_CANONICAL_SURFACE_REQUIRED)
-            for name in surface_names:
-                writer.add(f"surface/{name}", surface[name])
+            surface_names = []
+            if surface is not None:
+                if not isinstance(surface, Mapping):
+                    raise TypeError("canonical prepared surface must be a mapping")
+                missing_surface = sorted(
+                    _CANONICAL_SURFACE_REQUIRED - set(surface))
+                if missing_surface:
+                    raise KeyError(
+                        "canonical prepared surface is missing "
+                        f"{missing_surface}")
+                surface_names = sorted(_CANONICAL_SURFACE_REQUIRED)
+                for name in surface_names:
+                    writer.add(f"surface/{name}", surface[name])
 
         if lbc is None:
             if not _is_nested_child_identity(self.identity):
@@ -1845,17 +1923,18 @@ class PreparedCacheStream:
         before_keys = set(writer.manifest)
         before_bytes = writer.payload_bytes
         field_names = sorted(interval.fields)
-        for name in field_names:
-            field = interval.fields[name]
-            for side_name in ("west", "east", "south", "north"):
-                side = getattr(field, side_name)
-                prefix = f"lbc/{index}/{name}/{side_name}"
-                writer.add(f"{prefix}/value", side.value)
-                writer.add(f"{prefix}/tendency", side.tendency)
-                if side.time_law is not None:
-                    for coefficient in ("quadratic", "denominator_rate"):
-                        writer.add(f"{prefix}/rational_time_v1/{coefficient}",
-                                   getattr(side.time_law, coefficient))
+        with writer.immutable_batch():
+            for name in field_names:
+                field = interval.fields[name]
+                for side_name in ("west", "east", "south", "north"):
+                    side = getattr(field, side_name)
+                    prefix = f"lbc/{index}/{name}/{side_name}"
+                    writer.add(f"{prefix}/value", side.value)
+                    writer.add(f"{prefix}/tendency", side.tendency)
+                    if side.time_law is not None:
+                        for coefficient in ("quadratic", "denominator_rate"):
+                            writer.add(f"{prefix}/rational_time_v1/{coefficient}",
+                                       getattr(side.time_law, coefficient))
         # The frame this interval's tendency was built toward, as its
         # builder recorded it (A140b): kept in the interval's row and in its
         # segment marker, because no array holds it (the last interval's is
@@ -2600,6 +2679,7 @@ def restore_prepared_cache(path, *, expected_identity, cfg, static,
                            allow_nested_without_lbc: bool = False,
                            reader=None, boundary_source=None,
                            array_module=None,
+                           scratch_arena=None, dycore_state_workspace=None,
                            ) -> RestoredPreparedCache:
     """Validate and restore an integration-ready GPU state.
 
@@ -2618,6 +2698,10 @@ def restore_prepared_cache(path, *, expected_identity, cfg, static,
     whatever the machine has, and a CUDA import there refused every
     HRRR domain tree on a CPU-only install although nothing in it needs
     a card.  A NumPy state is never a valid forecast input.
+
+    Optional scratch and dycore workspaces are the original tree builder's
+    owners. Passing them keeps restored member roots on that same ledger;
+    omitted owners retain the historical constructor call.
     """
     # Resolve the pure ownership decision before importing the optional CUDA
     # runtime.  This keeps malformed caller contracts deterministic on CPU-
@@ -2689,7 +2773,11 @@ def restore_prepared_cache(path, *, expected_identity, cfg, static,
             boundary_values=_device_boundary_values(
                 reader, metadata.get("lbc"), lbc_mode=lbc_mode,
                 streamed=boundary_source is not None))
-    state = DomainState(cfg, array_module=array_module)
+    state = (DomainState(cfg, array_module=array_module)
+             if scratch_arena is None and dycore_state_workspace is None else
+             DomainState(cfg, scratch_arena=scratch_arena,
+                         dycore_state_workspace=dycore_state_workspace,
+                         array_module=array_module))
     state.load_base(coord, base)
     state.set_map_coriolis(
         static["MAPFAC_M"], static["MAPFAC_U"], static["MAPFAC_V"],

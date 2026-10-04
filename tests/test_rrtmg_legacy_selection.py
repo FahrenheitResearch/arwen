@@ -168,7 +168,8 @@ def test_selecting_legacy_constructs_the_adapter_at_physics_setup(
     # construction is the readiness proof: identity is declared, and the
     # coefficient/table builds exist on the instance
     identity = adapter.restart_identity()
-    assert identity["algorithms"]["lw"] == "wrf-v4.6.1-rrtmg-legacy-lw-v1"
+    assert identity["algorithms"]["lw"] == \
+        "wrf-v4.6.1-rrtmg-legacy-lw-v2-owned-gpoint-stratosphere-corrections"
     assert adapter._C is not None and adapter._sw_tables is not None
 
 
@@ -206,8 +207,10 @@ def test_every_runtime_radiation_construction_uses_the_shared_variant_factory():
 def test_restart_identity_strings_are_distinct_from_rte_rrtmgp():
     from gpuwm.io import restart
 
+    # v2: the band 4 and band 7 stratospheric corrections are applied once
+    # by their owning g-point thread; a v1 checkpoint ran the racing form.
     assert restart.RRTMG_LEGACY_LW_ALGORITHM_IDENTITY == \
-        "wrf-v4.6.1-rrtmg-legacy-lw-v1"
+        "wrf-v4.6.1-rrtmg-legacy-lw-v2-owned-gpoint-stratosphere-corrections"
     assert restart.RRTMG_LEGACY_SW_ALGORITHM_IDENTITY == \
         "wrf-v4.6.1-rrtmg-legacy-sw-v1"
     assert restart.RRTMG_LEGACY_LW_ALGORITHM_IDENTITY != \

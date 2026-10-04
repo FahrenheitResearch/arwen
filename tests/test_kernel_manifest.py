@@ -44,6 +44,7 @@ KERNEL_DIR = REPO / "gpuwm" / "core" / "kernels"
 #: is the census behind this list; nothing under ``gpuwm/`` may construct a
 #: RawModule without appearing either here or in its explained allow-list.
 SITE_FILES = (
+    "gpuwm/core/spp_kernel_sources.py",
     "gpuwm/core/kernels/__init__.py",
     "gpuwm/core/nest_interp.py",
     "gpuwm/core/noahmp_driver_gpu.py",
@@ -54,6 +55,7 @@ SITE_FILES = (
     "gpuwm/core/noahmp_thermal_gpu.py",
     "gpuwm/core/noahmp_vegeflux_gpu.py",
     "gpuwm/core/rrtmg_sw.py",
+    "gpuwm/core/ruc_spp.py",
     # The fused forecast units the 2026-09-30 speed lanes added: New
     # Tiedtke's fused column (b11fc66ab), Noah's forcing prologue
     # (3e23476ce) and SFCDIAGS (9aea8904f), the cumulus clock (da604fe01,
@@ -63,6 +65,13 @@ SITE_FILES = (
     "gpuwm/core/noah_sfcdiags.py",
     "gpuwm/core/cumulus_clock.py",
     "gpuwm/core/tendency_coupling.py",
+    "gpuwm/ensemble/batch_fluxes.py",
+    "gpuwm/ensemble/batch_kernel.py",
+    "gpuwm/ensemble/batch_perturbation.py",
+    "gpuwm/ensemble/batch_physics.py",
+    "gpuwm/ensemble/batch_physics_init.py",
+    "gpuwm/ensemble/batch_product_output.py",
+    "gpuwm/ensemble/batch_products.py",
 )
 
 #: Two cached loaders, nest interpolation, and the one Noah-MP compile
@@ -71,8 +80,10 @@ SITE_FILES = (
 #: NOT among them -- it compiles through :data:`EXPECTED_NVRTC_SITE_COUNT`'s
 #: route instead, see the module docstring -- but it stays in
 #: :data:`SITE_FILES` because it still records.  Plus the six fused units
-#: of the speed lanes' five files (the cumulus clock compiles two).
-EXPECTED_SITE_COUNT = 10
+#: of the speed lanes' five files (the cumulus clock compiles two), and the
+#: CLM lake's own ``--fmad=false`` site beside the two cached loaders
+#: (``_load_module_without_fmad``, 2.8.5), which records in its own function.
+EXPECTED_SITE_COUNT = 27
 
 #: ``cp.RawModule`` constructors under ``gpuwm/`` that are NOT manifest
 #: sites, each with the reason.  Closed and literal: a new constructor
@@ -136,10 +147,19 @@ RAWMODULE_CONSTRUCTORS_OUTSIDE_THE_MANIFEST = {
         "tests/test_smallstep_vertical_wrf471_parity.py, never in a forecast"),
 }
 
-#: ``compile_using_nvrtc`` sites among :data:`SITE_FILES`: rrtmg_sw only.
+#: ``compile_using_nvrtc`` sites among SITE_FILES: shortwave and RUC SPP.
 #: (``rrtmg_lw.py`` and ``rrtmg_mcica.py`` take the same route but record
 #: nothing, so they are not manifest sites and are not listed above.)
-EXPECTED_NVRTC_SITE_COUNT = 1
+EXPECTED_NVRTC_SITE_COUNT = 3
+
+# These direct-NVRTC transforms precede forecast construction. They bind
+# compiler options and source bytes in their own preparation receipts.
+PREPARATION_NVRTC_SITES = {
+    "gpuwm/ensemble/recentered.py": (
+        "one-time physical source preparation before initialize_real at "
+        "initial and boundary knots, never a forecast execution kernel; "
+        "its operator receipt binds the source SHA, compiler options and full population mapping"),
+}
 
 
 def _is_rawmodule(node: ast.AST) -> bool:
@@ -304,6 +324,31 @@ def test_every_direct_nvrtc_site_is_accounted_for():
     assert total == EXPECTED_NVRTC_SITE_COUNT, (
         f"expected {EXPECTED_NVRTC_SITE_COUNT} compile_using_nvrtc site(s) "
         f"among the manifest files, found {total}")
+
+
+def test_preparation_nvrtc_route_preserves_subnormals_and_records_its_options():
+    from tools.ftz_receipt import route_inventory
+    from gpuwm.ensemble import recentered
+    for path,reason in PREPARATION_NVRTC_SITES.items():
+        source = _site_text(path)
+        sites = route_inventory.scan_source(path,source)
+        assert len(sites) == 1
+        assert sites[0]["constructor_kind"] == "cupy.cuda.compiler.compile_using_nvrtc"
+        assert sites[0]["options_expression"] == "_CUDA_OPTIONS"
+        assert len(reason.split()) >= 12
+        assert "receipt[\"compiler_options\"] = list(_CUDA_OPTIONS)" in source
+    assert recentered._CUDA_OPTIONS == ("-std=c++17", "--fmad=false", "--ftz=false")
+
+
+def test_ruc_hydraulic_nvrtc_route_preserves_small_conductivities():
+    from tools.ftz_receipt import route_inventory
+    from gpuwm.core import ruc_spp
+    path = "gpuwm/core/ruc_spp.py"
+    sites = route_inventory.scan_source(path, _site_text(path))
+    assert len(sites) == 1
+    assert sites[0]["constructor_kind"] == "cupy.cuda.compiler.compile_using_nvrtc"
+    assert sites[0]["options_expression"] == "MODULE_OPTIONS"
+    assert ruc_spp.MODULE_OPTIONS == ("-std=c++17", "--fmad=false", "--ftz=false")
 
 
 @pytest.mark.parametrize("path", SITE_FILES)

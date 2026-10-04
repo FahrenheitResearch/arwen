@@ -8,9 +8,11 @@ preparation on a 24 GB card decoded its inputs, built its statics and then
 stopped about two minutes later with a raw CuPy out-of-memory inside
 ``DomainState.__init__``.  This module prices that preparation from the
 same inventories the allocations are made from, per route, so every door
-can decide before the first device allocation: ``auto`` prepares on the
-CPU when the price does not fit the card's free memory, and an explicit
-``cuda`` request is refused by name.
+can decide before the first device allocation. The mapped route stages CUDA
+batches and retains completed arrays on the host when the whole build would
+take more than its 1 GiB staging pool, leaving room for a concurrent forecast.
+Other routes choose the CPU under ``auto`` when their price does not
+fit, and refuse an explicit ``cuda`` request by name.
 
 No GPU imports: the price is arithmetic over shapes.
 
@@ -324,6 +326,9 @@ class PreparationDevicePrice:
     phase: str
     basis: str = PREPARATION_PRICE_BASIS
     phases: Mapping[str, int] = field(default_factory=dict)
+    #: Minimum staging capacity for a full column row plus source-plane donors.
+    chunk_minimum_bytes: int = 0
+    chunk_source_bytes: int = 0
 
     @property
     def stage(self) -> str:
@@ -561,7 +566,13 @@ def price_preparation(route: str, domains: Sequence, inventory: SourceInventory,
         basis=(_route_basis(row) + (
             "; device REAL column workspace priced from its live arrays"
             if inventory.device_real_columns and row.state_on_card else "")),
-        phases=MappingProxyType(dict(totals)))
+        phases=MappingProxyType(dict(totals)),
+        chunk_source_bytes=(16 * inventory.source_points if route == "mapped" else 0),
+        chunk_minimum_bytes=((
+            16 * inventory.source_points +
+            max((max(inventory.levels, int(cfg.nz) + 1) * (int(cfg.nx) + 1)
+                 * 1024 for cfg in domains), default=0))
+            if route == "mapped" else 0))
 
 
 def _route_basis(row: PreparationRoute) -> str:

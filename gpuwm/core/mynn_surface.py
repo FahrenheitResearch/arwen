@@ -2,7 +2,7 @@
 
 The implementation is a direct, single-precision translation of
 ``SFCLAY1D_mynn`` for the admitted option identities: every defined
-``isftcflx`` over water, with ``iz0tlnd=0``, ``spp_pbl=0`` and ``psi_opt=0``.
+``isftcflx`` over water, with ``iz0tlnd=0``, ``spp_pbl`` in {0,1} and ``psi_opt=0``.
 It is a numerical reference for oracle/CUDA work; importing it does not admit
 the MYNN surface-layer runtime selector.
 
@@ -514,6 +514,8 @@ def mynn_surface_layer_default(
     isftcflx: int = 0,
     mol: object | None = None,
     ustm: object | None = None,
+    spp_pbl: int = 0,
+    pattern_spp_pbl=None,
 ) -> dict[str, np.ndarray]:
     """Evaluate the WRF MYNN surface layer for independent columns.
 
@@ -523,6 +525,8 @@ def mynn_surface_layer_default(
     them.
     """
 
+    from gpuwm.core.spp_kernel_sources import spp_flag
+    stochastic = spp_flag(spp_pbl, "spp_pbl")
     if not isinstance(itimestep, int) or itimestep < 1:
         raise ValueError("itimestep must be a positive integer")
     if isfflx not in (0, 1):
@@ -540,6 +544,11 @@ def mynn_surface_layer_default(
     if not np.isfinite(dx) or dx <= 0.0:
         raise ValueError("dx must be positive and finite")
     source, count = _as_columns(values)
+    pattern = None
+    if stochastic:
+        pattern = np.asarray(pattern_spp_pbl, dtype=np.float32)
+        if pattern.shape != (count,) or not np.isfinite(pattern).all():
+            raise ValueError("MYNN surface SPP pattern must be finite with shape (ncol,)")
     initial_mol = np.zeros(count, dtype=np.float32) if mol is None else np.asarray(
         mol, dtype=np.float32
     )
@@ -630,7 +639,28 @@ def mynn_surface_layer_default(
             F(1.0) + F(6.542e-3) * tc1 + F(8.301e-6) * tc1 * tc1
             - F(4.84e-9) * tc1 * tc1 * tc1
         ))
-        if xland >= F(1.5):
+        if stochastic:
+            rstoch = F(pattern[i])
+            if xland >= F(1.5):
+                z0, _, _, _ = _water_roughness(isftcflx, ust, wsp, visc, za, xland)
+            z0_nominal = z0
+            z0 = F(max(F(z0 + F(z0 * rstoch)), F(1e-6)))
+            restar = max(F(ust * z0 / visc), F(0.1))
+            if xland >= F(1.5):
+                if isftcflx == 2:
+                    zt, zq = _garratt_1992(z0, restar, xland)
+                else:
+                    zt = F(F(5.5e-5) * _powf(restar, F(-0.60)))
+                    zt = F(zt + F(F(zt * F(0.5)) * rstoch))
+                    zt = F(max(min(zt, F(1e-4)), F(2e-9)))
+                    zq = zt
+            elif snowh >= F(0.1):
+                zt, zq = _andreas_snow(z0, visc, ust)
+            else:
+                zt, zq = _zilitinkevich_land(z0, restar)
+                zt = F(max(F(zt + F(F(zt * F(0.5)) * rstoch)), F(0.0001)))
+                zq = zt
+        elif xland >= F(1.5):
             z0, restar, zt, zq = _water_roughness(
                 isftcflx, ust, wsp, visc, za, xland
             )
@@ -789,7 +819,7 @@ def mynn_surface_layer_default(
             # arm -- :635/:647 charnock_1955, :641 davis_etal_2008, :643
             # Taylor_Yelland_2001 -- mutates it in place; the updated value
             # persists into the next step's ZNTstoch/restar/z_t/z_q.
-            "znt": z0,
+            "znt": z0_nominal if stochastic else z0,
         }
         for name, value in values_out.items():
             result[name][i] = value

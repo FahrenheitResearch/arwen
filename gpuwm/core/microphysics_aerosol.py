@@ -181,26 +181,16 @@ AEROSOL_SCRATCH_SLOTS = (
     "mp_thompson_aero_nwfaten",
     "mp_thompson_aero_nifaten",
     "mp_thompson_aero_entry_density",
-    "mp_thompson_aero_nwfa_entry_m3",
-    "mp_thompson_aero_nifa_entry_m3",
     "mp_thompson_aero_tau1_density",
     "mp_thompson_aero_nwfa_work_m3",
     "mp_thompson_aero_qc_entry",
     "mp_thompson_aero_ni_entry",
-    "mp_thompson_aero_rc_entry",
-    "mp_thompson_aero_nc_entry_m3",
-    "mp_thompson_aero_nu_c_entry",
-    "mp_thompson_aero_l_qc_entry",
     "mp_thompson_aero_condensation_rate",
 )
 
-#: The two int32 members of that set (the entry droplet diagnosis's shape
-#: parameter and its ``L_qc`` flag).  Both are 4 bytes per element, so the
-#: registry's shape-only accounting is unaffected by the dtype.
-AEROSOL_INT_SCRATCH_SLOTS = (
-    "mp_thompson_aero_nu_c_entry",
-    "mp_thompson_aero_l_qc_entry",
-)
+#: The fused source networks diagnose their integer entry flags inline.
+#: Keep the exported inventory empty for consumers that classify dtypes.
+AEROSOL_INT_SCRATCH_SLOTS = ()
 
 
 def _apply_thompson_aerosol(
@@ -319,23 +309,12 @@ def _apply_thompson_aerosol(
     nifaten = state.scratch((nz, ny, nx), "mp_thompson_aero_nifaten")
     entry_density = state.scratch(
         (nz, ny, nx), "mp_thompson_aero_entry_density")
-    nwfa_entry_m3 = state.scratch(
-        (nz, ny, nx), "mp_thompson_aero_nwfa_entry_m3")
-    nifa_entry_m3 = state.scratch(
-        (nz, ny, nx), "mp_thompson_aero_nifa_entry_m3")
     tau1_density = state.scratch(
         (nz, ny, nx), "mp_thompson_aero_tau1_density")
     nwfa_work_m3 = state.scratch(
         (nz, ny, nx), "mp_thompson_aero_nwfa_work_m3")
     qc_entry = state.scratch((nz, ny, nx), "mp_thompson_aero_qc_entry")
     ni_entry = state.scratch((nz, ny, nx), "mp_thompson_aero_ni_entry")
-    rc_entry = state.scratch((nz, ny, nx), "mp_thompson_aero_rc_entry")
-    nc_entry_m3 = state.scratch(
-        (nz, ny, nx), "mp_thompson_aero_nc_entry_m3")
-    nu_c_entry = state.scratch(
-        (nz, ny, nx), "mp_thompson_aero_nu_c_entry", dtype=np.int32)
-    l_qc_entry = state.scratch(
-        (nz, ny, nx), "mp_thompson_aero_l_qc_entry", dtype=np.int32)
     condensation_rate = state.scratch(
         (nz, ny, nx), "mp_thompson_aero_condensation_rate")
 
@@ -371,12 +350,15 @@ def _apply_thompson_aerosol(
     # (:1826-1848).  The second call ZEROES state.qc and state.nc wherever
     # qc <= R1, which is what makes state.nc a legitimate "nc1d" for every
     # later kernel.
+    # The fused source networks diagnose aerosol concentrations and the
+    # droplet distribution inline.  Only entry density and the qc/nc
+    # rewrite have consumers here; six diagnostic volumes were dead stores.
     launch_aerosol_entry_snapshot(
         temperature, state.p, state.qv, state.nwfa, state.nifa,
-        entry_density, nwfa_entry_m3, nifa_entry_m3)
+        entry_density, None, None)
     launch_aerosol_entry_cloud_number(
         state.qc, state.nc, entry_density,
-        rc_entry, nc_entry_m3, nu_c_entry, l_qc_entry)
+        None, None, None, None)
     # The ncten balance limiter (:2996-3019) needs BOTH the entry and the
     # post-source cloud mass, so the entry value has to be held.
     qc_entry[...] = state.qc

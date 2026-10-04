@@ -934,11 +934,15 @@ neither is an open deviation and neither is a registry warning:
   reader sees; WRF forces `qnwfa`/`qnifa` at the boundary, so in WRF
   this zero does not arise. This matches ArWen's existing
   hydrometeor policy and is documented, not fixed.
-- **MYNN mixes aerosol numbers only when requested.**
-  `bl_mynn_mixscalars` is admitted at 0 (off, also WRF's Registry default)
-  and 1, which uses WRF's qn mixing solves for `nc`/`nwfa`/`nifa`.
-  The 1 arm requires `bl_pbl_physics = 5`, `mp_physics = 28` and
-  `bldt = 0`; see the MYNN scope note and the column-evidence page.
+- **MYNN aerosol number mixing is selectable.** `scalar_pblmix = 1`
+  applies WRF's post-PBL `diff4d` diffusion using MYNN's `exch_h` to
+  `nc`, `ni`, `nwfa` and `nifa`. Rain number is excluded, as in WRF.
+  `bl_mynn_mixscalars = 1` selects MYNN's separate plume transport.
+  Both paths require `mp_physics = 28`, `bl_pbl_physics = 5` and
+  `bldt = 0`; the two mixing selectors cannot both be 1 because WRF
+  disables `scalar_pblmix` when MYNN scalar plume mixing is active.
+  Their defaults are 0. The local diffusion column oracle uses
+  unmodified WRF v4.6.1 `phys/module_pbl_driver.F:2641-2844`.
 - **Mixed mp=8 ↔ mp=28 nesting runs, with a declared entry closure.**
   An mp=28 child under a different-scheme parent takes its rain and ice
   numbers from Thompson's own two closures (the same ones the ratified
@@ -1163,29 +1167,24 @@ and nine for RUC. The optional stock-WRF export beside that route's
 preparation records REFUSED for such a tree, as it does for any MYNN or
 RUC tree; the forecast itself is unaffected.
 
-**What is pinned, and it is a real scope limit.** MYNN's *namelist
-option identity* is a single admitted combination. 11 knobs --
-`bl_mynn_closure` 2.6, `bl_mynn_cloudpdf` 2, `bl_mynn_mixlength` 1,
+**MYNN options.** 10 knobs retain one implemented value:
+`bl_mynn_closure` 2.6, `bl_mynn_cloudpdf` 2,
 `bl_mynn_edmf` 1, `bl_mynn_edmf_mom` 1, `bl_mynn_edmf_tke` 0,
 `bl_mynn_cloudmix` 1, `bl_mynn_mixqt` 0,
 `bl_mynn_output` 0, `bl_mynn_tkeadvect` false, `icloud_bl` 1
-(`gpuwm/config.py`, `MYNN_PBL_OPTION_IDENTITY`) -- have exactly one
-implemented value each, and any other value is refused before the run
-starts rather than three hours into a forecast. `bl_mynn_mixscalars`
-left the single-value table at the W4 full admission: it is admitted at
-0 (default, off) and 1 (the fixture-anchored stock qn mixing), with 1
-pinned by its own validator block to `bl_pbl_physics=5`,
-`mp_physics=28` and `bldt=0`. This is what you will
-see, verbatim:
+(`gpuwm/config.py`, `MYNN_PBL_OPTION_IDENTITY`).
+
+`bl_mynn_mixlength` accepts 1 (default) and 2, the WRF v4.6.1
+mixing-length branches. `bl_mynn_mixscalars` and `scalar_pblmix` accept
+0 (default, off) and 1 for MYNN with aerosol-aware Thompson and
+`bldt = 0`. The former uses MYNN plume transport, the latter local
+post-PBL diffusion. Selecting both is refused because WRF disables the
+latter in that combination. Radiation can be enabled with either
+mixing length. An unported mixing length is refused as follows:
 
 ```
-bl_mynn_mixlength=2 is outside the admitted MYNN option identity; gpuwm implements bl_mynn_mixlength=1 only, and no nearby branch is substituted for an unported one.
+bl_mynn_mixlength must be 1 or 2; other WRF mixing-length branches have no implementation in the column solver.
 ```
-
-So "MYNN now has radiation" does not mean "MYNN now takes options". The
-two facts are independent, and both are pinned by tests: radiation-bearing
-MYNN configs load, and a moved `bl_mynn_*` knob still refuses with
-radiation on.
 
 **One genuine pairing rule, and it points the other way from the usual
 misreading.** The MYNN *surface layer* requires the PBL slot to be MYNN
@@ -1251,6 +1250,13 @@ definition and for the measured difference between the two.
 | RUC (9-level) | 3 | implemented-unverified | column family oracle-matched vs unmodified `module_sf_ruclsm.F`; full device residency measured at production width (0.47 s per call at 360,000 columns, snow-free) |
 | Noah-MP | 4 | implemented-unverified | `NOAHMP_SFLX` bitwise on all four whole-column fixtures; device slab path max ULP 0 vs the scalar authority at 360,000 columns; expert-route option pinned to the exact WRF Registry default option identity |
 
+RUC's `mosaic_lu` and `mosaic_soil` switches accept 0 or 1, default 0.
+`sf_lake_physics = 1` adds WRF's CLM lake column after the land surface;
+its default is also 0. Source category fractions and lake bathymetry pass
+through the prepared and WRF-input doors. See
+[RUC mosaic and CLM lake](../ruc-mosaic-and-clm-lake.md) for the column
+oracles, input requirements and persistence contract.
+
 Divergences the registry states plainly (read the registry warnings
 before relying on any of these over unusual surfaces):
 
@@ -1292,7 +1298,8 @@ defect rather than changing the Noah scheme.
   initialization (not silently skipped); sea ice takes WRF's own skip.
   The WRF six-rate precipitation partition and radiation-cadence COSZEN
   carrier are active.
-- **RUC:** uses WRF-ARW's `EM_CORE==1` species partition, lake bypass,
+- **RUC:** uses WRF-ARW's `EM_CORE==1` species partition, lake bypass only
+  with the lake model enabled,
   fractional-sea-ice pre/post blend, and radiation-cadence GSW carrier.
   WRF's own uninitialized-`ilnb` read on thin snow (a real WRF defect:
   the value depends on grid traversal order) is *not* reproduced; ArWen
@@ -1862,8 +1869,8 @@ with Grell-Freitas, SASE on the revised MM5 surface layer, and the three
 large-eddy closures (1.5-order TKE, 3D Smagorinsky, constant K). None of
 them reads anything source-specific, so none of them is a source's
 choice to make, and every source that names any suite at all names all
-six. On the prepared single-domain route that is nineteen of its
-twenty sources; the other one is the caller-supplied composition row,
+six. On the prepared single-domain route that is twenty-two of its
+twenty-three sources; the other one is the caller-supplied composition row,
 which names no suite because the caller states the physics. A source
 with no measured suite of its own is not emptied: it reports the suites
 that route names for every source it HAS measured, with the limitation
@@ -2303,20 +2310,21 @@ complete register with WRF source citations is
 
 `mp_physics = 28` is a **translation, not a substitution**: it imports
 as 28 and runs the aerosol-aware scheme, so the table above stays at
-exactly two substitutions. The aerosol knobs that surround it
-(`use_aero_icbc`, `use_rap_aero_icbc`, `wif_input_opt`,
-`num_wif_levels`, `qna_update`, `scalar_pblmix`, `grav_settling`,
-`dust_emis`, `wif_fire_emit`, `wif_fire_inj`) are published in the
-registry as unimplemented and refuse rather than being silently
-dropped -- including where WRF *silently overwrites* them under mp=28.
+exactly two substitutions. The monthly WIF namelist pair and
+`use_rap_aero_icbc` are implemented. The latter selects analyzed
+three-dimensional aerosol while retaining the operational monthly surface
+emission; see [analyzed aerosol inputs](ANALYZED-AEROSOL-INPUT.md).
+`scalar_pblmix` imports and runs for MYNN with aerosol-aware Thompson.
+The other surrounding options (`qna_update`, `grav_settling`,
+`dust_emis`, `wif_fire_emit`, `wif_fire_inj`) retain their declared refusals.
 Precisely, in `share/module_check_a_mundo.F`: `grav_settling` is forced
 to 0 unconditionally for every mp=28 domain (`:2459-2474`);
 `scalar_pblmix` is forced to 1 **only** when `use_aero_icbc` or
-`use_rap_aero_icbc` is set (`:2477-2495`), which ArWen never reaches
-because both are refused, and is forced back to 0 on any domain running
+`use_rap_aero_icbc` is set (`:2477-2495`), and is forced back to 0 on any domain running
 MYNN with `bl_mynn_mixscalars = 1` (`:2497-2511`). All three are debug-
 or warning-level messages, not errors. ArWen's standing posture is to
-refuse where WRF overwrites.
+refuse where WRF overwrites: a request combining `scalar_pblmix` with
+`bl_mynn_mixscalars = 1` is refused instead of silently overwritten.
 
 The full knob table around the scheme selectors -- every tweakable
 namelist knob, its TOML spelling, default and allowed range, plus the

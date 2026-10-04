@@ -1,0 +1,26 @@
+{
+  "schema": "gpuwm-obs.precipitation-hdf-products.v1",
+  "products": [
+    {
+      "name": "imerg-final-v07b",
+      "source": "gpm-imerg-final",
+      "reference": "https://gdex.ucar.edu/datasets/d731000/",
+      "value_variable": "/Grid/precipitation",
+      "value_units": "mm/hr",
+      "value_axes": "time,lon,lat",
+      "latitude_variable": "/Grid/lat",
+      "longitude_variable": "/Grid/lon",
+      "time_bounds_variable": "/Grid/time_bnds",
+      "time_units": "seconds since 1980-01-06 00:00:00 UTC",
+      "time_origin": "1980-01-06T00:00:00Z",
+      "accumulation_seconds": 1800,
+      "quality_variable": "/Grid/precipitationQualityIndex",
+      "quality_range": [0.0, 1.0],
+      "root_header_attribute": "FileHeader",
+      "header_start_key": "StartGranuleDateTime",
+      "header_last_included_key": "StopGranuleDateTime",
+      "header_last_included_tick_milliseconds": 1,
+      "required_header_values": {"AlgorithmID": "3IMERGHH", "ProductVersion": "V07B", "TimeInterval": "HALF_HOUR", "EmptyGranule": "NOT_EMPTY"}
+    }
+  ]
+}

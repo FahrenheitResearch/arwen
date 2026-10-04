@@ -20,6 +20,7 @@ workspace's lock.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import tomllib
 
 import pytest
@@ -141,3 +142,46 @@ def test_every_workspace_with_a_lock_is_checked():
         for path in (REPOSITORY_ROOT / "tools").glob("*/Cargo.lock")
     }
     assert locks == set(WORKSPACES)
+
+
+def _ambiguous_dependencies(lock):
+    """Cargo requires a source qualifier when equal-version crates coexist."""
+    ambiguous = []
+    for owner in lock["package"]:
+        for dependency in owner.get("dependencies", ()):
+            match = re.fullmatch(r"([^ ]+)(?: ([^ ]+))?(?: \((.+)\))?", dependency)
+            assert match, dependency
+            name, version, source = match.groups()
+            candidates = [entry for entry in lock["package"]
+                if entry["name"] == name and (version is None or entry["version"] == version)
+                and (source is None or entry.get("source", "").split("#", 1)[0] == source)]
+            if source is None and len(candidates) > 1:
+                # A path/workspace package is represented without a source.
+                # Cargo's generated lock retains that unqualified local edge
+                # beside a qualified git copy of the same package/version.
+                local = [entry for entry in candidates if "source" not in entry]
+                if local:
+                    candidates = local
+            if len(candidates) != 1:
+                ambiguous.append(f"{owner['name']}: {dependency} resolves to {len(candidates)} entries")
+    return ambiguous
+
+
+@pytest.mark.parametrize("workspace", WORKSPACES)
+def test_lock_dependency_edges_identify_one_package(workspace):
+    ambiguous = _ambiguous_dependencies(_load(REPOSITORY_ROOT / workspace / "Cargo.lock"))
+    assert not ambiguous, "cargo build --locked cannot resolve these dependency edges: " + "; ".join(ambiguous)
+
+
+def test_equal_version_git_dependencies_require_their_actual_source():
+    packages = [{"name": "consumer", "version": "1", "dependencies": ["core"]},
+        {"name": "core", "version": "0.1", "source": "git+https://example.test/core?rev=first#aaa"},
+        {"name": "core", "version": "0.1", "source": "git+https://example.test/core?rev=second#bbb"}]
+    assert _ambiguous_dependencies({"package": packages})
+    packages[0]["dependencies"] = ["core 0.1"]
+    assert _ambiguous_dependencies({"package": packages})
+    packages[0]["dependencies"] = ["core 0.1 (git+https://example.test/core?rev=first)"]
+    assert _ambiguous_dependencies({"package": packages}) == []
+    packages.append({"name": "core", "version": "0.1"})
+    packages[0]["dependencies"] = ["core 0.1"]
+    assert _ambiguous_dependencies({"package": packages}) == []

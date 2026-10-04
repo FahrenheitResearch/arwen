@@ -64,6 +64,10 @@ _TOP_LEVEL_EXCLUDES = {
     # exists to call is not in this wheel, so shipping it would offer a
     # command that cannot run.
     "go_cli.py",
+    # Input-cycle checks belong to go_cli/runplan, both excluded here.
+    # Their checkpoint verification imports the forecast-only io.restart;
+    # no standalone preparation door imports this module.
+    "input_cycle.py",
     # Its only importer, go_cli.py, is excluded, as is its dependency
     # gpuwm.supervisor. A preprocessing wheel does not run forecasts.
     "forecast_supervisor.py",
@@ -515,7 +519,49 @@ _INGEST_EXCLUDES = {"preflight.py", "nest_spawn_init.py",
 #: the radar front door `gpuwm doctor` checks for is unaffected.
 # GOES window acquisition publishes cycle/ensemble manifests. The lower-level
 # observation decoders remain available to standalone preprocessing.
-_OBS_EXCLUDES = {"sources.py", "goes_window.py"}
+#: `precipitation.py` subclasses `gpuwm.obs.sources._GriddedSource` at module
+#: scope, so it crosses the same verification boundary `sources.py` does and
+#: stays behind with it.  It is the scorer's precipitation timeline, and its
+#: only importer is the observation battery's scoring tool, which this wheel
+#: does not stage.
+_OBS_EXCLUDES = {"sources.py", "goes_window.py", "precipitation.py"}
+#: The PREPARATION SIDE of ``gpuwm/ensemble``, an allowlist like
+#: ``_IO_MODULES`` and for the same reason: the package is mostly member
+#: orchestration and the batched forecast, which this wheel exists not to
+#: carry.
+#:
+#: What forces a name here is that ordinary preparation reaches it.  Every
+#: streamed preparation asks ``posted_preparation`` whether a posted member
+#: input is bound (``gpuwm/ingest/boundary_stream.py``, ``gpuwm/gfs_direct.py``,
+#: ``gpuwm/mapped_direct.py``, ``gpuwm/ingest/nest_init.py``), every child
+#: preparation asks ``runtime_preparation`` the same about a runtime member
+#: (``nest_init.py``), and every namelist import reads ``stochastic`` and
+#: ``stochastic_seeds`` through ``gpuwm/namelist_stochastic.py``.  With the
+#: package absent each of those is a ModuleNotFoundError in a preparation
+#: that binds no member at all, which is how the ensemble line broke this
+#: wheel's staging.
+#:
+#: The rest is the physical member input those doors accept
+#: (``--physical-input-store``, ``--physical-output-store``, a posted
+#: provider): the store, its field contract, the boundary record a prepared
+#: head binds, the source recipes and the three per-source contracts and
+#: reuse writers.  Module scope across the set is the standard library plus
+#: numpy; every reach into the forecast executor is function-local and has
+#: its reason in ``_OPTIONAL_STAGED_IMPORTS``.
+#:
+#: ``__init__.py`` is staged as the package door.  Its exports are lazy, so
+#: importing one of these modules imports none of the orchestration the
+#: door also names (``cycle`` and ``engine`` reach the forecast executor).
+_ENSEMBLE_MODULES = {
+    "__init__.py",
+    "gfs_physical_contract.py", "gfs_posted_reuse.py",
+    "hrrr_physical_contract.py",
+    "mapped_physical_contract.py", "mapped_posted_reuse.py",
+    "physical_boundary.py", "physical_fields.py", "physical_store.py",
+    "posted_native.py", "posted_physical.py", "posted_preparation.py",
+    "recipes.py", "runtime_preparation.py", "seeds.py",
+    "stochastic.py", "stochastic_seeds.py",
+}
 #: The only two files of ``gpuwm/io`` this wheel stages -- named
 #: individually rather than by excluding the rest of the package,
 #: because the package is the forecast executor's output side and the
@@ -622,6 +668,60 @@ _FORBIDDEN_STAGED_FILES = {
 }
 
 _OPTIONAL_STAGED_IMPORTS = {
+    ("gpuwm/config.py", "gpuwm.ensemble.request"):
+        "the [ensemble] table's validator, imported only when a RunConfig "
+        "TOML carries the table.  The request reads the batched forecast's "
+        "product table (gpuwm.ensemble.batch_products), which this wheel "
+        "does not stage.  load_config asks "
+        "gpuwm.ensemble.request_installed() first: preparation consumes "
+        "nothing from the table, so a preparation-only install leaves it "
+        "for the ensemble door to validate where the forecast is installed",
+    ("gpuwm/experiment.py", "gpuwm.ensemble.request"):
+        "the same [ensemble] validator at the experiment door, behind the "
+        "same request_installed() check as gpuwm/config.py above",
+    ("gpuwm/core/streaming.py", "gpuwm.ensemble.stochastic_streaming"):
+        "the stochastic hook of an executing forecast tile step; "
+        "StreamingOptions and config validation reach no step",
+    ("gpuwm/stage_cli.py", "gpuwm.ensemble.calibration_admission"):
+        "the calibrated-perturbation admission inside sim_main, a forecast "
+        "door.  This package's one route into stage_cli is the preparation "
+        "handoff, which resolves no forecast (see "
+        "gpuwm.prepared_single_domain_forecast below)",
+    ("gpuwm/ensemble/posted_physical.py", "gpuwm.ensemble.physical_recenter"):
+        "the recentered recipe's member operator, imported inside "
+        "PostedPhysicalProvider.prepare only for recipe kind 'recentered'.  "
+        "It runs real initialization over a donor population on the card "
+        "(gpuwm.ensemble.recentered, gpuwm.ensemble.native_preparation); "
+        "direct posted recipes never take the branch",
+    ("gpuwm/ensemble/posted_native.py", "gpuwm.prepared_single_domain_forecast"):
+        "the ordinary source head preflight a posted provider's member runs "
+        "with its original pin (checked_source_inputs).  It is the forecast "
+        "runner's preflight and this wheel carries no forecast runner; the "
+        "function asks gpuwm.stage_cli.missing_forecast_runners() first and "
+        "refuses a provider member here by name.  Sealed physical stores do "
+        "not reach it",
+    ("gpuwm/ensemble/runtime_preparation.py", "gpuwm.ingest.preflight"):
+        "the runtime member's input catalog (runtime_input_catalog and "
+        "RuntimePreparation.catalog), called by the forecast runtime's own "
+        "preparation, excluded with gpuwm/ingest/preflight.py above.  A "
+        "standalone preparation asks only current_runtime_preparation(), "
+        "which answers None with no runtime member bound",
+    ("gpuwm/ensemble/runtime_preparation.py", "gpuwm.ingest.case_store"):
+        "capture_root_inputs seals a runtime member's cold source words, "
+        "reached only inside a root build scope the forecast runtime opens",
+    ("gpuwm/ensemble/runtime_preparation.py", "gpuwm.runtime"):
+        "prepare_root and _restore_root build or restore a runtime member's "
+        "root through the forecast runtime, excluded above",
+    ("tools/hrrr_single_domain_benchmark.py", "tools.hrrr_posted_reuse"):
+        "the shared posted HRRR producer of a provider member, imported only "
+        "with --physical-input-provider and beside "
+        "gpuwm.ensemble.posted_native.checked_source_inputs, which refuses a "
+        "provider member on a preparation-only install by name before the "
+        "producer is used",
+    ("gpuwm/ingest/prepared_store.py", "gpuwm.core.terrain_drag"):
+        "the topo_wind=1 halo refresh of a forecast slab's physics "
+        "initialization (CuPy, imported inside the function); standalone "
+        "preparation initializes no forecast physics",
     ("gpuwm/config.py", "gpuwm.offline_child_geography"):
         "the [static] parser runs only when load_config admits child_static, "
         "which only the excluded offline child route requests; ordinary "
@@ -698,6 +798,10 @@ _OPTIONAL_STAGED_IMPORTS = {
         "forecast_installed() is checked before this import, so a "
         "preparation-only installation reads no forecast workspace count "
         "and publishes at the seal",
+    ("gpuwm/ingest/boundary_stream.py", "gpuwm.core.devices_memory"):
+        "ranked forecast memory admission, reached through PreparedTreeWriter.admit "
+        "only after forecast_installed() confirms a forecast executor; a "
+        "preparation-only installation returns before pricing any forecast",
     ("gpuwm/ingest/boundary_stream.py", "gpuwm.prepared_domain_tree_forecast"):
         "the prepared tree's land-cover count reader, reused for chained "
         "head admission after forecast_installed() confirms this package "
@@ -1121,7 +1225,7 @@ description = "Native parallel preprocessing and stock-WRF initialization"
 readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.11"
-dependencies = ["numpy>=1.26", "netCDF4>=1.6"]
+dependencies = ["numpy>=1.26", "netCDF4>=1.6", "threadpoolctl>=3.1"]
 keywords = ["WRF", "WPS", "GRIB", "NetCDF", "weather"]
 classifiers = ["License :: OSI Approved :: Apache Software License"]
 
@@ -1264,6 +1368,11 @@ def _stage_rw_wps_python_project(destination: Path) -> dict[str, object]:
         _copy_source(
             REPO / "gpuwm" / "io" / name,
             package / "io" / name,
+        )
+    for name in sorted(_ENSEMBLE_MODULES):
+        _copy_source(
+            REPO / "gpuwm" / "ensemble" / name,
+            package / "ensemble" / name,
         )
     for name in sorted(_CORE_MODULES):
         _copy_source(

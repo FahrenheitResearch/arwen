@@ -47,6 +47,10 @@ Two download sources serve byte-identical archives:
   accepts the new bytes when the size stays inside a sanity band, and
   records the archive as unpinned in the local manifest.
 
+The optional lake-depth archive is available from NCAR only. Source
+availability is declared per archive; a request through the mirror uses
+the declared upstream source for a dataset the mirror does not carry.
+
 ``--bundle`` fetches NCAR's single ``geog_high_res_mandatory.tar.gz``
 (2.6 GB compressed, ~29 GB unpacked) instead of the per-dataset
 tarballs and extracts only the requested datasets from it.  The bundle
@@ -164,8 +168,12 @@ class GeogArchive:
     door hard-requires, so that flag made ``gpuwm doctor`` choose between
     demanding 13 GB of a WRF-only box and calling a tree complete that
     ``gpuwm mesh`` refuses.  Scoped by consumer, each verdict reads its
-    own column and both are right.  Every pin is required by at least one
-    door; a pin no door names would be a download with no reader.
+    own column and both are right. ``optional_for`` names consumers that
+    read a dataset only when a selected model option needs it. It does not
+    change the consumer's mandatory geography set.
+
+    ``available_sources`` lists the hosts that carry these exact bytes.
+    The first serves requests whose preferred host does not carry the file.
     """
 
     dataset: str
@@ -176,6 +184,8 @@ class GeogArchive:
     index_subdirs: tuple[str, ...] = ()
     in_mandatory_bundle: bool = True
     required_by: tuple[str, ...] = (GEOG_CONSUMER_WRF,)
+    optional_for: tuple[str, ...] = ()
+    available_sources: tuple[str, ...] = GEOG_SOURCES
 
 
 #: Both doors need this pin; only the WRF static builder does; only the
@@ -254,6 +264,15 @@ GEOG_ARCHIVES: tuple[GeogArchive, ...] = (
          "texture_layer1", "texture_layer2",
          "texture_layer3", "texture_layer4"),
         in_mandatory_bundle=False, required_by=_MESH_ONLY),
+    # CLM lake physics reads depth only when sf_lake_physics=1. This NCAR
+    # archive is outside the mandatory bundle and is not on the mirror:
+    # gpuwm fetch-geog --datasets lake_depth --source ncar
+    # Pinned from the official TLS download on 2026-10-03.
+    GeogArchive(
+        "lake_depth", "lake_depth.tar.bz2", 2425674,
+        "7f016173f4999e67d9757bddb9e80f1b1f3794bfe820fd78b215eb599d59fd76",
+        1884949370, in_mandatory_bundle=False,
+        required_by=(), optional_for=_WRF_ONLY, available_sources=("ncar",)),
 )
 
 #: NCAR's "highest resolution mandatory fields" bundle: the fallback
@@ -1174,9 +1193,9 @@ def _fetch_geog_locked(*, root: Path, datasets: tuple[str, ...], source: str,
 
     def run_archive(filename: str, expected_bytes: int,
                     expected_sha256: str, targets: tuple[str, ...],
-                    label: str) -> None:
+                    label: str, actual_source: str = source) -> None:
         nonlocal staged
-        url = archive_url(filename, source)
+        url = archive_url(filename, actual_source)
         dest = archive_dir / filename
         if dest.exists() and dest.stat().st_size == expected_bytes \
                 and sha256_file(dest) == expected_sha256:
@@ -1187,11 +1206,11 @@ def _fetch_geog_locked(*, root: Path, datasets: tuple[str, ...], source: str,
             download_archive(url, dest, expected_bytes=expected_bytes,
                              progress=progress, label=label,
                              strict_size=not (allow_drift
-                                              and source == "ncar"),
+                                              and actual_source == "ncar"),
                              urlopen_fn=urlopen_fn)
             observed, pinned = verify_archive(
                 dest, expected_sha256=expected_sha256,
-                expected_bytes=expected_bytes, source=source,
+                expected_bytes=expected_bytes, source=actual_source,
                 allow_drift=allow_drift, progress=progress, label=label)
         counts = extract_datasets(dest, root, targets,
                                   progress=progress, label=label)
@@ -1201,7 +1220,7 @@ def _fetch_geog_locked(*, root: Path, datasets: tuple[str, ...], source: str,
         # holding it in memory until every archive finished meant a kill
         # in between lost it with nothing able to rebuild it.
         publish_archive_entry(root, filename, {
-            "url": url, "source": source,
+            "url": url, "source": actual_source,
             "archive_bytes": dest.stat().st_size,
             "archive_sha256": observed, "pinned": pinned,
             "datasets": {target: counts[target] for target in targets},
@@ -1221,8 +1240,13 @@ def _fetch_geog_locked(*, root: Path, datasets: tuple[str, ...], source: str,
     else:
         for name in needed:
             archive = archive_for(name)
+            actual_source = (source if source in archive.available_sources
+                             else archive.available_sources[0])
+            if actual_source != source:
+                progress(f"fetch-geog {name}: unavailable on {source}; "
+                         f"using {actual_source}")
             run_archive(archive.filename, archive.archive_bytes,
-                        archive.archive_sha256, (name,), name)
+                        archive.archive_sha256, (name,), name, actual_source)
 
     failures = []
     for name in datasets:

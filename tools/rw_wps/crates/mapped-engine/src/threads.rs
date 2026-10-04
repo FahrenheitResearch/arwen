@@ -36,10 +36,14 @@
 //! made from the inventory pass, which has read every selected record's
 //! grid, so the first decode already runs at the priced width.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use rayon::{ThreadPool, ThreadPoolBuilder};
+use std::io::Write;
+
+#[path = "../../../../preparation_resources.rs"]
+mod resources;
 
 /// Override for the worker count, for measurement and for a caller who
 /// is running several engines at once and wants each one narrower.
@@ -70,12 +74,9 @@ pub fn threads() -> usize {
             .and_then(|value| value.trim().parse::<usize>().ok())
             .filter(|value| *value > 0)
         {
-            return declared;
+            return declared.min(resources::available_cpus());
         }
-        std::thread::available_parallelism()
-            .map(|count| count.get())
-            .unwrap_or(1)
-            .max(1)
+        resources::available_cpus()
     })
 }
 
@@ -203,6 +204,148 @@ fn available_memory_impl() -> Option<u64> {
 /// the next reads come from, and anything else on the box.
 pub const MEMORY_SHARE: f64 = 0.7;
 
+/// Additional whole-child memory reserved by a concurrently running parent.
+/// Unlike available host bytes, this is already a usable budget: no second
+/// MEMORY_SHARE discount is applied. Retained primary and donor streams count
+/// against the same cap, not a new cap for each stream.
+pub const MEMORY_BUDGET_ENV: &str = "GPUWM_MAPPED_ENGINE_MEMORY_BUDGET_BYTES";
+pub const MEMORY_BUDGET_SCHEMA: &str = "gpuwm-mapped-host-memory-budget-v1";
+static UNPRICED_ACQUISITION: AtomicBool = AtomicBool::new(false);
+
+fn acquisition_budget_check(codec: &str, cap: Option<u64>) -> crate::refusal::Result<()> {
+    if cap.is_some() {
+        return Err(crate::refusal::host_memory(format!(
+            "the {codec} acquisition wrapper has no bounded expansion price; refusing the scoped child before decompression")));
+    }
+    Ok(())
+}
+
+pub fn admit_acquisition_codec(codec: &str) -> crate::refusal::Result<()> {
+    // The ordinary acquisition path remains available. Its price cannot
+    // qualify a future child reservation until codec expansion is bounded.
+    UNPRICED_ACQUISITION.store(true, Ordering::SeqCst);
+    acquisition_budget_check(codec, declared_memory_budget()?)
+}
+
+#[cfg(target_os = "linux")]
+fn process_memory() -> Option<(u64, u64)> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let kib = |name: &str| status.lines().find_map(|line| {
+        line.strip_prefix(name)?.split_whitespace().next()?.parse::<u64>().ok()
+    }).map(|n| n.saturating_mul(1024));
+    let resident = kib("VmRSS:")?;
+    // Swapped arrays still belong to this child and may become resident at
+    // the next access. Do not turn paging into a fresh reservation.
+    Some((resident, resident.saturating_add(kib("VmSwap:").unwrap_or(0))))
+}
+
+#[cfg(windows)]
+fn process_memory() -> Option<(u64, u64)> {
+    use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    let mut counters: PROCESS_MEMORY_COUNTERS = unsafe { std::mem::zeroed() };
+    counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+    let size = counters.cb;
+    // SAFETY: the pseudo-handle names this process; counters is writable and
+    // its API size is supplied. The call acquires no handle to close.
+    if unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, size) } == 0 {
+        return None;
+    }
+    let resident = counters.WorkingSetSize as u64;
+    Some((resident, resident.max(counters.PagefileUsage as u64)))
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn process_memory() -> Option<(u64, u64)> { None }
+
+fn declared_memory_budget() -> crate::refusal::Result<Option<u64>> {
+    match std::env::var(MEMORY_BUDGET_ENV) {
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Ok(value) => value.trim().parse::<u64>().map(Some).map_err(|_| {
+            crate::refusal::usage(format!("{MEMORY_BUDGET_ENV} must be a nonnegative integer number of usable bytes"))
+        }),
+        Err(_) => Err(crate::refusal::usage(format!("{MEMORY_BUDGET_ENV} is not Unicode"))),
+    }
+}
+
+fn usable_budget_on(available: Option<u64>, declared: Option<u64>,
+                    held: u64, process_bytes: Option<u64>) -> crate::refusal::Result<Option<u64>> {
+    let host = available.map(|n| (n.saturating_add(held) as f64 * MEMORY_SHARE) as u64);
+    let child = match declared {
+        None => None,
+        Some(cap) => {
+            let current = process_bytes.ok_or_else(|| crate::refusal::host_memory(
+                "the native child cannot measure its own memory to enforce the declared budget"))?;
+            // held is this stream's first decoded frame, already included in
+            // series_price. Other retained streams and native overhead remain
+            // charged. Saturate the debit before subtracting it from the cap.
+            Some(cap.saturating_sub(current.saturating_sub(held)))
+        }
+    };
+    Ok(match (host, child) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    })
+}
+
+pub fn usable_budget(held: u64) -> crate::refusal::Result<Option<u64>> {
+    usable_budget_on(available_memory(), declared_memory_budget()?, held,
+                     process_memory().map(|(_, committed)| committed))
+}
+
+/// The bytes ONE source time on one worker is held to ([`require_minimum`]).
+///
+/// With no declared child budget this is the whole reading, available
+/// memory plus what this stream already holds: [`MEMORY_SHARE`] is the
+/// margin the pool's width and the lanes keep, not a minimum, so a valid
+/// time bigger than the share still runs, alone and on one thread, and
+/// only a valid time bigger than the memory there is gets refused.  A
+/// declared child budget is a reservation the parent holds the rest of the
+/// machine against, so there the minimum is held to the usable budget.
+///
+/// Named breakage: the minimum was checked against the share, so a 7 GiB
+/// source time with 9.5 GiB available (share 6.65 GiB) was refused before
+/// decode with `host_memory`, where 2.8.4 decoded it on one worker.  The
+/// refusal named a 70% planning share, not memory the host did not have.
+fn minimum_budget_on(available: Option<u64>, declared: Option<u64>,
+                     held: u64, process_bytes: Option<u64>) -> crate::refusal::Result<Option<u64>> {
+    match declared {
+        Some(_) => usable_budget_on(available, declared, held, process_bytes),
+        None => Ok(available.map(|bytes| bytes.saturating_add(held))),
+    }
+}
+
+fn minimum_budget(held: u64) -> crate::refusal::Result<Option<u64>> {
+    minimum_budget_on(available_memory(), declared_memory_budget()?, held,
+                      process_memory().map(|(_, committed)| committed))
+}
+
+pub fn require_priced_format(format: &str) -> crate::refusal::Result<()> {
+    if format != "grib2" {
+        let _ = writeln!(std::io::stderr(), "GPUWM_PREP_THREADS {}", serde_json::json!({
+            "stage": "mapped_decode_compose", "source_format": format,
+            "memory_priced": false, "per_time_bytes": 0,
+            "process_rss_bytes": process_memory().map(|(rss, _)| rss)
+        }));
+        if declared_memory_budget()?.is_some() {
+            return Err(crate::refusal::host_memory(format!(
+                "a scoped native memory budget cannot price the whole-object {format} decode; refusing before reading its payload")));
+        }
+    }
+    Ok(())
+}
+
+fn require_minimum(per_time: u64, fields: &[u64], budget: Option<u64>) -> crate::refusal::Result<()> {
+    if let Some(bytes) = budget.filter(|_| per_time > 0) {
+        let minimum = series_price(1, 1, per_time, fields);
+        if minimum > bytes {
+            return Err(crate::refusal::host_memory(format!(
+                "one source time on one worker needs {minimum} bytes, but only {bytes} usable bytes remain; refusing before decode")));
+        }
+    }
+    Ok(())
+}
+
 /// How many valid times a whole-series writer keeps in flight at once,
 /// on the pool as [`admit_width`] left it.
 ///
@@ -221,21 +364,24 @@ pub const MEMORY_SHARE: f64 = 0.7;
 /// Named breakage the memory bound prevents: a 3 km CONUS pressure-level
 /// valid time is about 7 GB of float64 before it is windowed, so sixteen
 /// of them at once is more than a 128 GB box has.
-pub fn lanes(per_time_bytes: u64, field_bytes: &[u64], held_bytes: u64, times: usize) -> usize {
-    if let Some(declared) = std::env::var(LANES_ENV)
+pub fn lanes(per_time_bytes: u64, field_bytes: &[u64], held_bytes: u64, times: usize) -> crate::refusal::Result<usize> {
+    release_freed_memory();
+    let budget = usable_budget(held_bytes)?;
+    require_minimum(per_time_bytes, field_bytes, minimum_budget(held_bytes)?)?;
+    // Another stream may now be retained, or available memory may have
+    // fallen since the first decode. Narrow before dispatch, not after OOM.
+    narrow(width_for_budget(width(), per_time_bytes, field_bytes, budget));
+    require_priced_pool()?;
+    let fit = lanes_on_budget(width(), per_time_bytes, field_bytes, budget, times);
+    let requested = std::env::var(LANES_ENV)
         .ok()
         .and_then(|value| value.trim().parse::<usize>().ok())
-        .filter(|value| *value > 0)
-    {
-        return declared.min(times).max(1);
-    }
-    lanes_on(
-        width(),
-        per_time_bytes,
-        field_bytes,
-        available_memory().map(|bytes| bytes.saturating_add(held_bytes)),
-        times,
-    )
+        .filter(|value| *value > 0);
+    Ok(limit_requested_lanes(fit, requested))
+}
+
+fn limit_requested_lanes(fit: usize, requested: Option<usize>) -> usize {
+    requested.map_or(fit, |count| count.min(fit)).max(1)
 }
 
 /// What `lanes` valid times in flight on a pool `width` threads wide hold
@@ -261,9 +407,9 @@ pub fn lanes(per_time_bytes: u64, field_bytes: &[u64], held_bytes: u64, times: u
 /// 19.5 GiB; two on 24 threads 32.6 GiB; four on 24 threads 56.7 GiB.
 pub fn series_price(lanes: usize, width: usize, per_time_bytes: u64, field_bytes: &[u64]) -> u64 {
     let lanes = lanes.max(1) as u64;
-    let decoded: u64 = field_bytes.iter().sum();
+    let decoded = field_bytes.iter().copied().fold(0u64, u64::saturating_add);
     let waiting = if lanes >= 2 { lanes / 2 } else { 0 };
-    let in_flight: u64 = field_bytes.iter().take(width.max(1)).sum();
+    let in_flight = field_bytes.iter().take(width.max(1)).copied().fold(0u64, u64::saturating_add);
     lanes
         .saturating_mul(per_time_bytes)
         .saturating_add(waiting.saturating_mul(decoded))
@@ -273,14 +419,17 @@ pub fn series_price(lanes: usize, width: usize, per_time_bytes: u64, field_bytes
 /// The widest pool, up to `threads`, on which ONE valid time's
 /// [`series_price`] fits in [`MEMORY_SHARE`] of `memory`; never narrower
 /// than one thread, so a valid time bigger than the share still runs,
-/// alone and on one thread.  An unknown price (0) or an unknown memory
-/// keeps every thread.
+/// alone and on one thread.  A valid time bigger than the memory there is
+/// is refused by [`require_minimum`], not here.  An unknown price (0) or
+/// an unknown memory keeps every thread.
 pub fn width_for(threads: usize, per_time_bytes: u64, field_bytes: &[u64], memory: Option<u64>) -> usize {
+    width_for_budget(threads, per_time_bytes, field_bytes,
+                     memory.map(|n| (n as f64 * MEMORY_SHARE) as u64))
+}
+
+fn width_for_budget(threads: usize, per_time_bytes: u64, field_bytes: &[u64], budget: Option<u64>) -> usize {
     let threads = threads.max(1);
-    let Some(memory) = memory.filter(|_| per_time_bytes > 0) else {
-        return threads;
-    };
-    let share = (memory as f64 * MEMORY_SHARE) as u64;
+    let Some(share) = budget.filter(|_| per_time_bytes > 0) else { return threads; };
     let mut width = threads;
     while width > 1 && series_price(1, width, per_time_bytes, field_bytes) > share {
         width -= 1;
@@ -299,11 +448,15 @@ pub fn lanes_on(
     memory: Option<u64>,
     times: usize,
 ) -> usize {
+    lanes_on_budget(width, per_time_bytes, field_bytes,
+                    memory.map(|n| (n as f64 * MEMORY_SHARE) as u64), times)
+}
+
+fn lanes_on_budget(width: usize, per_time_bytes: u64, field_bytes: &[u64], budget: Option<u64>, times: usize) -> usize {
     let width = width.max(1);
-    let Some(memory) = memory.filter(|_| per_time_bytes > 0) else {
-        return lanes_for(width, per_time_bytes, memory, times);
+    let Some(share) = budget.filter(|_| per_time_bytes > 0) else {
+        return width.min(if budget.is_some() { width } else { 2 }).min(times).max(1);
     };
-    let share = (memory as f64 * MEMORY_SHARE) as u64;
     let mut lanes = width.min(times).max(1);
     while lanes > 1 && series_price(lanes, width, per_time_bytes, field_bytes) > share {
         lanes -= 1;
@@ -326,10 +479,46 @@ pub fn lanes_on(
 /// same valid time holds 14.4 GiB in the same wall time.  Narrowing the
 /// pool only after the first valid time had been decoded was measured
 /// and made it worse: that decode had already run at full width.
-pub fn admit_width(per_time_bytes: u64, field_bytes: &[u64]) -> usize {
+pub fn admit_width(per_time_bytes: u64, field_bytes: &[u64], whole_per_time_bytes: u64) -> crate::refusal::Result<usize> {
     release_freed_memory();
-    narrow(width_for(threads(), per_time_bytes, field_bytes, available_memory()));
-    width()
+    let budget = usable_budget(0)?;
+    require_minimum(per_time_bytes, field_bytes, minimum_budget(0)?)?;
+    narrow(width_for_budget(threads(), per_time_bytes, field_bytes, budget));
+    require_priced_pool()?;
+    if let Some(share) = budget.filter(|_| per_time_bytes > 0) {
+        let alone = series_price(1, 1, per_time_bytes, field_bytes);
+        if alone > share {
+            let _ = writeln!(std::io::stderr(), "preparation worker warning: one source time needs {alone} bytes, more than the {share} bytes its planning share of host memory allows; decoding it alone on one worker");
+        }
+    }
+    let actual_pool = pool();
+    let actual_width = actual_pool.as_ref().map_or_else(
+        rayon::current_num_threads, |pool| pool.current_num_threads());
+    if actual_width < threads() {
+        let _ = writeln!(std::io::stderr(), "preparation worker warning: native decode requested {} workers, but its host-memory budget permits {actual_width}; using the priced pool", threads());
+    }
+    if actual_pool.is_none() {
+        let _ = writeln!(std::io::stderr(), "preparation worker warning: dedicated decode pool unavailable; using the global Rayon pool with {actual_width} workers");
+    }
+    let _ = writeln!(std::io::stderr(), "GPUWM_PREP_THREADS {}", serde_json::json!({
+        "stage": "mapped_decode_compose", "requested_workers": std::env::var(THREADS_ENV).ok(),
+        "available_cpus": resources::available_cpus(), "effective_workers": actual_width,
+        "memory_priced": !UNPRICED_ACQUISITION.load(Ordering::SeqCst), "per_time_bytes": per_time_bytes,
+        "whole_per_time_bytes": whole_per_time_bytes,
+        "process_rss_bytes": process_memory().map(|(rss, _)| rss),
+        "usable_budget_bytes": budget,
+        "declared_child_budget_bytes": declared_memory_budget()?,
+        "pool": if actual_pool.is_some() { "dedicated-rayon" } else { "global-rayon-fallback" }
+    }));
+    Ok(width())
+}
+
+fn require_priced_pool() -> crate::refusal::Result<()> {
+    if pool().is_none() && (declared_memory_budget()?.is_some() || rayon::current_num_threads() > width()) {
+        return Err(crate::refusal::host_memory(
+            "the dedicated native worker pool could not start; an unpriced global-pool fallback would exceed the scoped memory contract"));
+    }
+    Ok(())
 }
 
 /// Hand the heap pages the steps so far have freed back to the system
@@ -358,7 +547,7 @@ fn release_freed_memory() {
 }
 
 /// Override for [`lanes`], for measurement: the number of valid times a
-/// whole-series writer keeps in flight, whatever the memory says.
+/// whole-series writer requests in flight, bounded by memory admission.
 pub const LANES_ENV: &str = "GPUWM_MAPPED_ENGINE_LANES";
 
 /// The lane rule without a price: the pool width, lowered so
@@ -612,5 +801,102 @@ mod tests {
         ];
         let refusal = in_order(slots).unwrap_err();
         assert_eq!(refusal.message, "second");
+    }
+
+    #[test]
+    fn a_child_cap_charges_retained_streams_and_is_not_discounted_twice() {
+        // Host gives 700 usable bytes, child cap 500 less 120 already held.
+        assert_eq!(usable_budget_on(Some(1000), Some(500), 0, Some(120)).unwrap(), Some(380));
+        // This stream's 80-byte first frame is already in its series price.
+        // Its other 40 resident bytes (including another stream) stay charged.
+        assert_eq!(usable_budget_on(Some(1000), Some(500), 80, Some(120)).unwrap(), Some(460));
+        assert_eq!(usable_budget_on(Some(100), Some(500), 0, Some(120)).unwrap(), Some(70));
+        assert_eq!(usable_budget_on(None, Some(500), 0, Some(120)).unwrap(), Some(380));
+        assert_eq!(usable_budget_on(Some(1000), Some(50), 80, Some(160)).unwrap(), Some(0));
+        assert_eq!(usable_budget_on(None, None, 0, None).unwrap(), None);
+        assert!(usable_budget_on(Some(1000), Some(500), 0, None).is_err());
+    }
+
+    #[test]
+    fn explicit_time_lanes_cannot_bypass_the_reserved_child_budget() {
+        let fit = lanes_on_budget(24, 130, &[60, 20], Some(220), 48);
+        assert_eq!(fit, 1);
+        assert_eq!(limit_requested_lanes(fit, Some(48)), 1);
+        assert_eq!(limit_requested_lanes(5, Some(2)), 2);
+    }
+
+    #[test]
+    fn an_unaffordable_first_time_is_a_structured_refusal() {
+        let failure = require_minimum(130, &[60, 20], Some(189)).unwrap_err();
+        assert_eq!(failure.class, crate::refusal::class::HOST_MEMORY);
+        assert!(failure.message.contains("190 bytes"));
+        assert!(failure.message.contains("189 usable bytes"));
+        assert!(failure.message.contains("before decode"));
+        assert!(require_minimum(130, &[60, 20], Some(190)).is_ok());
+    }
+
+    #[test]
+    fn a_source_time_bigger_than_the_share_runs_alone_as_it_did_in_2_8_4() {
+        const GIB: u64 = 1 << 30;
+        // THE REGRESSION: 7 GiB per source time, 9.5 GiB available, no
+        // child budget.  The share is 0.7 * 9.5 = 6.65 GiB, under the
+        // price; 2.8.4 narrowed the pool to one thread and decoded it.
+        let per_time = 7 * GIB;
+        let available = Some(19 * GIB / 2);
+        let share = usable_budget_on(available, None, 0, None).unwrap();
+        assert_eq!(share, Some((19.0 * GIB as f64 / 2.0 * MEMORY_SHARE) as u64));
+        assert!(series_price(1, 1, per_time, &[]) > share.unwrap());
+        // The share only narrows: one thread, one lane, never zero.
+        assert_eq!(width_for_budget(24, per_time, &[], share), 1);
+        assert_eq!(lanes_on_budget(1, per_time, &[], share, 19), 1);
+        // The minimum is held to the memory there is, and it fits.
+        let minimum = minimum_budget_on(available, None, 0, None).unwrap();
+        assert_eq!(minimum, available);
+        assert!(require_minimum(per_time, &[], minimum).is_ok());
+        // The frame this stream already holds is part of that memory.
+        assert_eq!(minimum_budget_on(Some(GIB), None, 8 * GIB, None).unwrap(), Some(9 * GIB));
+        // An unknown reading refuses nothing.
+        assert_eq!(minimum_budget_on(None, None, 0, None).unwrap(), None);
+        assert!(require_minimum(per_time, &[], None).is_ok());
+    }
+
+    #[test]
+    fn the_minimum_still_refuses_what_the_host_or_a_child_budget_cannot_hold() {
+        const GIB: u64 = 1 << 30;
+        // No child budget: a source time bigger than ALL available memory
+        // is the refusal that names a real out-of-memory.
+        let per_time = 7 * GIB;
+        let minimum = minimum_budget_on(Some(6 * GIB), None, 0, None).unwrap();
+        let refusal = require_minimum(per_time, &[], minimum).unwrap_err();
+        assert_eq!(refusal.class, crate::refusal::class::HOST_MEMORY);
+        assert!(refusal.message.contains("before decode"));
+        // A declared child budget keeps the strict check: the usable
+        // budget (the share of the host, or the cap less what the child
+        // already holds), not the whole reading.
+        let strict = minimum_budget_on(Some(19 * GIB / 2), Some(64 * GIB), 0, Some(GIB)).unwrap();
+        assert_eq!(strict, usable_budget_on(Some(19 * GIB / 2), Some(64 * GIB), 0, Some(GIB)).unwrap());
+        assert!(require_minimum(per_time, &[], strict).is_err());
+        let capped = minimum_budget_on(Some(512 * GIB), Some(6 * GIB), 0, Some(GIB)).unwrap();
+        assert_eq!(capped, Some(5 * GIB));
+        assert!(require_minimum(per_time, &[], capped).is_err());
+        // A child that cannot measure itself still cannot enforce a cap.
+        assert!(minimum_budget_on(Some(512 * GIB), Some(6 * GIB), 0, None).is_err());
+    }
+
+    #[test]
+    fn current_process_memory_is_measured_on_supported_hosts() {
+        if cfg!(any(target_os = "linux", windows)) {
+            let (rss, owned) = process_memory().expect("own process memory");
+            assert!(rss > 0);
+            assert!(owned >= rss);
+        }
+    }
+
+    #[test]
+    fn an_unpriced_codec_cannot_expand_inside_a_reserved_child() {
+        assert!(acquisition_budget_check("bz2", None).is_ok());
+        let error = acquisition_budget_check("bz2", Some(1 << 30)).unwrap_err();
+        assert_eq!(error.class, crate::refusal::class::HOST_MEMORY);
+        assert!(error.message.contains("before decompression"));
     }
 }

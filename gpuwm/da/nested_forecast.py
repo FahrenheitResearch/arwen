@@ -948,6 +948,8 @@ def _initialize_child_physics(initialized, child_run, inventory,
     from gpuwm.core.diagnostics import update_diagnostics
     from gpuwm.core.landuse import initialize_landuse
     from gpuwm.core.physics import initialize_physics
+    from gpuwm.ingest.ruc_mosaic import ruc_mosaic_physics_inputs
+    from gpuwm.ingest.lake_physics import lake_physics_inputs
     from gpuwm.static.build import monthly_interp_to_date
 
     static = inventory["static"]
@@ -995,7 +997,11 @@ def _initialize_child_physics(initialized, child_run, inventory,
         # carrying the declaration its experiment made.
         glw=constant_glw_wm2,
         radiation_start_time=valid_time, radiation_latitude=lat,
-        radiation_longitude=lon)
+        radiation_longitude=lon,
+        **lake_physics_inputs(child_run, static),
+        **ruc_mosaic_physics_inputs(
+            child_run, static, landuse_attrs=landuse_identity,
+            xice=fields["SEAICE"], fractional_seaice=True))
     from gpuwm.core.noah import noah_initial_snow_albedo
     driver.fields["snoalb"][...] = cp.asarray(
         noah_initial_snow_albedo(

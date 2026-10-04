@@ -12,6 +12,7 @@ use std::sync::Arc;
 use hdf5_reader::{Hdf5File, SliceInfo as H5SliceInfo, SliceInfoElem as H5SliceInfoElem};
 use ndarray::ArrayD;
 pub use netcdf_reader::{NcFormat, NcMetadataMode, NcOpenOptions, NcSliceInfo, NcSliceInfoElem};
+pub use netcdf_reader::NcReadable;
 
 use netcdf_reader::{NcAttrValue, NcDimension, NcFile, NcType, NcVariable};
 
@@ -298,6 +299,31 @@ impl File {
             .iter()
             .map(Attribute::from_reader)
             .collect())
+    }
+
+    /// Read stored numeric words without promotion or CF interpretation.
+    ///
+    /// Membership masks and diagnostic replay require exact integer and
+    /// floating words. Promoting UInt64 to f64 discards member bits above 53.
+    pub fn read_array<T: NcReadable>(&self, name: &str) -> Result<ArrayD<T>> {
+        let variable = self.inner.variable(name)?;
+        let shape = nc_variable_shape(&variable, &self.dimension_overrides)?;
+        checked_array_elements(name, &shape)?;
+        if nc_variable_uses_overrides(&variable, &self.dimension_overrides) {
+            return Err(Error::Hdf5(format!("typed read requires resolved stored dimensions for {name}")));
+        }
+        Ok(self.inner.read_variable::<T>(name)?)
+    }
+
+    /// Read a bounded stored-word hyperslab without numeric promotion.
+    pub fn read_array_slice<T: NcReadable>(&self, name: &str, selection: &NcSliceInfo) -> Result<ArrayD<T>> {
+        let variable = self.inner.variable(name)?;
+        let shape = nc_variable_shape(&variable, &self.dimension_overrides)?;
+        checked_selection_elements(name, &shape, selection)?;
+        if nc_variable_uses_overrides(&variable, &self.dimension_overrides) {
+            return Err(Error::Hdf5(format!("typed read requires resolved stored dimensions for {name}")));
+        }
+        Ok(self.inner.read_variable_slice::<T>(name, selection)?)
     }
 
     /// Read a variable as promoted `f64` values with shape metadata.

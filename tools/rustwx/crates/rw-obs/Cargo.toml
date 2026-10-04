@@ -32,6 +32,14 @@ name = "rw_stage4"
 path = "src/bin/stage4.rs"
 
 [[bin]]
+name = "rw_precip"
+path = "src/bin/precip.rs"
+
+[[bin]]
+name = "rw_ensemble_match"
+path = "src/bin/ensemble_match.rs"
+
+[[bin]]
 name = "rw_asos"
 path = "src/bin/asos.rs"
 
@@ -72,7 +80,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # need a system zlib.  MRMS archive objects are all gzip-wrapped.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 sha2 = "0.10"
 ureq.workspace = true
 grib-core = { path = "../../../grib1_bridge/vendor/grib-core" }
@@ -93,6 +101,8 @@ rw-nexrad = { path = "../rw-nexrad" }
 # occultation profiles (`rw_gnssro`), the same pure-Rust NetCDF-4 facade.
 rw-sat = { path = "../rw-sat" }
 netcrust = { path = "../../vendor/netcrust" }
+# Typed reads preserve the diagnostic archive's uint64 identities and f32 words.
+netcdf-reader = "0.3"
 # `rw_wis2`: the TLS stack every HTTPS door here already uses (rustls with
 # the RustCrypto provider and the webpki roots), reached directly for a raw
 # MQTT stream, and base64 for the notifications' integrity digests.
@@ -102,3 +112,9 @@ webpki-roots = "1"
 base64 = "0.22"
 rustwx-core = { path = "../rustwx-core" }
 rustwx-io = { path = "../rustwx-io" }
+obs-regrid = { path = "../obs-regrid" }
+static-fields = { path = "../static-fields" }
+wrf-core = { git = "https://github.com/FahrenheitResearch/wrf-rust.git", rev = "93bd2ca670c13fec35bcfc27a58108e6fd71c627", package = "wrf-core", default-features = false, features = ["pure-rust-reader"] }
+
+[dev-dependencies]
+netcdf-writer = { path = "../netcdf-writer" }

@@ -36,15 +36,16 @@ from gpuwm.ingest.horiz import (
     HorizontalSnapshot,
     source_orography_from_catalog as _source_orography_from_catalog,
 )
-from gpuwm.ingest.preprocess_backend import resolve_preprocess_backend
+from gpuwm.ingest.preprocess_backend import preprocess_math_call, resolve_preprocess_backend
 
 
-def surface_fields_to_device(met, array_module):
+def surface_fields_to_device(met, array_module, *, preserve_dtype=False):
     """Upload restored or freshly mapped near-surface fields to a device."""
 
     return {
         name: array_module.asarray(
-            met.fields[name], dtype=array_module.float32)
+            met.fields[name], dtype=(met.fields[name].dtype if preserve_dtype
+                                     else array_module.float32))
         for name in ("T2", "U10", "V10")
     }
 
@@ -59,11 +60,8 @@ def _default_column_workers(preprocess_backend, preprocess_workers) -> int:
     """Setup column threads when the caller named none.
 
     On the CPU preparation the columns take the preparation's own worker
-    count: the one it was given, else the automatic count
-    (:func:`gpuwm.ingest.cpu_backend.automatic_workers`), because the
-    host-RAM estimate that admits that preparation was measured there.
-    Sized from the machine, a 64-vCPU host peaked above that estimate.
-    The device road keeps every CPU this process may use.
+    count: the one it was given, else the CPU and memory budget. The same
+    explicit count reaches host columns under either preparation backend.
     """
     if isinstance(preprocess_backend, str):
         name = preprocess_backend.strip().lower()
@@ -73,9 +71,14 @@ def _default_column_workers(preprocess_backend, preprocess_workers) -> int:
         workers = (preprocess_workers if preprocess_workers is not None
                    else getattr(preprocess_backend, "workers", None))
     if name != "cpu":
-        return _available_cpu_count()
+        from gpuwm.ingest.cpu_backend import automatic_workers
+        from gpuwm.ingest.preparation_workers import effective_workers
+        host_workers = (preprocess_workers if preprocess_workers is not None
+                        else getattr(preprocess_backend, "host_step_workers", None))
+        return automatic_workers() if host_workers is None else effective_workers(host_workers)
     if workers is not None:
-        return workers
+        from gpuwm.ingest.preparation_workers import effective_workers
+        return effective_workers(workers)
     from gpuwm.ingest.cpu_backend import automatic_workers
     return automatic_workers()
 
@@ -115,7 +118,21 @@ def _column_pool(max_workers: int):
     to the operating system when the pool closes."""
     try:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            yield executor
+            binding = pm.current_cpu_bridge_binding()
+            if binding is None:
+                yield executor
+            else:
+                class BoundExecutor:
+                    def submit(self, function, *args, **kwargs):
+                        return executor.submit(pm.run_with_cpu_bridge_binding,
+                                               binding, function, *args, **kwargs)
+                    def map(self, function, *iterables, **kwargs):
+                        def bound(*values):
+                            return pm.run_with_cpu_bridge_binding(binding, function, *values)
+                        return executor.map(bound, *iterables, **kwargs)
+                    def __getattr__(self, name):
+                        return getattr(executor, name)
+                yield BoundExecutor()
     finally:
         _return_freed_host_memory()
 
@@ -127,7 +144,8 @@ def _column_worker_count(value) -> int:
     value = int(value)
     if value < 1:
         raise ValueError("column_workers must be positive")
-    return value
+    from gpuwm.ingest.preparation_workers import effective_workers
+    return effective_workers(value)
 
 
 def _axis0_chunks(length: int, workers: int):
@@ -164,6 +182,13 @@ def _host(value) -> np.ndarray:
     if hasattr(value, "get"):
         value = value.get()
     return np.asarray(value, dtype=np.float64)
+
+
+def _host_owned_float64(value) -> np.ndarray:
+    """Widen once into independent storage, retaining the existing layout."""
+    if hasattr(value, "get"):
+        value = value.get()
+    return np.array(value, dtype=np.float64, copy=True, order="K")
 
 
 HRRR_ANALYZED_HYDROMETEORS = ("QC", "QR", "QI", "QS", "QG")
@@ -457,6 +482,8 @@ def _resolved_mp28_aerosol_source(cfg) -> str:
     """
     from gpuwm.ingest.analyzed_numbers import wif_climatology_named_by_namelist
 
+    if bool(getattr(cfg, "use_rap_aero_icbc", False)):
+        return "analysis"
     if wif_climatology_named_by_namelist(cfg):
         return "climatology"
     return str(getattr(cfg, "mp28_aerosol_source", "auto") or "auto")
@@ -483,8 +510,8 @@ def _cold_start_droplet_number(qc, nc, inverse_density, aerosol_number,
     ``nc`` outside ``seed_mask``.
     """
     from gpuwm.core.thompson_entry import (
-        MAKE_DROPLET_NUMBER_SOURCE, droplet_mean_diameter_m,
-        make_droplet_number,
+        MAKE_DROPLET_NUMBER_SOURCE, cold_start_aerosol_row_refusal,
+        droplet_mean_diameter_m, make_droplet_number,
     )
 
     alt = np.asarray(_host(inverse_density), dtype=np.float32)
@@ -524,6 +551,11 @@ def _cold_start_droplet_number(qc, nc, inverse_density, aerosol_number,
         "seeded_cells": count,
     }
     if count:
+        # A NaN per-volume aerosol number has no gamma-table row; named
+        # here, with its cells, before the mirror indexes with it.
+        not_a_number = int(np.count_nonzero(np.isnan(aerosol_seed)))
+        if not_a_number:
+            raise ValueError(cold_start_aerosol_row_refusal(not_a_number))
         rc = (qc[seed] * rho_seed).astype(np.float32)
         per_volume = make_droplet_number(
             rc, aerosol_seed, xland3[seed])
@@ -613,6 +645,26 @@ def _cold_start_rain_ice_number(species, mass, number, inverse_density,
 
 def _thompson_cold_start_moment_closure(state, state_xp, cfg: RunConfig,
                                         inverse_density, *,
+                                        aerosol_number=None, landmask=None,
+                                        temperature=None, temperature_at=None,
+                                        temperature_fields=None, receipt=True):
+    """Use the native cell path when host fields expose its exact inputs."""
+    if state_xp is np and (temperature_fields is not None or temperature_at is None):
+        from gpuwm.ingest.cold_start_cpu import close_numbers
+        native = close_numbers(
+            state, cfg, inverse_density, aerosol_number=aerosol_number,
+            landmask=landmask, temperature=temperature,
+            temperature_fields=temperature_fields, receipt=receipt)
+        if native is not None:
+            return native
+    return _thompson_cold_start_moment_closure_reference(
+        state, state_xp, cfg, inverse_density, aerosol_number=aerosol_number,
+        landmask=landmask, temperature=temperature,
+        temperature_at=temperature_at, receipt=receipt)
+
+
+def _thompson_cold_start_moment_closure_reference(state, state_xp, cfg: RunConfig,
+                                        inverse_density, *,
                                         aerosol_number=None,
                                         landmask=None,
                                         temperature=None, temperature_at=None, receipt=True) -> dict[str, object]:
@@ -652,7 +704,7 @@ def _thompson_cold_start_moment_closure(state, state_xp, cfg: RunConfig,
     """
     from gpuwm.core.thompson_entry import (
         R1, THOMPSON_ENTRY_AUTHORITY, THOMPSON_ENTRY_SOURCE,
-        np_thompson_entry_numbers,
+        cold_start_droplet_row_refusal, np_thompson_entry_numbers,
     )
 
     alt = np.asarray(_host(inverse_density), dtype=np.float32)
@@ -745,6 +797,15 @@ def _thompson_cold_start_moment_closure(state, state_xp, cfg: RunConfig,
             # division and library call keeps its original operands/order.
             if count:
                 density = 1.0 / alt_seed[offenders].astype(np.float64)
+                if name == "cloud":
+                    # The entry block's own gamma-table row comes from the
+                    # droplet number per volume; a NaN there has no row.
+                    with np.errstate(invalid="ignore", over="ignore"):
+                        not_a_number = int(np.count_nonzero(np.isnan(
+                            seeded[offenders].astype(np.float64) * density)))
+                    if not_a_number:
+                        raise ValueError(
+                            cold_start_droplet_row_refusal(not_a_number))
                 closed = np_thompson_entry_numbers(
                     name, mass[offenders], seeded[offenders], density)
                 seeded[offenders] = np.asarray(closed, dtype=np.float32)
@@ -842,6 +903,10 @@ def array_correspondence_fingerprint(value) -> dict[str, object]:
     array = np.ascontiguousarray(np.asarray(value))
     if array.size == 0:
         raise ValueError("cannot fingerprint an empty correspondence array")
+    from gpuwm.ingest.preparation_fingerprints import array_fingerprint
+    native = array_fingerprint(array)
+    if native is not None:
+        return native
     mask = np.packbits(
         np.ravel(array != 0.0), bitorder="little")
     return {
@@ -1302,8 +1367,11 @@ def _receipt_array_fingerprint(value):
         if (extrema_on_host or not np.isfinite(reductions[name])
                 or (zero_extrema_on_host and reductions[name] == 0.0)):
             reductions[name] = float(operation(array))
+    from gpuwm.ingest.preparation_fingerprints import array_sha256
+    digest = array_sha256(array)
     return {"shape": list(array.shape), "dtype": str(array.dtype),
-            "sha256": hashlib.sha256(array.tobytes(order="C")).hexdigest(),
+            "sha256": (digest if digest is not None else
+                       hashlib.sha256(array.tobytes(order="C")).hexdigest()),
             **reductions}
 
 
@@ -3584,12 +3652,13 @@ def _wif_grid_latlon_from(grid, state):
     return None
 
 
+@preprocess_math_call
 def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                     coord: VerticalCoord, terrain, *, source_orography=None,
                     p_top=5000.0, sfcp_to_sfcp=True,
                     use_sh_qv=None,
                     analyzed_species=None,
-                    analyzed_number_fields=(),
+                    analyzed_number_fields=None,
                     analyzed_surface_fields=(),
                     column_workers=None,
                     preprocess_backend="cuda",
@@ -3604,6 +3673,7 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                     grid=None,
                     wif_grid_latlon=None,
                     wif_valid_date=None,
+                    aerosol_snapshot=None,
                     boundary_only=False,
                     landmask=None,
                     boundary_species=()) -> RealInitResult:
@@ -3618,7 +3688,12 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     ``analyzed_number_fields`` declares flagged metgrid QNI/QNC/QNR/QNS/QNG/QNH
     inputs. They use WRF's same linear Q vertical operator and selected scalar
     package, with the supplied NAME_SFC surface pseudo-level. They do not contribute condensate to
-    the pressure recurrence. Omission retains source-absent initialization.
+    the pressure recurrence. Omission discovers the fields carried by the snapshot.
+
+    ``aerosol_snapshot`` supplies a separate same-time aerosol donor on the
+    target horizontal grid. Its own pressure and moisture columns remain
+    attached to its QNWFA/QNIFA through vertical interpolation, before the
+    cold-start droplet closure reads the initialized aerosol.
 
     ``analyzed_surface_fields`` selects supplied NAME_SFC mass pseudo-levels.
     Native HRRR callers retain their established exact-zero surface policy.
@@ -3684,8 +3759,8 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     default) runs not one instruction of that path.
     ``column_workers`` is how many host threads the float64 setup columns
     use; ``None`` (the default) is every CPU this process may run on for a
-    card preparation, and the preparation's worker count (at most eight
-    unless named) for a CPU-backend one. Every count gives the same bytes.
+    preparation, capped by its CPU and memory budget. An explicit worker
+    count reaches both backends. Every count gives the same bytes.
     ``boundary_only`` marks a forcing time whose state only feeds the
     lateral boundaries: its caller keeps the state and drops the result's
     receipts, so the hydrometeor vertical disposition receipt, one operator
@@ -3697,18 +3772,24 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     np = globals()["np"]
     # ``np`` is CuPy on the card route below; a host-state test needs NumPy.
     host_numpy = np
+    from gpuwm.ingest import host_arrays as _host_arrays
     _ops = sys.modules[__name__]
     _setup = _host
     route_name = (preprocess_backend.strip().lower() if isinstance(preprocess_backend, str)
                   else getattr(preprocess_backend, "name", None))
+    bounded_cuda = bool(getattr(preprocess_backend, "bounded_cuda", False))
     state_route = state_backend.strip().lower() if isinstance(state_backend, str) else None
     device_route = (
         route_name == "cuda" and state_route in ("cuda", "preprocess")
         and {"PRES", "SPFH", "Q2"}.issubset(snapshot.fields)
         and initial_perturbation is None and cfg.mp_physics != 28
         and bool(sfcp_to_sfcp))
+    release_completed_host = bounded_cuda or route_name == "cpu"
     if device_route:
-        from gpuwm.ingest import real_device as _ops
+        if bounded_cuda:
+            _ops = preprocess_backend.real_ops
+        else:
+            from gpuwm.ingest import real_device as _ops
         np = _ops._cp()
         _setup = _ops.widen
     if not isinstance(boundary_only, (bool, np.bool_)):
@@ -3716,6 +3797,27 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     def receipt_fingerprint(value):
         # Boundary callers retain only state. Checks stay at their owners.
         return {} if boundary_only else array_correspondence_fingerprint(value)
+
+    def receipt_fingerprints(names, value_for):
+        names = tuple(names)
+        if boundary_only:
+            return {name: {} for name in names}
+        if route_name != "cpu" or state_xp is not host_numpy:
+            return {name: receipt_fingerprint(value_for(name)) for name in names}
+        from gpuwm.ingest.preparation_fingerprints import array_fingerprints
+        result = {}
+        # Normalize at most two fields at a time. A five-species source may
+        # hold float64 fields whose FP32 receipt copies are each substantial.
+        for start in range(0, len(names), 2):
+            batch = names[start:start + 2]
+            arrays = [host_numpy.ascontiguousarray(host_numpy.asarray(value_for(name)))
+                      for name in batch]
+            receipts = array_fingerprints(arrays, workers=min(column_workers, 2))
+            if receipts is None:
+                receipts = [receipt_fingerprint(array) for array in arrays]
+            result.update(zip(batch, receipts))
+            del arrays
+        return result
 
     from gpuwm.boundary_fields import BOUNDARY_HYDROMETEOR_MASSES
     if (not isinstance(boundary_species, (tuple, list))
@@ -3754,11 +3856,24 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         analyzed_aerosol_way_out, metgrid_number_targets,
         wif_climatology_named_by_namelist,
         WIF_CLIMATOLOGY_NAMELIST_PAIR, WIF_CLIMATOLOGY_NAMELIST_PHRASE)
+    if analyzed_number_fields is None:
+        analyzed_number_fields = tuple(name for name in METGRID_NUMBER_FIELDS
+                                       if name in snapshot.fields)
     if (not isinstance(analyzed_number_fields, (tuple, list))
             or any(name not in METGRID_NUMBER_FIELDS for name in analyzed_number_fields)
             or len(set(analyzed_number_fields)) != len(analyzed_number_fields)):
         raise ValueError("analyzed_number_fields must list distinct supported metgrid number fields")
-    decoded_numbers = tuple(name for name in METGRID_NUMBER_FIELDS if name in analyzed_number_fields)
+    donor_numbers = ()
+    if aerosol_snapshot is not None:
+        if aerosol_snapshot.valid_time != snapshot.valid_time:
+            raise ValueError("aerosol donor and initial analysis must have the same valid time")
+        donor_numbers = tuple(name for name in AEROSOL_NUMBER_FIELDS
+                              if name in aerosol_snapshot.fields)
+        if len(donor_numbers) != len(AEROSOL_NUMBER_FIELDS):
+            raise ValueError("aerosol donor must carry both QNWFA and QNIFA; a half pair would mix different aerosol sources")
+    decoded_numbers = tuple(name for name in METGRID_NUMBER_FIELDS
+                            if name in analyzed_number_fields or name in donor_numbers)
+    main_numbers = tuple(name for name in decoded_numbers if name not in donor_numbers)
     number_targets = metgrid_number_targets(cfg) if decoded_numbers else {}
     if cfg.mp_physics == 28:
         # The aerosol-source selectors decide what this function is even
@@ -3803,8 +3918,15 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         # the resolver cannot disagree about one analysis.
         _carried_aerosol = analyzed_aerosol_fields(
             decoded_numbers, number_targets)
+        if (_resolved_mp28_aerosol_source(cfg) == "analysis"
+                and len(_carried_aerosol) != len(AEROSOL_NUMBER_FIELDS)):
+            missing = sorted(set(AEROSOL_NUMBER_FIELDS) - set(_carried_aerosol))
+            raise ValueError("analyzed aerosol IC/BC requires QNWFA and QNIFA on every initial and boundary frame; missing "
+                             + ", ".join(missing) + "; substituting climatology would change the requested forcing")
+        if cfg.use_rap_aero_icbc and not boundary_only:
+            validate_run_preparation(cfg)
         if not (len(_carried_aerosol) == len(AEROSOL_NUMBER_FIELDS)
-                and _resolved_mp28_aerosol_source(cfg) == "auto"):
+                and _resolved_mp28_aerosol_source(cfg) in ("auto", "analysis")):
             try:
                 validate_run_preparation(cfg)
             except ValueError as refused:
@@ -3897,7 +4019,7 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         surface_rh_name = surface_rh_markers[0]
         required = ("TT", "RH", "GHT", "UU", "VV", "PSFC", "T2",
                     surface_rh_name, "U10", "V10")
-    required += decoded_species + decoded_numbers + tuple(name+"_SFC" for name in (*decoded_numbers, *supplied_mass_surfaces))
+    required += decoded_species + main_numbers + tuple(name+"_SFC" for name in (*main_numbers, *supplied_mass_surfaces))
     if not sfcp_to_sfcp:
         required += ("PMSL",)
     missing = [name for name in required if name not in snapshot.fields]
@@ -3935,11 +4057,11 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     mass_shape = (nsource, cfg.ny, cfg.nx)
     mass_names = ["TT", "GHT"]
     mass_names += (["PRES", "SPFH"] if has_specific_humidity else ["RH"])
-    mass_names += list(decoded_species) + list(decoded_numbers)
+    mass_names += list(decoded_species) + list(main_numbers)
     if any(fields[name].shape != mass_shape for name in mass_names):
         raise ValueError(
             f"mass-field shapes do not match levels and mass grid: {mass_names}")
-    if any(fields[name+"_SFC"].shape != (cfg.ny, cfg.nx) for name in decoded_numbers):
+    if any(fields[name+"_SFC"].shape != (cfg.ny, cfg.nx) for name in main_numbers):
         raise ValueError("number-field surface pseudo-levels must match the mass grid")
     if any(fields[name+"_SFC"].shape != (cfg.ny, cfg.nx) for name in supplied_mass_surfaces):
         raise ValueError("hydrometeor surface pseudo-levels must match the mass grid")
@@ -4076,6 +4198,8 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             coord, float(p_top), _host(dry_mass + float(p_top)),
             quantity="target dry pressure")
             or "target dry pressure is not monotonic")
+    if release_completed_host:
+        del dry_pressure_full
     mark_timing("source_moisture_and_dry_mass")
 
     # Backend-selected FP32 vertical interpolation, after the float64
@@ -4136,10 +4260,13 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         plan_float32(pressure),
         plan_float32(fields["PSFC"]),
         interp_in_logp=False, extrap="temperature")
-    temperature_h = _setup(temperature).astype(np.float64)
+    temperature_h = (_setup(temperature).astype(np.float64) if device_route
+                     else _host_owned_float64(temperature))
     rh_h = (None if rh is None else
-            _setup(rh).astype(np.float64))
-    total_pressure_h = _setup(total_pressure).astype(np.float64)
+            _setup(rh).astype(np.float64) if device_route else
+            _host_owned_float64(rh))
+    total_pressure_h = (_setup(total_pressure).astype(np.float64) if device_route
+                        else _host_owned_float64(total_pressure))
     # NOT clamped to the target dry pressure.  This line used to read
     # ``np.maximum(total_pressure_h, dry_pressure)``; real.exe has no such
     # step.  WRF interpolates p_gc onto pd_gc with var_type 'T' and
@@ -4194,6 +4321,14 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                 column_workers=column_workers),
             total_pressure_h, column_workers=column_workers)
     mark_timing("thermodynamic_vertical_interpolation")
+    if release_completed_host:
+        # Their final consumers have finished. Retaining widened source
+        # fields beside the finished host state needlessly doubled host RAM.
+        del source_temperature, source_qv, source_rh, pressure
+        del temperature, rh, total_pressure, qv
+        for name in ("TT", "GHT", "PRES", "SPFH", "RH"):
+            if name in fields:
+                fields[name] = snapshot.fields[name]
 
     # WRF interpolates the analyzed hydrometeors BEFORE the moist
     # pressure recurrence -- the vert_interp calls for QR/QC/QI/QS/QG/QH
@@ -4230,10 +4365,8 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             raise ValueError(
                 "mapped HRRR hydrometeor forcing is non-finite or negative: "
                 f"{invalid_source}")
-        source_fingerprints = {
-            name: receipt_fingerprint(plan_float32(fields[name]))
-            for name in decoded_species
-        }
+        source_fingerprints = receipt_fingerprints(
+            decoded_species, lambda name: plan_float32(fields[name]))
         # Retention is READ from the Registry-package mapping, never decided
         # here: the membership test above and the species this loop writes
         # have to be answers to the same question, and an if-ladder is how
@@ -4311,9 +4444,8 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         if supplied_mass_surfaces:
             hydrometeor_initialization["schema"] = "gpuwm-metgrid-hydrometeor-initialization-v1"
             hydrometeor_initialization.pop("vertical_disposition")
-            hydrometeor_initialization["surface_pseudo_levels"] = {
-                name: receipt_fingerprint(plan_float32(fields[name+"_SFC"]))
-                for name in supplied_mass_surfaces}
+            hydrometeor_initialization["surface_pseudo_levels"] = receipt_fingerprints(
+                supplied_mass_surfaces, lambda name: plan_float32(fields[name+"_SFC"]))
             hydrometeor_initialization["vertical_operator"] = {
                 "source": "WRF module_initialize_real.F:1862-1997",
                 "operation": "linear Q interpolation with supplied surface before moist-pressure recurrence",
@@ -4326,10 +4458,51 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
 
     number_moments, number_receipt = {}, {}
     if decoded_numbers:
+        donor_fields = None
+        if donor_numbers:
+            # Aerosols retain their donor's own dry-pressure coordinate.
+            # Pairing donor numbers with the initial meteorology's PRES
+            # silently shifts every layer when their hybrid ladders differ.
+            required_donor = ("PRES", "SPFH", "Q2", "PSFC", "T2", "TT",
+                              "GHT", "SOURCE_OROGRAPHY", *donor_numbers,
+                              *(name + "_SFC" for name in donor_numbers))
+            missing = sorted(set(required_donor) - set(aerosol_snapshot.fields))
+            if missing:
+                raise ValueError(f"aerosol donor dry-pressure coordinate is missing {missing}")
+            donor_fields = {name: _setup(aerosol_snapshot.fields[name])
+                            for name in required_donor}
+            donor_shape = (len(aerosol_snapshot.levels_hpa), cfg.ny, cfg.nx)
+            for name in ("PRES", "SPFH", "TT", "GHT", *donor_numbers):
+                if donor_fields[name].shape != donor_shape:
+                    raise ValueError(f"aerosol donor {name} must match its own levels and the target mass grid")
+            for name in ("PSFC", "Q2", "T2", "SOURCE_OROGRAPHY",
+                         *(name + "_SFC" for name in donor_numbers)):
+                if donor_fields[name].shape != (cfg.ny, cfg.nx):
+                    raise ValueError(f"aerosol donor {name} must match the target mass grid")
+            donor_surface_specific = _ops._wrf_flag_sh_surface_specific_humidity(
+                donor_fields["Q2"], donor_fields["SPFH"], donor_fields["PRES"])
+            donor_surface_qv = _ops._specific_humidity_to_mixing_ratio(
+                donor_surface_specific, allow_wps_undershoot=True,
+                column_workers=column_workers)
+            donor_qv = _ops._specific_humidity_to_mixing_ratio(
+                donor_fields["SPFH"], allow_wps_undershoot=True,
+                undershoot_floor=getattr(aerosol_snapshot, "specific_humidity_undershoot_floor", None),
+                column_workers=column_workers)
+            donor_pd, donor_intq, donor_order = _ops._integrate_moisture(
+                donor_qv, donor_fields["PRES"], donor_fields["TT"],
+                donor_fields["GHT"], donor_fields["PSFC"], donor_fields["T2"],
+                donor_surface_qv, donor_fields["SOURCE_OROGRAPHY"],
+                column_workers=column_workers)
+            donor_plan = preprocess.prepare_wrf_vertical(
+                plan_float32(donor_pd),
+                plan_float32(donor_fields["PSFC"] - donor_intq),
+                mass_target_pd_f32)
+            donor_order_backend = backend_xp.asarray(donor_order, dtype=backend_xp.int32)
         source_numbers, surface_numbers = {}, {}
         for name in decoded_numbers:
-            source = plan_float32(fields[name])
-            surface = plan_float32(fields[name+"_SFC"])
+            number_fields = donor_fields if name in donor_numbers else fields
+            source = plan_float32(number_fields[name])
+            surface = plan_float32(number_fields[name+"_SFC"])
             if any(not bool(backend_xp.isfinite(value).all()) or bool((value < 0).any())
                    for value in (source, surface)):
                 raise ValueError(f"analyzed number field {name} is non-finite or negative")
@@ -4337,8 +4510,11 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             surface_numbers[name] = receipt_fingerprint(surface)
             if name not in number_targets:
                 continue
-            value = mass_vertical_plan.apply(
-                backend_ordered_levels(fields[name]), surface,
+            number_plan = donor_plan if name in donor_numbers else mass_vertical_plan
+            ordered_number = (backend_xp.take(source, donor_order_backend, axis=0)
+                              if name in donor_numbers else backend_ordered_levels(fields[name]))
+            value = number_plan.apply(
+                ordered_number, surface,
                 interp_in_logp=True, extrap="constant",
                 vboundb=cfg.nz + 1, values_are_finite=True)
             if not bool(backend_xp.isfinite(value).all()) or bool((value < 0).any()):
@@ -4348,12 +4524,18 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             "schema": "gpuwm-metgrid-number-initialization-v1",
             "source": source_numbers,
             "surface_pseudo_level": surface_numbers,
+            "separate_aerosol_donor": bool(donor_numbers),
+            "aerosol_donor_valid_time": (aerosol_snapshot.valid_time.isoformat()
+                                         if donor_numbers else None),
             "retained_correspondence": {name: number_targets[name] for name in decoded_numbers if name in number_targets},
             "discarded_inactive_package_fields": [name for name in decoded_numbers if name not in number_targets],
             "operator": "WRF module_initialize_real.F:1999-2120; linear Q vertical interpolation with supplied surface pseudo-level",
             "boundary_policy": "initial analysis; default flow-dependent scalar boundaries are unchanged",
         }
         mark_timing("number_moment_vertical_interpolation")
+    if release_completed_host:
+        del mass_vertical_plan, mass_source_pd_f32
+        del mass_surface_pd_f32, mass_target_pd_f32
 
     # WRF's qtot for the pressure recurrence is a sum over the ACTIVE moist
     # package (module_initialize_real.F:3913-3916, PARAM_FIRST_SCALAR ..
@@ -4361,15 +4543,23 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     # carry contributes nothing there either -- ``hydrometeors`` holds
     # exactly the retained set, in the package's own qc/qr/qi/qs/qg order,
     # and the accumulation below is WRF's own left-to-right one.
-    condensate_h = None
-    for analyzed in hydrometeors.values():
-        contribution = _setup(analyzed).astype(np.float64)
-        condensate_h = (contribution if condensate_h is None
-                        else condensate_h + contribution)
+    condensate_h = (None if device_route else _host_arrays.sum_fields(
+        hydrometeors.values(), workers=column_workers))
+    if condensate_h is None:
+        for analyzed in hydrometeors.values():
+            contribution = _setup(analyzed).astype(np.float64)
+            condensate_h = (contribution if condensate_h is None
+                            else condensate_h + contribution)
+        if hydrometeors:
+            del contribution, analyzed
 
     def moist_total(vapour):
         """WRF ``qtot``: vapour plus every analyzed condensate species."""
-        return vapour if condensate_h is None else vapour + condensate_h
+        if condensate_h is None:
+            return vapour
+        total = (None if device_route else _host_arrays.sum_fields(
+            (vapour, condensate_h), workers=column_workers))
+        return vapour + condensate_h if total is None else total
 
     host_base = _make_real_base(coord, _host(terrain), float(p_top), cfg.base_temp,
                                 hypsometric_opt=cfg.hypsometric_opt,
@@ -4412,12 +4602,20 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     # the staggered points exactly like the interior levels
     # (module_initialize_real.F:2785-2811 with vert_interp's 'U'/'V'
     # pressure averaging at :5664-5713; extrap_type=2 constant).
-    source_pd_u = _ops._pressure_at_u(source_pd)
-    source_pd_v = _ops._pressure_at_v(source_pd)
-    surface_pd_u = _ops._pressure_at_u(surface_pd[None])[0]
-    surface_pd_v = _ops._pressure_at_v(surface_pd[None])[0]
-    target_pd_u = _ops._pressure_at_u(dry_pressure)
-    target_pd_v = _ops._pressure_at_v(dry_pressure)
+    def stagger_pressure(value, axis):
+        result = (None if device_route else _host_arrays.stagger_pressure(
+            value, axis, workers=column_workers))
+        if result is not None:
+            return result
+        return (_ops._pressure_at_u(value) if axis == 2
+                else _ops._pressure_at_v(value))
+
+    source_pd_u = stagger_pressure(source_pd, 2)
+    source_pd_v = stagger_pressure(source_pd, 1)
+    surface_pd_u = stagger_pressure(surface_pd[None], 2)[0]
+    surface_pd_v = stagger_pressure(surface_pd[None], 1)[0]
+    target_pd_u = stagger_pressure(dry_pressure, 2)
+    target_pd_v = stagger_pressure(dry_pressure, 1)
     u_plan = preprocess.prepare_wrf_vertical(
         plan_float32(source_pd_u),
         plan_float32(surface_pd_u),
@@ -4434,6 +4632,11 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         backend_ordered_levels(fields["VV"]),
         plan_float32(fields["V10"]),
         interp_in_logp=True, extrap="constant")
+    if release_completed_host:
+        del u_plan, v_plan, source_pd_u, source_pd_v
+        del surface_pd_u, surface_pd_v, target_pd_u, target_pd_v, source_pd
+        del condensate_h, temperature_h, rh_h
+        _return_freed_host_memory()
 
     # -- Configured initial-state perturbation (theta bubbles) ----------
     # Applied ONCE, here, after the base real-data state is final (the
@@ -4476,12 +4679,17 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     if device_route:
         _ops.load_base(state, coord, host_base, base)
     else:
-        state.load_base(coord, host_base)
+        with pm.worker_limit(column_workers):
+            state.load_base(coord, host_base, native_host=True)
     mark_timing("base_state_upload")
-    state.mup[...] = (plan_float32(dry_mass - base.mub) if device_route else
-                      state_xp.asarray(dry_mass - base.mub, dtype=state_xp.float32))
-    state.thp[...] = (plan_float32(theta_h - base.thb) if device_route else
-                      state_xp.asarray(theta_h - base.thb, dtype=state_xp.float32))
+    if not (state_xp is host_numpy and _host_arrays.difference_float32(
+            state.mup, dry_mass, base.mub, workers=column_workers)):
+        state.mup[...] = (plan_float32(dry_mass - base.mub) if device_route else
+                          state_xp.asarray(dry_mass - base.mub, dtype=state_xp.float32))
+    if not (state_xp is host_numpy and _host_arrays.difference_float32(
+            state.thp, theta_h, base.thb, workers=column_workers)):
+        state.thp[...] = (plan_float32(theta_h - base.thb) if device_route else
+                          state_xp.asarray(theta_h - base.thb, dtype=state_xp.float32))
     mark_timing("mass_theta_upload")
     state.php[...] = state_xp.asarray(
         _ops._fp32_geopotential_split(base, coord, dry_mass, alpha,
@@ -4489,20 +4697,19 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                                  column_workers=column_workers),
         dtype=state_xp.float32)
     mark_timing("fp32_geopotential_split_and_upload")
-    state.qv[...] = (plan_float32(qv_h) if device_route else
-                     state_xp.asarray(qv_h, dtype=state_xp.float32))
+    if not (state_xp is host_numpy and _host_arrays.copy_float32(
+            state.qv, qv_h, workers=column_workers)):
+        state.qv[...] = (plan_float32(qv_h) if device_route else
+                         state_xp.asarray(qv_h, dtype=state_xp.float32))
     if hydrometeors:
         for source_name, value in hydrometeors.items():
             if state_xp is host_numpy:
                 value = _host_float32(value)
             getattr(state, source_name.lower())[...] = state_xp.asarray(
                 value, dtype=state_xp.float32)
-        hydrometeor_initialization["initialized_state_species"] = {
-            state_name: receipt_fingerprint(
-                getattr(state, state_name))
-            for state_name in hydrometeor_initialization[
-                "retained_correspondence"].values()
-        }
+        hydrometeor_initialization["initialized_state_species"] = receipt_fingerprints(
+            hydrometeor_initialization["retained_correspondence"].values(),
+            lambda name: getattr(state, name))
         if cfg.mp_physics == 8:
             # HRRR provides the shared five WRF mass species but not classic
             # Thompson's Registry scalar QNICE/QNRAIN fields.  Both number
@@ -4527,11 +4734,10 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         hydrometeor_initialization["source"] = ("supplied-metgrid-mass-and-surface-analysis"
             if supplied_mass_surfaces else "declared-analyzed-field-inventory")
         hydrometeor_initialization["declared_analyzed_species"] = list(decoded_species)
-        hydrometeor_initialization["source_absent_state_fields"] = {
-            name.lower(): receipt_fingerprint(getattr(state, name.lower()))
-            for name in DECLARED_ANALYZED_HYDROMETEORS
-            if name not in decoded_species and getattr(state, name.lower(), None) is not None
-        }
+        hydrometeor_initialization["source_absent_state_fields"] = receipt_fingerprints(
+            (name.lower() for name in DECLARED_ANALYZED_HYDROMETEORS
+             if name not in decoded_species and getattr(state, name.lower(), None) is not None),
+            lambda name: getattr(state, name))
         hydrometeor_initialization["source_absent_policy"] = (
             "WRF module_initialize_real.F:1862-1997 only interpolates fields with FLAG_*=1; others retain allocated zero")
     aerosol_initialization: dict[str, object] = {}
@@ -4689,7 +4895,7 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         # resolved climatology/synthetic source initializes both fields,
         # which is the one basis that covers them both.
         _metgrid_analyzed_aerosol = (
-            not _analyzed_aerosol_missing and _source_choice == "auto")
+            not _analyzed_aerosol_missing and _source_choice in ("auto", "analysis"))
         if _analyzed_aerosol and not _metgrid_analyzed_aerosol:
             # RULE: warn, never refuse.  The run proceeds on a resolved
             # source; what it must not do is proceed and stay quiet about
@@ -4890,7 +5096,33 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                         "populate them are the wif-climatology branch "
                         "above and the analyzed QNWFA/QNIFA install "
                         "below, and this run selected neither.")
-        if _metgrid_analyzed_aerosol and "QNWFA" in _analyzed_aerosol:
+        surface_emission_receipt = None
+        if _metgrid_analyzed_aerosol and cfg.use_rap_aero_icbc and not boundary_only:
+            # Operational WRF keeps monthly surface emissions while taking
+            # its three-dimensional initial and boundary numbers from RAP.
+            from gpuwm.ingest.wif_climatology import (
+                load_wif_climatology, wif_lowest_number_for_grid)
+            from gpuwm.ingest.cpu_backend import CpuPreprocessBackend
+            emission_resolution = resolve_wif_climatology(
+                cfg.wif_climatology_path or None, explicit_required=True,
+                requested_by="use_rap_aero_icbc surface emissions")
+            emission_latlon = wif_grid_latlon or _wif_grid_latlon_from(grid, state)
+            if emission_latlon is None:
+                raise ValueError("monthly aerosol surface emissions require the target mass-point latitude and longitude")
+            monthly_number = wif_lowest_number_for_grid(
+                load_wif_climatology(emission_resolution.path),
+                _host_float32(emission_latlon[0]), _host_float32(emission_latlon[1]),
+                str(wif_valid_date or snapshot.valid_time))
+            surface_emission = CpuPreprocessBackend(cpu_bridge).aerosol_surface_mass(
+                monthly_number, _host_float32(base.phb), _host_float32(alpha[0]),
+                cfg.dx, cfg.dy)
+            state.nwfa2d[...] = state_xp.asarray(surface_emission, dtype=state_xp.float32)
+            surface_emission_receipt = {
+                "source": "monthly-climatology", "dataset": describe_wif_source(emission_resolution),
+                "operator": "qnwfa2d=monthly_number*0.000196*(airmass*2e-10); airmass=(1/alt)*z1*dx*dy",
+                "authority": "NOAA-EMC/HRRR WRFV3.9 module_initialize_real.F:4424-4430",
+            }
+        elif _metgrid_analyzed_aerosol and "QNWFA" in _analyzed_aerosol and not cfg.use_rap_aero_icbc:
             # WRF's own surface-emission formula
             # (dyn_em/module_initialize_real.F:4530-4547), reached through
             # the SAME wif_surface_emission the climatology branch uses,
@@ -4941,6 +5173,11 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                 _analyzed_aerosol)
             aerosol_initialization["policy"] = (
                 "metgrid-analyzed-number-vertical-interp")
+            if cfg.use_rap_aero_icbc:
+                aerosol_initialization["aerosol_source_statement"] = (
+                    "Three-dimensional QNWFA/QNIFA initial and boundary values come from the analyzed driving fields. "
+                    "The two-dimensional surface source uses operational WRF's monthly climatology and cell air mass formula.")
+                aerosol_initialization["surface_emission"] = surface_emission_receipt
         elif wif_receipt is not None:
             # The fields are ALREADY populated: thompson_init's MAXVAL
             # tests will find them nonzero and skip the synthetic fill,
@@ -4983,9 +5220,8 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             if state_xp is host_numpy:
                 value = _host_float32(value)
             getattr(state, name)[...] = state_xp.asarray(value, dtype=state_xp.float32)
-        number_receipt["initialized_state_fields"] = {
-            name: receipt_fingerprint(getattr(state, name))
-            for name in number_moments}
+        number_receipt["initialized_state_fields"] = receipt_fingerprints(
+            number_moments, lambda name: getattr(state, name))
         hydrometeor_initialization["number_moments"] = number_receipt
     # The analysed hydrometeors the source publishes on every frame ride
     # the root's specified boundary (gpuwm.boundary_fields): the masses
@@ -5011,8 +5247,9 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     # hydrometeor receipt.  The droplet number reads the aerosol real.exe
     # would hold here: the analyzed QNWFA just installed, the climatology,
     # or zero ahead of thompson_init's synthetic profile.
+    mark_timing("surface_and_aerosol_initialization")
     if hydrometeors and cfg.mp_physics in (8, 28):
-        if state_xp is not host_numpy:
+        if state_xp is not host_numpy or getattr(preprocess, "bounded_cuda", False):
             # The state is on the card: the closure runs there, gathering
             # only the seeded cells (gpuwm/ingest/closure_device.py), with
             # the seed temperature from the libm crate's device twin.
@@ -5023,22 +5260,26 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                 aerosol_number=(state.nwfa
                                 if cfg.mp_physics == 28 else None),
                 landmask=landmask,
-                temperature=make_temperature_provider(theta_h, total_pressure_h))
+                temperature=make_temperature_provider(theta_h, total_pressure_h),
+                **({"chunk_cells": preprocess.chunk_cells} if bounded_cuda else {}))
         else:
-            closure_receipt = _thompson_cold_start_moment_closure(
-                state, state_xp, cfg, alpha, receipt=not boundary_only,
-                aerosol_number=(state.nwfa
-                                if cfg.mp_physics == 28 else None),
-                landmask=landmask,
-                # Built only if a rain or ice cell is seeded; only the
-                # seeded cells' columns are evaluated.
-                temperature_at=lambda indices: _temperature_from_potential_temperature(
-                    theta_h.ravel()[indices], total_pressure_h.ravel()[indices],
-                    column_workers=column_workers).astype(np.float32),
-                temperature=lambda: _temperature_from_potential_temperature(
-                    theta_h, total_pressure_h,
-                    column_workers=column_workers).astype(np.float32))
+            with pm.worker_limit(column_workers):
+                closure_receipt = _thompson_cold_start_moment_closure(
+                    state, state_xp, cfg, alpha, receipt=not boundary_only,
+                    aerosol_number=(state.nwfa
+                                    if cfg.mp_physics == 28 else None),
+                    landmask=landmask,
+                    temperature_fields=(theta_h, total_pressure_h),
+                    # Built only if a rain or ice cell is seeded; only the
+                    # seeded cells' columns are evaluated.
+                    temperature_at=lambda indices: _temperature_from_potential_temperature(
+                        theta_h.ravel()[indices], total_pressure_h.ravel()[indices],
+                        column_workers=column_workers).astype(np.float32),
+                    temperature=lambda: _temperature_from_potential_temperature(
+                        theta_h, total_pressure_h,
+                        column_workers=column_workers).astype(np.float32))
         hydrometeor_initialization["cold_start_moment_closure"] = closure_receipt
+    mark_timing("cold_start_moment_closure")
     # CUDA transforms may feed a host setup state. Transfer their FP32
     # wind arrays explicitly; NumPy cannot implicitly consume a CuPy array.
     if state_xp is host_numpy:

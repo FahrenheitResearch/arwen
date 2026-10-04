@@ -967,7 +967,7 @@ class _ReplayedFetch:
         (self.out / name).write_bytes(payload)
         digest = hashlib.sha256(payload).hexdigest()
         self.published.append((lead, name, digest))
-        with self.series.open("a", encoding="utf-8") as series:
+        with self.series.open("a", encoding="utf-8", newline="\n") as series:
             series.write(f"{lead}\t{name}\t{81 if lead == 0 else 96}\n")
         _write(self.out / fetch.FETCH_MANIFEST_NAME, {
             "schema": fetch.FETCH_MANIFEST_SCHEMA, "source": "gfs",

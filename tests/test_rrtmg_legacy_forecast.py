@@ -190,6 +190,8 @@ def test_legacy_restart_continuation_is_bit_identical(tmp_path):
     # The header carries the legacy identities, not the RTE+RRTMGP ones.
     header = restart.read_restart_header(out_c / rst_end)
     blob = str(header)
-    assert "wrf-v4.6.1-rrtmg-legacy-lw-v1" in blob
+    assert restart.RRTMG_LEGACY_LW_ALGORITHM_IDENTITY in blob
+    assert restart.RRTMG_LEGACY_LW_ALGORITHM_IDENTITY.startswith(
+        "wrf-v4.6.1-rrtmg-legacy-lw-v2-")
     assert "wrf-v4.6.1-rrtmg-legacy-sw-v1" in blob
     assert "rte-rrtmgp-v1" not in blob

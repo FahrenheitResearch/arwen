@@ -163,6 +163,87 @@ def _reconstruct_pre_lift(text: str) -> str:
     return text
 
 
+#: The SOILPROP lineage switch (ruc_soilprop, 2.8.5), each edit with the
+#: v4.6.1 text it replaced.  Oracle-verified on its own
+#: (tests/test_ruc_soilprop.py, the v4.6.1 name against the unmodified WRF
+#: oracle), so it is undone here before the historical geometry proof.
+SOILPROP_LINEAGE_EDITS = (
+    ("""#ifdef GPUWM_SOILPROP_WRF461
+    real mineral = qwrtz > 0.2f ? 2.0f : 3.0f;
+#else
+    real mineral = 2.0f;
+#endif
+""", """    real mineral = qwrtz > 0.2f ? 2.0f : 3.0f;
+"""),
+    ("""#ifdef GPUWM_SOILPROP_WRF461
+            real h = fmaxf(
+                0.0f,
+                __fdiv_rn(
+                    __fsub_rn(__fadd_rn(middle_moisture, qmin), ice),
+                    fmaxf(minimum, __fsub_rn(ws, ice))));
+            real porosity = ws;
+#else
+            real h = fmaxf(
+                0.0f,
+                __fdiv_rn(
+                    __fsub_rn(middle_moisture, ice),
+                    fmaxf(minimum, __fsub_rn(dqm, ice))));
+            real porosity = dqm;
+#endif
+""", """            real h = fmaxf(
+                0.0f,
+                __fdiv_rn(
+                    __fsub_rn(__fadd_rn(middle_moisture, qmin), ice),
+                    fmaxf(minimum, __fsub_rn(ws, ice))));
+"""),
+    ("""            real ame = fmaxf(minimum, __fsub_rn(porosity, ice));
+""", """            real ame = fmaxf(minimum, __fsub_rn(ws, ice));
+"""),
+    ("""                diffusivity, ruc_powf_rn(__fdiv_rn(porosity, ame), 3.0f));
+""", """                diffusivity, ruc_powf_rn(__fdiv_rn(ws, ame), 3.0f));
+"""),
+    ("""#ifdef GPUWM_SOILPROP_WRF461
+        real am = fmaxf(minimum, __fsub_rn(ws, ice));
+#else
+        real am = fmaxf(minimum, __fsub_rn(dqm, ice));
+#endif
+""", """        real am = fmaxf(minimum, __fsub_rn(ws, ice));
+"""),
+)
+
+
+def _reconstruct_pre_soilprop(text: str) -> str:
+    """Undo the SOILPROP lineage switch: its comment block and five edits."""
+    start = text.index("    // SOILPROP by WRF lineage (ruc_soilprop")
+    end = text.index("#ifdef GPUWM_SOILPROP_WRF461", start)
+    text = text[:start] + text[end:]
+    for shipped, original in SOILPROP_LINEAGE_EDITS:
+        assert text.count(shipped) == 1, shipped
+        text = text.replace(shipped, original)
+    return text
+
+
+def _reconstruct_pre_mosaic(text: str) -> str:
+    """Undo the separately oracle-verified mosaic surface port before history checks.
+
+    The rest of the historical geometry proof remains pinned to its original
+    hash. This prevents unrelated leaf edits hiding inside a mosaic update.
+    """
+    text = _reconstruct_pre_soilprop(text)
+    previous = (ROOT / "tests/data/ruc_surface_pre_mosaic.cu").read_text()
+    text = _replace_sentinel_block(text, "RUC MOSAIC SURFACE", previous + "\n")
+    current = (
+        "// WRF v4.6.1 RUC LSM surface/soil parameter setup.\n"
+        "// Public-domain WRF transcription: licenses/LICENSE-WRF-public-domain.txt.\n"
+        "// One thread transcribes one call to module_sf_ruclsm.F:soilvegin.  Explicit round-to-nearest intrinsics keep\n")
+    original = (
+        "// WRF v4.6.1 RUC LSM dominant-category surface/soil parameter setup.\n"
+        "// One thread transcribes one call to module_sf_ruclsm.F:soilvegin with\n"
+        "// mosaic_lu=0 and mosaic_soil=0.  Explicit round-to-nearest intrinsics keep\n")
+    assert text.startswith(current)
+    return original + text[len(current):]
+
+
 def _reconstruct_pre_fix(text: str) -> str:
     """Undo the one named non-substitution edit, and only it.
 
@@ -241,7 +322,7 @@ def test_the_lift_is_exactly_a_macro_for_literal_substitution():
     reformatting, re-wrapping, a "while I'm here" fix -- and the re-pinned
     freeze digest is no longer justified by anything.
     """
-    reconstructed = _reconstruct_pre_lift(_reconstruct_pre_fix(_shipped()))
+    reconstructed = _reconstruct_pre_lift(_reconstruct_pre_fix(_reconstruct_pre_mosaic(_shipped())))
     digest = hashlib.sha256(reconstructed.encode("utf-8")).hexdigest()
     assert digest == PRE_LIFT_FILE_SHA256, (
         "the shipped ruc.cu does not invert to the pre-lift file.  Either a "
@@ -268,7 +349,7 @@ def test_the_named_fix_is_the_only_non_substitution_edit():
 
     fix_only = _reconstruct_pre_fix(shipped)
     assert PRE_FIX_DZSTOP in fix_only
-    assert hashlib.sha256(_reconstruct_pre_lift(fix_only).encode(
+    assert hashlib.sha256(_reconstruct_pre_lift(_reconstruct_pre_mosaic(fix_only)).encode(
         "utf-8")).hexdigest() == PRE_LIFT_FILE_SHA256
     # The difference between the shipped file and that one is EXACTLY the
     # sentinel block -- nothing was smuggled in beside it.
@@ -293,7 +374,7 @@ def test_the_reconstruction_can_fail():
     mutated = shipped.replace(anchor, anchor + " ", 1)
     assert mutated != shipped, "the mutation control mutated nothing"
     digest = hashlib.sha256(_reconstruct_pre_lift(
-        _reconstruct_pre_fix(mutated)).encode("utf-8")).hexdigest()
+        _reconstruct_pre_fix(_reconstruct_pre_mosaic(mutated))).encode("utf-8")).hexdigest()
     assert digest != PRE_LIFT_FILE_SHA256
 
 
@@ -470,6 +551,10 @@ def _host_preprocessor() -> list[str] | None:
             "*/*/VC/Tools/MSVC/*/bin/Hostx64/x64/cl.exe"))
         if found:
             return [str(found[-1]), "-nologo", "-EP", "-TP"]
+    for name in ("g++", "clang++"):
+        compiler = shutil.which(name)
+        if compiler is not None:
+            return [compiler, "-E", "-P", "-x", "c++"]
     return None
 
 

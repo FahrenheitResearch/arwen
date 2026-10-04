@@ -840,6 +840,25 @@ def mynn_column_chunk_for_memory(nz: int, *, total_bytes: int,
 
 _PRICING_MEMORY: ContextVar[tuple[int, int] | None] = ContextVar(
     "mynn_pricing_memory", default=None)
+_PRICING_RANK_CHUNK: ContextVar[int | None] = ContextVar(
+    "mynn_pricing_rank_chunk", default=None)
+
+
+@contextmanager
+def mynn_pricing_rank_chunk(chunk: int | None):
+    """Price one resident rank at its selected width without changing a run.
+
+    Rank fits can run concurrently, and the runtime's global pin also
+    controls other domains. A context-local value keeps a candidate fit
+    out of those owners. Only the tile-buffer resolver reads this value.
+    """
+    if chunk is not None and (type(chunk) is not int or chunk < 1):
+        raise ValueError("a ranked MYNN price needs a positive integer width")
+    token = _PRICING_RANK_CHUNK.set(chunk)
+    try:
+        yield
+    finally:
+        _PRICING_RANK_CHUNK.reset(token)
 
 
 @contextmanager
@@ -985,6 +1004,9 @@ def resolve_mynn_tile_column_chunk(nz: int, *, walking: bool = False) -> int:
     pricing leaves it off, so a plan that is never run writes nothing.
     """
     nz = int(nz)
+    priced = _PRICING_RANK_CHUNK.get()
+    if priced is not None:
+        return priced
     chunk = resolve_mynn_column_chunk(nz)
     choice = _RESOLVED.get(nz)
     if _PRICING_MEMORY.get() is not None:
@@ -1000,6 +1022,53 @@ def resolve_mynn_tile_column_chunk(nz: int, *, walking: bool = False) -> int:
     if walking:
         _TILE_WALKED[nz] = int(chunk)
     return int(chunk)
+
+
+def mynn_rank_chunk_candidates(nz: int) -> tuple[int, ...]:
+    """Resident-rank widths to fit before optional output snapshots.
+
+    The resident solver's existing width cap is 98,304 columns. Fit every
+    existing 4,096-column memory quantum between that cap and the minimum:
+    jumping straight from 8,192 to 32,768 left fitting intermediate widths
+    unused on smaller cards. Reused streamed buffers keep their separate
+    minimum-width policy. Explicit pins and overrides remain exact requests
+    and must pass the ordinary memory gate.
+    """
+    if _PINNED is not None:
+        return (int(_PINNED),)
+    choice = _RESOLVED.get(int(nz))
+    if choice is not None and choice.source == "override":
+        return (int(choice.chunk),)
+    override = mynn_column_chunk_override()
+    if override is not None:
+        return (int(override),)
+    return tuple(range(MYNN_PBL_COLUMN_CHUNK_MINIMUM,
+                       MYNN_PBL_COLUMN_CHUNK_DEFAULT + 1,
+                       MYNN_PBL_CHUNK_VRAM_QUANTUM))
+
+
+def bind_mynn_rank_chunk(state, cfg, chunk: int) -> int:
+    """Bind a rank's immutable, admitted workspace width before first use."""
+    if type(chunk) is not int or chunk < 1:
+        raise ValueError("a ranked MYNN workspace needs a positive integer width")
+    width = min(chunk, int(cfg.nx) * int(cfg.ny))
+    previous = getattr(state, "_mynn_rank_column_chunk", None)
+    if previous is not None and previous != width:
+        raise ValueError(
+            f"ranked MYNN width is already {previous}, requested {width}; "
+            "changing it after admission would invalidate scratch storage")
+    # A constructor may already own scratch, so check it before publishing
+    # the binding rather than wait for a differently shaped first request.
+    shapes = {**mynn_pbl_scratch_shapes(width, int(cfg.nz)),
+              **mynn_pbl_index_shapes(width, int(cfg.nz))}
+    for slot, shape in shapes.items():
+        held = getattr(state, "_scratch", {}).get(slot)
+        if held is not None and tuple(held.shape) != tuple(shape):
+            raise ValueError(
+                f"ranked MYNN slot {slot} already has shape {held.shape}, "
+                f"admitted width {width} needs {shape}")
+    state._mynn_rank_column_chunk = width
+    return width
 
 
 def pin_mynn_column_chunk(chunk: int | None) -> int:
@@ -1289,6 +1358,9 @@ __all__ = [
     "derive_mynn_column_chunk",
     "mynn_column_chunk_for_memory",
     "mynn_pricing_memory",
+    "mynn_pricing_rank_chunk",
+    "mynn_rank_chunk_candidates",
+    "bind_mynn_rank_chunk",
     "mynn_pricing_total_bytes",
     "mynn_column_chunk_override",
     "mynn_column_chunk_receipt",

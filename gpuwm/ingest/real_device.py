@@ -153,7 +153,7 @@ def _wrf_flag_sh_surface_specific_humidity(q2, spfh, pressure, *, force_fallback
 
 
 def _integrate_moisture(qv, pressure, temperature, height, psfc, tsfc, qsfc,
-                        surface_height, *, column_workers=1):
+                        surface_height, *, column_workers=1, _order=None):
     _workers(column_workers)
     cp = _cp()
     p = _contiguous(pressure, dtype=cp.float64)
@@ -162,7 +162,7 @@ def _integrate_moisture(qv, pressure, temperature, height, psfc, tsfc, qsfc,
     # This tiny metadata vector is ordered by NumPy's exact argsort. CuPy's
     # stable sort differs on ties from NumPy's default quicksort.
     import numpy as np
-    order = np.argsort((-p[:, 0, 0]).get())
+    order = np.argsort((-p[:, 0, 0]).get()) if _order is None else _order
     od = cp.asarray(order, dtype=cp.int32)
     q, t, z = (_contiguous(v, dtype=cp.float64) for v in (qv, temperature, height))
     ps, ts, qs, zs = (_contiguous(v, dtype=cp.float64)

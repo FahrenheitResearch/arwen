@@ -474,8 +474,8 @@ def test_mynn_condensation_cuda_rejects_other_cloud_pdfs_and_shape_drift():
     }
     with pytest.raises(ValueError, match="bl_mynn_cloudpdf=2"):
         mynn_condensation_default_cuda(inputs, bl_mynn_cloudpdf=1)
-    with pytest.raises(ValueError, match="spp_pbl=0"):
-        mynn_condensation_default_cuda(inputs, spp_pbl=1)
+    with pytest.raises(ValueError, match="spp_pbl"):
+        mynn_condensation_default_cuda(inputs, spp_pbl=2)
     inputs["exner"] = inputs["exner"][:, :-1]
     with pytest.raises(ValueError, match="not broadcastable"):
         mynn_condensation_default_cuda(inputs)
@@ -923,7 +923,7 @@ def test_mynn_initialize_cuda_rejects_nondefault_knobs_and_shape_drift():
     with pytest.raises(ValueError, match="bl_mynn_mixlength"):
         mynn_initialize_default_cuda(values, bl_mynn_mixlength=0)
     with pytest.raises(ValueError, match="spp_pbl"):
-        mynn_initialize_default_cuda(values, spp_pbl=1)
+        mynn_initialize_default_cuda(values, spp_pbl=2)
     with pytest.raises(TypeError, match="initialize_qke"):
         mynn_initialize_default_cuda(values, initialize_qke=1)
     missing = dict(values)
@@ -1053,7 +1053,7 @@ def test_mynn_initialize_cuda_is_insensitive_to_fma_contraction():
                 device["sh"], device["qke"], device["rmo"], device["ust"],
                 device["zi"], device["psig_bl"],
                 *(outputs[name] for name in MYNN_INITIALIZE_OUTPUTS),
-                scratch, np.int32(1), np.int32(nz), np.int32(ncol),
+                scratch, np.int32(1), np.int32(1), np.int32(nz), np.int32(ncol),
             ),
         )
         cp.cuda.get_current_stream().synchronize()
@@ -1220,7 +1220,7 @@ def test_mynn_dmp_mf_cuda_rejects_nondefault_knobs_and_shape_drift():
         # asserting ValueError for an admitted value and passed only
         # because the call happened to fail LATER, on arity, with a
         # DIFFERENT exception type.
-        ("bl_mynn_mixscalars", 2), ("spp_pbl", 1),
+        ("bl_mynn_mixscalars", 2), ("spp_pbl", 2),
     ):
         with pytest.raises(ValueError, match=knob):
             mynn_dmp_mf_cuda(values, **{knob: bad})

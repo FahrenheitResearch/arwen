@@ -268,7 +268,7 @@ def test_gf_overwrites_poisoned_output_slabs(monkeypatch):
         def get_function(self, name):
             return PoisonedFunction(self.module.get_function(name))
 
-    monkeypatch.setattr(gf, "_gf_module", lambda nz: PoisonedModule(load(nz)))
+    monkeypatch.setattr(gf, "_gf_module", lambda nz, **kw: PoisonedModule(load(nz, **kw)))
     cfg = RunConfig(
         nx=4, ny=2, nz=16, dx=12000.0, dy=12000.0, ztop=9000.0,
         dt=60.0, run_seconds=0.0, moist=True, mp_physics=10,

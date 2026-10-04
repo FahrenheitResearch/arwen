@@ -30,7 +30,11 @@
 * whitespace=cr-at-eol
 
 gpuwm/data/** -text
-tools/grib1_bridge/vendor/** -text
+# Vendored crate sources keep their upstream bytes, trailing blanks included:
+# Cargo verifies them against .cargo-checksum.json, and the public export's
+# `git diff --check` would refuse the 2.8.5 export on the trailing blanks in
+# cpufeatures, digest, rayon-core and typenum (as tools/rustwx/vendor below).
+tools/grib1_bridge/vendor/** -text -whitespace
 patches/** -text
 *.sh text eol=lf
 *.ps1 text eol=lf
@@ -99,6 +103,10 @@ tools/urban_wrf471_oracle/couple_noahdrv_1679_1776.inc -whitespace
 tools/urban_wrf471_oracle/couple_noahmpdrv_3363_3372_3689_3776.inc -whitespace
 tools/uwpbl_wrf471_oracle/libm64/*.objdump.txt -whitespace
 tools/uwpbl_wrf471_oracle/libm64/upstream/*.c -whitespace
+
+# Byte-unmodified WRF lake oracle sources retain upstream trailing blanks.
+# Their SHA-256 values are bound in gpuwm/data/lake/oracle/manifest.json.
+tools/lake_wrf461_oracle/upstream/** -whitespace
 
 # YSU's topo_wind arm (lane/282-terrain-drag), byte-pinned by
 # tests/test_kernel_source_freeze_per_module.py PINNED_HEADERS and graded with

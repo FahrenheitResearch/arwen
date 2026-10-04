@@ -11,10 +11,12 @@ from typing import Callable
 import numpy as np
 
 from gpuwm.ingest.grib import Era5Snapshot
+from gpuwm.ingest.analyzed_numbers import CANONICAL_NUMBER_FIELDS
 
 
 ATMOSPHERIC_FIELDS = frozenset({
     "T", "PRES", "SPFH", "U", "V", "GHT", "QC", "QR", "QI", "QS", "QG",
+    *CANONICAL_NUMBER_FIELDS.values(),
 })
 #: The canonical names of exactly the fields ATMOSPHERIC_FIELDS lists under
 #: their legacy names: the six thermodynamic and wind fields and the five
@@ -34,6 +36,7 @@ CANONICAL_ATMOSPHERIC_FIELDS = frozenset({
     "cloud_water_mixing_ratio", "rain_water_mixing_ratio",
     "cloud_ice_mixing_ratio", "snow_mixing_ratio",
     "graupel_or_hail_mixing_ratio",
+    *CANONICAL_NUMBER_FIELDS,
 })
 WINDOW_SCHEMA = "gpuwm-mapped-atmospheric-window-v1"
 WINDOWED_FRAMESET_SCHEMA = "gpuwm-mapped-windowed-frameset-v1"

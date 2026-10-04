@@ -83,10 +83,37 @@ All writers support at most 16384 gates per radial. Increase `gate_spacing_m`
 or reduce `range_km` for a larger request. Gate spacing uses whole metres.
 Level II additionally supports at most 32 physical cuts per volume.
 
-The lowest two distinct tilts have reflectivity and velocity PPI images.
-Reflectivity uses dBZ and the Rust renderer's `scales::reflectivity_scale`.
-Velocity uses m/s and `scales::radial_velocity_scale` with a fixed -60 to
-+60 m/s range. These are the same palette definitions used by `rw_wrfbatch`.
+The lowest two distinct tilts have reflectivity and velocity PPI images,
+and CC, ZDR and KDP PPI images when the volume carries those moments; a
+volume without dual-polarization moments draws reflectivity and velocity
+only. PHIDP is written to the radar files but not drawn. Every image uses
+the Rust renderer's radar tables (`rustwx_render::RadarTable`, selected by
+name through `scales::radar_scale_named`):
+
+| Image field | Units | Scale |
+| --- | --- | --- |
+| `reflectivity` | dBZ | `radar_reflectivity`, 10 to 85 dBZ, nothing drawn below 10 dBZ |
+| `velocity` | m/s | `radar_velocity`, fixed -60 to +60 m/s, greens toward the radar and reds away |
+| `rhohv` | unitless | `correlation_coefficient`, 0.2 to 1.05 |
+| `zdr` | dB | `differential_reflectivity`, -4 to 8 dB |
+| `kdp` | deg/km | `specific_differential_phase`, -1 to 7 deg/km |
+
+A CC, ZDR or KDP image is drawn only where the same gate's reflectivity is
+drawn (10 dBZ and above), so the three cover the echo the reflectivity image
+shows and nothing else. The radar files keep every gate.
+
+These are the same tables `rw_wrfbatch` draws its reflectivity products and
+observed radar grids with. The table sources are recorded in
+`tools/rustwx/vendor/RADAR-COLOR-TABLES.md`.
+
+`color_tables = "classic"` in the `[simulated_radar]` table draws the
+reflectivity and velocity images with the scales they wore before 2.8.5
+(`reflectivity_classic`, the twelve-step ladder to 70 dBZ, and
+`radial_velocity_classic`, the blue-red scale). The default is
+`"standard"`. The map products take the same two names from
+`gpuwm render --radar-colors classic`, or from `RUSTWX_RADAR_COLORS=classic`
+in the environment of any run. The choice changes images only, never the
+radar files, and an `rw_simradar` older than the key refuses it by name.
 
 Replay saved history without running the model:
 

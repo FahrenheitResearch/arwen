@@ -1942,6 +1942,19 @@ tests/test_terrain_drag_static_identity.py
 # Saved-child own geography must request drag statistics and pass them to
 # physics; otherwise an accepted downscale option stops during initialization.
 tests/test_terrain_drag_offline_child.py
+# Tiled terrain drag must gather every coefficient and statistic before use.
+# Prevents neutral tile statics silently disabling drag and obsolete tile
+# refusals stopping an otherwise complete prepared-domain forecast.
+tests/test_terrain_drag_tiles.py
+# Resident ranks must walk the exact MYNN width admitted per physical card.
+# Prevents repeated IDs overspending one card, workspace shapes changing
+# after allocation, and rank threads inheriting a reused tile's small chunk.
+tests/test_mynn_rank_chunk_policy.py
+
+# Device ranks must receive every orographic statistic and topo_wind input,
+# with the same halo and edge mapping as the state. Prevents accepted drag
+# options failing at rank construction or reading the wrong terrain column.
+tests/test_terrain_drag_devices.py
 
 # Hosted AWS transport policy (lane/282-aws-transport).  Prevents a hosted
 # run under the AWS policy falling through to NOMADS after a failed AWS
@@ -1991,6 +2004,8 @@ tests/test_rrtmg_lw_buffer_grid.py
 # breakage (every ERA5 worker run refused at prep for passing its bundle's
 # own cycle) and a cycle that nothing reads silently naming the wrong start.
 tests/test_go_cycle.py
+# Existing inputs must agree with an asserted cycle. Prevents silently
+# relabelling a prepared analysis or restart with another initialization time.
 tests/test_input_cycle.py
 
 # The front door refuses a CuPy older than the extras' floor by name.  Prevents
@@ -2032,3 +2047,253 @@ tests/test_simulated_radar_resources.py
 # Prevents a wheel carrying compiled donor code while omitting the license
 # and NOTICE files required for redistribution.
 tests/test_licence_notices_ship.py
+
+# MYNN option 2 and post-PBL scalar diffusion: prevent selecting option 1
+# at initialization, treating local diffusion as plume transport, or dropping
+# the nc/ni/nwfa/nifa tendency between the wrapper and RK3. WRF column
+# fixtures ship; GPU checks for the same paths are on gpu_shard_files.txt.
+tests/test_mynn_options.py
+tests/test_mynn_mixlength2.py
+tests/test_scalar_pblmix.py
+# Price both solve and coupling live sets so enabled scalar mixing cannot
+# pass memory admission using an estimate for the default-off path.
+tests/test_scalar_pblmix_memory.py
+
+# Explicit preparation workers must override inherited library defaults.
+# Prevents a 24-worker request silently decoding or initializing on one core.
+tests/test_preparation_workers.py
+# Host admission must include CPU preparation and native worker scratch.
+# Prevents starting initialization whose retained arrays exhaust available RAM.
+tests/test_cpu_preparation_host_ram.py
+# Large CUDA preparation must retain completed arrays on the host.
+# Prevents an own-grid preparation allocating a whole state on a smaller card.
+tests/test_bounded_cuda_preparation.py
+# Ranked forecasts must consume a checked head and stop before an absent seam.
+# Prevents seal-only startup, wrong-card reserves and unpriced later decodes.
+tests/test_ranked_boundary_stream.py
+# A newly sealed mapped proof must remain readable by the public forecast.
+# Prevents worker and stage telemetry rejecting a completed run at its seal.
+tests/test_cross_source_sim_stage.py
+# Parallel prepared-array writes must publish the original bytes atomically.
+# Prevents early ready markers, changed hashes and deletion of foreign files.
+tests/test_prepared_writer.py
+# Native FP64 host functions must retain scalar-library words and edge cases.
+# Prevents threading changing pow results, signed zeros or NaN payload behavior.
+tests/test_host_libm.py
+# Native cold-start seeding must retain each mixed-precision operation.
+# Prevents changed Thompson numbers, partial state writes or lost refusals.
+tests/test_cold_start_cpu.py
+# Parallel setup copies must preserve float32 residuals and owned caches.
+# Prevents altered geopotential words or aliasing a cached base-state array.
+tests/test_host_setup_arrays.py
+# Native receipt hashing must preserve source bytes and field correspondence.
+# Prevents changed preparation identities, reordered receipts or unbounded copies.
+tests/test_preparation_fingerprints.py
+
+# RUC mosaic input and WRF column controls prevent silently falling back to
+# dominant categories, losing irrigation, or misindexing rank fractions.
+tests/test_ruc_mosaic.py
+tests/test_ruc_mosaic_options.py
+tests/test_ruc_mosaic_doors.py
+
+# Lake controls prevent changed defaults, omitted bathymetry, restart setting
+# drift and non-horizontal lake state that the resident-rank copier cannot carry.
+tests/test_lake_options.py
+tests/test_lake_physics_doors.py
+tests/test_surface_rank_carriers.py
+
+# WPS bathymetry must retain its area mean, bounded search and land mask;
+# an old native bridge must not silently ignore the new interpolation row.
+tests/test_lake_static.py
+
+# Pin all WRF lake statements, layer bounds, defaults and 300-step oracle
+# words so a reduced lake substitute or changed source cannot pass unnoticed.
+tests/test_lake_contract.py
+
+# Rank physics memory must price actual allocations and live aliases once.
+# Prevents fitting multi-card forecasts being refused by duplicate MYNN
+# output pricing, and admitted forecasts exhausting the card through omitted
+# RUC workspaces or atmosphere density. The output staging cap stays priced.
+tests/test_devices_memory_pools.py
+# The RUC inventory counts the full-width soil/snow workspaces, output pools
+# and pinned host mirrors. Prevents these live allocations disappearing from
+# device or host admission while the full-column solve still allocates them.
+tests/test_ruc_memory.py
+
+# Prevents a native mass-level top being confused with its model-top interface,
+# pressure rounding refusing the source's own eta ladder, aerosol numbers
+# silently replaced by climatology, and a separate analysis replacing RAP f00
+# boundaries or escaping the prepared bundle's source and time bindings.
+tests/test_native_pressure_top.py
+tests/test_native_source_profiles.py
+tests/test_aerosol_analysis_input.py
+tests/test_initial_source.py
+
+# The time-lagged and multi-model ensemble door (2.8.5), run on a CPU: the
+# real request, member plan, member configs, chain plans, flag handling,
+# gates, receipts and failure handling of `gpuwm ensemble / go / run
+# --recipe`, with only the paid stages replaced (a member's fetch and
+# preparation, the card gates, the forecast runner).  Before it was listed
+# the door body ran on no battery leg: every CPU test replaced
+# run_recipe_ensemble, so the body could be broken with all of them green.
+# Prevents --readiness starting the members' downloads, --cycle and the
+# other go flags being dropped, a member its chain cannot prepare being
+# found after earlier members were fetched, one model run counted as several
+# members, and a stage failure leaving a traceback and a stale receipt.
+tests/test_ensemble_recipe_door.py
+
+# 2.8.5 ensemble lines (lanes 283-ensemble-batch and 283-ens-perturb): the
+# CPU halves.  Found by the 2.8.5 ensemble reviews: none of the two lanes'
+# test files was on this list, so neither public CI nor a cut ran the
+# calibration refusal's own gate, the batch kernel adapter's source audits
+# or the member admission pricing.  Measured on node-4 at 75950cec9 with
+# CUDA hidden and the tip build's native libraries loaded, every file below
+# together (-n 6 --dist loadfile): 1,310 passed, 4 skipped by design
+# (tests/test_ensemble_calibration_admission.py covers the native doors'
+# one request descriptor once), 0 failed.
+#
+# The batch kernel adapter and its packing.  The adapter rewrites CUDA text
+# under audits; these read the installed kernels on a CPU, so an audit that
+# went stale against a kernel edit fails here and not on a card nobody ran.
+# tests/test_ensemble_batch_acoustic_fusion_audit.py is that check for the
+# fusion trial, whose stale audit left 21 device tests red at the 2.8.5
+# staging tip.  The three files that also carry device rows are on
+# tools/battery/gpu_shard_files.txt SHARD 1w and 1y for those.
+tests/test_ensemble_batch_acoustic_fusion_audit.py
+tests/test_ensemble_batch_kernel.py
+tests/test_ensemble_batch_advection_family_gpu.py
+tests/test_ensemble_batch_layout_trials_gpu.py
+tests/test_ensemble_batch_state.py
+tests/test_ensemble_batch_storage.py
+tests/test_ensemble_batch_health.py
+tests/test_ensemble_batch_mixing.py
+tests/test_ensemble_batch_physics.py
+tests/test_ensemble_batch_physics_init.py
+tests/test_ensemble_batch_products.py
+tests/test_ensemble_batch_product_spool.py
+tests/test_ensemble_batch_profile.py
+tests/test_ensemble_admission_packing.py
+tests/test_ensemble_prepared_batch.py
+tests/test_ensemble_identity_compare.py
+tests/test_rustwx_resident_ensemble.py
+# The ensemble run path: the production door and session, ordinary and
+# native execution, member capture, progress, counters and member products.
+# A regression here is a --members run that stops, mislabels a member or
+# drops a member's output.
+tests/test_ensemble_production_door.py
+tests/test_ensemble_production_request.py
+tests/test_ensemble_production_sizing.py
+tests/test_ensemble_production_execution.py
+tests/test_ensemble_prepared_execution.py
+tests/test_ensemble_prepared_source_binding.py
+tests/test_ensemble_ordinary_execution.py
+tests/test_ensemble_physics_execution.py
+tests/test_ensemble_posted_execution.py
+tests/test_ensemble_posted_native.py
+tests/test_ensemble_native_forecast.py
+tests/test_ensemble_native_review.py
+tests/test_ensemble_supervised_devices.py
+tests/test_ensemble_runtime_context.py
+tests/test_ensemble_runtime_capture_lifecycle.py
+tests/test_ensemble_runtime_counters.py
+tests/test_ensemble_runtime_preparation.py
+tests/test_ensemble_progress.py
+tests/test_ensemble_output_counters.py
+tests/test_ensemble_radar_output.py
+tests/test_ensemble_reconstruction.py
+tests/test_ensemble_member_diagnostics.py
+tests/test_prepared_history_capture_receipt.py
+# Member sources, recipes and the calibration refusal.
+# tests/test_ensemble_calibration_admission.py is the gate on the refusal
+# of uncalibrated random perturbation at every door; unlisted, the refusal
+# could be removed with nothing red.
+tests/test_ensemble_calibration_admission.py
+tests/test_ensemble_calibration_score.py
+tests/test_ensemble_campaign_run.py
+tests/test_ensemble_campaign_score.py
+tests/test_ensemble_campaign_retention.py
+tests/test_ensemble_amplitude_select.py
+tests/test_ensemble_recipe_time_axes.py
+tests/test_ensemble_source_recipes.py
+tests/test_ensemble_source_routes.py
+tests/test_ensemble_source_preparation.py
+tests/test_ensemble_automatic_sources.py
+tests/test_ensemble_automatic_preparation.py
+tests/test_ensemble_acquisition_binding.py
+tests/test_ensemble_member_preparation.py
+tests/test_ensemble_posted_preparation.py
+# Stochastic patterns and SPP: seeds, restart and streaming authority, the
+# config contract, and the SPP consumers against unmodified WRF v4.6.1
+# captures (the device halves are on gpu_shard_files.txt SHARD 1x).
+tests/test_ensemble_stochastic_authority.py
+tests/test_ensemble_stochastic_config_contract.py
+tests/test_ensemble_stochastic_execution.py
+tests/test_ensemble_stochastic_model.py
+tests/test_ensemble_stochastic_restart.py
+tests/test_ensemble_stochastic_seeds.py
+tests/test_ensemble_stochastic_streamed_restart.py
+tests/test_ensemble_stochastic_streaming.py
+tests/test_spp_config.py
+tests/test_spp_consumers.py
+tests/test_spp_restart.py
+tests/test_ruc_spp.py
+tests/test_preprocess_math_binding.py
+# Physical member stores and posted preparation: units, pressure alignment,
+# recentring through the native preparation library and the store's own
+# reader.  Five files on this list (four in this block and
+# tests/test_ensemble_source_preparation.py above) read
+# GPUWM_ENSEMBLE_PREPARATION_BRIDGE (the gpuwm_preprocess_cpu library) and
+# skip 56 tests without it, so the leg must export it.  The
+# native-dependent files are also on tools/battery/stage1_native_files.txt.
+tests/test_ensemble_physical_preparation.py
+tests/test_ensemble_physical_boundary.py
+tests/test_ensemble_physical_review.py
+tests/test_ensemble_physical_units.py
+tests/test_ensemble_mapped_physical.py
+tests/test_ensemble_posted_physical.py
+tests/test_gfs_physical_store.py
+tests/test_gfs_posted_physical.py
+tests/test_hrrr_physical_contract.py
+tests/test_hrrr_physical_store.py
+tests/test_hrrr_posted_physical.py
+tests/test_mapped_posted_engine.py
+tests/test_mapped_posted_physical.py
+tests/test_mapped_posted_reuse.py
+tests/test_mapped_posted_tree.py
+tests/test_posted_prep_handoff.py
+tests/test_prep_handoff_directory.py
+tests/test_source_cli_physical_stores.py
+
+# 2.8.5 ensemble run control (lane fix/285-ens-runcontrol): the CPU half.
+# Ctrl-C was held until every member in flight had finished its whole
+# forecast, a failed member was not named, and a native run closed its
+# log with "0 steps".  This file drives the real wave executor and
+# session: the stop must be back before half of a 6 s member and a queued
+# wave must never start, every failure of a wave is named by its member,
+# and a source-audit refusal before any pack began declines to the
+# ordinary runner while one after a pack began still fails the run.  The
+# device halves are on gpu_shard_files.txt beside the recipe door and in
+# SHARD 1w0.
+tests/test_ensemble_run_control.py
+# The table law for the ensemble line (lane fix/285-ens-tables; the
+# project ruling that a new model is table work).  The line branched on
+# source and runner names in code (a runner id in the shared geography
+# build, a set of runner ids at the physical store door, a source and
+# mode pair in the decoder resolver).  This reads the ensemble package
+# and tools with ast and fails on any source id, alias or runner id
+# outside a docstring, and runs a synthetic row through every generic
+# door.  Run against the recipe door lane it caught `chain ==
+# "prepared:hrrr"` in gpuwm/ensemble/recipe_door.py before the merge.
+tests/test_ensemble_table_law.py
+
+# 2.8.5 ensemble admission (lane fix/285-ens-admission) and the RUC soil
+# property selector (lane 286-ruc-soilprop-285).  A plain member count used
+# to run N copies of one forecast and publish spread and probabilities from
+# them, and an imported WRF &stoch namelist reached random perturbations the
+# release refuses; tests/test_ensemble_member_inputs.py holds every N > 1
+# door to real member inputs and tests/test_namelist_stochastic.py holds the
+# importer to the calibration refusal.  tests/test_ruc_soilprop.py holds the
+# default soil diffusivity to the HRRR form and "wrf_461" to the old bytes.
+tests/test_ensemble_member_inputs.py
+tests/test_namelist_stochastic.py
+tests/test_ruc_soilprop.py

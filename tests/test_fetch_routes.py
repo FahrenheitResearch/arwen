@@ -15,6 +15,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 import json
+import os
 import re
 import shlex
 
@@ -954,7 +955,10 @@ def test_every_route_prints_the_whole_prep_line_it_published(source,
     commands = [line.strip() for line in lines
                 if line.strip().startswith("gpuwm prep ")]
     assert len(commands) == 1, lines
-    assert shlex.split(commands[0]) == ["gpuwm", "prep", *document["argv"]]
+    # The printed line is the platform's own quoting: on Windows the paths
+    # are bare backslash paths, which POSIX splitting would eat.
+    assert shlex.split(commands[0], posix=os.name != "nt") == [
+        "gpuwm", "prep", *document["argv"]]
     comments = " ".join(line for line in lines
                         if line.strip().startswith("#"))
     for flag in document["caller_supplies"]:

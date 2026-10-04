@@ -240,7 +240,7 @@ observation band, pinned RED by a named test) [docs/public/PHYSICS.md:1331-1397]
 ## 3.9 Radiation cadence on nests (`radt`), and the 2.5.0 fix
 
 `radt` is per-domain, in minutes, 0 = every step; shortwave is held constant
-between calls (`swint_opt = 0`) [docs/public/CONFIGURATION.md:424, 741].
+between calls (`swint_opt = 0`) [docs/public/CONFIGURATION.md:441, 782].
 
 **The 2.5.0 rule: a nest inherits its parent's radiation cadence.** Radiative
 transfer varies on cloud timescales, not grid scales, so nothing about halving dx

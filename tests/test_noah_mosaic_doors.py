@@ -59,8 +59,8 @@ def test_import_mosaic_with_urban_canopy_loads_and_bep_is_refused_as_in_wrf(tmp_
 
 @pytest.mark.parametrize("line,message", [
     ("sf_surface_mosaic = 2,", "land surface would not be integrated"),
-    ("mosaic_lu = 1,", "mosaic land/soil physics is not implemented"),
-    ("mosaic_soil = 1,", "mosaic land/soil physics is not implemented"),
+    ("mosaic_lu = 1,", "RUC mosaic requires sf_surface_physics=3"),
+    ("mosaic_soil = 1,", "RUC mosaic requires sf_surface_physics=3"),
     ("sf_surface_mosaic = 1,\n mosaic_cat = 0,", "Noah has no tile")])
 def test_import_refusals(tmp_path, line, message):
     with pytest.raises(ValueError, match=message):

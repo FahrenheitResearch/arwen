@@ -812,7 +812,7 @@ def _engine_compose_harness(tmp_path, monkeypatch):
 
     monkeypatch.setattr(tempfile, "TemporaryDirectory", recording_factory)
 
-    def compose(destination):
+    def compose(destination, **options):
         return mapped_composition._compose_through_engine(
             engine=tmp_path / "engine.exe",
             mapping_path=files["mapping.json"],
@@ -835,6 +835,7 @@ def _engine_compose_harness(tmp_path, monkeypatch):
                     for name, path in files.items()}
                    | {str(files["mapping.json"]): "mapping-hash"},
             scratch_destination=destination,
+            **options,
         )
 
     return SimpleNamespace(

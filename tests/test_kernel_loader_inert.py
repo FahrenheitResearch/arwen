@@ -83,6 +83,10 @@ _EXPECTED_HEADERS = {
     # A new module; the WRF v4.7.1 Noah mosaic column oracle grades it
     # bitwise.
     "noah_mosaic": ("glibc_flt32.cuh",),
+    # RUC LOG/EXP mixture words and the new lake driver's REAL32 power
+    # use the shared WRF-oracle float32 functions.
+    "ruc": ("glibc_flt32.cuh",),
+    "lake": ("glibc_flt32.cuh", "lake_support.cuh", "lake_wrf.cuh"),
 }
 
 
@@ -91,6 +95,15 @@ def _module_names() -> list[str]:
     assert names, "no CUDA translation units found"
     assert "thompson" in names
     return names
+
+
+def test_lake_compile_options_do_not_change_existing_modules():
+    # Disabling contraction belongs to the lake Fortran translation. A
+    # global option change would also move previously qualified kernels.
+    assert kernel_loader.module_options("lake") == ("-std=c++17", "--fmad=false")
+    for name in _module_names():
+        if name != "lake":
+            assert kernel_loader.module_options(name) == ("-std=c++17",)
 
 
 def _pre_hook_source(name: str) -> str:

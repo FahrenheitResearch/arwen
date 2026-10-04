@@ -55,7 +55,9 @@ def with_terrain_drag_statics(selection, cfg):
     """A GEOG selection also requesting this configuration's drag fields."""
     names = required_static_fields(int(getattr(cfg, "topo_wind", 0) or 0),
                                    int(getattr(cfg, "gwd_opt", 0) or 0))
-    return selection.with_orographic(names) if names else selection
+    from .lake import with_lake_statics
+    selected = selection.with_orographic(names) if names else selection
+    return with_lake_statics(selected, cfg)
 
 #: The land-use dataset whose mask the ``masked = water`` rows read is the
 #: build's own (``GeogSelection.landuse``).

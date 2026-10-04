@@ -2489,7 +2489,10 @@ dependencies = [
  "flate2",
  "grib-core",
  "hdf5-reader",
+ "netcdf-reader 0.3.0",
+ "netcdf-writer",
  "netcrust",
+ "obs-regrid",
  "rustls",
  "rustls-rustcrypto",
  "rustwx-core",
@@ -2499,8 +2502,10 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "static-fields",
  "ureq",
  "webpki-roots 1.0.9",
+ "wrf-core 0.1.0 (git+https://github.com/FahrenheitResearch/wrf-rust.git?rev=93bd2ca670c13fec35bcfc27a58108e6fd71c627)",
 ]
 
 [[package]]

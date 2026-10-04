@@ -360,8 +360,16 @@ _NUMBER_WORDS = {
     7: "seven", 8: "eight", 9: "nine", 10: "ten", 11: "eleven",
     12: "twelve", 13: "thirteen", 14: "fourteen", 15: "fifteen",
     16: "sixteen", 17: "seventeen", 18: "eighteen", 19: "nineteen",
-    20: "twenty",
 }
+# Spelled through ninety-nine, so a registered source is a sentence edit on
+# the page and never a KeyError here (the table stopped at twenty when
+# hrrr-native and rap-native made the route's count twenty-two).
+for _tens, _word in ((20, "twenty"), (30, "thirty"), (40, "forty"),
+                     (50, "fifty"), (60, "sixty"), (70, "seventy"),
+                     (80, "eighty"), (90, "ninety")):
+    _NUMBER_WORDS[_tens] = _word
+    for _unit in range(1, 10):
+        _NUMBER_WORDS[_tens + _unit] = f"{_word}-{_NUMBER_WORDS[_unit]}"
 
 #: The six suite-less compositions R-067 gave their first named template.
 #: Read off the registry by composition rather than spelled as ids, so a
@@ -536,7 +544,7 @@ def test_the_page_lists_the_whole_mynn_option_identity():
 def test_the_quoted_mynn_identity_refusal_is_the_one_the_loader_emits():
     """A user compares a quoted error against their terminal, character
     for character, so this one is executed rather than transcribed."""
-    message = _refusal(extra="bl_mynn_mixlength = 2")
+    message = _refusal(extra="bl_mynn_mixlength = 0")
     assert _squash(message) in _squash(_page()), (
         "docs/public/PHYSICS.md quotes a MYNN option-identity refusal that "
         f"the loader does not emit. Measured:\n{message}")

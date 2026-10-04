@@ -5,6 +5,9 @@
 // WRF v4.6.1 phys/module_mp_thompson.F, commit
 // d66e442fccc04111067e29274c9f9eaccc3cef28, zero local modifications.  Every
 // bare line number below refers to that file.
+// WRF-derived arithmetic retains the notice in NOTICE and
+// licenses/LICENSE-WRF-public-domain.txt. Optional output guards add no
+// numerical transcription.
 //
 // This translation unit receives gpuwm/core/kernels/thompson_aerosol_common.cuh
 // textually, prepended by gpuwm/core/kernels/__init__.py's _EXTRA_HEADERS
@@ -141,8 +144,10 @@ extern "C" __global__ void thompson_aa_entry_snapshot(
     // :1805  nwfa(k) = MAX(11.1E6, MIN(9999.E6, nwfa1d(k)*rho(k)))
     // :1806  nifa(k) = MAX(naIN1*0.01, MIN(9999.E6, nifa1d(k)*rho(k)))
     //        naIN1*0.01 = 0.5E6*0.01 = 5.0E3 exactly.
-    nwfa_entry_m3[idx] = thompson_aa_clamp_nwfa(nwfa[idx] * rho);
-    nifa_entry_m3[idx] = thompson_aa_clamp_nifa(nifa[idx] * rho);
+    if (nwfa_entry_m3)
+        nwfa_entry_m3[idx] = thompson_aa_clamp_nwfa(nwfa[idx] * rho);
+    if (nifa_entry_m3)
+        nifa_entry_m3[idx] = thompson_aa_clamp_nifa(nifa[idx] * rho);
 }
 
 
@@ -247,6 +252,9 @@ extern "C" __global__ void thompson_aa_entry_cloud_number(
     const float qc_local = qc[idx];
 
     if (qc_local > THOMPSON_AA_R1) {
+        // Forecast sources diagnose this distribution inline.  With no
+        // output requested this branch changes no prognostic field.
+        if (!(rc_out || nc_entry_m3 || nu_c_out || l_qc_out)) return;
         // :1828-1841.  thompson_aa_cloud_dist carries WRF's type mixing:
         // a REAL power widened to DOUBLE, REAL size clamps, a DOUBLE
         // rediagnosis.  Do not re-derive it here.
@@ -255,21 +263,21 @@ extern "C" __global__ void thompson_aa_entry_cloud_number(
         double lamc = 0.0;
         const float nc_m3 = thompson_aa_cloud_dist(rc, nc[idx], rho_local,
                                                    &nu_c, &lamc);
-        rc_out[idx] = rc;
-        nc_entry_m3[idx] = nc_m3;
-        nu_c_out[idx] = nu_c;
-        l_qc_out[idx] = 1;
+        if (rc_out) rc_out[idx] = rc;
+        if (nc_entry_m3) nc_entry_m3[idx] = nc_m3;
+        if (nu_c_out) nu_c_out[idx] = nu_c;
+        if (l_qc_out) l_qc_out[idx] = 1;
     } else {
         // :1843-1848
         qc[idx] = 0.0f;
         nc[idx] = 0.0f;
-        rc_out[idx] = THOMPSON_AA_R1;
-        nc_entry_m3[idx] = THOMPSON_AA_NC_FLOOR;
+        if (rc_out) rc_out[idx] = THOMPSON_AA_R1;
+        if (nc_entry_m3) nc_entry_m3[idx] = THOMPSON_AA_NC_FLOOR;
         // nu_c is undefined on this branch in WRF (the whole level is
         // switched off by L_qc).  Publish the nc=2 value so a downstream
         // read of a switched-off level is deterministic rather than stale.
-        nu_c_out[idx] = thompson_aa_nu_c(THOMPSON_AA_NC_FLOOR);
-        l_qc_out[idx] = 0;
+        if (nu_c_out) nu_c_out[idx] = thompson_aa_nu_c(THOMPSON_AA_NC_FLOOR);
+        if (l_qc_out) l_qc_out[idx] = 0;
     }
 }
 

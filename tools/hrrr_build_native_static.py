@@ -140,6 +140,8 @@ def main() -> None:
     parser.add_argument("--geog-root", type=Path)
     parser.add_argument("--static-cache", type=Path)
     parser.add_argument("--static-receipt", type=Path)
+    parser.add_argument("--lake-depth", action="store_true",
+                        help="build WPS lake-depth geography for the CLM lake model")
     configuration = parser.add_mutually_exclusive_group()
     configuration.add_argument("--experiment-config", type=Path)
     configuration.add_argument(
@@ -157,6 +159,11 @@ def main() -> None:
               "the sealed 500x500 benchmark geometry"),
     )
     args = parser.parse_args()
+    need_lake_depth = args.lake_depth
+    if args.experiment_config is not None:
+        from gpuwm.experiment import load_experiment
+        run = load_experiment(args.experiment_config).root.run
+        need_lake_depth |= bool(run.sf_lake_physics == 1 and run.use_lakedepth == 1)
     if args.output.exists() or args.receipt.exists():
         raise FileExistsError("native static output/receipt already exists")
 
@@ -193,6 +200,10 @@ def main() -> None:
         from gpuwm.hrrr_native_static import verify_hrrr_native_static
         fields, prior = verify_hrrr_native_static(
             args.static_cache, args.static_receipt, target)
+        if need_lake_depth and "LAKE_DEPTH" not in fields:
+            raise ValueError(
+                "the static cache has no LAKE_DEPTH required by the selected "
+                "lake model; rebuild from --geog-root to include bathymetry")
         # A sealed static keeps the terrain it was built with.  One built
         # under another d01 smoothing than this preparation asks for would
         # integrate terrain the configuration did not ask for (a default
@@ -209,11 +220,15 @@ def main() -> None:
         selection = GeogSelection(
             root=Path(prior["geog_root"]), resolution_tokens=(),
             **prior["geog_selection"])
+        if "LAKE_DEPTH" in fields:
+            selection = replace(selection, lake_depth=True)
         geog_source_coverage = prior["geog_source_coverage"]
     else:
         if args.geog_root is None:
             raise ValueError("provide geog-root or a verified static-cache/static-receipt pair")
         selection = GeogSelection.fallback(args.geog_root)
+        if need_lake_depth:
+            selection = replace(selection, lake_depth=True)
         if smoothing_attestation is not None:
             selection = replace(selection, terrain_smoothing=smoothing)
         geog_source_coverage: dict[str, object] = {}
@@ -270,6 +285,9 @@ def main() -> None:
             "terrain", "landuse", "soil_top", "soil_bottom", "greenfrac",
             "lai", "albedo", "snow_albedo", "soil_temperature"):
         index = selection.path(name) / "index"
+        index_hashes[str(index.resolve())] = sha256_file(index)
+    if "LAKE_DEPTH" in fields:
+        index = Path(geog_source_coverage["lake_depth"]["dataset"]) / "index"
         index_hashes[str(index.resolve())] = sha256_file(index)
     legacy_mode = args.domain_spec is None
     receipt = {

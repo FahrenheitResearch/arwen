@@ -69,6 +69,9 @@ _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
     # still grade at max_ulp 0.  See glibc_flt32.cuh's header.
     # Noah mosaic uses scalar glibc float32 words for the WRF column oracle.
     "noah_mosaic": ("glibc_flt32.cuh",),
+    # RUC mosaic roughness uses WRF's LOG/EXP parameter blend.
+    "ruc": ("glibc_flt32.cuh",),
+    "lake": ("glibc_flt32.cuh", "lake_support.cuh", "lake_wrf.cuh"),
     "gf": ("glibc_flt32.cuh",),
     # New Tiedtke: scale_fac reads log(dxref/dx), and glibc's logf is not
     # CUDA's.  Prep stage only so far; cumastrn will add exp and pow.
@@ -141,6 +144,38 @@ def module_source(name: str, *, kernel_dir: Path = _KDIR) -> str:
             + (Path(kernel_dir) / f"{name}.cu").read_text(encoding=_ENCODING))
 
 
+def module_options(name: str) -> tuple[str, ...]:
+    """Compile options shared by runtime, oracle and division census."""
+    return (("-std=c++17", "--fmad=false") if name == "lake"
+            else ("-std=c++17",))
+
+
+def _load_module_without_fmad(name: str, src: str, options: tuple[str, ...]):
+    """The CLM lake's own compile site: the loader's tuple plus --fmad=false.
+
+    Its WRF column oracle is graded word for word, which needs NVRTC not to
+    contract multiply-adds.  A separate site keeps load_module's call a
+    literal tuple, so the FTZ route inventory still reads route R1's options.
+
+    The site records what it compiled here, beside the compile, with the
+    same literal tuple.  The breakage this prevents: the kernel manifest's
+    audit pairs each compile with a record in the same function and
+    compares their arguments as written; a record left in load_module named
+    a variable, so the audit could no longer tell that the lake's manifest
+    row states the options NVRTC was given.
+    """
+    import cupy as cp
+    if options != ("-std=c++17", "--fmad=false"):
+        raise ValueError(f"no kernel compile site takes options {options!r}")
+    mod = cp.RawModule(code=src, options=("-std=c++17", "--fmad=false"),
+                       name_expressions=None)
+    _compile_observed(mod, f"{MODULE_KEY_ROOT}:{name}")
+    from gpuwm.certify.kernel_manifest import record_module
+    record_module(f"{MODULE_KEY_ROOT}:{name}", source=src,
+                  options=("-std=c++17", "--fmad=false"), module=mod)
+    return mod
+
+
 @cuda_cache(maxsize=None)
 def load_module(name: str):
     import cupy as cp
@@ -161,6 +196,11 @@ def load_module(name: str):
                 and name != "noahmp_vegeflux"):
             return compile_runtime_unit(name, module_key=f"{MODULE_KEY_ROOT}:{name}")
     src = module_source(name)
+    options = module_options(name)
+    if options != ("-std=c++17",):
+        return _load_module_without_fmad(name, src, options)
+    # The loader's literal tuple: tools/ftz_receipt reads it from this
+    # call (route R1) and probes NVRTC's float behaviour under it.
     mod = cp.RawModule(code=src, options=("-std=c++17",), name_expressions=None)
     _compile_observed(mod, f"{MODULE_KEY_ROOT}:{name}")
     from gpuwm.certify.kernel_manifest import record_module

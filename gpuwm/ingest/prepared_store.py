@@ -44,7 +44,9 @@ two places a slab could disagree with the domain are named and handled --
 ``center_lat`` is passed down explicitly rather than re-derived from the
 slab's own grid (``initialize_landuse`` reads it for the LANDUSE.TBL season),
 and the y-staggered inputs take one extra row so the ``V10`` face average at
-a slab's last row sees the same neighbour the whole domain would.
+a slab's last row sees the same neighbour the whole domain would.  The
+``topo_wind = 1`` terrain laplacian also uses one neighbour row on each
+side before its coefficients are retained in the geography store.
 
 That the two roads agree is not argued from this docstring: a domain small
 enough for both produces bit-identical frames, which is the parity gate.
@@ -156,6 +158,40 @@ def _window_mapping(mapping, j0: int, rows: int, ny: int):
         return None
     return {name: _row_window(value, j0, rows, ny)
             for name, value in mapping.items()}
+
+
+def _complete_slab_topo_wind(state, cfg, static, base, j0, rows, ny):
+    """Use true terrain neighbours before harvesting a slab's coefficients.
+
+    Physics initialization sees only the slab's rows. topo_wind=1 needs a
+    terrain neighbour on either side, so that initial local-edge clamp is
+    replaced with the domain stencil here. Only one extra row per side is
+    uploaded; no domain-shaped device array is needed. The local land mask
+    and statistics remain the initialized column's own values.
+    """
+    option = int(getattr(cfg, "topo_wind", 0))
+    if option != 1 or (j0 == 0 and rows == ny):
+        return
+    import cupy as cp
+
+    from gpuwm.core.terrain_drag import topo_wind_coefficients
+
+    first, last = max(0, j0 - 1), min(ny, j0 + rows + 1)
+    before, after = j0 - first, last - (j0 + rows)
+    height = (cp.zeros((last - first, int(cfg.nx)), dtype=cp.float32)
+              if base.terrain_z is None else
+              cp.asarray(_row_window(base.terrain_z, first, last - first, ny),
+                         dtype=cp.float32))
+    # Padding supplies only discarded coefficient rows. The kernel's
+    # Laplacian reads height; it never reads a neighbour's land mask.
+    xland = cp.pad(state.physics.fields["xland"],
+                   ((before, after), (0, 0)), mode="edge")
+    ctopo, ctopo2, _ = topo_wind_coefficients(
+        height, xland, topo_wind=option,
+        var_sso=_row_window(static["VAR_SSO"], first, last - first, ny))
+    take = slice(before, before + rows)
+    state.physics.terrain_drag.ctopo[...] = ctopo[take]
+    state.physics.terrain_drag.ctopo2[...] = ctopo2[take]
 
 
 def _slab_base(base, j0: int, rows: int, ny: int):
@@ -643,6 +679,7 @@ def store_from_prepared_cache(path, *, expected_identity, cfg, static,
             physics_initializer(
                 *physics_args, **physics_kwargs,
                 row_start=j0, domain_rows=ny)
+        _complete_slab_topo_wind(state, cfg, static, base, j0, rows, ny)
         # Do not retain result/state through this call tuple into the next slab.
         del physics_args
         # Exactly where the resident road primes the DOMAIN before attach

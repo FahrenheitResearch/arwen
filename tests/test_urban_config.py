@@ -113,10 +113,13 @@ def test_the_fields_are_appended_last():
     at = names.index("adaptive_nest_lattice")
     assert names[at + 1:at + 4] == ["sf_urban_physics", "use_wudapt_lcz",
                                     "num_urban_hi"]
-    assert names[-8:] == ["sf_surface_mosaic", "mosaic_cat",
-                          "mosaic_urban_canopy", "diff_opt",
-                          "mix_full_fields", "topo_wind", "gwd_opt",
-                          "zadvect_implicit_variant"]
+    # 2.8.5 appended scalar_pblmix, use_rap_aero_icbc, the CLM lake
+    # quartet and the SPP consumer pair after zadvect_implicit_variant.
+    at = names.index("sf_surface_mosaic")
+    assert names[at:at + 8] == ["sf_surface_mosaic", "mosaic_cat",
+                                "mosaic_urban_canopy", "diff_opt",
+                                "mix_full_fields", "topo_wind", "gwd_opt",
+                                "zadvect_implicit_variant"]
 
 
 def test_the_memory_checks_price_the_urban_arrays():

@@ -443,29 +443,37 @@ def _device_tables(params: NoahParams, dzs):
     ``+Noah LSM`` upward from being capturable -- see the census in
     :mod:`tilestream.graphcap`.
 
-    The cache lives in this module and NOT on the ``params`` object, keyed
-    by that object's identity with a reference held so the identity cannot
-    be recycled.  Attaching it to ``params`` was the first attempt and
+    The cache lives in this module and NOT on the ``params`` object.
+    Attaching it to ``params`` was the first attempt and
     ``gpuwm/io/restart.py`` was right to refuse the equivalent on the
     radiation callable: an array attribute on a driver object is state a
     restart must account for, and a cached constant is not state.
+
+    It is keyed by the values it uploads, not by the identity of
+    ``params``.  An identity key held a reference to every parameter object
+    it had seen, and each forecast run in one process loads its own: every
+    member of an ensemble left one more copy of the same tables on the card
+    for the rest of the run (tests/test_ensemble_member_release_gpu.py).  By
+    value, every forecast with the same tables shares one upload, a forecast
+    with other tables gets its own, and nothing keeps a finished forecast's
+    parameter object alive.
     """
     import cupy as cp
 
     from gpuwm.core.device_cache import cached_ready
 
-    key = (int(cp.cuda.Device().id), id(params), tuple(float(v)
-                             for v in np.asarray(dzs, np.float32).ravel()))
+    host = (params.veg.astype(np.float32).ravel(),
+            params.soil.astype(np.float32).ravel(),
+            params.gen.astype(np.float32),
+            np.asarray(dzs, np.float32))
+    key = (int(cp.cuda.Device().id),
+           *((table.shape, table.tobytes()) for table in host))
     def upload():
-        return (params,
-                (cp.asarray(params.veg.astype(np.float32).ravel()),
-                 cp.asarray(params.soil.astype(np.float32).ravel()),
-                 cp.asarray(params.gen.astype(np.float32)),
-                 cp.asarray(np.asarray(dzs, np.float32))))
-    return cached_ready(cp, _DEVICE_TABLES, key, upload)[1]
+        return tuple(cp.asarray(table) for table in host)
+    return cached_ready(cp, _DEVICE_TABLES, key, upload)
 
 
-#: ``(device, id(params), dzs) -> (params, device tables)``.  See :func:`_device_tables`.
+#: ``(device, the uploaded tables by value) -> device tables``.  See :func:`_device_tables`.
 _DEVICE_TABLES: dict = {}
 
 def initialize_noah_liquid_water(dev: dict, params: NoahParams, dzs) -> None:

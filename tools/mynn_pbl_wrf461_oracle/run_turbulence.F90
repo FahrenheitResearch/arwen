@@ -5,7 +5,9 @@ program run_mynn_turbulence_oracle
   integer, parameter :: ncase = 4, nz = 12, kts = 1, kte = nz
   character(len=32), parameter :: names(ncase) = [character(len=32) :: &
       'stable', 'convective', 'cloudy', 'edmf_active']
+  character(len=32) :: mixlength_arg
   character(len=1024) :: output_path
+  integer :: bl_mynn_mixlength = 1
   integer :: c, k, unit
   real :: dz(nz), zw(nz+1), u(nz), v(nz), thl(nz), thetav(nz)
   real :: ql(nz), qw(nz), qke(nz), tsq(nz), qsq(nz), cov(nz)
@@ -18,6 +20,8 @@ program run_mynn_turbulence_oracle
   real :: psig_bl, psig_shcu
 
   call get_command_argument(1, output_path)
+  call get_command_argument(2, mixlength_arg)
+  if (len_trim(mixlength_arg) > 0) read(mixlength_arg, *) bl_mynn_mixlength
   if (len_trim(output_path) == 0) then
     write(*, '(A)') 'usage: run_turbulence OUTPUT.csv'
     error stop 2
@@ -112,7 +116,7 @@ program run_mynn_turbulence_oracle
         thl, thetav, ql, qw, qke, tsq, qsq, cov, vt, vq, rmo, flt, &
         fltv, flq, zi, theta, sh, sm, el, dfm, dfh, dfq, tcd, qcd, &
         pdk, pdt, pdq, pdc, qwt, qshear, qbuoy, qdiss, 0, psig_bl, &
-        psig_shcu, cldfra, 1, edmf_w, edmf_a, tkeprodtd, 0, rstoch)
+        psig_shcu, cldfra, bl_mynn_mixlength, edmf_w, edmf_a, tkeprodtd, 0, rstoch)
     ! mym_level2 and the production terms are defined only on kts+1:kte.
     ! The WRF driver never consumes their kts work slot; canonicalize it for
     ! a deterministic CSV rather than serializing compiler-stack bytes.

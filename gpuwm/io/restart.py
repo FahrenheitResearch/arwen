@@ -111,6 +111,7 @@ from gpuwm.checkpoint_identity import (
     SURFACE_LAYER_ALGORITHM_IDENTITIES,
     URBAN_ALGORITHM_IDENTITIES,
     drop_default_diffusion_selectors,
+    drop_default_spp_selectors,
     require_identifiable_checkpoint_schemes,
     unidentifiable_checkpoint_schemes,
 )
@@ -348,7 +349,13 @@ RRTMGP_TRACE_GAS_POLICY_IDENTITY = \
 #: legacy RRTMG (RunConfig.ra_rrtmg_variant = "rrtmg_legacy" on the 4/4
 #: pair).  Deliberately NOT "rte-rrtmgp-v1": a restart written under one
 #: 4/4 implementation must refuse to resume under the other.
-RRTMG_LEGACY_LW_ALGORITHM_IDENTITY = "wrf-v4.6.1-rrtmg-legacy-lw-v1"
+#: LW v2 (2.8.5): each stratospheric optical-depth correction of bands 4
+#: and 7 is applied once, by the thread that owns its g-point.  v1's
+#: parallel band threads raced on those shared outputs, which moved
+#: upper-level heating and outgoing longwave, so a v1 checkpoint may not
+#: continue under v2.
+RRTMG_LEGACY_LW_ALGORITHM_IDENTITY = \
+    "wrf-v4.6.1-rrtmg-legacy-lw-v2-owned-gpoint-stratosphere-corrections"
 RRTMG_LEGACY_SW_ALGORITHM_IDENTITY = "wrf-v4.6.1-rrtmg-legacy-sw-v1"
 #: Legacy RRTMG extends the model column with WRF's own Cavallo buffer
 #: layers (deltap = 4 mb), like RRTM option 1 but with RRTMG's tables.
@@ -479,6 +486,9 @@ STATE_INFRA_ATTRS = frozenset({
     "_canonical_store", "_canonical_geography", "_canonical_scalars",
     "_scratch_allocator", "cfg", "nx", "ny", "nz",
     "physics", "lateral_boundaries", "_lateral_boundary_device",
+    # Member-local spectral forcing is serialized in its own optional
+    # stochastic namespace and header. An off run adds neither.
+    "_ensemble_stochastic",
     "elapsed_seconds", "_nest_restart_classification",
     # The domain's ACTIVATION EPOCH in seconds, published beside
     # ``elapsed_seconds`` by gpuwm.core.state.refresh_model_time and from
@@ -546,6 +556,9 @@ STATE_INFRA_ATTRS = frozenset({
     # changes a bit.  Without it classify_state_attr refused every streamed
     # buffer's inventory (measured on node-4's RTX 5070 Ti, 2026-09-30).
     "_tile_buffer",
+    # The resident rank's admitted MYNN workspace width. It affects only
+    # column batching and allocation, never forecast or checkpoint bits.
+    "_mynn_rank_column_chunk",
 })
 
 # --------------------------------------------------------------------------
@@ -921,6 +934,13 @@ DRIVER_CHECKPOINT_ONLY_ATTRS = frozenset({"olr"})
 DRIVER_HELD_FORCING_ATTRS = frozenset({"gf_rthblten", "gf_rqvblten"})
 
 DRIVER_REBUILT_ATTRS = frozenset({
+    # Lake sparse work is rebuilt from the horizontal arrays in fields.
+    "lake",
+    # SPP flags/shapes derive from the bound RunConfig. Patterns are borrowed
+    # views owned by the stochastic provider, which restores its spectra and
+    # rebinds the views before the next physics call. The driver owns no SPP
+    # history, and the disabled path must add no checkpoint/carrier arrays.
+    "_spp_flags", "_spp_shapes", "spp_patterns",
     "noah_mosaic",  # Rebuilt by the LANDUSEF door; arrays live in fields.
     "cam_ozone",
     # WRF's slope_rad/topo_shading carrier (gpuwm.core.topo_radiation):
@@ -2379,6 +2399,9 @@ def _drop_inert_mosaic(values: dict) -> None:
 def _mosaic_checkpoint_config(config: Mapping) -> dict:
     """Keep pre-mosaic headers and comparisons byte-identical when off."""
     values = dict(config)
+    if not values.get("sf_lake_physics", 0):
+        for name in ("sf_lake_physics", "use_lakedepth", "lakedepth_default", "lake_min_elev"):
+            values.pop(name, None)
     _drop_inert_mosaic(values)
     drop_default_diffusion_selectors(values)
     return values
@@ -2395,6 +2418,20 @@ def _drop_default_off_run_keys(values: dict) -> None:
     so every writer drops each key the same way.  A new default-off field
     joins this list, naming the commit that added it.
     """
+    # scalar_pblmix: off preserves checkpoints predating scalar diffusion.
+    if not values.get("scalar_pblmix", 0):
+        values.pop("scalar_pblmix", None)
+    # use_rap_aero_icbc: off is the aerosol start every earlier header ran.
+    if not values.get("use_rap_aero_icbc", False):
+        values.pop("use_rap_aero_icbc", None)
+    # CLM lake off keeps prescribed water temperatures and the earlier
+    # header.  RUC's own lake-column change at off is bound by its
+    # algorithm identity (LAND_SURFACE_ALGORITHM_IDENTITIES[3]), not here.
+    if not values.get("sf_lake_physics", 0):
+        values.pop("sf_lake_physics", None)
+        values.pop("use_lakedepth", None)
+        values.pop("lakedepth_default", None)
+        values.pop("lake_min_elev", None)
     # adaptive_nest_lattice (9a2f3fa63): off is the original root clock.
     if not values.get("adaptive_nest_lattice", False):
         values.pop("adaptive_nest_lattice", None)
@@ -2405,6 +2442,9 @@ def _drop_default_off_run_keys(values: dict) -> None:
     # Before the numerical-generation selector, IEVA used WRF 4.7.1.
     if values.get("zadvect_implicit_variant", "wrf_471") == "wrf_471":
         values.pop("zadvect_implicit_variant", None)
+    # The RUC SOILPROP lineage: wrf_45 is omitted at its default.
+    if values.get("ruc_soilprop", "wrf_45") == "wrf_45":
+        values.pop("ruc_soilprop", None)
     # w_crit_cfl (A165, c0d566414): 1.0 is the w_damp every header written
     # before the field ran.
     if float(values.get("w_crit_cfl", 1.0)) == 1.0:
@@ -2418,6 +2458,9 @@ def _drop_default_off_run_keys(values: dict) -> None:
     # diff_opt and mix_full_fields (679a5f5fe): diff_opt 2 with full-field
     # mixing is the metric operator every earlier header ran.
     drop_default_diffusion_selectors(values)
+    # SPP consumers (1ef07b807): zero leaves the deterministic trajectory
+    # and the pre-feature checkpoint echo and digest unchanged.
+    drop_default_spp_selectors(values)
 
 
 def configuration_echo(cfg) -> dict:
@@ -3402,6 +3445,12 @@ def _write_restart(path, state, cfg, *, run_trackers=None,
     manifest: dict[str, object] = {}
     manifest.update(state_manifest(state))
     manifest.update(_scratch_manifest(state))
+    stochastic_header = None
+    stochastic_binding = getattr(state, "_ensemble_stochastic", None)
+    if stochastic_binding is not None and stochastic_binding.enabled:
+        from gpuwm.ensemble.stochastic_execution import checkpoint_payload
+        stochastic_header, stochastic_arrays = checkpoint_payload(stochastic_binding)
+        manifest.update(stochastic_arrays)
     if extra_scratch_slots:
         manifest.update(_opted_in_scratch_manifest(state, extra_scratch_slots))
     driver = getattr(state, "physics", None)
@@ -3457,6 +3506,8 @@ def _write_restart(path, state, cfg, *, run_trackers=None,
                          else dict(run_trackers)),
         "array_manifest": array_manifest,
     }
+    if stochastic_header is not None:
+        header["ensemble_stochastic"] = stochastic_header
     if sealed_forcing_extension or preserved_forcing_prefix:
         header.update({
             "forcing_extension_mode": (PRESERVED_FORCING_PREFIX_MODE if preserved_forcing_prefix
@@ -3645,6 +3696,29 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
             # Changing the split or solve mass changes the trajectory.
             stored = "wrf_471" if stored is absent else stored
             live = "wrf_471" if live is absent else live
+        if key == "ruc_soilprop":
+            # A header omits the default, so a checkpoint with no RUC
+            # column resumes unchanged; a flip between the two names is
+            # refused below.  A RUC checkpoint written before the selector
+            # ran the v4.6.1 form and is refused by its land-surface
+            # algorithm identity (gpuwm/checkpoint_identity.py), by name.
+            stored = "wrf_45" if stored is absent else stored
+            live = "wrf_45" if live is absent else live
+        if key == "use_rap_aero_icbc":
+            # Off is omitted by configuration_echo and is what every earlier
+            # checkpoint ran; an analyzed aerosol start still binds.
+            stored = False if stored is absent else stored
+            live = False if live is absent else live
+        if key == "scalar_pblmix":
+            # Off is omitted by configuration_echo. Old checkpoints also
+            # had no post-PBL scalar diffusion. An enabled value still binds.
+            stored = 0 if stored is absent else stored
+            live = 0 if live is absent else live
+        if key in ("spp_conv", "spp_pbl"):
+            # Builds before the SPP consumer port had both disabled.
+            # An enabled consumer still differs and is refused below.
+            stored = 0 if stored is absent else stored
+            live = 0 if live is absent else live
         if key == "w_crit_cfl":
             # Older checkpoints measured w_damp from Courant 1.0; a moved
             # value is refused, because it changes the trajectory.
@@ -3936,6 +4010,9 @@ def _check_array(stored: np.ndarray, target, key: str) -> None:
 RESTART_MEMBER_NAMESPACES = (
     "state/", "acoustic/", "scratch/", "driver/", "fields/", "cumulus/",
     "diag/", "held/", "pbl/", "radiation/",
+    # The dedicated stochastic validator checks the exact spectrum inventory,
+    # member, recipe and process metadata before this namespace closure.
+    "stochastic/",
 )
 
 
@@ -6114,6 +6191,25 @@ def _require_preserved_forcing_prefix(header, state, cfg, *, path, elapsed):
         raise RestartMismatchError(f'{path}: forcing renewal changed a previously declared interval or boundary controls; retain the complete original prefix')
 
 
+def _validate_ensemble_stochastic_checkpoint(header, stored, state):
+    """Validate member identity and all spectra before any model-array write."""
+    binding = getattr(state, "_ensemble_stochastic", None)
+    enabled = binding is not None and binding.enabled
+    metadata = header.get("ensemble_stochastic")
+    arrays = {key: value for key, value in stored.items() if key.startswith("stochastic/")}
+    if not enabled and metadata is None and not arrays:
+        return
+    if not enabled or metadata is None:
+        raise RestartMismatchError("stochastic checkpoint enabling differs from this member")
+    from gpuwm.ensemble.stochastic_execution import decode_checkpoint_payload
+    try:
+        snapshot = decode_checkpoint_payload(metadata, arrays)
+        binding.validate_identity(snapshot)
+        binding.hook.validate_snapshot(snapshot["hook"])
+    except (ValueError, TypeError, KeyError) as error:
+        raise RestartMismatchError(f"stochastic checkpoint is incompatible: {error}") from error
+
+
 def _validate_restart(path, state, cfg, *,
                       sealed_forcing_extension: bool = False,
                       preserved_forcing_prefix: bool = False
@@ -6158,6 +6254,7 @@ def _validate_restart(path, state, cfg, *,
                 "(a header without the key is a pre-bind file).")
     _require_nssl2_restart_contract(header, cfg, path)
     _require_physics_setup_match(header, state, cfg, path)
+    _validate_ensemble_stochastic_checkpoint(header, stored, state)
     try:
         elapsed = _admissible_elapsed_seconds(
             header["elapsed_seconds"], f"restart file {path}")
@@ -6433,6 +6530,11 @@ def _apply_validated_restart(validated: _ValidatedRestart,
     if driver is not None:
         _restore_driver(stored, header, state, driver, elapsed, asarray,
                         format_version)
+    stochastic_header = header.get("ensemble_stochastic")
+    if stochastic_header is not None:
+        from gpuwm.ensemble.stochastic_execution import restore_checkpoint_payload
+        restore_checkpoint_payload(state._ensemble_stochastic, stochastic_header,
+            {key: value for key, value in stored.items() if key.startswith("stochastic/")})
     # v5 migration normalization: checkpoints written before the
     # spec-zone ring exclusion (same format version) can carry nonzero
     # ring MP accumulators/diagnostics and stale ring h_diabatic from
@@ -6488,6 +6590,9 @@ def _restore_driver(stored, header, state, driver, elapsed, asarray,
         target = driver.fields[name]
         _check_array(host, target, f"fields/{name}")
         target[...] = asarray(host)
+    lake = getattr(driver, "lake", None)
+    if lake is not None:
+        lake.invalidate_columns()
 
     for name in ("rthratenlw", "rthratensw"):
         key = f"driver/{name}"

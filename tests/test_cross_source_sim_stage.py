@@ -88,6 +88,30 @@ def test_the_real_cross_source_proof_passes_the_certificate(prepared_tree):
     _validate(prepared, proof, manifest)
 
 
+def test_the_real_cross_source_seal_accepts_preparation_telemetry(prepared_tree):
+    """Current worker/stage receipts can complete a real mapped proof.
+
+    A live preparation reached the final model step, then this validator
+    rejected its seal for carrying the two measurements the writer added.
+    The proof still binds their content and refuses unknown top-level keys.
+    """
+    prepared, proof, manifest = prepared_tree
+    proof = copy.deepcopy(proof)
+    proof["preparation_parallelism"] = {"effective_workers": 8}
+    proof["forcing_stage_timings"] = [
+        {"forcing_index": 0, "horizontal_seconds": 1.25, "total_seconds": 2.5}]
+    proof["proof_content_sha256"] = _canonical_hash(proof)
+    _validate(prepared, proof, manifest)
+
+    proof["preparation_parallelism"]["effective_workers"] = 4
+    with pytest.raises(ValueError, match="proof content hash is stale"):
+        _validate(prepared, proof, manifest)
+    proof["preparation_parallelisms"] = proof.pop("preparation_parallelism")
+    proof["proof_content_sha256"] = _canonical_hash(proof)
+    with pytest.raises(ValueError, match="top-level inventory differs"):
+        _validate(prepared, proof, manifest)
+
+
 def test_a_receipt_without_its_contributing_sources_refuses(prepared_tree):
     """The packaged composition declares bindings, so a receipt that
     names no contributing source is a receipt for some other decode."""

@@ -277,6 +277,44 @@ def preparation_chains():
             'prepared:staged': runplan._staged_chain}
 
 
+def preparation_chain_reviews():
+    """Each chain's own review of a config written for it, before any fetch.
+
+    One row per ID of :func:`preparation_chains`; ``None`` is a chain whose
+    plan has nothing to answer before its fetch stage runs.  A door that
+    writes a config for a source's chain calls the row as
+    ``review(config_path, exp, raw=..., scratch=..., posting=...)``:
+    ``raw`` is the config's parsed TOML, ``scratch`` a folder the caller
+    discards, and ``posting`` the host pin and posting rule the door
+    carries into the chain's fetch (``transport``, ``as_posted``,
+    ``late_after_minutes``).  A review raises ``ValueError`` with the
+    sentence the chain itself would refuse with.
+
+    The door reads the row instead of testing the chain ID, so a chain is
+    added here and in :func:`preparation_chains`, and no door gains a
+    branch on a chain or source name.
+    """
+    return {'prepared:go': _review_native, 'prepared:hrrr': _review_hourly,
+            'prepared:staged': None}
+
+
+def _review_native(config_path, exp, *, raw, scratch, posting):
+    """The native chain's own planner: the keys its stages need, the
+    preparation preconditions and the profile, planned into ``scratch``."""
+    from gpuwm import go_cli
+    scratch = Path(scratch)
+    go_cli.plan_from_config(Path(config_path), outdir=scratch / 'plan', run_stamp=False,
+                            data_dir=scratch / 'data', **posting)
+
+
+def _review_hourly(config_path, exp, *, raw, scratch, posting):
+    """The namelists the hourly chain runs from, asked of the function the
+    chain itself calls; the set is rendered into a discarded folder.  The
+    host the fetch is pinned to does not change them."""
+    from gpuwm.hrrr_route_inputs import run_route_inputs
+    run_route_inputs(Path(config_path), exp, raw=raw)
+
+
 def _prepare_hourly(plan, *, config_path, exp, observer, run_dir, prepare_only):
     from gpuwm.hrrr_route_inputs import write_hrrr_route_inputs
     from gpuwm import runplan
@@ -290,8 +328,14 @@ def _prepare_hourly(plan, *, config_path, exp, observer, run_dir, prepare_only):
 
 def _prepare_native(plan, *, config_path, exp, observer, run_dir, prepare_only):
     from gpuwm import go_cli, runplan
+    # The host pin and posting rule a door carries reach this chain's fetch
+    # stage the way run_options reach the other two chains' (their
+    # _pinned_fetch_hints); absent, the config's own [fetch] table decides.
     go = go_cli.plan_from_config(config_path, outdir=run_dir, run_stamp=False,
-                                  data_dir=Path(plan.run_options['data_dir']))
+                                  data_dir=Path(plan.run_options['data_dir']),
+                                  transport=plan.run_options.get('transport'),
+                                  as_posted=plan.run_options.get('as_posted'),
+                                  late_after_minutes=plan.run_options.get('late_after_minutes'))
     bridge = go_cli.resolve_bridge()
     go_cli.claim_run_root(go)
     # Regions prepared from one shared download each bind their own manifest.

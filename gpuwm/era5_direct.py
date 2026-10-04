@@ -65,6 +65,7 @@ from gpuwm.ingest.memory_refusal import InitializationMemoryRefused
 from gpuwm.ingest.preparation_price import (
     price_forcing_preparation, price_preparation_floor)
 from gpuwm.ingest.preprocess_backend import (
+    preprocess_math_call,
     admit_preparation,
     preprocess_identity,
     release_backend_memory,
@@ -284,7 +285,9 @@ def _static_from_geog(
     catalog, receipt = verified_static_catalog(
         Path(wps_namelist), Path(geog_root), (1,),
         **selection_carrier_kwargs(static_highres))
-    fields = build_static_for_domain(grid, catalog, 1)
+    fields = build_static_for_domain(
+        grid, catalog, 1,
+        **({"cfg": cfg} if getattr(cfg, "sf_lake_physics", 0) else {}))
     # The land-use table's own ISLAKE/ISWATER, from the same GEOG index
     # the statics were built from, so the water-temperature assembly
     # and the statics cannot disagree about what a lake is.
@@ -384,6 +387,7 @@ def _soil_source_orography(declared, fields):
     return resolved
 
 
+@preprocess_math_call
 def prepare_era5_wrf(
     *,
     grib: Path,

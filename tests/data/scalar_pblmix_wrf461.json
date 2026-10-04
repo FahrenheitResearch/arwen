@@ -1,0 +1,48 @@
+{
+  "source": "WRF v4.6.1 phys/module_pbl_driver.F",
+  "source_url": "https://raw.githubusercontent.com/wrf-model/WRF/v4.6.1/phys/module_pbl_driver.F",
+  "source_sha256": "90336e30296991fb397ffde87649a4bd20eaa2b7dc6e90639b043810c8420b56",
+  "extracted_routines": [
+    "diff4d",
+    "diff",
+    "invert"
+  ],
+  "compiler": "GNU Fortran (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+  "flags": [
+    "-O0",
+    "-ffree-form",
+    "-ffree-line-length-none",
+    "-fno-fast-math",
+    "-ffp-contract=off"
+  ],
+  "cases": [
+    "zero_diffusivity",
+    "zero_scalar",
+    "surface_jump",
+    "top_jump",
+    "weak_diffusion",
+    "strong_diffusion",
+    "long_step",
+    "short_step"
+  ],
+  "active_scalars": [
+    "qnc",
+    "qni",
+    "qnwfa",
+    "qnifa"
+  ],
+  "excluded_scalars": [
+    "qns",
+    "qnr",
+    "qng",
+    "qt",
+    "qnh",
+    "qvolg",
+    "qke_adv"
+  ],
+  "levels": 50,
+  "rows": 4400,
+  "harness_sha256": "0baed731f88a4d412b661e803311f221fdbb340642bdbfb0c6940d7061b7b764",
+  "csv_sha256": "a1ebdaa9e472af5181ac7e0e66ac4ef079afd7853f5489786048574ca1513682",
+  "fixture_sha256": "ee2e3b0ff34569db72da628aa448163050cf609af6d0645f256f728161bde0aa"
+}

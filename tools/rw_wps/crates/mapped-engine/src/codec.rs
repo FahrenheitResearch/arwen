@@ -35,6 +35,7 @@ pub fn decoded_payload(bytes: Vec<u8>, label: &str) -> Result<Vec<u8>> {
     match object_codec(&bytes) {
         None => Ok(bytes),
         Some("bz2") => {
+            crate::threads::admit_acquisition_codec("bz2")?;
             let mut plain = Vec::new();
             bzip2::read::MultiBzDecoder::new(&bytes[..])
                 .read_to_end(&mut plain)

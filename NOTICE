@@ -1,12 +1,50 @@
 ArWen (Python package "gpuwm", preprocessor "rw-wps")
 Copyright 2026 ArWen contributors
 
+gpuwm/ensemble/stochastic.py and
+gpuwm/core/kernels/ensemble_stochastic.cu implement Philox4x32-10 using
+Random123's algorithm. Its BSD-3-Clause notice is reproduced in
+licenses/LICENSE-Random123.txt. The spectral stochastic equations in those
+files come from WRF v4.6.1 dyn_em/module_stoch.F, covered by the WRF notice
+below and licenses/LICENSE-WRF-public-domain.txt. GPU counter generation
+and cuFFT replace the compiler-dependent RNG and FFTPACK; the implementation
+does not claim bitwise identity with WRF.
+
+gpuwm/core/spp_kernel_sources.py restores stochastic parameter consumers
+from WRF v4.6.1 module_cu_gf_deep.F, module_bl_mynn.F and module_sf_mynn.F.
+The WRF public-domain notice below and licenses/LICENSE-WRF-public-domain.txt
+apply to these expressions and the native captures in gpuwm/data/spp/.
+
+gpuwm/core/ruc_spp.py and gpuwm/core/kernels/ruc_spp.cu restore the hydraulic
+conductivity perturbation operator from WRF V3.9.1 phys/module_sf_ruclsm.F.
+It runs inside the current RUC soil and snow-soil ports. WRF 4.6.1 and 4.7.1
+retain the parameter arguments but omit this historical operator. The WRF
+public-domain notice below and licenses/LICENSE-WRF-public-domain.txt apply.
+
+tools/grib1_bridge/src/aerosol_emission.rs and
+tests/oracles/aerosol_surface_mass.f90 transcribe the surface aerosol source
+in NOAA-EMC/HRRR WRFV3.9 dyn_em/module_initialize_real.F:4428-4430.
+The WRF public-domain notice is retained in
+licenses/LICENSE-WRF-public-domain.txt. The source's scalar field identities
+are also documented in the RAP native mapping provenance.
+The nearest-neighbor entry in tools/grib1_bridge/src/wps_masked.rs follows
+WPS v4.6.0 geogrid/src/interp_module.F:402-438 and falls through to the
+existing WPS four-point and average operators when its donor is missing.
+
 gpuwm/core/kernels/portable_libm64.cuh transcribes Rust libm 0.2.16
 exp.rs, log.rs, log1p.rs, pow.rs and generic/scalbn.rs, and glibc 2.39
 s_log1pf.c through gpuwm/core/noahmp_libm.py. The Rust crate's MIT grant
 and MIT OR Apache-2.0 contributor grant are preserved in
 licenses/LICENSE-rust-libm.txt. The Sun notices for the algorithms are
 preserved in the header and licenses/LICENSE-FDLIBM-SunPro.txt.
+
+The CPU preparation bridge's tools/grib1_bridge/src/glibc239_math.rs
+transcribes the pinned FP32 powf implementation and tables in
+gpuwm/core/noahmp_libm.py. These are Arm optimized-routines under MIT,
+Copyright (c) 2017-2018, Arm Limited. The complete grant is reproduced
+beside the Rust code and in licenses/LICENSE-Arm-optimized-routines-MIT.txt.
+The binary-form bridge notice covers this compiled copy too. The separate
+host FP64 entries call the platform C library; they do not transcribe it.
 
 The native regular-grid Zarr reader's locked dependencies, including codec
 and TLS libraries, are inventoried with their licence texts in
@@ -54,6 +92,12 @@ See "Source Sans 3" below.
 --------------------------------------------------------------------------
 
 WRF / NCAR / UCAR
+
+The MYNN mixing-length option 2 and post-PBL scalar diffusion in
+gpuwm/core/mynn_pbl.py, mynn_scalar_mix.py and their CUDA companions
+transcribe WRF v4.6.1 phys/module_bl_mynn.F and phys/module_pbl_driver.F.
+Their Fortran oracle tools retain the same public-domain source notice.
+The full WRF notice below and licenses/LICENSE-WRF-public-domain.txt apply.
 
 ArWen is an independent implementation. It is not affiliated with or
 endorsed by the National Center for Atmospheric Research (NCAR) or the
@@ -284,6 +328,10 @@ once more, in Python, in gpuwm/core/noahmp_libm.py. Sixteen files, and the
 count is machine-derived: those are exactly the files that reproduce Arm's
 coefficient tables.
 
+vert_interp.cu's wrf_vi_pressure_log uses the Arm logf tables from
+glibc_flt32.cuh and reproduces its range reduction and polynomial with
+fused binary64 operations.
+
 The sinf / cosf cores and their tables in
 gpuwm/core/kernels/glibc_trig_flt32.cuh are also Arm's work. Their sources
 are math/sinf.c, math/cosf.c, math/sincosf.h and math/sincosf_data.c.
@@ -306,7 +354,7 @@ renamings, qualifiers, macro spellings and splitting polynomial helpers
 into sincosf_poly.h. Integration aliases and IFUNC wrappers are not copied.
 The MIT branch is elected for these parts too; the full Arm permission
 notice below and licenses/LICENSE-Arm-optimized-routines-MIT.txt apply.
-This adds one trig header to the fourteen log/exp/pow kernel files above;
+This adds one trig header to the fifteen log/exp/pow kernel files above;
 the Python log/exp/pow copy remains separate.
 
 The grant ArWen elects is Arm's MIT, and the sequence matters enough to
@@ -1027,3 +1075,22 @@ randtable.c. Its upstream grant is retained at:
 Both binary-form notice copies reproduce these notices and the table grant.
 The upstream notice collections remain beside each SOURCE.json. Exact build
 resolution is documented in tools/rustwx/vendor/SIMULATED-RADAR.md.
+
+--------------------------------------------------------------------------
+
+RUC mosaic and CLM lake transcriptions
+
+gpuwm/core/ruc_mosaic.py, the mosaic sections of gpuwm/core/ruc.py,
+gpuwm/core/kernels/ruc.cu and ruc_fused_driver.cuh, and the corresponding
+driver generator transcribe SOILVEGIN and LSMRUC from WRF v4.6.1
+phys/module_sf_ruclsm.F. The generated lake.cu and lake_wrf.cuh transcribe
+the complete WRF v4.6.1 phys/module_sf_lake.F. Reproducible source and
+oracle notices are retained under tools/ruc_mosaic_wrf461_oracle and
+tools/lake_wrf461_oracle. The WRF public-domain notice above and in
+licenses/LICENSE-WRF-public-domain.txt applies to these transcriptions.
+
+The lake-depth row in gpuwm/static/lake.py and the bounded default-REAL
+search in tools/rustwx/crates/static-fields/src/interp.rs follow WPS
+v4.6.0 GEOGRID.TBL.ARW and geogrid/src/interp_module.F. WPS's source
+download page points to the WRF public-domain notice reproduced above:
+https://www2.mmm.ucar.edu/wrf/site/wps_source.html.

@@ -24,6 +24,8 @@ from gpuwm.hrrr_hierarchy_direct import (
 )
 from gpuwm.ingest.hrrr_target import HrrrTargetDomain
 from gpuwm.native_wrf_contract import CERTIFIED_ETA_LEVELS
+from gpuwm.core.devices import DeviceOptions, DEVICES_OFF
+from gpuwm.simulated_radar import SimulatedRadarOptions, OFF as RADAR_OFF
 
 
 def test_atomic_staging_sibling_keeps_deep_windows_publication_short(tmp_path):
@@ -745,6 +747,8 @@ class _Experiment:
     projection: _Projection = _Projection()
     vertical: _Vertical = _Vertical()
     spec_bdy_width: int = 5
+    devices: DeviceOptions = DEVICES_OFF
+    simulated_radar: SimulatedRadarOptions = RADAR_OFF
 
 
 def _native() -> _Experiment:

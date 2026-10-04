@@ -327,6 +327,10 @@ def distribution_contract(
             "required": {
                 "numpy": ">=1.26",
                 "netCDF4": ">=1.6",
+                # Resizes numeric pools already loaded when --workers is
+                # given (gpuwm.ingest.preparation_workers); the wheel
+                # declares it, and without it that step warns and skips.
+                "threadpoolctl": ">=3.1",
             },
             "gpu_extra": {"cupy-cuda12x": ">=13.0"},
         },
@@ -335,7 +339,7 @@ def distribution_contract(
         "bundled_native_libraries_by_platform": libraries_by_platform,
         "preprocess_backends": {
             "cuda": "cupy-fp32-v1",
-            "cpu": "rust-scoped-threads-fp32-v1",
+            "cpu": "rust-parallel-fp32-v1",
             "parity_contract": "gpuwm-preprocess-backend-parity-v1",
             # Both backends map soil, snow, skin temperature and sea ice
             # through these entries of the bundled CPU library: the WPS

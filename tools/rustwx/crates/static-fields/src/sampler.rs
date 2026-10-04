@@ -339,13 +339,22 @@ impl<'g> DomainSampler<'g> {
         &self, ds: &GeogDataset, win: &GeogWindow, z: usize,
         seq: &[InterpOp], fill: f64, gcell: bool, active: Option<&[bool]>,
     ) -> Result<Grid2> {
+        self.continuous_wps(ds, win, z, seq, fill, gcell, active, 4.0)
+    }
+
+    /// The WPS default-REAL field sampler with a declared grid-cell ratio.
+    pub fn continuous_wps(
+        &self, ds: &GeogDataset, win: &GeogWindow, z: usize,
+        seq: &[InterpOp], fill: f64, gcell: bool, active: Option<&[bool]>,
+        gcell_ratio: f32,
+    ) -> Result<Grid2> {
         let grid = self.grid.ok_or_else(|| StaticError::Invalid(
             "orographic sampling needs a projected grid".into()))?;
         let projection = crate::projection::orographic::OrographicProjection::new(grid)?;
         let n = self.nxe*self.nye;
         let mut out = vec![f32::NAN;n];
         let s=&grid.spec;
-        let average_gcell = 4.0f32*(ds.index.dx as f32).max(ds.index.dy as f32)*111.0
+        let average_gcell = gcell_ratio*(ds.index.dx as f32).max(ds.index.dy as f32)*111.0
             <= (s.dx as f32).max(s.dy as f32)/1000.0;
         if gcell && average_gcell {
             let vals = win.values_real(z);
@@ -1288,6 +1297,37 @@ struct CoverageReceipt {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lake_gcell_ratio_one_matches_unmodified_wps_projection_and_mean() {
+        use crate::projection::{GridSpec,ProjectedGrid,ProjectionKind};
+        use crate::geog::GeogDataset;
+        use crate::interp::InterpOp;
+        let stamp=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let dir=std::env::temp_dir().join(format!("static-fields-lake-gcell-{}-{stamp}",std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let index=dir.join("index");
+        let tile=dir.join("00001-00021.00001-00021");
+        std::fs::write(&index,include_bytes!("../golden/orographic/gcell-index")).unwrap();
+        let raw:Vec<u8>=(0u16..21).flat_map(|j|(0u16..21).flat_map(move |i|
+            (31+20*i+100*j+(i*j)%17).to_be_bytes())).collect();
+        std::fs::write(&tile,raw).unwrap();
+        let ds=GeogDataset::open(&dir,None).unwrap();
+        let grid=ProjectedGrid::new(GridSpec{kind:ProjectionKind::Lambert,
+            ref_lat:35.0,ref_lon:-90.0,truelat1:30.0,truelat2:60.0,stand_lon:-90.0,
+            dx:50000.0,dy:50000.0,e_we:4,e_sn:4,known_x:2.0,known_y:2.0,
+            moad_cen_lat:35.0,moad_cen_lon:-90.0,lat_deg:vec![],lon0_deg:0.0,dlon_deg:0.0}).unwrap();
+        let dom=super::DomainSampler::new(&grid,0).unwrap();
+        let win=ds.read_window(1,21,1,21).unwrap();
+        let got=dom.continuous_wps(&ds,&win,0,&[InterpOp::SearchDepth(5)],10.0,true,None,1.0).unwrap();
+        std::fs::remove_file(&tile).unwrap();
+        std::fs::remove_file(&index).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+        let data=include_bytes!("../golden/orographic/lake-gcell-real.bin");
+        for (k,&value) in got.data.iter().enumerate() {
+            let expected=u32::from_le_bytes(data[k*4..(k+1)*4].try_into().unwrap());
+            assert_eq!((value as f32).to_bits(),expected,"WPS average_gcell(1.0) {k}");
+        }
+    }
     #[test]
     fn orographic_nint_matches_fortran_at_half_integer_neighbors() {
         let data=include_bytes!("../golden/orographic/nint-real.bin");

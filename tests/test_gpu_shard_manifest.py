@@ -40,6 +40,62 @@ MANIFEST = REPOSITORY_ROOT / "tools" / "battery" / "gpu_shard_files.txt"
 #: The line that divides the per-cut leg from the weekly one.
 SHARD2_MARKER = "SHARD-2-BEGIN"
 
+#: Entries whose device reads live in a test helper, not in their own text:
+#: entry -> the helper it uses.  The 2.8.5 ensemble runtime-case witnesses
+#: run the ordinary runtime on the card and capture every state and physics
+#: array as device words through _RuntimeWords, which reads them with the
+#: production forecast gate's CuPy helpers.  conftest's detector reads one
+#: file, so it cannot see that; _helper_opens_cuda follows the imports.
+DEVICE_HELPERS = {
+    "tests/test_ensemble_runtime_forecast_gpu.py": "_RuntimeWords",
+    "tests/test_ensemble_simulated_radar_forecast_gpu.py": "_RuntimeWords",
+}
+
+
+def _helper_opens_cuda(module: str, name: str, root: pathlib.Path,
+                       seen: set[tuple[str, str]] | None = None) -> bool:
+    """Whether ``name`` in ``root/<module>.py`` reaches a CuPy import.
+
+    Follows the definition of ``name`` (or the import that brings it in)
+    through every name it loads, across ``from <module> import`` lines of
+    sibling test modules, until a definition that imports cupy by
+    conftest's own detector.  A helper chain that stops reading the device
+    answers False.
+    """
+
+    import ast
+
+    from conftest import _is_cupy_import
+
+    seen = set() if seen is None else seen
+    if (module, name) in seen:
+        return False
+    seen.add((module, name))
+    path = root / f"{module}.py"
+    if not path.is_file():
+        return False
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    kinds = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+    imported = {alias.asname or alias.name: (node.module, alias.name)
+                for node in tree.body
+                if isinstance(node, ast.ImportFrom) and node.module and not node.level
+                for alias in node.names}
+    local = {node.name: node for node in tree.body if isinstance(node, kinds)}
+    definition = local.get(name)
+    if definition is None:
+        source = imported.get(name)
+        return source is not None and _helper_opens_cuda(*source, root, seen)
+    if any(_is_cupy_import(node) for node in ast.walk(definition)):
+        return True
+    loaded = sorted({node.id for node in ast.walk(definition)
+                     if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)})
+    for use in loaded:
+        if use in imported and _helper_opens_cuda(*imported[use], root, seen):
+            return True
+        if use in local and _helper_opens_cuda(module, use, root, seen):
+            return True
+    return False
+
 
 def _lines() -> list[str]:
     return MANIFEST.read_text(encoding="utf-8").splitlines()
@@ -208,10 +264,204 @@ def test_every_entry_is_actually_gpu_bound(entry: str) -> None:
         assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                    and node.func.attr == "RawModule" for node in ast.walk(loader))
         return
+    if entry == "tests/test_ensemble_recipe_door_gpu.py":
+        # The recipe door's end-to-end test types the real command, so its
+        # device is opened by a `python -m gpuwm` subprocess and not by an
+        # import this file makes.  Pin the whole route: the helper runs the
+        # package entry point, the door is run for real (not only as a dry
+        # run), the door hands its members to the prepared forecast runner,
+        # and that runner is device-bound by conftest's own detector.
+        import ast
+        tree = ast.parse((REPOSITORY_ROOT / entry).read_text(encoding="utf-8"))
+        functions_by_name = {node.name: node for node in tree.body
+                             if isinstance(node, ast.FunctionDef)}
+        launcher = functions_by_name["_gpuwm"]
+        assert any(
+            isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "run" and node.args
+            and isinstance(node.args[0], ast.List)
+            and [item.value for item in node.args[0].elts
+                 if isinstance(item, ast.Constant)] == ["-m", "gpuwm"]
+            for node in ast.walk(launcher)), (
+            f"{entry} no longer runs the `python -m gpuwm` entry point")
+        door_calls = [
+            node for node in ast.walk(functions_by_name["_run_door"])
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "_gpuwm" and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "ensemble"]
+        real_runs = [
+            call for call in door_calls
+            if "--dry-run" not in [item.value for item in call.args
+                                   if isinstance(item, ast.Constant)]]
+        assert real_runs, f"{entry} no longer runs `gpuwm ensemble` for real"
+        door = ast.parse((REPOSITORY_ROOT / "gpuwm/ensemble/recipe_door.py")
+                         .read_text(encoding="utf-8"))
+        runner_names = {
+            alias.asname or alias.name for node in ast.walk(door)
+            if isinstance(node, ast.ImportFrom) and node.module == "gpuwm"
+            for alias in node.names if alias.name == "prepared_single_domain_forecast"}
+        assert any(
+            isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "main" and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in runner_names for node in ast.walk(door)), (
+            "the recipe door no longer hands its members to the prepared "
+            "forecast runner")
+        runner_whole, runner_functions = _cupy_scope(
+            str(REPOSITORY_ROOT / "gpuwm/prepared_single_domain_forecast.py"))
+        assert runner_whole or runner_functions, (
+            "the prepared forecast runner no longer opens CUDA")
+        return
+    if entry == "tests/test_ensemble_go_door_gpu.py":
+        # The go door's end-to-end test types `gpuwm go CONFIG --members N`,
+        # so, as for the recipe door above, a `python -m gpuwm` subprocess
+        # opens the device.  Pin the whole route: the helper runs the
+        # package entry point, go is run for real (not only as a dry run),
+        # go's member route enters the ensemble door's production scope,
+        # that scope builds the production session, and the session's
+        # module is device-bound by conftest's own detector.
+        import ast
+        tree = ast.parse((REPOSITORY_ROOT / entry).read_text(encoding="utf-8"))
+        functions_by_name = {node.name: node for node in tree.body
+                             if isinstance(node, ast.FunctionDef)}
+        assert any(
+            isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "run" and node.args
+            and isinstance(node.args[0], ast.List)
+            and [item.value for item in node.args[0].elts
+                 if isinstance(item, ast.Constant)] == ["-m", "gpuwm"]
+            for node in ast.walk(functions_by_name["_gpuwm"])), (
+            f"{entry} no longer runs the `python -m gpuwm` entry point")
+        go_calls = [
+            node for node in ast.walk(functions_by_name["_go"])
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "_gpuwm" and node.args
+            and isinstance(node.args[0], ast.Constant) and node.args[0].value == "go"]
+        assert any("--dry-run" not in [item.value for item in call.args
+                                       if isinstance(item, ast.Constant)]
+                   for call in go_calls), f"{entry} no longer runs `gpuwm go` for real"
+        go = ast.parse((REPOSITORY_ROOT / "gpuwm/go_cli.py").read_text(encoding="utf-8"))
+        assert any(
+            isinstance(node, ast.ImportFrom) and node.module == "gpuwm.ensemble.door"
+            and any(alias.name == "production_run_scope" for alias in node.names)
+            for node in ast.walk(go)) and any(
+            isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "production_run_scope" for node in ast.walk(go)), (
+            "gpuwm go no longer runs its members inside the ensemble door's "
+            "production scope")
+        door = ast.parse((REPOSITORY_ROOT / "gpuwm/ensemble/door.py").read_text(encoding="utf-8"))
+        assert any(
+            isinstance(node, ast.ImportFrom) and node.module == "gpuwm.ensemble.production"
+            and any(alias.name == "PreparedEnsembleSession" for alias in node.names)
+            for node in ast.walk(door)), (
+            "the ensemble door's production scope no longer builds the "
+            "production session")
+        session_whole, session_functions = _cupy_scope(
+            str(REPOSITORY_ROOT / "gpuwm/ensemble/production.py"))
+        assert session_whole or session_functions, (
+            "the ensemble production session no longer opens CUDA")
+        return
+    if entry == "tests/test_ensemble_native_decline_gpu.py":
+        # The decline gate runs the production session and the wrfinput
+        # door's own runner in this process; it imports neither cupy nor a
+        # helper that does, so conftest's detector reads the file as CPU.
+        # Pin the route: the gate imports the prepared tree runner and hands
+        # it to the session's run_prepared, and that runner is device-bound
+        # by conftest's own detector.
+        import ast
+        tree = ast.parse((REPOSITORY_ROOT / entry).read_text(encoding="utf-8"))
+        assert any(
+            isinstance(node, ast.ImportFrom)
+            and node.module == "gpuwm.prepared_domain_tree_forecast"
+            and any(alias.name == "run_prepared_tree" and alias.asname is None
+                    for alias in node.names)
+            for node in ast.walk(tree)), (
+            f"{entry} no longer imports the prepared tree runner")
+        assert any(
+            isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "run_prepared" and node.args
+            and isinstance(node.args[0], ast.Name) and node.args[0].id == "run_prepared_tree"
+            for node in ast.walk(tree)), (
+            f"{entry} no longer runs its members through the prepared tree runner")
+        runner_whole, runner_functions = _cupy_scope(
+            str(REPOSITORY_ROOT / "gpuwm/prepared_domain_tree_forecast.py"))
+        assert runner_whole or runner_functions, (
+            "the prepared tree runner no longer opens CUDA")
+        return
+    if entry in DEVICE_HELPERS:
+        # The entry must still use its helper, and the helper must still
+        # read device words; either change turns this red.
+        import ast
+        helper = DEVICE_HELPERS[entry]
+        tree = ast.parse((REPOSITORY_ROOT / entry).read_text(encoding="utf-8"))
+        assert any(isinstance(node, ast.Name) and node.id == helper
+                   and isinstance(node.ctx, ast.Load) for node in ast.walk(tree)), (
+            f"{entry} no longer uses {helper}")
+        assert _helper_opens_cuda(pathlib.PurePosixPath(entry).stem, helper,
+                                  REPOSITORY_ROOT / "tests"), (
+            f"{entry}: {helper} no longer reaches a CuPy read of device words")
+        return
     assert whole or functions, (
         f"{entry} opens no CUDA device by conftest's own detector, so it is "
         "already covered by a CPU leg and does not belong on the GPU shard.  "
         "If it reaches a device transitively, say so here and pin the reason")
+
+
+#: Ensemble device files that run their forecasts in `python -m gpuwm`
+#: subprocesses, so they leave nothing on the card in the leg's own process.
+ENSEMBLE_SUBPROCESS_DOORS = frozenset({
+    "tests/test_ensemble_recipe_door_gpu.py",
+    "tests/test_ensemble_go_door_gpu.py",
+})
+
+
+def test_the_native_decline_gate_is_the_first_ensemble_device_file() -> None:
+    """Shard 1 runs in one pytest process, so its order is card memory.
+
+    tests/test_ensemble_native_decline_gpu.py runs four ordinary members
+    after a native pack, and the ordinary runner's memory gate prices the
+    card by its free bytes.  Run after the real-input ensemble files in one
+    process it was refused with 3.66 GiB free (lane fix/285-ens-runcontrol,
+    RTX 5090); alone it passed.  Listed below them, the leg would fail it on
+    memory that earlier tests had already released, not on the decline it
+    gates.  The two door files run their forecasts in subprocesses and may
+    sit anywhere.
+    """
+
+    shard1 = _entries("shard1")
+    gate = "tests/test_ensemble_native_decline_gpu.py"
+    assert gate in shard1, f"{gate} left GPU shard 1"
+    earlier = [entry for entry in shard1[:shard1.index(gate)]
+               if pathlib.PurePosixPath(entry).name.startswith("test_ensemble_")
+               and entry not in ENSEMBLE_SUBPROCESS_DOORS]
+    assert not earlier, (
+        f"{earlier} run before {gate} in the shard's one process; move the "
+        "decline gate above them (SHARD 1w0 in tools/battery/gpu_shard_files.txt)")
+
+
+@pytest.mark.parametrize("reads_device", [True, False])
+def test_the_helper_rule_follows_imports_and_refuses_a_cpu_chain(
+        tmp_path: pathlib.Path, reads_device: bool) -> None:
+    """The DEVICE_HELPERS exemption holds only while the chain reads CUDA.
+
+    Two hops, as in the ensemble runtime pair: the entry imports a class
+    from a sibling module, and that class loads a word reader imported
+    from a third.  Take the cupy import out of the reader and the entry
+    is refused like any CPU file.
+    """
+
+    reader = ("def words(array):\n    import cupy as cp\n    return cp.asnumpy(array)\n"
+              if reads_device else
+              "def words(array):\n    import numpy as np\n    return np.asarray(array)\n")
+    (tmp_path / "test_reader_mod.py").write_text(reader, encoding="utf-8")
+    (tmp_path / "test_owner_mod.py").write_text(
+        "from test_reader_mod import words\n\n\nclass Capture:\n"
+        "    def record(self, value):\n        return words(value)\n",
+        encoding="utf-8")
+    (tmp_path / "test_entry_mod.py").write_text(
+        "from test_owner_mod import Capture\n\n\ndef test_x():\n    Capture().record(1)\n",
+        encoding="utf-8")
+    assert _helper_opens_cuda("test_entry_mod", "Capture", tmp_path) is reads_device
 
 
 def test_the_dycore_parity_files_the_audit_named_are_all_present() -> None:

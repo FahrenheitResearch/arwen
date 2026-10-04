@@ -55,7 +55,7 @@ def _call(function, fields, atmosphere, params, k):
     return function(fields, atmosphere, params=params,
                     precipitation=SurfacePrecipitationForcing.from_fields(fields),
                     dt=12.0, itimestep=k, mosaic_lu=0, mosaic_soil=0,
-                    flag_sm_adj=0, spp_lsm=0)
+                    flag_sm_adj=0, spp_lsm=0, lakemodel=1)
 
 
 @pytest.mark.gpu
@@ -93,6 +93,53 @@ def test_negative_control_detects_one_word():
     _call(_ruc_lsm_step_reference, reference, atmosphere, driver.ruc_params, 1)
     with pytest.raises(AssertionError):
         _equal(driver.fields, reference)
+
+
+@pytest.mark.gpu
+@requires_gpu
+@pytest.mark.parametrize("nzs", [6, 9])
+@pytest.mark.parametrize("ncol", [17, 500000])
+def test_full_width_workspace_allocation_census(nzs, ncol, monkeypatch):
+    """Admission counts real arrays, including the generated snow workspace."""
+    from gpuwm.core import ruc_fused, ruc_gpu, ruc_memory
+
+    monkeypatch.setattr(ruc_gpu, "_SFCTMP_SCRATCH", {})
+    workspace = ruc_fused._Workspace((1, ncol), nzs)
+    driver = {name: getattr(workspace, name) for name in
+              ("storage", "integer", "run", "flag_slab", "sptr", "iptr", "optr", "cptr")}
+    scratch = ruc_gpu._sfctmp_scratch(ncol, nzs)
+    surface = {"scratch": scratch[0], "pointers": scratch[2],
+               "private_flags": scratch[7], "alive": scratch[8]}
+    for actual, expected in (
+            (driver, ruc_memory.driver_workspace_allocations(ncol, nzs)),
+            (surface, ruc_memory.sfctmp_workspace_allocations(ncol, nzs))):
+        assert {name: (array.shape, str(array.dtype)) for name, array in actual.items()} == expected
+        assert len({array.data.ptr for array in actual.values()}) == len(actual)
+        assert sum(array.nbytes for array in actual.values()) == ruc_memory.allocation_bytes(
+            expected, rounded=False)
+
+
+@pytest.mark.gpu
+@requires_gpu
+@pytest.mark.parametrize("nzs", [6, 9])
+def test_full_width_output_allocation_census(nzs, monkeypatch):
+    """Full-width outputs coexist with both workspaces until the commit."""
+    from gpuwm.core import ruc_fused, ruc_memory
+    from gpuwm.core.ruc_runtime import ruc_lsm_step
+
+    _, driver, atmosphere, _ = _case(17, nzs, "mixed")
+    original = ruc_fused._RUC_SFCTMP_FULL_WIDTH
+    observed = []
+
+    def measure(*args, **kwargs):
+        result = original(*args, **kwargs)
+        observed.append({name: (array.shape, str(array.dtype))
+                         for name, array in result.items()})
+        return result
+
+    monkeypatch.setattr(ruc_fused, "_RUC_SFCTMP_FULL_WIDTH", measure)
+    _call(ruc_lsm_step, driver.fields, atmosphere, driver.ruc_params, 1)
+    assert observed == [ruc_memory.sfctmp_output_allocations(17, nzs)]
 
 
 @pytest.mark.gpu
@@ -254,8 +301,8 @@ def test_the_forecast_call_is_six_kernels_and_no_orchestration_reads(nzs, monkey
     launched = []
     original = ruc_tier.ruc_fused_kernel
 
-    def counting(func, levels):
-        kernel = original(func, levels)
+    def counting(func, levels, *lineage):
+        kernel = original(func, levels, *lineage)
 
         def launch(*args):
             launched.append(func)

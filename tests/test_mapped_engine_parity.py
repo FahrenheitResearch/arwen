@@ -1050,6 +1050,24 @@ COMPOSED_SOURCES: dict[str, dict[str, object]] = {
                           "rap.t00z.awip32f01.grib2"),
         "supplement": _SUPPLEMENT_EVERY,
     },
+    # RAP's native hybrid-level product (awp130bgrb, 13 km Lambert): fifty
+    # model levels with explicit pressure, analyzed aerosol and hydrometeor
+    # numbers that keep their masks, in-band terrain and the nine-node soil
+    # column, all in one file per valid time.
+    "rap-native": {
+        "primary": _files("rap", "rap.t00z.awp130bgrbf00.grib2",
+                          "rap.t00z.awp130bgrbf01.grib2"),
+        "supplement": _SUPPLEMENT_EVERY,
+    },
+    # CROSS-PRODUCT: HRRR's native hybrid analysis (wrfnat) borrowing
+    # terrain and the nine-node soil column from the same cycle's pressure
+    # product (wrfprs) under the analysis broadcast.  One frame: the native
+    # source supplies an initial state and no lateral boundary.
+    "hrrr-native": {
+        "primary": _files("hrrr", "hrrr.t00z.wrfnatf00.grib2"),
+        "supplement": _SUPPLEMENT_DONOR,
+        "donor_files": _files("hrrr", "hrrr.t00z.wrfprsf00.grib2"),
+    },
     # Two products per valid time on one Lambert grid.
     "rrfs": {
         "primary": _files(
@@ -2095,6 +2113,7 @@ def test_every_refusal_class_maps_to_a_python_exception_type():
         "manifest_mismatch", "selector_unmatched", "grid_mismatch",
         "decode_failed", "frame_invalid", "forcing_series",
         "authority_moved", "disk_full", "write_failed", "requester_closed",
+        "host_memory",
     }
     assert set(engine_bridge.REFUSAL_CLASSES) == expected
     for name, exception in engine_bridge.REFUSAL_CLASSES.items():
@@ -2548,6 +2567,13 @@ def test_the_compose_registry_covers_every_registered_composition_source():
         # be permanently skipped rather than covered.  It is reported by
         # `--kind compose --list` the moment the bytes appear.
         "20crv3-cf": "no staged NetCDF-CF corpus",
+        # One perturbed member, cut out of ECMWF's enfo-ef object by its
+        # JSON index ranges.  The staging tree holds the oper product only
+        # (ifs/*-oper-fc.grib2): no member has been cut and staged on any
+        # box this battery has run on, so a row would be permanently
+        # skipped rather than covered.  A row belongs here the moment a
+        # member's two steps are staged.
+        "ecmwf-ens": "no staged ENS member bytes",
         # The one source whose compose inputs are not published bytes: a
         # GDT-101 mesh reaches compose only through the normalization
         # stage, so this row's primary files would be the 350 regional

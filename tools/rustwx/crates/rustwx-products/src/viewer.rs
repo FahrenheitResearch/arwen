@@ -1772,7 +1772,9 @@ mod tests {
         .expect("composite_reflectivity resolves");
         let scale = reflectivity.scale.resolved_discrete();
         assert_eq!(scale.levels.first().copied(), Some(10.0));
-        assert_eq!(scale.levels.last().copied(), Some(70.0));
+        // Re-recorded 2026-10-03: the reflectivity products moved to the
+        // radar reflectivity table, which runs to 85 dBZ (was 70).
+        assert_eq!(scale.levels.last().copied(), Some(85.0));
         assert_eq!(scale.mask_below, Some(10.0));
     }
 

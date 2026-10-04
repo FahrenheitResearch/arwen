@@ -178,8 +178,9 @@ cpu  tools/rustwx  rustwx-models  97
 # renderer's own regressions land in.
 cpu  tools/rustwx  rustwx-products  295
 
-# The raster/vector renderer, basemaps, fonts and layout.
-cpu  tools/rustwx  rustwx-render  159
+# The raster/vector renderer, basemaps, fonts and layout.  Floor raised by
+# the six radar colour table tests (radar_tables.rs), 2026-10-03.
+cpu  tools/rustwx  rustwx-render  165
 
 # The library half of the project's top-level crate (the eleven command-line
 # bins and their 9.8 MB of fixtures are deliberately not vendored --
@@ -282,8 +283,8 @@ cpu  tools/rustwx  rw-store  146
 # wrfout -> product-PNG batch renderer `gpuwm render --engine rust`
 # drives.  It is the seam between the model's output and the pictures a
 # person actually looks at, and it is the one crate here whose upstream
-# is us.
-cpu  tools/rustwx  rw-wrfbatch  114
+# is us.  Floor raised by the radar scale selection test, 2026-10-03.
+cpu  tools/rustwx  rw-wrfbatch  115
 
 # Native simulated radar: model-column conversion, preserved wind missingness,
 # beam physics, writer metadata and pre-allocation resource refusals. Prevents
@@ -291,8 +292,9 @@ cpu  tools/rustwx  rw-wrfbatch  114
 # sample arrays after accepting a CLI request, and (since 2.8.4's review
 # fixes) loops re-encoded whole on every history, superseded generations and
 # loops left on disk, and an output-size bound that misses a format or image.
-# Floor measured on node-2 (Ubuntu, Rust 1.94.0): 27 passed.
-cpu  tools/rustwx  rw-simradar  27
+# Floor measured on node-2 (Ubuntu, Rust 1.94.0): 27 passed; 31 on node-1
+# with the dual-pol PPI field and echo mask tests, 2026-10-03.
+cpu  tools/rustwx  rw-simradar  31
 
 # rw-mpas: THIS project's crate too, and the DEFAULT route from an MPAS
 # history frame to a picture -- `rw_mpas_convert` gathers an unstructured
@@ -361,10 +363,15 @@ cpu  tools/rustwx  rw-libm  5
 
 # Static-fields functional tests stay required on both operating systems:
 # builder/interpolation, GeoTIFF safety, highres parity and the C-ABI seam.
-# Measured 43 passes; the two lane1 refusal/cropping controls also stay here.
+# The prior floor was 43; the lane1 refusal/cropping controls also stay here.
 # Exact platform qualification is a separately executed shard, never a
 # functional waiver; see docs/dev/static-platform-qualification.md.
-cpu  tools/rustwx  static-fields  43  --lib --test geotiff_envelope --test geotiff_malformed --test highres_parity --test seam_probe
+# Lake depth adds exact WPS search(5) and average_gcell(1.0) controls.
+# A generic unbounded search or the terrain's ratio 4 selects different
+# bathymetry. Measured on Ubuntu 24.04 with Rust 1.94.0: 41 lib + 25
+# integration tests passed; the 448 search values and nine means match the
+# pinned unmodified WPS Fortran bits.
+cpu  tools/rustwx  static-fields  66  --lib --test geotiff_envelope --test geotiff_malformed --test highres_parity --test seam_probe
 cpu  tools/rustwx  static-fields  1  --test lane1_goldens -- grid_refusals_name_the_breakage --exact
 cpu  tools/rustwx  static-fields  1  --test lane1_goldens -- wps32_twin_states_bit_equal --exact
 cpu  tools/rustwx  static-fields  1  --test lane1_goldens -- translated_twin_delegates_bit_equal --exact
@@ -401,8 +408,20 @@ fixtures  tools/rustwx  rw-sat  4  --test cloud_products
 # hrrr_grib2_bridge) as bridges.  Its quantization path is where a
 # decoded field silently loses precision, which is a wrong initial
 # condition rather than a crash -- the failure mode the whole
-# full-files-over-idx ruling exists to keep visible.
-cpu  tools/grib1_bridge  grib1_bridge  64
+# full-files-over-idx ruling exists to keep visible.  Floor was 64, its
+# first green run, when the package was a handful of bridge binaries.
+# Raised to 200, measured 2026-10-03 on Ubuntu 24.04 and on Windows
+# MSVC, Rust 1.94.0: 65 in the lib test binary and 135 across the seven
+# bin targets.  At 64 the lib binary could vanish and the bins alone
+# would still clear the floor, and the lib is the half the model loads
+# as libgpuwm_preprocess_cpu: vertical interpolation, quantization, the
+# masked WPS operators, the water repairs, the parallel ranges, the
+# pinned glibc 2.39 power and the fingerprints are tested there and
+# nowhere else.  The 2.8.5 staging line showed how it goes missing: two
+# lib tests stopped COMPILING after a merge (vertical_column gained a
+# 16th argument on one side) and no build path noticed, because none of
+# them compiles #[cfg(test)].
+cpu  tools/grib1_bridge  grib1_bridge  200
 
 # grib-core: the DECODER ITSELF, vendored at tools/grib1_bridge/vendor
 # and a cargo workspace member by the path-dependency rule.  It was

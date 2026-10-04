@@ -2,16 +2,21 @@ program run_mynn_mixlength_oracle
   use module_bl_mynn, only: mym_length
   implicit none
 
-  integer, parameter :: ncase = 4, nz = 12, kts = 1, kte = nz
+  integer, parameter :: ncase = 8, nz = 12, kts = 1, kte = nz
   character(len=32), parameter :: names(ncase) = [character(len=32) :: &
-      'stable', 'convective', 'high_shear', 'edmf_active']
+      'stable', 'convective', 'high_shear', 'edmf_active', &
+      'weak_buoyancy', 'neutral_les', 'deep_pbl', 'high_tke']
+  character(len=32) :: mixlength_arg
   character(len=1024) :: output_path
+  integer :: bl_mynn_mixlength = 1
   integer :: c, k, unit
   real :: dz(nz), zw(nz+1), u(nz), v(nz), qke(nz), dtv(nz), theta(nz)
   real :: vt(nz), vq(nz), cldfra(nz), edmf_w(nz), edmf_a(nz)
   real :: el(nz), qkw(nz), xland, dx, rmo, flt, fltv, flq, zi, psig_bl
 
   call get_command_argument(1, output_path)
+  call get_command_argument(2, mixlength_arg)
+  if (len_trim(mixlength_arg) > 0) read(mixlength_arg, *) bl_mynn_mixlength
   if (len_trim(output_path) == 0) then
     write(*, '(A)') 'usage: run_mixlength OUTPUT.csv'
     error stop 2
@@ -20,7 +25,7 @@ program run_mynn_mixlength_oracle
   write(unit, '(A)') 'case,k,dz,zw,zw_next,u,v,qke,dtv,theta,vt,vq,' // &
       'cldfra,edmf_w,edmf_a,xland,dx,rmo,flt,fltv,flq,zi,psig_bl,el,qkw'
 
-  do c = 1, ncase
+  do c = 1, merge(4, ncase, bl_mynn_mixlength == 1)
     zw(1) = 0.0
     do k = 1, nz
       dz(k) = 80.0 + 5.0 * real(k - 1)
@@ -76,11 +81,39 @@ program run_mynn_mixlength_oracle
         cldfra(k) = min(0.08 * real(k - 1), 0.65)
         dtv(k) = merge(-0.002, 0.007, k <= 5)
       end do
+    case (5)
+      dtv = 1.0e-7
+      qke = 1.0e-5
+      zi = 60.0
+      fltv = -0.01
+      psig_bl = 0.35
+    case (6)
+      dtv = 0.0
+      rmo = 0.0
+      fltv = 0.0
+      psig_bl = 0.0
+    case (7)
+      dz = dz*4.0
+      do k = 1, nz
+        zw(k+1) = zw(k) + dz(k)
+      end do
+      zi = 2500.0
+      rmo = -0.002
+      fltv = 0.8
+      dtv = -0.002
+      psig_bl = 0.65
+    case (8)
+      qke = 120.0
+      fltv = 3.0
+      zi = 600.0
+      do k = 1, nz
+        dtv(k) = merge(0.004, -0.004, mod(k,2) == 0)
+      end do
     end select
 
     call mym_length(kts, kte, xland, dz, dx, zw, rmo, flt, fltv, flq, &
         vt, vq, u, v, qke, dtv, el, zi, theta, qkw, psig_bl, cldfra, &
-        1, edmf_w, edmf_a)
+        bl_mynn_mixlength, edmf_w, edmf_a)
     do k = 1, nz
       write(unit, '(A,",",I0,23(",",ES24.16E3))') trim(names(c)), k, &
           dz(k), zw(k), zw(k+1), u(k), v(k), qke(k), dtv(k), theta(k), &

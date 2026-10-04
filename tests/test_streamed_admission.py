@@ -537,12 +537,15 @@ def test_check_on_a_config_that_does_not_stream_is_byte_identical(
     # A163 moved the estimate and envelope by -212,355,128 B: the forecast
     # margin is the measured 1.13 instead of the plan's 1.15 (two
     # hundredths of this config's 10,617,756,432 B subtotal).
-    assert payload["peak_envelope_bytes"] == 15164330113
-    assert payload["observed_peak_envelope_bytes"] == 15164330113
-    assert payload["alloc_estimate_bytes"] == 11998064769
+    # The atmosphere's separate density array adds 4*49*550*550 =
+    # 59,290,000 B, or 66,997,700 B with the unchanged 1.13 pool margin.
+    assert payload["peak_envelope_bytes"] == 15231327813
+    assert payload["observed_peak_envelope_bytes"] == 15231327813
+    assert payload["alloc_estimate_bytes"] == 12065062469
     # The reserve's 0.03 retention term follows the estimate: A163 moved
     # it by 0.03 x -212,355,128 = -6,370,653 B.
-    assert payload["reserve_bytes"] == 3526207288
+    # The density addition raises its retention reserve by 2,009,931 B.
+    assert payload["reserve_bytes"] == 3528217219
     assert payload["budget_bytes"] == _FITS_STREAMED_GIB * GIB
     assert payload["gates"]["alloc_estimate_le_wddm_budget"] is False
     assert rc == 1
@@ -593,11 +596,12 @@ def test_check_on_a_config_that_does_not_stream_is_byte_identical(
 
     # The command without the radiation modules gives every pin above,
     # with the same refusal: they are narrower than Morrison, so they
-    # change nothing this configuration is charged.
-    assert old_payload["peak_envelope_bytes"] == 15164330113
-    assert old_payload["observed_peak_envelope_bytes"] == 15164330113
-    assert old_payload["alloc_estimate_bytes"] == 11998064769
-    assert old_payload["reserve_bytes"] == 3526207288
+    # change nothing this configuration is charged. The density allocation
+    # and its unchanged pool and retention margins remain present in both.
+    assert old_payload["peak_envelope_bytes"] == 15231327813
+    assert old_payload["observed_peak_envelope_bytes"] == 15231327813
+    assert old_payload["alloc_estimate_bytes"] == 12065062469
+    assert old_payload["reserve_bytes"] == 3528217219
     assert old_rc == rc == 1
     assert old_estimate == estimate
     for key in ("peak_envelope_bytes", "observed_peak_envelope_bytes",

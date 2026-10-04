@@ -101,14 +101,19 @@ def test_first_buffer_uses_only_interval_zero_and_loads_next_at_the_seam(monkeyp
     _assert_interval_bytes(loaded, eager.intervals[1])
 
 
-def test_sealed_eager_buffer_retains_its_complete_attachment(monkeypatch):
+def test_sealed_buffer_reloads_one_interval_without_changing_boundary_words(monkeypatch):
     boundaries = _boundaries()
     tile = _factory(monkeypatch, boundaries)(object())
     mirror = tile._lateral_boundary_device
-    assert not mirror.streaming_external
-    assert len(mirror.intervals) == len(boundaries.intervals) == 2
+    assert mirror.streaming_external
+    assert len(mirror.intervals) == 1
+    assert len(boundaries.intervals) == 2
+    packed = mirror.packed_forcing
     for index, interval in enumerate(boundaries.intervals):
         _assert_interval_bytes(lateral_bc._resident_interval(tile, interval), interval)
+        assert mirror.packed_forcing is packed
+        assert len(mirror.intervals) == 1
+    assert mirror.external_reload_count == 2
 
 
 def test_lazy_factory_retains_next_interval_geometry_validation(monkeypatch):

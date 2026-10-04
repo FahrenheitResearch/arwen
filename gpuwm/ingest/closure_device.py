@@ -20,6 +20,18 @@ def make_temperature_provider(theta, pressure):
     fields = []
 
     def temperature(indices):
+        if isinstance(theta, np.ndarray) and isinstance(pressure, np.ndarray):
+            # A bounded preparation owns its fields on the host. Gather only
+            # seed cells, retaining the ordinary temperature kernel's math.
+            take = indices.get()
+            local = tuple(cp.ascontiguousarray(cp.asarray(value.flat[take], dtype=cp.float64))
+                          for value in (theta, pressure))
+            idx = cp.arange(indices.size, dtype=cp.int64)
+            output = cp.empty(idx.shape, dtype=cp.float32)
+            get_kernel("thompson_cold_start", "cold_start_temperature")(
+                ((idx.size + 255) // 256,), (256,),
+                (*local, idx, output, np.int32(idx.size), np.float64(c.P0), np.float64(c.RCP)))
+            return output
         if not fields:
             fields.extend(cp.ascontiguousarray(cp.asarray(value, dtype=cp.float64)).ravel()
                           for value in (theta, pressure))
@@ -57,6 +69,19 @@ def _constants():
     ], dtype=np.float64)
 
 
+class _DropletRowRefused(ValueError):
+    """One chunk's NaN droplet numbers at the entry block, with their count.
+
+    A ``ValueError`` carrying :func:`cold_start_droplet_row_refusal` for
+    the chunk, so a direct caller is refused by name; the chunked closure
+    adds the counts and raises once for the whole domain.
+    """
+
+    def __init__(self, cells: int):
+        super().__init__(te.cold_start_droplet_row_refusal(cells))
+        self.cells = int(cells)
+
+
 def gathered_numbers(species, mass, number, alt, temperature, aerosol, xland):
     """Return seeded and closed numbers plus seed per-volume numbers on device."""
     import cupy as cp
@@ -74,9 +99,17 @@ def gathered_numbers(species, mass, number, alt, temperature, aerosol, xland):
         active = m > cp.float32(te.R1)
         if bool(active.any()):
             from gpuwm.core.thompson_entry import np_thompson_entry_numbers
-            rho = 1.0 / a[active].astype(cp.float64)
+            rho = (1.0 / a[active].astype(cp.float64)).get()
+            seeded = out[active].get()
+            # The entry block's gamma-table row comes from the droplet
+            # number per volume; a NaN there has no row.
+            with np.errstate(invalid="ignore", over="ignore"):
+                not_a_number = int(np.count_nonzero(np.isnan(
+                    seeded.astype(np.float64) * rho)))
+            if not_a_number:
+                raise _DropletRowRefused(not_a_number)
             closed = np_thompson_entry_numbers(
-                "cloud", m[active].get(), out[active].get(), rho.get())
+                "cloud", m[active].get(), seeded, rho)
             out[active] = cp.asarray(closed, dtype=cp.float32)
     return out, volume
 
@@ -279,19 +312,24 @@ def _merge_counts_and_extrema(target, source):
 
 def thompson_cold_start_moment_closure(state, state_xp, cfg, inverse_density,
                                      *, aerosol_number=None, landmask=None,
-                                     temperature=None, receipt=True):
+                                     temperature=None, receipt=True,
+                                     chunk_cells=COLD_START_CHUNK_CELLS):
     """Close bounded chunks and publish only after the same global validations."""
     import cupy as cp
     from types import SimpleNamespace
     from gpuwm.boundary_fields import COLD_START_SEEDED_NUMBERS
+
+    if isinstance(chunk_cells, bool) or not isinstance(chunk_cells, (int, np.integer)) or chunk_cells < 1:
+        raise ValueError("cold-start chunk_cells must be a positive integer")
+    chunk_cells = min(int(chunk_cells), COLD_START_CHUNK_CELLS)
 
     pairs = COLD_START_SEEDED_NUMBERS[int(cfg.mp_physics)]
     size = inverse_density.size
     alt_flat = inverse_density.ravel()
     # Count inverse-density refusals over the whole domain before changing it.
     invalid_count = 0
-    for start in range(0, size, COLD_START_CHUNK_CELLS):
-        stop = min(size, start + COLD_START_CHUNK_CELLS)
+    for start in range(0, size, chunk_cells):
+        stop = min(size, start + chunk_cells)
         a = _rounded_alt(alt_flat[start:stop])
         bits = a.view(cp.uint32) & cp.uint32(0x7fffffff)
         invalid_count += int(cp.count_nonzero((bits == 0) | (bits > cp.uint32(0x7f800000))))
@@ -301,20 +339,30 @@ def thompson_cold_start_moment_closure(state, state_xp, cfg, inverse_density,
             f"{invalid_count} cell(s), so the density Thompson's entry block works in cannot be formed there")
     fields = {q: getattr(state, q).ravel() for q, _ in pairs}
     fields.update({n: getattr(state, n).ravel().copy() for _, n in pairs})
+    host_state = state_xp is np
     aggregate = None
-    aerosol = None if aerosol_number is None else cp.broadcast_to(cp.asarray(aerosol_number), state.qr.shape).ravel()
-    land = None if landmask is None else cp.broadcast_to(cp.asarray(landmask), state.qr.shape)
+    if host_state:
+        aerosol = None if aerosol_number is None else np.broadcast_to(np.asarray(aerosol_number), state.qr.shape)
+        land = None if landmask is None else np.broadcast_to(np.asarray(landmask), state.qr.shape)
+    else:
+        aerosol = None if aerosol_number is None else cp.broadcast_to(cp.asarray(aerosol_number), state.qr.shape).ravel()
+        land = None if landmask is None else cp.broadcast_to(cp.asarray(landmask), state.qr.shape)
+
+    def aerosol_batch(start, stop):
+        if aerosol is None:
+            return None
+        return cp.asarray(aerosol.flat[start:stop]) if host_state else aerosol[start:stop]
     if int(cfg.mp_physics) == 28:
         surface_count = nan_count = 0
-        for start in range(0, size, COLD_START_CHUNK_CELLS):
-            stop = min(size, start + COLD_START_CHUNK_CELLS)
-            mass, number = fields["qc"][start:stop], fields["nc"][start:stop]
+        for start in range(0, size, chunk_cells):
+            stop = min(size, start + chunk_cells)
+            mass, number = (cp.asarray(fields[name][start:stop]) for name in ("qc", "nc"))
             seed = _seed_mask(mass, number)
             idx = cp.flatnonzero(seed)
             if not idx.size:
                 continue
             a = _rounded_alt(alt_flat[start:stop])[idx]
-            w = cp.zeros_like(a) if aerosol is None else aerosol[start:stop][idx].astype(cp.float32)
+            w = cp.zeros_like(a) if aerosol is None else aerosol_batch(start, stop)[idx].astype(cp.float32)
             surface = cp.empty(a.shape, dtype=cp.uint8)
             get_kernel("thompson_cold_start", "cold_start_surface")(
                 ((a.size + 255) // 256,), (256,), (a, w, surface, np.int32(a.size)))
@@ -328,36 +376,45 @@ def thompson_cold_start_moment_closure(state, state_xp, cfg, inverse_density,
                 "initialization was given no target LANDMASK; pass "
                 "landmask=<static LANDMASK> to initialize_real")
         if nan_count:
-            # The host's NaN NINT becomes INT64_MIN and its table index
-            # wraps to INT64_MAX. Preserve that existing refusal verbatim.
-            raise IndexError(
-                "index 9223372036854775807 is out of bounds for axis 0 with size 15")
+            # The host mirror's NINT of a NaN wrapped a table index to
+            # INT64_MAX and failed as a NumPy IndexError; the cells and the
+            # field are named instead, in the sentence every closure uses.
+            raise ValueError(te.cold_start_aerosol_row_refusal(nan_count))
     # Complete and validate each species in host order. This preserves which
     # refusal fires when multiple species are invalid in different chunks.
     for q, n in pairs:
         name = {"qc": "cloud", "qr": "rain", "qi": "ice"}[q]
         if temperature is None and name != "cloud":
             count = sum(int(cp.count_nonzero(_seed_mask(
-                fields[q][start:start + COLD_START_CHUNK_CELLS],
-                fields[n][start:start + COLD_START_CHUNK_CELLS])))
-                for start in range(0, size, COLD_START_CHUNK_CELLS))
+                cp.asarray(fields[q][start:start + chunk_cells]),
+                cp.asarray(fields[n][start:start + chunk_cells]))))
+                for start in range(0, size, chunk_cells))
             if count:
                 raise ValueError(
                     f"Thompson cold start: {count} cell(s) carry {name} mass "
                     "and no number, and real.exe's make_"
                     f"{name.capitalize()}Number sizes them by temperature, "
                     "but the closure was given none")
-        for start in range(0, size, COLD_START_CHUNK_CELLS):
-            stop = min(size, start + COLD_START_CHUNK_CELLS)
-            chunk = SimpleNamespace(**{k: v[start:stop] for k, v in fields.items()})
+        droplet_rows_refused = 0
+        for start in range(0, size, chunk_cells):
+            stop = min(size, start + chunk_cells)
+            chunk = SimpleNamespace(**{k: cp.asarray(v[start:stop]) for k, v in fields.items()})
             t = (lambda idx, start=start: temperature(idx + start)) if callable(temperature) else (
                 None if temperature is None else temperature.ravel()[start:stop])
-            lm = None if land is None else land[cp.unravel_index(
-                cp.arange(start, stop, dtype=cp.int64), land.shape)]
-            part = _closure_chunk(chunk, cp, cfg, alt_flat[start:stop],
-                                  temperature=t, landmask=lm, only_pair=(q, n),
-                                  defer_result_validation=True, receipt=receipt,
-                                  aerosol_number=None if aerosol is None else aerosol[start:stop])
+            lm = (None if land is None else cp.asarray(land.flat[start:stop]) if host_state
+                  else land[cp.unravel_index(cp.arange(start, stop, dtype=cp.int64), land.shape)])
+            try:
+                part = _closure_chunk(chunk, cp, cfg, alt_flat[start:stop],
+                                      temperature=t, landmask=lm, only_pair=(q, n),
+                                      defer_result_validation=True, receipt=receipt,
+                                      aerosol_number=aerosol_batch(start, stop))
+            except _DropletRowRefused as refused:
+                # Count the whole domain before refusing, as the host does;
+                # nothing of this species is published.
+                droplet_rows_refused += refused.cells
+                continue
+            if host_state:
+                fields[n][start:stop] = getattr(chunk, n).get()
             if aggregate is None:
                 aggregate = part
             else:
@@ -377,10 +434,12 @@ def thompson_cold_start_moment_closure(state, state_xp, cfg, inverse_density,
                 for field in part["written_state_fields"]:
                     if field not in aggregate["written_state_fields"]:
                         aggregate["written_state_fields"].append(field)
+        if droplet_rows_refused:
+            raise ValueError(te.cold_start_droplet_row_refusal(droplet_rows_refused))
         if n in aggregate["written_state_fields"]:
             bad = False
-            for start in range(0, size, COLD_START_CHUNK_CELLS):
-                value = fields[n][start:start + COLD_START_CHUNK_CELLS]
+            for start in range(0, size, chunk_cells):
+                value = cp.asarray(fields[n][start:start + chunk_cells])
                 bits = value.view(cp.uint32)
                 bad |= bool((~cp.isfinite(value) | (bits > cp.uint32(0x80000000))).any())
             if bad:

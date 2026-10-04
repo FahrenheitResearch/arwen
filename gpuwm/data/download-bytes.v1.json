@@ -36,6 +36,12 @@
   {"source": "hrrr-prs", "mode": "full-file",
    "objects": {"wrfprs": 428000000},
    "measured": "the same wrfprs objects as the hrrr row's soil role, 75 measured"},
+  {"source": "rap-native", "mode": "full-file",
+   "objects": {"awp130bgrb": 40052891},
+   "measured": "2026-10-02 18Z f00 and f03 awp130bgrb objects: 39996024 and 40052891 bytes, larger retained"},
+  {"source": "hrrr-native", "mode": "full-file",
+   "objects": {"wrfnat": 738600000},
+   "measured": "the hrrr full-file row native-atmosphere measurement; the same-cycle hrrr-prs soil donor is priced separately"},
   {"source": "rap", "mode": "full-file",
    "objects": {"awip32": 19880000},
    "measured": "mean of 14 awip32 objects, 2026-09-26 00Z f00 to f06, two fetches"},
@@ -196,6 +202,26 @@
     "windowed_layers": 270,
     "bytes_per_value": 8,
     "measured": "the engine's frame stream for a real two-time fetch of 2026-09-27 00Z, composed whole by gpuwm_mapped_engine on 2026-09-28 with no atmospheric window: 4,557,097,272 bytes per valid time"
+   },
+   "rap-native": {
+    "mapping": "rw-wps-rap-native-grib2.mapping.json",
+    "grid": "451 x 337 Lambert native vertical source",
+    "grid_points": 151987,
+    "layers_per_valid_time": 829,
+    "soil_layers": 18,
+    "windowed_layers": 800,
+    "bytes_per_value": 8,
+    "measured": "Declared frame-stream shape: sixteen atmospheric fields on fifty levels, eleven surfaces, eighteen soil planes; decoded values are float64."
+   },
+   "hrrr-native": {
+    "mapping": "rw-wps-hrrr-native-grib2.mapping.json",
+    "grid": "1799 x 1059 Lambert native vertical source",
+    "grid_points": 1905141,
+    "layers_per_valid_time": 829,
+    "soil_layers": 18,
+    "windowed_layers": 800,
+    "bytes_per_value": 8,
+    "measured": "Declared frame-stream shape: sixteen atmospheric fields on fifty levels, eleven surfaces, eighteen soil planes; decoded values are float64."
    },
    "rap": {
     "mapping": "rw-wps-rap-awip32-grib2.mapping.json",

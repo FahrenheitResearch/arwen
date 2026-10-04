@@ -10,9 +10,11 @@
 
 pub mod dealias;
 pub mod eta;
+pub mod ensemble;
 pub mod grib2_supplement;
 pub mod quantization;
 pub mod surface_pressure;
+pub mod aerosol_emission;
 // The static-dataset ingest arm: a WPS intermediate READER (the
 // inverse of src/bin/met_intermediate.rs's writer) and the
 // global-source bilinear the seam of a cyclic lat/lon grid needs.
@@ -40,6 +42,12 @@ pub mod surface_nearest;
 // vendored libm crate, so a host preparation's transcendentals are the same
 // on every CPU and C library (gpuwm/core/portable_math.py).
 pub mod portable_math;
+pub mod parallel;
+pub mod glibc239_math;
+pub mod prepared_io;
+pub mod cold_start;
+pub mod host_arrays;
+pub mod preparation_fingerprints;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -301,10 +309,8 @@ pub unsafe extern "C" fn gpuwm_regular_interp_f32(
         let x_slice = std::slice::from_raw_parts(target_x, ntarget);
         let output_address = output as usize;
         let error = AtomicI32::new(OK);
-        std::thread::scope(|scope| {
-            for (start, stop) in worker_ranges(ntarget, workers) {
-                let error = &error;
-                scope.spawn(move || {
+        parallel::run_ranges(ntarget, workers, |start, stop| {
+                    let error = &error;
                     let output_ptr = output_address as *mut f32;
                     for target_index in start..stop {
                         if error.load(Ordering::Relaxed) != OK {
@@ -337,8 +343,6 @@ pub unsafe extern "C" fn gpuwm_regular_interp_f32(
                             }
                         }
                     }
-                });
-            }
         });
         let code = error.load(Ordering::Relaxed);
         if code == OK
@@ -507,9 +511,7 @@ pub unsafe extern "C" fn gpuwm_indexed_interp_f32(
             }
         }
         let output_address = output as usize;
-        std::thread::scope(|scope| {
-            for (start, stop) in worker_ranges(ntarget, workers) {
-                scope.spawn(move || {
+        parallel::run_ranges(ntarget, workers, |start, stop| {
                     let output_ptr = output_address as *mut f32;
                     // Lead outer, target inner: within one level the source
                     // stencil sweeps the window in raster order, so the
@@ -537,8 +539,6 @@ pub unsafe extern "C" fn gpuwm_indexed_interp_f32(
                             }
                         }
                     }
-                });
-            }
         });
         OK
     }))
@@ -565,6 +565,19 @@ fn lagrange(x: &[f32], y: &[f32], order: usize, target: f32) -> f32 {
     result
 }
 
+struct VerticalScratch {
+    ox: Vec<f32>,
+    oy: Vec<f32>,
+    x: Vec<f32>,
+}
+
+impl VerticalScratch {
+    fn new(levels: usize) -> Self {
+        Self { ox: Vec::with_capacity(levels), oy: Vec::with_capacity(levels),
+               x: Vec::with_capacity(levels) }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn vertical_column(
     field: &[f32],
@@ -582,6 +595,7 @@ fn vertical_column(
     force_surface: usize,
     zap_close_levels: f32,
     vboundb: usize,
+    scratch: &mut VerticalScratch,
 ) -> Result<(), i32> {
     let psfc = surface_pressure[column];
     if !psfc.is_finite() || psfc <= 0.0 || !surface_field[column].is_finite() {
@@ -604,8 +618,10 @@ fn vertical_column(
         }
     }
     let first_above = first_above.ok_or(ERR_SURFACE_BRACKET)?;
-    let mut ox = Vec::with_capacity(nsource + 1);
-    let mut oy = Vec::with_capacity(nsource + 1);
+    let VerticalScratch { ox, oy, x } = scratch;
+    ox.clear();
+    oy.clear();
+    x.clear();
     if first_above > 0 {
         for level in 0..first_above {
             ox.push(source_pressure[level * ncolumn + column]);
@@ -662,16 +678,30 @@ fn vertical_column(
     if ox.len() < 2 {
         return Err(ERR_INTERPOLATION_WINDOW);
     }
-    let x: Vec<f32> = if interp_in_logp {
-        ox.iter().map(|value| value.ln()).collect()
+    if interp_in_logp {
+        x.extend(ox.iter().map(|value| value.ln()));
     } else {
-        ox.clone()
-    };
+        x.extend_from_slice(ox);
+    }
     let output = output_address as *mut f32;
     for target_level in 0..ntarget {
-        let pressure = target_pressure[target_level * ncolumn + column];
+        let mut pressure = target_pressure[target_level * ncolumn + column];
         if !pressure.is_finite() || pressure <= 0.0 {
             return Err(ERR_NONFINITE);
+        }
+        // Native mass pressures can be a few FP32 roundings above the
+        // same endpoint rebuilt from decimal eta levels.  Co-locate only
+        // this serialization roundoff, using the bounded-field pipeline's
+        // four-epsilon envelope.  A higher physical target still fails;
+        // no atmospheric value is extrapolated past the source column.
+        let top = ox[ox.len() - 1];
+        if pressure < top {
+            if top - pressure > (4.0 * f32::EPSILON) * top.abs() {
+                // Check pressure before logarithms: two distinct endpoint
+                // pressures can have the same rounded logarithm.
+                return Err(ERR_TARGET_ABOVE_TOP);
+            }
+            pressure = top;
         }
         let target_x = if interp_in_logp {
             pressure.ln()
@@ -797,10 +827,11 @@ pub unsafe extern "C" fn gpuwm_wrf_vert_interp_f32(
         let target_slice = std::slice::from_raw_parts(target_pressure, target_length);
         let output_address = output as usize;
         let error = AtomicI32::new(OK);
-        std::thread::scope(|scope| {
-            for (start, stop) in worker_ranges(ncolumn, workers) {
-                let error = &error;
-                scope.spawn(move || {
+        parallel::run_ranges(ncolumn, workers, |start, stop| {
+                    let error = &error;
+                    // Three source-level vectors per worker, reused for
+                    // every column instead of three allocations per cell.
+                    let mut scratch = VerticalScratch::new(nsource + 1);
                     for column in start..stop {
                         if error.load(Ordering::Relaxed) != OK {
                             break;
@@ -821,6 +852,7 @@ pub unsafe extern "C" fn gpuwm_wrf_vert_interp_f32(
                             force_surface,
                             zap_close_levels,
                             vboundb,
+                            &mut scratch,
                         ) {
                             error
                                 .compare_exchange(OK, code, Ordering::Relaxed, Ordering::Relaxed)
@@ -828,8 +860,6 @@ pub unsafe extern "C" fn gpuwm_wrf_vert_interp_f32(
                             break;
                         }
                     }
-                });
-            }
         });
         error.load(Ordering::Relaxed)
     }))
@@ -1057,5 +1087,52 @@ mod tests {
         };
         assert_eq!(code, OK);
         assert!(output.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn native_pressure_endpoint_roundoff_does_not_create_an_extrapolated_layer() {
+        let source = [98000.0f32, 70000.0, 30000.0, 5000.0, 2209.2018, 1731.4755];
+        let field = [289.0f32, 270.0, 238.0, 216.0, 218.0, 219.0];
+        let surface_p = [100000.0f32];
+        let surface_value = [291.0f32];
+        for logp in [false, true] {
+            for (pressure, expected) in [(1731.475f32, Ok(())), (1731.465, Err(ERR_TARGET_ABOVE_TOP))] {
+                let mut output = [0.0f32];
+                let result = vertical_column(
+                    &field, &surface_value, &source, &surface_p, &[pressure],
+                    output.as_mut_ptr() as usize, source.len(), 1, 1, 0,
+                    logp, false, 0, 500.0, 4,
+                    &mut VerticalScratch::new(source.len() + 1));
+                assert_eq!(result, expected);
+                if result.is_ok() {
+                    assert_eq!(output[0].to_bits(), field[field.len() - 1].to_bits());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_logarithm_tie_cannot_hide_pressure_above_the_endpoint_envelope() {
+        let mut ties = 0;
+        for top in (5000..30000).step_by(137) {
+            let top = top as f32;
+            let allowance = (4.0 * f32::EPSILON) * top;
+            let mut target = top;
+            while top - target <= allowance {
+                target = f32::from_bits(target.to_bits() - 1);
+            }
+            if target.ln() == top.ln() {
+                ties += 1;
+                let source = [90000.0, 60000.0, 40000.0, top];
+                let mut output = [0.0f32];
+                assert_eq!(vertical_column(
+                    &[290.0, 270.0, 240.0, 220.0], &[291.0], &source,
+                    &[100000.0], &[target], output.as_mut_ptr() as usize,
+                    4, 1, 1, 0, true, false, 0, 0.0, 4,
+                    &mut VerticalScratch::new(source.len() + 1)),
+                    Err(ERR_TARGET_ABOVE_TOP));
+            }
+        }
+        assert!(ties > 0, "the control must exercise actual logarithm ties");
     }
 }

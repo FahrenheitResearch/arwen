@@ -8,7 +8,7 @@ geography tree `gpuwm fetch-geog` downloads and stages. `gpuwm fetch
 | | sources |
 |---|---|
 | hand-written transports (this page, in detail) | `gfs`, `gdas`, `hrrr`, `era5` |
-| [packaged route table](#every-other-source-the-packaged-route-table) | `hrrr-prs`, `rap`, `rrfs`, `gefs`, `aigfs`, `aigefs`, `ecmwf-open-data`, `aifs`, `icon-global`, `icon-eu`, `icon-d2`, `gem-gdps` |
+| [packaged route table](#every-other-source-the-packaged-route-table) | `hrrr-prs`, `hrrr-native`, `rap`, `rap-native`, `rrfs`, `gefs`, `aigfs`, `aigefs`, `ecmwf-open-data`, `aifs`, `icon-global`, `icon-eu`, `icon-d2`, `gem-gdps` |
 | refused by name, with a remedy | `era5-l137`, `20crv3`, `20crv3-cf`, `mapped` -- no bytes at a path a fetch can resolve; the refusal prints the `gpuwm prep` line that runs on a folder you fill (`--source-root DIR`), or for `mapped` on your own mapping (see [SOURCES.md](SOURCES.md#sources-with-no-fetch-door)) |
 
 Registry aliases work everywhere a source id does: `gdps`, `ifs`,
@@ -462,6 +462,8 @@ every row. Adding a model's front door is a row in that file.
 # one command per source; --cycle is explicit (these producers' lags
 # differ by hours, so there is no accurate 'latest' to resolve)
 gpuwm fetch --source rap      --cycle 2026-08-16T00 --hours 6 --out data/rap
+gpuwm fetch --source rap-native --cycle 2026-10-02T18 --hours 3 --cadence 3 --out data/rap-native
+gpuwm fetch --source hrrr-native --cycle 2026-10-02T18 --hours 0 --out data/hrrr-native
 gpuwm fetch --source icon-eu  --cycle 2026-08-17T12 --hours 6 --out data/icon
 gpuwm fetch --source icon-d2  --cycle 2026-09-27T12 --hours 3 --out data/icon-d2
 gpuwm fetch --source gefs     --cycle 2026-08-17T00 --hours 6 --out data/gefs --member c00

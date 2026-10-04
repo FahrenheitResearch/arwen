@@ -599,6 +599,11 @@ def require(door: str, *requirements: Requirement,
 #: a traceback, pointed the other way.
 COMMAND_REQUIREMENTS: dict[str, tuple[Requirement, ...]] = {
     "go": (GPU_RUNTIME,),
+    # `gpuwm ensemble` is `go` by another name, and argparse stores the
+    # name the reader typed, so a table keyed on "go" alone misses it.
+    # Without the row an install with no CuPy fetched and prepared every
+    # member of a recipe ensemble before the forecast stage refused.
+    "ensemble": (GPU_RUNTIME,),
     "run": (GPU_RUNTIME,),
     "resume": (GPU_RUNTIME,),
     # The unbundled forecast stage integrates the same model `go`'s
@@ -616,6 +621,9 @@ _BEFORE = {
     "go": ("Refusing here, before the fetch stage downloads the forcing "
            "data and the prepare stage writes the static fields, rather "
            "than at the forecast stage after both."),
+    "ensemble": ("Refusing here, before any member's forcing data is "
+                 "downloaded or prepared, rather than at the forecast "
+                 "stage after every member's fetch and preparation."),
     "run": ("Refusing here, before a GPU is selected, a worker spawned "
             "and the case prepared."),
     "resume": ("Refusing here, before a GPU is selected and a worker "

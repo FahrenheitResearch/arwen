@@ -192,20 +192,24 @@ bytes are outside the numerical oracle.
   `-ftz=true` to whatever the caller passed, at
   `cupy.cuda.compiler` line 585 (`options += ('-ftz=true',)`), after the
   caller's options, and NVRTC honours the last occurrence.
-  The inventory records 7 distinct caller-supplied option tuples across the 43
+  The inventory records 9 distinct caller-supplied option tuples across the 63
   compile sites in the shipped package, each listed here with a site that
   supplies it:
   - no caller options -- `gpuwm/core/attribute_tracking.py:99`
-    (xp.ElementwiseKernel), and 23 other site(s)
-  - `-std=c++17` -- `gpuwm/core/kernels/__init__.py:164` (cp.RawModule), and
+    (xp.ElementwiseKernel), and 32 other site(s)
+  - `--std=c++17` -- `gpuwm/ensemble/batch_perturbation.py:51`
+    (xp.RawModule), and 8 other site(s)
+  - `-std=c++17` -- `gpuwm/core/kernels/__init__.py:204` (cp.RawModule), and
     6 other site(s)
-  - `-std=c++17` `--ftz=false` -- `gpuwm/core/rrtmg_legacy.py:904`
-    (_cc.compile_using_nvrtc), and 4 other site(s)
+  - `-std=c++17` `--ftz=false` -- `gpuwm/core/rrtmg_legacy.py:919`
+    (_cc.compile_using_nvrtc), and 5 other site(s)
   - `-fmad=false` -- `gpuwm/core/dycore.py:292` (cp.ElementwiseKernel), and
     2 other site(s)
   - `-std=c++17` `--ftz=true` -- `gpuwm/core/mynn_pbl_gpu.py:362`
     (cp.RawKernel), and 1 other site(s)
   - `--ftz=true` -- `gpuwm/core/morrison.py:39` (cp.ElementwiseKernel)
+  - `-std=c++17` `--fmad=false` -- `gpuwm/core/kernels/__init__.py:170`
+    (cp.RawModule)
   - `-std=c++17` `-fmad=false` -- `gpuwm/core/nest_interp.py:261`
     (cp.RawModule)
   `R5` and `R1` are kernels inside ONE compiled object -- same device, same

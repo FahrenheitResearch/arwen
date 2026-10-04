@@ -896,6 +896,9 @@ NVRTC_UNPINNED_CLASS = {
     (13, 0): "widens",
     # RTX 4090 sm_89, driver 590.48.01, 2026-08-03 (arwen-stress-4090).
     (13, 1): "real4",
+    # RTX 4090 sm_89, NVRTC 13.3, 2026-10-03: both unpinned spellings
+    # retain the REAL(4) prefactor; the pinned Fortran answer is unchanged.
+    (13, 3): "real4",
     # An RTX PRO 4500 (sm_120, 2026-09-28) and the RTX 5070 Ti (sm_120,
     # NVRTC 13.4.92, driver 595.91.07, 2026-09-29): both spellings give
     # 3.5430368e+08, the widened answer, against WRF's 3.543037e+08.

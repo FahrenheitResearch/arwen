@@ -142,7 +142,11 @@ pub fn render_panel(request: PanelRequest<'_>) -> Result<PathBuf, String> {
     map_request.legend = request.legend;
     map_request.subtitle_left = Some(request.subtitle_left);
     map_request.subtitle_center = request.subtitle_center;
-    map_request.subtitle_right = Some(request.subtitle_right);
+    // An empty right subtitle is a panel that carries no source label:
+    // it is passed as none, so a theme's own label is not drawn in its
+    // place and the left subtitle keeps the whole row.
+    map_request.subtitle_right = (!request.subtitle_right.trim().is_empty())
+        .then_some(request.subtitle_right);
     map_request.projected_domain = Some(ProjectedDomain {
         x: projected.projected_x,
         y: projected.projected_y,

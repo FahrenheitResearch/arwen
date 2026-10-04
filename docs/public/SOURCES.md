@@ -20,6 +20,7 @@ List the whole registry with `gpuwm prep --list-sources`, or one row with
 |---|---|---|---|---|
 | `hrrr` | -- | 1 h | f048 | 1799x1059 Lambert at 3 km (CONUS) |
 | `hrrr-prs` | `hrrr-pressure`, `hrrr-wrfprs` | 1 h | f048 | 1799x1059 Lambert at 3 km (CONUS) |
+| `hrrr-native` | `hrrr-mapped-native` | 1 h | f048 | 1799x1059 Lambert at 3 km, native hybrid levels; same-cycle pressure product supplies analysis soil |
 | `gem-gdps` | `gem`, `gdps`, `gem-global` | 3 h | f240 | global |
 | `icon-global` | `icon`, `icon-13km`, `dwd-icon`, `dwd-icon-global` | 3 h | f180 (00/12Z), f120 (06/18Z) | global, 2,949,120-cell icosahedral mesh at nominally 13 km |
 | `icon-eu` | `dwd-icon-eu`, `icon-eu-regular` | 1 h | f120 | lat 29.5..70.5, lon -23.5..62.5 |
@@ -32,11 +33,19 @@ List the whole registry with `gpuwm prep --list-sources`, or one row with
 | `ecmwf-open-data` | `ecmwf`, `ifs` | 3 h | f360 | global |
 | `aifs` | `aifs-v2`, `aifs-single` | 6 h | f360 | global |
 | `rap` | `rap-awip32` | 1 h | f051 | AWIPS 221, 349x277 Lambert at 32 km (North America) |
+| `rap-native` | `rap-awp130bgrb` | 1 h | f051 | AWIPS 130, 451x337 Lambert at 13.545 km, 50 native hybrid levels (CONUS) |
 | `rrfs` | `rrfs-ops` | 1 h | f084 | 1799x1059 Lambert at 3 km (CONUS; HRRR's grid, measured identical) |
 | `era5` | -- | 6 h | analysis only | global |
 | `era5-l137` | `era5-model-level`, `era5-ml` | 1 h | analysis only | global |
 | `20crv3` | `20cr`, `twentycrv3`, `20crv3-member` | 3 h | analysis only | global |
 | `20crv3-cf` | `20crv3-netcdf`, `20cr-netcdf`, `20cr-cf` | 3 h | analysis only | global |
+
+`rap-native` preserves RAP's 50 hybrid levels and their explicit pressure
+fields. The producer interpolates those levels horizontally onto AWIPS grid
+130. Its model lid is 10 hPa; `hrrr-native` has a 15 hPa lid. Both packaged
+profiles carry analyzed cloud, ice, rain and aerosol number concentrations.
+The older `rap` pressure product remains a separate 32 km source with a
+50 hPa uppermost pressure level.
 
 The boundary cadence column is the default. `--cadence N` writes another
 spacing when the publisher posts every lead of the window at it and the
@@ -95,7 +104,7 @@ bare grid rectangle would accept.
 ## Which sources `gpuwm fetch` downloads
 
 Every row in the table above except `era5-l137`, `20crv3` and
-`20crv3-cf` (see "Sources with no fetch door" below). Twelve of them are
+`20crv3-cf` (see "Sources with no fetch door" below). Fourteen of them are
 rows in the packaged acquisition-route document
 (`gpuwm/authorities/rw-wps-fetch-routes.v1.json`), read by the one engine
 in `gpuwm/fetch_routes.py`; four keep the hand-written transports that
@@ -103,7 +112,7 @@ predate it. `docs/public/DATA.md` publishes the working command for each.
 
 | how the bytes arrive | sources |
 |---|---|
-| table route (whole published objects, in parallel) | `hrrr-prs`, `rap`, `rrfs`, `gefs`, `aigfs`, `aigefs`, `ecmwf-open-data`, `aifs`, `icon-global`, `icon-eu`, `icon-d2`, `gem-gdps` |
+| table route (whole published objects, in parallel) | `hrrr-prs`, `hrrr-native`, `rap`, `rap-native`, `rrfs`, `gefs`, `aigfs`, `aigefs`, `ecmwf-open-data`, `aifs`, `icon-global`, `icon-eu`, `icon-d2`, `gem-gdps` |
 | hand-written transport (publisher-side subsetting) | `gfs`, `gdas` (NOMADS grib-filter or the S3 archive), `hrrr` (`.idx` byte ranges, live-cycle wait), `era5` (the public ARCO Zarr store with no key, or a Copernicus CDS retrieval under your own key) |
 
 `gpuwm domain` emits the `[fetch]` table and the runnable step 1 for every

@@ -1741,7 +1741,8 @@ def test_tke_adv_opt_drops_as_inert(tmp_path):
 @pytest.mark.parametrize("key", [
     # gwd_opt left this list with lane/282-terrain-drag: 1 and 3 are ported
     # (tests/test_terrain_drag_config.py).
-    "swint_opt", "sf_lake_physics", "shcu_physics",
+    # CLM lake 0/1 and its WRF defaults are held by test_lake_options.py.
+    "swint_opt", "shcu_physics",
     "kf_edrates", "flag_sm_adj",
     "sst_update", "sst_skin", "tmn_update",
 ])
@@ -1781,20 +1782,47 @@ def test_cu_rad_feedback_false_fixes_true_refuses(tmp_path):
 
 
 def test_mynn_identity_keys_fix_at_identity_and_refuse_others(tmp_path):
-    _, report = _import_with(
+    text, report = _import_with(
         tmp_path,
         extra_physics=(" bl_mynn_mixlength = 1,\n icloud_bl = 1,\n"
                        " bl_mynn_tkeadvect = .false., .false.,\n"
                        " bl_mynn_closure = 2.6,\n"))
     fixed = {(f.section, f.key): f for f in report.fixed}
-    assert fixed[("physics", "bl_mynn_mixlength")].fixed_value == 1
+    assert "bl_mynn_mixlength = 1" in text
     assert fixed[("physics", "bl_mynn_closure")].fixed_value == 2.6
-    for line, match in ((" bl_mynn_mixlength = 2,\n", "bl_mynn_mixlength"),
+    for line, match in ((" bl_mynn_mixlength = 0,\n", "bl_mynn_mixlength"),
                         (" icloud_bl = 0,\n", "icloud_bl"),
                         (" bl_mynn_tkeadvect = .true., .true.,\n",
                          "bl_mynn_tkeadvect")):
         with pytest.raises(ValueError, match=match):
             _import_with(tmp_path, extra_physics=line)
+
+
+def test_mynn_mixing_length_and_scalar_diffusion_import_without_substitution(tmp_path):
+    # The WRF post-PBL selector must not turn on MYNN's separate plume path.
+    inp = INPUT_TEXT.replace(
+        " mp_physics = 55, 55,",
+        " mp_physics = 28, 28,\n bl_mynn_mixlength = 2,\n scalar_pblmix = 1,")
+    inp = inp.replace(" bl_pbl_physics = 11, 11,", " bl_pbl_physics = 5, 5,")
+    inp = inp.replace(" sf_sfclay_physics = 91, 91,", " sf_sfclay_physics = 5, 5,")
+    text, report = import_namelists(*_pair(tmp_path, inp=inp), name="mynn-options")
+    exp = _load(tmp_path, text, "mynn-options.toml")
+    for domain in exp.domains:
+        assert domain.run.bl_mynn_mixlength == 2
+        assert domain.run.scalar_pblmix == 1
+        assert domain.run.bl_mynn_mixscalars == 0
+    assert "bl_mynn_mixlength = 2" in text
+    assert "scalar_pblmix = 1" in text
+
+
+@pytest.mark.parametrize("key, values", [
+    ("bl_mynn_mixlength", "1, 2"),
+    ("scalar_pblmix", "0, 1"),
+    ("bl_mynn_mixscalars", "0, 1"),
+])
+def test_mynn_shared_option_never_discards_a_different_domain_value(tmp_path, key, values):
+    with pytest.raises(ValueError, match="differing domain values"):
+        _import_with(tmp_path, extra_physics=f" {key} = {values},\n")
 
 
 def test_noah_mp_section_identity_values_fix_others_refuse(tmp_path):
@@ -1812,7 +1840,7 @@ def test_noah_mp_section_identity_values_fix_others_refuse(tmp_path):
                      extra_input="&noah_mp\n not_a_noahmp_key = 1,\n/\n")
 
 
-def test_stoch_section_off_drops_seeds_and_refuses_active_schemes(
+def test_stoch_section_off_drops_seeds_and_refuses_missing_consumers(
         tmp_path):
     section = ("&stoch\n spp = 0,\n spp_pbl = 0,\n iseed_spp_lsm = 123,\n"
                " nens = 1,\n/\n")
@@ -1823,8 +1851,42 @@ def test_stoch_section_off_drops_seeds_and_refuses_active_schemes(
     assert ("stoch", "spp_pbl") in fixed
     assert ("stoch", "iseed_spp_lsm") in dropped
     assert ("stoch", "nens") in dropped
-    with pytest.raises(ValueError, match="stochastic"):
-        _import_with(tmp_path, extra_input="&stoch\n spp_lsm = 1,\n/\n")
+    with pytest.raises(ValueError, match="spp_lsm.*no consumer"):
+        _import_with(tmp_path, extra_input="&stoch\n spp_lsm = 1, 1,\n/\n")
+
+
+def test_disabled_stochastic_parameters_do_not_enable_any_scheme(tmp_path):
+    reference, _ = _import_with(tmp_path)
+    text, report = _import_with(tmp_path, extra_input=(
+        "&stoch\n sppt = 0,\n skebs = 0,\n spp = 0,\n"
+        " gridpt_stddev_sppt = 0.5,\n timescale_sppt = 21600.,\n"
+        " lengthscale_sppt = 150000.,\n rexponent_psi = -1.83,\n"
+        " kmaxforc = 1000000,\n/\n"))
+    assert text == reference
+    dropped = {(row.section, row.key) for row in report.dropped}
+    assert ("stoch", "gridpt_stddev_sppt") in dropped
+    assert ("stoch", "kmaxforc") in dropped
+
+
+def test_complete_disabled_wrf_stochastic_defaults_keep_original_import_bytes(tmp_path):
+    from gpuwm.wrf_namelist_registry import wrf_namelist_keys
+    entries = [f" {key} = {row['default']}," for (section, key), row in wrf_namelist_keys().items()
+               if section == "stoch"]
+    reference, _ = _import_with(tmp_path)
+    actual, _ = _import_with(tmp_path, extra_input="&stoch\n" + "\n".join(entries) + "\n/\n")
+    assert actual == reference
+
+
+@pytest.mark.parametrize("setting, reason", [
+    # An active random selector is refused with the reason every run door
+    # gives (its spread amplitude has no observation calibration) and the
+    # key that set it; an unknown key keeps its own answer.
+    ("pert_thom = .true.", "&stoch pert_thom = .*spread amplitudes have not been calibrated"),
+    ("perturb_bdy = 1", "&stoch perturb_bdy = .*spread amplitudes have not been calibrated"),
+    ("unknown_noise = 0", "unmapped key")])
+def test_disabled_parameter_handling_does_not_drop_active_or_unknown_settings(tmp_path, setting, reason):
+    with pytest.raises(ValueError, match=reason):
+        _import_with(tmp_path, extra_input="&stoch\n" + setting + ",\n/\n")
 
 
 def test_fdda_active_nudging_refuses_disabled_drops(tmp_path):

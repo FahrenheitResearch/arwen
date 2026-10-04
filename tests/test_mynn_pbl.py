@@ -274,7 +274,7 @@ def test_default_mixlength_matches_unmodified_wrf_columns():
     )
 
 
-def test_default_mixlength_rejects_short_top_and_shape_drift():
+def test_default_mixlength_rejects_shape_drift_and_integrates_a_short_top():
     _, fields = _mixlength_oracle()
     inputs = {
         name: fields[name]
@@ -293,10 +293,18 @@ def test_default_mixlength_rejects_short_top_and_shape_drift():
     bad["qke"] = bad["qke"][:, :-1]
     with pytest.raises(ValueError, match="share shape"):
         mynn_mixlength_default(bad)
+    # A boundary layer above a short column's top used to be refused here
+    # ("column top is too low") while the CUDA kernel ran on.  WRF's own
+    # loop reads past the column there, so the integral now ends at the top
+    # interior interface on both; tests/test_mynn_mixlength2.py pins the
+    # CPU and CUDA results to the same bits for such columns.
     low = dict(inputs)
     low["zi"] = np.full(4, 5000.0, np.float32)
-    with pytest.raises(ValueError, match="top is too low"):
-        mynn_mixlength_default(low)
+    assert (low["zi"] > fields["zw"][:, -1]).all()
+    short = mynn_mixlength_default(low)
+    for name in ("el", "qkw"):
+        assert np.isfinite(short[name]).all(), name
+    assert (short["el"][:, 0] == 0).all() and (short["el"] >= 0).all()
 
 
 TURBULENCE_OUTPUTS = (
@@ -776,8 +784,8 @@ def test_default_condensation_rejects_other_cloud_pdfs_and_shape_drift():
     for rejected in (0, 1, -2, 3):
         with pytest.raises(ValueError, match="bl_mynn_cloudpdf=2"):
             mynn_condensation_default(inputs, bl_mynn_cloudpdf=rejected)
-    with pytest.raises(ValueError, match="spp_pbl=0"):
-        mynn_condensation_default(inputs, spp_pbl=1)
+    with pytest.raises(ValueError, match="spp_pbl"):
+        mynn_condensation_default(inputs, spp_pbl=2)
     missing = dict(inputs)
     del missing["exner"]
     with pytest.raises(TypeError, match="exner"):
@@ -1539,7 +1547,7 @@ def test_initialize_rejects_nondefault_knobs_and_shape_drift():
     with pytest.raises(ValueError, match="bl_mynn_mixlength"):
         mynn_initialize_default(values, bl_mynn_mixlength=0)
     with pytest.raises(ValueError, match="spp_pbl"):
-        mynn_initialize_default(values, spp_pbl=1)
+        mynn_initialize_default(values, spp_pbl=2)
     with pytest.raises(TypeError, match="initialize_qke"):
         mynn_initialize_default(values, initialize_qke=1)
     missing = dict(values)
@@ -1801,7 +1809,7 @@ def test_mass_flux_rejects_nondefault_knobs_and_shape_drift():
         # W4 mixscalars admission: 1 is now admitted (anchored fixtures,
         # w4-oracle-fixtures); every other nonzero value
         # stays refused as an unmeasured combination.
-        ("bl_mynn_mixscalars", 2), ("spp_pbl", 1),
+        ("bl_mynn_mixscalars", 2), ("spp_pbl", 2),
     ):
         with pytest.raises(ValueError, match=knob):
             mynn_dmp_mf(values, **{knob: bad})
@@ -1850,14 +1858,6 @@ DRIVER_PROFILE_OUTPUTS = (
     "dozone", "exch_h", "exch_m", "qke", "tsq", "qsq", "cov", "el",
     "sh", "sm", "qc_bl", "qi_bl", "cldfra_bl",
 )
-#: Fields the cold start reproduces bitwise on *every* column, including the
-#: two that carry the open residue.  Keeping them separate is what makes
-#: the residue a bounded island instead of a blanket tolerance.
-DRIVER_COLD_EXACT = (
-    "dozone", "qc_bl", "qi_bl", "cldfra_bl",
-)
-#: The three columns the cold start reproduces bitwise on every field.
-DRIVER_COLD_EXACT_CASES = ("convective_land", "marine_cumulus", "stable_land")
 
 
 def _stfunc_oracle():
@@ -1997,104 +1997,33 @@ def test_driver_warm_step_is_bitwise_identical_to_unmodified_wrf():
         )
 
 
-def test_driver_cold_start_is_bitwise_on_three_of_five_columns():
-    """initflag=1 runs the mym_initialize cold start.
+def test_driver_cold_start_matches_all_five_wrf_columns():
+    """Seeding with vapor keeps resolved condensate out of the initial qw.
 
-    Three of the five columns are bitwise on every field.  ``cloudy_deep`` and
-    ``snow_anvil`` carry an open residue that first appears in
-    ``mym_turbulence``'s ``el``/``sh``/``sm``; they are bounded in
-    :func:`test_driver_cold_start_residue_is_confined_and_bounded` rather than
-    hidden behind a tolerance here.
+    The former deep-cloud divergence came from passing total water where
+    WRF passes sqv to mym_initialize. Gate every cold output at equality so
+    the vapor/total-water argument swap cannot return behind a tolerance.
     """
-
     blocks, values, initflag, delt = _driver_step(1)
-    assert initflag == 1
-    actual = mynn_bl_driver(
-        values, initflag=initflag, delt=delt, flag_qs=True,
-    )
+    actual = mynn_bl_driver(values, initflag=initflag, delt=delt, flag_qs=True)
     for index, case in enumerate(DRIVER_CASES):
-        if case not in DRIVER_COLD_EXACT_CASES:
-            continue
         for name in DRIVER_PROFILE_OUTPUTS:
             key = DRIVER_OUTPUT_CSV.get(name, name)
-            want = np.asarray(
-                [np.float32(row[key]) for row in blocks[index]],
-                dtype=np.float32,
-            )
-            np.testing.assert_array_equal(
-                np.asarray(actual[name], dtype=np.float32)[index], want,
-                err_msg=f"{case}/{name}",
-            )
-
-
-def test_driver_cold_start_residue_is_confined_and_bounded():
-    """Name the island: which column, which fields, how far.
-
-    The cold-start residue lives entirely in the two deep-cloud columns.
-    Everything upstream of ``mym_turbulence`` on those columns -- ``pblh``, ``kpbl``,
-    ``rmol``, ``qc_bl``, ``qi_bl``, ``cldfra_bl``, ``maxwidth``, ``maxmf``,
-    ``ztop_plume``, ``ktop_plume`` -- is still bitwise, which is what says the
-    assembly, ``get_pblh``, ``scale_aware``, ``mym_initialize``,
-    ``mym_condensation`` and ``DMP_mf`` are all reproducing WRF and the
-    divergence enters later.
-    """
-
-    blocks, values, initflag, delt = _driver_step(1)
-    actual = mynn_bl_driver(
-        values, initflag=initflag, delt=delt, flag_qs=True,
-    )
-    # The measured worst case, field by field.  A regression trips this.
-    budgets = {
-        "rublten": 34917581, "rvblten": 34571878, "rthblten": 1867304141,
-        "rqvblten": 1670853428, "rqcblten": 15629004, "rqiblten": 5420692,
-        "exch_h": 5165997, "exch_m": 5169200, "qke": 1413755,
-        "tsq": 3387398, "qsq": 21682734, "cov": 2782383, "el": 25193,
-        "sh": 3346336, "sm": 2120151,
-    }
-    for case in ("cloudy_deep", "snow_anvil"):
-        index = DRIVER_CASES.index(case)
-        for name in DRIVER_COLD_EXACT:
-            key = DRIVER_OUTPUT_CSV.get(name, name)
-            want = np.asarray(
-                [np.float32(row[key]) for row in blocks[index]],
-                dtype=np.float32,
-            )
-            np.testing.assert_array_equal(
-                np.asarray(actual[name], dtype=np.float32)[index], want,
-                err_msg=f"{case}/{name}",
-            )
+            want = np.asarray([np.float32(row[key]) for row in blocks[index]])
+            np.testing.assert_array_equal(actual[name][index], want,
+                                          err_msg=f"{case}/{name}")
         for name in ("pblh", "rmol", "maxwidth", "maxmf", "ztop_plume"):
-            assert np.float32(actual[name][index]) \
-                == np.float32(blocks[index][0][name]), f"{case}/{name}"
-        for name in ("kpbl", "ktop_plume"):
-            assert int(actual[name][index]) == int(
+            assert np.float32(actual[name][index]) == np.float32(
                 blocks[index][0][name]), f"{case}/{name}"
-        for name, budget in budgets.items():
-            key = DRIVER_OUTPUT_CSV.get(name, name)
-            want = np.asarray(
-                [np.float32(row[key]) for row in blocks[index]],
-                dtype=np.float32,
-            )
-            got = np.asarray(actual[name], dtype=np.float32)[index]
-            _assert_within_ulp(got, want, budget, f"{case}/{name}")
-        # el is where it enters, and it enters small: a relative difference
-        # below 2e-3, not a structural break.
-        want_el = np.asarray(
-            [np.float32(row["el_pbl"]) for row in blocks[index]],
-            dtype=np.float32,
-        )
-        got_el = np.asarray(actual["el"], dtype=np.float32)[index]
-        relative = np.abs(
-            got_el.astype(np.float64) - want_el.astype(np.float64))
-        relative /= np.maximum(np.abs(want_el.astype(np.float64)), 1.0e-30)
-        assert relative.max() < 2.0e-3, (case, relative.max())
+        for name in ("kpbl", "ktop_plume"):
+            assert int(actual[name][index]) == int(blocks[index][0][name])
 
 
 def test_driver_rejects_nondefault_knobs_and_shape_drift():
     _, values, _, delt = _driver_step(2)
     for knob, bad in (
         ("bl_mynn_edmf", 0), ("bl_mynn_output", 1), ("icloud_bl", 0),
-        ("tke_budget", 1), ("spp_pbl", 1),
+        ("tke_budget", 1), ("spp_pbl", 2),
     ):
         with pytest.raises(ValueError, match=knob):
             mynn_bl_driver(values, initflag=0, delt=delt, **{knob: bad})

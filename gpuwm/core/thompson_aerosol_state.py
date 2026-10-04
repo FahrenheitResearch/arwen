@@ -141,18 +141,25 @@ def launch_aerosol_entry_snapshot(temperature, pressure, qv, nwfa, nifa,
     ``rho_out`` receives WRF's entry density (:1802), formed from the
     vapour already floored at 1e-10 by :1801.
 
-    This snapshot -- both bounds applied -- is what scavenging, ``iceDeMott``
+    Optional ``None`` aerosol outputs skip storage when the fused source
+    kernels rediagnose those values inline.  Density is always written.
+    The snapshot -- both bounds applied -- is what scavenging, ``iceDeMott``
     and ``iceKoop`` consume.  It is a different quantity from
     :func:`launch_aerosol_working_number`'s output; see that docstring.
     """
-    _, size = validate_fields({
+    arrays = {
         "temperature": temperature, "pressure": pressure, "qv": qv,
         "nwfa": nwfa, "nifa": nifa, "rho_out": rho_out,
-        "nwfa_entry_m3": nwfa_entry_m3, "nifa_entry_m3": nifa_entry_m3,
-    })
+    }
+    arrays.update((name, value) for name, value in (
+        ("nwfa_entry_m3", nwfa_entry_m3), ("nifa_entry_m3", nifa_entry_m3))
+        if value is not None)
+    _, size = validate_fields(arrays)
     _launch("thompson_aa_entry_snapshot", size,
             (temperature, pressure, qv, nwfa, nifa, rho_out,
-             nwfa_entry_m3, nifa_entry_m3, np.int32(size)))
+             np.uint64(0) if nwfa_entry_m3 is None else nwfa_entry_m3,
+             np.uint64(0) if nifa_entry_m3 is None else nifa_entry_m3,
+             np.int32(size)))
 
 
 def launch_aerosol_micro_columns(qc, qi, qr, qs, qg, temperature, pressure,
@@ -194,17 +201,26 @@ def launch_aerosol_entry_cloud_number(qc, nc, rho, rc_out, nc_entry_m3,
     in kg m^-3 (floored at R1), ``nc_entry_m3`` the rediagnosed droplet number
     in m^-3, ``nu_c_out``/``l_qc_out`` int32.
 
+    Diagnostic outputs may be ``None``.  The forecast sources rediagnose
+    them inline; requesting no diagnostic preserves the qc/nc entry rewrite
+    without retaining four unused volume arrays.
+
     The arithmetic is ``thompson_aa_cloud_dist`` from the shared device
     header, so a package that prefers to recompute it inline gets the
     identical value.
     """
-    shape, size = validate_fields({
-        "qc": qc, "nc": nc, "rho": rho, "rc_out": rc_out,
-        "nc_entry_m3": nc_entry_m3,
-    })
-    validate_int_fields({"nu_c_out": nu_c_out, "l_qc_out": l_qc_out}, shape)
+    arrays = {"qc": qc, "nc": nc, "rho": rho}
+    arrays.update((name, value) for name, value in (
+        ("rc_out", rc_out), ("nc_entry_m3", nc_entry_m3))
+        if value is not None)
+    shape, size = validate_fields(arrays)
+    integer_outputs = {name: value for name, value in (
+        ("nu_c_out", nu_c_out), ("l_qc_out", l_qc_out)) if value is not None}
+    if integer_outputs:
+        validate_int_fields(integer_outputs, shape)
     _launch("thompson_aa_entry_cloud_number", size,
-            (qc, nc, rho, rc_out, nc_entry_m3, nu_c_out, l_qc_out,
+            (qc, nc, rho, *(np.uint64(0) if value is None else value
+                           for value in (rc_out, nc_entry_m3, nu_c_out, l_qc_out)),
              np.int32(size)))
 
 

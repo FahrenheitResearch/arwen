@@ -39,6 +39,7 @@ pub const OP_AVERAGE_4PT: u8 = 2;
 pub const OP_WT_AVERAGE_4PT: u8 = 3;
 pub const OP_WT_AVERAGE_16PT: u8 = 4;
 pub const OP_SEARCH: u8 = 5;
+pub const OP_NEAREST_NEIGHBOR: u8 = 6;
 
 pub const MODE_PLAIN: i32 = 0;
 pub const MODE_LAND: i32 = 1;
@@ -632,6 +633,18 @@ fn chain_target(
                     }
                 }
                 value
+            }
+            OP_NEAREST_NEIGHBOR => {
+                // WPS interp_module.F:402-438, nearest_neighbor. A
+                // missing nearest donor advances to the next operator.
+                let ix = xx.round() as i64;
+                let iy = yy.round() as i64;
+                if ix < 0 || iy < 0 || ix >= c.nx as i64 || iy >= c.ny as i64 {
+                    f64::NAN
+                } else {
+                    let index = c.at(iy as usize, ix as usize);
+                    if c.pro.usable[index] { c.pro.safe[index] } else { f64::NAN }
+                }
             }
             OP_FOUR_PT => four_pt(c, yy, xx, false),
             OP_AVERAGE_4PT => four_pt(c, yy, xx, true),
@@ -1275,6 +1288,18 @@ mod tests {
         let x = 0.5f64;
         let expected = 2.0 + (1.0 - x) * (0.5 * (1.0 - 4.0) + (1.0 - x) * (0.5 * (1.0 + 4.0) - 2.0));
         assert_eq!(oned(x, 0.0, 1.0, 2.0, 4.0).to_bits(), expected.to_bits());
+    }
+
+    #[test]
+    fn missing_nearest_uses_neighbors_before_zero_fill() {
+        let field = vec![f64::NAN, 20.0, 40.0, 60.0];
+        let chain = [OP_NEAREST_NEIGHBOR, OP_FOUR_PT, OP_AVERAGE_4PT];
+        let (code, out, counts, _) = chain_call(
+            &field, 2, 2, &[1; 4], &[0.1, 0.8, 0.0], &[0.1, 0.8, 0.0],
+            &[1; 3], &chain, MODE_PLAIN, 0.0, None, 1);
+        assert_eq!(code, OK);
+        assert_eq!(out, vec![40.0, 60.0, 0.0]);
+        assert_eq!(counts[COUNT_FILL], 1);
     }
 
     #[test]

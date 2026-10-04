@@ -158,6 +158,9 @@ def mynn_pbl_step(
     state=None,
     column_chunk: int | None = None,
     qn_scalars: Mapping[str, cp.ndarray] | None = None,
+    scalar_pblmix: int = 0,
+    spp_pbl: int = 0,
+    pattern_spp_pbl=None,
     **options,
 ) -> dict[str, cp.ndarray]:
     """Run one MYNN PBL call and write its state back into ``fields``.
@@ -195,6 +198,18 @@ def mynn_pbl_step(
             f"MYNN PBL requires at least {VERTICAL_LEVEL_BOUNDS[0]} "
             "vertical levels")
     ncol = ny * nx
+    from gpuwm.core.spp_kernel_sources import spp_flag
+    stochastic = spp_flag(spp_pbl, "spp_pbl")
+    stochastic_flat = None
+    if stochastic:
+        if (not isinstance(pattern_spp_pbl, cp.ndarray)
+                or pattern_spp_pbl.shape != (nz, ny, nx)
+                or pattern_spp_pbl.dtype != DTYPE
+                or pattern_spp_pbl.device.id != theta.device.id):
+            raise ValueError("MYNN SPP requires float32 pattern_spp_pbl[nz,ny,nx] on the atmosphere device")
+        if not bool(cp.all(cp.isfinite(pattern_spp_pbl)).item()):
+            raise ValueError("MYNN SPP pattern must be finite")
+        stochastic_flat = pattern_spp_pbl.reshape(nz, ncol)
     if w.shape[0] < nz:
         raise ValueError("MYNN PBL needs w on the lower interface of each "
                          "layer, i.e. at least nz levels")
@@ -224,12 +239,13 @@ def mynn_pbl_step(
     # copies below are plain pool allocations, accepted behind the key
     # (the priced-scratch discipline covers the always-on path only).
     mixscalars_on = int(options.get("bl_mynn_mixscalars", 0)) == 1
+    scalar_diffusion_on = scalar_pblmix == 1
     qn_source: dict[str, cp.ndarray] = {}
     qn_out: dict[str, cp.ndarray] = {}
-    if mixscalars_on:
+    if mixscalars_on or scalar_diffusion_on:
         if qn_scalars is None:
             raise TypeError(
-                "bl_mynn_mixscalars=1 requires qn_scalars (the mp=28 "
+                "PBL scalar mixing requires qn_scalars (the mp=28 "
                 "nc/ni/nwfa/nifa fields); the caller owns the presence "
                 "check so the refusal names the missing state, not a "
                 "KeyError inside a chunk loop")
@@ -238,6 +254,7 @@ def mynn_pbl_step(
                 qn_scalars[state_name].reshape(nz, ncol))
         qn_out = {out_name: cp.zeros((nz, ny, nx), dtype=DTYPE)
                   for _, _, out_name in MYNN_MIXSCALARS_QN}
+    if mixscalars_on:
         # The driver's fixture-pinned combo requires all five qn flags.
         for flag in ("flag_qnc", "flag_qni", "flag_qnwfa", "flag_qnifa",
                      "flag_qnbca"):
@@ -262,6 +279,9 @@ def mynn_pbl_step(
 
     initflag = 1 if int(itimestep) == 1 else 0
     piece = mynn_column_pieces(ncol, chunk)
+    if scalar_diffusion_on:
+        from gpuwm.core.mynn_scalar_mix_gpu import scalar_pblmix_columns_cuda
+        scalar_work = cp.empty(piece * (5 * nz + 1), dtype=DTYPE)
     for lo in range(0, ncol, piece):
         hi = min(lo + piece, ncol)
         n = hi - lo
@@ -295,6 +315,8 @@ def mynn_pbl_step(
         for name in flat_columns:
             values[name] = flat_columns[name][lo:hi]
         values["kpbl"] = flat_kpbl[lo:hi]
+        if stochastic:
+            values["rstoch"] = cp.asfortranarray(stochastic_flat[:, lo:hi].T)
         if mixscalars_on:
             for solver_name, _, _ in MYNN_MIXSCALARS_QN:
                 values[solver_name] = cp.asfortranarray(
@@ -305,7 +327,7 @@ def mynn_pbl_step(
 
         out = mynn_bl_driver_cuda(
             values, initflag=initflag, delt=DTYPE(delt), scratch=work,
-            flag_qs=mynn_flag_qs(mp_physics), **options,
+            flag_qs=mynn_flag_qs(mp_physics), spp_pbl=spp_pbl, **options,
         )
 
         # --- module_bl_mynn_wrapper.F:587-607 specific -> mixing ratio -----
@@ -327,6 +349,20 @@ def mynn_pbl_step(
             for solver_name, _, out_name in MYNN_MIXSCALARS_QN:
                 qn_out[out_name].reshape(nz, ncol)[:, lo:hi] = (
                     out[f"r{solver_name}blten"].T)
+        if scalar_diffusion_on:
+            # module_pbl_driver.F calls diff4d after MYNN. Its local solve
+            # replaces, rather than adds to, any MYNN scalar plume rate.
+            # Precipitating number scalars are excluded by WRF's diff4d.
+            for solver_name, _, out_name in MYNN_MIXSCALARS_QN:
+                solved, rate = scalar_pblmix_columns_cuda(
+                    cp.asfortranarray(qn_source[solver_name][:, lo:hi].T),
+                    stage["dz"], stage["rho"], out["exch_h"],
+                    DTYPE(delt), scratch=scalar_work[:n * (5 * nz + 1)].reshape(
+                        (n, 5 * nz + 1), order="F"))
+                qn_out[out_name].reshape(nz, ncol)[:, lo:hi] = rate.T
+                # The stream orders the copy before allocator reuse. Drop
+                # both outputs before the next species builds its buffers.
+                del solved, rate
 
     result = dict(tendencies)
     result.update(qn_out)

@@ -1709,6 +1709,12 @@ _MICROPHYSICS_INIT_RECEIPTS: "weakref.WeakKeyDictionary" = \
 class PhysicsDriver:
     """Persistent surface state, diagnostics, scheduler, and held tendencies."""
 
+    # SPP is off unless __init__ reads it from the config.  A driver built
+    # around __init__ (a test double, a partly restored driver) otherwise
+    # failed in compute() reading flags that only __init__ set.
+    _spp_flags: dict = {}
+    spp_patterns: dict = {}
+
     @property
     def microphysics_init_receipt(self) -> dict[str, object]:
         """What WRF's ``mp_init`` did for this domain, as a receipt.
@@ -1785,6 +1791,7 @@ class PhysicsDriver:
     #: contract consume whatever its buffers held -- which is the defect
     #: the contract exists to close, reintroduced through the back door.
     noah_mosaic = None
+    lake = None
     cam_ozone = None
     o3rad = None
     carriers = None
@@ -1810,6 +1817,14 @@ class PhysicsDriver:
                  ruc_params=None, glw_provenance="declared",
                  carriers=None):
         self.state = state
+        self._spp_flags = {
+            key: int(getattr(cfg, f"spp_{key}"))
+            for key in ("conv", "pbl", "lsm")}
+        self._spp_shapes = {
+            "conv": (4, cfg.ny, cfg.nx),
+            "pbl": (cfg.nz, cfg.ny, cfg.nx),
+            "lsm": (soil_layer_count(cfg), cfg.ny, cfg.nx)}
+        self.spp_patterns = {}
         self.cam_ozone = None
         # WRF's slope_rad carrier; initialize_physics attaches it where
         # WRF would adjust the surface shortwave (restart: rebuilt).
@@ -1817,6 +1832,7 @@ class PhysicsDriver:
         # WRF's topo_wind / gwd_opt; initialize_physics attaches it where
         # either is on (restart: rebuilt from the prepared statics).
         self.terrain_drag = None
+        self.lake = None
         self.o3rad = None
         self.fields = fields
         # Where this domain's downward longwave came from; see the class
@@ -3057,6 +3073,9 @@ class PhysicsDriver:
                 dx=cfg.dx,
                 itimestep=itimestep,
                 isfflx=cfg.isfflx,
+                spp_pbl=cfg.spp_pbl,
+                pattern_spp_pbl=(self.spp_patterns["pbl"][0]
+                                 if cfg.spp_pbl else None),
             )
             if fractional_ruc:
                 # module_surface_driver.F:5441-5506.  Force the second call
@@ -3091,6 +3110,9 @@ class PhysicsDriver:
                     sea_inputs, f["mol_sea"], f["ustm_sea"],
                     self.mynn_sfclay_sea_result,
                     dx=cfg.dx, itimestep=itimestep, isfflx=cfg.isfflx,
+                    spp_pbl=cfg.spp_pbl,
+                    pattern_spp_pbl=(self.spp_patterns["pbl"][0]
+                                     if cfg.spp_pbl else None),
                 )
 
                 # :5508-5554.  These diagnostics become grid-cell values
@@ -3265,20 +3287,10 @@ class PhysicsDriver:
         return couple_ysu_tendencies(
             self.state if state is None else state, cfg, rates)
 
-    def _refuse_terrain_drag_on_tile(self) -> None:
-        if getattr(self.state, "_tile_buffer", False):
-            raise ValueError(
-                "topo_wind / gwd_opt reached a streamed tile: the terrain "
-                "drag's statistics are held for the resident domain's "
-                "columns and are not gathered per tile, so a tile would drag "
-                "with another column's terrain.  Run the domain resident "
-                "(no [tiles]).")
-
     def _apply_gwd(self, drag, cfg: RunConfig,
                    rates: Mapping[str, cp.ndarray],
                    atmosphere: Mapping[str, cp.ndarray] | None) -> None:
         """Add gwd_opt's drag to the PBL slot's A-grid momentum rates."""
-        self._refuse_terrain_drag_on_tile()
         if atmosphere is None:
             raise RuntimeError(
                 f"gwd_opt = {drag.gwd_opt} reached the PBL coupling seam "
@@ -3552,7 +3564,12 @@ class PhysicsDriver:
             precipitation=SurfacePrecipitationForcing.from_fields(f),
             dt=self.bldt_seconds, itimestep=itimestep,
             mosaic_lu=cfg.mosaic_lu, mosaic_soil=cfg.mosaic_soil,
-            flag_sm_adj=cfg.flag_sm_adj, spp_lsm=cfg.spp_lsm)
+            lakemodel=cfg.sf_lake_physics,
+            ruc_soilprop=cfg.ruc_soilprop,
+            flag_sm_adj=cfg.flag_sm_adj, spp_lsm=cfg.spp_lsm,
+            pattern_spp_lsm=(self.spp_patterns.get("lsm")
+                             if cfg.spp_lsm else None),
+            field_sf=f.get("field_sf"))
         for name, admitted in RUC_OPTION_IDENTITY.items():
             if int(getattr(cfg, name)) != int(admitted):
                 raise ValueError(
@@ -3777,7 +3794,6 @@ class PhysicsDriver:
         topo_kw = {}
         drag = self.terrain_drag
         if drag is not None and drag.topo_wind:
-            self._refuse_terrain_drag_on_tile()
             topo_kw = {"topo": (drag.ctopo, drag.ctopo2),
                        "u10_out": cp.empty_like(f["u10"]),
                        "v10_out": cp.empty_like(f["v10"])}
@@ -3874,23 +3890,29 @@ class PhysicsDriver:
         # already pinned the combo (bl_pbl_physics=5, mp_physics=28,
         # bldt=0), so the attribute reads cannot miss.
         qn_scalars = None
-        if cfg.bl_mynn_mixscalars == 1:
+        if cfg.bl_mynn_mixscalars == 1 or cfg.scalar_pblmix == 1:
             qn_scalars = {name: getattr(self.state, name)
                           for name in ("nc", "ni", "nwfa", "nifa")}
+        column_chunk = getattr(self.state, "_mynn_rank_column_chunk", None)
+        if column_chunk is None and getattr(self.state, "_tile_buffer", False):
+            column_chunk = resolve_mynn_tile_column_chunk(int(cfg.nz), walking=True)
         out = mynn_pbl_step(
             atmosphere, f, w=self.state.w, dx=cfg.dx,
             delt=self.bldt_seconds, itimestep=itimestep,
             mp_physics=cfg.mp_physics,
             qn_scalars=qn_scalars,
+            scalar_pblmix=cfg.scalar_pblmix,
+            spp_pbl=cfg.spp_pbl,
+            pattern_spp_pbl=(self.spp_patterns.get("pbl")
+                             if cfg.spp_pbl else None),
             # The domain state is what makes MYNN's working set a set of
             # priced scratch slots instead of ~46 kB of pool churn per
             # column per step; see gpuwm/core/mynn_pbl_scratch.py.
             state=self.state,
-            # A streamed tile buffer holds its own workspace and walks the
-            # tile width it is priced at; every other state the run's.
-            column_chunk=(resolve_mynn_tile_column_chunk(
-                int(cfg.nz), walking=True)
-                if getattr(self.state, "_tile_buffer", False) else None),
+            # Resident ranks bind their admitted width once. Reused streamed
+            # buffers keep their smaller workspace; other states use the
+            # run's resident policy.
+            column_chunk=column_chunk,
             closure=cfg.bl_mynn_closure,
             bl_mynn_cloudpdf=cfg.bl_mynn_cloudpdf,
             bl_mynn_mixlength=cfg.bl_mynn_mixlength,
@@ -3906,7 +3928,7 @@ class PhysicsDriver:
         validate_mynn_tendencies(out)
         self.pbl_tendencies = self._couple_pbl_slot(
             cfg, out, atmosphere=atmosphere)
-        if cfg.bl_mynn_mixscalars == 1:
+        if cfg.bl_mynn_mixscalars == 1 or cfg.scalar_pblmix == 1:
             # WRF couples RQN*BLTEN through the same calculate_phy_tend
             # multiply and add_a2a bounds as every other A-grid scalar
             # rate (module_physics_addtendc.F).  Held as plain-attribute
@@ -4859,11 +4881,39 @@ class PhysicsDriver:
         dz = cp.ascontiguousarray(z_interface[1:] - z_interface[:-1])
         return launch_bulk_richardson_zi(u, v, theta, dz_col=dz)
 
+    def bind_spp_patterns(self, patterns: Mapping[str, cp.ndarray]) -> None:
+        """Borrow one member's patterns after its stochastic timestep update.
+
+        Pattern spectra and restart state belong to the provider. The driver
+        retains array references only; disabled consumers allocate no arrays.
+        """
+        expected = {key for key, enabled in self._spp_flags.items() if enabled}
+        if set(patterns) != expected:
+            raise ValueError(
+                f"SPP pattern keys must match enabled consumers {sorted(expected)}; "
+                f"got {sorted(patterns)}")
+        device = self.state.u.device.id
+        for key, value in patterns.items():
+            if (not isinstance(value, cp.ndarray)
+                    or value.dtype != np.dtype("float32")
+                    or tuple(value.shape) != self._spp_shapes[key]):
+                raise ValueError(
+                    f"SPP {key} must be float32 with shape {self._spp_shapes[key]}")
+            if value.device.id != device:
+                raise ValueError(f"SPP {key} belongs to a different member device")
+        self.spp_patterns = dict(patterns)
+
     def compute(self, state: DomainState,
                 cfg: RunConfig) -> PhysicsTendencies:
         """Run due physics at time t and return the held RK3 tendencies."""
         if state is not self.state:
             raise ValueError("PhysicsDriver is attached to a different state")
+        for key, enabled in self._spp_flags.items():
+            if int(getattr(cfg, f"spp_{key}")) != enabled:
+                raise ValueError("SPP flags cannot change after physics initialization")
+            if enabled and key not in self.spp_patterns:
+                raise ValueError(
+                    f"spp_{key}=1 requires a member pattern before physics.compute")
         # Complete any exceptional in-flight expiry before constructing this
         # step.  Normal compute() calls finalize the mask immediately after
         # composing the prior/current RK target, so this is a cheap invariant
@@ -5053,6 +5103,11 @@ class PhysicsDriver:
                 # :4461-4481).
                 topo_save = (self.topo_shortwave.before_land()
                              if self.topo_shortwave is not None else None)
+                # WRF's lake call consumes the same accumulated rain as the
+                # LSM. The LSM clears its input, so retain it before dispatch.
+                lake_precipitation = (
+                    self.fields["rainbl"] + self._pending_rainbl
+                    if self.lake is not None else None)
                 getattr(self, land_method)(atmosphere, cfg, itimestep)
                 if int(cfg.sf_surface_physics) in \
                         LAND_SURFACE_SFCDIAGS_SCHEMES:
@@ -5063,6 +5118,10 @@ class PhysicsDriver:
                     # Noah, :3383-3423 Noah-MP).
                     self.urban_coupler.after_surface_diagnostics(
                         self.fields, atmosphere, cfg)
+                if self.lake is not None:
+                    self.lake.step(self.fields, atmosphere,
+                                   dt=self.bldt_seconds,
+                                   precipitation=lake_precipitation)
                 self.call_counts["noah"] += 1
                 if topo_save is not None:
                     self.topo_shortwave.after_land(topo_save)
@@ -5446,7 +5505,7 @@ def _attach_terrain_drag(state, cfg, fields, static):
             f"{options} on grid_id = {cfg.grid_id}: this initialization "
             "route hands the physics no static field set, so the sub-grid "
             "orographic statistics the terrain drag reads have nowhere to "
-            "come from.  The prepared single-domain forecast carries them "
+            "come from.  The prepared forecast carries them "
             "(gpuwm prep with the option set, then gpuwm sim prep).")
     shape = tuple(state.mup.shape)
     hgt = static.get("HGT_M") if hasattr(static, "get") else None
@@ -5456,8 +5515,8 @@ def _attach_terrain_drag(state, cfg, fields, static):
             f"handed to the physics is {None if hgt is None else np.shape(hgt)}"
             f" where this state's columns are {shape} (a streamed slab or a "
             "corridor), and the terrain drag reads its statistics column for "
-            "column, so it would drag the wrong columns.  Run the domain "
-            "resident (no [tiles]).")
+            "column, so it would drag the wrong columns.  Pass static fields "
+            "windowed to this state's columns.")
     return build_terrain_drag(
         topo_wind=int(cfg.topo_wind), gwd_opt=int(cfg.gwd_opt),
         static=static, ht=state.ht, xland=fields["xland"],
@@ -5477,7 +5536,10 @@ def initialize_physics(
         radiation_longitude=None,
         noahmp_start_time=None, noahmp_latitude=None,
         noahmp_longitude=None, cam_ozone=None,
-        frc_urb2d=None, terrain_drag_static=None) -> PhysicsDriver:
+        frc_urb2d=None, terrain_drag_static=None,
+        landusef=None, soilctop=None, lakemask=None,
+        lake_depth=None, lake_depth_flag=None, lake_iswater=None,
+        lake_mask_flag=None) -> PhysicsDriver:
     """Allocate and attach persistent physics state and scheme callables.
 
     An mp-only configuration also receives a driver: microphysics itself is
@@ -5721,9 +5783,11 @@ def initialize_physics(
         "tsk": _as_2d(tsk, shape, "tsk"),
         "pblh": _as_2d(pblh, shape, "pblh"),
         "mavail": _as_2d(mavail, shape, "mavail"),
-        "lakemask": (_as_2d(landuse.lakemask, shape, "lakemask")
-                     if landuse is not None else
-                     cp.zeros(shape, dtype=DTYPE)),
+        "lakemask": (_as_2d(lakemask, shape, "lakemask")
+                     if lakemask is not None else
+                     (_as_2d(landuse.lakemask, shape, "lakemask")
+                      if landuse is not None else
+                      cp.zeros(shape, dtype=DTYPE))),
         "ivgtyp": _as_2d(ivgtyp, shape, "ivgtyp", dtype=cp.int32),
         "isltyp": _as_2d(isltyp, shape, "isltyp", dtype=cp.int32),
         "vegfra": _as_2d(vegfra, shape, "vegfra"),
@@ -5740,6 +5804,21 @@ def initialize_physics(
         "snow": _as_2d(snow, shape, "snow"),
         "snowh": _as_2d(snow_depth, shape, "snow_depth"),
     }
+    if int(cfg.sf_surface_physics) == 3:
+        for switch, name, value in ((cfg.mosaic_lu, "landusef", landusef),
+                                    (cfg.mosaic_soil, "soilctop", soilctop)):
+            if not switch:
+                continue
+            if value is None:
+                raise ValueError(
+                    f"RUC mosaic needs {name.upper()} category fractions; "
+                    "using only the dominant category changes the surface fluxes")
+            fractions = cp.asarray(value, dtype=DTYPE)
+            if fractions.ndim != 3 or fractions.shape[1:] != shape:
+                raise ValueError(
+                    f"{name.upper()} must have shape (categories, {shape[0]}, "
+                    f"{shape[1]}), got {fractions.shape}")
+            f[name] = cp.ascontiguousarray(fractions)
     if int(cfg.sf_surface_physics) in (3, 4):
         for name in SURFACE_PRECIPITATION_FIELDS:
             f[name] = cp.zeros(shape, dtype=DTYPE)
@@ -5760,6 +5839,8 @@ def initialize_physics(
                           else liquid_moisture, shape, "liquid_moisture",
                           layers=n_soil)
     f["smcrel"] = cp.zeros((n_soil, *shape), dtype=DTYPE)
+    if cfg.spp_lsm:
+        f["field_sf"] = cp.zeros((n_soil, *shape), dtype=DTYPE)
 
     # Shared SFCLAY outputs / Noah inout fields are the same device arrays.
     sf_initial = {
@@ -6007,6 +6088,21 @@ def initialize_physics(
             dataset_identifier=landuse_dataset,
             seaice_albedo_default=cfg.seaice_albedo_default,
             num_soil_layers=n_soil)
+        # Fractions are immutable geography. Validate their values once,
+        # avoiding a full-grid device reduction at every surface call.
+        from gpuwm.core.ruc_mosaic import mosaic_fractions
+        for switch, name, maximum in (
+                (cfg.mosaic_lu, "landusef", len(ruc_params.vegetation.rows)),
+                (cfg.mosaic_soil, "soilctop", len(ruc_params.bundle.soil.rows))):
+            if switch:
+                f[name] = mosaic_fractions(f[name], shape, name, maximum,
+                                            arrays=cp)
+        if cfg.mosaic_lu:
+            required_categories = max(int(ruc_params.vegetation.scalars[key])
+                                      for key in ("CROP", "NATURAL"))
+            if f["landusef"].shape[0] < required_categories:
+                raise ValueError(
+                    "RUC LANDUSEF omits the crop/natural categories read by irrigation")
 
     if xice_threshold is not None and int(cfg.sf_surface_physics) != 4:
         raise ValueError(
@@ -6156,6 +6252,36 @@ def initialize_physics(
                           dzs=NOAH_LAYER_THICKNESS_M,
                           sf_urban_physics=int(
                               getattr(cfg, "sf_urban_physics", 0)))
+    if int(cfg.sf_lake_physics) == 1:
+        from gpuwm.core.lake import initialize_lake
+        if lake_iswater is None:
+            if ruc_params is not None:
+                lake_iswater = (ruc_params.iswater if ruc_params.iswater is not None
+                                else {"USGS-RUC": 16, "MODI-RUC": 17}[
+                                    ruc_params.vegetation.name])
+            elif noahmp_params is not None:
+                lake_iswater = int(noahmp_params.land_use.iswater)
+            else:
+                lake_iswater = {"USGS": 16, "MODIFIED_IGBP_MODIS_NOAH": 17}.get(
+                    landuse_dataset)
+                if lake_iswater is None:
+                    raise ValueError(
+                        "lake initialization needs the land-use table's ISWATER "
+                        "category to convert frozen lake cells")
+        if (lake_mask_flag is not None and int(lake_mask_flag) == 0
+                or lake_mask_flag is None and lakemask is None and landuse is None):
+            # lakeini's LAKEFLAG=0 branch: inland water and elevated ice
+            # become lakes. An explicit zero flag overrides a supplied mask.
+            f["lakemask"][...] = (
+                ((f["ivgtyp"] == int(lake_iswater))
+                 | (f["xice"] > DTYPE(0.5)))
+                & (state.ht >= DTYPE(cfg.lake_min_elev))).astype(DTYPE)
+        driver.lake = initialize_lake(
+            f, latitude=(noahmp_geometry.latitude_deg
+                         if noahmp_geometry is not None else radiation_latitude),
+            lake_depth=lake_depth, lake_depth_flag=lake_depth_flag,
+            use_lakedepth=cfg.use_lakedepth,
+            lakedepth_default=cfg.lakedepth_default, iswater=lake_iswater)
     if int(getattr(cfg, "sf_urban_physics", 0)) > 0:
         # urban_param_init + urban_var_init, after the LSM's own init and
         # on its initialized TSK/TSLB/TMN/SMOIS, exactly where

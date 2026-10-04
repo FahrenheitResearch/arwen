@@ -75,13 +75,15 @@ def verify_geog_source_evidence(receipt: dict[str, object]) -> None:
         raise ValueError(
             "root static receipt must bind GEOG source coverage and tile "
             "hashes together")
-    if set(coverage) != set(_GEOG_FIELDS):
+    geog_fields = (*_GEOG_FIELDS, *(
+        ("lake_depth",) if "LAKE_DEPTH" in receipt.get("array_sha256", {}) else ()))
+    if set(coverage) != set(geog_fields):
         raise ValueError(
             "root static GEOG source-coverage fields mismatch: expected "
-            f"{sorted(_GEOG_FIELDS)}, got {sorted(coverage)}")
+            f"{sorted(geog_fields)}, got {sorted(coverage)}")
 
     observed_paths: set[str] = set()
-    for field in _GEOG_FIELDS:
+    for field in geog_fields:
         evidence = coverage[field]
         if not isinstance(evidence, dict):
             raise ValueError(
@@ -232,10 +234,12 @@ def verify_hrrr_native_static(
         raise ValueError("root static receipt cache name mismatch")
 
     with np.load(cache_path, allow_pickle=False) as stored:
-        if set(stored.files) != _STATIC_ARRAY_FIELDS:
+        optional = {"LAKE_DEPTH"} & set(receipt.get("array_sha256", {}))
+        expected_fields = _STATIC_ARRAY_FIELDS | optional
+        if set(stored.files) != expected_fields:
             raise ValueError(
                 "root static cache inventory mismatch: expected "
-                f"{sorted(_STATIC_ARRAY_FIELDS)}, got {sorted(stored.files)}")
+                f"{sorted(expected_fields)}, got {sorted(stored.files)}")
         fields = {}
         for name in stored.files:
             value = np.asarray(stored[name])
@@ -246,7 +250,7 @@ def verify_hrrr_native_static(
     if any(not np.isfinite(value).all() for value in fields.values()):
         raise ValueError("root static cache contains non-finite values")
     mass_shape = (target.ny, target.nx)
-    for name in sorted(_MASS_2D_FIELDS):
+    for name in sorted(_MASS_2D_FIELDS | optional):
         if fields[name].shape != mass_shape:
             raise ValueError(f"root static field {name} shape mismatch")
     for name in sorted(_MONTHLY_FIELDS):

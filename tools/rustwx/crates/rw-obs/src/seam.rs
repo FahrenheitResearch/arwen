@@ -45,6 +45,9 @@ pub const UNITS_MM: &str = "mm";
 /// the producing side checks first so the refusal names the archive object.
 pub fn seam_bounds(quantity: &str) -> Option<(f64, f64)> {
     match quantity {
+        "temperature_2m" | "dewpoint_2m" => Some((150.0, 350.0)),
+        "wind_speed_10m" => Some((0.0, 150.0)),
+        "mslp" => Some((80000.0, 115000.0)),
         QUANTITY_COMPOSITE_REFLECTIVITY => Some((-40.0, 100.0)),
         QUANTITY_PRECIPITATION_ACCUMULATION => Some((0.0, 2000.0)),
         _ => None,
@@ -127,5 +130,7 @@ mod tests {
         assert_eq!(seam_bounds(QUANTITY_COMPOSITE_REFLECTIVITY), Some((-40.0, 100.0)));
         assert_eq!(seam_bounds(QUANTITY_PRECIPITATION_ACCUMULATION), Some((0.0, 2000.0)));
         assert_eq!(seam_bounds("brightness_temperature"), None);
+        assert_eq!(seam_bounds("temperature_2m"), Some((150.0, 350.0)));
+        assert_eq!(seam_bounds("wind_speed_10m"), Some((0.0, 150.0)));
     }
 }

@@ -375,6 +375,10 @@ def test_the_nine_layer_preflight_estimate_is_larger_end_to_end():
             len(RUC_FRACTIONAL_SEAICE_FIELDS)
             + len(SURFACE_PRECIPITATION_FIELDS) + 1
         ) * _NY * _NX)
+    from gpuwm.core.ruc_memory import ruc_runtime_memory_bytes
+    pools = ruc_runtime_memory_bytes(_NY * _NX, ruc_contract.NUM_SOIL_LAYERS)
+    expected_delta += sum(pools[name] for name in (
+        "driver_workspace", "sfctmp_workspace", "tables"))
     assert (ruc.category_bytes("physics") - noah.category_bytes("physics")
             == expected_delta)
     # Resident, because all of it is persistent physics state: it must land in
@@ -382,7 +386,7 @@ def test_the_nine_layer_preflight_estimate_is_larger_end_to_end():
     # that a later pass could reuse away.  On this hardware an understated
     # preflight is a correctness failure, not an estimate.
     assert ruc.resident_bytes - noah.resident_bytes == expected_delta
-    assert ruc.transient_bytes == noah.transient_bytes
+    assert ruc.transient_bytes - noah.transient_bytes == pools["sfctmp_outputs"]
 
 
 # ---------------------------------------------------------------------------

@@ -55,13 +55,16 @@ gpuwm sim prep --experiment-config experiment.toml \
 Replace `SOURCE` with the forcing source and include its required
 supplementary inputs, as for a run without terrain drag.
 
-The current routes support a prepared resident root domain and a separate
-downscale of saved history on its own geography. The downscale builds the
+The current routes support a prepared resident root domain, a root split
+across cards through `[devices]`, a streamed `[tiles]` root, and a separate
+downscale of saved history on its own geography. Each tile receives its
+static fields with the same halo and edge mapping as its initial state.
+Topographic wind curvature uses the neighboring domain terrain across
+stored row slabs. The downscale builds the
 requested statistics from WPS_GEOG and passes them to child physics.
 Parent-terrain downscales and children inside a running domain tree are
 refused because those initializers do not supply the required statistics.
-Streamed tiles are refused because the statistics are not
-gathered for each tile. `topo_wind` with BEP or BEP+BEM is refused because
+`topo_wind` with BEP or BEP+BEM is refused because
 that YSU arm does not contain the surface momentum term it would scale.
 
 The reproducible column authority is
@@ -69,3 +72,8 @@ The reproducible column authority is
 files are pinned by SHA-256. The comparison gates are
 `tests/test_terrain_drag_wrf471_parity.py`, and option/import/default
 identity gates are `tests/test_terrain_drag_config.py`.
+Static-field and halo delivery to device ranks is covered by
+`tests/test_terrain_drag_devices.py`; device decomposition comparisons are
+in `tests/test_terrain_drag_devices_gpu.py`. Rank delivery does not change
+the WRF-derived drag routines or add a new Fortran transcription. Their
+notices remain in `NOTICE` and `licenses/LICENSE-WRF-public-domain.txt`.

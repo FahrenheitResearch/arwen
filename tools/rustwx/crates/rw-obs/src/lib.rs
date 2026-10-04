@@ -16,6 +16,8 @@ pub mod bufr;
 pub mod bufr_obs;
 pub mod table;
 pub mod tar;
+pub mod precipitation;
+pub mod precipitation_hdf;
 
 use std::error::Error;
 

@@ -540,7 +540,10 @@ def geography_inventory(obj, names=None) -> dict:
     sides of the copy.
 
     Keys are ``setup/<name>`` for :data:`STATE_SETUP_ARRAYS` entries with a
-    horizontal extent and ``<scheme>/<attr>`` for the scheme lat/lon grids.
+    horizontal extent, ``<scheme>/<attr>`` for the scheme lat/lon grids,
+    and ``terrain_drag/*`` for drag statistics and topo coefficients.
+    The coefficients carry the domain's terrain laplacian; rebuilding them
+    from a tile's terrain would clamp the stencil at its internal edges.
     The purely vertical setup arrays (``c1h..c4f``, ``dnw``, ``rdnw``,
     ``dn``, ``rdn``, ``fnp``, ``fnm``, ``znu``, ``znw``, and ``thb/pb/alb/
     phb`` when ``terrain_opt == 0``) are deliberately ABSENT: they are pure
@@ -575,11 +578,24 @@ def geography_inventory(obj, names=None) -> dict:
                     and value.ndim >= 2):
                 out[f"setup/{name}"] = value
         phys = getattr(obj, "physics", None)
+        drag = getattr(phys, "terrain_drag", None)
+        if drag is not None:
+            for name in ("ctopo", "ctopo2"):
+                value = getattr(drag, name, None)
+                if isinstance(value, (cp.ndarray, np.ndarray)):
+                    out[f"terrain_drag/{name}"] = value
+            for name, value in (getattr(drag, "gwd", None) or {}).items():
+                out[f"terrain_drag/gwd/{name}"] = value
         for prefix, scheme in _scheme_geography_owners(phys):
             for field in _SCHEME_GEOGRAPHY_ATTRS:
                 value = getattr(scheme, field, None)
                 if isinstance(value, (cp.ndarray, np.ndarray)):
                     out[f"{prefix}/{field}"] = value
+        terrain_drag = getattr(phys, "terrain_drag", None)
+        # Both lanes' gathers name the same keys; an object without the
+        # TerrainDrag accessor is covered by the attribute walk above.
+        if callable(getattr(terrain_drag, "geography", None)):
+            out.update(terrain_drag.geography())
         out = {k: out[k] for k in sorted(out)}
     if names is not None:
         keep = set(names)
@@ -614,8 +630,10 @@ def geography_store(source, *, host: bool | None = None) -> dict:
 def _as_host(array) -> np.ndarray:
     import cupy as cp
 
-    return (cp.asnumpy(array) if isinstance(array, cp.ndarray)
-            else np.ascontiguousarray(array))
+    if isinstance(array, cp.ndarray):
+        with array.device:
+            return cp.asnumpy(array)
+    return np.ascontiguousarray(array)
 
 
 def geography_scalars(arrays) -> dict[str, bool]:
@@ -668,7 +686,7 @@ def _pin_scheme_geography(state) -> None:
 
 def assert_geography_gathered(state, driver=None, *, keys=None,
                               allow=()) -> None:
-    """Raise unless every LATITUDE-DERIVED array is one the gather reaches.
+    """Raise unless every scheme geography array is one the gather reaches.
 
     The rule this checks is deliberately narrow, and the reason is a
     measurement.  A tile buffer holds ~113 to 210 horizontally-shaped driver
@@ -682,7 +700,7 @@ def assert_geography_gathered(state, driver=None, *, keys=None,
 
     Geography is exactly what that proof CANNOT see, because its two probe
     states are built with the same lat/lon and so it never dirties them.  So
-    this checks the two things that are unambiguous:
+    this checks the things that are unambiguous:
 
     ``latitude_deg`` / ``longitude_deg`` on any scheme
         found by walking the driver, so a scheme added tomorrow is caught the
@@ -693,6 +711,10 @@ def assert_geography_gathered(state, driver=None, *, keys=None,
         installs, so a uniformity escape would make the check vacuous exactly
         when it matters.  The domain's grid varies; that is why it is being
         gathered.
+
+    Terrain drag coefficients and orographic statistics
+        must be gathered even when neutral initialization makes every value
+        equal. A missing gather would silently disable drag on the tile.
 
     ``(ny*nx, ...)`` -- horizontal axes FLATTENED into a leading column index
         the transport windows trailing axes and cannot touch this layout.
@@ -728,6 +750,11 @@ def assert_geography_gathered(state, driver=None, *, keys=None,
                 return
         bad.append((path, tuple(int(s) for s in array.shape),
                     str(array.dtype), family))
+
+    terrain_drag = getattr(driver, "terrain_drag", None)
+    if callable(getattr(terrain_drag, "geography", None)):
+        for name, array in terrain_drag.geography().items():
+            note(array, name, "terrain-drag-static")
 
     def walk(obj, path, depth) -> None:
         if depth > 4 or id(obj) in seen:
@@ -783,6 +810,12 @@ def assert_geography_gathered(state, driver=None, *, keys=None,
                 continue
             walk(value, f"{path}.{key}", depth + 1)
 
+    # Drag statistics and the already-derived topo coefficients are geography,
+    # even though their trailing horizontal axes are directly gatherable.
+    # Missing one leaves a buffer's neutral fill in real forecast columns.
+    for key, array in geography_inventory(state).items():
+        if key.startswith("terrain_drag/"):
+            note(array, key, "terrain drag")
     walk(driver, "driver", 0)
     if not bad:
         return
@@ -1443,6 +1476,10 @@ class TiledRun:
                  on_sweep=None) -> None:
         import cupy as cp
 
+        # Every tile buffer and stream belongs to the construction card.
+        # Later store reads may arrive from a thread still on card 0.
+        self._device_id = int(cp.cuda.Device().id)
+
         from gpuwm.core.dycore import (step, begin_wrf_cfl_domain_step,
             set_wrf_cfl_tile_window, finish_wrf_cfl_tile,
             finish_wrf_cfl_domain_step)
@@ -1933,6 +1970,10 @@ class TiledRun:
             nonlocal gathered, saved_ring, patched_ring
             nonlocal geo_gathered, geo_gathers, hook_calls
             b = itile % nbuffers
+            if occupant[b] != itile:
+                lake = getattr(getattr(tiles[b], "physics", None), "lake", None)
+                if lake is not None:
+                    lake.invalidate_columns()
             # The gather's stream: the buffer's own single stream under the
             # legacy loop, the buffer's copy-in stream under overlap.  The
             # geography gather, the boundary bind and the carrier gather all
@@ -2097,11 +2138,17 @@ class TiledRun:
             # of having it averaged away.
             sweep_seconds: list[float] = []
             sweep_clocks: list[dict] = []
+            stochastic = getattr(self, "_ensemble_stochastic_lease", None)
+            execution_graphs = None if stochastic is not None else graph_steppers
+            if stochastic is not None and graph_steppers is not None:
+                self._ensemble_stochastic_graph_fallback = "ordinary window step preserves the live full-domain stochastic pattern"
             for istep in range(nsteps):
                 sweep_sequence += 1
                 _t_sweep = _time.perf_counter()
+                if stochastic is not None:
+                    stochastic.begin(cfg, windows=len(specs))
                 begin_wrf_cfl_domain_step(cfg)
-                if graph_steppers is not None:
+                if execution_graphs is not None:
                     # Under graph_reuse="sweep" the sweep index IS the cache
                     # key's clock component: every tile of one sweep steps
                     # from the same domain clock and so issues the same
@@ -2118,7 +2165,7 @@ class TiledRun:
                     #
                     # Monotonic across calls: repeated sweep(1) must not
                     # reuse a graph containing the preceding absolute time.
-                    for gstepper in graph_steppers:
+                    for gstepper in execution_graphs:
                         gstepper.set_sweep(sweep_sequence)
                 if health is not None and health.enabled:
                     health.begin()
@@ -2152,6 +2199,8 @@ class TiledRun:
                             stream.wait_event(ev_save[itile])
                         if chain and compute_done is not None:
                             stream.wait_event(compute_done)
+                        if stochastic is not None:
+                            stochastic.bind_window(tiles[b], tile_cfg, tspec, itile, stream=stream)
                         set_wrf_cfl_tile_window(cfg.grid_id, tspec)
                         if timeline:
                             began = cp.cuda.Event()
@@ -2207,7 +2256,7 @@ class TiledRun:
                         # ``reflectivity_run_kwargs`` puts ``refl_10cm_due``
                         # in it so every tile writes the ``refl_10cm`` slot
                         # its store carries.
-                        if graph_steppers is None:
+                        if execution_graphs is None:
                             step(tiles[b], tile_cfg, **step_kwargs)
                         else:
                             # REFUSED rather than dropped.  ``GraphStepper
@@ -2231,7 +2280,7 @@ class TiledRun:
                                     "dropped for every tile.  Run this sweep "
                                     "without graph capture, or capture a "
                                     "step that takes them.")
-                            graph_steppers[b].run(tiles[b], stream)
+                            execution_graphs[b].run(tiles[b], stream)
                         finish_wrf_cfl_tile(cfg.grid_id)
                         if timeline:
                             ended = cp.cuda.Event()
@@ -2306,6 +2355,10 @@ class TiledRun:
                     if progress is not None:
                         progress(istep, itile, tspec)
                 finish_wrf_cfl_domain_step(cfg.grid_id)
+                if stochastic is not None:
+                    for stream in streams:
+                        stream.synchronize()
+                    stochastic.finish()
                 if defer_seam:
                     # THE DEFERRED SEAM: nothing here waits.  The last
                     # tiles' scatters drain UNDER the next step's gathers
@@ -2326,14 +2379,14 @@ class TiledRun:
                         for stream in copy_out:
                             stream.synchronize()
                     cp.cuda.runtime.deviceSynchronize()
-                if graph_steppers is not None:
+                if execution_graphs is not None:
                     # The sweep's synchronisation is the point the deferred
                     # health readback was deferred TO, and it is already paid
                     # for.  Drain every sweep, not at the end of the run: a
                     # ledger that is recorded into and drained late turns a
                     # non-finite field into a much longer wrong forecast, and
                     # one that is never drained turns it into no error at all.
-                    for gstepper in graph_steppers:
+                    for gstepper in execution_graphs:
                         gstepper.drain()
                 if health is not None and health.enabled:
                     health_report = health.finish()
@@ -2440,6 +2493,9 @@ class TiledRun:
                     sweep_seconds=list(sweep_seconds),
                     sweep_clocks=list(sweep_clocks),
                 )
+                if stochastic is not None:
+                    report["ensemble_stochastic"] = stochastic.receipt()
+                    report["stochastic_graph_fallback"] = getattr(self, "_ensemble_stochastic_graph_fallback", None)
                 if ring is not None:
                     store_bytes = sum(int(a.nbytes) for a in home.values())
                     report.update(
@@ -2452,8 +2508,8 @@ class TiledRun:
                             len(p) for p in ring.plan.patches),
                         ring_report=_rings.ring_report(ring.plan),
                     )
-                if graph_steppers is not None:
-                    per = [g.report() for g in graph_steppers]
+                if execution_graphs is not None:
+                    per = [g.report() for g in execution_graphs]
                     report.update(
                         graph=dict(
                             reuse=graph_reuse, key=graph_key,
@@ -2636,11 +2692,12 @@ class TiledRun:
             return
         import cupy as cp
 
-        for group in (self._streams, self._copy_in, self._copy_out):
-            if group is not None:
-                for stream in group:
-                    stream.synchronize()
-        cp.cuda.runtime.deviceSynchronize()
+        with cp.cuda.Device(self._device_id):
+            for group in (self._streams, self._copy_in, self._copy_out):
+                if group is not None:
+                    for stream in group:
+                        stream.synchronize()
+            cp.cuda.runtime.deviceSynchronize()
         self._pending = False
 
     def sync_compute(self) -> None:
@@ -2655,8 +2712,11 @@ class TiledRun:
         self._require_open()
         if not self._pending:
             return
-        for stream in self._streams:
-            stream.synchronize()
+        import cupy as cp
+
+        with cp.cuda.Device(self._device_id):
+            for stream in self._streams:
+                stream.synchronize()
 
     def reseed_clock(self, scalars) -> None:
         """Replace the sweep's cached domain clock (a restart restore did).
@@ -2715,16 +2775,19 @@ class TiledRun:
                     "clamped windows overlap along a shared domain edge by "
                     "2*halo.  See tilestream.receipts for what a streamed "
                     "domain can and cannot report.")
-        if live_config is not None and live_config != self.cfg:
-            # A previous deferred sweep may still reference its old scalar
-            # kernel arguments and graph workspaces. Finish it before rebinding.
-            self.drain()
-            self._set_live_config(live_config)
-        try:
-            self._sweep(nsteps, step_kwargs, report, progress, physics_control)
-        finally:
-            from gpuwm.core.dycore import finish_wrf_cfl_domain_step
-            finish_wrf_cfl_domain_step(self.cfg.grid_id, commit=False)
+        import cupy as cp
+
+        with cp.cuda.Device(self._device_id):
+            if live_config is not None and live_config != self.cfg:
+                # A deferred sweep can still read old kernel arguments and
+                # graph workspaces. Finish it before rebinding.
+                self.drain()
+                self._set_live_config(live_config)
+            try:
+                self._sweep(nsteps, step_kwargs, report, progress, physics_control)
+            finally:
+                from gpuwm.core.dycore import finish_wrf_cfl_domain_step
+                finish_wrf_cfl_domain_step(self.cfg.grid_id, commit=False)
 
 
 def run_tiled(store, cfg, tile_nx, tile_ny, halo: int = 16,

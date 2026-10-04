@@ -189,9 +189,41 @@ def test_pin_table_binds_the_static_builders_dataset_list():
     assert (geog_assets.datasets_required_by(geog_assets.GEOG_CONSUMER_WRF)
             == GEOG_DATASETS)
     for archive in geog_assets.GEOG_ARCHIVES:
-        assert archive.required_by, f"{archive.dataset} serves no door"
-        unknown = set(archive.required_by) - set(geog_assets.GEOG_CONSUMERS)
+        assert archive.required_by or archive.optional_for, f"{archive.dataset} serves no door"
+        unknown = set(archive.required_by + archive.optional_for) - set(geog_assets.GEOG_CONSUMERS)
         assert not unknown, f"{archive.dataset}: unknown consumer {unknown}"
+
+
+def test_lake_depth_is_explicitly_fetchable_without_changing_mandatory_wrf_data():
+    archive = geog_assets.archive_for("lake_depth")
+    assert archive.filename == "lake_depth.tar.bz2"
+    assert archive.archive_bytes == 2425674
+    assert archive.archive_sha256 == "7f016173f4999e67d9757bddb9e80f1b1f3794bfe820fd78b215eb599d59fd76"
+    assert archive.extracted_bytes == 1884949370
+    assert archive.required_by == ()
+    assert archive.optional_for == (geog_assets.GEOG_CONSUMER_WRF,)
+    assert archive.available_sources == ("ncar",)
+    assert not archive.in_mandatory_bundle
+    assert parse_datasets("lake_depth") == ("lake_depth",)
+    assert "lake_depth" not in parse_datasets("wrf")
+    assert archive_url(archive.filename, "ncar") == (
+        "https://www2.mmm.ucar.edu/wrf/src/wps_files/lake_depth.tar.bz2")
+
+
+def test_uncopied_optional_archive_uses_upstream_and_records_actual_source(tmp_path, monkeypatch):
+    from dataclasses import replace
+    payload = _build_archive(("lake_depth",))
+    pin = replace(_pin("lake_depth", payload), required_by=(),
+                  optional_for=(geog_assets.GEOG_CONSUMER_WRF,), available_sources=("ncar",))
+    monkeypatch.setattr(geog_assets, "GEOG_ARCHIVES", (pin,))
+    transport = _fake_transport({pin.filename: payload})
+    assert fetch_geog(root=tmp_path, datasets=("lake_depth",), source="hf",
+                      urlopen_fn=transport, progress=lambda message: None) == 1
+    assert transport.calls[0].full_url.startswith(geog_assets.NCAR_BASE_URL)
+    manifest = json.loads((tmp_path / GEOG_FETCH_MANIFEST_NAME).read_text())
+    record = manifest["archives"][pin.filename]
+    assert record["source"] == "ncar"
+    assert record["url"].startswith(geog_assets.NCAR_BASE_URL)
 
 
 def test_the_mesh_column_carries_every_dataset_the_mesh_door_opens():
@@ -323,7 +355,9 @@ def test_a_consumer_name_selects_that_doors_datasets():
     assert parse_datasets("mesh") == geog_assets.datasets_required_by(
         geog_assets.GEOG_CONSUMER_MESH)
     # and it composes with explicit names, in canonical order
-    assert parse_datasets("wrf,soilgrids") == geog_assets.geog_datasets()
+    assert parse_datasets("wrf,soilgrids") == tuple(
+        archive.dataset for archive in geog_assets.GEOG_ARCHIVES if archive.required_by)
+    assert parse_datasets("wrf,soilgrids,lake_depth") == geog_assets.geog_datasets()
 
 
 def test_resolve_source_defaults_and_bundle_rules():
@@ -1289,6 +1323,8 @@ def test_live_mirror_serves_the_pinned_bytes_sizes():
     from urllib.request import Request, urlopen
 
     for archive in geog_assets.GEOG_ARCHIVES:
+        if "hf" not in archive.available_sources:
+            continue
         url = archive_url(archive.filename, "hf")
         request = Request(url, method="HEAD",
                           headers={"User-Agent": "gpuwm-tests/1"})

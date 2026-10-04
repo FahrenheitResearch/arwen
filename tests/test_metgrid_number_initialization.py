@@ -179,7 +179,8 @@ def test_native_cpu_initialization_retains_numbers_without_changing_thermodynami
     snapshot, cfg, coord, terrain, orography = _case(mp)
     kw = dict(source_orography=orography, p_top=5000., preprocess_backend="cpu",
               state_backend="preprocess", analyzed_species=())
-    absent = initialize_real(snapshot, cfg, coord, terrain, **kw)
+    absent = initialize_real(snapshot, cfg, coord, terrain,
+                             analyzed_number_fields=(), **kw)
     supplied = initialize_real(snapshot, cfg, coord, terrain,
                                analyzed_number_fields=METGRID_NUMBER_FIELDS, **kw)
     receipt = supplied.hydrometeor_initialization["number_moments"]

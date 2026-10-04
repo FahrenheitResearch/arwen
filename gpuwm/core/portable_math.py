@@ -36,12 +36,14 @@ import sys
 import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass, replace
 from typing import Final
 
 import numpy as np
 
 __all__ = ["IMPLEMENTATION", "FALLBACK_IMPLEMENTATION", "implementation",
-           "worker_limit", "exp", "log", "log1p", "log10", "sin", "cos",
+           "worker_limit", "cpu_bridge_scope", "current_cpu_bridge_binding",
+           "run_with_cpu_bridge_binding", "exp", "log", "log1p", "log10", "sin", "cos",
            "tan", "arcsin", "arccos", "arctan", "arctan2", "power"]
 
 #: The implementation name a receipt records for the library route.
@@ -67,11 +69,98 @@ _library = None
 _resolved = False
 _absent_reason: str | None = None
 _warned = False
+_scoped_warned = set()
+
+
+@dataclass(frozen=True)
+class _CpuBridgeBinding:
+    path: object
+    library: object
+    absent_reason: str | None
+    publish_selection: bool = False
+    worker_cap: int | None = None
+
+
+_cpu_bridge_binding = ContextVar("portable_math_cpu_bridge_binding", default=None)
+
+
+def _configure_candidate(candidate, path):
+    missing = [name for name in _ENTRIES + ("gpuwm_portable_math_version",)
+               if not hasattr(candidate, name)]
+    if missing:
+        return None, (f"the CPU preprocessing library at {path} predates the "
+                      "portable math entries (" + ", ".join(missing) + ")")
+    candidate.gpuwm_portable_math_version.argtypes = []
+    candidate.gpuwm_portable_math_version.restype = ctypes.c_uint32
+    version = int(candidate.gpuwm_portable_math_version())
+    if version != PORTABLE_MATH_VERSION:
+        return None, (f"the CPU preprocessing library at {path} carries "
+                      f"portable math generation {version}, this package reads {PORTABLE_MATH_VERSION}")
+    pointer, size, code = ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint32
+    for name in ("gpuwm_portable_unary_f64", "gpuwm_portable_unary_f32"):
+        entry = getattr(candidate, name)
+        entry.argtypes = [code, pointer, pointer, size, size]
+        entry.restype = ctypes.c_int32
+    for name in ("gpuwm_portable_binary_f64", "gpuwm_portable_binary_f32"):
+        entry = getattr(candidate, name)
+        entry.argtypes = [code, pointer, size, pointer, size, pointer, size, size]
+        entry.restype = ctypes.c_int32
+    return candidate, None
+
+
+@contextmanager
+def cpu_bridge_scope(path, *, publish_selection=False, worker_cap=None):
+    """Use one selected preparation library without changing the implicit resolver.
+
+    The binding belongs to this call context. Concurrent preparations can choose
+    different libraries, and a private worker can explicitly carry this binding
+    without copying model, source or output contexts. None retains the ordinary
+    implicit resolution and does not load a library.
+    """
+    if path is None:
+        yield
+        return
+    if worker_cap is not None:
+        worker_cap = _positive_workers(worker_cap)
+    from gpuwm.ingest.cpu_backend import cpu_bridge_scope as native_bridge_scope, resolve_cpu_bridge
+    resolved = resolve_cpu_bridge(path)
+    library, reason = _configure_candidate(ctypes.CDLL(str(resolved)), resolved)
+    parent = _cpu_bridge_binding.get()
+    publish = bool(publish_selection or (parent is not None and parent.path == resolved and parent.publish_selection))
+    if parent is not None and parent.worker_cap is not None:
+        worker_cap = parent.worker_cap if worker_cap is None else min(worker_cap, parent.worker_cap)
+    with native_bridge_scope(resolved, worker_cap=worker_cap):
+        token = _cpu_bridge_binding.set(_CpuBridgeBinding(resolved, library, reason, publish, worker_cap))
+        try:
+            yield
+        finally:
+            _cpu_bridge_binding.reset(token)
+
+
+def current_cpu_bridge_binding():
+    return _cpu_bridge_binding.get()
+
+
+def run_with_cpu_bridge_binding(binding, function, *args, **kwargs):
+    """Carry only a selected math library into one private preparation worker."""
+    from gpuwm.ingest.cpu_backend import cpu_bridge_scope as native_bridge_scope
+    if binding is not None:
+        binding = replace(binding, worker_cap=1)
+    with native_bridge_scope(None if binding is None else binding.path,
+                             worker_cap=None if binding is None else binding.worker_cap):
+        token = _cpu_bridge_binding.set(binding)
+        try:
+            return function(*args, **kwargs)
+        finally:
+            _cpu_bridge_binding.reset(token)
 
 
 def _load():
     """The configured library, or None with the reason kept for the warning."""
     global _library, _resolved, _absent_reason
+    binding = _cpu_bridge_binding.get()
+    if binding is not None:
+        return binding.library
     if _resolved:
         return _library
     with _lock:
@@ -93,37 +182,7 @@ def _load():
                 "the CPU preprocessing library is not available ("
                 + str(error).splitlines()[0] + ")")
         else:
-            missing = [name for name in
-                       _ENTRIES + ("gpuwm_portable_math_version",)
-                       if not hasattr(candidate, name)]
-            if missing:
-                _absent_reason = (
-                    f"the CPU preprocessing library at {path} predates the "
-                    "portable math entries (" + ", ".join(missing) + ")")
-            else:
-                candidate.gpuwm_portable_math_version.argtypes = []
-                candidate.gpuwm_portable_math_version.restype = ctypes.c_uint32
-                version = int(candidate.gpuwm_portable_math_version())
-                if version != PORTABLE_MATH_VERSION:
-                    _absent_reason = (
-                        f"the CPU preprocessing library at {path} carries "
-                        f"portable math generation {version}, this package "
-                        f"reads {PORTABLE_MATH_VERSION}")
-                else:
-                    pointer, size = ctypes.c_void_p, ctypes.c_size_t
-                    code = ctypes.c_uint32
-                    for name in ("gpuwm_portable_unary_f64",
-                                 "gpuwm_portable_unary_f32"):
-                        entry = getattr(candidate, name)
-                        entry.argtypes = [code, pointer, pointer, size, size]
-                        entry.restype = ctypes.c_int32
-                    for name in ("gpuwm_portable_binary_f64",
-                                 "gpuwm_portable_binary_f32"):
-                        entry = getattr(candidate, name)
-                        entry.argtypes = [code, pointer, size, pointer, size,
-                                          pointer, size, size]
-                        entry.restype = ctypes.c_int32
-                    library = candidate
+            library, _absent_reason = _configure_candidate(candidate, path)
         _library = library
         _resolved = True
         return _library
@@ -136,11 +195,20 @@ def implementation() -> str:
 
 def _warn_fallback() -> None:
     global _warned
-    if _warned:
-        return
-    _warned = True
+    binding = _cpu_bridge_binding.get()
+    if binding is None:
+        if _warned:
+            return
+        _warned = True
+        reason = _absent_reason
+    else:
+        with _lock:
+            if binding.path in _scoped_warned:
+                return
+            _scoped_warned.add(binding.path)
+        reason = binding.absent_reason
     sys.stderr.write(
-        "[portable-math] WORKAROUND: " + str(_absent_reason) + "; the host "
+        "[portable-math] WORKAROUND: " + str(reason) + "; the host "
         "preparation's exp, log, pow and trigonometric functions take the "
         "C library through math.* one element at a time, so the prepared "
         "state's last bits follow this host.  Build tools/grib1_bridge or "
@@ -175,17 +243,19 @@ def worker_limit(workers: int):
 
 def _workers(workers: int | None) -> int:
     if workers is not None:
-        return _positive_workers(workers)
-    limit = _worker_limit.get()
-    if limit is not None:
-        return limit
-    # A call from a worker thread belongs to a caller that already split
-    # the work over threads; it runs on that thread alone.
-    if threading.current_thread() is not threading.main_thread():
-        return 1
-    from gpuwm.ingest.cpu_backend import automatic_workers
-
-    return automatic_workers()
+        value = _positive_workers(workers)
+    else:
+        limit = _worker_limit.get()
+        if limit is not None:
+            value = limit
+        # A private worker belongs to a caller that already split the work.
+        elif threading.current_thread() is not threading.main_thread():
+            value = 1
+        else:
+            from gpuwm.ingest.cpu_backend import automatic_workers
+            value = automatic_workers()
+    binding = _cpu_bridge_binding.get()
+    return value if binding is None or binding.worker_cap is None else min(value, binding.worker_cap)
 
 
 def _is_single(*operands) -> bool:

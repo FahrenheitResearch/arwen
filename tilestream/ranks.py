@@ -43,7 +43,8 @@ class RankedRun(multigpu.MultiGPUDomain):
     def __init__(self, store, cfg, *, options, scalars, geography, template,
                  clock=None, seam="zeros", boundaries=None,
                  check_geography=True, step_mode="threads", halo=None,
-                 nest_hook=None, _unsafe_short_halo=False):
+                 nest_hook=None, snapshot_limits=None, mynn_column_chunks=None,
+                 _unsafe_short_halo=False):
         from gpuwm.core.devices import validate_ranked_physics
         validate_ranked_physics(cfg)
         import cupy as cp
@@ -57,6 +58,26 @@ class RankedRun(multigpu.MultiGPUDomain):
         self.nz, self.ny, self.nx = int(cfg.nz), int(cfg.ny), int(cfg.nx)
         self.devices = list(options.device_ids())
         self.ngpu = self.nbuffers = len(self.devices)
+        from gpuwm.core.devices_memory import FRAME_SNAPSHOT_LIMIT_BYTES
+        self._snapshot_limit = FRAME_SNAPSHOT_LIMIT_BYTES
+        if snapshot_limits is None:
+            snapshot_limits = [self._snapshot_limit] * self.ngpu
+        if (len(snapshot_limits) != self.ngpu
+                or any(isinstance(value, bool) or not isinstance(value, int)
+                       or value < 0 for value in snapshot_limits)):
+            raise RankedRunError(
+                "frame snapshot limits must give one non-negative byte count "
+                "per rank; otherwise output allocation could exceed admission")
+        self._snapshot_limits = tuple(snapshot_limits)
+        if mynn_column_chunks is None:
+            mynn_column_chunks = (None,) * self.ngpu
+        if (len(mynn_column_chunks) != self.ngpu
+                or any(value is not None and (type(value) is not int or value < 1)
+                       for value in mynn_column_chunks)):
+            raise RankedRunError(
+                "MYNN widths must give one positive column count or None per "
+                "rank; otherwise scratch allocation could differ from admission")
+        self._mynn_column_chunks = list(mynn_column_chunks)
         self.grid = options.resolved_grid(self.nx, self.ny)
         self.periodic_x, self.periodic_y = streaming._periodic_axes(cfg)
         self.periodic = self.periodic_x and self.periodic_y
@@ -74,6 +95,10 @@ class RankedRun(multigpu.MultiGPUDomain):
                                       nest_forcing=nest_hook is not None)
         self.seams = multigpu.seam_plan(self.specs, self.halo)
         self.boundaries = boundaries
+        self._boundary_clock = clock
+        # The caller owns source waits and clock changes. Resolve the first
+        # interval before a rank constructor can wrap those exceptions.
+        self._require_boundary_interval(float(scalars.get("elapsed_seconds", 0.0)))
         self.transport = options.transport
         available = cp.cuda.runtime.getDeviceCount()
         if any(d < 0 or d >= available for d in self.devices):
@@ -115,6 +140,14 @@ class RankedRun(multigpu.MultiGPUDomain):
                         template, cfg, tables0=None if tables is None else tables[rank])
                     tile = factory(self.sub_cfgs[rank])
                     self.tiles.append(tile)
+                    if int(cfg.bl_pbl_physics) == 5:
+                        from gpuwm.core.mynn_pbl_scratch import (
+                            bind_mynn_rank_chunk, resolve_mynn_tile_column_chunk)
+                        chunk = self._mynn_column_chunks[rank]
+                        if chunk is None:
+                            chunk = resolve_mynn_tile_column_chunk(int(cfg.nz))
+                        self._mynn_column_chunks[rank] = bind_mynn_rank_chunk(
+                            tile, self.sub_cfgs[rank], chunk)
                     compute = cp.cuda.Stream(non_blocking=True)
                     self.compute_streams.append(compute)
                     self.copy_streams.append(cp.cuda.Stream(non_blocking=True))
@@ -182,8 +215,14 @@ class RankedRun(multigpu.MultiGPUDomain):
         self._frame_streams = None
         self._frame_snapshots = [{} for _ in self.devices]
         self._snapshot_done = [None for _ in self.devices]
-        from gpuwm.core.devices_memory import FRAME_SNAPSHOT_LIMIT_BYTES
+        from gpuwm.core.devices_memory import (FRAME_SNAPSHOT_LIMIT_BYTES,
+                                               frame_snapshot_budget)
         self._snapshot_limit = FRAME_SNAPSHOT_LIMIT_BYTES
+        # Admission and allocation use the same whole-rank policy.  An
+        # oversized carrier inventory takes direct DMA even when a frame
+        # requests a small subset, so admission may safely price no snapshot.
+        self._snapshot_budgets = [frame_snapshot_budget(cfg)
+                                  for cfg in self.sub_cfgs]
         self._store_guards = []
         self.output_report = dict(full_drains=0, full_drain_seconds=0.0,
                                   full_gathers=0, frame_downloads=0,
@@ -236,6 +275,7 @@ class RankedRun(multigpu.MultiGPUDomain):
     def devices_report(self):
         return dict(ranks=self.ngpu, grid=list(self.grid), devices=list(self.devices),
                     halo=self.halo, rank_shapes=[[s.cny, s.cnx] for s in self.specs],
+                    mynn_column_chunks=list(self._mynn_column_chunks),
                     seam_bytes_per_exchange=self._seam_bytes,
                     transfers_per_exchange=self._transfers_per_exchange,
                     transport=self.transport_report())
@@ -252,6 +292,20 @@ class RankedRun(multigpu.MultiGPUDomain):
             else:
                 self._done.put((rank, None))
 
+    def _require_boundary_interval(self, elapsed):
+        """Seal the current forcing interval before dispatching any rank.
+
+        Later intervals stay lazy. A source failure or a clock change must
+        reach the forecast controller unchanged, before any rank steps, so
+        it can checkpoint or retry the sealed preparation as appropriate.
+        """
+        boundaries = self.boundaries
+        if (boundaries is not None
+                and getattr(boundaries.intervals, "bounds", None) is not None):
+            clock = self._boundary_clock
+            boundaries.interval_at(float(elapsed if clock is None
+                                         else clock.elapsed_seconds))
+
     def _step_rank(self, rank, kwargs, control):
         import cupy as cp
         from gpuwm.core import dycore
@@ -263,6 +317,10 @@ class RankedRun(multigpu.MultiGPUDomain):
                 self._nest_attached[rank] = True
             if control is not None:
                 control.apply(tile)
+            stochastic = getattr(self, "_ensemble_stochastic_lease", None)
+            if stochastic is not None:
+                stochastic.bind_window(tile, self.sub_cfgs[rank], self.specs[rank], rank,
+                                       stream=self.compute_streams[rank])
             dycore.set_wrf_cfl_tile_window(self.cfg.grid_id, self.specs[rank])
             dycore.step(tile, self.sub_cfgs[rank], **kwargs)
             dycore.finish_wrf_cfl_tile(self.cfg.grid_id)
@@ -393,9 +451,19 @@ class RankedRun(multigpu.MultiGPUDomain):
             # downloads of the same generation write other members only.
             self._guard_store()
             self._guarded_generation = self._generation
-        # Downloads that have landed need no further wait from anyone.
-        self._downloads = [d for d in self._downloads
-                           if not all(event.done for _dev, event in d["events"])]
+        # Event queries need the recording card current just like waits.
+        # A caller can still be on card 0 while every rank uses other cards.
+        pending = []
+        for download in self._downloads:
+            complete = True
+            for dev, event in download["events"]:
+                with cp.cuda.Device(dev):
+                    if not event.done:
+                        complete = False
+                        break
+            if not complete:
+                pending.append(download)
+        self._downloads = pending
         if self._frame_streams is None:
             self._frame_streams = []
             for dev in self.devices:
@@ -424,7 +492,9 @@ class RankedRun(multigpu.MultiGPUDomain):
                         "snapshot copy would read different cells than the frame")
                 needed = sum(array.nbytes for array in snapshot.values()) + sum(
                     array.nbytes for name, array in source.items() if name not in snapshot)
-                buffered = needed <= self._snapshot_limit
+                limit = min(self._snapshot_limit, self._snapshot_limits[rank],
+                            self._snapshot_budgets[rank])
+                buffered = 0 < needed <= limit
                 if buffered:
                     with compute:
                         for name, array in source.items():
@@ -452,8 +522,8 @@ class RankedRun(multigpu.MultiGPUDomain):
                 done = cp.cuda.Event(disable_timing=True)
                 done.record(stream)
                 if not buffered:
-                    # Large frames keep the bounded-memory road. Their DMA
-                    # reads live arrays, so the next kernel must wait.
+                    # Ineligible ranks and oversized requests use direct
+                    # DMA. It reads live arrays, so the next kernel must wait.
                     compute.wait_event(done)
                     self.output_report["fallback_downloads"] += 1
                 self._snapshot_done[rank] = done
@@ -636,7 +706,11 @@ class RankedRun(multigpu.MultiGPUDomain):
         timing = report is not None and bool(report.get("timing", False))
         step_seconds = exchange_seconds = 0.0
         steps = []
+        stochastic = getattr(self, "_ensemble_stochastic_lease", None)
         for index in range(int(nsteps)):
+            self._require_boundary_interval(self._clock.get("elapsed_seconds", 0.0))
+            if stochastic is not None:
+                stochastic.begin(self.cfg, windows=len(self.tiles))
             dycore.begin_wrf_cfl_domain_step(self.cfg, devices=self.devices)
             try:
                 if timing:
@@ -660,6 +734,9 @@ class RankedRun(multigpu.MultiGPUDomain):
                             self._drain_after_error()
                             raise RankedRunError(f"rank {rank} card {self.devices[rank]} failed: {exc}") from exc
                 dycore.finish_wrf_cfl_domain_step(self.cfg.grid_id)
+                if stochastic is not None:
+                    self.sync_all()
+                    stochastic.finish()
                 if timing:
                     self.sync_all()
                     middle = perf_counter()
@@ -683,6 +760,8 @@ class RankedRun(multigpu.MultiGPUDomain):
         if report is not None:
             report.update(self.devices_report(), steps=steps, dt=float(self.cfg.dt),
                           time_step_sound=int(self.cfg.time_step_sound))
+            if stochastic is not None:
+                report["ensemble_stochastic"] = stochastic.receipt()
             if timing:
                 report.update(step_seconds=step_seconds, exchange_seconds=exchange_seconds,
                               wall_seconds=step_seconds + exchange_seconds)
@@ -696,6 +775,7 @@ class RankedRun(multigpu.MultiGPUDomain):
         self.compute_streams = self.copy_streams = self.unpack_streams = []
         self._streams = []
         self._frame_snapshots = []
+        self._snapshot_budgets = []
         self._snapshot_done = []
         self._frame_streams = None
         self._home = None

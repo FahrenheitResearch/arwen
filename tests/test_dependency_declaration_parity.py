@@ -98,6 +98,7 @@ _PROVIDERS: dict[str, tuple[str, ...]] = {
     "cupyx": ("cupy-cuda12x", "cupy-cuda13x"),
     "huggingface_hub": ("huggingface_hub",),
     "jsonschema": ("jsonschema",),
+    "threadpoolctl": ("threadpoolctl",),
     "matplotlib": ("matplotlib",),
     "mcp": ("mcp",),
     "netCDF4": ("netCDF4",),

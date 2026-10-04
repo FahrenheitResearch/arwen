@@ -14,6 +14,11 @@ SCAN_STRATEGIES = {
 }
 FORMATS = ("level2", "cfradial1", "cfradial2", "odim")
 FIELDS = ("reflectivity", "velocity", "zdr", "rhohv", "phidp", "kdp")
+#: The colour tables the reflectivity and velocity PPI images draw with:
+#: ``standard`` is the renderer's radar tables, ``classic`` the reflectivity
+#: ladder and blue-red velocity scale they replaced in 2.8.5. The same two
+#: names the render door takes as ``--radar-colors``.
+COLOR_TABLES = ("standard", "classic")
 REQUEST_SCHEMA = "simulated-radar.request/v1"
 MANIFEST_SCHEMA = "simulated-radar.manifest/v1"
 
@@ -74,6 +79,7 @@ class SimulatedRadarOptions:
     gate_spacing_m: float = 250.0
     azimuth_step_deg: float = 1.0
     volume_duration_s: float = 300.0
+    color_tables: str = "standard"
 
     @classmethod
     def from_mapping(cls, value, *, source="configuration"):
@@ -137,6 +143,9 @@ class SimulatedRadarOptions:
         timing = value.get("timing", "history")
         if timing not in ("history", "scan"):
             raise ValueError("timing must be 'history' or 'scan'")
+        color_tables = value.get("color_tables", "standard")
+        if color_tables not in COLOR_TABLES:
+            raise ValueError(f"color_tables must be one of {COLOR_TABLES}; got {color_tables!r}")
         defaults = {"range_km": 230.0, "gate_spacing_m": 250.0,
                     "azimuth_step_deg": 1.0, "volume_duration_s": 300.0}
         checked = {}
@@ -175,7 +184,7 @@ class SimulatedRadarOptions:
                 raise ValueError("custom IDs beginning T trigger a fixed station lookup in Py-ART; use another ID or omit level2")
         return cls(enabled=enabled, sites=sites, scan_strategy=strategy,
                    elevations_deg=elevations, formats=tuple(formats), timing=timing,
-                   fields=fields, **checked)
+                   fields=fields, color_tables=color_tables, **checked)
 
     def to_mapping(self):
         result = asdict(self)
@@ -184,6 +193,10 @@ class SimulatedRadarOptions:
         result["elevations_deg"] = list(self.elevations_deg)
         result["formats"] = list(self.formats)
         result["fields"] = self.fields if isinstance(self.fields, str) else list(self.fields)
+        # The default is left out, so a table that does not name the key
+        # writes the request, and gets the config identity, it always did.
+        if result["color_tables"] == "standard":
+            del result["color_tables"]
         return result
 
 
@@ -194,9 +207,11 @@ def declared_key_rows():
     """Metadata for configuration editors, using the parsed option defaults."""
     from gpuwm.config_keys import KeyRow
     defaults = SimulatedRadarOptions(enabled=True).to_mapping()
+    defaults["color_tables"] = "standard"
     types = {"enabled": "boolean", "sites": ("string", "array"),
              "scan_strategy": "string", "elevations_deg": "array", "formats": "array",
-             "timing": "string", "fields": ("string", "array")}
+             "timing": "string", "fields": ("string", "array"),
+             "color_tables": "string"}
     descriptions = {
         "enabled": "Write simulated radar volumes and PPI images from saved history.",
         "sites": "Automatic coverage selection, site IDs or custom coordinates and antenna height.",
@@ -209,6 +224,7 @@ def declared_key_rows():
         "gate_spacing_m": "Range gate spacing in metres.",
         "azimuth_step_deg": "Ray spacing in degrees.",
         "volume_duration_s": "Custom volume duration in seconds.",
+        "color_tables": "PPI colour tables: standard, or classic for the reflectivity and velocity colours before 2.8.5.",
     }
     return {name: KeyRow(name, types.get(name, "number"), default, descriptions[name])
             for name, default in defaults.items()}

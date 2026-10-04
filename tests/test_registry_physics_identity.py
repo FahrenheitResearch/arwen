@@ -85,6 +85,28 @@ _URBAN = (
     "the urban canopy models (sf_urban_physics), a component 2.8.0 did not "
     "have, off at its none option in every template (f21eedce3)")
 PHYSICS_CHANGES_SINCE_280 = {
+    "components.pbl.options.mynn": (
+        "mixing length 2 and local scalar diffusion are implemented; "
+        "cold initialization now passes vapor to the WRF moments solve"),
+    "parameters.bl_mynn_mixlength": (
+        "the implemented choices are WRF mixing lengths 1 and 2"),
+    "parameters.scalar_pblmix": (
+        "WRF post-PBL local diffusion for MYNN aerosol number scalars, "
+        "off by default"),
+    **{f"components.microphysics.options.{option}": (
+        "new analyzed-aerosol controls are forbidden under this package; "
+        "exact prior option declarations remain compatible at admitted old settings")
+       for option in ("thompson-mp8", "milbrandt2mom-mp9", "morrison-mp10",
+                      "nssl2-mp18", "p3-mp50")},
+    "parameters.aer_init_opt": (
+        "first-guess aerosol source value 2 is admitted with explicit analyzed "
+        "selection; prior values retain their parameter-declaration identity"),
+    "parameters.mp28_aerosol_source": (
+        "analysis requires source aerosol on every frame; the previous three "
+        "choices retain their parameter-declaration identity"),
+    "parameters.use_rap_aero_icbc": (
+        "analyzed aerosol input with operational monthly surface emission, "
+        "new and disabled by default"),
     "parameters.moist_cq": (
         "moisture pressure correction now defaults on whenever a vapor "
         "state exists, including passive vapor with microphysics off"),
@@ -157,10 +179,40 @@ PHYSICS_CHANGES_SINCE_280 = {
         "(lane/282-namelist-tolerance, 679a5f5fe): 1 selects coordinate-"
         "surface diffusion for km_opt 2 and 4, and it is off at 2, the "
         "metric form every earlier build ran"),
+    "components.land_surface.options.ruc-lsm": (
+        "a LAKEMASK column is bypassed only when the lake model is selected "
+        "(module_sf_ruclsm.F:824), so with sf_lake_physics = 0 it runs the "
+        "water branch instead of never being advanced; the option's restart "
+        "algorithm identity advanced to v2 with it, and to v3 with the "
+        "SOILPROP lineage default (ruc_soilprop), whose admitted names "
+        "wrf_45 and wrf_461 the option declares"),
+    "parameters.ruc_soilprop": (
+        "LSMRUC SOILPROP's soil-water lineage, a knob 2.8.0 did not have: "
+        "the default wrf_45 diffusivity over the moisture above the residual "
+        "replaces the WRF v4.6.1 form over total porosity, which stays "
+        "selectable as wrf_461; every RUC configuration changes answers"),
+    "parameters.mosaic_lu": (
+        "RUC fractional land-use mosaic, implemented and off at 0"),
+    "parameters.mosaic_soil": (
+        "RUC fractional soil mosaic, implemented and off at 0"),
+    "parameters.sf_lake_physics": (
+        "WRF's CLM lake model, a knob 2.8.0 did not have, off at 0"),
+    "parameters.use_lakedepth": (
+        "CLM lake bathymetry switch, read only with sf_lake_physics = 1"),
+    "parameters.lakedepth_default": (
+        "CLM lake default depth, read only with sf_lake_physics = 1"),
+    "parameters.lake_min_elev": (
+        "CLM lake minimum elevation, read only with sf_lake_physics = 1"),
     "parameters.mix_full_fields": (
         "WRF's full-field mixing logical, a knob 2.8.0 did not have "
         "(679a5f5fe), off at true, the full-field mixing every earlier "
         "build ran"),
+    "parameters.spp_conv": (
+        "WRF's stochastic parameter perturbation for Grell-Freitas, a knob "
+        "2.8.0 did not have, off at 0"),
+    "parameters.spp_pbl": (
+        "WRF's stochastic parameter perturbation for MYNN, a knob 2.8.0 did "
+        "not have, off at 0"),
 }
 
 _WDM6_SUITE = "wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-rrtmgp-v1"
@@ -180,6 +232,14 @@ EXPECTED_280_REFUSALS: dict[tuple[str, str], list[str]] = {
         *(["registry physics of templates.p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1 "
            "(changed)"] if spelling == "named" and
           row["switches"]["mp_physics"] == 50 else []),
+        *(["registry physics of components.pbl.options.mynn (changed)",
+           "registry physics of parameters.bl_mynn_mixlength (changed)"]
+          if row["switches"].get("bl_pbl_physics") == 5 else []),
+        *(["registry physics of components.land_surface.options.ruc-lsm "
+           "(changed)",
+           "registry physics of parameters.mosaic_lu (changed)",
+           "registry physics of parameters.mosaic_soil (changed)"]
+          if row["switches"].get("sf_surface_physics") == 3 else []),
     ])
     for row in json.loads(RECEIPTS_2492999CD.read_text())["receipts"]
     for spelling in ("named", "unnamed")
@@ -370,7 +430,10 @@ def test_every_documentation_row_names_a_field_the_parts_carry():
     declared = (set(REGISTRY_DOCUMENTATION_FIELDS)
                 | set(REGISTRY_DOCUMENTATION_VALUE_MAPS)
                 | set(REGISTRY_EVIDENCE_RECORDS))
-    assert declared - used == set()
+    # This retired field remains classified so historical registry documents
+    # still hash their explanatory prose as documentation. Removing its
+    # classification would turn old aerosol notes into a false physics change.
+    assert declared - used == {"withheld_aerosol_number_note"}
 
 
 def _constraint_kinds(registry) -> set[str]:
@@ -973,6 +1036,53 @@ def test_a_read_condition_holds_only_at_its_value(settings, read):
     assert registry_knob_is_read("radt", settings) is True
 
 
+@pytest.mark.parametrize("knob,old_value,new_value", [
+    ("aer_init_opt", 0, 2),
+    ("mp28_aerosol_source", "auto", "analysis"),
+])
+def test_enum_extension_reuses_only_previously_admitted_values(knob, old_value, new_value):
+    from gpuwm.physics_registry import canonical_sha256, REGISTRY_PHYSICS_IDENTITY_SCHEMA
+    spec = physics_registry()["parameters"][knob]
+    part = "parameters." + knob
+    prior = {**spec, "enum": spec["compatible_previous_enums"][0]}
+
+    def receipt(declaration):
+        return {"registry_physics": {
+            "schema": REGISTRY_PHYSICS_IDENTITY_SCHEMA,
+            "parts": {part: canonical_sha256(strip_registry_documentation(declaration))}}}
+
+    before, after = receipt(prior), receipt(spec)
+    assert physics_selection_differences(before, after, settings={knob: old_value}) == []
+    expected = [f"registry physics of {part} (changed)"]
+    assert physics_selection_differences(before, after, settings={knob: new_value}) == expected
+    assert physics_selection_differences(before, after) == expected
+    # A different prior default is physics, even though the enum matches.
+    wrong_default = receipt({**prior, "default": new_value})
+    assert physics_selection_differences(wrong_default, after,
+                                         settings={knob: old_value}) == expected
+
+
+def test_added_aerosol_refusals_preserve_only_admitted_prior_options():
+    from gpuwm.physics_registry import canonical_sha256, REGISTRY_PHYSICS_IDENTITY_SCHEMA
+    option = physics_registry()["components"]["microphysics"]["options"]["thompson-mp8"]
+    name = "components.microphysics.options.thompson-mp8"
+    prior = {**option, "constraints": {**option["constraints"],
+        "forbidden_setting_values": option["compatible_previous_forbidden_settings"][0]}}
+
+    def receipt(value):
+        return {"registry_physics": {"schema": REGISTRY_PHYSICS_IDENTITY_SCHEMA,
+            "parts": {name: canonical_sha256(strip_registry_documentation(value))}}}
+
+    before, after = receipt(prior), receipt(option)
+    assert physics_selection_differences(before, after, settings={
+        "mp28_aerosol_source": "auto", "use_rap_aero_icbc": False}) == []
+    expected = [f"registry physics of {name} (changed)"]
+    for settings in ({"mp28_aerosol_source": "analysis"}, {"use_rap_aero_icbc": True}):
+        assert physics_selection_differences(before, after, settings=settings) == expected
+    wrong_physics = receipt({**prior, "selectors": {"mp_physics": 88}})
+    assert physics_selection_differences(wrong_physics, after, settings={}) == expected
+
+
 def test_without_the_configuration_an_added_knob_is_named(monkeypatch):
     """Unknown values cannot be shown off: name every knob added or
     implemented since 2.8.0, including A179's registered IEVA knob,
@@ -982,13 +1092,19 @@ def test_without_the_configuration_an_added_knob_is_named(monkeypatch):
                if row["profile"] == PROFILE)
     _added_knobs(monkeypatch)
     assert physics_selection_differences(
-        row["named"], _expected_for(row, "named")) == _legacy_expected(row, "named", *[
+        row["named"], _expected_for(row, "named")) == _legacy_expected(row, "named",
+        "registry physics of components.microphysics.options.thompson-mp8 (changed)",
+        "registry physics of parameters.aer_init_opt (changed)",
+        "registry physics of parameters.mp28_aerosol_source (changed)",
+        "registry physics of parameters.use_rap_aero_icbc (absent from the prepared registry)", *[
         f"registry physics of parameters.{knob} (absent from the prepared "
         "registry)"
-        for knob in ("diff_opt", "gwd_opt", "mix_full_fields", "mosaic_cat",
-                     "mosaic_urban_canopy",
-                     "sf_surface_mosaic", "slope_rad", "topo_shading",
-                     "topo_wind", "zadvect_implicit",
+        for knob in ("diff_opt", "gwd_opt", "lake_min_elev",
+                     "lakedepth_default", "mix_full_fields", "mosaic_cat",
+                     "mosaic_urban_canopy", "sf_lake_physics",
+                     "sf_surface_mosaic", "slope_rad", "spp_conv", "spp_pbl",
+                     "topo_shading",
+                     "topo_wind", "use_lakedepth", "zadvect_implicit",
                      "zadvect_implicit_variant")])
 
 
@@ -999,6 +1115,26 @@ def test_a_new_receipt_resolves_to_its_own_parts():
         == expected["registry_physics"]["parts"]
     assert physics_selection_differences(
         json.loads(json.dumps(expected)), expected) == []
+
+
+@pytest.mark.parametrize("pbl", [1, 5])
+def test_changed_mynn_parameter_only_binds_a_configuration_that_reads_it(pbl):
+    # Before the MYNN options were scoped, every receipt carried this part.
+    # A YSU preparation must survive the scope correction; an active MYNN
+    # calculation must still name a changed mixing-length declaration.
+    row = next(row for row in _receipts_2492999cd()
+               if row["switches"].get("bl_pbl_physics") == pbl)
+    settings = _loaded_settings(row["switches"])
+    expected = single_domain_physics_selection(settings)
+    recorded = deepcopy(expected)
+    key = "parameters.bl_mynn_mixlength"
+    recorded["registry_physics"]["parts"][key] = "0" * 64
+    differences = physics_selection_differences(recorded, expected, settings=settings)
+    if pbl == 1:
+        assert differences == []
+        assert physics_selection_differences(recorded, expected)
+    else:
+        assert differences == [f"registry physics of {key} (changed)"]
 
 
 def test_parts_in_another_identity_schema_resolve_through_the_document():

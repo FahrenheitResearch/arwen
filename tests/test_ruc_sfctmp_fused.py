@@ -118,6 +118,9 @@ def test_driver_carries_fused_state(monkeypatch, nzs):
         keys = {name: kw[name] for name in (
             'delt', 'conflx', 'ivgtyp', 'iland', 'nroot', 'ilnb', 'isice',
             'c1sn', 'c2sn', 'isncovr_opt', 'mminlu', 'parameters')}
+        # The fused stages compile the SOILPROP lineage the driver was
+        # handed (the runtime default, wrf_45), as the reference runs it.
+        keys['soilprop'] = kw['soilprop']
         run = cp.ones(values['snhei'].size, dtype=cp.bool_)
         result = ruc_sfctmp_full_width_fused(values, run=run, **keys)
         _assert_words({name: getattr(reference, name) for name in result}, result, run)

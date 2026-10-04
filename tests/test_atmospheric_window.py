@@ -64,7 +64,7 @@ def test_provider_packs_only_atmosphere_with_original_pressure_ladder(source):
     full_bytes = sum(v.nbytes for v in full.fields.values())
     small_bytes = sum(v.nbytes for v in actual.fields.values())
     nlev = len(full.levels_hpa)
-    saved = 8 * nlev * len(ATMOSPHERIC_FIELDS) * (
+    saved = 8 * nlev * len(ATMOSPHERIC_FIELDS.intersection(full.fields)) * (
         np.prod(actual.window.source_shape) - np.prod(actual.window.shape))
     assert full_bytes - small_bytes == saved
     assert small_bytes < full_bytes / 8
@@ -322,6 +322,7 @@ def _rust_window_inventory():
 
 def test_the_three_window_inventories_are_one_list():
     from gpuwm.ingest.atmospheric_window import CANONICAL_ATMOSPHERIC_FIELDS
+    from gpuwm.ingest.analyzed_numbers import CANONICAL_NUMBER_FIELDS
     from gpuwm.mapped_source import HYDROMETEOR_LEGACY_NAMES
 
     legacy_of = {
@@ -329,6 +330,7 @@ def test_the_three_window_inventories_are_one_list():
         "specific_humidity": "SPFH", "eastward_wind": "U",
         "northward_wind": "V", "geopotential_height": "GHT",
         **HYDROMETEOR_LEGACY_NAMES,
+        **CANONICAL_NUMBER_FIELDS,
     }
     assert frozenset(legacy_of) == CANONICAL_ATMOSPHERIC_FIELDS
     assert frozenset(legacy_of.values()) == ATMOSPHERIC_FIELDS
@@ -367,3 +369,81 @@ def test_a_windowed_snapshot_carries_the_hydrometeors_at_the_window(
         cloud[:, rows[0]:rows[1], columns[0]:columns[1]])
     full = snapshot.full_snapshot()
     assert full.fields["QC"].shape == (len(snapshot.levels_hpa), 31, 37)
+
+
+def test_number_masks_and_neighbor_fallback_survive_windowing(monkeypatch, tmp_path):
+    monkeypatch.setattr(fixture, "_NY", 31)
+    monkeypatch.setattr(fixture, "_NX", 37)
+    frame = fixture._one_frame()
+    fields = dict(frame.fields)
+    number = np.arange(fields["air_temperature"].values.size, dtype=np.float64)
+    number = (number.reshape(fields["air_temperature"].values.shape) + 1) * 1000.
+    number[:, ::2, ::3] = np.nan
+    fields["water_friendly_aerosol_number"] = replace(
+        fields["air_temperature"], name="water_friendly_aerosol_number", units="kg-1",
+        values=number, missing_count=int(np.isnan(number).sum()),
+        source_references=("fixture:water_friendly_aerosol_number",))
+    frame = replace(frame, fields=fields)
+    directory = fixture.engine_bridge.write_frameset(tmp_path / "numbers", (frame,))
+    authority = tmp_path / "authority"
+    authority.write_text("number-mask window witness")
+    bundle = fixture._bundle(directory, authority)
+    full = bundle.regular_snapshots()[0]
+    small = bundle.regular_snapshots().for_grids((target(),))[0]
+    assert isinstance(small, WindowedAtmosphericSnapshot)
+    full_mapped = interpolate_era5_to_lambert(full, target(), backend="cpu")
+    small_mapped = interpolate_era5_to_lambert(small, target(), backend="cpu")
+    assert_horizontal_exact(full_mapped, small_mapped)
+    assert np.isfinite(small_mapped.fields["QNWFA"]).all()
+    assert small_mapped.horizontal_operators["QNWFA"] == "nearest_neighbor+four_pt+average_4pt"
+
+
+def test_number_surface_pseudo_level_is_selected_by_the_native_library(monkeypatch, tmp_path):
+    """The number fields' surface pseudo-level leaves Python for the Rust library.
+
+    A native number field has no two-metre product, so the mapped door
+    takes each column's deepest level.  That selection ran as NumPy
+    ``argmax`` and ``take_along_axis`` on the CPU and bounded CUDA routes;
+    it is now one call into the preprocessing library, and the NumPy form
+    stays only for a device array or a library without the entry.  Both
+    give the same bytes.
+    """
+    from gpuwm.ingest import host_arrays
+    from gpuwm.core import portable_math as pm
+    if not hasattr(pm._load(), "gpuwm_host_deepest_level_f32"):
+        pytest.skip("CPU bridge predates the native deepest-level selection")
+    monkeypatch.setattr(fixture, "_NY", 31)
+    monkeypatch.setattr(fixture, "_NX", 37)
+    frame = fixture._one_frame()
+    fields = dict(frame.fields)
+    number = np.arange(fields["air_temperature"].values.size, dtype=np.float64)
+    number = (number.reshape(fields["air_temperature"].values.shape) + 1) * 1000.
+    fields["water_friendly_aerosol_number"] = replace(
+        fields["air_temperature"], name="water_friendly_aerosol_number", units="kg-1",
+        values=number, source_references=("fixture:water_friendly_aerosol_number",))
+    frame = replace(frame, fields=fields)
+    directory = fixture.engine_bridge.write_frameset(tmp_path / "numbers", (frame,))
+    authority = tmp_path / "authority"
+    authority.write_text("number surface pseudo-level witness")
+    full = fixture._bundle(directory, authority).regular_snapshots()[0]
+
+    taken = []
+    native = host_arrays.deepest_level
+
+    def recorded(pressure, field, **kwargs):
+        result = native(pressure, field, **kwargs)
+        taken.append(result is not None)
+        return result
+
+    monkeypatch.setattr(host_arrays, "deepest_level", recorded)
+    mapped = interpolate_era5_to_lambert(full, target(), backend="cpu")
+    assert taken == [True]
+    pressure, values = mapped.fields["PRES"], mapped.fields["QNWFA"]
+    expected = np.take_along_axis(
+        values, np.argmax(pressure, axis=0)[None, ...], axis=0)[0]
+    assert mapped.fields["QNWFA_SFC"].dtype == np.float32
+    assert mapped.fields["QNWFA_SFC"].tobytes() == expected.tobytes()
+
+    monkeypatch.setattr(host_arrays, "deepest_level", lambda *a, **k: None)
+    reference = interpolate_era5_to_lambert(full, target(), backend="cpu")
+    assert reference.fields["QNWFA_SFC"].tobytes() == mapped.fields["QNWFA_SFC"].tobytes()

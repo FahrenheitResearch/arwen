@@ -680,7 +680,7 @@ _SWITCHES_OUTSIDE_THE_SINGLE_DOMAIN_PRODUCT = frozenset({
     "bl_mynn_edmf", "bl_mynn_edmf_mom", "bl_mynn_edmf_tke",
     "bl_mynn_mixlength", "bl_mynn_mixqt", "bl_mynn_mixscalars",
     "bl_mynn_output", "bl_mynn_tkeadvect",
-    "flag_sm_adj", "mosaic_lu", "mosaic_soil", "spp_lsm",
+    "flag_sm_adj", "spp_lsm",
     "dveg", "noahmp_acc_dt", "noahmp_output", "soiltstep",
     "opt_alb", "opt_btr", "opt_crop", "opt_crs", "opt_frz", "opt_gla",
     "opt_inf", "opt_infdv", "opt_irr", "opt_irrm", "opt_pedo", "opt_rad",
@@ -2949,9 +2949,10 @@ def physics_selection_differences(
 
     from gpuwm.physics_registry import (
         NO_OFF_VALUE, REGISTRY_PHYSICS_IDENTITY_SCHEMA, component_off_option,
-        canonical_template_id,
+        canonical_template_id, canonical_sha256,
         physics_registry, recorded_registry_physics_parts,
-        registry_knob_is_read, same_setting_value, setting_off_value)
+        registry_knob_is_read, same_setting_value, setting_off_value,
+        strip_registry_documentation)
 
     if not isinstance(recorded, Mapping):
         return ["the recorded physics receipt is missing"]
@@ -3042,6 +3043,68 @@ def physics_selection_differences(
             return knob_at_off_value(rest)
         return False
 
+    def parameter_enum_was_extended(name: str) -> bool:
+        # A newly admitted value does not change an older prepared value.
+        # Match the complete prior declaration, changing only its enum;
+        # altered defaults, types, bounds or physics therefore still refuse.
+        kind, _, knob = name.partition(".")
+        if kind != "parameters" or settings is None:
+            return False
+        spec = (registry.get("parameters") or {}).get(knob)
+        if not isinstance(spec, Mapping) or not isinstance(spec.get("enum"), list):
+            return False
+        if expected_parts.get(name) != canonical_sha256(strip_registry_documentation(spec)):
+            return False
+        value = _selection_value_or_absent(settings, knob)
+        if value is _ABSENT:
+            value = setting_off_value(knob, registry)
+        for previous in spec.get("compatible_previous_enums", ()):
+            if not isinstance(previous, list) or not previous:
+                continue
+            if not all(any(same_setting_value(old, current) for current in spec["enum"])
+                       for old in previous):
+                continue
+            if not any(same_setting_value(value, old) for old in previous):
+                continue
+            prior_spec = {**spec, "enum": previous}
+            if recorded_parts.get(name) == canonical_sha256(
+                    strip_registry_documentation(prior_spec)):
+                return True
+        return False
+
+    def forbidden_values_were_extended(name: str) -> bool:
+        # New forbidden values for new controls do not change an admitted
+        # older selection. The complete old option must still hash exactly.
+        kind, _, rest = name.partition(".")
+        component, separator, option_id = rest.partition(".options.")
+        if kind != "components" or not separator or settings is None:
+            return False
+        option = ((registry.get("components") or {}).get(component, {}).get("options") or {}).get(option_id)
+        if not isinstance(option, Mapping):
+            return False
+        if expected_parts.get(name) != canonical_sha256(strip_registry_documentation(option)):
+            return False
+        constraints = option.get("constraints") or {}
+        current = constraints.get("forbidden_setting_values") or {}
+        for knob, values in current.items():
+            value = _selection_value_or_absent(settings, knob)
+            if value is _ABSENT:
+                value = setting_off_value(knob, registry)
+            if value is NO_OFF_VALUE or any(same_setting_value(value, v) for v in values):
+                return False
+        for previous in option.get("compatible_previous_forbidden_settings", ()):
+            if not isinstance(previous, Mapping):
+                continue
+            if not all(knob in current and isinstance(values, list)
+                       and all(any(same_setting_value(old, new) for new in current[knob])
+                               for old in values) for knob, values in previous.items()):
+                continue
+            prior_option = {**option, "constraints": {
+                **constraints, "forbidden_setting_values": previous}}
+            if recorded_parts.get(name) == canonical_sha256(strip_registry_documentation(prior_option)):
+                return True
+        return False
+
     # A receipt written before registry_physics existed (or in another
     # identity schema) resolves to every part its document had; the
     # selection's own scope is then this build's.  A receipt's own parts
@@ -3053,6 +3116,17 @@ def physics_selection_differences(
         names |= set(recorded_parts)
     for name in sorted(names):
         if recorded_parts.get(name) == expected_parts.get(name):
+            continue
+        if (settings is not None and name.startswith("parameters.")
+                and not registry_knob_is_read(
+                    name.removeprefix("parameters."), settings, registry)):
+            # A newly scoped knob can leave an older receipt's parts.
+            # Its metadata cannot change physics this configuration never
+            # reads, just as an added unread knob cannot change it.
+            continue
+        if parameter_enum_was_extended(name):
+            continue
+        if forbidden_values_were_extended(name):
             continue
         if (name not in recorded_parts and name in expected_parts
                 and part_added_at_off_value(name)):
@@ -3094,11 +3168,8 @@ def _tree_tuple_registry_governance(
         raise PhysicsCapabilityError(
             "physics registry lacks tuple reachability declarations")
 
-    def key(value: Mapping[str, str]) -> tuple[tuple[str, str], ...]:
-        return tuple(sorted(value.items()))
-
-    normal: set[tuple[tuple[str, str], ...]] = set()
-    expert: dict[tuple[tuple[str, str], ...], set[str]] = {}
+    normal = False
+    expert: set[str] = set()
 
     for route in routes.values():
         if (
@@ -3149,38 +3220,30 @@ def _tree_tuple_registry_governance(
                 admitted.update(option_sets.get(component_id, ()))
                 option_sets[component_id] = tuple(sorted(admitted))
 
-        def variants(template_id: str):
+        def admits(template_id: str) -> bool:
             template = templates.get(template_id)
             base = (
                 template.get("components", {})
                 if isinstance(template, Mapping) else {}
             )
             if not isinstance(base, Mapping):
-                return
-            candidates = [dict(base)]
+                return False
+            # Preparation used to materialize millions of Cartesian tuples
+            # to ask whether this one tuple belonged. Each override dimension
+            # is independent, so exact membership needs only its own choices.
+            if set(selected) != set(base) | set(option_sets):
+                return False
+            if any(selected[name] != value for name, value in base.items()
+                   if name not in option_sets):
+                return False
             for component_id, option_ids in option_sets.items():
-                expanded = []
-                for candidate in candidates:
-                    # SEED WITH THE TEMPLATE'S OWN VALUE (audit R-022).
-                    # The expansion REPLACES this component, so a template
-                    # whose own option is absent from the route's allowed
-                    # list was deleted from the union -- the template
-                    # itself stopped being reachable through the route
-                    # that declares it.  Measured when land_surface gained
-                    # an option list: the expert Noah-MP templates
-                    # silently demoted to outside-declared-reachability
-                    # and lost the acknowledgement they publish.  No
-                    # template tripped it before, which is exactly why it
-                    # had to be fixed in the same pass as the list.
-                    own = candidate.get(component_id)
-                    seeded = list(option_ids)
-                    if isinstance(own, str) and own not in seeded:
-                        seeded.append(own)
-                    for option_id in seeded:
-                        expanded.append({
-                            **candidate, component_id: option_id})
-                candidates = expanded
-            yield from candidates
+                own = base.get(component_id)
+                value = selected[component_id]
+                # Keep the template's own choice even when it is absent
+                # from the route override list (the R-022 expert demotion).
+                if value not in option_ids and not (isinstance(own, str) and value == own):
+                    return False
+            return True
 
         source_template_ids = route.get("source_template_ids", {})
         if isinstance(source_template_ids, Mapping):
@@ -3192,8 +3255,7 @@ def _tree_tuple_registry_governance(
                 if isinstance(template_id, str)
             }
             for template_id in normal_ids:
-                normal.update(key(candidate)
-                              for candidate in variants(template_id))
+                normal = normal or admits(template_id)
 
         expert_template_ids = route.get("expert_template_ids", {})
         acknowledgement = route.get("expert_acknowledgement_id")
@@ -3209,15 +3271,13 @@ def _tree_tuple_registry_governance(
                 if isinstance(template_id, str)
             }
             for template_id in expert_ids:
-                for candidate in variants(template_id):
-                    expert.setdefault(key(candidate), set()).add(
-                        acknowledgement)
+                if admits(template_id):
+                    expert.add(acknowledgement)
 
-    selected_key = key(selected)
-    if selected_key in normal:
+    if normal:
         return "registry-reachable", None
-    if selected_key in expert:
-        acknowledgements = sorted(expert[selected_key])
+    if expert:
+        acknowledgements = sorted(expert)
         if len(acknowledgements) != 1:
             raise PhysicsCapabilityError(
                 "registry expert tuple publishes ambiguous acknowledgements "
@@ -3454,8 +3514,8 @@ def pending_wrf_physics_components(
     # never by a silent numeric gate here:
     #   * the two aerosol-source selectors fail closed in
     #     gpuwm.config.validate_aerosol_source_options -- aer_init_opt and
-    #     wif_input_opt are honoured at 0 only, because ArWen has no WIF
-    #     metgrid ingest and no nbca species;
+    #     wif_input_opt select climatology or analyzed fields; the analyzed
+    #     route requires both QNWFA/QNIFA. Black carbon has no nbca species;
     #   * WRF's real.exe FATALs mp_physics=28 at wif_input_opt=0
     #     (dyn_em/module_initialize_real.F:2735-2736) while ArWen runs
     #     thompson_init's synthetic CCN/IN profile.  Same physics, an

@@ -305,23 +305,25 @@ consumed `RunConfig` field -- the knob-parity battery
 consuming kernel/module rather than being decorative -- and every one
 is importable from a WRF namelist.
 
-**Which keys a `[[domain]]` table may override.** Exactly these 69,
+**Which keys a `[[domain]]` table may override.** Exactly these 75,
 and no others (`gpuwm/experiment.py`'s `_DOMAIN_RUN_OVERRIDES`):
 
     cu_physics  cudt_minutes  clos_choice  ishallow  radt  radt_minutes  bldt
     ra_physics  ra_lw_physics  ra_sw_physics  ra_rrtmg_variant
     wrf_rrtmg_compatibility  o3input  use_mp_re  swrad_scat  diff_6th_factor  epssm
-    spec_exp  mp_physics  moist  moist_cq  nest_microphysics_transition  km_opt
-    bl_pbl_physics  sf_sfclay_physics  c_s  c_k  moist_mix6_off  diff_6th_opt
-    mix_isotropic  mix_upper_bound  isfflx  tke_heat_flux  tke_drag_coefficient
-    tke_upper_bound  diff_6th_slopeopt  diff_6th_thresh  dampcoef  zdamp  emdiv
-    smdiv  khdif  kvdif  diff_opt  mix_full_fields  h_sca_adv_order  moist_adv_opt
-    tke_budget  sase_flux_diag  hmix_k_diag  inflow_perturbation
-    inflow_perturbation_seed  inflow_perturbation_amplitude_scale
-    inflow_perturbation_faces  target_cfl  target_hcfl  max_step_increase_pct
-    starting_time_step  starting_time_step_den  max_time_step  max_time_step_den
-    min_time_step  min_time_step_den  min_time_step_sound  slope_rad  topo_shading
-    mosaic_urban_canopy  topo_wind  gwd_opt
+    spec_exp  mp_physics  moist  moist_cq  nest_microphysics_transition  spp_conv
+    spp_pbl  km_opt  bl_pbl_physics  sf_sfclay_physics  c_s  c_k  moist_mix6_off
+    diff_6th_opt  mix_isotropic  mix_upper_bound  isfflx  tke_heat_flux
+    tke_drag_coefficient  tke_upper_bound  diff_6th_slopeopt  diff_6th_thresh
+    dampcoef  zdamp  emdiv  smdiv  khdif  kvdif  diff_opt  mix_full_fields
+    h_sca_adv_order  moist_adv_opt  tke_budget  sase_flux_diag  hmix_k_diag
+    inflow_perturbation  inflow_perturbation_seed
+    inflow_perturbation_amplitude_scale  inflow_perturbation_faces  target_cfl
+    target_hcfl  max_step_increase_pct  starting_time_step  starting_time_step_den
+    max_time_step  max_time_step_den  min_time_step  min_time_step_den
+    min_time_step_sound  slope_rad  topo_shading  mosaic_urban_canopy
+    sf_lake_physics  use_lakedepth  lakedepth_default  lake_min_elev  topo_wind
+    gwd_opt
 
 `clos_choice` and `ishallow` configure the Grell-Freitas cumulus scheme
 (`cu_physics = 3`): which closure the deep scheme uses (0, the default,
@@ -619,10 +621,15 @@ transcribed code at all: `opt_pedo`, `noahmp_output` and
 still recorded as fixed at the pin the run used:
 
 - **MYNN** (`&physics`): `bl_mynn_closure 2.6`, `bl_mynn_cloudpdf 2`,
-  `bl_mynn_mixlength 1`, `bl_mynn_edmf 1`, `bl_mynn_edmf_mom 1`,
-  `bl_mynn_edmf_tke 0`, `bl_mynn_mixscalars 0`, `bl_mynn_cloudmix 1`,
+  `bl_mynn_edmf 1`, `bl_mynn_edmf_mom 1`,
+  `bl_mynn_edmf_tke 0`, `bl_mynn_cloudmix 1`,
   `bl_mynn_mixqt 0`, `bl_mynn_output 0`, `bl_mynn_tkeadvect false`,
   `icloud_bl 1` (`MYNN_PBL_OPTION_IDENTITY`, `gpuwm/config.py`).
+  `bl_mynn_mixlength` instead accepts 1 (default) or 2.
+  `scalar_pblmix = 1` runs WRF post-PBL local diffusion of
+  `nc/ni/nwfa/nifa`; `bl_mynn_mixscalars = 1` runs MYNN plume transport.
+  Both default to 0 and require MYNN with `mp_physics = 28`, `bldt = 0`.
+  Selecting both is refused because WRF disables the former in that pair.
 - **Noah-MP** (`&noah_mp`): `dveg 4`, `opt_crs 1`, `opt_btr 1`,
   `opt_run 3`, `opt_sfc 1`, `opt_frz 1`, `opt_inf 1`, `opt_rad 3`,
   `opt_alb 2`, `opt_snf 1`, `opt_tbot 2`, `opt_stc 1`, `opt_gla 1`,
@@ -630,8 +637,14 @@ still recorded as fixed at the pin the run used:
   `opt_irrm 0`, `opt_infdv 0`, `opt_tdrn 0`, `soiltstep 0`,
   `noahmp_output 1`, `noahmp_acc_dt 0` -- each with its evidence line
   in `NOAHMP_OPTION_IDENTITY_EVIDENCE`.
-- **RUC** (`&physics`/`&stoch`): `mosaic_lu 0`, `mosaic_soil 0`,
-  `flag_sm_adj 0`, `spp_lsm 0`.
+- **RUC** (`&physics`/`&stoch`): `mosaic_lu` and `mosaic_soil` accept 0 or 1,
+  default 0. `flag_sm_adj 0` remains pinned. `spp_lsm 1` is recognised
+  and refused with the calibration reason, like the other `&stoch` selectors.
+- **CLM lake** (`&physics`): `sf_lake_physics` accepts 0 or 1, default 0.
+  `use_lakedepth` defaults to 1 and requires input bathymetry;
+  `lakedepth_default` defaults to 50 m. `lake_min_elev` defaults to 5 m
+  when lake cells must be derived without an input mask. These lake
+  controls are per domain. See `docs/ruc-mosaic-and-clm-lake.md`.
 - **NSSL 2-moment parameters** (`&physics`, `mp_physics = 18`): the
   port runs at the WRF v4.6.1 Registry defaults pinned by
   `gpuwm/core/nssl2_contract.py` (`nssl_cccn 0.5e9`, `nssl_alphah 0`,
@@ -762,7 +775,8 @@ pins differ from what WRF assumes for an omitted key.
 | `use_theta_m` | 0 | the engine evolves dry theta and has no moist-theta branch; every import door (`import-namelist`, `run --wrfinput` and `run --met-em`) admits a namelist's `use_theta_m = 1` (WRF's omitted default) as a DECLARED DIVERGENCE announced at the terminal and recorded under "Physics substitutions" in the import receipt: the initial and boundary state is recovered exactly (moist wrfbdy THM/QV/MU converted at each forcing time; metgrid TT is physical temperature; native initialization builds dry theta from physical temperature) but the integration is dry theta, so it differs from a `use_theta_m = 1` WRF run |
 | `scalar_adv_opt` | 1 | must match `moist_adv_opt` |
 | `isfflx` | 1 | surface fluxes on |
-| `sf_lake_physics`, `mosaic_lu/soil` | 0 | not implemented |
+| `sf_lake_physics`, `mosaic_lu/soil` | 0 (default), 1 | CLM lake columns and RUC weighted land-use/soil parameters; lake bathymetry and mosaic source fractions must be supplied |
+| `ruc_soilprop` | `"wrf_45"` (default), `"wrf_461"` | gpuwm key, `[shared]`: which WRF lineage's LSMRUC SOILPROP sets soil-water diffusivity and hydraulic conductivity. `wrf_45` (WRF v4.0-4.5, also the operational RAP/HRRR branch) normalises both by the moisture above the residual, (theta - qmin)/(theta_sat - qmin), with mineral conductivity 2.0 at every quartz fraction. `wrf_461` (WRF v4.6.1) uses total moisture over porosity and 3.0 below 20 percent quartz; in dry soil its water diffusivity is 2.5 to 8 times larger, measured to raise a 3 km afternoon top soil level from 0.161 to 0.187 m3/m3 in one hour from the levels below. Select it by name for WRF v4.6.1 parity. Every RUC configuration changes answers with this key; a flip is refused on restart |
 | `sf_urban_physics` | 0 (default) | 1 single-layer urban canopy, 2 BEP, 3 BEP+BEM; requires Noah or Noah-MP; mosaic admits only option 1 |
 | `sf_surface_mosaic`, `mosaic_cat` | 0, 3 | Noah land-use tiles; enabled only at 1, positive tile count; requires LANDUSEF; urban option 1 runs per tile; urban options 2 and 3 are refused as in WRF |
 | `mosaic_urban_canopy` | "dominant" | gpuwm key, per domain: where mosaic runs urban option 1. "dominant" is WRF's rule (only cells whose dominant category is urban); "every_tile" also runs the town tiles of mostly rural cells at their own land-use weights, sharing the URBPARM urban fraction of the largest urban tile's type; needs `sf_surface_mosaic = 1` and `sf_urban_physics = 1` |
@@ -777,16 +791,16 @@ pins differ from what WRF assumes for an omitted key.
 | `cu_rad_feedback` | .false. | KF cloud fraction does not feed radiation |
 | `kf_edrates` | 0 | no KF rate diagnostics |
 | `sst_update`, `sst_skin`, `tmn_update` | 0 | single-analysis case runs |
-| `use_aero_icbc`, `use_rap_aero_icbc` | .false. | synthetic fallback identity; imported `use_aero_icbc .true.` with `wif_input_opt 1` selects the monthly WIF dataset. A generic GOCART reader and the RAP source are unavailable |
+| `use_aero_icbc` | .false. | imported `.true.` with `wif_input_opt 1` selects the monthly WIF dataset |
+| `use_rap_aero_icbc` | .false. | `.true.` selects analyzed QNWFA/QNIFA initial and lateral values, with operational monthly surface emissions; see [analyzed aerosol inputs](ANALYZED-AEROSOL-INPUT.md) |
 | `wif_input_opt` | 0 | synthetic fallback identity; the imported monthly WIF route accepts value 1 with `num_wif_levels = 30`. Value 2 requires unimplemented black carbon. At 0, `num_wif_levels` is inert. **WRF's `real.exe` FATALs `mp_physics = 28` at this value** (`dyn_em/module_initialize_real.F:2734-2736`) while ArWen runs it, taking WRF's own internal fallback â€” the synthetic CCN/IN profile `thompson_init` installs â€” as the aerosol initial condition. So an ArWen mp=28 run and a WIF-initialised WRF mp=28 run are **not** directly comparable; see D9a/D9b in [PROVENANCE.md](../../PROVENANCE.md) |
 | `qna_update` | 0 | no auxiliary `wrfqnainp` input stream |
 | `wif_fire_emit`, `wif_fire_inj` | .false. / unused | no biomass-burning aerosol emission inventory |
 | `dust_emis` | 0 | no non-chem dust source; `nifa2d` stays exactly zero, matching `thompson_init` |
 | `grav_settling` | 0 | fog gravitational settling not ported. WRF *silently* forces 0 on every `mp_physics = 28` domain (`share/module_check_a_mundo.F:2459-2474`); ArWen refuses a nonzero value instead |
-| `scalar_pblmix` | 0 | no 4-D scalar PBL mixing path. WRF forces 1 under `mp_physics = 28` **only with** `use_aero_icbc`/`use_rap_aero_icbc` (`:2477-2495`), which ArWen refuses, and forces 0 again under MYNN with `bl_mynn_mixscalars = 1` (`:2497-2511`); at ArWen's identity WRF's own value is 0 too |
 | `interp_method_type` | 2 | SINT nest interpolation only |
 | `input_from_file` | .true. | per-domain real init is the T branch |
-| every `&stoch` selector | 0 | no stochastic physics (seed keys drop as inert) |
+| `&stoch` selectors (`sppt`, `skebs`, `spp`, `spp_conv`, `spp_pbl`, `spp_lsm`, `rand_perturb`, `pert_*`) | 0 | recognised; an active selector is refused (exit 2) before any download or GPU work, because the spread amplitudes have not been calibrated against observations. All-off controls run the ordinary forecast. See [stochastic import](../ensemble-wrf-stochastic-import.md) |
 
 Init-side constants frozen at the WRF reference behavior (no namelist
 counterpart is honored): base-state `iso_temp = 200 K` and
@@ -900,7 +914,8 @@ A root loaded from a prebuilt static cache that does not record its smoothing re
 Moving nests,
 vertical nest refinement, FDDA nudging
 (active `grid_fdda`/`grid_sfdda`/`obs_nudge_opt` refuse; inert keys
-drop), stochastic physics (SPP/SPPT/SKEBS), `mp_zero_out` (documented
+drop), active `&stoch` selectors (refused with the calibration reason; see the
+`&stoch` row above), unimplemented stochastic field and boundary consumers, `mp_zero_out` (documented
 absent -- ArWen relies on PD transport), urban/lake/seaice physics,
 auxiliary I/O streams (`auxhist*`/`auxinput*`, `iofields_filename`;
 ArWen writes one fixed wrfout frame per file per domain -- fields are

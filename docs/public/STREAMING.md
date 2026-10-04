@@ -123,6 +123,13 @@ schedule alone. Its exit code is **0** ready (or a source that cannot be
 asked), **75** not ready yet (with `retry_after_seconds`), **2** refused: the
 window can never start, and `refusal` says why.
 
+A time-lagged or multi-model ensemble fetches one window per member, and the
+question answers for all of them: ready only when every member's window is,
+with the exit code of the worst. The document is the deciding member's, with
+`state`, `ready`, `expected_ready_at`, `retry_after_seconds` and `refusal`
+answering for the whole roster, and a `recipe` block whose `member_windows`
+holds each member's own document.
+
 ## Waiting at a seam
 
 A forecast that reaches a boundary interval not there yet waits between two

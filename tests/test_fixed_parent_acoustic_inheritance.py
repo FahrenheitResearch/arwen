@@ -160,8 +160,10 @@ def _parent_checkpoint(tmp_path, monkeypatch, producer, choice, *, resumed=False
             host_store=False)
     labels = None if choice == "legacy" else exp.auto_epssm
     output_dir = parent_dir / "run"
+    # A prepared case carries its grid; the runtime hands it to the
+    # ensemble member hook on every single-domain run.
     prepared = SimpleNamespace(
-        cfg=cfg, initial_result=SimpleNamespace(
+        cfg=cfg, grid=None, initial_result=SimpleNamespace(
             state=state, initial_perturbation=None))
     if choice == "legacy":
         # The pre-label producer's API writes the same numeric checkpoint.

@@ -30,6 +30,8 @@ that predates the entry is refused by name with the remedy
 from __future__ import annotations
 
 import ctypes
+from contextlib import contextmanager
+from contextvars import ContextVar
 import os
 from pathlib import Path
 from typing import Final
@@ -39,6 +41,23 @@ import numpy as np
 
 CPU_BACKEND_ABI: Final[int] = 1
 CPU_BRIDGE_ENV: Final[str] = "GPUWM_CPU_PREPROCESS_BRIDGE"
+_selected_cpu_bridge = ContextVar("selected_preparation_cpu_bridge", default=None)
+_selected_cpu_worker_cap = ContextVar("selected_preparation_cpu_worker_cap", default=None)
+
+
+@contextmanager
+def cpu_bridge_scope(path, *, worker_cap=None):
+    """Keep one preparation's selected bridge for its default native helpers."""
+    if path is None:
+        yield
+        return
+    token = _selected_cpu_bridge.set(resolve_cpu_bridge(path))
+    worker_token = _selected_cpu_worker_cap.set(worker_cap)
+    try:
+        yield
+    finally:
+        _selected_cpu_bridge.reset(token)
+        _selected_cpu_worker_cap.reset(worker_token)
 
 _ERRORS = {
     1: "null buffer",
@@ -102,6 +121,7 @@ WATER_BODY_STAT_SLOTS: Final[int] = 7
 _WPS_OPERATOR_CODES = {
     "sixteen_pt": 0, "four_pt": 1, "average_4pt": 2,
     "wt_average_4pt": 3, "wt_average_16pt": 4, "search": 5,
+    "nearest_neighbor": 6,
 }
 _WPS_UNKNOWN_OPERATOR = 255
 _WPS_CHAIN_MODES = {"plain": 0, "land": 1, "skin": 2}
@@ -148,6 +168,8 @@ def resolve_cpu_bridge(path: Path | str | None = None) -> Path:
 
     from gpuwm.bridges import cpu_bridge_remedy, find_artifact
 
+    if path is None:
+        path = _selected_cpu_bridge.get()
     filename = _library_names()[0]
     if path is not None:
         explicit = Path(path)
@@ -178,31 +200,22 @@ def resolve_cpu_bridge(path: Path | str | None = None) -> Path:
         + rendered + "\n" + cpu_bridge_remedy(filename))
 
 
-#: The most threads the CPU preparation starts on its own, in the native
-#: transforms here and in the setup column helpers
-#: (:func:`gpuwm.ingest.real.initialize_real`).  Its peak host RAM grows
-#: with its thread count, and every calibration row behind
-#: ``IngestMemoryEstimate.host_preprocess_bytes`` in
-#: :mod:`gpuwm.core.preflight` was measured at eight.  Sized from the
-#: machine instead, a 64-vCPU host prepared a 744x594x49 domain from 6 h
-#: of real GFS at a peak 10% over the eight-thread one and 1.04 times
-#: the estimate ``gpuwm check`` and ``gpuwm domain`` size RAM against,
-#: and no faster on that shared host.  An explicit ``workers`` (``--preprocess-workers``)
-#: still goes above it; that is a choice the estimate does not price.
+#: The reference width of the saved host-RAM calibration. Runtime uses
+#: the CPU and memory budget, with extra worker scratch priced in preflight.
 AUTOMATIC_PREPARATION_WORKERS: Final[int] = 8
 
 
 def available_cpu_count() -> int:
-    """The CPUs this process may run on (its affinity where the OS has one)."""
-    try:
-        return max(1, len(os.sched_getaffinity(0)))
-    except (AttributeError, OSError):
-        return max(1, int(os.cpu_count() or 1))
+    """The CPU capacity allowed by affinity and every cgroup quota."""
+    from gpuwm.ingest.preparation_workers import cpu_budget
+    return cpu_budget()["available_cpus"]
 
 
 def automatic_workers() -> int:
     """Threads a CPU preparation uses when no count was given."""
-    return min(available_cpu_count(), AUTOMATIC_PREPARATION_WORKERS)
+    from gpuwm.ingest.preparation_workers import PREPARATION_THREADS_ENV, effective_workers
+    configured = os.environ.get(PREPARATION_THREADS_ENV, "")
+    return effective_workers(int(configured)) if configured.isdecimal() and int(configured) > 0 else effective_workers()
 
 
 def host_step_workers(backend=None) -> int:
@@ -229,7 +242,10 @@ def _workers(value: int | None, independent_count: int) -> int:
     value = int(value)
     if value < 1:
         raise ValueError("workers must be positive")
-    return min(value, independent_count)
+    from gpuwm.ingest.preparation_workers import effective_workers
+    value = min(effective_workers(value), independent_count)
+    cap = _selected_cpu_worker_cap.get()
+    return value if cap is None else min(value, cap)
 
 
 def _host_f32(value) -> np.ndarray:
@@ -718,6 +734,24 @@ class CpuPreprocessBackend:
             raise ValueError(
                 f"parallel CPU {operation} failed: {detail}: {message}")
         raise ValueError(f"parallel CPU {operation} failed: {detail}")
+
+    def aerosol_surface_mass(self, number, phb, inverse_density, dx, dy):
+        """Operational WRF's REAL surface emission from monthly number."""
+        try:
+            entry = self._library.gpuwm_aerosol_surface_mass_f32
+        except AttributeError:
+            raise RuntimeError("CPU bridge lacks aerosol surface emission; rebuild the preprocessing bridge") from None
+        arrays = [_host_f32(value) for value in
+                  (number, phb[0], phb[1], inverse_density)]
+        if not arrays[0].ndim == 2 or any(a.shape != arrays[0].shape for a in arrays):
+            raise ValueError("surface aerosol operands must share the mass grid")
+        output = np.empty_like(arrays[0])
+        entry.argtypes = [ctypes.c_void_p] * 5 + [ctypes.c_size_t] + [ctypes.c_float] * 3
+        entry.restype = ctypes.c_int32
+        code = entry(*(a.ctypes.data for a in arrays), output.ctypes.data,
+                     output.size, 9.81, float(dx), float(dy))
+        self._raise_native(code, "aerosol surface emission")
+        return output
 
     def read_wps_intermediate(self, path):
         """Decode every field record of a WPS intermediate (IFV=5) file.

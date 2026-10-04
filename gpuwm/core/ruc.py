@@ -215,7 +215,7 @@ class RucInitialization:
 
 @dataclass(frozen=True)
 class RucSurfaceParameters:
-    """Dominant-category outputs from WRF ``soilvegin``."""
+    """Surface and soil outputs from WRF ``soilvegin``."""
 
     iforest: np.ndarray
     emiss: np.ndarray
@@ -836,21 +836,28 @@ def ruc_surface_parameters(
     mminlu: str = "MODIFIED_IGBP_MODIS_NOAH",
     mosaic_lu: int = 0,
     mosaic_soil: int = 0,
+    landusef=None,
+    soilctop=None,
     parameters: RucParameterBundle | None = None,
     arrays=None,
 ) -> RucSurfaceParameters:
-    """Transcribe WRF ``soilvegin`` for the first dominant-category lane.
+    """Transcribe WRF ``soilvegin``, preserving ordered mosaic mixtures.
 
-    All arithmetic follows WRF's default-real (float32) evaluation order.
-    The two mosaic modes remain fail-closed because they are outside the
-    pinned first RUC option lane.
+    Fractions have category-first shape. WRF's dominant-category defaults
+    remain unchanged; enabled mosaics require the original source fractions.
     """
+    from gpuwm.core.ruc_mosaic import mosaic_option, surface_mixture
 
     np = arrays if arrays is not None else _NUMPY
-    if type(mosaic_lu) is not int or mosaic_lu != 0:
-        raise ValueError("RUC surface setup currently requires mosaic_lu=0")
-    if type(mosaic_soil) is not int or mosaic_soil != 0:
-        raise ValueError("RUC surface setup currently requires mosaic_soil=0")
+    mosaic_option(mosaic_lu, "mosaic_lu")
+    mosaic_option(mosaic_soil, "mosaic_soil")
+    if arrays is not None and (mosaic_lu or mosaic_soil):
+        from gpuwm.core.ruc_gpu import ruc_surface_parameters_cuda
+        return ruc_surface_parameters_cuda(
+            isltyp, ivgtyp, shdmin, shdmax, vegfrac, znt, lai,
+            rdlai2d=rdlai2d, iswater=iswater, mminlu=mminlu,
+            mosaic_lu=mosaic_lu, mosaic_soil=mosaic_soil,
+            landusef=landusef, soilctop=soilctop, parameters=parameters)
     if type(rdlai2d) is not bool:
         raise TypeError("rdlai2d must be bool")
 
@@ -1017,7 +1024,7 @@ def ruc_surface_parameters(
         output_flat[name][:] = np.where(
             solid, value, output_flat[name]).astype(np.float32)
 
-    return RucSurfaceParameters(
+    result = RucSurfaceParameters(
         iforest=forest,
         emiss=output["emiss"],
         pc=output["pc"],
@@ -1033,14 +1040,39 @@ def ruc_surface_parameters(
         ref=output["ref"],
         wilt=output["wilt"],
     )
+    if mosaic_lu or mosaic_soil:
+        surface_mixture(
+            result, isltyp=soil_type, shdmin=minimum_green,
+            shdmax=maximum_green, vegfrac=green_fraction,
+            znt=incoming_roughness, lai=incoming_lai,
+            vegetation=vegetation, soil=bundle.soil,
+            mosaic_lu=mosaic_lu, mosaic_soil=mosaic_soil,
+            landusef=landusef, soilctop=soilctop,
+            iswater=water_category, rdlai2d=rdlai2d)
+    return result
+
 
 
 def ruc_soil_properties(
     values: Mapping[str, object],
     *,
     riw: float = 0.9,
+    spp_lsm: int = 0,
+    rstochcol=None,
+    fieldcol_sf=None,
+    soilprop: str = "wrf_461",
 ) -> RucSoilProperties:
     """Transcribe deterministic WRF ``soilprop`` in float32.
+
+    ``soilprop`` names the WRF lineage (:data:`gpuwm.core.ruc_tier.
+    RUC_SOILPROP_FORMS`): ``wrf_45`` (v4.5.2 ``:6154``, ``:6213-6216``,
+    ``:6245``) normalises water diffusivity and conductivity by the moisture
+    above the residual and uses mineral conductivity 2.0 at every quartz
+    fraction; ``wrf_461`` (``:6198-6202``, ``:6261-6267``, ``:6289``) uses
+    total moisture over porosity and 3.0 below 20 percent quartz.  The
+    transcription keeps v4.6.1, the lineage its oracle was recorded with, as
+    its default; the forecast runtime passes ``RunConfig.ruc_soilprop``
+    (default ``wrf_45``) through :func:`gpuwm.core.ruc_runtime.ruc_lsm_step`.
 
     Profile arrays use gpuwm soil-first order
     ``(9, ...horizontal...)``.  WRF initializes all four output profiles to
@@ -1049,6 +1081,10 @@ def ruc_soil_properties(
     value while computing hydraulic conductivity at all nine levels.
     """
 
+    from gpuwm.core.ruc_spp import validate_spp_mode, hydraulic_spp
+    from gpuwm.core.ruc_tier import ruc_soilprop_form
+    enabled_spp = validate_spp_mode(spp_lsm)
+    v461 = ruc_soilprop_form(soilprop) == "wrf_461"
     ice_water_ratio = np.float32(riw)
     if not np.isfinite(ice_water_ratio) or ice_water_ratio <= 0.0:
         raise ValueError("RUC soilprop riw must be finite and positive")
@@ -1132,7 +1168,8 @@ def ruc_soil_properties(
                 np.float32(2700.0) - np.float32(np.float32(0.947) * gamd)
             )
         )
-        mineral = np.float32(2.0 if qwrtz > np.float32(0.2) else 3.0)
+        mineral = np.float32(
+            3.0 if v461 and not qwrtz > np.float32(0.2) else 2.0)
         # Every transcendental in soilprop rounds a float64 evaluation once.
         # See _RUC_PROVISIONAL_TRANSCENDENTALS: this is NOT glibc, it is the
         # closest of the available float32 kernels and the only one that is
@@ -1246,22 +1283,31 @@ def ruc_soil_properties(
             if np.float32(ws - ice) < np.float32(0.12):
                 diffu = zero
             else:
-                h = np.float32(max(
-                    zero,
-                    np.float32(soilmoism + qmin - ice)
-                    / np.float32(max(minimum, np.float32(ws - ice))),
-                ))
+                if v461:
+                    porosity = ws
+                    h = np.float32(max(
+                        zero,
+                        np.float32(soilmoism + qmin - ice)
+                        / np.float32(max(minimum, np.float32(ws - ice))),
+                    ))
+                else:
+                    porosity = dqm
+                    h = np.float32(max(
+                        zero,
+                        np.float32(soilmoism - ice)
+                        / np.float32(max(minimum, np.float32(dqm - ice))),
+                    ))
                 facd = one
                 if ice != zero:
                     facd = np.float32(
                         one - ice / np.float32(max(minimum, soilmoism))
                     )
-                ame = np.float32(max(minimum, np.float32(ws - ice)))
+                ame = np.float32(max(minimum, np.float32(porosity - ice)))
                 diffu = np.float32(np.float32(-bclh * ksat) * psis)
                 diffu = np.float32(diffu / ame)
                 diffu = np.float32(
                     diffu * np.float32(np.power(
-                        np.float64(np.float32(ws / ame)), np.float64(3.0)
+                        np.float64(np.float32(porosity / ame)), np.float64(3.0)
                     ))
                 )
                 diffu = np.float32(
@@ -1289,7 +1335,8 @@ def ruc_soil_properties(
                             minimum, profile_flat["soilmois"][level, column]
                         ))
                     )
-                am = np.float32(max(minimum, np.float32(ws - ice)))
+                am = np.float32(max(
+                    minimum, np.float32((ws if v461 else dqm) - ice)))
                 hydro = np.float32(ksat / am)
                 hydro = np.float32(
                     hydro * np.float32(np.power(
@@ -1306,6 +1353,9 @@ def ruc_soil_properties(
                 if hydro < np.float32(1.0e-10):
                     hydro = zero
             output_flat["hydro"][level, column] = hydro
+
+    if enabled_spp:
+        hydraulic_spp(outputs["hydro"], rstochcol, fieldcol_sf)
 
     for name, array in outputs.items():
         if not np.all(np.isfinite(array)):
@@ -2940,6 +2990,10 @@ def ruc_soil_step(
     myj: bool = False,
     mminlu: str = "MODIFIED_IGBP_MODIS_NOAH",
     parameters: RucParameterBundle | None = None,
+    spp_lsm: int = 0,
+    rstochcol=None,
+    fieldcol_sf=None,
+    soilprop: str = "wrf_461",
 ) -> RucSoilStep:
     """Run the complete deterministic snow-free WRF RUC land column."""
 
@@ -3009,7 +3063,9 @@ def ruc_soil_step(
         **{name: columns[name] for name in (
             "qwrtz", "rhocs", "dqm", "qmin", "psis", "bclh", "ksat"
         )},
-    }, riw=float(np.float32(np.float32(900.0) * np.float32(1.0e-3))))
+    }, riw=float(np.float32(np.float32(900.0) * np.float32(1.0e-3))),
+       spp_lsm=spp_lsm, rstochcol=rstochcol, fieldcol_sf=fieldcol_sf,
+       soilprop=soilprop)
 
     ncolumn = int(np.prod(horizontal_shape))
     column_flat = {name: array.reshape(ncolumn) for name, array in columns.items()}
@@ -6760,6 +6816,10 @@ def ruc_snow_soil_step(
     cw: float = 4.183e6,
     mminlu: str = "MODIFIED_IGBP_MODIS_NOAH",
     parameters: RucParameterBundle | None = None,
+    spp_lsm: int = 0,
+    rstochcol=None,
+    fieldcol_sf=None,
+    soilprop: str = "wrf_461",
 ) -> RucSnowSoilStep:
     """Run the complete deterministic snow-covered WRF RUC land column.
 
@@ -6875,7 +6935,8 @@ def ruc_snow_soil_step(
         **{name: columns[name] for name in (
             "qwrtz", "rhocs", "dqm", "qmin", "psis", "bclh", "ksat"
         )},
-    }, riw=float(riw))
+    }, riw=float(riw), spp_lsm=spp_lsm, rstochcol=rstochcol,
+       fieldcol_sf=fieldcol_sf, soilprop=soilprop)
 
     ncolumn = int(np.prod(horizontal_shape))
     column_flat = {name: array.reshape(ncolumn) for name, array in columns.items()}
@@ -7537,6 +7598,10 @@ def ruc_surface_temperature_step(
     leaves: "Mapping[str, object] | None" = None,
     stages: "Mapping[str, object] | None" = None,
     arrays=None,
+    spp_lsm: int = 0,
+    pattern_spp_lsm=None,
+    field_sf=None,
+    soilprop: str = "wrf_461",
 ) -> RucSurfaceTemperatureStep:
     """Transcribe WRF ``sfctmp`` end to end.
 
@@ -7578,9 +7643,9 @@ def ruc_surface_temperature_step(
     ``snowseaice`` runs, on every one of the four paths.
     ``edir1``, ``ec1``, ``ett1``  the same, except on the two sea-ice paths
     where ``:1863-1865``/``:1961-1963``/``:2176-2178`` force them.
-    ``isltyp``, ``ktau``, ``i``, ``j``, ``spp_lsm``, ``rstochcol``,
-    ``fieldcol_sf``  carried through to leaves that gpuwm has already shown
-    do not read them.
+    ``isltyp``, ``ktau``, ``i``, ``j`` are unobserved by the deterministic
+    leaves. SPP patterns are explicit optional arguments; when enabled the
+    historical WRF hydraulic operator runs before soil moisture transport.
 
     ``s``, ``sublim`` and ``evapl`` are NOT in that list and are required
     inputs: ``snowseaice`` reads ``s``; ``sublim`` survives the snow-free
@@ -7692,6 +7757,25 @@ def ruc_surface_temperature_step(
     assert shape is not None
     horizontal_shape = shape[1:]
     ncolumn = int(np.prod(horizontal_shape))
+    from gpuwm.core.ruc_spp import pattern_inputs
+    spp_pattern, spp_field = pattern_inputs(
+        spp_lsm, pattern_spp_lsm, field_sf, shape, arrays=np)
+    if spp_pattern is not None:
+        spp_pattern = spp_pattern.reshape(nzs, ncolumn)
+    spp_diagnostic = (None if spp_field is None else
+                      np.array(spp_field.reshape(nzs, ncolumn), copy=True))
+
+    def _spp_arguments(take):
+        if spp_pattern is None:
+            return {}
+        return {"spp_lsm": 1, "rstochcol": spp_pattern[:, take],
+                "fieldcol_sf": None if spp_diagnostic is None else
+                spp_diagnostic[:, take].copy()}
+
+    def _spp_scatter(take, arguments):
+        if spp_diagnostic is not None:
+            spp_diagnostic[:, take] = arguments["fieldcol_sf"]
+
     columns = {
         name: _horizontal_float_field(
             values[name], horizontal_shape, name, arrays=arrays,
@@ -7847,6 +7931,7 @@ def ruc_surface_temperature_step(
             gswnew,
             arrays=arrays,
         )
+        spp_arguments = _spp_arguments(mask)
         free = leaf["soil"](
             {
                 "soilmois": state["soilm1d"][:, mask],
@@ -7898,7 +7983,10 @@ def ruc_surface_temperature_step(
             myj=myj,
             mminlu=mminlu,
             parameters=bundle,
+            soilprop=soilprop,
+            **spp_arguments,
         )
+        _spp_scatter(mask, spp_arguments)
         for name, source in (
             ("soilm1d", "soilmois"), ("ts1d", "tso"),
             ("smfrkeep", "smfrkeep"), ("keepfr", "keepfr"),
@@ -8007,6 +8095,7 @@ def ruc_surface_temperature_step(
         snfr = np.where(mosaic[mask], one, state["snowfrac"][mask]).astype(
             np.float32
         )
+        spp_arguments = _spp_arguments(mask)
         packed = leaf["snow_soil"](
             {
                 "soilmois": state["soilm1d"][:, mask],
@@ -8064,7 +8153,10 @@ def ruc_surface_temperature_step(
             cw=cw,
             mminlu=mminlu,
             parameters=bundle,
+            soilprop=soilprop,
+            **spp_arguments,
         )
+        _spp_scatter(mask, spp_arguments)
         for name, source in (
             ("soilm1d", "soilmois"), ("ts1d", "tso"),
             ("smfrkeep", "smfrkeep"), ("keepfr", "keepfr"),
@@ -8372,6 +8464,7 @@ def ruc_surface_temperature_step(
 
     mask = _selected(bare_land, np, runs_bare_land)
     if mask.size:
+        spp_arguments = _spp_arguments(mask)
         bare = leaf["soil"](
             {
                 "soilmois": state["soilm1d"][:, mask],
@@ -8422,7 +8515,10 @@ def ruc_surface_temperature_step(
             myj=myj,
             mminlu=mminlu,
             parameters=bundle,
+            soilprop=soilprop,
+            **spp_arguments,
         )
+        _spp_scatter(mask, spp_arguments)
         for name, source in (
             ("soilm1d", "soilmois"), ("ts1d", "tso"),
             ("smfrkeep", "smfrkeep"), ("keepfr", "keepfr"),
@@ -8523,6 +8619,8 @@ def ruc_surface_temperature_step(
     for name, ok in zip(checked, finite.tolist()):
         if not ok:
             raise ValueError(f"RUC sfctmp produced non-finite {name}")
+    if spp_field is not None:
+        spp_field[...] = spp_diagnostic.reshape(shape)
     return result
 
 
@@ -8820,6 +8918,8 @@ def ruc_land_surface_step(
     rdlai2d: bool = False,
     mosaic_lu: int = 0,
     mosaic_soil: int = 0,
+    landusef=None,
+    soilctop=None,
     iswater: int | None = None,
     isice: int | None = None,
     xice_threshold: float = 0.5,
@@ -8833,6 +8933,10 @@ def ruc_land_surface_step(
     leaves: "Mapping[str, object] | None" = None,
     stages: "Mapping[str, object] | None" = None,
     arrays=None,
+    spp_lsm: int = 0,
+    pattern_spp_lsm=None,
+    field_sf=None,
+    soilprop: str = "wrf_461",
 ) -> RucLandSurfaceStep:
     """Transcribe WRF ``LSMRUC``, ``phys/module_sf_ruclsm.F:84-1175``.
 
@@ -8849,12 +8953,9 @@ def ruc_land_surface_step(
     for the historical ``gpuwm/data/ruc/oracle`` fixture; the forecast
     runtime always selects ARW.
 
-    ``mosaic_lu`` and ``mosaic_soil`` must be 0.  That is not an extra
-    restriction: :func:`ruc_surface_parameters` is fail-closed on
-    ``SOILVEGIN``'s mosaic arms, and ``LSMRUC``'s irrigation block
-    (``:984-1009``) is gated on the same ``mosaic_lu == 1``, so the irrigation
-    block is unreachable wherever ``SOILVEGIN`` is.  It is therefore not
-    transcribed either.
+    Enabled ``mosaic_lu`` and ``mosaic_soil`` require category-first
+    ``landusef`` and ``soilctop``. WRF mixes parameters before the single
+    prognostic column and irrigates root layers after SFCTMP.
 
     **Two WRF defects reproduced on purpose.**
 
@@ -8966,10 +9067,11 @@ def ruc_land_surface_step(
             "dependence on WRF's uninitialised ilnb and is refused on a "
             "non-host array namespace; the forecast runtime uses "
             "ilnb_chain=False, which is gpuwm's defined behaviour")
-    if type(mosaic_lu) is not int or mosaic_lu != 0:
-        raise ValueError("RUC driver currently requires mosaic_lu=0")
-    if type(mosaic_soil) is not int or mosaic_soil != 0:
-        raise ValueError("RUC driver currently requires mosaic_soil=0")
+    from gpuwm.core.ruc_mosaic import mosaic_option, mosaic_fractions, irrigate
+    mosaic_option(mosaic_lu, "mosaic_lu")
+    mosaic_option(mosaic_soil, "mosaic_soil")
+    from gpuwm.core.ruc_tier import ruc_soilprop_form
+    ruc_soilprop_form(soilprop)
     if myj is not False:
         # Same gate as ``ruc_surface_temperature_step``: ``ruc_soil_step``
         # and ``ruc_snow_soil_step`` are fail-closed on ``myj=True``, so the
@@ -9071,6 +9173,13 @@ def ruc_land_surface_step(
     assert shape is not None
     horizontal_shape = shape[1:]
     ncolumn = int(np.prod(horizontal_shape))
+    if mosaic_lu:
+        landusef = mosaic_fractions(landusef, horizontal_shape, "landusef",
+                                   ncategory, arrays=np).reshape(-1, ncolumn)
+    if mosaic_soil:
+        soilctop = mosaic_fractions(soilctop, horizontal_shape, "soilctop",
+                                   len(bundle.soil.rows), arrays=np).reshape(-1, ncolumn)
+
 
     # The reshape and the copy are what the driver keeps; the finiteness of
     # the field it copied FROM is what the batch decides, and the two are the
@@ -9288,6 +9397,9 @@ def ruc_land_surface_step(
         soil_category, vegetation_category, columns["shdmin"],
         columns["shdmax"], columns["vegfra"], columns["znt"], columns["lai"],
         rdlai2d=rdlai2d, iswater=water_category, mminlu=mminlu,
+        mosaic_lu=mosaic_lu, mosaic_soil=mosaic_soil,
+        landusef=(None if landusef is None else np.asarray(landusef).reshape(-1, ncolumn)),
+        soilctop=(None if soilctop is None else np.asarray(soilctop).reshape(-1, ncolumn)),
         parameters=bundle, arrays=arrays,
     )
     iforest = np.asarray(surface.iforest, dtype=np.int32)
@@ -9491,15 +9603,30 @@ def ruc_land_surface_step(
             values_out[name] = local[name][take]
         return values_out
 
+    from gpuwm.core.ruc_spp import pattern_inputs
+    spp_pattern, spp_field = pattern_inputs(
+        spp_lsm, pattern_spp_lsm, field_sf, (nzs,) + horizontal_shape, arrays=np)
+    if spp_pattern is not None:
+        spp_pattern = spp_pattern.reshape(nzs, ncolumn)
+    spp_diagnostic = (None if spp_field is None else
+                      np.array(spp_field.reshape(nzs, ncolumn), copy=True))
+
     def _dispatch(take, seeds):
-        return ruc_surface_temperature_step(
+        spp_arguments = {} if spp_pattern is None else {
+            "spp_lsm": 1, "pattern_spp_lsm": spp_pattern[:, take],
+            "field_sf": None if spp_diagnostic is None else spp_diagnostic[:, take].copy()}
+        step_result = ruc_surface_temperature_step(
             _sfctmp_values(take), delt=float(timestep), conflx=conflx[take],
             ivgtyp=vegetation_category[take], iland=iland[take],
             nroot=nroot[take], ilnb=seeds, isice=ice_category,
             c1sn=c1sn, c2sn=c2sn, myj=myj, isncovr_opt=isncovr_opt,
             mminlu=mminlu, parameters=bundle, leaves=leaves, stages=stages,
-            arrays=arrays,
+            soilprop=soilprop,
+            arrays=arrays, **spp_arguments,
         )
+        if spp_diagnostic is not None:
+            spp_diagnostic[:, take] = spp_arguments["field_sf"]
+        return step_result
 
     if run.size:
         if ilnb_chain:
@@ -9568,6 +9695,17 @@ def ruc_land_surface_step(
         columns["lh"][run] = np.asarray(surface_step.qfx, dtype=np.float32)
         columns["hfx"][run] = np.asarray(surface_step.hfx, dtype=np.float32)
         sflx[run] = np.asarray(surface_step.s, dtype=np.float32)
+
+    if mosaic_lu:
+        fractions = mosaic_fractions(
+            np.asarray(landusef).reshape(-1, ncolumn), (ncolumn,),
+            "landusef", len(vegetation.rows), arrays=np)
+        irrigate(soilm1d, landusef=fractions, vegfrac=columns["vegfra"],
+                 shdmin=columns["shdmin"], shdmax=columns["shdmax"],
+                 wilt=wilt, qmin=qmin, nroot=nroot,
+                 crop=int(vegetation.scalars["CROP"]),
+                 natural=int(vegetation.scalars["NATURAL"]),
+                 active=land_here, arrays=np)
 
     # ``:1024-1035`` soil moisture diagnostics.
     smavail = np.zeros(ncolumn, dtype=np.float32)
@@ -9691,6 +9829,8 @@ def ruc_land_surface_step(
     for name, ok in zip(checked, finite.tolist()):
         if not ok:
             raise ValueError(f"RUC driver produced non-finite {name}")
+    if spp_field is not None:
+        spp_field[...] = spp_diagnostic.reshape((nzs,) + horizontal_shape)
     return result
 
 

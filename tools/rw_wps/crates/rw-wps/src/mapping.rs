@@ -170,6 +170,10 @@ pub struct VerticalCoordinate {
     /// ladder its records carry in full.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub era_ladders: Vec<Vec<f64>>,
+    /// Native model lid, the interface above the highest decoded mass level.
+    /// Direct preparation checks mass-level interpolation separately.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_top_pressure_pa: Option<f64>,
     /// Inline hybrid A coefficients in Pa (declared-data fallback; the
     /// primary channel is the GRIB pv coordinate octets read at decode).
     #[serde(default)]
@@ -806,11 +810,12 @@ pub fn validate_mapping(mapping: &NativeMapping) -> ValidationReport {
         if matches!(field.missing, MissingPolicy::PreserveMask)
             && field.location != GridLocation::Soil
             && !MASKED_WATER_STATE_FIELDS.contains(&name.as_str())
+            && !MASKED_NUMBER_FIELDS.contains(&name.as_str())
         {
             error(
                 "preserve_mask_location",
                 Some(name),
-                "preserve_mask is restricted to soil fields repaired by the land/water-aware initializer and the water-state fields read over water only"
+                "preserve_mask is restricted to soil fields repaired by the land/water-aware initializer, analyzed number fields repaired by the metgrid interpolation chain, and the water-state fields read over water only"
                     .to_owned(),
             );
         }
@@ -1004,6 +1009,19 @@ pub fn validate_mapping(mapping: &NativeMapping) -> ValidationReport {
                 "empty_initialization_policy",
                 Some(field),
                 "initialization policy must not be empty".to_owned(),
+            );
+        }
+    }
+
+    if let Some(top) = mapping.coordinates.vertical.model_top_pressure_pa {
+        if !top.is_finite() || top <= 0.0 || !matches!(
+            mapping.coordinates.vertical.kind,
+            VerticalKind::ModelLevel | VerticalKind::HybridSigmaPressure
+        ) {
+            error(
+                "invalid_native_model_top",
+                None,
+                "model_top_pressure_pa must be a positive native model-level interface pressure".to_owned(),
             );
         }
     }
@@ -2312,6 +2330,17 @@ pub const MASKED_WATER_STATE_FIELDS: [&str; 5] = [
     "sea_surface_temperature",
 ];
 
+/// Number fields retain their source mask until the metgrid horizontal
+/// interpolation chain tries its finite neighboring donors before filling zero.
+/// Kept equal to `gpuwm.ingest.analyzed_numbers.CANONICAL_NUMBER_FIELDS`.
+pub const MASKED_NUMBER_FIELDS: [&str; 5] = [
+    "cloud_droplet_number",
+    "cloud_ice_number",
+    "rain_number",
+    "water_friendly_aerosol_number",
+    "ice_friendly_aerosol_number",
+];
+
 fn canonical_wrf_requirements() -> Vec<FieldRequirement> {
     let three_d = [
         ("air_temperature", "K"),
@@ -2491,6 +2520,7 @@ pub fn mapping_template(format: SourceFormat) -> NativeMapping {
                 positive: Some(PositiveDirection::Down),
                 levels: Vec::new(),
                 era_ladders: Vec::new(),
+                model_top_pressure_pa: None,
                 hybrid_a: Vec::new(),
                 hybrid_b: Vec::new(),
                 hybrid_a_field: None,
@@ -2901,6 +2931,24 @@ Param| Type |Level1|Level2| Name     | Units    | Description             |Discp
                 .iter()
                 .any(|record| record.contains("flash_lat"))
         );
+    }
+
+    #[test]
+    fn native_model_top_is_an_explicit_positive_interface() {
+        let mut mapping = mapping_template(SourceFormat::Grib2);
+        mapping.coordinates.vertical.kind = VerticalKind::ModelLevel;
+        mapping.coordinates.vertical.model_top_pressure_pa = Some(1500.0);
+        let text = serde_json::to_string(&mapping).unwrap();
+        let read: NativeMapping = serde_json::from_str(&text).unwrap();
+        assert_eq!(read.coordinates.vertical.model_top_pressure_pa, Some(1500.0));
+        let invalid = |mapping: &NativeMapping| validate_mapping(mapping).errors
+            .iter().any(|item| item.code == "invalid_native_model_top");
+        assert!(!invalid(&mapping));
+        mapping.coordinates.vertical.model_top_pressure_pa = Some(0.0);
+        assert!(invalid(&mapping));
+        mapping.coordinates.vertical.model_top_pressure_pa = Some(1500.0);
+        mapping.coordinates.vertical.kind = VerticalKind::Pressure;
+        assert!(invalid(&mapping));
     }
 
     #[test]

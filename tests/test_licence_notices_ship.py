@@ -31,7 +31,7 @@ WHAT THIS FILE ASSERTS
     sits under a directory ``build_bridge_bundle`` actually walks.
 4.  The nineteen files that carry a per-file notice still carry it.
 5.  The Arm scope list in ``gpuwm/core/kernels/LICENSE-third-party.txt`` is
-    DERIVED FROM THE TREE, not typed: the fifteen files are exactly the ones
+    DERIVED FROM THE TREE, not typed: the sixteen files are exactly the ones
     that reproduce Arm's coefficient tables.  The FDLIBM list is pinned, and a
     kernel that starts defining an FDLIBM routine without joining it fails.
 6.  Every first-party crate carrying a third-party licence marker, and every
@@ -45,6 +45,10 @@ WHAT THIS FILE ASSERTS
     the current one, are this project's own work (ruling of 2026-09-12); an
     earlier development record said otherwise and was wrong, and the claim
     came back into the tree three times from that record before this pin.
+9.  The two generated notices survive their own generators.  The terminal
+    section's generator, which every version bump runs, replaces that
+    section and nothing after it; and the Zarr reader's notice reproduces
+    the binary notice as it is now, resolved from the lock as it is now.
 
 It reads text.  No CUDA, no compiler, no network, no device.
 """
@@ -53,6 +57,7 @@ from __future__ import annotations
 
 import pathlib
 import hashlib
+import importlib.util
 import json
 import re
 import tomllib
@@ -259,7 +264,8 @@ def test_the_binary_form_notice_covers_the_first_party_ports() -> None:
     text = _read(LICENSES / "THIRD-PARTY-LICENSES-bridge-binaries.txt")
     for token in ("UChicago Argonne", "Los Alamos National Security",
                   "NumPy Developers", "SIL OPEN FONT LICENSE",
-                  "rw-libm", "Arm Limited", "Alexei Sibidanov"):
+                  "rw-libm", "Arm Limited", "Alexei Sibidanov",
+                  "tools/grib1_bridge/src/glibc239_math.rs"):
         assert token in text, (
             f"the binary-form notice does not reproduce {token!r}; a compiled "
             "consumer never sees the source tree, so this is the only copy "
@@ -273,6 +279,8 @@ def test_the_binary_form_notice_covers_the_first_party_ports() -> None:
 #: transcribed work.  Measured on the 2.7.0 tree; a file that carries
 #: transcription joins the list, and a file that loses its header fails.
 NOTICE_CARRIERS: tuple[str, ...] = (
+    "gpuwm/core/spp_kernel_sources.py",
+    "gpuwm/ensemble/stochastic.py",
     "gpuwm/core/kernels/glibc_flt32.cuh",
     "gpuwm/core/kernels/glibc_trig_flt32.cuh",
     "gpuwm/core/kernels/thompson_aerosol_common.cuh",
@@ -435,6 +443,10 @@ _LICENCE_MARKER = re.compile(
 #: A first-party file announcing someone else's copyright and no NOTICE entry
 #: is the exact shape of the NumPy breach.
 MARKER_FILES: dict[str, str] = {
+    # Its pinned FP32 power is a native copy of the existing Arm MIT code.
+    # A source header alone would leave the compiled bridge unnotified.
+    "tools/grib1_bridge/src/glibc239_math.rs":
+        "tools/grib1_bridge/src/glibc239_math.rs",
     "tools/region_global_dealias/src/solver.rs": "UChicago Argonne",
     "tools/rustwx/crates/static-fields/src/projection/npmath.rs":
         "NumPy Developers",
@@ -902,3 +914,82 @@ def test_simulated_radar_writer_crates_resolve_from_the_public_source_tree() -> 
         replacement = config[registry]["replace-with"]
         directory = rust / config[replacement]["directory"]
         assert directory.is_dir(), f"offline source replacement is absent: {directory}"
+
+
+# ---------------------------------------------------------------------------
+# 9.  the generated notices survive their own generators
+# ---------------------------------------------------------------------------
+def _notice_tool(name: str):
+    """A generator under tools/, loaded by path: it is a script, not a module."""
+    path = ROOT / "tools" / name
+    spec = importlib.util.spec_from_file_location("licence_notice_" + path.stem, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_terminal_notice_generator_replaces_only_its_own_section() -> None:
+    """Every version bump runs tools/update_tui_license_notice.py.  It rewrote
+    the binary notice from section 5's heading to the end of the file, and the
+    simulated-radar vendor notices follow that section: opening 2.8.5 would
+    have deleted the BowEcho and recast-radar-tools notices and the bzip2 table
+    grant from the notice a compiled consumer receives."""
+    _requires_source_tree()
+    tool = _notice_tool("update_tui_license_notice.py")
+    path = LICENSES / "THIRD-PARTY-LICENSES-bridge-binaries.txt"
+    notice = path.read_bytes().decode("utf-8")
+    assert notice.count(tool.MARKER) == 1 and notice.count(tool.END) == 1, (
+        "section 5 of the binary notice needs one heading and one END line; "
+        "without the END line its generator cannot tell where to stop")
+    head, _, rest = notice.partition(tool.MARKER)
+    section, _, after = rest.partition(tool.END)
+    # The section the file carries, written back, is the file.
+    assert tool.compose(notice, tool.MARKER + section.rstrip() + "\n") == notice
+    # A new section leaves both sides of it byte for byte.
+    replaced = tool.compose(notice, tool.MARKER + "a new lock\n")
+    assert replaced == head + tool.MARKER + "a new lock\n\n" + tool.END + after
+    for name in ("NOTICE-BowEcho.txt", "NOTICE-recast-radar-tools.txt",
+                 "LICENSE-recast-radar-tools-bzip2.txt"):
+        assert _read(LICENSES / name) in replaced, (
+            f"regenerating section 5 drops {name} from the binary notice")
+    # With no END line it refuses; it does not truncate.
+    with pytest.raises(SystemExit, match="END line"):
+        tool.compose(head + tool.MARKER + section + after, tool.MARKER + "a new lock\n")
+    # A notice that has no section 5 yet gains one and loses nothing.
+    assert tool.compose(head, tool.MARKER + "a new lock\n") == (
+        head + tool.MARKER + "a new lock\n\n" + tool.END)
+
+
+def test_the_zarr_notice_reproduces_the_binary_notice_as_it_is_now() -> None:
+    """The Zarr reader's notice reproduces the binary notice whole, as the
+    retained record of the mapped engine it links, and names the lock it was
+    resolved from.  Nothing regenerated it when either moved: through 2.8.4
+    it shipped the binary notice of 2026-09-08, which by then counted 27
+    binaries in a bundle of 31 and lacked every notice added since, beside a
+    lock digest two lock edits old.  tools/release/bump_version.py now runs
+    its generator after the binary notice's; an edit to either file outside a
+    bump has to run it too."""
+    _requires_source_tree()
+    wheel_copy = LICENSES / "THIRD-PARTY-LICENSES-zarr-binary.txt"
+    bundle_copy = (ROOT / "tools" / "rustwx" / "assets" / "basemap"
+                   / "THIRD-PARTY-LICENSES-zarr-binary.txt")
+    assert wheel_copy.read_bytes() == bundle_copy.read_bytes(), (
+        "the two copies of the Zarr notice have drifted; regenerate both "
+        "with python tools/update_zarr_license_notice.py")
+    notice = wheel_copy.read_bytes().decode("utf-8")
+    remedy = "run python tools/update_zarr_license_notice.py"
+
+    lock = hashlib.sha256((ROOT / "tools/zarr_bridge/Cargo.lock").read_bytes()).hexdigest()
+    assert f"\nCargo.lock sha256 {lock}\n" in notice, (
+        "the Zarr notice was resolved from a different tools/zarr_bridge/Cargo.lock; "
+        + remedy)
+
+    binary = (LICENSES / "THIRD-PARTY-LICENSES-bridge-binaries.txt").read_bytes()
+    carried = re.findall(
+        r"^\[ZARR-\d+\] sha256 ([0-9a-f]{64})\nAs carried by:\n"
+        r"  licenses/THIRD-PARTY-LICENSES-bridge-binaries\.txt\n", notice, re.M)
+    assert len(carried) == 1, "the Zarr notice no longer reproduces the binary notice"
+    assert carried[0] == hashlib.sha256(binary).hexdigest(), (
+        "the Zarr notice reproduces an earlier binary notice; " + remedy)
+    assert binary.decode("utf-8").rstrip() in notice, (
+        "the Zarr notice names the binary notice's digest without its text; " + remedy)

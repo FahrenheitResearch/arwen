@@ -76,6 +76,7 @@ from gpuwm.ingest.memory_refusal import InitializationMemoryRefused
 from gpuwm.ingest.preparation_price import (
     price_forcing_preparation, price_preparation_floor)
 from gpuwm.ingest.preprocess_backend import (
+    preprocess_math_call,
     admit_preparation,
     preprocess_identity,
     release_backend_memory,
@@ -99,6 +100,7 @@ from gpuwm.native_domain_artifacts import (
 from gpuwm.native_hierarchy import hierarchy_moisture_floor_receipts
 from gpuwm.native_wrf_contract import (
     native_geometry_contract,
+    native_static_export_fields,
     require_land_terrain,
     validate_native_lambert_contract,
     validate_native_lambert_contracts,
@@ -974,7 +976,7 @@ def _series_row(hour: int, name: str) -> str:
 
 
 def _as_posted_plan(*, posting: Path, series: Path, cycle_time: datetime,
-                    roles: Mapping[str, Path]):
+                    roles: Mapping[str, Path], captured_decoder=None):
     """The input plan of an as-posted GFS preparation, from its first lead.
 
     ``posting`` is the as-posted fetch's ``posting/`` folder beside
@@ -987,6 +989,10 @@ def _as_posted_plan(*, posting: Path, series: Path, cycle_time: datetime,
     the series records the preparation reads, and the manifest the seal
     will write with every lead's payload digest (and the series digest,
     which follows them) not yet known.
+
+    A physical member may supply the decoder record from its pinned ordinary
+    source head. It still binds current configuration bytes and the complete
+    posting schedule, then checks the resulting plan against that source.
     """
 
     from gpuwm.ingest.boundary_stream import (
@@ -1045,7 +1051,8 @@ def _as_posted_plan(*, posting: Path, series: Path, cycle_time: datetime,
         identity["pressure_levels_hpa"] = [float(level) for level in levels]
         identity["top_pressure_pa"] = float(min(levels)) * 100.0
     files = {
-        role: {"name": path.name,
+        role: dict(captured_decoder) if role == "bridge" and captured_decoder is not None else {
+               "name": path.name,
                "sha256": None if role in _AS_POSTED_DERIVED_ROLES
                else _sha256(path)}
         for role, path in roles.items()
@@ -1543,11 +1550,12 @@ def _survey_static_catalog(exp, wps_namelist, geog_root, static_highres=None):
     return catalog
 
 
+@preprocess_math_call
 def prepare_gfs_wrf(
     *,
     series: Path,
     cycle: str,
-    bridge: Path,
+    bridge: Path | None,
     wps_namelist: Path,
     static_input: Path | None,
     static_receipt: Path | None,
@@ -1566,6 +1574,10 @@ def prepare_gfs_wrf(
     statics_corridor=None,
     preprocess_backend_reason: str | None = None,
     as_posted: Path | None = None,
+    physical_input_store: Path | None = None,
+    physical_output_store: Path | None = None,
+    physical_input_provider=None,
+    physical_member_index: int | None = None,
 ) -> dict[str, object]:
     """Build native GFS initial/boundary files and return the proof receipt.
 
@@ -1610,6 +1622,38 @@ def prepare_gfs_wrf(
     if (cycle_time.hour not in {0, 6, 12, 18}
             or cycle_time.minute != 0 or cycle_time.second != 0):
         raise ValueError("GFS cycle must be an exact 00/06/12/18 UTC cycle")
+    physical_provider = None
+    captured_decoder = None
+    if (physical_input_provider is None) != (physical_member_index is None):
+        raise ValueError("a physical input provider needs its original member index")
+    if physical_input_provider is not None:
+        if as_posted is None or physical_input_store is not None or physical_output_store is not None:
+            raise ValueError("a GFS posted physical provider needs as-posted input and its own member output")
+        from gpuwm.ensemble.posted_physical import PostedPhysicalProvider
+        physical_provider = (physical_input_provider if isinstance(physical_input_provider, PostedPhysicalProvider)
+                             else PostedPhysicalProvider.open(physical_input_provider,
+                                  cpu_bridge=cpu_preprocess_bridge, workers=preprocess_workers or 1))
+        source_context = physical_provider.source_context(physical_member_index)
+        if (source_context.trajectory.source != "gfs"
+                or source_context.trajectory.cycle.replace(tzinfo=None) != cycle_time):
+            raise ValueError("GFS member source or cycle differs from its pinned ordinary source")
+        member_output = Path(output_root).resolve()
+        for protected in (source_context.prepared_root, source_context.physical_stream.root, physical_provider.root):
+            if (member_output == protected or member_output.is_relative_to(protected)
+                    or protected.is_relative_to(member_output)):
+                raise ValueError("GFS member output must be separate from its checked source and provider")
+        captured_decoder = source_context.source_plan["manifest"]["files"].get("bridge")
+        if not isinstance(captured_decoder, dict):
+            raise ValueError("GFS source head has no captured decoder authority")
+        if bridge is not None:
+            bridge = Path(bridge)
+            if (bridge.name != captured_decoder.get("name")
+                    or bridge.exists() and (not bridge.is_file() or _sha256(bridge) != captured_decoder.get("sha256"))):
+                raise ValueError("GFS member decoder differs from its pinned ordinary source authority")
+        else:
+            bridge = Path(captured_decoder["name"])
+    elif bridge is None:
+        raise ValueError("GFS source preparation requires its Rust decoder bridge")
     base_roles = {
         "series": Path(series),
         "bridge": Path(bridge),
@@ -1633,22 +1677,26 @@ def prepare_gfs_wrf(
                 "an as-posted GFS preparation writes its input manifest at "
                 "its seal, so it is given no manifest digest to verify")
         for role, path in base_roles.items():
+            if role == "bridge" and captured_decoder is not None:
+                continue
             if role != "series" and not path.is_file():
                 raise FileNotFoundError(
                     f"missing GFS adapter input {role}: {path}")
         posted, records, posted_manifest = _as_posted_plan(
             posting=Path(as_posted), series=Path(series),
-            cycle_time=cycle_time, roles=base_roles)
+            cycle_time=cycle_time, roles=base_roles, captured_decoder=captured_decoder)
     else:
         records = _read_series(Path(series))
     grib_roles = {f"grib-f{hour:03d}": path for hour, path in records}
     roles = {**base_roles, **grib_roles}
     for role, path in roles.items():
+        if role == "bridge" and captured_decoder is not None:
+            continue
         if posted is not None and (role in grib_roles or role == "series"):
             continue
         if not path.is_file():
             raise FileNotFoundError(f"missing GFS adapter input {role}: {path}")
-    if not os.access(Path(bridge), os.X_OK):
+    if captured_decoder is None and not os.access(Path(bridge), os.X_OK):
         raise PermissionError("GFS Rust bridge is not executable")
     # A head published early whose producer failed, was stopped or went
     # silent is this tool's own unfinished product, not a finished run.
@@ -1723,6 +1771,21 @@ def prepare_gfs_wrf(
     verify_inputs_seconds = time.perf_counter() - verify_started
 
     exp = load_experiment(Path(experiment_config))
+    physical_input = physical_output = physical_stream = None
+    if physical_input_store is not None or physical_input_provider is not None:
+        from gpuwm.ensemble.posted_preparation import require_exclusive_native_consumer
+        require_exclusive_native_consumer(physical_input_store=physical_input_store,
+                                         physical_input_provider=physical_input_provider)
+    if (physical_input_store is not None or physical_output_store is not None
+            or physical_input_provider is not None or physical_member_index is not None):
+        from gpuwm.ensemble.physical_store import NativePhysicalStore
+        if len(exp.domains) != 1:
+            raise ValueError(
+                "GFS physical fields require a single-domain native preparation")
+        if physical_input_store is not None and as_posted is not None:
+            raise ValueError("an as-posted GFS member requires a physical input provider, not a complete store")
+        if physical_input_store is not None:
+            physical_input = NativePhysicalStore(physical_input_store)
     # THE FLOOR, BEFORE THE DECODE (A98).  The domains alone set a lower
     # bound on the card price: an explicit cuda they cannot fit is refused
     # here, in seconds, instead of after the host decode and the statics,
@@ -1751,6 +1814,18 @@ def prepare_gfs_wrf(
     physics_selection = front_door_physics_selection(
         exp, physics_profile=physics_profile,
         expert_acknowledgements=expert_acknowledgements)
+    if physical_provider is not None:
+        if statics_corridor is not None:
+            raise ValueError("--statics-corridor needs child domains; a physical member here has one domain")
+        from gpuwm.ensemble.gfs_posted_reuse import prepare_posted_gfs_member
+        return prepare_posted_gfs_member(physical_provider, physical_member_index,
+            input_plan=plan, experiment_config=experiment_config, wps_namelist=wps_namelist,
+            output_root=output_root, preprocess=preprocess, preprocess_workers=preprocess_workers,
+            physics_profile=physics_profile, expert_acknowledgements=expert_acknowledgements,
+            physics_selection=physics_selection, case_policy=case_policy,
+            water_overlay_binding=water_overlay_binding, stock_wrf_export=stock_wrf_export,
+            implementation_sha256=implementation_sha256, git_source_identity=git_source_identity,
+            input_manifest=input_manifest, progress=progress)
     # The model's time zero is the experiment's, and it may sit at any
     # source lead the series carries -- not only at the cycle.  Two hour
     # vocabularies live from here down and they are never interchanged:
@@ -2121,20 +2196,128 @@ def prepare_gfs_wrf(
         # it.  Off, this does nothing.
         terrain_blend = RootTerrainBlend(exp, static, route="gfs")
 
+        native_source_identity = {
+            "adapter": "gfs-pgrb2-0p25-direct-v1",
+            **({"static_highres": static_highres_identity(static_highres)}
+               if static_highres is not None else {}),
+            "preparation_case_policy": case_policy,
+            "water_temperature_overlay": water_overlay_binding,
+            "input_manifest_schema": manifest["schema"],
+            "input_manifest_sha256": manifest_digest,
+            # Cycle and lead remain distinct source authorities.
+            "initial_condition": provenance,
+            "source_forecast_hours": list(source_hours),
+            "decoded_forecast_hours": list(series_hours),
+            "decoder": {
+                "name": Path(bridge).name,
+                "sha256": decoder_digest,
+                "implementation": "gpuwm-all-rust-gfs-grib2-bridge",
+            },
+            "relative_humidity_convention": "GFS water",
+            "soil_mapping": "exact GFS Noah 4-layer copy",
+            "initial_hydrometeors": (
+                "explicit zero (WRF Vtable.GFS parity)"),
+            "implementation_sha256": implementation_sha256,
+            "git_source_identity": git_source_identity,
+            "preprocessing": preprocess_identity(preprocess_receipt),
+            **({"initial_perturbation": initial_perturbation}
+               if initial_perturbation is not None else {}),
+        }
+        if physical_input is not None or physical_output_store is not None:
+            from gpuwm.ensemble.physical_store import (
+                NativePhysicalStore, physical_input_binding, physical_static_identity)
+            from gpuwm.ensemble import gfs_physical_contract
+            from gpuwm.native_wrf_contract import NATIVE_LANDUSE_IDENTITY
+            if physical_input is not None:
+                if physical_input.document["grid"] != _geometry_contract(grid, cfg):
+                    raise ValueError("GFS physical input geometry differs from native preparation geometry")
+                gfs_physical_contract.require_native_gfs_field_contract(
+                    physical_input.require_field_contract(), _geometry_contract(grid, cfg))
+            if physical_output_store is not None:
+                field_contract = gfs_physical_contract.native_gfs_field_contract(
+                    _geometry_contract(grid, cfg), evidence={
+                        ("input_manifest" if posted_series is None else "input_plan"):
+                            manifest_digest if posted_series is None else plan_sha256,
+                        "native_decoder": decoder_digest,
+                        "decoder_gate": _sha256((decoded if posted_series is None
+                                                  else posted_series.batches[0]) / "gate.tsv"),
+                        "gfs_adapter": _sha256(Path(__file__)),
+                        "horizontal_mapping": _sha256(Path(__file__).parent / "ingest" / "horiz.py"),
+                        # The contract is a packaged document now: bind the
+                        # document that defines it, not the import path.
+                        "field_contract": gfs_physical_contract.contract_sha256(),
+                    })
+                if posted_series is None:
+                    physical_output = NativePhysicalStore(
+                        physical_output_store, grid_identity=_geometry_contract(grid, cfg),
+                        source_identity=dict(native_source_identity), field_contract=field_contract)
+
         def build_forcing_time(index):
             # One forcing time's build, unchanged.  A single domain and a
             # chained tree call it start first
             # (gpuwm.ingest.boundary_stream); an unchained hierarchy keeps
             # the start time last.
+            nonlocal physical_stream
             source = snapshots[index]
-            met = interpolate_era5_to_lambert(
-                source, grid,
-                target_landmask=interpolation_landmask,
-                relative_humidity_convention="water",
-                backend=preprocess,
-            )
+            if physical_input is None:
+                met = interpolate_era5_to_lambert(
+                    source, grid,
+                    target_landmask=interpolation_landmask,
+                    relative_humidity_convention="water",
+                    backend=preprocess,
+                )
+            else:
+                met = physical_input.read(index)
             terrain_blend.before_initialize(
                 met.fields.get("SOURCE_OROGRAPHY"))
+            if index == 0 and (physical_input is not None or physical_output_store is not None):
+                static_identity = physical_static_identity(
+                    native_static_export_fields(static, grid), NATIVE_LANDUSE_IDENTITY)
+                if physical_input is not None:
+                    native_source_identity["ensemble_physical_input"] = physical_input_binding(
+                        physical_input, grid, cfg, native_source_identity,
+                        input_manifest_sha256=manifest_digest, static_identity=static_identity)
+                if physical_output is not None:
+                    physical_output.document["source"] = {
+                        **native_source_identity, "static_identity": static_identity}
+                if physical_output_store is not None and posted_series is not None:
+                    from gpuwm.ensemble.posted_physical import PostedPhysicalStream, posted_source_identity
+                    from gpuwm.ensemble.recipes import SourceTrajectory
+                    from datetime import timezone
+                    trajectory = SourceTrajectory(posted.source, cycle_time.replace(tzinfo=timezone.utc),
+                                                  posted_series.markers[source_hours[0]].get("member"))
+                    physical_stream = PostedPhysicalStream.create(
+                        physical_output_store, trajectory=trajectory,
+                        valid_times=[value.replace(tzinfo=timezone.utc) for value in times],
+                        grid_identity=_geometry_contract(grid, cfg),
+                        source_identity=posted_source_identity(
+                            {**native_source_identity, "static_identity": static_identity}, input_plan=plan),
+                        field_contract=field_contract, input_plan_sha256=plan_sha256)
+            if physical_stream is not None:
+                from gpuwm.ingest.boundary_stream import posted_lead_marker_sha256
+                hour = source_hours[index]
+                batch = next(path for path, leads in zip(posted_series.batches, posted_series.batch_leads)
+                             if hour in leads)
+                physical_stream.publish(met,
+                    posted_leads={str(hour): posted_lead_marker_sha256(posted_series.markers[hour])},
+                    decoded_leads={str(hour): _sha256(batch / "decoded-sha256.tsv")})
+            if physical_output is not None:
+                physical_output.write(met)
+            from gpuwm.ensemble.posted_preparation import (
+                current_posted_preparation, replace_current_native_snapshot)
+            if current_posted_preparation() is not None:
+                met = replace_current_native_snapshot(met, grid=grid, cfg=cfg,
+                    static_fields=static, landuse_attrs=landuse_attrs,
+                    domain_id=exp.root.grid_id, metadata={
+                        "input_manifest": manifest, "input_manifest_sha256": manifest_digest,
+                        "input_plan": plan, "input_plan_sha256": plan_sha256,
+                        "source_snapshot": source, "source_forecast_hours": tuple(source_hours),
+                        "decoded_forecast_hours": tuple(series_hours), "decoder_sha256": decoder_digest,
+                        "initial_condition": provenance, "preprocessing": preprocess_identity(preprocess_receipt),
+                        "preparation_case_policy": case_policy,
+                        "water_temperature_overlay": water_overlay_binding,
+                        "implementation_sha256": implementation_sha256,
+                        "git_source_identity": git_source_identity})
             coord = make_vertical_coord(
                 cfg.nz, hybrid_opt=cfg.hybrid_opt, etac=cfg.etac,
                 eta_levels=exp.vertical.eta_levels)
@@ -2156,6 +2339,8 @@ def prepare_gfs_wrf(
                  if posted_series is None else
                  tuple(cycle_time + timedelta(hours=hour)
                        for hour in source_hours))
+        if physical_input is not None and tuple(physical_input.times) != times:
+            raise ValueError("GFS physical input valid times differ from the complete initial/boundary window")
         if len(exp.domains) > 1 and not chain_tree:
             for index in start_last_forcing_order(len(snapshots)):
                 met, initialized = build_forcing_time(index)
@@ -2259,38 +2444,9 @@ def prepare_gfs_wrf(
             verify_overlay_sequence(snapshots)
         initialize_seconds = time.perf_counter() - initialize_started
 
-        native_source_identity = {
-            "adapter": "gfs-pgrb2-0p25-direct-v1",
-            **({"static_highres": static_highres_identity(static_highres)}
-               if static_highres is not None else {}),
-            "preparation_case_policy": case_policy,
-            "water_temperature_overlay": water_overlay_binding,
-            "input_manifest_schema": manifest["schema"],
-            "input_manifest_sha256": manifest_digest,
-            # Cycle AND lead, never one standing in for the other.  A
-            # cache restored from this identity can say what its initial
-            # condition was without consulting anything else.
-            "initial_condition": provenance,
-            "source_forecast_hours": list(source_hours),
-            "decoded_forecast_hours": list(series_hours),
-            "decoder": {
-                "name": Path(bridge).name,
-                "sha256": decoder_digest,
-                "implementation": "gpuwm-all-rust-gfs-grib2-bridge",
-            },
-            "relative_humidity_convention": "GFS water",
-            "soil_mapping": "exact GFS Noah 4-layer copy",
-            "initial_hydrometeors": (
-                "explicit zero (WRF Vtable.GFS parity)"),
-            "implementation_sha256": implementation_sha256,
-            "git_source_identity": git_source_identity,
-            # What ran, without what was measured (A138): the proof keeps
-            # the whole receipt.
-            "preprocessing": preprocess_identity(preprocess_receipt),
-            **({"initial_perturbation": initial_perturbation}
-               if initial_perturbation is not None else {}),
-        }
-
+        from gpuwm.ensemble.posted_preparation import bind_current_source_identity
+        native_source_identity = bind_current_source_identity(native_source_identity,
+            domain_id=exp.root.grid_id)
         staging = _atomic_staging_sibling(Path(output_root))
         if staging.exists():
             raise FileExistsError(f"stale GFS staging directory exists: {staging}")
@@ -2698,6 +2854,11 @@ def prepare_gfs_wrf(
                 release=lambda: release_backend_memory(preprocess))
             verify_overlay_sequence(snapshots)
             initialize_seconds += time.perf_counter() - boundaries_started
+            if physical_output is not None:
+                physical_output.document["source"]["preprocessing"] = preprocess.receipt()
+                physical_output.seal()
+            if physical_stream is not None:
+                physical_stream.seal()
             progress.enter("write_prepared_cache")
             cache_started = time.perf_counter()
             sealed = None
@@ -3424,7 +3585,8 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--series", type=Path, required=True)
     parser.add_argument("--cycle", required=True)
-    parser.add_argument("--bridge", type=Path, required=True)
+    parser.add_argument("--bridge", type=Path,
+                        help="source decoder; posted members reuse their pinned producer decoder authority")
     parser.add_argument("--wps-namelist", type=Path, required=True)
     parser.add_argument("--static-input", type=Path)
     parser.add_argument("--static-receipt", type=Path)
@@ -3437,6 +3599,14 @@ def _parser() -> argparse.ArgumentParser:
              "POSTING_DIR is its posting/ folder; the seal writes "
              "--input-manifest, which then takes no digest")
     parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument("--physical-input-store", type=Path,
+                        help="sealed native physical snapshots for the complete forcing window")
+    parser.add_argument("--physical-output-store", type=Path,
+                        help="capture mapped native physical snapshots before real initialization")
+    parser.add_argument("--physical-input-provider", type=Path,
+                        help="posted native physical member provider directory")
+    parser.add_argument("--physical-member-index", type=int,
+                        help="original recipe member index for a posted physical provider")
     parser.add_argument(
         "--preprocess-backend", choices=("cuda", "cpu", "auto"),
         default="auto",
@@ -3517,6 +3687,10 @@ def main(argv: list[str] | None = None) -> int:
             stock_wrf_export=args.stock_wrf_export,
             statics_corridor=statics_corridor,
             as_posted=args.as_posted,
+            physical_input_store=args.physical_input_store,
+            physical_output_store=args.physical_output_store,
+            physical_input_provider=args.physical_input_provider,
+            physical_member_index=args.physical_member_index,
         )
     except PreparationRefusal:
         # The decorator on this main owns the whole refusal family: two

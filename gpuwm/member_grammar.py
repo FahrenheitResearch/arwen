@@ -45,14 +45,11 @@ from typing import Mapping, Sequence
 
 MEMBERS_SCHEMA = "rw-wps.members.v1"
 
-#: The one layout this build implements.  Declaring any other refuses by
-#: name: a concatenated-members layout (ECMWF AIFS-ENS packs all fifty
-#: members into one file per step) would need metadata-driven member
-#: extraction, and accepting the declaration without that engine would
-#: silently treat a fifty-member file as one member.  The verification
-#: triple contract is layout-independent, so adding that layout later is
-#: an engine extension, not a grammar change.
-SUPPORTED_LAYOUTS = ("file_per_member",)
+#: Indexed collections are split by :mod:`gpuwm.member_index` and then
+#: verified under the same byte contract as file-per-member products.
+#: An undeclared concatenated layout still refuses rather than allowing
+#: a whole-ensemble object to masquerade as one member.
+SUPPORTED_LAYOUTS = ("file_per_member", "indexed_members")
 
 #: Template placeholders a path/id template may use.  ``{ordinal:0Nd}``
 #: zero-pads the member ordinal to N digits; the rest are filled at

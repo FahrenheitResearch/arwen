@@ -277,7 +277,8 @@ def pinned_copy(array) -> np.ndarray:
 
     out = pinned_empty_like(array)
     if is_device_array(array):
-        out[...] = cp.asnumpy(array)
+        with array.device:
+            out[...] = cp.asnumpy(array)
     else:
         out[...] = np.asarray(array)
     return out
@@ -1081,6 +1082,12 @@ def gather_tile(store, tile_state, spec, stream=None, *,
     plan = make_plan(src, dst, spec, "gather", allow_pageable=allow_pageable,
                      require_full_gather=require_full_gather, nz=nz)
     plan.execute(src, dst, stream)
+    if "fields/lakemask" in dst:
+        lake = getattr(getattr(tile_state, "physics", None), "lake", None)
+        if lake is not None:
+            # No device read here. Rebuild sparse work only on the compute
+            # stream, after the caller's transfer event has completed.
+            lake.invalidate_columns()
     return plan
 
 

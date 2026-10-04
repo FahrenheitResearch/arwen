@@ -11,6 +11,11 @@ from gpuwm.core.kernels import get_kernel, get_kernel_int_defines
 _THREADS = 256
 _WRF_THREADS = 192
 
+# Four FP32 epsilons, shared with the Rust/CUDA native endpoint correction.
+# Native mass pressure serialized in GRIB and a target rebuilt from decimal
+# eta levels can differ by this rounding even on the same vertical grid.
+WRF_TOP_ENDPOINT_RTOL = 4.0 * float(np.finfo(np.float32).eps)
+
 #: Column capacities ``wrf_real_vertical_interpolate`` is compiled at.  A
 #: column is the source levels plus the surface pseudo-level, and each tier
 #: is the ``WRF_VI_MAX_LEVELS`` size of the kernel's three per-thread column
@@ -186,7 +191,8 @@ def _prepare_wrf_vert_interp_geometry(source_pressure, surface_pressure,
         source = source[::-1]
     if not bool(((source < sfc_pressure[None]).any(axis=0)).all()):
         raise ValueError("every column needs a source level above the surface")
-    if bool((target < source[-1][None, :, :]).any()):
+    if bool(((source[-1][None, :, :] - target)
+             > WRF_TOP_ENDPOINT_RTOL * source[-1][None, :, :]).any()):
         raise ValueError("target pressure lies above source top")
     return _WrfVertGeometryPlan(
         source=cp.ascontiguousarray(source),
@@ -335,7 +341,9 @@ def wrf_vert_interp_gpu(field, surface_value, source_pressure,
     ``interp_in_logp=False`` is WRF's forced ``interp_type=1`` for the
     full-pressure field; ``extrap='temperature'`` selects the
     ``t_extrap_type=2`` CRC below-ground branch.  A target above the source
-    top is WRF-fatal and rejected here before launch.  The kernel runs at
+    top beyond FP32 coordinate roundoff is WRF-fatal and rejected before
+    launch.  An endpoint within four FP32 epsilons is co-located with the
+    source endpoint, with no value extrapolation.  The kernel runs at
     the smallest :data:`WRF_VERT_INTERP_LEVEL_TIERS` tier holding the
     column; a column deeper than the top tier runs on the CPU bridge and
     comes back on the device all the same.
@@ -382,7 +390,8 @@ def wrf_vert_interp_gpu(field, surface_value, source_pressure,
         source = source[::-1]
     if not bool(((source < sfc_pressure[None]).any(axis=0)).all()):
         raise ValueError("every column needs a source level above the surface")
-    if bool((target < source[-1][None, :, :]).any()):
+    if bool(((source[-1][None, :, :] - target)
+             > WRF_TOP_ENDPOINT_RTOL * source[-1][None, :, :]).any()):
         raise ValueError("target pressure lies above source top")
     values = cp.ascontiguousarray(values)
     source = cp.ascontiguousarray(source)

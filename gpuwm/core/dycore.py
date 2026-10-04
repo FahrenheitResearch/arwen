@@ -3502,6 +3502,9 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
     # see the time-t state.  The default scheme IDs are all zero, so this
     # branch performs no device operation for every frozen Phase-1/2 case.
     physics_tendencies = None
+    stochastic_binding = getattr(state, "_ensemble_stochastic", None)
+    if stochastic_binding is not None:
+        stochastic_binding.before_physics(state, cfg)
     if physics_enabled(cfg):
         if state.physics is None:
             raise RuntimeError(
@@ -3514,6 +3517,10 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
         # schemes disabled. Run its common cadence, adding no tendencies.
         update_diagnostics(state, cfg.hypsometric_opt)
         state.physics.compute(state, cfg)
+
+    if stochastic_binding is not None:
+        physics_tendencies = stochastic_binding.after_nonmicrophysics(
+            state, cfg, physics_tendencies)
 
     if not acoustic:
         if state.qv is not None:

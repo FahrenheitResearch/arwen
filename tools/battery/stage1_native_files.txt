@@ -17,6 +17,7 @@ tests/test_horiz.py # gpuwm_preprocess_cpu remaps masked surface fields.
 tests/test_hrrr_single_domain_benchmark.py # gpuwm_preprocess_cpu executes slot preparation.
 tests/test_ingest_preflight.py # rw_netcdf decodes orography before shape/value preflight.
 tests/test_lake_temperature.py # gpuwm_preprocess_cpu remaps lake surface fields.
+tests/test_lake_static.py # static-fields builds lake bathymetry with WPS average, bounded search and masking.
 tests/test_mapped_atmospheric_writer.py # gpuwm_mapped_engine and gpuwm_preprocess_cpu decode, publish and crop preparation.
 tests/test_metgrid_number_initialization.py # gpuwm_preprocess_cpu initializes metgrid numbers.
 tests/test_mp28_runnable.py # netcdf-writer writes the forecast product tape.
@@ -38,3 +39,23 @@ tests/test_water_temperature.py # gpuwm_preprocess_cpu remaps masked water surfa
 tests/test_wif_climatology.py # gpuwm_preprocess_cpu prepares the climatological column inputs.
 tests/test_wrfinput_physics_fields.py # rw_netcdf decodes the initialized physics fields.
 tests/test_wrfout.py # netcdf-writer executes history output round trips.
+tests/test_host_libm.py # gpuwm_preprocess_cpu executes the FP64 host-libm ABI and its special-value parity checks.
+tests/test_cold_start_cpu.py # gpuwm_preprocess_cpu executes the native mixed-precision cold-start closure.
+tests/test_host_setup_arrays.py # gpuwm_preprocess_cpu executes parallel setup copies and geopotential residuals.
+tests/test_preparation_fingerprints.py # gpuwm_preprocess_cpu hashes native source buffers and field metadata without changing receipt identities.
+
+tests/test_native_pressure_top.py # gpuwm_preprocess_cpu checks decoded native pressure endpoints.
+tests/test_aerosol_analysis_input.py # gpuwm_preprocess_cpu and the compiled Fortran oracle check aerosol ingest and surface emission.
+
+tests/test_ensemble_member_diagnostics.py # netcdf-writer writes the native member store; 3 of its 4 tests fail without it.
+tests/test_hrrr_posted_physical.py # netcdf-writer writes the posted physical capture; 1 of its 8 tests fails without it.
+tests/test_gfs_physical_store.py # netcdf-writer writes and reads the GFS physical store in 7 of its 8 tests.
+tests/test_gfs_posted_physical.py # netcdf-writer writes and reads the posted GFS physical frames in all 8 tests.
+tests/test_ensemble_mapped_physical.py # netcdf-writer writes the shared mapped physical store in 1 of its 3 tests.
+tests/test_ensemble_physical_units.py # netcdf-writer writes the physical arrays read back in 5 of its 7 tests.
+tests/test_ensemble_physical_review.py # netcdf-writer writes the physical store in 12 of its 15 tests and gpuwm_preprocess_cpu recenters it in 1.
+tests/test_ensemble_physical_preparation.py # gpuwm_preprocess_cpu, named by GPUWM_ENSEMBLE_PREPARATION_BRIDGE, aligns, stores and selects member sources in all 9 tests.
+tests/test_ensemble_physical_boundary.py # gpuwm_preprocess_cpu, named by GPUWM_ENSEMBLE_PREPARATION_BRIDGE, and netcdf-writer build the member boundary inputs in all 11 tests.
+tests/test_ensemble_posted_physical.py # gpuwm_preprocess_cpu, named by GPUWM_ENSEMBLE_PREPARATION_BRIDGE, and netcdf-writer build the posted physical frames in 29 of its 33 tests.
+tests/test_ensemble_source_preparation.py # gpuwm_preprocess_cpu, named by GPUWM_ENSEMBLE_PREPARATION_BRIDGE, and netcdf-writer prepare posted member sources in 6 of its 16 tests.
+tests/test_ensemble_native_review.py # gpuwm_preprocess_cpu supplies the portable libm its one humidity reference test pins.

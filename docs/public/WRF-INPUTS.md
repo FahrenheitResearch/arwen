@@ -26,6 +26,17 @@ take the WRF defaults (option 2, 1000 m, 50 m, 1.3, and 1.1). The resolved
 grid and control values are recorded with the forecast. `--vertical-grid native`
 explicitly chooses ArWen's native profile instead when no eta list is given.
 
+Native model-level mappings can declare `model_top_pressure_pa`, the interface
+above the highest mass level. This lets a native analysis initialize the model
+on its own eta ladder and lid. Each target mass level must still be supported
+by the decoded pressure column. A declared numerical divergence from WRF real's
+strict top test co-locates a target with the highest source mass level when
+their pressures differ by at most four FP32 epsilons times that source pressure.
+This covers coordinate and GRIB rounding, including the 0.00061 Pa mismatch at
+the native 1731.475 Pa mass level above a 1500 Pa lid. It returns the source
+endpoint value and never extrapolates a new atmospheric layer. The preprocessing
+receipt records `native-pressure-top-colocation-four-fp32-epsilon-v1`.
+
 The external WRF doors preserve WRF RRTMG when radiation scheme 4 is selected.
 Changing it to RTE+RRTMGP requires `--rrtmg-variant rte-rrtmgp`. Other unsupported
 controls fail with the missing capability named; the adapter does not silently

@@ -19,7 +19,7 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use crate::{worker_ranges, ERR_DIMENSION, ERR_NULL, ERR_PANIC, OK};
+use crate::{ERR_DIMENSION, ERR_NULL, ERR_PANIC, OK};
 
 /// Unary operation codes, shared with `gpuwm/core/portable_math.py`.
 pub const UNARY_EXP: u32 = 0;
@@ -35,6 +35,74 @@ pub const UNARY_ACOS: u32 = 9;
 /// Binary operation codes.
 pub const BINARY_POW: u32 = 0;
 pub const BINARY_ATAN2: u32 = 1;
+
+// Separate host-libm entries preserve gpuwm.core.host_libm's existing
+// contract. They must never replace the portable musl entries above.
+// This is the same C ABI used by water_blend::python_square and CPython
+// math. A black-box exponent prevents LLVM from replacing pow(x, 2)
+// with multiplication, which is a different last bit for some x.
+extern "C" {
+    #[link_name = "exp"] fn host_c_exp(x: f64) -> f64;
+    #[link_name = "log"] fn host_c_log(x: f64) -> f64;
+    #[link_name = "log10"] fn host_c_log10(x: f64) -> f64;
+    #[link_name = "tan"] fn host_c_tan(x: f64) -> f64;
+    #[link_name = "atan"] fn host_c_atan(x: f64) -> f64;
+    #[link_name = "asin"] fn host_c_asin(x: f64) -> f64;
+    #[link_name = "acos"] fn host_c_acos(x: f64) -> f64;
+    #[link_name = "atan2"] fn host_c_atan2(y: f64, x: f64) -> f64;
+    #[link_name = "pow"] fn host_c_pow(x: f64, y: f64) -> f64;
+}
+
+fn host_exp(x: f64) -> f64 { unsafe { host_c_exp(x) } }
+fn host_log(x: f64) -> f64 {
+    if x > 0.0 { unsafe { host_c_log(x) } }
+    else if x == 0.0 { f64::NEG_INFINITY } else { f64::NAN }
+}
+fn host_log10(x: f64) -> f64 {
+    if x > 0.0 { unsafe { host_c_log10(x) } }
+    else if x == 0.0 { f64::NEG_INFINITY } else { f64::NAN }
+}
+fn host_tan(x: f64) -> f64 {
+    if x.is_infinite() { f64::NAN } else { unsafe { host_c_tan(x) } }
+}
+fn host_atan(x: f64) -> f64 { unsafe { host_c_atan(x) } }
+fn host_asin(x: f64) -> f64 {
+    if (-1.0..=1.0).contains(&x) { unsafe { host_c_asin(x) } } else { f64::NAN }
+}
+fn host_acos(x: f64) -> f64 {
+    if (-1.0..=1.0).contains(&x) { unsafe { host_c_acos(x) } } else { f64::NAN }
+}
+fn host_atan2(y: f64, x: f64) -> f64 {
+    // Unlike the C call, math.atan2 returns the canonical Python NaN.
+    if y.is_nan() || x.is_nan() { f64::NAN } else { unsafe { host_c_atan2(y, x) } }
+}
+pub(crate) fn host_pow(x: f64, y: f64) -> f64 {
+    // CPython handles NaN operands before the C call. Preserve their
+    // payload and sign, as well as pow(NaN, 0) and pow(1, NaN).
+    if x.is_nan() { return if y == 0.0 { 1.0 } else { x }; }
+    if y.is_nan() { return if x == 1.0 { 1.0 } else { y }; }
+    // host_libm._pow maps math.pow's ValueError for either signed zero
+    // raised to a negative power to positive infinity.
+    if x == 0.0 && y < 0.0 { return f64::INFINITY; }
+    if x < 0.0 && x.is_finite() && y.is_finite() && y.trunc() != y {
+        return f64::NAN;
+    }
+    unsafe { host_c_pow(x, std::hint::black_box(y)) }
+}
+
+fn host_unary_f64(op: u32) -> Option<fn(f64) -> f64> {
+    Some(match op {
+        UNARY_EXP => host_exp, UNARY_LOG => host_log, UNARY_LOG10 => host_log10,
+        UNARY_TAN => host_tan, UNARY_ATAN => host_atan,
+        UNARY_ASIN => host_asin, UNARY_ACOS => host_acos,
+        _ => return None,
+    })
+}
+
+fn host_binary_f64(op: u32) -> Option<fn(f64, f64) -> f64> {
+    Some(match op { BINARY_POW => host_pow, BINARY_ATAN2 => host_atan2,
+                    _ => return None })
+}
 
 /// Below this many elements a call stays on the calling thread: spawning
 /// costs more than the work.
@@ -99,11 +167,7 @@ fn run_ranges(length: usize, workers: usize, body: &(dyn Fn(usize, usize) + Sync
         body(0, length);
         return;
     }
-    std::thread::scope(|scope| {
-        for (start, stop) in worker_ranges(length, workers) {
-            scope.spawn(move || body(start, stop));
-        }
-    });
+    crate::parallel::run_ranges(length, workers, body);
 }
 
 unsafe fn unary<T: Copy + Send + Sync>(
@@ -300,6 +364,45 @@ pub unsafe extern "C" fn gpuwm_portable_binary_f32(
         OK
     }))
     .unwrap_or(ERR_PANIC)
+}
+
+/// Host C-library unary math with the existing Python helper's domains.
+///
+/// # Safety
+/// As [`gpuwm_portable_unary_f64`]. The host and portable ABIs are separate.
+#[no_mangle]
+pub unsafe extern "C" fn gpuwm_host_unary_f64(
+    op: u32, input: *const f64, output: *mut f64, length: usize, workers: usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let Some(function) = host_unary_f64(op) else { return ERR_DIMENSION; };
+        if length == 0 { return OK; }
+        if input.is_null() || output.is_null() { return ERR_NULL; }
+        if workers == 0 { return ERR_DIMENSION; }
+        unary(function, input, output, length, workers);
+        OK
+    })).unwrap_or(ERR_PANIC)
+}
+
+/// Host C-library binary math with the existing Python helper's domains.
+///
+/// # Safety
+/// As [`gpuwm_portable_binary_f64`]. The host and portable ABIs are separate.
+#[no_mangle]
+pub unsafe extern "C" fn gpuwm_host_binary_f64(
+    op: u32, left: *const f64, left_length: usize, right: *const f64,
+    right_length: usize, output: *mut f64, length: usize, workers: usize,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let Some(function) = host_binary_f64(op) else { return ERR_DIMENSION; };
+        if length == 0 { return OK; }
+        if left.is_null() || right.is_null() || output.is_null() { return ERR_NULL; }
+        if workers == 0 || !operand_ok(left_length, length) || !operand_ok(right_length, length) {
+            return ERR_DIMENSION;
+        }
+        binary(function, left, left_length, right, right_length, output, length, workers);
+        OK
+    })).unwrap_or(ERR_PANIC)
 }
 
 #[cfg(test)]

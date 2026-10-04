@@ -1454,7 +1454,13 @@ def _run_forecast(plan: dict, digests: dict, *, explain: bool,
     # chain gives up the process isolation that keeps a CUDA failure
     # inside one stage.  Defaults to True, so every existing caller
     # (which is run-plan, and which does host) is unchanged.
-    hosted = observer is not None and getattr(observer, "hosts_forecast", True)
+    #
+    # An ensemble session hosts the forecast here whoever is observing:
+    # its members run in this process.  That is a second reason to be
+    # in process, and it does not make the stage observer a host.
+    from gpuwm.ensemble.runtime_context import current_session
+    observer_hosts = observer is not None and getattr(observer, "hosts_forecast", True)
+    hosted = current_session() is not None or observer_hosts
     early = None if hosted else _early_render_products(plan)
     command = (tree_forecast_command(
                    plan, early_render=early,
@@ -1503,7 +1509,24 @@ def _run_forecast(plan: dict, digests: dict, *, explain: bool,
     import importlib
 
     runner = importlib.import_module(module_name)
-    code = runner.main(argv, observer=observer)
+    # The runner calls its observer on every committed step, so it is
+    # handed one only when that observer hosts.  A stage observer that
+    # does not (gpuwm go's own GoChainEvents, under an ensemble session)
+    # still hears stage_begin and stage_end above and below; the session
+    # then says each member's progress on the terminal itself.  Breakage
+    # this prevents: gpuwm go and gpuwm ensemble with members ended at
+    # the first forecast step with "TypeError: 'GoChainEvents' object is
+    # not callable", after the fetch and the preparation had run.
+    try:
+        code = runner.main(argv, observer=observer if observer_hosts else None)
+    except KeyboardInterrupt:
+        if observer_hosts:
+            # The host owns its stop (gpuwm run-plan reads this class).
+            raise
+        # The typed chain, as for a stage subprocess: go's own Ctrl-C
+        # result, one sentence naming the stage, exit 130, and its stage
+        # stream closed as interrupted.  There is no child pid to name.
+        raise GoInterrupted("forecast", None, hosted=True) from None
     ok = not code
     _notify(observer, "stage_end", label="forecast", exit_code=code, ok=ok,
             elapsed_seconds=time.monotonic() - started,
@@ -2010,6 +2033,14 @@ def _render_stage(plan: dict, *, explain: bool,
     render that wrote it, because on `gpuwm go` it never does.
     """
 
+    from gpuwm.ensemble.runtime_context import current_session
+    ensemble_session = current_session()
+    if ensemble_session is not None:
+        ensemble_session.completed_products()
+        _notify(observer, "stage_begin", label="render", command=[])
+        _notify(observer, "stage_end", label="render", exit_code=0, ok=True,
+                elapsed_seconds=0.0)
+        return True
     if str(plan.get("render_products") or "").strip().lower() == "none":
         print("  -- render skipped: this run asked for no products "
               "(render_products = none).")
@@ -3497,10 +3528,51 @@ class GoInterrupted(Exception):
     #: without importing this module to ask.
     exit_code = INTERRUPT_EXIT_CODE
 
-    def __init__(self, label: str, pid: int | None):
+    def __init__(self, label: str, pid: int | None, *, hosted: bool = False):
         super().__init__(f"interrupted during {label}")
         self.label = label
         self.pid = pid
+        #: The stage ran inside this process (an ensemble's members), so
+        #: there was no stage subprocess for the interrupt to reach.
+        self.hosted = hosted
+
+
+def _interrupt_report(stop: GoInterrupted, plan: dict) -> str:
+    """go's Ctrl-C result: what stopped and what is on disk, then why.
+
+    The explanation half is the mechanism, and the mechanism differs.  A
+    stage subprocess received the terminal's SIGINT itself.  A stage
+    hosted in this process (an ensemble's members) has no subprocess:
+    the session stopped its members at a step boundary.
+    """
+
+    child = ("" if stop.pid is None else
+             f"  # the {stop.label} process was pid {stop.pid}; gpuwm "
+             "signalled nothing and killed nothing\n")
+    why = (
+        "The ensemble's members ran inside this process, so there was no "
+        "stage subprocess: members that were running ended at their next "
+        "model step, members not yet started were cancelled, and gpuwm "
+        "signalled no pid. ensemble-run.json in the run folder records "
+        "the run as interrupted and lists the members not completed; no "
+        "aggregate product was closed as complete."
+        if stop.hosted else
+        "Ctrl-C sends SIGINT to the whole foreground process group, "
+        "so the stage subprocess received it directly and gpuwm did "
+        "not (and will not) signal any pid itself -- a tool that "
+        "kills pids it merely observed is a tool that eventually "
+        "kills the wrong one. If the stage was launched into the "
+        "background by a shell, SIGINT is SIG_IGN for the whole job "
+        "and neither process can see a Ctrl-C at all; send SIGTERM "
+        "there instead.")
+    return layered(
+        f"go: interrupted during {stop.label}; no later stage ran and "
+        f"{plan['root']} is a partial tree with no certification "
+        "capsule.\n"
+        f"{child}"
+        f"  remedy: gpuwm go {_quote(plan['config'])} --outdir "
+        "<a new directory>   # every stage is create-only",
+        why)
 
 
 def _physics_words(plan: dict) -> str:
@@ -3681,6 +3753,10 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
         profiles = (None if measured is None else
                     {int(dev): profile_from_device_probe(row)
                      for dev, row in measured["cards"].items()})
+        budgets = ({dev: int(vram_gib * 2**30) for dev in exp.devices.device_ids()}
+                   if vram_gib is not None else None if measured is None else
+                   {int(dev): int(row["free_bytes"])
+                    for dev, row in measured["cards"].items()})
         if len(exp.domains) > 1:
             # A split tree: every grid on the cards it runs on, the
             # pricing the tree runner repeats before its first restore.
@@ -3692,12 +3768,8 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
         else:
             estimate = estimate_devices(
                 exp, vram_gib=vram_gib, forcing_intervals=intervals, source=source,
-                profiles=profiles,
+                profiles=profiles, budgets=budgets,
                 forcing_interval_seconds=interval or DEFAULT_FORCING_INTERVAL_SECONDS)
-        budgets = ({dev: int(vram_gib * 2**30) for dev in exp.devices.device_ids()}
-                   if vram_gib is not None else None if measured is None else
-                   {int(dev): int(row["free_bytes"])
-                    for dev, row in measured["cards"].items()})
         gate = devices_gate(estimate, budgets=budgets,
                             host_budget=host_available_bytes())
         include_preparation(
@@ -4090,6 +4162,10 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
                              else str(Path(args.geog_root).resolve())),
                "render_products": (args.render_products if args.render_products is not None
                                    else DEFAULT_RENDER_PRODUCTS)}
+    from gpuwm.ensemble.runtime_context import current_session
+    ensemble_session = current_session()
+    if ensemble_session is not None:
+        options["ensemble"] = ensemble_session.request.receipt()
     if section is not None:
         options["render_section"] = section
     keep = getattr(args, "keep_checkpoints", None)
@@ -4546,12 +4622,11 @@ def _at_flag_cycle(args, config: Path, payload: dict, cycle: str
     return out, tomllib.loads(out.read_text(encoding="utf-8"))
 
 
-def _go_readiness(payload: dict, options: dict, pinned: str | None, *,
-                  no_probe: bool) -> int:
-    """``gpuwm go CONFIG --readiness``: the config's window, answered, run nothing."""
+def _readiness_answer(payload: dict, options: dict, pinned: str | None, *,
+                      no_probe: bool) -> tuple[dict, int]:
+    """``gpuwm.readiness.v1`` and its exit code for one config's fetch window."""
 
     from gpuwm import runplan as plans
-    from gpuwm import source_readiness as readiness
     from gpuwm.fetch import readiness_for_fetch
 
     hints = pin_request(config_fetch_request(payload), pinned)
@@ -4565,9 +4640,18 @@ def _go_readiness(payload: dict, options: dict, pinned: str | None, *,
 
     parsed = plans._parse_fetch_arguments(_join_negative_coordinates(arguments))
     try:
-        document, code = readiness_for_fetch(parsed, no_probe=no_probe)
+        return readiness_for_fetch(parsed, no_probe=no_probe)
     except ValueError as error:
         raise GoRefusal(f"--readiness: {error}") from error
+
+
+def _go_readiness(payload: dict, options: dict, pinned: str | None, *,
+                  no_probe: bool) -> int:
+    """``gpuwm go CONFIG --readiness``: the config's window, answered, run nothing."""
+
+    from gpuwm import source_readiness as readiness
+
+    document, code = _readiness_answer(payload, options, pinned, no_probe=no_probe)
     readiness.print_document(document)
     print(f"go: readiness {document['state']}"
           + (f" ({document['refusal']})" if document.get("refusal") else "")
@@ -4585,10 +4669,271 @@ def go_main(args, *, observer=None) -> int:
     then refused that envelope again after the fetch and the preparation.
     """
     from gpuwm.core.resident_admission import memory_gate_override
+    from gpuwm.ensemble.door import request_for_config, production_run_scope
+    from gpuwm.ensemble.runtime_context import current_session
+    inherited = current_session()
+    from gpuwm.ensemble import recipe_door
+    try:
+        request = (request_for_config(args.config,
+                                     override=None if inherited is None else inherited.request.receipt(),
+                                     members=getattr(args, "members", None),
+                                     keep_member_files=getattr(args, "keep_member_files", None),
+                                     **recipe_door.flag_overrides(args))
+                   if Path(args.config).is_file() else None)
+    except recipe_door.RecipeRefusal as refusal:
+        raise GoRefusal(str(refusal)) from None
+    if getattr(args, "command", None) == "ensemble" and request is None and Path(args.config).is_file():
+        raise GoRefusal("ensemble requires --members N or [ensemble].members in CONFIG")
+    from gpuwm.ensemble import member_inputs
+    # A plain member count (N > 1, no recipe named) is given real members
+    # too: this chain prepares ONE trajectory, so launching it would run N
+    # copies of one forecast and publish zero spread.  It takes the recipe
+    # route, which plans the source's operational ensemble or refuses by
+    # name before anything is downloaded, and which answers every go flag
+    # for the members that will run: --readiness for each member's window,
+    # --cycle by re-timing the config the members are planned from, and
+    # the flags that name one trajectory's input by name.
+    plain = member_inputs.needs_member_sources(request)
+    if request is not None and (request.recipe is not None or plain):
+        # Time-lagged, multi-model and operational-ensemble members: each
+        # member's own source trajectory is prepared by its ordinary chain,
+        # then the roster runs through the same ensemble session every
+        # other ensemble uses.
+        from gpuwm.core.resident_admission import memory_gate_override as _gate
+        try:
+            with _gate(getattr(args, "no_memory_gate", False)), _each_advisory_once():
+                return _go_recipe(args, request, observer=observer)
+        except recipe_door.RecipeRefusal as refusal:
+            raise GoRefusal(str(refusal)) from None
 
     with memory_gate_override(getattr(args, "no_memory_gate", False)), \
-            _each_advisory_once():
+            _each_advisory_once(), production_run_scope(request,
+                output_directory=getattr(args, "outdir", None) or Path(args.config).with_suffix("")):
         return _go_launch(args, observer=observer)
+
+
+#: ``gpuwm go`` flags a recipe request does not consume, each with the
+#: breakage a silent acceptance would cause.  ``(flag, namespace attribute,
+#: sentence)``; refused by name before anything is planned.
+_RECIPE_UNCONSUMED_FLAGS = (
+    ("--prepared-root", "prepared_root",
+     "it names one prepared bundle, which is one trajectory: every member "
+     "would run that bundle and the ensemble would report spread it does "
+     "not have"),
+    ("--restart", "restart",
+     "it continues one forecast from its checkpoint, and a recipe ensemble "
+     "prepares and starts every member from its own source, so the run "
+     "would be a fresh fetch and forecast in place of the continuation"),
+    ("--data-dir", "data_dir",
+     "it names one existing download, and a recipe downloads one window "
+     "per member into its own request cache: the fetch refuses a folder "
+     "that holds another cycle's files, after the members before it were "
+     "prepared"),
+    ("--supplement", "supplement",
+     "it binds one donor file of one trajectory, and every member is "
+     "prepared from its own trajectory: handed to all of them it is "
+     "another valid time's bytes for every member but one"),
+    ("--section", "render_section",
+     "the ensemble draws its aggregate maps and no stage of it cuts a "
+     "vertical section, so the line would be read by nothing"),
+    ("--keep-checkpoints", "keep_checkpoints",
+     "a recipe ensemble cannot be resumed (no door continues a set of "
+     "members prepared from different sources), and the count would be "
+     "read by nothing"),
+)
+
+
+def _refuse_recipe_unconsumed(args) -> None:
+    """Refuse, by name, the ``gpuwm go`` flags the recipe route does not consume.
+
+    Breakage it prevents: each was parsed and dropped, so the run did not
+    do what its command line said (a restart became a fresh fetch and
+    forecast, a prepared bundle was ignored) and exited 0.
+    """
+
+    given = [(flag, why) for flag, attribute, why in _RECIPE_UNCONSUMED_FLAGS
+             if getattr(args, attribute, None) not in (None, [], ())]
+    if given:
+        raise GoRefusal(
+            "An ensemble recipe does not use " + ", ".join(flag for flag, _ in given)
+            + ": " + "; ".join(f"{flag}: {why}" for flag, why in given)
+            + ". Next: omit " + ("it" if len(given) == 1 else "them") + ".")
+    if (getattr(args, "cycle", None) is not None
+            and getattr(args, "wps_namelist", None) is not None):
+        raise GoRefusal(
+            "--wps-namelist names a namelist written for the config's own "
+            "cycle, and --cycle re-times the config and renders its namelist "
+            "again: every member would be prepared with the old dates. "
+            "Next: omit --wps-namelist.")
+
+
+def _recipe_flag_cycle(args, payload: dict) -> str | None:
+    """``--cycle`` on the recipe route: ``latest``, a concrete cycle, or None."""
+
+    value = getattr(args, "cycle", None)
+    fetch_table = payload.get("fetch")
+    if value is None or not isinstance(fetch_table, dict) or not (
+            {"source", "cycle"} <= fetch_table.keys()):
+        # A config with no [fetch] source and cycle is refused by the
+        # recipe plan itself, in its own words.
+        return None
+    value = str(value).strip()
+    if value.lower() == "latest":
+        return "latest"
+    from gpuwm.fetch import parse_cycle
+
+    try:
+        return parse_cycle(value, str(fetch_table["source"])).strftime("%Y-%m-%dT%H")
+    except ValueError as error:
+        raise GoRefusal(str(error)) from error
+
+
+def recipe_readiness(request, payload: dict, experiment, *, cycle: str | None,
+                     posting: dict, transport: str | None = None,
+                     no_probe: bool = False) -> tuple[dict, int]:
+    """``--readiness`` for a recipe: every member's window, answered, run nothing.
+
+    A readiness document answers for one fetch window, and a recipe
+    fetches one per member.  Each member's window is asked the way the
+    config's own is (:func:`_readiness_answer`), and the answer is the
+    worst of them: refused (2) when any member's window is, not yet (75)
+    when any is waiting, ready (0) only when every one is.  The document
+    is the deciding member's own ``gpuwm.readiness.v1``, with ``state``,
+    ``ready``, ``expected_ready_at``, ``retry_after_seconds`` and
+    ``refusal`` answering for the whole roster and ``recipe`` carrying
+    every member's document.  ``cycle`` is the base cycle asked about
+    (``latest``, a concrete cycle, or None for the config's own);
+    ``posting`` and ``transport`` are the run's posting rule and host pin.
+
+    Breakage it prevents: the flag was dropped on this route, so a
+    scheduler's readiness poll claimed a run folder and started the
+    members' downloads, on a box the capability check had waved through
+    because ``--readiness`` spends nothing.
+    """
+
+    from gpuwm import source_readiness as readiness
+    from gpuwm.ensemble import recipe_door
+
+    flag = transport
+    base = None
+    fetch_table = payload.get("fetch")
+    if cycle == "latest" and isinstance(fetch_table, dict):
+        # The config's own window names the concrete cycle, under the same
+        # rule the run resolves ``latest`` with.
+        latest = {**payload, "fetch": {**fetch_table, "cycle": "latest"}}
+        pinned, _from = pinned_transport(fetch_table, flag)
+        base, code = _readiness_answer(latest, posting, pinned, no_probe=no_probe)
+        if code == readiness.REFUSED_EXIT or not base.get("cycle"):
+            return base, code
+        cycle = str(base["cycle"])
+    recipe = recipe_door.plan_recipe(request, payload, experiment, cycle=cycle)
+    answers = []
+    for member in recipe.members:
+        table = recipe_door.member_fetch(payload, experiment, recipe, member)
+        pinned, _from = pinned_transport(table, flag)
+        document, code = _readiness_answer({**payload, "fetch": table}, posting,
+                                           pinned, no_probe=no_probe)
+        answers.append((member, document, code))
+    worst = (readiness.REFUSED_EXIT
+             if any(code == readiness.REFUSED_EXIT for _m, _d, code in answers)
+             else readiness.NOT_YET_EXIT
+             if any(code == readiness.NOT_YET_EXIT for _m, _d, code in answers)
+             else readiness.READY_EXIT)
+    deciding = [row for row in answers if row[2] == worst]
+    if worst == readiness.NOT_YET_EXIT:
+        # The member that is ready last decides when to ask again.
+        deciding.sort(key=lambda row: float(row[1].get("retry_after_seconds") or 0.0),
+                      reverse=True)
+    member, chosen, _code = deciding[0]
+    states = {document.get("state") for _m, document, _c in answers}
+    stamps = [document["expected_ready_at"] for _m, document, _c in answers
+              if document.get("expected_ready_at")]
+    retries = [float(document["retry_after_seconds"]) for _m, document, _c in answers
+               if document.get("retry_after_seconds") is not None]
+    refusals = [f"{recipe_door.member_label(row[0])}: {row[1]['refusal']}"
+                for row in answers if row[1].get("refusal")]
+    document = dict(chosen)
+    document.update(
+        state=("refused" if worst == readiness.REFUSED_EXIT else
+               "waiting" if worst == readiness.NOT_YET_EXIT else
+               states.pop() if len(states) == 1 else "ready"),
+        ready=worst == readiness.READY_EXIT,
+        expected_ready_at=max(stamps) if stamps else None,
+        retry_after_seconds=(max(retries) if retries and worst == readiness.NOT_YET_EXIT
+                             else None),
+        refusal="; ".join(refusals) or None)
+    document["recipe"] = {
+        "kind": recipe.kind, "members": len(answers),
+        "answered_by_member": member.index,
+        "base_cycle": recipe.base.cycle.strftime("%Y-%m-%dT%H"),
+        "base_cycle_basis": None if base is None else base.get("cycle_basis"),
+        "member_windows": [
+            {"member_id": row[0].index, "source": row[0].trajectory.source,
+             "cycle": row[0].trajectory.cycle.strftime("%Y-%m-%dT%H"),
+             "source_member": row[0].trajectory.member,
+             "exit_code": row[2], "readiness": row[1]} for row in answers]}
+    return document, worst
+
+
+def _recipe_readiness(args, request, config: Path, payload: dict,
+                      cycle: str | None, posting: dict) -> int:
+    """``gpuwm go CONFIG --readiness`` on the recipe route: answered, run nothing."""
+
+    from gpuwm import source_readiness as readiness
+    from gpuwm.experiment import load_experiment
+
+    document, code = recipe_readiness(
+        request, payload, load_experiment(config), cycle=cycle,
+        posting={key: value for key, value in posting.items() if key != "transport"},
+        transport=posting.get("transport"),
+        no_probe=bool(getattr(args, "no_probe", False)))
+    readiness.print_document(document)
+    members = (document.get("recipe") or {}).get("members")
+    print(f"go: readiness {document['state']}"
+          + ("" if members is None else f" for {members} recipe members")
+          + (f" ({document['refusal']})" if document.get("refusal") else "")
+          + (f"; expected ready at {document['expected_ready_at']}"
+             if document.get("expected_ready_at") else ""), file=sys.stderr)
+    return code
+
+
+def _go_recipe(args, request, *, observer=None) -> int:
+    """The recipe route of :func:`go_main`: go's own flags, then the door.
+
+    Every ``gpuwm go`` flag is answered here before the door plans
+    anything: ``--readiness`` and ``--no-probe`` answer and stop,
+    ``--cycle`` re-times the config the members are planned from,
+    ``--transport``, ``--whole-cycle`` and ``--late-after-minutes`` reach
+    every member's fetch stage, and the flags the route does not consume
+    are refused by name (:func:`_refuse_recipe_unconsumed`).  The route
+    used to return to the door before any of them was read.
+    """
+
+    import tomllib
+
+    from gpuwm.ensemble import recipe_door
+
+    config = Path(args.config)
+    payload = tomllib.loads(config.read_text(encoding="utf-8-sig"))
+    _refuse_recipe_unconsumed(args)
+    _posting_options(args)          # refuses --no-probe without --readiness
+    posting = {key: value for key, value in (
+        ("transport", getattr(args, "transport", None)),
+        ("as_posted", False if getattr(args, "whole_cycle", False) else None),
+        ("late_after_minutes", getattr(args, "late_after_minutes", None)),
+    ) if value is not None}
+    if posting.get("as_posted") is False:
+        # The budget is an as-posted fetch's; the whole-cycle rule waits
+        # for nothing, as the ordinary plan drops it.
+        posting.pop("late_after_minutes", None)
+    cycle = _recipe_flag_cycle(args, payload)
+    if getattr(args, "readiness", False):
+        return _recipe_readiness(args, request, config, payload, cycle, posting)
+    if cycle is not None:
+        config, payload = _at_flag_cycle(args, config, payload, cycle)
+    _extend_outdir(args, config, payload)
+    return recipe_door.run_recipe_ensemble(args, request, observer=observer,
+                                           options=posting)
 
 
 def _go_launch(args, *, observer=None) -> int:
@@ -5225,25 +5570,8 @@ def _go_prepared_main(args, *, observer=None) -> int:
         # One sentence, 130, and the truth about what is on disk.  The
         # partial tree has no certification capsule, which is what makes
         # its incompleteness visible to every receipt reader.
-        child = ("" if stop.pid is None else
-                 f"  # the {stop.label} process was pid {stop.pid}; gpuwm "
-                 "signalled nothing and killed nothing\n")
-        print(render(layered(
-            f"go: interrupted during {stop.label}; no later stage ran and "
-            f"{plan['root']} is a partial tree with no certification "
-            "capsule.\n"
-            f"{child}"
-            f"  remedy: gpuwm go {_quote(plan['config'])} --outdir "
-            "<a new directory>   # every stage is create-only",
-            "Ctrl-C sends SIGINT to the whole foreground process group, "
-            "so the stage subprocess received it directly and gpuwm did "
-            "not (and will not) signal any pid itself -- a tool that "
-            "kills pids it merely observed is a tool that eventually "
-            "kills the wrong one. If the stage was launched into the "
-            "background by a shell, SIGINT is SIG_IGN for the whole job "
-            "and neither process can see a Ctrl-C at all; send SIGTERM "
-            "there instead."),
-            explain=explain, command="gpuwm go"), file=sys.stderr)
+        print(render(_interrupt_report(stop, plan),
+                     explain=explain, command="gpuwm go"), file=sys.stderr)
         if chain is not None:
             chain.finish(status="INTERRUPTED",
                          exit_code=INTERRUPT_EXIT_CODE)
@@ -5268,7 +5596,9 @@ def _go_prepared_main(args, *, observer=None) -> int:
         print(f"go: forecast validity {verdict}")
     print(f"go: wrote {plan['run']}")
     if rendered:
-        print(f"go: rendered {plan['render']}")
+        pictures = _rendered_root(plan)
+        if pictures is not None:
+            print(f"go: rendered {pictures}")
     if chain is not None:
         summary = chain.finish(status="SUCCESS")
         # THE HEADLINE NUMBER, said out loud at the end of the run that
@@ -5288,6 +5618,30 @@ def _go_prepared_main(args, *, observer=None) -> int:
         print("go: launch to done "
               f"{_elapsed_words(summary['wall_seconds'])}{where}")
     return 0
+
+
+def _rendered_root(plan: dict) -> Path | None:
+    """The folder this run's pictures are in, or None when there is none.
+
+    An ensemble session draws its own aggregate maps while the members
+    run, under the forecast folder (``run/maps/<domain>/<product>/
+    <valid-day>/``), and the render stage only verifies them, so
+    ``plan["render"]`` is never created for an ensemble.  Breakage this
+    prevents: go's closing line named ``<run folder>/png`` for an ensemble
+    whose 132 pictures were under ``run/maps``, a path that did not exist.
+    """
+
+    from gpuwm.ensemble.runtime_context import current_session
+
+    session = current_session()
+    if session is None:
+        return Path(plan["render"])
+    # The run folder as this chain names it everywhere else, then the
+    # session's own record of where it wrote.
+    for root in (plan.get("run"), getattr(session, "last_output_directory", None)):
+        if root is not None and (Path(root) / "maps").is_dir():
+            return Path(root) / "maps"
+    return None
 
 
 def _boundary_interval_refusal(plan: dict, report: dict) -> str | None:
@@ -5353,11 +5707,14 @@ def _checkpoint_sets(text: str) -> int:
 
 def register_cli(subparsers) -> None:
     parser = subparsers.add_parser(
-        "go",
+        "go", aliases=["ensemble"],
         help="prepare, run and render a forecast, fetching inputs when needed")
     parser.add_argument("config", type=Path, metavar="CONFIG",
                         help="an experiment TOML from gpuwm domain; its source and "
                              "domain tree choose the preparation route")
+    from gpuwm.ensemble.door import add_arguments, add_recipe_arguments
+    add_arguments(parser)
+    add_recipe_arguments(parser)
     parser.add_argument("--outdir", type=Path, default=None, metavar="DIR",
                         help="output root for one timestamped run folder per launch, "
                              "with forecast files, pictures and diagnostics "

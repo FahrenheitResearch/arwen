@@ -18,6 +18,7 @@
 
 pub mod annotate;
 pub mod panel;
+pub mod ensemble_products;
 
 #[path = "grib_import.rs"]
 pub mod grib_import;

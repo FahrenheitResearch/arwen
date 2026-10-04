@@ -66,6 +66,13 @@ rather than left as holes or back-filled from another platform.  They
 agree with sm_120: 88 B, 0 B and 512 B.  This recording is COMPLETE
 again.
 
+The lake module was added on 2026-10-03. Recordings without a lake reading
+are partial again. Its production loader on RTX 5090 with NVRTC 13.4.92
+read 4,720 B for initialization and 14,224 B for stepping; that platform's
+existing recording includes the new module. RTX PRO 6000 Blackwell Server
+with NVRTC 12.8.93 read 4,720 B and 14,400 B in the two-card oracle run;
+the partial recording below raises the module ceiling to that reading.
+
 COMPLETE is a claim about the ``.cu`` files that compile ALONE, and those
 are the whole key domain of a ``frames`` mapping: both readers --
 ``tools/vram_reserve_probe.py`` (``mode_frames``) and
@@ -102,8 +109,9 @@ what a module could cost, and a module whose widest kernel a given
 configuration never launches costs less than its row.  ``thompson`` is
 the standing example: its 11,264 B is the ``KMAX=256`` template, and a
 run with nz <= 64 launches only the ``_64`` variants (2,816 B measured).
-Pricing the row is the safe direction and is what preflight does; it is
-not what the driver charges.
+The recordings retain that full-module ceiling. Preflight prices the
+measured 64-level ceiling when every domain selecting the module stays
+within that tier, and the full ceiling when any selected domain is deeper.
 
 Rows move with the ARCHITECTURE at a fixed compiler, with the COMPILER
 BUILD at a fixed architecture, or with both (``noahmp_leaves``,
@@ -702,6 +710,17 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
     measured='2026-10-02',
     complete=True,
     frames=MappingProxyType({
+        # The 2.8.5 ensemble line's three units, read 2026-10-03 with
+        # `tools/vram_reserve_probe.py frames` on this card, CuPy 14.2.0,
+        # NVRTC 13.4.92 (CL-38855100), fresh CuPy and compute caches: 0 B
+        # each.  The same reading reproduced every other row of this
+        # recording to the byte.
+        'ensemble_bookkeeping': 0,
+        'ensemble_stochastic': 0,
+        'ruc_spp': 0,
+        # WRF lake through the production --fmad=false loader, 2026-10-03:
+        # init 4,720 B and step 14,224 B on this card and compiler.
+        'lake': 14224,
         # horizontal.cu: fused RH adds 0 B; unit maximum stays 16 B, NVRTC 13.4.92.
         'horizontal': 16,
         # thompson_cold_start.cu (the card closure) and the test-only
@@ -910,7 +929,7 @@ SM120_NVRTC_12_9_86 = KernelFrameRecording(
     nvrtc_build='12.9.86',
     platform_family='linux',
     measured='2026-10-02',
-    complete=True,
+    complete=False,  # The new lake module has not been read on this compiler.
     frames=MappingProxyType({
         'acoustic': 544,
         'advection': 0,
@@ -1059,7 +1078,7 @@ SM89_NVRTC_13_4_92 = KernelFrameRecording(
     nvrtc_build='13.4.92',
     platform_family='linux',
     measured='2026-09-30',
-    complete=True,
+    complete=False,  # The new lake module has not been read on this architecture.
     frames=MappingProxyType({
         # Read whole 2026-10-01 on this card at this build, fresh CuPy cache,
         # at the GPU forcing-preparation lane's merge with integrate/2.8
@@ -1239,6 +1258,14 @@ SM89_NVRTC_13_4_59_COLD_START = KernelFrameRecording(
 )
 
 KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
+    # Production loader, final WRF lake source, 2026-10-03. Both cards
+    # matched every native 300-step oracle word at this compiler profile.
+    KernelFrameRecording(
+        box='box-e', device='NVIDIA RTX PRO 6000 Blackwell Server Edition',
+        compute_capability='120', nvrtc_build='12.8.93',
+        platform_family='linux', measured='2026-10-03', complete=False,
+        frames=MappingProxyType({'lake': 14400}),
+    ),
     # gp-libm64 records only its new grading unit on the measured compiler.
     KernelFrameRecording(
         box='node-2', device='NVIDIA GeForce RTX 5090',

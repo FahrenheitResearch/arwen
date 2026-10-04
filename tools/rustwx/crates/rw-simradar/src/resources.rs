@@ -89,9 +89,11 @@ pub fn output_bound(config: &Config) -> Result<Value, String> {
     }
     let mut tilts: Vec<f64> = config.elevations_deg.clone();
     tilts.dedup_by(|a, b| (*a - *b).abs() < 0.01);
+    // Every PPI field a volume may carry: reflectivity, velocity and the
+    // dual-pol moments drawn when the history's microphysics supplies them.
     let drawn = match &config.fields {
-        Fields::List(v) => v.iter().filter(|f| *f == "reflectivity" || *f == "velocity").count(),
-        Fields::Auto(_) => 2,
+        Fields::List(v) => v.iter().filter(|f| crate::ppi::PPI_FIELDS.contains(&f.as_str())).count(),
+        Fields::Auto(_) => crate::ppi::PPI_FIELDS.len(),
     };
     let images = (drawn * tilts.len().min(crate::PPI_TILTS)) as u64;
     let pixels = u64::from(crate::PPI_WIDTH) * u64::from(crate::PPI_HEIGHT);
@@ -221,6 +223,12 @@ mod tests {
         let images = 2 * (bound["png_bytes_upper_bound"].as_u64().unwrap()
             + 2 * bound["gif_frame_bytes_upper_bound"].as_u64().unwrap());
         assert_eq!(bound["output_bytes_per_site_volume_upper_bound"], level2 + cfradial + images);
+        // Auto fields price every PPI field at both drawn tilts: reflectivity,
+        // velocity, ZDR, CC and KDP.
+        c.fields = Fields::Auto("auto".into());
+        assert_eq!(output_bound(&c).unwrap()["ppi_images_per_site_volume"], 10);
+        c.fields = Fields::List(vec!["zdr".into(), "phidp".into()]);
+        assert_eq!(output_bound(&c).unwrap()["ppi_images_per_site_volume"], 2, "PHIDP has no PPI");
     }
     #[test]
     fn atmosphere_overflow_cannot_wrap_to_a_small_quote() {

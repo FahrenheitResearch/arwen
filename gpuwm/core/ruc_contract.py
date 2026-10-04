@@ -26,6 +26,7 @@ from gpuwm.core.noahmp_mynn_contract import (
     WRF_REFERENCE_VERSION,
 )
 from gpuwm.ingest.ruc_soil import RUC_LEVEL_DEPTHS_M as _RUC_LEVEL_DEPTHS_M
+from gpuwm.core.ruc_spp import RUC_SPP_VALUES
 
 
 CONTRACT_ID = "wrf-v4.6.1-ruc3-nine-level-defaults-v1"
@@ -118,8 +119,9 @@ RUC_PACKAGE_STATE_SHA256 = (
 
 # Direct RUC controls from Registry.EM_COMMON:2535-2537 and the stochastic
 # physics controls documented in run/README.namelist:1218-1220.  The first
-# executable lane is the deterministic, dominant-category WRF default.  Six
-# levels and stochastic/mosaic alternatives remain separately gated modes.
+# executable defaults retain WRF dominant categories; mosaics use source
+# category fractions. Six levels and the separately versioned hydraulic SPP
+# operator are admitted.
 RUC_NAMELIST_DEFAULTS: Mapping[str, int] = MappingProxyType({
     "num_soil_layers": 9,
     "mosaic_lu": 0,
@@ -129,17 +131,21 @@ RUC_NAMELIST_DEFAULTS: Mapping[str, int] = MappingProxyType({
 })
 
 #: Keys whose override is admitted against a SET rather than a single
-#: validated default.  ``num_soil_layers`` is the only one: WRF defines two
+#: validated default. WRF defines two
 #: RUC geometries and gpuwm's forecast column now compiles at both, so pinning
-#: it to one would be gpuwm's pin, not WRF's.  Every other key stays strict --
-#: ``mosaic_lu``, ``mosaic_soil``, ``flag_sm_adj`` and ``spp_lsm`` are
-#: unvalidated MODES, not geometries, and nothing here widens them.
+#: it to one would be gpuwm's pin, not WRF's. Mosaic modes admit 0 and 1;
+#: enabled modes require source fractions. SPP restores the historical
+#: hydraulic-conductivity operator under its own source identity. Other keys
+#: retain their defaults.
 #:
 #: Admitted is not validated.  Six levels has no WRF forecast oracle; what it
 #: has is a compiled column, host/device agreement and the runtime warning
 #: gpuwm.physics_compat raises.  See docs/wrf_ruc_runtime_admission.md.
 RUC_NAMELIST_ADMITTED: Mapping[str, tuple[int, ...]] = MappingProxyType({
     "num_soil_layers": WRF_SUPPORTED_NUM_SOIL_LAYERS,
+    "mosaic_lu": (0, 1),
+    "mosaic_soil": (0, 1),
+    "spp_lsm": RUC_SPP_VALUES,
 })
 
 
@@ -181,6 +187,17 @@ RUC_SURFACE_ORACLE_CASES = (
     "lai2d_preserve",
     "grass_short_season",
 )
+RUC_MOSAIC_SURFACE_ORACLE_ASSET = ReferenceAsset(
+    "mosaic_surface.csv",
+    3_003,
+    "a50e85da109af1981d2a8db8b302aaf4799ab80f25731d761b94d767f7646557",
+)
+RUC_MOSAIC_DRIVER_ORACLE_ASSET = ReferenceAsset(
+    "mosaic_driver.csv",
+    590_647,
+    "9ff0ff75a245d2ef7b90bea0b4d1b5eeaf653ff45aba6500304e381573a18e09",
+)
+
 RUC_SOILPROP_ORACLE_ASSET = ReferenceAsset(
     "soilprop.csv",
     10_137,

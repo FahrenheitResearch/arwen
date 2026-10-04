@@ -1000,9 +1000,11 @@ def verify_source_revision(payload: bytes, *, expected: str,
 #: from the Cargo manifests and the Rust sources and refuses any it does
 #: not find covered here.
 NATIVE_BUILD_INPUTS: dict[str, tuple[str, ...]] = {
-    "tools/grib1_bridge": ("tools/grib1_bridge",),
-    "tools/rustwx": ("tools/rustwx", "tools/grib1_bridge/vendor/grib-core"),
-    "tools/rw_wps": ("tools/rw_wps", "tools/grib1_bridge/vendor/grib-core"),
+    "tools/grib1_bridge": ("tools/grib1_bridge", "tools/preparation_resources.rs"),
+    "tools/rustwx": ("tools/rustwx", "tools/grib1_bridge/vendor/grib-core",
+                     "tools/preparation_resources.rs"),
+    "tools/rw_wps": ("tools/rw_wps", "tools/grib1_bridge/vendor/grib-core",
+                     "tools/preparation_resources.rs"),
     "tools/region_global_dealias": ("tools/region_global_dealias",),
     "tools/arwen-tui": (
         "tools/arwen-tui", "tools/arwen-ui-vendor", "gpuwm/tui_worker.py",
@@ -1010,7 +1012,8 @@ NATIVE_BUILD_INPUTS: dict[str, tuple[str, ...]] = {
         "configs/nest_lifecycle_20240521_4km.toml"),
     "tools/zarr_bridge": (
         "tools/zarr_bridge", "tools/rustwx/crates/netcdf-writer",
-        "tools/rw_wps", "tools/grib1_bridge/vendor/grib-core"),
+        "tools/rw_wps", "tools/grib1_bridge/vendor/grib-core",
+        "tools/preparation_resources.rs"),
 }
 
 

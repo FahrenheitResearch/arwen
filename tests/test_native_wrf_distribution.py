@@ -324,7 +324,7 @@ def test_native_wrf_contract_is_versioned_and_explicit():
     assert "grib2_inventory" in BRIDGE_NAMES
     assert "grib2_dump" in BRIDGE_NAMES
     assert contract["preprocess_backends"]["cpu"] \
-        == "rust-scoped-threads-fp32-v1"
+        == "rust-parallel-fp32-v1"
     assert "parallel CPU" in contract["public_controls"]["gfs"]["preprocessing"]
     assert "parallel CPU" in contract["public_controls"]["era5"]["preprocessing"]
     assert "max_dom=4" in contract["public_controls"]["20crv3"]["domain"]
@@ -669,6 +669,82 @@ assert 'gpuwm.core.cam_ozone' not in sys.modules
 assert 'gpuwm.branch' not in sys.modules
 assert 'gpuwm.prepared_single_domain_forecast' not in sys.modules
 
+# The ensemble package's preparation side is staged and its orchestration is
+# not.  Every streamed preparation asks these hooks whether a member input is
+# bound, and the namelist importer reads the stochastic contract; with the
+# package absent, or with a door that imported gpuwm.ensemble.cycle beside any
+# submodule, each was a ModuleNotFoundError in a preparation binding no member.
+from gpuwm.ensemble.posted_preparation import (
+    current_posted_domain, current_posted_preparation)
+from gpuwm.ensemble.runtime_preparation import current_runtime_preparation
+assert current_posted_domain() is None
+assert current_posted_preparation() is None
+assert current_runtime_preparation() is None
+import gpuwm.namelist_stochastic
+from gpuwm.ensemble import physical_boundary, physical_store
+for name in ("cycle", "engine", "member", "request", "batch_products"):
+    assert f"gpuwm.ensemble.{name}" not in sys.modules, name
+    assert not (root / "gpuwm" / "ensemble" / f"{name}.py").exists(), name
+# An experiment config carrying [ensemble] still builds past the table:
+# preparation consumes nothing from it, and its validator lives with the
+# forecast this wheel omits.  The builder leaves it for the ensemble door, so
+# the refusal below is about the rest of the document, not about the table.
+from gpuwm.experiment import build_experiment
+try:
+    build_experiment({"ensemble": {"members": 2, "unknown": 1}}, "standalone")
+except ValueError as error:
+    assert "must carry an [experiment] table" in str(error), error
+else:
+    raise AssertionError("an empty experiment document was built")
+# A [grid]/[dynamics]/[run] config carrying the table is refused by name here
+# as in the full distribution: no door runs an ensemble from one (2.8.4
+# refused the table as unknown), and the refusal needs nothing this wheel
+# omits.  Read and dropped, the table prepared one input for a run that the
+# forecast install then refuses.
+from gpuwm.config import load_config
+ensemble_config = Path.cwd() / "ensemble.toml"
+ensemble_config.write_text(
+    "[grid]\nnx = 28\nny = 28\nnz = 12\ndx = 3000.0\ndy = 3000.0\n"
+    "ztop = 16000.0\n[run]\ndt = 3.0\nrun_seconds = 30.0\n"
+    "[ensemble]\nmembers = 2\n", encoding="utf-8")
+try:
+    load_config(ensemble_config)
+except ValueError as error:
+    assert "carries an [ensemble] table" in str(error), error
+    assert "remove the [ensemble] table to run this one forecast" in str(error), error
+else:
+    raise AssertionError("the [ensemble] table of a RunConfig was read and dropped")
+assert "gpuwm.ensemble.request" not in sys.modules
+# The planning door reads a multi-model member list with what this wheel
+# carries.  Its reader lived in the forecast door (gpuwm.ensemble.recipe_door),
+# which is not staged, so the staging refused the import as unresolved.
+import contextlib
+import io
+import json
+from gpuwm.ensemble import recipes
+listed = Path.cwd() / "members.json"
+listed.write_text(json.dumps([{"source": "hrrr", "cycle": "2026-10-01T18"},
+                              {"source": "rap", "cycle": "2026-10-01T18"}]),
+                  encoding="utf-8")
+printed = io.StringIO()
+with contextlib.redirect_stdout(printed):
+    assert recipes.main(["--source", "hrrr", "--cycle", "2026-10-01T18:00:00+00:00",
+                         "--hours", "1", "--members", "2", "--recipe", "multi-model",
+                         "--trajectories", str(listed)]) == 0
+assert [member["trajectory"]["source"]
+        for member in json.loads(printed.getvalue())["members"]] == ["hrrr", "rap"]
+assert "gpuwm.ensemble.recipe_door" not in sys.modules
+assert not (root / "gpuwm" / "ensemble" / "recipe_door.py").exists()
+# A posted provider member needs the forecast runner's preflight and says so.
+from gpuwm.ensemble.posted_native import checked_source_inputs
+try:
+    checked_source_inputs(None, source="gfs", experiment_config="x",
+                          wps_namelist="y")
+except RuntimeError as error:
+    assert "preparation-only installation" in str(error), error
+else:
+    raise AssertionError("a provider member was not refused by name")
+
 # A staged config reader must retain attribute-following validation, including
 # its refusal, while the runtime UI and executor imports remain blocked.
 follow = build_follow_config({
@@ -756,6 +832,69 @@ for name in (
     assert completed.returncode == 0, completed.stderr
 
 
+def test_the_full_distribution_validates_the_ensemble_table_at_load(tmp_path):
+    """Leaving the table unvalidated is a property of the staged wheel alone.
+
+    The breakage this prevents: build_experiment skips the ``[ensemble]``
+    validator where ``gpuwm.ensemble.request`` is not installed.  If that
+    presence check ever answered False in the full distribution, every
+    ensemble table would load unchecked and an unknown key would reach the
+    batched forecast.
+
+    load_config asks no such question: a ``[grid]``/``[dynamics]``/``[run]``
+    config opens no ensemble session at any door, so its table is refused
+    by name in every installation, as 2.8.4 refused it as unknown.
+    """
+
+    from gpuwm import ensemble
+    from gpuwm.config import load_config
+    from gpuwm.experiment import build_experiment
+
+    assert ensemble.request_installed()
+    with pytest.raises(ValueError, match="unknown ensemble"):
+        build_experiment({"ensemble": {"members": 2, "unknown": 1}}, "full")
+    config = tmp_path / "ensemble.toml"
+    config.write_text(
+        "[grid]\nnx = 28\nny = 28\nnz = 12\ndx = 3000.0\ndy = 3000.0\n"
+        "ztop = 16000.0\n[run]\ndt = 3.0\nrun_seconds = 30.0\n"
+        "[ensemble]\nmembers = 2\nunknown = 1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"carries an \[ensemble\] table") as refused:
+        load_config(config)
+    assert "opens no ensemble session" in str(refused.value)
+
+
+def test_the_planning_door_reads_its_member_list_without_the_forecast_door(tmp_path):
+    """``python -m gpuwm.ensemble.recipes --trajectories FILE`` imports no forecast door.
+
+    The breakage this prevents: the planning module is staged into the
+    preparation-only wheel, and its ``--trajectories`` reader was imported
+    from ``gpuwm.ensemble.recipe_door``, which is not.  The staging of the
+    wheel refused that as an unresolved internal import, so the wheel could
+    not be built.  This runs in any tree, staged or not.
+    """
+
+    listed = tmp_path / "members.json"
+    listed.write_text(json.dumps([{"source": "hrrr", "cycle": "2026-10-01T18"},
+                                  {"source": "rap", "cycle": "2026-10-01T18"}]),
+                      encoding="utf-8")
+    script = (
+        "import sys\n"
+        "from gpuwm.ensemble import recipes\n"
+        "code = recipes.main(['--source', 'hrrr', '--cycle', '2026-10-01T18:00:00+00:00',\n"
+        "                     '--hours', '1', '--members', '2', '--recipe', 'multi-model',\n"
+        "                     '--trajectories', sys.argv[1]])\n"
+        "assert code == 0, code\n"
+        "assert 'gpuwm.ensemble.recipe_door' not in sys.modules\n")
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(listed)], cwd=tmp_path,
+        env={**os.environ, "PYTHONPATH": os.pathsep.join(
+            [str(ROOT), os.environ.get("PYTHONPATH", "")])},
+        capture_output=True, text=True, timeout=120)
+    assert completed.returncode == 0, completed.stderr
+    plan = json.loads(completed.stdout)
+    assert [member["trajectory"]["source"] for member in plan["members"]] == ["hrrr", "rap"]
+
+
 def test_standalone_auto_backend_reads_the_card_load(tmp_path):
     """The staged package prices its preparation against the card's load.
 
@@ -815,12 +954,18 @@ assert Path(backend.__file__).resolve().is_relative_to(root)
 
 runtime = SimpleNamespace(getDeviceCount=lambda: 1, getDevice=lambda: 0,
                           runtimeGetVersion=lambda: 13020)
-card = SimpleNamespace(name="cuda", array_module=SimpleNamespace(
-    __version__="14.2.0", cuda=SimpleNamespace(runtime=runtime)))
+class ShadowCuda(backend.CudaPreprocessBackend):
+    @property
+    def array_module(self):
+        return SimpleNamespace(__version__="14.2.0",
+                               cuda=SimpleNamespace(runtime=runtime))
+
 cpu = SimpleNamespace(name="cpu")
-backend.CudaPreprocessBackend = lambda: card
+backend.CudaPreprocessBackend = ShadowCuda
 backend.ParallelCpuPreprocessBackend = lambda **_: cpu
 backend._gpu_runtime_installed = lambda: True
+from gpuwm.ingest import preparation_workers
+preparation_workers.host_available_bytes = lambda: 1024 * GIB
 
 from gpuwm.config import RunConfig
 from gpuwm.ingest.preparation_price import price_forcing_preparation
@@ -835,33 +980,37 @@ snapshot = SimpleNamespace(fields={
     "TT": level, "UU": level, "VV": level, "RH": level, "GHT": level,
     "PSFC": SimpleNamespace(shape=(1059, 1799))})
 price = price_forcing_preparation("mapped", exp, [snapshot] * 7)
-# The stand-in card is 32 GiB: 2 GiB free cannot hold this preparation
-# and 30 GiB free can.
+# The stand-in card is 32 GiB. No free memory cannot hold even a batch;
+# 30 GiB free admits the host-retained, bounded CUDA preparation.
 assert 2 * GIB < price.need_bytes < 30 * GIB, price.need_bytes
 
-os.environ["SHADOW_FREE_GIB"] = "2"
+os.environ["SHADOW_FREE_GIB"] = "0"
 chosen = backend.resolve_preprocess_backend("auto", price=price)
 assert chosen is cpu, chosen.selection
 reason = chosen.selection["reason"]
 assert reason.startswith("the CUDA preparation needs "), reason
-assert "the card has 2.0 GiB free of 32.0 GiB" in reason, reason
+assert "the card has 0.0 GiB free of 32.0 GiB" in reason, reason
 fit = chosen.selection["device_fit"]
 assert fit["fits"] is False, fit
 assert fit["need_bytes"] == price.need_bytes, fit
-assert fit["free_bytes"] == 2 * GIB, fit
+assert fit["free_bytes"] == 0, fit
 assert fit["route"] == "mapped", fit
 load = chosen.selection["device_load"]
-assert load["free_bytes"] == 2 * GIB, load
+assert load["free_bytes"] == 0, load
 assert load["total_bytes"] == 32 * GIB, load
 
 os.environ["SHADOW_FREE_GIB"] = "30"
 chosen = backend.resolve_preprocess_backend("auto", price=price)
-assert chosen is card, chosen.selection
+from gpuwm.ingest.bounded_cuda import BoundedCudaPreprocessBackend
+assert isinstance(chosen, BoundedCudaPreprocessBackend), chosen.selection
 assert "certified" in chosen.selection["reason"], chosen.selection
 assert chosen.selection["device_load"]["free_bytes"] == 30 * GIB, chosen.selection
 fit = chosen.selection["device_fit"]
 assert fit["fits"] is True, fit
-assert fit["need_bytes"] == price.need_bytes, fit
+assert fit["need_bytes"] < price.need_bytes, fit
+assert fit["unchunked_need_bytes"] == price.need_bytes, fit
+assert fit["need_bytes"] == sum(fit["terms"].values()), fit
+assert chosen.selection["chunking"]["retained_arrays"] == "host"
 assert fit["free_bytes"] == 30 * GIB, fit
 
 import gpuwm.core.device_probe as probe

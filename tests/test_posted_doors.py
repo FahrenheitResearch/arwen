@@ -857,7 +857,7 @@ def test_only_a_runner_that_waits_on_posted_leads_prepares_as_posted():
     # The mapped engine waits on posted leads since A136 L3 (ii)
     # (mapped_direct --as-posted), and its door forwards the flag (L10).
     assert source_cli.prepares_as_posted("gefs")
-    assert not source_cli.prepares_as_posted("hrrr")
+    assert source_cli.prepares_as_posted("hrrr")
     assert not source_cli.prepares_as_posted("no-such-source")
 
 

@@ -76,6 +76,18 @@ pub struct Config {
     pub gate_spacing_m: f64,
     pub azimuth_step_deg: f64,
     pub volume_duration_s: f64,
+    /// The colour tables the reflectivity and velocity PPIs draw with:
+    /// `standard` (the radar tables) or `classic` (the reflectivity ladder
+    /// and blue-red velocity scale they replaced). Left out of the
+    /// serialized config when `standard`, so a request that does not name
+    /// it keeps the `config_sha256` it had before the key existed. The
+    /// radar files do not depend on it.
+    #[serde(skip_serializing_if = "is_standard_color_tables")]
+    pub color_tables: String,
+}
+
+fn is_standard_color_tables(name: &String) -> bool {
+    name == "standard"
 }
 
 impl Default for Config {
@@ -94,6 +106,7 @@ impl Default for Config {
             gate_spacing_m: 250.0,
             azimuth_step_deg: 1.0,
             volume_duration_s: 300.0,
+            color_tables: "standard".into(),
         }
     }
 }
@@ -248,7 +261,14 @@ impl Config {
             }
             _ => return Err("fields must be auto or a list of supported radar moments".into()),
         }
+        self.color_set()?;
         Ok(())
+    }
+
+    /// The radar colour set `color_tables` names, or a refusal listing them.
+    pub fn color_set(&self) -> Result<rustwx_render::RadarColorSet, String> {
+        rustwx_render::RadarColorSet::parse(&self.color_tables)
+            .map_err(|error| format!("color_tables: {error}"))
     }
 
     /// Memory needed for polar working rows, retained moments, writer copies,

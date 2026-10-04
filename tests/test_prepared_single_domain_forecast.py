@@ -189,6 +189,32 @@ def _mapped_proof_literals() -> tuple[dict[str, list[set[str]]],
         ordered += [None, *heads, *sorted(
             (node for node in assigns if node not in heads),
             key=lambda node: node.lineno)]
+    # An as-posted seal returns the keys it adds to the sealed proof from
+    # _seal_posted_mapped's own "proof" literal; the chained tree spreads
+    # them as ``**posted_proof`` (empty unless the tree was as-posted), so
+    # every key the head does not already carry is opted in.
+    posted_keys: set[str] = set()
+    for function in functions:
+        if function.name != "_seal_posted_mapped":
+            continue
+        for node in ast.walk(function):
+            if not isinstance(node, ast.Dict):
+                continue
+            for key, value in zip(node.keys, node.values):
+                if not (isinstance(key, ast.Constant) and key.value == "proof"
+                        and isinstance(value, ast.Dict)):
+                    continue
+                for inner, spread in zip(value.keys, value.values):
+                    if isinstance(inner, ast.Constant):
+                        posted_keys.add(inner.value)
+                    elif (inner is None and isinstance(spread, ast.IfExp)
+                          and isinstance(spread.body, ast.Dict)):
+                        posted_keys.update(item.value for item in spread.body.keys
+                                           if isinstance(item, ast.Constant))
+                    else:
+                        raise AssertionError(
+                            "_seal_posted_mapped's proof grew a key this gate "
+                            "cannot read statically; teach it, do not delete it")
     head_parts: dict[str, object] = {}
     for node in ordered:
         if node is None:
@@ -215,6 +241,14 @@ def _mapped_proof_literals() -> tuple[dict[str, list[set[str]]],
                     schema_name = value.id
             elif isinstance(key, ast.Name) and key.id == "forcing_key":
                 keys.add("forcing_hours")
+            elif (key is None and isinstance(value, ast.Name)
+                  and value.id == "posted_proof"):
+                if not posted_keys:
+                    raise AssertionError(
+                        "gpuwm/mapped_direct.py spreads posted_proof but "
+                        "_seal_posted_mapped publishes no proof literal")
+                opted_in |= posted_keys - keys
+                continue
             elif key is None:
                 # A `**` spread.  The writer uses it for two things.
                 #
@@ -318,9 +352,9 @@ def test_prepared_runner_capability_query_is_side_effect_free_without_run_args(
     assert payload["schema"] == "gpuwm-runner-capabilities-v1"
     assert payload["supported_sources"] == [
         "20crv3", "20crv3-cf", "aifs", "aigefs", "aigfs",
-        "ecmwf-open-data", "era5", "era5-l137", "gdas", "gefs",
-        "gem-gdps", "gfs", "hrrr", "hrrr-prs", "icon-d2", "icon-eu",
-        "icon-global", "mapped", "rap", "rrfs"]
+        "ecmwf-ens", "ecmwf-open-data", "era5", "era5-l137", "gdas", "gefs",
+        "gem-gdps", "gfs", "hrrr", "hrrr-native", "hrrr-prs", "icon-d2", "icon-eu",
+        "icon-global", "mapped", "rap", "rap-native", "rrfs"]
     assert payload["physics_profile_ids"] == list(runner.PHYSICS_PROFILES)
     assert payload["report_schema"] == runner.REPORT_SCHEMA
     assert payload["window"]["limit_policy"] \
@@ -333,6 +367,7 @@ def test_prepared_runner_capability_query_is_side_effect_free_without_run_args(
         "20crv3": "manifest-bound-uniform-positive-whole-hour",
         "20crv3-cf": "uniform-positive-whole-hour",
         "hrrr-prs": "uniform-positive-whole-hour",
+        "hrrr-native": "uniform-positive-whole-hour",
         "aifs": "uniform-positive-whole-hour",
         "aigefs": "uniform-positive-whole-hour",
         "aigfs": "uniform-positive-whole-hour",
@@ -343,6 +378,7 @@ def test_prepared_runner_capability_query_is_side_effect_free_without_run_args(
         "icon-eu": "uniform-positive-whole-hour",
         "icon-d2": "uniform-positive-whole-hour",
         "rap": "uniform-positive-whole-hour",
+        "rap-native": "uniform-positive-whole-hour",
         "rrfs": "uniform-positive-whole-hour",
     }
     twentycr = payload["source_profiles"]["20crv3"]

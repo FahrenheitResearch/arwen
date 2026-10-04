@@ -146,6 +146,16 @@ def _profile(
 
 
 _PACKAGED_PROFILES = MappingProxyType({
+    "ecmwf-ens-open-grib2-v1": _profile(
+        "rw-wps-ecmwf-ens-open-grib2",
+        source_format="grib2",
+        mapping="f24b41cd53e8da762cdc1bbd786d0a43f231a246e93347f0b3f07090c7423d09",
+        composition="bd8a748fb20f9709cca13490a806f3b6b6cbf4eca72fafb1189758557fc3b53f",
+        provenance="e6127a3c9da1ba3834a529c135a177d3652d80bbb2c5c7ca68891e8c87d0bec3",
+        data_role="ecmwf_open_data_in_band_surface",
+        provenance_role="ecmwf_open_data_in_band_surface_provenance",
+    ),
+
     # Native global ICON carries its coordinates in separate GDT-101
     # CLAT/CLON records. Normalize before the existing mapped authority is
     # authored, never disguise its unstructured array as an embedded grid.
@@ -217,6 +227,33 @@ _PACKAGED_PROFILES = MappingProxyType({
         provenance="f2aade12671166959e42cacd357bc54359af4d3034eedff81630b26646eb4b8c",
         data_role="hrrr_prs_in_band_surface",
         provenance_role="hrrr_prs_in_band_surface_provenance",
+    ),
+    # RAP's awp130bgrb product (13 km CONUS Lambert, 50 native hybrid
+    # levels): the complete state, in-band terrain and the nine-node RUC
+    # soil column in one file per valid time.
+    "rap-native-grib2-v1": _profile(
+        "rw-wps-rap-native-grib2", source_format="grib2",
+        mapping="6a94ace93fff992657cf70122dd4934762df50b9a1babae03d7b575b28f6621f",
+        composition="5e1191db5f310fef5e6f27af7a8268662785b0e10a1bee844d825931be0e7cc5",
+        provenance="89ba6be652b95b99da759d1ae88d09235335f45b41117f767f48fcb228ac3c1c",
+        data_role="rap_native_in_band_surface",
+        provenance_role="rap_native_in_band_surface_provenance",
+    ),
+    # HRRR's wrfnat hybrid atmosphere at each valid time; terrain and the
+    # nine-node soil column come from the same cycle's wrfprs analysis.
+    "hrrr-native-grib2-v1": _profile(
+        "rw-wps-hrrr-native-grib2", source_format="grib2",
+        mapping="8b6a51db0ef885b23287013f2d6beafd64c738bad46629584195fc384e9ff569",
+        composition="e0b85e8e41c7281ddfbfed42d5b5144411063ad2d76d2970e1df57d914ba2ef8",
+        provenance="4af5ef7fa316955c00115294518850010d097d8a0ecef5884aeb613fcd477b52",
+        data_role="soil_surface_data",
+        provenance_role="soil_surface_provenance",
+        contributing_mappings={
+            "soil_surface_mapping": {
+                "file": "rw-wps-hrrr-prs-grib2.mapping.json",
+                "sha256": "1bb2dd3f91bb0c645d4256cc23d7827bd7f6ba17eaf8da4d4fa4caa590ac8d61",
+            },
+        },
     ),
     # RAP's awip32 product (AWIPS grid 221, 32 km Lambert, all of North
     # America): the one public RAP product that carries the complete
@@ -534,6 +571,14 @@ _PACKAGED_PROFILES = MappingProxyType({
 #: an ensemble can have a members grammar before its field mapping
 #: exists -- which is exactly the state GEFS and AIGEFS ship in.
 _PACKAGED_MEMBER_GRAMMARS = MappingProxyType({
+    "rrfs-ops-subset-grib2-members-v1": MappingProxyType({
+        "file": "rw-wps-rrfs-ops-subset-grib2.members.json",
+        "sha256": "2924d472498e298b01cf3a34fe876a950803b1007be8a22e7b639c13a82ad217",
+    }),
+    "ecmwf-ens-open-grib2-members-v1": MappingProxyType({
+        "file": "rw-wps-ecmwf-ens-open-grib2.members.json",
+        "sha256": "f5e3103d949b1851171bdad56e19203c2716170fa77c5003728324cda7104167",
+    }),
     # NCEP GEFS v12, the 0.5-degree atmos pgrb2a/b (and 0.25-degree
     # pgrb2s) member files: 31 forecasts whose encoded ensemble size
     # says 30 (the octet excludes the control), whose control is flagged
@@ -601,6 +646,65 @@ def packaged_member_grammar(grammar_id: str) -> Path:
     if observed != row["sha256"]:
         raise RuntimeError(
             f"packaged member grammar {grammar_id} hash differs: "
+            f"expected {row['sha256']}, got {observed}")
+    return path
+
+
+#: The physical field contract of a NATIVE preparation implementation: the
+#: units, target-grid dimensions, vector basis and source operation of every
+#: array its physical store carries, its vertical coordinate, the evidence
+#: it must be given, and the sentences it refuses with.  A mapped source
+#: needs no row here, because its contract is read from its own packaged
+#: mapping.  These two were Python tables in one module per source; they
+#: are documents now, pinned by SHA-256 like every other authority and read
+#: by one module (:mod:`gpuwm.ensemble.physical_fields`), so an
+#: implementation with the same capabilities is one document plus one row.
+_PACKAGED_PHYSICAL_CONTRACTS = MappingProxyType({
+    "gfs-pgrb2-0p25-physical-fields-v1": MappingProxyType({
+        "file": "rw-wps-gfs-pgrb2-0p25.physical-fields.json",
+        "sha256": "93732b11f63ad5446569f867b97c71d77fe4a3302dca912fd52e383b4a0431a3",
+    }),
+    "hrrr-f00-f12-physical-fields-v1": MappingProxyType({
+        "file": "rw-wps-hrrr-f00-f12.physical-fields.json",
+        "sha256": "18813958f53f9028198c434bfb26d240d83811df097d80c3a393852f564a608a",
+    }),
+})
+
+
+def packaged_physical_contract_ids() -> tuple[str, ...]:
+    """Every packaged physical field contract this distribution ships, sorted."""
+
+    return tuple(sorted(_PACKAGED_PHYSICAL_CONTRACTS))
+
+
+def _physical_contract_row(contract_id: str) -> Mapping[str, object]:
+    try:
+        return _PACKAGED_PHYSICAL_CONTRACTS[contract_id]
+    except KeyError:
+        raise KeyError(
+            f"unknown packaged physical field contract {contract_id!r}; this "
+            f"distribution ships {sorted(_PACKAGED_PHYSICAL_CONTRACTS)}"
+        ) from None
+
+
+def packaged_physical_contract_sha256(contract_id: str) -> str:
+    """One physical field contract's immutable SHA-256, without touching disk."""
+
+    return str(_physical_contract_row(contract_id)["sha256"])
+
+
+def packaged_physical_contract(contract_id: str) -> Path:
+    """Resolve and byte-verify one packaged physical field contract."""
+
+    row = _physical_contract_row(contract_id)
+    path = (_AUTHORITY_ROOT / str(row["file"])).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"packaged physical field contract {contract_id} is missing: {path}")
+    observed = hashlib.sha256(path.read_bytes()).hexdigest()
+    if observed != row["sha256"]:
+        raise RuntimeError(
+            f"packaged physical field contract {contract_id} hash differs: "
             f"expected {row['sha256']}, got {observed}")
     return path
 
@@ -998,7 +1102,9 @@ __all__ = [
     "packaged_contributing_mappings", "packaged_contributing_sha256",
     "packaged_gfs_vtable", "packaged_gfs_vtable_sha256",
     "packaged_member_grammar", "packaged_member_grammar_ids",
-    "packaged_member_grammar_sha256", "packaged_profile",
+    "packaged_member_grammar_sha256",
+    "packaged_physical_contract", "packaged_physical_contract_ids",
+    "packaged_physical_contract_sha256", "packaged_profile",
     "packaged_profile_ids", "twentycrv3_authorities",
     "twentycrv3_authority_sha256",
 ]

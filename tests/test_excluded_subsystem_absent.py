@@ -199,11 +199,16 @@ _RADAR_WRITER_FILES = frozenset("".join(parts) for parts in (
     ("licenses/LICENSE-", "re", "cast-radar-tools-bzip2.txt"),
     ("licenses/NOTICE-", "re", "cast-radar-tools.txt"),
     ("licenses/THIRD-PARTY-LICENSES-bridge-binaries.txt",),
+    # The two Zarr notice copies reproduce the bridge-binaries notice above
+    # verbatim (tools/update_zarr_license_notice.py), so since 2.8.5 they
+    # carry the same radar-writer attribution and nothing else of it.
+    ("licenses/THIRD-PARTY-LICENSES-zarr-binary.txt",),
     ("tests/test_licence_notices_ship.py",),
     ("tools/rustwx/Cargo.lock",),
     ("tools/rustwx/Cargo.toml",),
     ("tools/rustwx/VENDOR.md",),
     ("tools/rustwx/assets/basemap/THIRD-PARTY-LICENSES.txt",),
+    ("tools/rustwx/assets/basemap/THIRD-PARTY-LICENSES-zarr-binary.txt",),
     ("tools/rustwx/crates/rw-simradar/Cargo.toml",),
     ("tools/rustwx/crates/rw-simradar/src/adapter.rs",),
 ))

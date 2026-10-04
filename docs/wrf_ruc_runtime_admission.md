@@ -109,16 +109,17 @@ between `:1057` and the `:824-847` water arm and is asserted separately.
 
 ## The enforced option identity
 
-`gpuwm.config.RUC_OPTION_IDENTITY_EVIDENCE`, refused by
-`validate_run_config` **before a run starts**, and re-checked at the seam that
-would have had to implement each branch.
+`validate_run_config` checks these controls before a run starts. Mosaic
+switches accept both implemented values; the remaining fixed controls are
+listed in `gpuwm.config.RUC_OPTION_IDENTITY_EVIDENCE` and checked again at
+the runtime seam.
 
-| knob | admitted | why that is the only value |
+| knob | admitted | implementation |
 |---|---|---|
-| `mosaic_lu` | 0 | dead-proved. `ruc_surface_parameters` is fail-closed on SOILVEGIN's mosaic arms, and LSMRUC's irrigation block (`:984-1009`) is gated on the same `mosaic_lu==1`, so it is unreachable wherever SOILVEGIN is. |
-| `mosaic_soil` | 0 | the `soilctop`/`nscat` half of the same refusal. |
+| `mosaic_lu` | 0 or 1, default 0 | SOILVEGIN weighted vegetation parameters and LSMRUC irrigation consume source LANDUSEF fractions. |
+| `mosaic_soil` | 0 or 1, default 0 | SOILVEGIN weighted soil parameters consume SOILCTOP, with WRF's water-category exclusion and dominant fallback. |
 | `flag_sm_adj` | 0 | no consumer. `share/module_soil_pre.F:2063` reads it inside `init_soil_ruc`, i.e. in real.exe, to adjust a Noah-derived RUC soil state — gpuwm's RUC soil ingest (`gpuwm/ingest/ruc_soil.py`) is `init_soil_3_real`, which never reads it. |
-| `spp_lsm` | 0 | not ported. The ARW/`EM_CORE==1` surface path is active, but `LSMRUC:446-450` additionally needs the stochastic `pattern_spp_lsm`/`field_sf` inputs and their restart contract when this knob is nonzero. |
+| `spp_lsm` | 0 or 1 | 0 keeps the original fused RUC path. 1 runs the resident GPU soil and snow-soil consumers with the exact WRF V3.9.1 hydraulic operator, `field_sf=hydro*pattern` then `hydro=hydro*(1+pattern)`, before moisture transport. The pattern is supplied explicitly; no local noise is synthesized. WRF 4.6.1/4.7.1 omit this historical operator, so the enabled option carries a separate source identity. |
 
 RUC's namelist surface is only four knobs, which is precisely why the
 interesting restrictions are the ones with **no** namelist field.

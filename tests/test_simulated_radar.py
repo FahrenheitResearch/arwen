@@ -40,6 +40,7 @@ def test_default_surface_and_custom_coordinates_round_trip():
     ({"formats": ["level2", "level2"]}, "formats"),
     ({"fields": ["imaginary"]}, "fields"),
     ({"timing": "instant-ish"}, "timing"),
+    ({"color_tables": "rainbow"}, "color_tables"),
     ({"elevations_deg": [1, 0.5]}, "increase"),
     ({"scan_strategy": "vcp212", "elevations_deg": [0.5]}, "custom"),
     ({"range_km": float("nan")}, "finite"),
@@ -59,8 +60,24 @@ def test_declared_metadata_uses_the_option_defaults():
     from gpuwm.config import declared_key_rows
     rows = declared_key_rows()["simulated_radar"]
     options = radar.SimulatedRadarOptions.from_mapping({}).to_mapping()
-    assert set(rows) == set(options)
-    assert {name: row["default"] for name, row in rows.items()} == options
+    # color_tables is declared with its default but left out of a default
+    # request, so a table that does not name it writes the request it
+    # always did (re-recorded 2026-10-03 with the key).
+    assert set(rows) == set(options) | {"color_tables"}
+    assert rows["color_tables"]["default"] == "standard"
+    assert {name: row["default"] for name, row in rows.items()
+            if name != "color_tables"} == options
+
+
+def test_color_tables_selects_the_earlier_ppi_colours_and_stays_out_of_default_requests():
+    default = radar.SimulatedRadarOptions.from_mapping({})
+    assert default.color_tables == "standard"
+    assert "color_tables" not in default.to_mapping()
+    explicit = radar.SimulatedRadarOptions.from_mapping({"color_tables": "standard"})
+    assert explicit == default and explicit.to_mapping() == default.to_mapping()
+    classic = radar.SimulatedRadarOptions.from_mapping({"color_tables": "classic"})
+    assert classic.to_mapping()["color_tables"] == "classic"
+    assert radar.SimulatedRadarOptions.from_mapping(classic.to_mapping()) == classic
 
 
 @pytest.mark.parametrize("format", radar.FORMATS)
@@ -514,7 +531,8 @@ def _late_domain_writers(monkeypatch, simulated_radar):
     monkeypatch.setattr(runtime, "_global_wrf_attrs", lambda *a, **k: {})
     monkeypatch.setattr(runtime, "_metadata_frame", lambda *a, **k: {})
     run = SimpleNamespace(nx=4, ny=4, nz=3, dx=1000.0, dy=1000.0)
-    node = SimpleNamespace(cfg=SimpleNamespace(start_time=None, run=run, output=None))
+    node = SimpleNamespace(cfg=SimpleNamespace(start_time=None, run=run, output=None),
+                           state=None)
     case = SimpleNamespace(geog_selection=None, initial_result=SimpleNamespace(coord=None))
     writers = object.__new__(wrfout.PerDomainWrfoutWriters)
     writers.model = SimpleNamespace(node=lambda gid: node, _prepared_by_grid_id={2: case},

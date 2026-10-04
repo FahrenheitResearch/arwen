@@ -1,0 +1,21 @@
+{
+  "upstream": "https://github.com/wrf-model/WRF/tree/v4.6.1",
+  "source_tag": "v4.6.1",
+  "compile": "gfortran -O0 -fPIC -cpp -DEM_CORE=1 -ffree-form -ffree-line-length-none",
+  "columns": 12,
+  "steps": 300,
+  "dt_seconds": 30,
+  "native_cpp_comparison_max_ulp": 0,
+  "files": {
+    "tools/lake_wrf461_oracle/upstream/module_sf_lake.F": "b173ad8328ecc0aa6bb6e6306a9c6af4dc876b39dc5d304fe221122983214b98",
+    "tools/lake_wrf461_oracle/upstream/module_model_constants.F": "5b80377fecdc18a5f0ad38d3b6c15cfc86ad5d76701adbbbb08a08698d0f7062",
+    "tools/lake_wrf461_oracle/column_wrapper.F90": "e909ba3d79800b67ff977fe4ac097380d3f4c7796ad60b3ae3eb51935921288b",
+    "gpuwm/data/lake/oracle/columns.npz": "5f9bbb0c9b69f3b1a61690f4924ba1bb93f9ea84065771e1e7302a882d792d7a",
+    "gpuwm/data/lake/oracle/initialization.npz": "3018f7aa481ae75d1858e9a1a89a9e6f2fe082bfcda0fa299997a91cae3a927f",
+    "tools/lake_wrf461_oracle/upstream/Registry.EM_COMMON": "28cf7a2d369e898217d7231f4ed19310af7f0bec920f3cb57831e3dc4c80beec",
+    "tools/lake_wrf461_oracle/upstream/registry.lake": "f4897ffa57d2eae17552df220e984c5a76c93b95327fac1172b84d2ce969fe31",
+    "tools/lake_wrf461_oracle/abs_control.F90": "1a9b490aef7a1f91c2c92f5cea1c39cffe561557d3ca4ef9b576a816af867cba",
+    "tools/lake_wrf461_oracle/abs_control.cpp": "9d1c710c974ac46205643d04734598d1b5525ff357100fb19ebd1f0e998d3850",
+    "gpuwm/data/lake/oracle/abs-fortran.txt": "023499a251808a0ac9ccf741135c1796f7b7853f6bcef23b261b8a7ab34ad240"
+  }
+}

@@ -1172,6 +1172,7 @@ def intent_arguments(intent: Mapping[str, Any], *, out: Path
 #: an option the route does not support is refused, never accepted and
 #: dropped.
 _RUN_OPTION_DEFAULTS: dict[str, Any] = {
+    "ensemble": None,
     "device": None,
     "dry_run": False,
     "restart": None,
@@ -1226,6 +1227,14 @@ _RUN_OPTION_DEFAULTS: dict[str, Any] = {
 
 def _run_option(key: str, value: object, base: Path) -> Any:
     label = f"run plan 'run_options.{key}'"
+    if key == "ensemble":
+        if value is None:
+            return None
+        from gpuwm.ensemble.request import EnsembleRequest
+        try:
+            return EnsembleRequest.from_mapping(value).receipt()
+        except (ValueError, TypeError) as error:
+            raise PlanError(f"{label}: {error}") from error
     if key == "devices":
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise PlanError(f"{label} must be a positive integer slab count")
@@ -2598,6 +2607,9 @@ class RunObserver:
         place, :func:`gpuwm.first_products.early_render_requested`.
         """
 
+        from gpuwm.ensemble.runtime_context import current_session
+        if current_session() is not None:
+            return
         from gpuwm.first_products import (FirstProducts,
                                           early_render_requested)
         from gpuwm.live_products import (LiveProducts, early_render_runner,
@@ -3107,6 +3119,9 @@ def resolve_plan(plan: RunPlan, *, generate_into: Path | None = None,
                 "and the caller owns restart policy"})
 
     existing_bundle = _existing_prepared_bundle(plan)
+    recipe_refusal = _recipe_plan_refusal(plan, raw, existing_bundle)
+    if recipe_refusal is not None:
+        raise PlanError(recipe_refusal)
     if plan.route == "prepared" and existing_bundle is None:
         hints = raw.get("fetch") or {}
         if {"source", "cycle"} <= hints.keys():
@@ -3387,6 +3402,81 @@ def resolve_plan(plan: RunPlan, *, generate_into: Path | None = None,
     }, exp, data
 
 
+def _plan_recipe(plan: RunPlan, raw: Mapping[str, Any]) -> str | None:
+    """The member-source recipe this plan's ensemble request names, or None.
+
+    ``run_options.ensemble`` wins over the configuration's ``[ensemble]``
+    table, as it does when the request is built for the run.  A trajectory
+    list alone is the multi-model recipe.
+    """
+
+    table = plan.run_options.get("ensemble")
+    if table is None and isinstance(raw, Mapping):
+        table = raw.get("ensemble")
+    if not isinstance(table, Mapping):
+        return None
+    if table.get("recipe") is not None:
+        return str(table["recipe"])
+    return "multi-model" if table.get("trajectories") else None
+
+
+#: Run options a recipe request does not consume, each with the breakage a
+#: silent acceptance would cause.  The recipe door fetches and prepares
+#: every member by its own source's chain (:mod:`gpuwm.ensemble.recipe_door`).
+_RECIPE_UNCONSUMED_OPTIONS = {
+    "supplement": "it binds one donor file of one trajectory, and every member "
+                  "is prepared from its own trajectory",
+    "data_dir": "it names one existing download, and a recipe downloads one "
+                "window per member into its own request cache",
+    "physics_profile": "it asserts a suite to one chain's preparer, and each "
+                       "member is prepared by its source's own chain, which is "
+                       "handed no assertion",
+    "render_section": "the ensemble draws its aggregate maps and no stage of "
+                      "it cuts a vertical section",
+}
+
+
+def _recipe_plan_refusal(plan: RunPlan, raw: Mapping[str, Any],
+                         existing_bundle) -> str | None:
+    """Why this plan's recipe request cannot run as planned, or None.
+
+    Asked at plan resolution, so ``--resolve`` and a run both answer
+    before anything is fetched.  Breakage it prevents: a recipe on the
+    experiment route, or over an existing prepared bundle, ran its whole
+    download or restore for ONE trajectory and was refused only at the
+    forecast stage, where the session finds no member sources; and a run
+    option the recipe door does not consume was accepted and read by
+    nothing.
+    """
+
+    recipe = _plan_recipe(plan, raw)
+    if recipe is None:
+        return None
+    door = f"gpuwm ensemble CONFIG --recipe {recipe}"
+    if plan.route != "prepared":
+        return (f"the {recipe} ensemble recipe fetches and prepares each member's "
+                f"own source trajectory, and the {plan.route!r} route runs the one "
+                "trajectory its [case_data] files hold: every member would be a "
+                f"copy of it. Next: {door} on a config with a [fetch] table "
+                "(gpuwm domain writes one)")
+    if existing_bundle is not None or plan.run_options.get("restart") is not None:
+        return (f"the {recipe} ensemble recipe prepares each member's own source "
+                "trajectory, and run_options.prepared_root / restart name one "
+                "prepared trajectory: every member would be a copy of it. Next: "
+                "remove prepared_root and restart from the plan")
+    intent = plan.config_intent or {}
+    given = [key for key in _RECIPE_UNCONSUMED_OPTIONS
+             if plan.run_options.get(key) not in (None, [], ())
+             or (key == "data_dir" and intent.get("data_dir"))]
+    if given:
+        return (f"the {recipe} ensemble recipe does not use "
+                + ", ".join(f"run_options.{key}" for key in given) + ": "
+                + "; ".join(f"{key}: {_RECIPE_UNCONSUMED_OPTIONS[key]}" for key in given)
+                + ", so it would be read by nothing. Next: remove "
+                + ("it" if len(given) == 1 else "them") + " from the plan")
+    return None
+
+
 def _planned_download(plan: RunPlan, raw: Mapping[str, Any], data, *,
                       fetch_arguments: Sequence[str] | None,
                       run_dir: Path | None = None
@@ -3459,6 +3549,57 @@ def _preparation_chain(plan: RunPlan, raw: Mapping[str, Any]) -> str | None:
     if plan.route != "prepared":
         return plan.route
     return _chain_key(plan.route, ((raw or {}).get("fetch") or {}).get("source"))
+
+
+def _refuse_one_input_ensemble(plan: RunPlan, raw: Mapping[str, Any]) -> None:
+    """Refuse, before the fetch, N > 1 members that would all run this plan's one input.
+
+    Breakage it prevents: the experiment route, the native and staged
+    chains and an existing prepared bundle hold ONE trajectory's inputs.
+    N > 1 members on them are N copies of one forecast, and the ensemble
+    session only finds that out at its first member, after the download
+    and the preparation.  The ``go`` chain is not refused here: ``gpuwm
+    go`` hands a member count to the door that plans each member's own
+    source, and refuses it itself where no plan exists.
+    """
+
+    request = _member_request(plan, raw)
+    if request is None or _preparation_chain(plan, raw) == "prepared:go":
+        return
+    from gpuwm.ensemble import member_inputs
+
+    try:
+        member_inputs.refuse_one_input(
+            request, "This plan's route prepares one trajectory, so every member would run it.")
+    except ValueError as error:
+        raise PlanError(str(error)) from error
+
+
+def _member_request(plan: RunPlan, raw: Mapping[str, Any]):
+    """The ensemble request this plan makes, or None: ``run_options.ensemble`` over the config's table."""
+
+    value = plan.run_options.get("ensemble")
+    if value is None:
+        value = raw.get("ensemble") if isinstance(raw, Mapping) else None
+    if value is None:
+        return None
+    from gpuwm.ensemble.request import EnsembleRequest
+
+    return EnsembleRequest.from_mapping(value)
+
+
+def _go_plans_members(plan: RunPlan, raw: Mapping[str, Any]) -> bool:
+    """Does this plan hand a plain member count to the door that plans each member's source?
+
+    True for N > 1 members with no recipe named on the ``go`` chain:
+    ``gpuwm go`` runs them as the source's operational ensemble, so the
+    windows the run fetches are the members', not the config's own.
+    """
+
+    from gpuwm.ensemble import member_inputs
+
+    return (member_inputs.needs_member_sources(_member_request(plan, raw))
+            and _preparation_chain(plan, raw) == "prepared:go")
 
 
 def _present_download_bytes(request: Mapping[str, Any] | None, directory: Path | None,
@@ -6510,10 +6651,21 @@ def _execute_prepared_route(plan: RunPlan, *, exp, data, config_path,
     # dispatch.  One function, so a config cannot be judged as one chain
     # and then run as the other.
     chain = _chain_key(plan.route, (raw.get("fetch") or {}).get("source"))
-    if chain == "prepared:hrrr":
+    # A member-source recipe is not one chain's run: each member is fetched
+    # and prepared by ITS source's chain.  `gpuwm go` owns that door for
+    # every source (gpuwm.go_cli._go_recipe), so a recipe request takes the
+    # go arm below whatever chain the config's own source is on.  Breakage
+    # it prevents: the two chains dispatched here fetched and prepared the
+    # config's one trajectory and were refused at the forecast stage, where
+    # the ensemble session found no member sources.
+    from gpuwm.ensemble.runtime_context import current_session
+
+    session = current_session()
+    recipe = None if session is None else session.request.recipe
+    if chain == "prepared:hrrr" and recipe is None:
         return _hrrr_chain(plan, config_path=Path(config_path), exp=exp,
                            observer=observer, run_dir=run_dir)
-    if chain == "prepared:staged":
+    if chain == "prepared:staged" and recipe is None:
         return _staged_chain(plan, config_path=Path(config_path), exp=exp,
                              observer=observer, run_dir=run_dir)
 
@@ -7094,6 +7246,12 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
             inputs_present=resolution["inputs_present"],
             run_options=dict(plan.run_options))
 
+        # BEFORE the fetch, and before a dry run reports the plan as
+        # runnable: members that would all run this plan's one prepared
+        # input are refused while nothing has been spent.
+        _refuse_one_input_ensemble(
+            plan, _config_for_declared_fetch(plan, resolution, run_dir))
+
         if plan.run_options.get("dry_run"):
             events.emit(
                 "completed", dry_run=True, run_dir=str(run_dir),
@@ -7197,7 +7355,11 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
         # the phases it already reports; the observer maps them.  Only
         # finalize is this front door's own, because the pipeline has no
         # word for it.
-        with _kernel_compile_relay(observer):
+        from gpuwm.ensemble.door import request_for_config, production_run_scope
+        ensemble_request = request_for_config(config_path,
+            override=plan.run_options.get("ensemble"))
+        with _kernel_compile_relay(observer), production_run_scope(
+                ensemble_request, output_directory=run_dir):
             summary = ROUTES[plan.route].execute(
                 plan, exp=exp, data=data, config_path=config_path,
                 observer=observer)
@@ -7527,11 +7689,11 @@ def plan_readiness(plan: RunPlan, *, no_probe: bool = False
             plan, config_intent={**plan.config_intent, "cycle": cycle})
     if arguments is None:
         if plan.config_intent is None:
-            document = tomllib.loads(plan.config_bytes().decode("utf-8-sig"))
+            text = plan.config_bytes().decode("utf-8-sig")
         else:
             resolution, _exp, _data = resolve_plan(plan, require_inputs=False)
-            document = tomllib.loads(
-                str(resolution.get("generated_config") or ""))
+            text = str(resolution.get("generated_config") or "")
+        document = tomllib.loads(text)
         hints = document.get("fetch")
         if not isinstance(hints, dict) or not {"source", "cycle"} <= hints.keys():
             # Breakage it prevents: a plan with no download would be
@@ -7539,6 +7701,31 @@ def plan_readiness(plan: RunPlan, *, no_probe: bool = False
             raise PlanError(
                 "--readiness answers for the window a plan fetches, and this "
                 "plan's configuration has no [fetch] source and cycle")
+        if plan.route == "prepared" and (_plan_recipe(plan, document) is not None
+                                         or _go_plans_members(plan, document)):
+            # A recipe fetches one window per member: the answer is for
+            # all of them, from the reader `gpuwm go --readiness` uses.
+            # A plain member count on the go chain is the same run (the
+            # source's operational ensemble).  Breakage it prevents: it
+            # was answered for the config's own source, ready at one time
+            # for a run whose members post at another.
+            from gpuwm.domain_wizard import experiment_from_text
+            from gpuwm.ensemble.door import request_for_payload
+            from gpuwm.go_cli import recipe_readiness
+
+            try:
+                request = request_for_payload(
+                    text.encode("utf-8"), override=plan.run_options.get("ensemble"))
+                return recipe_readiness(
+                    request, document,
+                    experiment_from_text(text, source=str(plan.config_path or plan.source)),
+                    cycle=None if cycle is None else str(cycle),
+                    posting={key: plan.run_options[key]
+                             for key in ("as_posted", "late_after_minutes")
+                             if plan.run_options.get(key) is not None},
+                    transport=plan.run_options.get("transport"), no_probe=no_probe)
+            except ValueError as error:
+                raise PlanError(f"--readiness: {error}") from error
         arguments = _fetch_arguments_from_hints(
             _pinned_fetch_hints(plan, hints), out=Path("readiness"))
     parsed = _parse_fetch_arguments(arguments)

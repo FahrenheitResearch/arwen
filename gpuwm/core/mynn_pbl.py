@@ -610,9 +610,14 @@ def _mym_length_column(
     elt = F(1.0e-5)
     vsc_sum = F(1.0e-5)
     k = 1
-    while F(zw[k]) <= F(zi2 + h1):
-        if k >= nz:
-            raise ValueError("MYNN mixing-length column top is too low")
+    # THE MODEL TOP.  WRF's ``DO WHILE (zwk .LE. zi2+h1)`` has no upper
+    # bound: when the boundary layer plus its entrainment layer reaches the
+    # model top it reads ``dz`` and ``qkw`` one level past the column, which
+    # is undefined.  The integral ends at the top interior interface
+    # instead, as the CUDA kernel's does (``k < nz``), so both give the
+    # whole-column integral there.  This reference used to raise "column
+    # top is too low" at that point while the device ran on.
+    while k < nz and F(zw[k]) <= F(zi2 + h1):
         dzk = F(F(0.5) * F(dz[k] + dz[k - 1]))
         qdz = F(min(max(qkw[k], F(0.01)), F(30.0)) * dzk)
         elt = F(elt + F(qdz * zw[k]))
@@ -663,8 +668,97 @@ def _mym_length_column(
     return el, qkw
 
 
-def mynn_mixlength_default(values: Mapping[str, object]) -> dict[str, np.ndarray]:
-    """Translate default WRF ``mym_length`` (``bl_mynn_mixlength=1``)."""
+def _mym_length_local_column(
+    dz, zw, qke, dtv, edmf_w, edmf_a, rmo, fltv, zi, psig_bl,
+):
+    """WRF v4.6.1 ``mym_length`` CASE(2), lines 2100-2232.
+
+    Transcribed under ``licenses/LICENSE-WRF-public-domain.txt``. The source's
+    Ugrid, Uonset, cldavg and elb stable-branch temporaries never feed an
+    output. Keep the FP32 operator order of the remaining expressions.
+    """
+    nz = dz.size
+    qkw = np.empty(nz, dtype=np.float32)
+    qtke = np.empty(nz, dtype=np.float32)
+    zi2 = max(zi, F(300.0))
+    h1 = min(max(F(F(0.3) * zi2), F(300.0)), F(600.0))
+    h2 = F(h1 * F(0.5))
+    qtke[0] = max(F(F(0.5) * qke[0]), F(F(0.5) * QKEMIN))
+    qkw[0] = F(np.sqrt(max(qke[0], QKEMIN)))
+    for k in range(1, nz):
+        afk = F(dz[k] / F(dz[k] + dz[k - 1]))
+        abk = F(F(1.0) - afk)
+        qkw[k] = F(np.sqrt(max(
+            F(F(qke[k] * abk) + F(qke[k - 1] * afk)), QKEMIN)))
+        qtke[k] = F(F(0.5) * F(qkw[k] * qkw[k]))
+    elt = F(1.0e-5)
+    vsc_sum = F(1.0e-5)
+    pblh_plus_ent = max(F(zi + h1), F(100.0))
+    k = 1
+    # The model top, as in CASE(1): WRF's unbounded DO WHILE reads past the
+    # column when PBLH plus the entrainment layer reaches the top, and the
+    # integral ends at the top interior interface here and on the device.
+    while k < nz and zw[k] <= pblh_plus_ent:
+        dzk = F(F(0.5) * F(dz[k] + dz[k - 1]))
+        qdz = F(min(max(qkw[k], F(0.03)), F(30.0)) * dzk)
+        elt = F(elt + F(qdz * zw[k]))
+        vsc_sum = F(vsc_sum + qdz)
+        k += 1
+    elt = min(max(F(F(F(0.22) * elt) / vsc_sum), F(10.0)), F(400.0))
+    vsc = _powf(F(F(GTR * elt) * max(fltv, F(0.0))), ONETHIRD)
+    el = np.empty(nz, dtype=np.float32)
+    el[0] = F(0.0)
+    for k in range(1, nz):
+        zwk = zw[k]
+        dzk = F(F(0.5) * F(dz[k] + dz[k - 1]))
+        wstar = F(F(1.25) * _powf(
+            F(F(GTR * zi) * max(fltv, F(1.0e-4))), ONETHIRD))
+        weight = F(F(F(0.5) * _tanhf(F(
+            F(zwk - F(zi2 + h1)) / h2))) + F(0.5))
+        if dtv[k] > F(0.0):
+            bv = max(F(np.sqrt(F(GTR * dtv[k]))), F(0.001))
+            numerator = max(F(F(0.30) * qkw[k]),
+                            F(F(F(50.0) * edmf_a[k - 1]) * edmf_w[k - 1]))
+            elb_mf = F(F(numerator / bv) * F(F(1.0) + F(F(2.0) * F(
+                np.sqrt(F(vsc / F(bv * elt)))))))
+            tau = min(max(F(F(F(1000.0) * wstar) / F(9.81)), F(30.0)),
+                      F(150.0))
+            tau = F(F(tau * F(F(1.0) - weight)) + F(F(50.0) * weight))
+            elf = min(max(F(tau * F(np.sqrt(min(qtke[k], F(40.0))))),
+                          F(F(F(F(50.0) * edmf_a[k]) * edmf_w[k]) / bv)),
+                      zwk)
+        else:
+            tau = min(max(F(F(F(1000.0) * wstar) / F(9.81)), F(50.0)),
+                      F(200.0))
+            tau = F(F(tau * F(F(1.0) - weight))
+                    + F(max(F(100.0), F(dzk * F(0.25))) * weight))
+            elf = min(F(tau * F(np.sqrt(min(qtke[k], F(40.0))))), zwk)
+            elb_mf = elf
+        elf = F(elf / F(F(1.0) + F(elf / F(800.0))))
+        elb_mf = max(elb_mf, F(0.01))
+        if rmo > F(0.0):
+            els = F(F(KARMAN * zwk) / F(F(1.0) + F(
+                F(3.5) * min(F(zwk * rmo), F(1.0)))))
+        else:
+            els = F(F(KARMAN * zwk) * _powf(
+                F(F(1.0) - F(F(F(5.0) * zwk) * rmo)), F(0.2)))
+        els2 = F(els * els)
+        value = F(np.sqrt(F(els2 / F(
+            F(F(1.0) + F(els2 / F(elt * elt)))
+            + F(els2 / F(elb_mf * elb_mf))))))
+        value = F(F(value * F(F(1.0) - weight)) + F(elf * weight))
+        el_les = min(F(els / F(F(1.0) + F(els / F(12.0)))), elb_mf)
+        el[k] = F(F(value * psig_bl) + F(F(F(1.0) - psig_bl) * el_les))
+    return el, qkw
+
+
+def mynn_mixlength_default(
+    values: Mapping[str, object], *, bl_mynn_mixlength: int = 1,
+) -> dict[str, np.ndarray]:
+    """Translate WRF ``mym_length`` options 1 (nonlocal) and 2 (local)."""
+
+    if type(bl_mynn_mixlength) is not int or bl_mynn_mixlength not in (1, 2):
+        raise ValueError("MYNN mixing length requires bl_mynn_mixlength=1 or 2")
 
     missing = [name for name in MYNN_MIXLENGTH_INPUTS if name not in values]
     if missing:
@@ -703,6 +797,15 @@ def mynn_mixlength_default(values: Mapping[str, object]) -> dict[str, np.ndarray
     el_out = np.empty((ncol, nz), dtype=np.float32)
     qkw_out = np.empty((ncol, nz), dtype=np.float32)
     for column in range(ncol):
+        if bl_mynn_mixlength == 2:
+            el_out[column], qkw_out[column] = _mym_length_local_column(
+                columns["dz"][column], interface[column], columns["qke"][column],
+                columns["dtv"][column], columns["edmf_w"][column],
+                columns["edmf_a"][column], F(scalars["rmo"][column]),
+                F(scalars["fltv"][column]), F(scalars["zi"][column]),
+                F(scalars["psig_bl"][column]),
+            )
+            continue
         el, qkw = _mym_length_column(
             columns["dz"][column], interface[column], columns["u"][column],
             columns["v"][column], columns["qke"][column],
@@ -807,7 +910,7 @@ def mynn_initialize_default(
     ``el`` is fully rewritten by ``mym_length`` and needs no input.
 
     ``xland``, ``dx``, ``thetav``, ``cldfra`` and the stochastic column reach
-    the Fortran but none of them reaches an output.  Four are dead outright,
+    the Fortran but none of them reaches an output. Four are dead outright,
     whatever ``bl_mynn_mixlength`` selects: ``xland`` (``:1515``/``:1533``)
     and ``dx`` (``:1516``/``:1534``) are only handed on to ``mym_length`` at
     ``:1601-1602``, which declares them ``intent(in)`` at ``:1850-1851``
@@ -815,16 +918,16 @@ def mynn_initialize_default(
     (``:1519``/``:1547``) is only handed to ``mym_level2`` at ``:1561``, which
     mentions it only in the commented-out ``:1779`` line; and ``rstoch_col``
     (``:1525``/``:1548``) is never passed on or read at all.  ``cldfra_bl1D``
-    (``:1521``/``:1538``, forwarded at ``:1609``) is the one that is
-    branch-dependent -- ``mym_length`` reads it at ``:2160``, inside CASE(2),
-    which ``bl_mynn_mixlength=1`` does not select.  They stay in the signature
+    (``:1521``/``:1538``, forwarded at ``:1609``) is read at ``:2160`` in
+    CASE(2), but only to form the unused ``cldavg`` temporary. It therefore
+    reaches no output for either admitted option. They stay in the signature
     so the contract matches WRF's.
     """
 
-    if bl_mynn_mixlength != 1 or type(bl_mynn_mixlength) is not int:
-        raise ValueError("MYNN initialize lane requires bl_mynn_mixlength=1")
-    if spp_pbl != 0 or type(spp_pbl) is not int:
-        raise ValueError("MYNN initialize lane requires spp_pbl=0")
+    if type(bl_mynn_mixlength) is not int or bl_mynn_mixlength not in (1, 2):
+        raise ValueError("MYNN initialize requires bl_mynn_mixlength=1 or 2")
+    if type(spp_pbl) is not int or spp_pbl not in (0, 1):
+        raise ValueError("MYNN initialize requires spp_pbl in {0,1}")
     if type(initialize_qke) is not bool:
         raise TypeError("initialize_qke must be a bool")
     missing = [name for name in MYNN_INITIALIZE_INPUTS if name not in values]
@@ -918,10 +1021,16 @@ def mynn_initialize_default(
         pdq = np.zeros(nz, dtype=np.float32)
         pdc = np.zeros(nz, dtype=np.float32)
         for _ in range(MYM_INITIALIZE_ITERATIONS):
-            el, qkw = _mym_length_column(
-                dz, zw, u, v, qke, dtv, theta, edmf_w, edmf_a,
-                rmo, F(0.0), zi, psig_bl,
-            )
+            if bl_mynn_mixlength == 2:
+                el, qkw = _mym_length_local_column(
+                    dz, zw, qke, dtv, edmf_w, edmf_a,
+                    rmo, F(0.0), zi, psig_bl,
+                )
+            else:
+                el, qkw = _mym_length_column(
+                    dz, zw, u, v, qke, dtv, theta, edmf_w, edmf_a,
+                    rmo, F(0.0), zi, psig_bl,
+                )
             for k in range(1, nz):
                 elq = F(el[k] * qkw[k])
                 pdk[k] = F(elq * F(F(sm[k] * gm[k]) + F(sh[k] * gh[k])))
@@ -977,15 +1086,20 @@ def mynn_turbulence_default(
     values: Mapping[str, object],
     *,
     closure: float = 2.6,
+    bl_mynn_mixlength: int = 1,
+    spp_pbl: int = 0,
 ) -> dict[str, np.ndarray]:
     """Translate default WRF ``mym_turbulence`` for complete columns.
 
-    The first admitted identity fixes ``closure=2.6``, mixing-length option
-    1, TKE-budget output off, and stochastic PBL perturbations off.  EDMF and
+    The admitted identity fixes ``closure=2.6``, mixing-length options 1 or
+    2, TKE-budget output off, and stochastic PBL perturbations off unless
+    spp_pbl=1 supplies rstoch. EDMF and
     cloud fractions still enter the source-defined diffusivity floor; they
     are therefore required inputs rather than silently set to zero here.
     """
 
+    from gpuwm.core.spp_kernel_sources import spp_flag
+    stochastic = spp_flag(spp_pbl, "spp_pbl")
     missing = [name for name in MYNN_TURBULENCE_INPUTS if name not in values]
     if missing:
         raise TypeError(
@@ -1009,6 +1123,13 @@ def mynn_turbulence_default(
     zw = np.asarray(values["zw"], dtype=np.float32)
     if nz < 3 or zw.shape != (ncol, nz + 1):
         raise ValueError("MYNN turbulence zw must have shape (ncol,nz+1)")
+    rstoch = None
+    if stochastic:
+        if "rstoch" not in values:
+            raise TypeError("MYNN stochastic turbulence requires rstoch[ncol,nz]")
+        rstoch = np.asarray(values["rstoch"], dtype=np.float32)
+        if rstoch.shape != (ncol, nz) or not np.isfinite(rstoch).all():
+            raise ValueError("MYNN stochastic turbulence rstoch must be finite with shape (ncol,nz)")
     scalar_names = (
         "xland", "dx", "rmo", "flt", "fltv", "flq", "zi",
         "psig_bl", "psig_shcu",
@@ -1052,7 +1173,7 @@ def mynn_turbulence_default(
         "cldfra": columns["cldfra"], "edmf_w": columns["edmf_w"],
         "edmf_a": columns["edmf_a"],
         **scalars,
-    })
+    }, bl_mynn_mixlength=bl_mynn_mixlength)
     outputs = {
         name: np.zeros((ncol, nz), dtype=np.float32)
         for name in (
@@ -1192,6 +1313,14 @@ def mynn_turbulence_default(
                 F(outputs["qcd"][column, k + 1]
                   - outputs["qcd"][column, k]) / dz[k]
             )
+        if stochastic:
+            # module_bl_mynn.F:3135-3140. DFQ retains its earlier value.
+            for k in range(nz):
+                exponent = F(-max(F(zw[column, k] - F(8000.0)), F(0.0)) / F(2000.0))
+                taper = max(_glibc_expf(exponent), F(0.001))
+                for name in ("dfm", "dfh"):
+                    value = outputs[name][column, k]
+                    outputs[name][column, k] = F(value + F(F(F(value * rstoch[column, k]) * F(1.5)) * taper))
     return outputs
 
 
@@ -1668,7 +1797,7 @@ def mynn_condensation_default(
     default) is admitted; ``bl_mynn_cloudpdf`` values 0, 1, and the negative
     mass-flux-isolation test settings are rejected rather than silently
     aliased onto this branch.  Stochastic PBL perturbations are off, so
-    ``rstoch`` enters only through the zeroed ``spp_pbl`` factor.  ``qv``,
+    ``rstoch`` perturbs the saturation deficit when ``spp_pbl=1``. ``qv``,
     ``sh``, ``el``, ``zw``, ``dx``, ``hfx``, and ``rmo`` are part of WRF's
     argument list but are not read by this branch; they are required so the
     call site matches the Fortran ABI.  ``vt`` and ``vq`` are fully
@@ -1685,8 +1814,8 @@ def mynn_condensation_default(
         raise ValueError(
             "MYNN first condensation lane requires bl_mynn_cloudpdf=2"
         )
-    if spp_pbl != 0 or type(spp_pbl) is not int:
-        raise ValueError("MYNN first condensation lane requires spp_pbl=0")
+    if type(spp_pbl) is not int or spp_pbl not in (0, 1):
+        raise ValueError("MYNN condensation requires spp_pbl in {0,1}")
     column_names = (
         "dz", "th", "thl", "qw", "qv", "qc", "qi", "qs", "p", "exner",
         "tsq", "qsq", "cov", "sh", "el", "rstoch", "vt", "vq", "sgm",
@@ -3251,7 +3380,7 @@ def mynn_dmp_mf(
     ``s_aw*``.
 
     Pinned identity: ``bl_mynn_edmf_mom=1``, ``bl_mynn_edmf_tke=0``,
-    ``bl_mynn_mixscalars=0``, ``mix_chem=.false.`` and ``spp_pbl=0``.  Two
+    ``bl_mynn_mixscalars=0``, ``mix_chem=.false.`` and ``spp_pbl`` in {0,1}. Two
     compile-time parameters do most of the pruning: ``env_subs=.false.``
     (``module_bl_mynn.F:336``) skips the whole environmental subsidence and
     dynamic-detrainment block (``:6547-6617``), so ``sub_*`` and ``det_*``
@@ -3287,8 +3416,8 @@ def mynn_dmp_mf(
         )
     if mix_chem is not False:
         raise ValueError("MYNN mass-flux lane requires mix_chem false")
-    if spp_pbl != 0 or type(spp_pbl) is not int:
-        raise ValueError("MYNN mass-flux lane requires spp_pbl=0")
+    if type(spp_pbl) is not int or spp_pbl not in (0, 1):
+        raise ValueError("MYNN mass-flux requires spp_pbl in {0,1}")
     missing = [name for name in MYNN_DMP_MF_INPUTS if name not in values]
     if missing:
         raise TypeError(f"missing MYNN mass-flux inputs: {', '.join(missing)}")
@@ -3572,11 +3701,11 @@ def mynn_bl_driver(
     is one of the pinned transcriptions in this module.
 
     Admitted identity, matching the WRF registry defaults for
-    ``bl_pbl_physics=5``: ``bl_mynn_cloudpdf=2``, ``bl_mynn_mixlength=1``,
+    ``bl_pbl_physics=5``: ``bl_mynn_cloudpdf=2``, ``bl_mynn_mixlength=1 or 2``,
     ``bl_mynn_edmf=1``, ``bl_mynn_edmf_mom=1``, ``bl_mynn_edmf_tke=0``,
     ``bl_mynn_mixscalars=0``, ``bl_mynn_output=0``, ``bl_mynn_cloudmix=1``,
     ``bl_mynn_mixqt=0``, ``icloud_bl=1``, ``closure=2.6``,
-    ``bl_mynn_tkeadvect`` false, ``tke_budget=0``, ``spp_pbl=0``,
+    ``bl_mynn_tkeadvect`` false, ``tke_budget=0``, ``spp_pbl`` in {0,1},
     ``mix_chem`` false, ``restart``/``cycling`` false, ``FLAG_QC``/``FLAG_QI``
     true, ``FLAG_QS`` either Registry-derived boolean value, and every other
     species flag false.  Three module parameters do the
@@ -3616,8 +3745,8 @@ def mynn_bl_driver(
         raise ValueError("MYNN driver lane requires icloud_bl=1")
     if tke_budget != 0 or type(tke_budget) is not int:
         raise ValueError("MYNN driver lane requires tke_budget=0")
-    if spp_pbl != 0 or type(spp_pbl) is not int:
-        raise ValueError("MYNN driver lane requires spp_pbl=0")
+    if type(spp_pbl) is not int or spp_pbl not in (0, 1):
+        raise ValueError("MYNN driver requires spp_pbl in {0,1}")
     if mix_chem is not False:
         raise ValueError("MYNN driver lane requires mix_chem false")
     # W4 full admission (mf-close2, Stage B): the driver now FEEDS the
@@ -3680,6 +3809,14 @@ def mynn_bl_driver(
         raise ValueError("MYNN driver delt must be positive and finite")
 
     zero_column = np.zeros((ncol, nz), dtype=np.float32)
+    if spp_pbl:
+        if "rstoch" not in values:
+            raise TypeError("MYNN stochastic driver requires rstoch[ncol,nz]")
+        rstoch = np.asarray(values["rstoch"], dtype=np.float32)
+        if rstoch.shape != (ncol, nz) or not np.isfinite(rstoch).all():
+            raise ValueError("MYNN stochastic driver rstoch must be finite with shape (ncol,nz)")
+    else:
+        rstoch = zero_column
     zero_interface = np.zeros((ncol, nz + 1), dtype=np.float32)
     zw = _driver_zw(layers["dz"], nz)
     # module_bl_mynn.F:1240-1242: the driver replaces both qs and sqs with a
@@ -3696,7 +3833,6 @@ def mynn_bl_driver(
                      "cldfra_bl", "qc_bl", "qke"):
             layers[name][...] = 0.0
         thl_init = np.empty((ncol, nz), dtype=np.float32)
-        sqw_init = np.empty((ncol, nz), dtype=np.float32)
         thetav_init = np.empty((ncol, nz), dtype=np.float32)
         qke_seed = np.empty((ncol, nz), dtype=np.float32)
         for column in range(ncol):
@@ -3707,7 +3843,6 @@ def mynn_bl_driver(
                 sqi = F(layers["sqi"][column, k])
                 sqv = F(layers["sqv"][column, k])
                 th = F(layers["th"][column, k])
-                sqw_init[column, k] = F(F(sqv + sqc) + sqi)
                 thl_init[column, k] = F(F(th - F(F(XLVCP / exner) * sqc))
                                         - F(F(XLSCP / exner) * sqi))
                 thetav_init[column, k] = F(th * F(F(1.0) + F(P608 * sqv)))
@@ -3725,7 +3860,9 @@ def mynn_bl_driver(
         seeded = mynn_initialize_default(
             {
                 "dz": layers["dz"], "u": layers["u"], "v": layers["v"],
-                "thl": thl_init, "qw": sqw_init, "theta": layers["th"],
+                # WRF's cold call passes sqv, not total water sqw. Passing
+                # condensate here changes the initial cloud-column TKE.
+                "thl": thl_init, "qw": layers["sqv"], "theta": layers["th"],
                 "thetav": thetav_init, "cldfra": layers["cldfra_bl"],
                 "edmf_w": zero_column, "edmf_a": zero_column,
                 "sm": layers["sm"], "sh": layers["sh"], "qke": qke_seed,
@@ -3808,7 +3945,7 @@ def mynn_bl_driver(
             "qs": layers["sqs"] if flag_qs else kzero, "p": layers["p"],
             "exner": layers["exner"], "tsq": layers["tsq"],
             "qsq": layers["qsq"], "cov": layers["cov"], "sh": layers["sh"],
-            "el": layers["el"], "rstoch": zero_column,
+            "el": layers["el"], "rstoch": rstoch,
             "vt": zero_column, "vq": zero_column, "sgm": zero_column,
             "xland": scalars["xland"], "dx": scalars["dx"],
             "pblh": scalars["pblh"], "hfx": scalars["hfx"], "rmo": rmol,
@@ -3831,7 +3968,7 @@ def mynn_bl_driver(
             "w": layers["w"], "th": layers["th"], "thl": thl,
             "thv": thetav, "tk": layers["tk"], "qt": sqw,
             "qv": layers["sqv"], "qc": layers["sqc"],
-            "exner": layers["exner"], "rstoch": zero_column,
+            "exner": layers["exner"], "rstoch": rstoch,
             "qc_bl": qc_bl, "cldfra_bl": cldfra_bl, "vt": vt, "vq": vq,
             "sgm": sgm,
             "flt": flt, "fltv": fltv, "flq": flq,
@@ -3866,9 +4003,11 @@ def mynn_bl_driver(
             "tkeprodtd": zero_column, "xland": scalars["xland"],
             "dx": scalars["dx"], "rmo": rmol, "flt": flt, "fltv": fltv,
             "flq": flq, "zi": scalars["pblh"], "psig_bl": psig_bl,
-            "psig_shcu": psig_shcu,
+            "psig_shcu": psig_shcu, "rstoch": rstoch,
         },
         closure=closure,
+        bl_mynn_mixlength=bl_mynn_mixlength,
+        spp_pbl=spp_pbl,
     )
 
     # ---- module_bl_mynn.F:1215-1221 prognostic solve ---------------------

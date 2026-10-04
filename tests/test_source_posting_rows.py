@@ -130,7 +130,10 @@ def test_the_shapes_are_the_design_s():
     assert fetch_routes.posting_for("era5", provider="arco").shape == "archive"
     assert {source for source, shape in shapes.items() if shape == "rolling"} == {
         "hrrr", "hrrr-prs", "gfs", "gefs", "rap", "rrfs", "icon-global",
-        "icon-eu", "icon-d2", "gem-gdps"}
+        "icon-eu", "icon-d2", "gem-gdps", "ecmwf-ens", "rrfs-ens",
+        # The native hybrid products post lead by lead like their
+        # pressure-level siblings.
+        "hrrr-native", "rap-native"}
 
 
 def test_a_ready_check_that_asks_for_an_index_names_one_on_every_file():

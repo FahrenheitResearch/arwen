@@ -54,6 +54,14 @@ MOVED = {
     "diff_opt": (dict(diff_opt=1), {"diff_opt", "mix_full_fields"}),
     "mix_full_fields": (dict(diff_opt=1, mix_full_fields=False),
                         {"diff_opt", "mix_full_fields"}),
+    "scalar_pblmix": (dict(scalar_pblmix=1), {"scalar_pblmix"}),
+    "use_rap_aero_icbc": (dict(use_rap_aero_icbc=True), {"use_rap_aero_icbc"}),
+    "sf_lake_physics": (dict(sf_lake_physics=1),
+                        {"sf_lake_physics", "use_lakedepth",
+                         "lakedepth_default", "lake_min_elev"}),
+    "spp_conv": (dict(spp_conv=1), {"spp_conv"}),
+    "spp_pbl": (dict(spp_pbl=1), {"spp_pbl"}),
+    "ruc_soilprop": (dict(ruc_soilprop="wrf_461"), {"ruc_soilprop"}),
 }
 
 #: The keys an echo at every default leaves out.
@@ -62,6 +70,12 @@ DEFAULT_OFF = frozenset({
     "topo_shading", "shadlen", "topo_wind", "gwd_opt", "sf_surface_mosaic",
     "mosaic_cat", "mosaic_urban_canopy", "diff_opt", "mix_full_fields",
     "zadvect_implicit_variant",
+    # 2.8.5: post-PBL scalar diffusion, the analyzed aerosol start and the
+    # CLM lake quartet, each absent at its default as in a 2.8.4 header.
+    "scalar_pblmix", "use_rap_aero_icbc", "sf_lake_physics", "use_lakedepth",
+    "lakedepth_default", "lake_min_elev",
+    "spp_conv", "spp_pbl",
+    "ruc_soilprop",
 })
 
 

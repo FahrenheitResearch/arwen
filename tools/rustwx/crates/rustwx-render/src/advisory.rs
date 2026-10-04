@@ -41,6 +41,16 @@ thread_local! {
     static HELD: RefCell<Option<Vec<Advisory>>> = const { RefCell::new(None) };
 }
 
+/// The say-once key of the advisory a cut subtitle raises: the slot
+/// (`left`, `center`, `right`) and the full text that did not fit.
+///
+/// It is public so a caller that holds a render's advice can tell a cut
+/// subtitle from anything else the render said, and draw again with a
+/// shorter line instead of keeping the cut one.
+pub fn subtitle_truncated_key(slot: &str, full: &str) -> String {
+    format!("subtitle-truncated\u{1}{slot}\u{1}{full}")
+}
+
 /// Emit an advisory line every time it happens.
 pub fn advise(line: String) {
     route(Advisory { once_key: None, line });

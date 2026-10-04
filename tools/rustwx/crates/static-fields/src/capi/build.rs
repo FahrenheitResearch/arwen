@@ -66,6 +66,12 @@ pub extern "C" fn gpuwm_static_orographic_v2() -> u32 {
     2
 }
 
+/// Declared WPS grid-cell ratios, bounded search, fill values and land masks.
+#[unsafe(no_mangle)]
+pub extern "C" fn gpuwm_static_continuous_v1() -> u32 {
+    1
+}
+
 /// Build WRF's sub-grid orographic statistics (VAR_SSO, CON, VAR, OA1-4,
 /// OL1-4 and the GSL large- and small-scale sets) for a grid handle from a
 /// JSON `OrographicRequest`.  Writes a field-set handle holding only them.

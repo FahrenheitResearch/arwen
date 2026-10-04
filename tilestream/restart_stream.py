@@ -655,7 +655,7 @@ def write_streamed_restart(path, store, cfg, *, scalars, setup,
                            template_state, run_trackers=None, drop=(),
                            check_pinned: bool = True,
                            tree_header: dict | None = None,
-                           extra_scratch_slots=()) -> StreamedRestartInfo:
+                           extra_scratch_slots=(), stochastic_binding=None) -> StreamedRestartInfo:
     """Write a gpuwm restart file from a pinned host store. No device state.
 
     ``store`` is the streamed domain: ``{restart member name: host array}``,
@@ -798,6 +798,7 @@ def write_streamed_restart(path, store, cfg, *, scalars, setup,
                 f"tree restart header may not replace base keys {sorted(overlap)}")
         header.update(dict(tree_header))
     payload = {}
+    stochastic_copies = 0
     for key in sorted(arrays):
         if key in drop:
             continue
@@ -805,6 +806,15 @@ def write_streamed_restart(path, store, cfg, *, scalars, setup,
         header["array_manifest"][key] = {"shape": list(host.shape),
                                          "dtype": str(host.dtype)}
         payload[key] = host
+    if stochastic_binding is not None and stochastic_binding.enabled:
+        from gpuwm.ensemble.stochastic_execution import checkpoint_payload
+        metadata, spectra = checkpoint_payload(stochastic_binding)
+        stochastic_copies = len(spectra)
+        header["ensemble_stochastic"] = metadata
+        for key, value in sorted(spectra.items()):
+            host = value.get() if hasattr(value, "get") else np.asarray(value)
+            header["array_manifest"][key] = {"shape": list(host.shape), "dtype": str(host.dtype)}
+            payload[key] = host
     header_seconds = time.perf_counter() - t0
 
     t1 = time.perf_counter()
@@ -828,7 +838,7 @@ def write_streamed_restart(path, store, cfg, *, scalars, setup,
         bytes=sum(int(a.nbytes) for a in payload.values()),
         seconds=header_seconds + serialize_seconds,
         header_seconds=header_seconds, serialize_seconds=serialize_seconds,
-        device_copies=0, dropped=drop,
+        device_copies=stochastic_copies, dropped=drop,
         elapsed_seconds=header["elapsed_seconds"], header=header)
 
 
@@ -844,7 +854,7 @@ def _utcnow() -> str:
 
 def validate_streamed_restart(path, store, cfg, *, setup, template_state,
                           allow_missing: bool = False,
-                          scalars: dict | None = None, extra_scratch_slots=()
+                          scalars: dict | None = None, extra_scratch_slots=(), stochastic_binding=None
                           ) -> ValidatedStreamedRestart:
     """Validate a restart without mutating the pinned host store.
 
@@ -974,6 +984,15 @@ def validate_streamed_restart(path, store, cfg, *, setup, template_state,
             raise RestartRefused(
                 f"restart member {key} does not match its manifest entry")
 
+    # Spectra are full-domain owner state, not ordinary streamed carriers.
+    # Validate their identity and words before writing a single store value.
+    from types import SimpleNamespace
+    with _as_refusal("stochastic checkpoint differs from this original member"):
+        restart._validate_ensemble_stochastic_checkpoint(header, stored,
+            SimpleNamespace(_ensemble_stochastic=stochastic_binding))
+    stochastic_arrays = {key: value for key, value in stored.items() if key.startswith("stochastic/")}
+    stored = {key: value for key, value in stored.items() if not key.startswith("stochastic/")}
+
     missing = sorted(set(arrays) - set(stored))
     extra = sorted(set(stored) - set(arrays))
     if extra:
@@ -1024,7 +1043,8 @@ def validate_streamed_restart(path, store, cfg, *, setup, template_state,
         path=path, header=header, stored=stored, arrays=arrays,
         whole_store=whole_store, restored_scalars=restored_scalars,
         scalars=scalars, elapsed=float(elapsed), missing=tuple(missing),
-        started=t0)
+        started=t0, stochastic_binding=stochastic_binding,
+        stochastic_metadata=header.get("ensemble_stochastic"), stochastic_arrays=stochastic_arrays)
 
 
 @dataclasses.dataclass
@@ -1040,9 +1060,16 @@ class ValidatedStreamedRestart:
     elapsed: float
     missing: tuple
     started: float
+    stochastic_binding: object = None
+    stochastic_metadata: object = None
+    stochastic_arrays: object = None
+    _stochastic_applied: bool = False
 
     def apply(self) -> StreamedRestartInfo:
         from tilestream import physics_inventory as _physinv
+
+        if self.stochastic_metadata is not None and self._stochastic_applied:
+            raise RestartRefused("full-domain stochastic checkpoint was already applied")
 
         for key, host in self.stored.items():
             np.copyto(self.arrays[key], host)
@@ -1053,20 +1080,25 @@ class ValidatedStreamedRestart:
                 target[...] = 0.0
         if self.scalars is not None:
             self.scalars.update(self.restored_scalars)
+        if self.stochastic_metadata is not None:
+            from gpuwm.ensemble.stochastic_execution import restore_checkpoint_payload
+            restore_checkpoint_payload(self.stochastic_binding, self.stochastic_metadata, self.stochastic_arrays)
+            self._stochastic_applied = True
         return StreamedRestartInfo(
-            path=self.path, members=len(self.stored),
-            bytes=sum(int(np.asarray(a).nbytes) for a in self.stored.values()),
-            seconds=time.perf_counter() - self.started, device_copies=0,
+            path=self.path, members=len(self.stored) + len(self.stochastic_arrays or {}),
+            bytes=sum(int(np.asarray(a).nbytes) for a in self.stored.values())
+                + sum(int(np.asarray(a).nbytes) for a in (self.stochastic_arrays or {}).values()),
+            seconds=time.perf_counter() - self.started, device_copies=len(self.stochastic_arrays or {}),
             missing=self.missing, elapsed_seconds=self.elapsed, header=self.header)
 
 
 def read_streamed_restart(path, store, cfg, *, setup, template_state,
                           allow_missing: bool = False,
-                          scalars: dict | None = None) -> StreamedRestartInfo:
+                          scalars: dict | None = None, stochastic_binding=None) -> StreamedRestartInfo:
     """Validate then restore one domain using the shared staged reader."""
     return validate_streamed_restart(
         path, store, cfg, setup=setup, template_state=template_state,
-        allow_missing=allow_missing, scalars=scalars).apply()
+        allow_missing=allow_missing, scalars=scalars, stochastic_binding=stochastic_binding).apply()
 
 
 # --------------------------------------------------------------------------

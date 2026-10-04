@@ -522,14 +522,15 @@ def ruc_surface_parameters_cuda(
     mminlu: str = "MODIFIED_IGBP_MODIS_NOAH",
     mosaic_lu: int = 0,
     mosaic_soil: int = 0,
+    landusef=None,
+    soilctop=None,
     parameters: RucParameterBundle | None = None,
 ) -> RucSurfaceParametersCuda:
     """Evaluate WRF ``soilvegin`` directly on independent GPU columns."""
 
-    if type(mosaic_lu) is not int or mosaic_lu != 0:
-        raise ValueError("RUC CUDA surface setup currently requires mosaic_lu=0")
-    if type(mosaic_soil) is not int or mosaic_soil != 0:
-        raise ValueError("RUC CUDA surface setup currently requires mosaic_soil=0")
+    from gpuwm.core.ruc_mosaic import mosaic_option, mosaic_fractions
+    mosaic_option(mosaic_lu, "mosaic_lu")
+    mosaic_option(mosaic_soil, "mosaic_soil")
     if type(rdlai2d) is not bool:
         raise TypeError("rdlai2d must be bool")
 
@@ -584,6 +585,11 @@ def ruc_surface_parameters_cuda(
     else:
         raise ValueError(f"RUC iswater {iswater!r} is outside 1..{nvegetation}")
 
+    land_fractions = (mosaic_fractions(landusef, shape, "landusef", nvegetation, arrays=cp)
+                      if mosaic_lu else cp.empty((0,), dtype=cp.float32))
+    soil_fractions = (mosaic_fractions(soilctop, shape, "soilctop", nsoil, arrays=cp)
+                      if mosaic_soil else cp.empty((0,), dtype=cp.float32))
+
     float_names = (
         "emiss", "pc", "znt", "lai", "qwrtz", "rhocs", "bclh",
         "dqm", "ksat", "psis", "qmin", "ref", "wilt",
@@ -622,6 +628,9 @@ def ruc_surface_parameters_cuda(
             np.int32(water_category),
             np.int32(rdlai2d),
             np.int32(n),
+            land_fractions, soil_fractions,
+            np.int32(land_fractions.shape[0]), np.int32(soil_fractions.shape[0]),
+            np.int32(mosaic_lu), np.int32(mosaic_soil),
         ),
     )
     return RucSurfaceParametersCuda(
@@ -634,9 +643,19 @@ def ruc_soil_properties_cuda(
     values: dict[str, object],
     *,
     riw: float = 0.9,
+    spp_lsm: int = 0,
+    rstochcol=None,
+    fieldcol_sf=None,
+    soilprop: str = "wrf_461",
 ) -> RucSoilPropertiesCuda:
-    """Evaluate deterministic WRF ``soilprop`` on nine-level GPU columns."""
+    """Evaluate deterministic WRF ``soilprop`` on nine-level GPU columns.
 
+    ``soilprop`` names the WRF lineage (``gpuwm.core.ruc_tier``
+    ``RUC_SOILPROP_FORMS``); it selects the translation unit's define.
+    """
+
+    from gpuwm.core.ruc_spp import validate_spp_mode, hydraulic_spp_device
+    enabled_spp = validate_spp_mode(spp_lsm)
     ice_water_ratio = np.float32(riw)
     if not np.isfinite(ice_water_ratio) or ice_water_ratio <= np.float32(0.0):
         raise ValueError("RUC CUDA soilprop riw must be finite and positive")
@@ -672,7 +691,7 @@ def ruc_soil_properties_cuda(
     ncolumn = int(np.prod(horizontal_shape))
     threads = 128
     blocks = (ncolumn + threads - 1) // threads
-    kernel = _ruc_kernel("ruc_soil_properties", nzs)
+    kernel = _ruc_kernel("ruc_soil_properties", nzs, soilprop)
     kernel(
         (blocks,),
         (threads,),
@@ -684,6 +703,8 @@ def ruc_soil_properties_cuda(
             np.int32(ncolumn),
         ),
     )
+    if enabled_spp:
+        hydraulic_spp_device(outputs["hydro"], rstochcol, fieldcol_sf)
     return RucSoilPropertiesCuda(**outputs)
 
 
@@ -948,6 +969,10 @@ def ruc_soil_step_cuda(
     myj: bool = False,
     mminlu: str = "MODIFIED_IGBP_MODIS_NOAH",
     parameters: RucParameterBundle | None = None,
+    spp_lsm: int = 0,
+    rstochcol=None,
+    fieldcol_sf=None,
+    soilprop: str = "wrf_461",
 ) -> RucSoilStepCuda:
     """Run the complete snow-free WRF RUC land column on the GPU."""
 
@@ -1020,6 +1045,8 @@ def ruc_soil_step_cuda(
             )},
         },
         riw=float(source_riw),
+        spp_lsm=spp_lsm, rstochcol=rstochcol, fieldcol_sf=fieldcol_sf,
+        soilprop=soilprop,
     )
 
     ncolumn = int(np.prod(horizontal_shape))
@@ -2072,6 +2099,10 @@ def ruc_snow_soil_step_cuda(
     cw: float = 4.183e6,
     mminlu: str = "MODIFIED_IGBP_MODIS_NOAH",
     parameters: RucParameterBundle | None = None,
+    spp_lsm: int = 0,
+    rstochcol=None,
+    fieldcol_sf=None,
+    soilprop: str = "wrf_461",
 ) -> RucSnowSoilStepCuda:
     """Run the complete snow-covered WRF RUC land column on the GPU."""
 
@@ -2173,6 +2204,8 @@ def ruc_snow_soil_step_cuda(
             )},
         },
         riw=float(source_riw),
+        spp_lsm=spp_lsm, rstochcol=rstochcol, fieldcol_sf=fieldcol_sf,
+        soilprop=soilprop,
     )
 
     ncolumn = int(np.prod(horizontal_shape))
@@ -2699,9 +2732,12 @@ RUC_DEVICE_ARRAYS = SimpleNamespace(
     abs=cp.abs,
     all=cp.all,
     any=cp.any,
+    sum=cp.sum,
     arange=_dtype_normalising(cp.arange),
     array=_dtype_normalising(cp.array),
     asarray=_dtype_normalising(cp.asarray),
+    ascontiguousarray=_dtype_normalising(cp.ascontiguousarray),
+    shares_memory=cp.shares_memory,
     atleast_1d=cp.atleast_1d,
     broadcast_to=cp.broadcast_to,
     count_nonzero=cp.count_nonzero,
@@ -2984,7 +3020,7 @@ def ruc_sfctmp_full_width_fused(
     values: Mapping[str, object], *, run, delt: float, conflx, ivgtyp,
     iland, nroot, ilnb, isice: int, c1sn: float, c2sn: float,
     isncovr_opt: int, mminlu: str, parameters: RucParameterBundle | None,
-    flags=None,
+    flags=None, soilprop: str = "wrf_461",
 ) -> dict[str, cp.ndarray]:
     """Execute full-width sfctmp in three stages with deferred device flags.
 
@@ -3116,7 +3152,7 @@ def ruc_sfctmp_full_width_fused(
                    rsmax, np.int32(ice), np.int32(urban), np.int32(ncategory),
                    np.int32(min(errors, default=len(_SFCTMP_CHECKS))), np.int32(n))
         for stage in range(3):
-            ruc_fused_kernel(f'ruc_sfctmp_stage{stage}', nzs)(
+            ruc_fused_kernel(f'ruc_sfctmp_stage{stage}', nzs, soilprop)(
                 ((n + 127) // 128,), (128,), (pointers, run, active_flags, alive, *scalars))
     if flags is None:
         ruc_sfctmp_raise_from_flags(active_flags)

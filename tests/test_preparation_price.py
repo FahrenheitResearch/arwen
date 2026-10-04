@@ -27,6 +27,7 @@ from gpuwm.config import RunConfig
 from gpuwm.core import device_probe
 from gpuwm.ingest import preparation_price as pp
 from gpuwm.ingest import preprocess_backend as backend
+from gpuwm.ingest.bounded_cuda import BoundedCudaPreprocessBackend
 
 ROOT = Path(__file__).resolve().parents[1]
 GIB = 2 ** 30
@@ -381,10 +382,15 @@ def card(monkeypatch):
     def cuda_backend():
         return SimpleNamespace(name="cuda", array_module=module)
 
-    def cpu_backend(**kwargs):
-        return SimpleNamespace(name="cpu", workers=kwargs.get("workers"))
+    # A class, not a factory function: preprocessing_math_scope asks
+    # isinstance(backend, ParallelCpuPreprocessBackend) at every wrapped
+    # preparation door, and a function there is a TypeError.
+    class cpu_backend(SimpleNamespace):
+        def __init__(self, **kwargs):
+            super().__init__(name="cpu", workers=kwargs.get("workers"))
 
     reading = {}
+    monkeypatch.setattr("gpuwm.ingest.preparation_workers.host_available_bytes", lambda: 1024 * GIB)
     monkeypatch.setattr(backend, "CudaPreprocessBackend", cuda_backend)
     monkeypatch.setattr(backend, "ParallelCpuPreprocessBackend", cpu_backend)
     monkeypatch.setattr(backend, "_gpu_runtime_installed", lambda: True)
@@ -401,6 +407,13 @@ def test_auto_prepares_on_the_cpu_when_the_card_cannot_hold_it(
     card.reading.update(SMALL_CARD)
     price = _route_prices()[route]
     chosen = backend.resolve_preprocess_backend("auto", price=price)
+    if route == "mapped":
+        assert isinstance(chosen, BoundedCudaPreprocessBackend)
+        assert chosen.name == "cuda"
+        assert chosen.selection["device_fit"]["fits"] is True
+        assert chosen.selection["chunking"]["retained_arrays"] == "host"
+        assert card.allocations == []
+        return
     assert chosen.name == "cpu"
     selection = chosen.selection
     assert selection["requested"] == "auto"
@@ -420,6 +433,10 @@ def test_explicit_cuda_is_refused_by_name_before_anything_is_allocated(
         route, card):
     card.reading.update(SMALL_CARD)
     price = _route_prices()[route]
+    if route == "mapped":
+        # A mapped preparation only refuses when even one bounded batch
+        # cannot fit; it no longer refuses a whole-grid allocation it avoids.
+        card.reading["free_bytes"] = 128 * 1024**2
     with pytest.raises(backend.PreparationDeviceRefused) as refused:
         backend.resolve_preprocess_backend("cuda", price=price)
     message = str(refused.value)
@@ -438,6 +455,8 @@ def test_a_card_with_room_still_prepares_on_the_card(route, requested, card):
     price = _route_prices()[route]
     chosen = backend.resolve_preprocess_backend(requested, price=price)
     assert chosen.name == "cuda"
+    if route == "mapped":
+        assert isinstance(chosen, BoundedCudaPreprocessBackend)
     assert chosen.selection["device_fit"]["fits"] is True
     assert card.allocations == []
 

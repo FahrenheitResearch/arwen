@@ -1,9 +1,12 @@
 """Device driver checks against the pinned CPU and WRF references.
 
-The historical per-field driver budgets remain unchanged. Ordinary mixing
-length now reuses the rounded helper already called by initialization.
-The other leaves retain their recorded residuals; these upper bounds are
-regression limits, not a claim of full WRF or forecast accuracy.
+The warm step keeps every historical per-field driver budget. The cold
+step keeps them too, except the two wind tendencies, whose budgets are
+wider there and also held by absolute caps (``_COLD_VAPOR_ULP``,
+``_COLD_VAPOR_ABS``). Ordinary mixing length now reuses the rounded helper
+already called by initialization. The other leaves retain their recorded
+residuals; these upper bounds are regression limits, not a claim of full
+WRF or forecast accuracy.
 """
 
 from __future__ import annotations
@@ -38,6 +41,28 @@ _PROFILE_BUDGET = {
 }
 _COLUMN_BUDGET = {
     "pblh": 1, "rmol": 0, "maxwidth": 0, "maxmf": 2, "ztop_plume": 0,
+}
+
+# COLD-STEP OVERRIDES FOR THE TWO WIND TENDENCIES, AND WHY THEY ARE WIDER.
+# Both drivers now hand vapor (sqv) to initialization on the cold call, as
+# WRF does; both used to hand it total water (sqv+sqc+sqi). The earlier cold
+# comparison was CPU against CUDA on that same input, so it was consistent
+# and its 819 and 205 ULP budgets (the ordinary row above) were right for
+# it: this is NOT a case of an old comparison made against a wrong
+# reference. What changed is the input. With vapor, the cloudy cold columns
+# start from a different initialized state, and on that state the CUDA
+# driver's residue against the CPU driver in these two cancellation-
+# sensitive rates is larger: 3276 and 1638 ULP over the original
+# first-four-column population, measured on sm_89 / NVRTC 13.4, with the
+# same limits passing on RTX PRO 6000 (sm_120), CuPy 14.2.0 / NVRTC 12.9.
+# They are a new measured residue on a new cold-cloud population, declared
+# as such. Every other bound and the entire warm row stay unchanged. The
+# absolute bounds keep these rate comparisons from admitting a larger
+# physical error behind a ULP cap.
+_COLD_VAPOR_ULP = {"rublten": 3276, "rvblten": 1638}
+_COLD_VAPOR_ABS = {
+    "rublten": 7.147900760173798e-8,
+    "rvblten": 4.452886059880257e-9,
 }
 
 #: ``_PROFILE_BUDGET`` per compiler where a compiler reads it differently,
@@ -134,9 +159,9 @@ def test_device_driver_stays_within_the_measured_leaf_residue(step):
     """Every output, against the CPU driver, at the numbers this repo measures.
 
     ``rthblten``/``rqvblten`` carry huge ULP counts because they are
-    cancellation residues -- ``tests/test_mynn_pbl.py`` records a 1.87e9 ULP
-    budget for the same field on the same fixture against WRF itself -- so the
-    count is a regression tripwire, not a claim about accuracy.  The integer
+    cancellation residues from the assembled CUDA leaves. The CPU driver
+    now agrees bitwise with WRF on this option, including cold clouds. The
+    count is a regression tripwire, not a claim about accuracy. The integer
     indices have no budget at all: a PBL top or plume top that moves a level
     is a structural disagreement, not rounding.
     """
@@ -155,6 +180,12 @@ def test_device_driver_stays_within_the_measured_leaf_residue(step):
 
     profile = toolchain_row(_PROFILE_BUDGET_BY_TOOLCHAIN, _PROFILE_BUDGET,
                             "_PROFILE_BUDGET_BY_TOOLCHAIN")
+    if step == 1:
+        profile = {**profile, **_COLD_VAPOR_ULP}
+        for name, maximum in _COLD_VAPOR_ABS.items():
+            error = np.abs(cp.asnumpy(device[name]).astype(np.float64)
+                           - np.asarray(host[name], dtype=np.float64))
+            assert float(error.max()) <= maximum, (name, float(error.max()))
     for name, budget in profile.items():
         worst = _worst(device[name], host[name])
         assert worst <= budget, f"{name}: {worst} ULP (budget {budget})"
@@ -304,7 +335,7 @@ def test_device_driver_refuses_a_nondefault_identity():
     device_values = _device(values)
     for knob, bad in (
         ("bl_mynn_edmf", 0), ("bl_mynn_output", 1), ("icloud_bl", 0),
-        ("tke_budget", 1), ("spp_pbl", 1),
+        ("tke_budget", 1), ("spp_pbl", 2),
     ):
         with pytest.raises(ValueError, match=knob):
             mynn_bl_driver_cuda(

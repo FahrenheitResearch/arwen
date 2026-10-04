@@ -1,0 +1,46 @@
+{
+  "schema": "rw-wps.members.v1",
+  "name": "ecmwf-ens-open-perturbed-members",
+  "format": "grib2",
+  "layout": "indexed_members",
+  "declared_member_count": 50,
+  "cycle_hours": [
+    0,
+    6,
+    12,
+    18
+  ],
+  "classes": {
+    "perturbed": {
+      "ordinals": {
+        "first": 1,
+        "last": 50
+      },
+      "member_id": "p{ordinal:02d}",
+      "token": "{ordinal:02d}",
+      "verification": {
+        "product_definition_templates": [
+          1,
+          11
+        ],
+        "type_of_ensemble_forecast": 255,
+        "perturbation_number": "ordinal",
+        "ensemble_size": 51,
+        "type_of_generating_process": 4
+      }
+    }
+  },
+  "statistics": {},
+  "products": {
+    "enfo": {
+      "relative_path": "members/p{token}/{yyyymmdd}/{hh}/f{fff}.grib2",
+      "statistics_published": false,
+      "note": "Local extracted member. Upstream publishes a combined enfo-ef object; the fetch-route index contract selects its ranges and Rust verifies each message."
+    }
+  },
+  "notes": {
+    "control": "Since IFS 50r1 the control is the separate oper-fc trajectory. SourceAdapter.ensemble_control_source names it; this grammar declares only the 50 encoded perturbed members.",
+    "verification": "2026-10-01 00 UTC member 1 soil-temperature record: PDT1, member1, ensemble_type255, encoded ensemble_size51, generating_process4, center98. Inventory is metadata-only Rust; no Python GRIB decoder.",
+    "license": "ECMWF open data, CC BY 4.0."
+  }
+}

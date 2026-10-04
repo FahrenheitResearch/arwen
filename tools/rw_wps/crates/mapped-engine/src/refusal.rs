@@ -168,6 +168,8 @@ pub mod class {
     pub const GRID_MISMATCH: &str = "grid_mismatch";
     /// the byte decode itself failed.
     pub const DECODE_FAILED: &str = "decode_failed";
+    /// even one decoded valid time cannot fit the available host budget.
+    pub const HOST_MEMORY: &str = "host_memory";
     /// a canonical frame invariant does not hold.
     pub const FRAME_INVALID: &str = "frame_invalid";
     /// the staged valid times cannot bound a forecast.  Split out of
@@ -232,6 +234,11 @@ impl fmt::Display for Refusal {
 }
 
 pub type Result<T> = std::result::Result<T, Refusal>;
+
+pub fn host_memory(message: impl Into<String>) -> Refusal {
+    Refusal::new(class::HOST_MEMORY, message,
+        "free host memory or use a host with enough memory for one source time; a smaller worker count cannot reduce this minimum")
+}
 
 /// The remedy every "this mapping does not describe these bytes" refusal
 /// shares: the two vocabularies are both printed by the message, and the

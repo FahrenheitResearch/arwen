@@ -179,7 +179,7 @@ def production_units(root) -> list[Unit]:
             continue
         extra = [kfile(h) for h in K.EXTRA_HEADERS.get(name, ())]
         unit = _segmented(f"kernels:{name}", pre + extra + [kfile(path.name)],
-                          ("-std=c++17",))
+                          K.module_options(name))
         if unit.source != K.module_source(name, kernel_dir=kdir):
             raise AssertionError(f"census source for {name} drifted")
         units.append(unit)
@@ -191,6 +191,11 @@ def production_units(root) -> list[Unit]:
     assert gf.source == K.module_source_int_defines(
         "gf", (("GF_KMAX", 60),), kernel_dir=kdir)
     units.append(gf)
+    from gpuwm.core.spp_kernel_sources import specialized_source
+    for name, capacity in (("gf", 40), ("gf", 60), ("mynn_pbl", 40), ("mynn_surface", 40)):
+        units.append(Unit(f"spp:{name}[capacity={capacity}]",
+                          specialized_source(name, capacity=capacity, kernel_dir=kdir),
+                          ("-std=c++17",), []))
     for name, parts in N.NOAHMP_TRANSLATION_UNITS.items():
         ru = N.runtime_unit(name, kernel_dir=kdir)
         pieces = ([] if ru.preamble_sha256 != N._sha(K._preamble(kdir))

@@ -181,7 +181,8 @@ def smoke_install(args: argparse.Namespace) -> dict[str, object]:
         if args.wheelhouse is not None:
             dependency_command.extend((
                 "--no-index", "--find-links", str(args.wheelhouse.resolve())))
-        dependency_command.extend(("numpy>=1.26", "netCDF4>=1.6"))
+        dependency_command.extend((
+            "numpy>=1.26", "netCDF4>=1.6", "threadpoolctl>=3.1"))
         _run(dependency_command, cwd=work)
 
         environment = os.environ.copy()

@@ -27,3 +27,12 @@ source words and counts in default REAL before averaging and scaling.
 The retained full geogrid comparison has different latitude and longitude
 bits from the strict source build at some cells. Its few integer-boundary
 stencil differences are not accepted as an arithmetic oracle.
+
+`build_lake_search.sh` uses the same pinned, unmodified WPS sources with
+`run_lake_search.F90`. It writes 448 bounded-search values over eight missing
+data patterns, seven depth limits and eight coordinates, plus nine cell
+means at a 50 km grid spacing where average_gcell(1.0) is active and
+average_gcell(4.0) is not. `LAKE-FIXTURES.sha256` pins the results. The Rust
+tests compare every defined result bit for bit and compare missing results
+as missing. The search preserves the Fortran queue's mutation of depth
+between sibling inserts, including its effect at the five-step limit.

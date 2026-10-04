@@ -5,7 +5,7 @@ field selectors, surface donors, member byte identity and interpolation halos.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields, is_dataclass
 from datetime import datetime, timedelta, timezone
 import math
 import hashlib
@@ -48,6 +48,8 @@ def _utc(value, name):
 
 
 def _plain(value):
+    if is_dataclass(value) and not isinstance(value, type):
+        return {field.name: _plain(getattr(value, field.name)) for field in fields(value)}
     if isinstance(value, dict) or hasattr(value, "items"):
         return {str(k): _plain(v) for k, v in value.items()}
     if isinstance(value, (tuple, list)):
@@ -106,19 +108,19 @@ def capability(source: str) -> dict:
                 time_axis=axis, cycle_grid=None if grid is None else grid.declaration(),
                 forcing_interval_seconds=adapter.forcing_interval_seconds,
                 member_set=adapter.member_set, selection_owner=adapter.selection_owner,
-                coverage=None if adapter.coverage_window is None else _plain(asdict(adapter.coverage_window)),
+                coverage=None if adapter.coverage_window is None else _plain(adapter.coverage_window),
                 acquisition=acquisition,
-                archive_windows=[_plain(asdict(row)) for row in adapter.archive_windows],
-                credentials=[_plain(asdict(row)) for row in adapter.credentials],
+                archive_windows=[_plain(row) for row in adapter.archive_windows],
+                credentials=[_plain(row) for row in adapter.credentials],
                 acquisition_contract=None if route is None else dict(
                     cycle_hours=list(route.cycle_hours), ladders=_plain(route.ladders),
                     # A173: any whole multiple of the ladder's spacing the
                     # preparation takes; the row lists none.
                     cadences="whole_multiples", default_cadence=route.default_cadence,
                     members=_plain(route.members),
-                    files=[asdict(row) for row in route.files], axes=_plain(route.axes),
-                    compose=[_plain(asdict(row)) for row in route.compose],
-                    donors=[_plain(asdict(row)) for row in route.donors], prep=_plain(route.prep)),
+                    files=[_plain(row) for row in route.files], axes=_plain(route.axes),
+                    compose=[_plain(row) for row in route.compose],
+                    donors=[_plain(row) for row in route.donors], prep=_plain(route.prep)),
                 record_subset_supported=None if route is None else route.record_subset_supported,
                 authority=None if profile is None else _plain(profile),
                 field_mapping=adapter.field_mapping, level_mapping=adapter.level_mapping,

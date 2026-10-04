@@ -26,6 +26,7 @@
 use std::process::Command;
 
 fn main() {
+    println!("cargo:rerun-if-changed=../../../preparation_resources.rs");
     println!("cargo:rerun-if-env-changed=GPUWM_BRIDGE_SOURCE_REV");
     let rev = std::env::var("GPUWM_BRIDGE_SOURCE_REV")
         .ok()
@@ -92,7 +93,7 @@ fn head_of_clean_checkout() -> Option<String> {
     // engine's one out-of-workspace dependency is grib-core, which
     // `tools/grib1_bridge`'s own stamped build script covers, so the
     // workspace-root pathspec is the tree this binary is built from.
-    let dirty = git(&["status", "--porcelain", "-uno", "--", "."])?;
+    let dirty = git(&["status", "--porcelain", "-uno", "--", ".", "../preparation_resources.rs"])?;
     if !dirty.is_empty() {
         return None;
     }

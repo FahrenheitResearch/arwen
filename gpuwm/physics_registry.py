@@ -512,6 +512,7 @@ REGISTRY_DOCUMENTATION_FIELDS: Mapping[str, str] = {
     # Descriptive prose and display text.
     "note": "an explanatory note",
     "withheld_aerosol_number_note": "an explanatory note",
+    "aerosol_number_mixing_note": "an explanatory note",
     "evidence": "the evidence for a claim in words",
     "behaviour": "a measured behaviour in words",
     "measured": "a measured result in words",
@@ -644,6 +645,15 @@ def strip_registry_documentation(node: object) -> object:
     if isinstance(node, Mapping):
         kept: dict[str, object] = {}
         for key, value in node.items():
+            if (key == "compatible_previous_enums" and isinstance(value, list)
+                    and all(isinstance(previous, list) for previous in value)):
+                # Admission history is not the current physical declaration.
+                # The comparator verifies the complete historical hash and
+                # the selected value before applying an enum-only extension.
+                continue
+            if (key == "compatible_previous_forbidden_settings" and isinstance(value, list)
+                    and all(isinstance(previous, Mapping) for previous in value)):
+                continue
             if (key in REGISTRY_EVIDENCE_RECORDS
                     and isinstance(value, Mapping)):
                 continue

@@ -2864,7 +2864,7 @@ def _priced_external_boundary_source(boundaries, source):
 
 
 def _admit_devices_tree(exp, split_ids, *, forcing_intervals,
-                        forcing_interval_seconds, source):
+                        forcing_interval_seconds, source, stream_head=None):
     """Per-card memory admission for a split tree, before anything restores.
 
     Each split grid is priced the way the single-domain door prices one
@@ -2883,18 +2883,24 @@ def _admit_devices_tree(exp, split_ids, *, forcing_intervals,
     validate_device_count(exp.devices, cp.cuda.runtime.getDeviceCount())
     ids = list(dict.fromkeys(exp.devices.device_ids()))
     budgets = {}
+    identities = {}
+    from gpuwm.core.device_probe import cuda_device_identity
     for dev in ids:
         with cp.cuda.Device(dev):
             budgets[dev] = int(cp.cuda.runtime.memGetInfo()[0])
+            identities[dev] = cuda_device_identity(dev)
+    budgets = prepared_single._devices_stream_budgets(
+        budgets, stream_head, identities=identities)
     # The same pricing `gpuwm check --devices` and the `gpuwm go` gate
     # print before the download (devices_memory.estimate_devices_tree).
     estimate = estimate_devices_tree(
         exp, split_ids=split_ids, forcing_intervals=forcing_intervals,
-        forcing_interval_seconds=forcing_interval_seconds, source=source)
+        forcing_interval_seconds=forcing_interval_seconds, source=source,
+        streaming_boundaries=stream_head is not None)
     cards = {row["card"]: int(row["total_bytes"]) for row in estimate["cards"]}
     host = int(estimate["host_bytes"])
     rows = estimate["grids"]
-    host_budget = host_available_bytes()
+    host_budget = prepared_single._stream_host_budget(host_available_bytes(), stream_head)
     lines = []
     refused = False
     for dev in ids:
@@ -2962,6 +2968,7 @@ def run_prepared_tree(
     progress_options=None,
     initialization: TreeInitialization | None = None,
     first_products=None,
+    ensemble_bootstrap=None,
 ) -> dict[str, object]:
     """Restore the prepared domains and execute the existing tree engine.
 
@@ -2980,6 +2987,16 @@ def run_prepared_tree(
     WRF does -- plus ``progress.jsonl`` and a frame-ready marker per
     durable history file.
     """
+
+    from gpuwm.ensemble.runtime_context import current_session
+    ensemble_session = current_session()
+    if ensemble_session is not None:
+        return ensemble_session.run_prepared(
+            run_prepared_tree, inputs, output_directory=output_directory, io_mode=io_mode,
+            restart=restart, health_debug=health_debug,
+            sealed_forcing_extension=sealed_forcing_extension, observer=observer,
+            progress_options=progress_options, initialization=initialization,
+            first_products=first_products, ensemble_bootstrap=ensemble_bootstrap)
 
     if io_mode not in {"history", "none"}:
         raise ValueError("io_mode must be 'history' or 'none'")
@@ -3102,7 +3119,20 @@ def run_prepared_tree(
         heartbeat=True,
     )
 
+    stream_head = getattr(inputs, "stream_head", None)
+    from gpuwm.core.device_probe import cuda_device_identity
+    admission_identity = (cuda_device_identity(0) if not split_ids
+                          and prepared_single._stream_producer_reserve(stream_head) else None)
     planning_machine = streaming.cold_planning_machine(exp)
+    if (planning_machine is None and not split_ids
+            and (prepared_single._stream_producer_reserve(stream_head, identity=admission_identity)
+                 or prepared_single._stream_host_producer_reserve(stream_head))):
+        planning_machine = streaming.cold_admission_machine(
+            options=getattr(exp, "tiles", None))
+    planning_machine = prepared_single._stream_reserved_machine(
+        planning_machine, stream_head, identity=admission_identity)
+    planning_exp = prepared_single._stream_reserved_experiment(
+        exp, planning_machine, stream_head, identity=admission_identity)
     external_boundaries = getattr(initialization, "lateral_boundaries", None)
     # The root's boundary tables as this run will hold them.  Handed in
     # whole (the wrfinput and met_em doors), they are that set's own
@@ -3138,7 +3168,7 @@ def run_prepared_tree(
     # consumes this decision rather than asking again from the ledger
     # estimate, which is a different question against a different budget.
     cold_tree = cold_tree_streaming_decision(
-        exp, cold_nodes, machine=planning_machine, decisions=cold_decisions,
+        planning_exp, cold_nodes, machine=planning_machine, decisions=cold_decisions,
         source=priced_boundary, urban_columns=urban_columns)
     devices_admission = None
     if split_ids:
@@ -3148,7 +3178,7 @@ def run_prepared_tree(
         devices_admission = _admit_devices_tree(
             exp, split_ids, forcing_intervals=retained_intervals,
             forcing_interval_seconds=inputs.boundary_interval_seconds,
-            source=priced_boundary)
+            source=priced_boundary, stream_head=stream_head)
         for dc in exp.domains:
             if int(dc.grid_id) in split_ids:
                 cold_decisions[dc.grid_id] = streaming.ranked_decision(
@@ -3165,6 +3195,9 @@ def run_prepared_tree(
         # the card's own profile, state and physics of every domain together.
         admission_machine = streaming.cold_admission_machine(
             planning_machine, options=getattr(exp, "tiles", None))
+        if planning_machine is None:
+            admission_machine = prepared_single._stream_reserved_machine(
+                admission_machine, stream_head, identity=admission_identity)
         from gpuwm.boundary_fields import source_boundary_species
         streaming.admit_resident_road(
             exp, None, machine=admission_machine,
@@ -3778,6 +3811,8 @@ def run_prepared_tree(
     runtime.publish_lifecycle_runners(
         model, relocation_runner=relocation_runner)
 
+    from gpuwm.ensemble.runtime_context import bind_current_member_model
+    bind_current_member_model(model)
     restart_info = None
     if restart is not None:
         checkpoint = validate_manifest_checkpoint(Path(restart))
@@ -3921,6 +3956,14 @@ def run_prepared_tree(
         if not result["ok"]:
             raise FloatingPointError(f"initial d{grid_id:02d} health failed: {result}")
 
+    from gpuwm.ensemble.runtime_context import initialized_bootstrap_handoff, observe_current_counters
+    ensemble_report = initialized_bootstrap_handoff(
+        ensemble_bootstrap, inputs=inputs, model=model, node=model.root,
+        output_directory=outdir, observer=observer, step_log=step_log)
+    if ensemble_report is not None:
+        return ensemble_report
+    observe_current_counters(model, start_time=exp.start_time)
+
     history = []
     # Boundary-only sampling under-reported the peak: the executor trims
     # the CuPy pool per STEP and at period commit BEFORE the progress
@@ -4007,6 +4050,7 @@ def run_prepared_tree(
             wall_seconds=time.perf_counter() - restart_started)
 
     def progress_callback(**event):
+        observe_current_counters(model, start_time=exp.start_time)
         if observer is not None:
             observer(**event)
         memory_watch.sample()
@@ -4841,6 +4885,12 @@ def main(argv=None, *, observer=None) -> int:
     if argv == ["--show-capabilities"]:
         print(json.dumps(runner_capabilities(), sort_keys=True))
         return 0
+    from gpuwm.ensemble.calibration_admission import refuse_explicit_config_argv
+    try:
+        refuse_explicit_config_argv(argv)
+    except ValueError as error:
+        print(f"prepared_domain_tree_forecast: {error}", file=sys.stderr)
+        return 2
     # Which tree is about to integrate this tree of domains.  Same
     # contract as the single-domain runner, including leaving
     # ``--show-capabilities`` above untouched.
@@ -5125,6 +5175,11 @@ def main(argv=None, *, observer=None) -> int:
                 print("prepared_domain_tree_forecast: first-frame plot join "
                       f"failed: {type(render_error).__name__}: {render_error}",
                       file=sys.stderr)
+    if report.get("schema") == "gpuwm-ensemble-run.v1":
+        print(json.dumps({"schema": report["schema"], "status": report["status"],
+            "members": report["request"]["members"], "completed_seconds": report["completed_seconds"],
+            "ensemble_manifest": str(outdir / "ensemble-run.json")}, sort_keys=True))
+        return 0
     print(
         json.dumps(
             {

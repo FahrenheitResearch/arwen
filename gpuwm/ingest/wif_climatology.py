@@ -687,6 +687,21 @@ def wif_fields_for_grid(climatology: WifClimatology, target_lat, target_lon,
             "nwfa2d": nwfa2d, "nifa2d": nifa2d}, receipt
 
 
+def wif_lowest_number_for_grid(climatology, target_lat, target_lon, date_str):
+    """Monthly near-surface water-friendly number for surface emissions.
+
+    The three-dimensional initial and boundary aerosol can come from an
+    analysis while WRF's surface source still reads monthly climatology.
+    Only that lowest level is mapped, with the existing WIF operators.
+    """
+    bottom = int(np.argmax(climatology.pressure[0, :, 0, 0]))
+    startlat, deltalat, startlon, deltalon = climatology.axis_parameters()
+    monthly = four_pt_bilinear_rust(
+        climatology.qnwfa[:, bottom:bottom + 1],
+        startlat, deltalat, startlon, deltalon, target_lat, target_lon)
+    return monthly_interp_to_date(monthly, date_str)[0]
+
+
 # ---------------------------------------------------------------------------
 # Asset resolution.  This is the half that makes the dataset the DEFAULT.
 #

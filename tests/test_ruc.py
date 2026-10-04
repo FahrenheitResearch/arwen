@@ -374,9 +374,9 @@ def test_surface_parameters_preserve_inputs_and_fail_closed_on_unpinned_modes():
     ruc_surface_parameters(*inputs)
     for actual, expected in zip(inputs, originals):
         np.testing.assert_array_equal(actual, expected)
-    with pytest.raises(ValueError, match="mosaic_lu=0"):
+    with pytest.raises(ValueError, match="requires landusef"):
         ruc_surface_parameters(*inputs, mosaic_lu=1)
-    with pytest.raises(ValueError, match="mosaic_soil=0"):
+    with pytest.raises(ValueError, match="requires soilctop"):
         ruc_surface_parameters(*inputs, mosaic_soil=1)
     with pytest.raises(TypeError, match="rdlai2d"):
         ruc_surface_parameters(*inputs, rdlai2d=1)

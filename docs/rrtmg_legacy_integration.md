@@ -10,7 +10,8 @@ semantics, the proof boundaries, and every known divergence of the
 Selection: `RunConfig.ra_rrtmg_variant = "rrtmg_legacy"` on the resolved
 4/4 pair; token `wrf-rrtmg-4-4-legacy-v1`; importer flag
 `gpuwm import-namelist --rrtmg-variant rrtmg_legacy`. Restart identities
-`wrf-v4.6.1-rrtmg-legacy-lw-v1` / `-sw-v1` and the buffer policy id
+`wrf-v4.6.1-rrtmg-legacy-lw-v2-owned-gpoint-stratosphere-corrections` /
+`wrf-v4.6.1-rrtmg-legacy-sw-v1` and the buffer policy id
 `wrf-v4.6.1-rrtmg-deltap-4mb-buffer-layers-v1` are distinct from the
 RTE+RRTMGP identities: a restart written under one 4/4 implementation
 refuses to resume under the other.
