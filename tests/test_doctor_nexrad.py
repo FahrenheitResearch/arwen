@@ -176,17 +176,13 @@ def test_the_bundled_front_door_uses_the_resolution_ladders_own_env_var():
 def test_the_bundle_prose_counts_the_artifacts_it_actually_carries():
     """The docstring is the contract a release engineer reads; keep it true.
 
-    The literal below is this gate's own copy of the count, and it is the
-    side that moves last: ``rw_mlexport`` was the thirtieth bundled
-    artifact and ``rw_simradar`` (the simulated radar) is the
-    thirty-first. The count and ``gpuwm.bridge_assets`` prose must move
-    together. It is raised to 31 and the previous
-    spelling joins the stale list below, so the pin stays exact in both
-    directions rather than being widened to accommodate the roster.
+    The count and ``gpuwm.bridge_assets`` prose move together when a
+    consumer joins or leaves the bundle. The native tools added in 2.8.6
+    bring it to thirty-seven artifacts.
     """
 
-    assert len(bridge_assets.BUNDLED_ARTIFACTS) == 31
-    assert "thirty-one artifacts" in bridge_assets.__doc__
+    assert len(bridge_assets.BUNDLED_ARTIFACTS) == 37
+    assert "thirty-seven artifacts" in bridge_assets.__doc__
     for stale in ("eight artifacts", "nine artifacts", "nine files",
                   "ten artifacts", "ten files", "eleven artifacts",
                   "eleven files", "fourteen artifacts", "fourteen files",
@@ -203,7 +199,10 @@ def test_the_bundle_prose_counts_the_artifacts_it_actually_carries():
                   "twenty-seven artifacts", "twenty-seven files",
                   "twenty-eight artifacts", "twenty-eight files",
                   "twenty-nine artifacts", "twenty-nine files",
-                  "thirty artifacts", "thirty files"):
+                  "thirty artifacts", "thirty files",
+                  "thirty-one artifacts", "thirty-one files",
+                  "thirty-two artifacts", "thirty-two files",
+                  "thirty-eight artifacts", "thirty-eight files"):
         # Match the complete count, so "eight" does not reject "twenty-eight".
         assert re.search(r"(?<![a-z-])" + re.escape(stale) + r"(?![a-z-])",
                          bridge_assets.__doc__) is None

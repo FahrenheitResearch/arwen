@@ -69,7 +69,7 @@ def main():
         "gpu": device_name, "compute_capability": [device["major"], device["minor"]],
         "cupy": cp.__version__, "cuda_runtime": cp.cuda.runtime.runtimeGetVersion(),
         "kernels": {name: hashlib.sha256(module_source(name).encode("utf-8")).hexdigest()
-                    for name in ("advection", "pd_advection", "openbc")},
+                    for name in ("advection", "pd_advection", "pd_vertical_sl", "openbc")},
         "fixture_manifest_sha256": sha256(args.directory / "cases.json"),
         "words_directory": words_directory.as_posix(),
         "cases": {}, "controls": {},

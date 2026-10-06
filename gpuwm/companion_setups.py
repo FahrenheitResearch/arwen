@@ -202,7 +202,7 @@ def _resolve_declared_paths(raw, *, base_dir, source):
         from gpuwm.static.highres_production import parse_static_table
         config = parse_static_table(raw["static"], source=str(source),
                                     base_dir=base_dir)
-        if config is not None:
+        if config is not None and "highres" in raw["static"]:
             raw["static"]["highres"]["cache_root"] = str(config.cache_root.resolve())
     return raw
 
@@ -345,7 +345,7 @@ def save_setup(*, config_path, library, name):
         from gpuwm.static.highres_production import parse_static_table
         config = parse_static_table(raw["static"], source=str(authority.source),
                                     base_dir=authority.base_dir)
-        if config is not None:
+        if config is not None and "highres" in raw["static"]:
             raw["static"]["highres"]["cache_root"] = str(config.cache_root.resolve())
     _guard(original, raw, SAVE_ALLOWED_CHANGES,
            "Saving changed a setting it must keep: {field}. Nothing was saved.")

@@ -53,10 +53,13 @@ remains accepted with that meaning for compatibility and refuses to be
 combined with a lead.
 
 The native and stock namelists must be semantically identical after
-normalizing exactly three receipt-bound runtime differences: WRF RRTM
-longwave replaces disabled native longwave, stock WRF consumes the exported
-moist-theta representation, and `ghg_input=0` pins RRTM to fixed gases.  Any
-other raw namelist difference fails before output publication.
+normalizing the receipt-bound runtime differences: WRF RRTM longwave
+replaces disabled native longwave, `ghg_input=0` pins RRTM to fixed gases,
+and `do_radar_ref=1` makes stock WRF write the reflectivity the native arm
+always writes.  Both declare `use_theta_m = 0`: the export holds dry theta
+(`USE_THETA_M = 0`, `THM` equal to `T`, `T_B*` dry-coupled), and a stock
+namelist that says 1 is refused because WRF's input gate would stop on it.
+Any other raw namelist difference fails before output publication.
 
 The live 199x199x49 d01 plus five 300x300x49 children proof completed native
 d01..d06 generation and stock-WRF export in 135.093 seconds with eight

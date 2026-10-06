@@ -24,9 +24,9 @@ Contract:
   recorded in a JSON sidecar next to the cached payload; receipts carry
   those digests.  Arbitrary user windows cannot be pre-pinned, so recorded
   provenance -- not a pinned manifest -- is the contract.
-- A cache hit is a payload whose sidecar exists and whose byte count
-  matches the sidecar.  Anything else is refetched (resumable ``.partial``
-  staging, atomic rename), by one writer at a time per cached file; a
+- A cache hit is a payload whose byte count and SHA-256 match its
+  sidecar. Anything else is refetched (process-owned resumable staging,
+  fsync and atomic rename), by one writer at a time per cached file; a
   preparation that finds another downloading the file waits for as long
   as that download keeps growing.
 - Incomplete tile coverage refuses loudly, naming the missing tiles
@@ -48,6 +48,8 @@ import json
 import math
 import os
 import re
+import secrets
+import shutil
 import sys
 import time
 import urllib.error
@@ -55,6 +57,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 from dataclasses import dataclass
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Mapping
@@ -774,8 +777,11 @@ def _default_urlopen(url: str, offset: int):
             # both codes mean "this artifact is not published here".
             raise SourceAbsent(f"{url} -> HTTP {error.code}") from error
         if error.code == 416 and offset:
-            raise RangeExhausted(f"{url} -> HTTP 416 at offset {offset}") \
-                from error
+            match = re.fullmatch(r"bytes \*/(\d+)",
+                                 error.headers.get("Content-Range", ""))
+            if match and int(match.group(1)) == offset:
+                raise RangeExhausted(
+                    f"{url} -> HTTP 416 at complete offset {offset}") from error
         raise
 
 
@@ -789,21 +795,95 @@ def _read_sidecar(path: Path) -> dict | None:
         return None
     try:
         payload = json.loads(sidecar.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("bytes") != path.stat().st_size:
+            return None
+        digest = payload.get("sha256")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            return None
+        if sha256_file(path) != digest:
+            return None
     except (OSError, ValueError):
-        return None
-    if payload.get("bytes") != path.stat().st_size:
-        return None
-    if not isinstance(payload.get("sha256"), str):
         return None
     return payload
 
 
 def _write_sidecar(path: Path, payload: dict) -> None:
-    sidecar = _sidecar(path)
-    temporary = sidecar.with_name(sidecar.name + f".partial-{os.getpid()}")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n",
-                         encoding="utf-8")
-    os.replace(temporary, sidecar)
+    fetch_guard.atomic_write_text(
+        _sidecar(path), json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        tag="sha256")
+
+
+def _new_partial(path: Path) -> Path:
+    """Exclusively claim a process-owned sibling of a cached payload."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    while True:
+        partial = path.with_name(
+            f"{path.name}.partial-{os.getpid()}-{secrets.token_hex(6)}")
+        try:
+            with partial.open("xb"):
+                pass
+        except FileExistsError:
+            continue
+        return partial
+
+
+def _partial_progress(path: Path) -> tuple:
+    """Observe private staging files without opening or changing them."""
+    try:
+        stages = tuple(sorted(
+            (partial.name, _staged_bytes(partial))
+            for partial in path.parent.glob(path.name + ".partial-*")))
+    except OSError:
+        stages = ()
+    return stages, _staged_bytes(path)
+
+
+def _publish_partial(partial: Path, path: Path, *, url: str,
+                     expected_bytes: int | None = None,
+                     expected_sha256: str | None = None,
+                     expected_md5: str | None = None) -> FetchedFile:
+    """Validate and fsync private bytes before exposing a cached payload."""
+    size = partial.stat().st_size
+    consequence = ("; the staged payload was rejected before publication; "
+                   "the next preparation fetches it again")
+    if not size:
+        raise ValueError(f"{path.name} received an empty payload" + consequence)
+    if expected_bytes is not None and size != expected_bytes:
+        raise ValueError(f"{path.name} is pinned at {expected_bytes} bytes "
+                         f"and the staged payload holds {size}" + consequence)
+    digest = sha256_file(partial)
+    if expected_sha256 is not None and digest != expected_sha256:
+        raise ValueError(f"{path.name} is pinned at SHA-256 {expected_sha256} "
+                         f"and the staged payload hashes to {digest}" + consequence)
+    if expected_md5 is not None:
+        observed_md5 = _md5_file(partial)
+        if observed_md5 != expected_md5:
+            raise ValueError(f"{path.name} is published with MD5 {expected_md5} "
+                             f"and the staged payload hashes to {observed_md5}" + consequence)
+    with partial.open("r+b") as stream:
+        os.fsync(stream.fileno())
+    os.replace(partial, path)
+    fetch_guard._fsync_dir(path.parent)
+    record = FetchedFile(
+        path=path, url=url, sha256=digest, bytes=size,
+        fetched_utc=datetime.now(timezone.utc).isoformat(), cache_hit=False)
+    _write_sidecar(path, {
+        "url": url, "sha256": digest, "bytes": size,
+        "fetched_utc": record.fetched_utc})
+    return record
+
+
+@contextmanager
+def _derivation_writer(path: Path):
+    """Serialize a derived cache entry and own its unpublished staging file."""
+    with _one_writer(path):
+        partial = _new_partial(path)
+        try:
+            yield partial
+        finally:
+            partial.unlink(missing_ok=True)
 
 
 def record_local_artifact(path: Path, *, url: str,
@@ -842,7 +922,7 @@ def _declared_length(response) -> int | None:
         return None
 
 
-def _transfer(opener, url: str, partial: Path) -> None:
+def _transfer(opener, url: str, partial: Path) -> int:
     """One request, appended to what ``partial`` already holds.
 
     Returns once ``partial`` holds the whole payload.  A body shorter
@@ -856,11 +936,27 @@ def _transfer(opener, url: str, partial: Path) -> None:
     try:
         response = opener(url, offset)
     except RangeExhausted:
-        # The staged partial already holds the complete payload.
-        return
+        # The production opener accepts this only when the host's total
+        # byte count equals our offset.
+        return offset
     status = int(getattr(response, "status", 200) or 200)
     mode = "ab" if (offset and status == 206) else "wb"
     declared = _declared_length(response)
+    total = declared if mode == "wb" else (
+        None if declared is None else offset + declared)
+    if status == 206:
+        headers = getattr(response, "headers", {})
+        content_range = headers.get("Content-Range", "")
+        if content_range:
+            match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+)", content_range)
+            if (match is None or int(match.group(1)) != offset
+                    or int(match.group(2)) + 1 != int(match.group(3))
+                    or (declared is not None and
+                        int(match.group(2)) - offset + 1 != declared)):
+                response.close()
+                raise http.client.HTTPException(
+                    f"invalid Content-Range {content_range!r} at offset {offset}")
+            total = int(match.group(3))
     received = 0
     with response, partial.open(mode) as stream:
         while True:
@@ -871,8 +967,53 @@ def _transfer(opener, url: str, partial: Path) -> None:
             received += len(block)
         stream.flush()
         os.fsync(stream.fileno())
-    if declared is not None and received < declared:
-        raise http.client.IncompleteRead(b"", declared - received)
+    if declared is not None and received != declared:
+        if received < declared:
+            raise http.client.IncompleteRead(b"", declared - received)
+        raise http.client.HTTPException(
+            f"response delivered {received} bytes, declared {declared}")
+    size = partial.stat().st_size
+    if total is not None and size != total:
+        raise http.client.HTTPException(
+            f"staged payload holds {size} bytes, response declared {total}")
+    return size
+
+
+def _resume_sidecar(path: Path) -> Path:
+    return path.with_name(path.name + ".resume.json")
+
+
+def _remember_partial(path: Path, partial: Path, url: str) -> None:
+    """Record a verified private partial for a later preparation to copy."""
+    fetch_guard.atomic_write_text(_resume_sidecar(path), json.dumps({
+        "url": url, "partial": partial.name,
+        "bytes": _staged_bytes(partial), "sha256": sha256_file(partial),
+    }, sort_keys=True) + "\n", tag="resume")
+
+
+def _resume_partial(path: Path, partial: Path, url: str) -> None:
+    """Copy abandoned bytes into this process's own staging file under lock."""
+    resume = _resume_sidecar(path)
+    try:
+        saved = json.loads(resume.read_text(encoding="utf-8"))
+        name = saved["partial"]
+        if (saved.get("url") != url or not isinstance(name, str)
+                or Path(name).name != name
+                or not name.startswith(path.name + ".partial-")):
+            return
+        previous = path.parent / name
+        if (previous == partial or previous.stat().st_size != saved["bytes"]
+                or sha256_file(previous) != saved["sha256"]):
+            return
+    except (OSError, ValueError, KeyError, TypeError):
+        # Missing or damaged abandoned staging is never published.
+        return
+    with previous.open("rb") as source, partial.open("wb") as target:
+        shutil.copyfileobj(source, target, _CHUNK)
+        target.flush()
+        os.fsync(target.fileno())
+    previous.unlink()
+    resume.unlink(missing_ok=True)
 
 
 def _fetch_refusal(path: Path, url: str, partial: Path, error: BaseException,
@@ -887,14 +1028,14 @@ def _fetch_refusal(path: Path, url: str, partial: Path, error: BaseException,
     remedy = (f"remedy: check this computer's connection to {host} and "
               f"prepare again; the files already downloaded stay in "
               f"{path.parent}")
-    remedy += (f", and the {kept} bytes of {path.name} received so far "
+    remedy += (f", and the {kept} verified staged bytes of {path.name} "
                "resume where they stopped" if kept else "")
     remedy += (".  To prepare without them, leave [static.highres] "
                "disabled and run on the 30-arc-second baseline.")
     return HighresFetchRefusal(message, remedy=remedy, folders=(path.parent,))
 
 
-def _lock_refusal(path: Path, partial: Path,
+def _lock_refusal(path: Path,
                   busy: fetch_guard.FetchLockBusy) -> HighresFetchRefusal:
     """Another preparation holds ``path`` and this one stops waiting."""
     who = f"another preparation ({busy.holder or 'unidentified'})"
@@ -908,7 +1049,8 @@ def _lock_refusal(path: Path, partial: Path,
                    else busy.budget_s)
         waited = int(busy.waited_s if busy.waited_s is not None else idle)
         state = (f"and its download has not grown for {idle} s, with "
-                 f"{_staged_bytes(partial)} bytes staged; this one waited "
+                 f"{sum(size for _, size in _partial_progress(path)[0])} "
+                 "bytes staged; this one waited "
                  f"{waited} s for it")
     return HighresFetchRefusal(
         f"[static.highres] {who} is downloading {path.name} into "
@@ -929,9 +1071,10 @@ def _one_writer(path: Path):
     (four at once in a multi-area build) staged the same uncached tile
     into one ``.partial``, both wrote into it, and the second rename
     failed with ``FileNotFoundError``; a resume read the other process's
-    bytes as its own.  The loser waits for the holder and then finds the
-    file in the cache.  The ``.partial`` keeps its one name, so a
-    preparation that was stopped still resumes it the next time.
+    bytes as its own. The loser waits for the holder and then finds the
+    file in the cache. Every writer owns an exclusively claimed staging
+    name; a resumable failure records its bytes for the next writer to
+    copy into a new private file only after acquiring the same lock.
 
     The waiter watches the holder's ``.partial`` (and the published
     file) grow, and the lock's wait budget runs from the last growth, so
@@ -940,16 +1083,17 @@ def _one_writer(path: Path):
     3.8 MB/s ended parallel preparations on a fresh cache while the
     2.28 GB default land-cover file was still arriving.
     """
-    partial = path.with_name(path.name + ".partial")
     return fetch_guard.hold(
         _FETCH_LOCK_KIND, path,
         progress=lambda line: print(f"[static.highres] {line}",
                                     file=sys.stderr, flush=True),
-        holder_progress=lambda: (_staged_bytes(partial),
-                                 _staged_bytes(path)))
+        holder_progress=lambda: _partial_progress(path))
 
 
-def fetch_file(url: str, path: Path, *, urlopen=None) -> FetchedFile:
+def fetch_file(url: str, path: Path, *, urlopen=None,
+               expected_bytes: int | None = None,
+               expected_sha256: str | None = None,
+               expected_md5: str | None = None) -> FetchedFile:
     """Fetch ``url`` to ``path`` (cached, resumable, hashed at fetch).
 
     A transient network fault (a reset connection, a timeout, a body cut
@@ -961,26 +1105,35 @@ def fetch_file(url: str, path: Path, *, urlopen=None) -> FetchedFile:
     and failures on this computer propagate unchanged.
     """
     path = Path(path)
+    def admitted(cached):
+        return cached is not None and (
+            expected_bytes is None or cached.bytes == expected_bytes) and (
+            expected_sha256 is None or cached.sha256 == expected_sha256) and (
+            expected_md5 is None or _md5_file(path) == expected_md5)
+
     cached = _cache_hit(path, url)
-    if cached is not None:
+    if admitted(cached):
         return cached
 
     opener = _default_urlopen if urlopen is None else urlopen
     path.parent.mkdir(parents=True, exist_ok=True)
-    partial = path.with_name(path.name + ".partial")
     try:
         writer = _one_writer(path).acquire()
     except fetch_guard.FetchLockBusy as error:
-        raise _lock_refusal(path, partial, error) from error
+        raise _lock_refusal(path, error) from error
+    partial = None
+    keep_partial = False
     try:
         cached = _cache_hit(path, url)
-        if cached is not None:
+        if admitted(cached):
             # Another preparation fetched it while this one waited.
             return cached
+        partial = _new_partial(path)
+        _resume_partial(path, partial, url)
         waited_s = 0.0
         for attempt in range(1, FETCH_ATTEMPTS + 1):
             try:
-                _transfer(opener, url, partial)
+                total_bytes = _transfer(opener, url, partial)
                 break
             except Exception as error:  # noqa: BLE001 - classified below
                 delay = fetch_endpoints.retry_delay(
@@ -988,6 +1141,9 @@ def fetch_file(url: str, path: Path, *, urlopen=None) -> FetchedFile:
                 if delay is None and not isinstance(error, _NETWORK_FAULTS):
                     raise
                 if delay is None or attempt == FETCH_ATTEMPTS:
+                    if _staged_bytes(partial):
+                        _remember_partial(path, partial, url)
+                        keep_partial = True
                     raise _fetch_refusal(path, url, partial, error,
                                          attempts=attempt,
                                          waited_s=waited_s) from error
@@ -1000,9 +1156,16 @@ def fetch_file(url: str, path: Path, *, urlopen=None) -> FetchedFile:
                       file=sys.stderr, flush=True)
                 _sleep(delay)
                 waited_s += delay
-        os.replace(partial, path)
-        return record_local_artifact(path, url=url)
+        record = _publish_partial(
+            partial, path, url=url,
+            expected_bytes=(total_bytes if expected_bytes is None
+                            else expected_bytes),
+            expected_sha256=expected_sha256, expected_md5=expected_md5)
+        _resume_sidecar(path).unlink(missing_ok=True)
+        return record
     finally:
+        if partial is not None and not keep_partial:
+            partial.unlink(missing_ok=True)
         writer.release()
 
 
@@ -1293,111 +1456,110 @@ def derive_global_terrain_window(tiles, bbox: FootprintBBox,
     sidecar_path = out_dir / f"terrain_global_{identity}.audit.json"
     derivation_url = ("derived:mosaic+fill+clip of "
                       + ",".join(sorted(item.path.name for item in tiles)))
-    cached = _read_sidecar(out_path)
-    if cached is not None and sidecar_path.is_file():
-        return (FetchedFile(
-            path=out_path, url=derivation_url, sha256=cached["sha256"],
-            bytes=int(cached["bytes"]),
-            fetched_utc=str(cached.get("fetched_utc", "")), cache_hit=True),
-            json.loads(sidecar_path.read_text(encoding="utf-8")))
+    with _derivation_writer(out_path) as partial:
+        cached = _read_sidecar(out_path)
+        if cached is not None and sidecar_path.is_file():
+            return (FetchedFile(
+                path=out_path, url=derivation_url, sha256=cached["sha256"],
+                bytes=int(cached["bytes"]),
+                fetched_utc=str(cached.get("fetched_utc", "")), cache_hit=True),
+                json.loads(sidecar_path.read_text(encoding="utf-8")))
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    margin_deg = 0.01
-    bounds = (bbox.lon_min - margin_deg, bbox.lat_min - margin_deg,
-              bbox.lon_max + margin_deg, bbox.lat_max + margin_deg)
-    partial = out_path.with_name(out_path.name + ".partial")
-    bridge = _static_rust("derive_global_terrain_window")
-    if bridge is not None:
-        request = {
-            "kind": "global-terrain-window",
-            "tiles": [str(item.path) for item in tiles],
-            "bounds": list(bounds),
-            "resolution_deg": float(resolution_deg),
-            "source_nodata": (None if source_nodata is None
-                              else float(source_nodata)),
-            "out_path": str(partial),
-        }
-        if keep_holes:
-            request["keep_holes"] = True
-        else:
-            request["sea_level_fill"] = float(sea_level_fill)
-        audit = bridge.highres_derive_window(request)
-        os.replace(partial, out_path)
-        holes = int(audit.get("hole_pixels",
-                              audit.get("sea_level_filled_pixels", 0)))
+        out_dir.mkdir(parents=True, exist_ok=True)
+        margin_deg = 0.01
+        bounds = (bbox.lon_min - margin_deg, bbox.lat_min - margin_deg,
+                  bbox.lon_max + margin_deg, bbox.lat_max + margin_deg)
+        bridge = _static_rust("derive_global_terrain_window")
+        if bridge is not None:
+            request = {
+                "kind": "global-terrain-window",
+                "tiles": [str(item.path) for item in tiles],
+                "bounds": list(bounds),
+                "resolution_deg": float(resolution_deg),
+                "source_nodata": (None if source_nodata is None
+                                  else float(source_nodata)),
+                "out_path": str(partial),
+            }
+            if keep_holes:
+                request["keep_holes"] = True
+            else:
+                request["sea_level_fill"] = float(sea_level_fill)
+            audit = bridge.highres_derive_window(request)
+            artifact = _publish_partial(partial, out_path, url=derivation_url)
+            holes = int(audit.get("hole_pixels",
+                                  audit.get("sea_level_filled_pixels", 0)))
+            audit = {
+                "output_resolution_deg": float(resolution_deg),
+                "output_shape": [int(v) for v in audit["output_shape"]],
+                "sea_level_filled_pixels": 0 if keep_holes else holes,
+                "no_data_pixels_outside_coverage": holes if keep_holes else 0,
+                "total_pixels": int(audit["total_pixels"]),
+                "sea_level_fill_m": (None if keep_holes
+                                     else float(sea_level_fill)),
+                "source_nodata": (None if source_nodata is None
+                                  else float(source_nodata)),
+                "resampling": str(audit["resampling"]),
+                # The source's own vertical datum: provenance the crate has
+                # no business asserting, because it is a fact about which
+                # PRODUCT was fetched, not about the bytes.
+                "vertical_datum": COPERNICUS_DEM_VERTICAL_DATUM,
+            }
+            fetch_guard.atomic_write_text(sidecar_path,
+                json.dumps(audit, indent=2, sort_keys=True) + "\n")
+            return artifact, audit
+
+        try:
+            import rasterio
+            from rasterio.enums import Resampling
+            from rasterio.merge import merge as rasterio_merge
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError(
+                geog_unavailable_detail()
+            ) from exc
+        datasets = [rasterio.open(item.path) for item in tiles]
+        try:
+            crs = datasets[0].crs
+            bounds = _lattice_bounds(bounds, *_terrain_lattice(
+                None, resolution_deg))
+            mosaic, transform = rasterio_merge(
+                datasets, bounds=bounds,
+                res=(resolution_deg, resolution_deg),
+                resampling=Resampling.nearest,
+                nodata=np.nan, dtype="float32")
+        finally:
+            for dataset in datasets:
+                dataset.close()
+        values = np.asarray(mosaic[0], dtype=np.float32)
+        holes = ~np.isfinite(values)
+        if source_nodata is not None:
+            # SRTM carries an in-band void sentinel; Copernicus carries none.
+            holes |= values == np.float32(source_nodata)
+        filled = int(np.count_nonzero(holes))
+        values[holes] = (np.float32(np.nan) if keep_holes
+                         else np.float32(sea_level_fill))
+        with rasterio.open(
+                partial, "w", driver="GTiff", height=values.shape[0],
+                width=values.shape[1], count=1, dtype="float32", crs=crs,
+                transform=transform, nodata=None, compress="deflate",
+                predictor=3, tiled=True) as target:
+            target.write(values, 1)
+        artifact = _publish_partial(partial, out_path, url=derivation_url)
         audit = {
             "output_resolution_deg": float(resolution_deg),
-            "output_shape": [int(v) for v in audit["output_shape"]],
-            "sea_level_filled_pixels": 0 if keep_holes else holes,
-            "no_data_pixels_outside_coverage": holes if keep_holes else 0,
-            "total_pixels": int(audit["total_pixels"]),
+            "output_shape": [int(values.shape[0]), int(values.shape[1])],
+            "sea_level_filled_pixels": 0 if keep_holes else filled,
+            "no_data_pixels_outside_coverage": filled if keep_holes else 0,
+            "total_pixels": int(values.size),
             "sea_level_fill_m": (None if keep_holes
                                  else float(sea_level_fill)),
             "source_nodata": (None if source_nodata is None
                               else float(source_nodata)),
-            "resampling": str(audit["resampling"]),
-            # The source's own vertical datum: provenance the crate has
-            # no business asserting, because it is a fact about which
-            # PRODUCT was fetched, not about the bytes.
+            "resampling": "nearest (latitude-banded source resolutions)",
             "vertical_datum": COPERNICUS_DEM_VERTICAL_DATUM,
         }
-        sidecar_path.write_text(
-            json.dumps(audit, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8")
-        return record_local_artifact(out_path, url=derivation_url), audit
-
-    try:
-        import rasterio
-        from rasterio.enums import Resampling
-        from rasterio.merge import merge as rasterio_merge
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError(
-            geog_unavailable_detail()
-        ) from exc
-    datasets = [rasterio.open(item.path) for item in tiles]
-    try:
-        crs = datasets[0].crs
-        bounds = _lattice_bounds(bounds, *_terrain_lattice(
-            None, resolution_deg))
-        mosaic, transform = rasterio_merge(
-            datasets, bounds=bounds,
-            res=(resolution_deg, resolution_deg),
-            resampling=Resampling.nearest,
-            nodata=np.nan, dtype="float32")
-    finally:
-        for dataset in datasets:
-            dataset.close()
-    values = np.asarray(mosaic[0], dtype=np.float32)
-    holes = ~np.isfinite(values)
-    if source_nodata is not None:
-        # SRTM carries an in-band void sentinel; Copernicus carries none.
-        holes |= values == np.float32(source_nodata)
-    filled = int(np.count_nonzero(holes))
-    values[holes] = (np.float32(np.nan) if keep_holes
-                     else np.float32(sea_level_fill))
-    with rasterio.open(
-            partial, "w", driver="GTiff", height=values.shape[0],
-            width=values.shape[1], count=1, dtype="float32", crs=crs,
-            transform=transform, nodata=None, compress="deflate",
-            predictor=3, tiled=True) as target:
-        target.write(values, 1)
-    os.replace(partial, out_path)
-    audit = {
-        "output_resolution_deg": float(resolution_deg),
-        "output_shape": [int(values.shape[0]), int(values.shape[1])],
-        "sea_level_filled_pixels": 0 if keep_holes else filled,
-        "no_data_pixels_outside_coverage": filled if keep_holes else 0,
-        "total_pixels": int(values.size),
-        "sea_level_fill_m": (None if keep_holes
-                             else float(sea_level_fill)),
-        "source_nodata": (None if source_nodata is None
-                          else float(source_nodata)),
-        "resampling": "nearest (latitude-banded source resolutions)",
-        "vertical_datum": COPERNICUS_DEM_VERTICAL_DATUM,
-    }
-    sidecar_path.write_text(
-        json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    return record_local_artifact(out_path, url=derivation_url), audit
+        fetch_guard.atomic_write_text(sidecar_path,
+            json.dumps(audit, indent=2, sort_keys=True) + "\n")
+        return artifact, audit
 
 
 # ---------------------------------------------------------------------------
@@ -1443,17 +1605,6 @@ def _md5_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _reject_payload(path: Path, detail: str) -> None:
-    """Remove a payload that failed its pin, so the next run fetches it
-    again, and raise.  An integrity failure is a fault, not a coverage
-    fact: it is never answered with the 30-arc-second baseline."""
-    Path(path).unlink(missing_ok=True)
-    _sidecar(Path(path)).unlink(missing_ok=True)
-    raise ValueError(
-        f"{detail}; the payload {path} was removed so the next preparation "
-        "fetches it again")
-
-
 def _fetch_whole_geotiff(source: LandcoverSource, cache_root: Path, *,
                          urlopen=None) -> FetchedFile:
     """Fetch a whole-GeoTIFF source once per cache root and hold it to
@@ -1473,27 +1624,15 @@ def _fetch_whole_geotiff(source: LandcoverSource, cache_root: Path, *,
               f"{size} once into {path.parent}; later preparations with "
               "this cache_root read it from there")
     try:
-        fetched = fetch_file(source.url, path, urlopen=urlopen)
+        fetched = fetch_file(
+            source.url, path, urlopen=urlopen,
+            expected_bytes=source.pinned_bytes,
+            expected_sha256=source.pinned_sha256,
+            expected_md5=source.pinned_md5)
     except SourceAbsent as error:
         raise CoverageError(
             f"land-cover source {source.source_id!r} is not published at "
             f"{source.url}") from error
-    label = f"land-cover source {source.source_id!r}"
-    if (source.pinned_bytes is not None
-            and int(fetched.bytes) != int(source.pinned_bytes)):
-        _reject_payload(path, f"{label} is pinned at {source.pinned_bytes} "
-                              f"bytes and {path} holds {fetched.bytes}")
-    if (source.pinned_sha256 is not None
-            and fetched.sha256 != source.pinned_sha256):
-        _reject_payload(path, f"{label} is pinned at SHA-256 "
-                              f"{source.pinned_sha256} and {path} hashes "
-                              f"to {fetched.sha256}")
-    if not fetched.cache_hit and source.pinned_md5 is not None:
-        observed = _md5_file(path)
-        if observed != source.pinned_md5:
-            _reject_payload(path, f"{label} is published with MD5 "
-                                  f"{source.pinned_md5} and {path} hashes "
-                                  f"to {observed}")
     return fetched
 
 
@@ -1536,34 +1675,27 @@ def _fetch_yearly_zip_bundle(source: LandcoverSource, year: int,
                 f"{name} bundle {bundle.path} contains {len(members)} .tif "
                 f"members ({members}); expected one")
         raster_path = cache / Path(members[0]).name
-        cached = _read_sidecar(raster_path)
-        if cached is None:
-            # One staging file per process: preparations sharing this
-            # cache extracted the same year into one ".partial", both
-            # wrote into it, and the second rename failed with
-            # FileNotFoundError.  An extraction never resumes, so nothing
-            # is lost by the name; the rename is atomic and the last
-            # complete copy of the same member wins.
-            partial = raster_path.with_name(
-                f"{raster_path.name}.partial-{os.getpid()}")
-            with archive.open(members[0]) as stream, \
-                    partial.open("wb") as target:
-                while True:
-                    block = stream.read(_CHUNK)
-                    if not block:
-                        break
-                    target.write(block)
-                target.flush()
-                os.fsync(target.fileno())
-            os.replace(partial, raster_path)
-            raster = record_local_artifact(
-                raster_path, url=f"{url}!{members[0]}")
-        else:
-            raster = FetchedFile(
-                path=raster_path, url=str(cached.get("url", url)),
-                sha256=cached["sha256"], bytes=int(cached["bytes"]),
-                fetched_utc=str(cached.get("fetched_utc", "")),
-                cache_hit=True)
+        with _derivation_writer(raster_path) as partial:
+            cached = _read_sidecar(raster_path)
+            if cached is None:
+                with archive.open(members[0]) as stream, \
+                        partial.open("wb") as target:
+                    while True:
+                        block = stream.read(_CHUNK)
+                        if not block:
+                            break
+                        target.write(block)
+                    target.flush()
+                    os.fsync(target.fileno())
+                raster = _publish_partial(
+                    partial, raster_path, url=f"{url}!{members[0]}",
+                    expected_bytes=archive.getinfo(members[0]).file_size)
+            else:
+                raster = FetchedFile(
+                    path=raster_path, url=str(cached.get("url", url)),
+                    sha256=cached["sha256"], bytes=int(cached["bytes"]),
+                    fetched_utc=str(cached.get("fetched_utc", "")),
+                    cache_hit=True)
     return bundle, raster
 
 
@@ -1740,57 +1872,57 @@ def derive_terrain_window(tiles, bbox: FootprintBBox,
         sort_keys=True).encode("utf-8")).hexdigest()[:20]
     out_dir = Path(cache_root) / "derived"
     out_path = out_dir / f"terrain_{identity}.tif"
-    cached = _read_sidecar(out_path)
-    derivation_url = ("derived:mosaic+clip of "
-                      + ",".join(sorted(item.path.name for item in tiles)))
-    if cached is not None:
-        return FetchedFile(
-            path=out_path, url=derivation_url, sha256=cached["sha256"],
-            bytes=int(cached["bytes"]),
-            fetched_utc=str(cached.get("fetched_utc", "")), cache_hit=True)
+    with _derivation_writer(out_path) as partial:
+        cached = _read_sidecar(out_path)
+        derivation_url = ("derived:mosaic+clip of "
+                          + ",".join(sorted(item.path.name for item in tiles)))
+        if cached is not None:
+            return FetchedFile(
+                path=out_path, url=derivation_url, sha256=cached["sha256"],
+                bytes=int(cached["bytes"]),
+                fetched_utc=str(cached.get("fetched_utc", "")), cache_hit=True)
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    margin_deg = 0.01
-    bounds = (bbox.lon_min - margin_deg, bbox.lat_min - margin_deg,
-              bbox.lon_max + margin_deg, bbox.lat_max + margin_deg)
-    partial = out_path.with_name(out_path.name + ".partial")
-    bridge = _static_rust("derive_terrain_window")
-    if bridge is not None:
-        bridge.highres_derive_window({
-            "kind": "terrain-window",
-            "tiles": [str(item.path) for item in tiles],
-            "bounds": list(bounds),
-            "out_path": str(partial),
-        })
-        os.replace(partial, out_path)
-        return record_local_artifact(out_path, url=derivation_url)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        margin_deg = 0.01
+        bounds = (bbox.lon_min - margin_deg, bbox.lat_min - margin_deg,
+                  bbox.lon_max + margin_deg, bbox.lat_max + margin_deg)
+        bridge = _static_rust("derive_terrain_window")
+        if bridge is not None:
+            bridge.highres_derive_window({
+                "kind": "terrain-window",
+                "tiles": [str(item.path) for item in tiles],
+                "bounds": list(bounds),
+                "out_path": str(partial),
+            })
+            artifact = _publish_partial(partial, out_path, url=derivation_url)
+            return artifact
 
-    try:
-        import rasterio
-        from rasterio.merge import merge as rasterio_merge
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError(
-            geog_unavailable_detail()
-        ) from exc
-    datasets = [rasterio.open(item.path) for item in tiles]
-    try:
-        crs = datasets[0].crs
-        bounds = _lattice_bounds(bounds, *_terrain_lattice(
-            datasets[0].transform, None))
-        mosaic, transform = rasterio_merge(datasets, bounds=bounds)
-        nodata = datasets[0].nodata
-    finally:
-        for dataset in datasets:
-            dataset.close()
-    with rasterio.open(
-            partial, "w", driver="GTiff", height=mosaic.shape[1],
-            width=mosaic.shape[2], count=1, dtype=mosaic.dtype, crs=crs,
-            transform=transform, nodata=nodata, compress="deflate",
-            predictor=2 if np.issubdtype(mosaic.dtype, np.integer) else 3,
-            tiled=True) as target:
-        target.write(mosaic[0], 1)
-    os.replace(partial, out_path)
-    return record_local_artifact(out_path, url=derivation_url)
+        try:
+            import rasterio
+            from rasterio.merge import merge as rasterio_merge
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError(
+                geog_unavailable_detail()
+            ) from exc
+        datasets = [rasterio.open(item.path) for item in tiles]
+        try:
+            crs = datasets[0].crs
+            bounds = _lattice_bounds(bounds, *_terrain_lattice(
+                datasets[0].transform, None))
+            mosaic, transform = rasterio_merge(datasets, bounds=bounds)
+            nodata = datasets[0].nodata
+        finally:
+            for dataset in datasets:
+                dataset.close()
+        with rasterio.open(
+                partial, "w", driver="GTiff", height=mosaic.shape[1],
+                width=mosaic.shape[2], count=1, dtype=mosaic.dtype, crs=crs,
+                transform=transform, nodata=nodata, compress="deflate",
+                predictor=2 if np.issubdtype(mosaic.dtype, np.integer) else 3,
+                tiled=True) as target:
+            target.write(mosaic[0], 1)
+        artifact = _publish_partial(partial, out_path, url=derivation_url)
+        return artifact
 
 
 def _landcover_audit_path(window_path: Path) -> Path:
@@ -1836,90 +1968,88 @@ def derive_landcover_window(raster: FetchedFile, bbox: FootprintBBox,
     out_path = out_dir / f"landcover_{identity}.tif"
     audit_path = _landcover_audit_path(out_path)
     derivation_url = f"derived:clip of {raster.path.name}"
-    cached = _read_sidecar(out_path)
-    if cached is not None and audit_path.is_file():
-        return FetchedFile(
-            path=out_path, url=derivation_url, sha256=cached["sha256"],
-            bytes=int(cached["bytes"]),
-            fetched_utc=str(cached.get("fetched_utc", "")), cache_hit=True)
+    with _derivation_writer(out_path) as partial:
+        cached = _read_sidecar(out_path)
+        if cached is not None and audit_path.is_file():
+            return FetchedFile(
+                path=out_path, url=derivation_url, sha256=cached["sha256"],
+                bytes=int(cached["bytes"]),
+                fetched_utc=str(cached.get("fetched_utc", "")), cache_hit=True)
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    partial = out_path.with_name(out_path.name + ".partial")
-    bridge = _static_rust("derive_landcover_window")
-    if bridge is not None:
-        from .rust_bridge import StaticCoverageRefusal
+        out_dir.mkdir(parents=True, exist_ok=True)
+        bridge = _static_rust("derive_landcover_window")
+        if bridge is not None:
+            from .rust_bridge import StaticCoverageRefusal
+            try:
+                audit = bridge.highres_derive_window({
+                    "kind": "landcover-window",
+                    "source": str(raster.path),
+                    "bounds_lonlat": [bbox.lat_min, bbox.lat_max,
+                                      bbox.lon_min, bbox.lon_max],
+                    "margin_m": 2000.0,
+                    "out_path": str(partial),
+                })
+            except StaticCoverageRefusal as refusal:
+                partial.unlink(missing_ok=True)
+                raise CoverageError(str(refusal)) from refusal
+            artifact = _publish_partial(partial, out_path, url=derivation_url)
+            fetch_guard.atomic_write_text(audit_path, json.dumps(audit, indent=2, sort_keys=True)
+                                  + "\n")
+            return artifact
+
         try:
-            audit = bridge.highres_derive_window({
-                "kind": "landcover-window",
-                "source": str(raster.path),
-                "bounds_lonlat": [bbox.lat_min, bbox.lat_max,
-                                  bbox.lon_min, bbox.lon_max],
-                "margin_m": 2000.0,
-                "out_path": str(partial),
-            })
-        except StaticCoverageRefusal as refusal:
-            partial.unlink(missing_ok=True)
-            raise CoverageError(str(refusal)) from refusal
-        os.replace(partial, out_path)
-        audit_path.write_text(json.dumps(audit, indent=2, sort_keys=True)
-                              + "\n", encoding="utf-8")
-        return record_local_artifact(out_path, url=derivation_url)
-
-    try:
-        import rasterio
-        from rasterio.windows import from_bounds
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError(
-            geog_unavailable_detail()
-        ) from exc
-    with rasterio.open(raster.path) as source:
-        left, bottom, right, top = _densified_bounds(
-            bbox, source.crs, margin_m=2000.0)
-        window = from_bounds(left, bottom, right, top,
-                             transform=source.transform)
-        # Explicit outward rounding (rasterio's round_offsets/round_lengths
-        # signatures drifted across 1.x releases; the arithmetic is fixed).
-        col_off = math.floor(window.col_off)
-        row_off = math.floor(window.row_off)
-        window = rasterio.windows.Window(
-            col_off, row_off,
-            math.ceil(window.width + (window.col_off - col_off)),
-            math.ceil(window.height + (window.row_off - row_off)))
-        full = rasterio.windows.Window(0, 0, source.width, source.height)
-        clipped = window.intersection(full)
-        if clipped.width <= 0 or clipped.height <= 0:
-            raise CoverageError(
-                f"footprint {bbox.as_dict()} lies outside the land-cover "
-                f"raster extent of {raster.path.name}")
-        values = source.read(1, window=clipped)
-        transform = source.window_transform(clipped)
-        partial = out_path.with_name(out_path.name + ".partial")
-        with rasterio.open(
-                partial, "w", driver="GTiff", height=values.shape[0],
-                width=values.shape[1], count=1, dtype=values.dtype,
-                crs=source.crs, transform=transform, nodata=source.nodata,
-                compress="deflate", predictor=2, tiled=True) as target:
-            target.write(values, 1)
-        categories, counts = np.unique(values, return_counts=True)
-        audit = {
-            "output_shape": [int(values.shape[0]), int(values.shape[1])],
-            "window": [int(clipped.col_off), int(clipped.row_off),
-                       int(clipped.width), int(clipped.height)],
-            "requested_window": [int(window.col_off), int(window.row_off),
-                                 int(window.width), int(window.height)],
-            "clipped_to_raster": (int(clipped.width) != int(window.width)
-                                  or int(clipped.height)
-                                  != int(window.height)),
-            "nodata": source.nodata,
-            "category_pixels": {
-                str(int(category)): int(count)
-                for category, count in zip(categories, counts)
-                if np.isfinite(category)},
-        }
-    os.replace(partial, out_path)
-    audit_path.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n",
-                          encoding="utf-8")
-    return record_local_artifact(out_path, url=derivation_url)
+            import rasterio
+            from rasterio.windows import from_bounds
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError(
+                geog_unavailable_detail()
+            ) from exc
+        with rasterio.open(raster.path) as source:
+            left, bottom, right, top = _densified_bounds(
+                bbox, source.crs, margin_m=2000.0)
+            window = from_bounds(left, bottom, right, top,
+                                 transform=source.transform)
+            # Explicit outward rounding (rasterio's round_offsets/round_lengths
+            # signatures drifted across 1.x releases; the arithmetic is fixed).
+            col_off = math.floor(window.col_off)
+            row_off = math.floor(window.row_off)
+            window = rasterio.windows.Window(
+                col_off, row_off,
+                math.ceil(window.width + (window.col_off - col_off)),
+                math.ceil(window.height + (window.row_off - row_off)))
+            full = rasterio.windows.Window(0, 0, source.width, source.height)
+            clipped = window.intersection(full)
+            if clipped.width <= 0 or clipped.height <= 0:
+                raise CoverageError(
+                    f"footprint {bbox.as_dict()} lies outside the land-cover "
+                    f"raster extent of {raster.path.name}")
+            values = source.read(1, window=clipped)
+            transform = source.window_transform(clipped)
+            with rasterio.open(
+                    partial, "w", driver="GTiff", height=values.shape[0],
+                    width=values.shape[1], count=1, dtype=values.dtype,
+                    crs=source.crs, transform=transform, nodata=source.nodata,
+                    compress="deflate", predictor=2, tiled=True) as target:
+                target.write(values, 1)
+            categories, counts = np.unique(values, return_counts=True)
+            audit = {
+                "output_shape": [int(values.shape[0]), int(values.shape[1])],
+                "window": [int(clipped.col_off), int(clipped.row_off),
+                           int(clipped.width), int(clipped.height)],
+                "requested_window": [int(window.col_off), int(window.row_off),
+                                     int(window.width), int(window.height)],
+                "clipped_to_raster": (int(clipped.width) != int(window.width)
+                                      or int(clipped.height)
+                                      != int(window.height)),
+                "nodata": source.nodata,
+                "category_pixels": {
+                    str(int(category)): int(count)
+                    for category, count in zip(categories, counts)
+                    if np.isfinite(category)},
+            }
+        artifact = _publish_partial(partial, out_path, url=derivation_url)
+        fetch_guard.atomic_write_text(audit_path, json.dumps(audit, indent=2, sort_keys=True) + "\n")
+        return artifact
 
 
 __all__ = [

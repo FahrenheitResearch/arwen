@@ -140,10 +140,17 @@ def test_noahmp_post_lsm_2m_categories_match_the_wrf_source_transcription():
 
 
 @requires_gpu
+@pytest.mark.parametrize("ice_fraction,fractional_seaice", [
+    (0.65, 0), (0.3, 1)])
 @pytest.mark.parametrize("mp_physics", [6, 8])
 def test_mynn_ruc_fractional_seaice_stages_immediate_and_wait_fields(
-        mp_physics, monkeypatch):
-    """Port MYNN_SEAICE_WRAPPER's two calls and its split ownership sets."""
+        mp_physics, ice_fraction, fractional_seaice, monkeypatch):
+    """Port MYNN_SEAICE_WRAPPER's two calls and its split ownership sets.
+
+    XICE 0.3 under fractional_seaice = 1 is the cell the 0.02 threshold
+    admits (module_surface_driver.F:1365-1368 of the HRRR v4.1.21 fork):
+    open-water second call and staging against the same transcription.
+    """
     import gpuwm.core.physics as physics_module
     from gpuwm.core.physics import _prepare_atmosphere
     from gpuwm.core.mynn_sfclay import MYNN_SURFACE_OUTPUTS
@@ -155,10 +162,21 @@ def test_mynn_ruc_fractional_seaice_stages_immediate_and_wait_fields(
     )
     from test_ruc_runtime import _build
 
+    from gpuwm.core.ruc_runtime import RucRuntimeParameters
+
     state, cfg, driver = _build(
         nx=4, ny=2, nz=12, water_columns=0, ice_rows=1,
         mp_physics=mp_physics, sf_sfclay_physics=5, bl_pbl_physics=5)
-    driver.fields["xice"][0, :] = cp.float32(0.65)
+    if fractional_seaice:
+        old = driver.ruc_params
+        params = RucRuntimeParameters(
+            old.bundle, dataset_identifier=old.dataset_identifier,
+            seaice_albedo_default=old.seaice_albedo_default,
+            num_soil_layers=old.num_soil_layers, fractional_seaice=1)
+        params.iswater, params.isice = old.iswater, old.isice
+        driver.ruc_params = params
+    threshold = np.float32(driver.ruc_params.xice_threshold)
+    driver.fields["xice"][0, :] = cp.float32(ice_fraction)
     atmosphere = _prepare_atmosphere(state)
     driver.fields["psfc"][...] = atmosphere["p_interface"][0]
     tsk_before = _host(driver.fields["tsk"]).copy()
@@ -186,10 +204,11 @@ def test_mynn_ruc_fractional_seaice_stages_immediate_and_wait_fields(
         physics_module, "launch_mynn_surface_layer", capture)
     driver._run_sfclay(atmosphere, cfg)
     assert len(calls) == 2
-    active = _host(driver.fields["xice"]) >= np.float32(0.5)
+    active = _host(driver.fields["xice"]) >= threshold
+    assert np.count_nonzero(active) == 4
     temperatures = get_local_ice_tsk(
         xice=_host(driver.fields["xice"]), sst=sst_before, tsk=tsk_before,
-        itimestep=1)
+        itimestep=1, xice_threshold=threshold)
     np.testing.assert_array_equal(calls[0]["tsk"], temperatures["tsk_ice"])
     np.testing.assert_array_equal(calls[1]["tsk"], temperatures["tsk_sea"])
     np.testing.assert_array_equal(
@@ -389,3 +408,68 @@ def test_mynn_noahmp_writer_order_matches_wrf_for_two_microphysics_schemes(
     np.testing.assert_array_equal(pbl["q2"], diag["q2"])
     np.testing.assert_allclose(
         pbl["th2"], diag["th2"], rtol=2.0e-7, atol=0.0)
+
+
+@requires_gpu
+@pytest.mark.parametrize("fractional_seaice", [0, 1])
+def test_mynn_ice_call_tsk_matches_the_fork_at_low_ice_fractions(
+        fractional_seaice, monkeypatch):
+    """get_local_ice_tsk's two low-fraction clamps (HRRR v4.1.21 fork,
+    module_surface_driver.F:6816-6821) reach the ice-component MYNN call.
+
+    At the 0.5 threshold no active cell is below 0.2, so the clamps were
+    dead; under fractional_seaice = 1 (threshold 0.02) a cold blended TSK
+    over a thin ice fraction takes 253.15 K below 0.2 and 263.15 K below
+    0.1 instead of the 221.4 K floor.
+    """
+    import gpuwm.core.physics as physics_module
+    from gpuwm.core.physics import _prepare_atmosphere
+    from gpuwm.core.ruc_runtime import RucRuntimeParameters
+    from tools.mynn_surface_pairing_wrf461_oracle.transcribe_pairing import (
+        get_local_ice_tsk,
+    )
+    from test_ruc_runtime import _build
+
+    state, cfg, driver = _build(
+        nx=6, ny=2, nz=12, water_columns=0, ice_rows=1,
+        mp_physics=6, sf_sfclay_physics=5, bl_pbl_physics=5)
+    old = driver.ruc_params
+    params = RucRuntimeParameters(
+        old.bundle, dataset_identifier=old.dataset_identifier,
+        seaice_albedo_default=old.seaice_albedo_default,
+        num_soil_layers=old.num_soil_layers,
+        fractional_seaice=fractional_seaice)
+    params.iswater, params.isice = old.iswater, old.isice
+    driver.ruc_params = params
+    driver.fields["xice"][0, :] = cp.asarray(
+        [0.03, 0.05, 0.15, 0.30, 0.65, 0.01], dtype=cp.float32)
+    driver.fields["tsk"][0, :] = cp.asarray(
+        [250.0, 260.0, 250.0, 250.0, 250.0, 250.0], dtype=cp.float32)
+    driver.fields["tsk_sea"][0, :] = cp.float32(271.4)
+    atmosphere = _prepare_atmosphere(state)
+    driver.fields["psfc"][...] = atmosphere["p_interface"][0]
+    tsk_before = _host(driver.fields["tsk"]).copy()
+    sst_before = _host(driver.fields["tsk_sea"]).copy()
+    calls = []
+    real = physics_module.launch_mynn_surface_layer
+
+    def capture(inputs, mol, ustm, result, **kwargs):
+        calls.append(_host(inputs["tsk"]).copy())
+        return real(inputs, mol, ustm, result, **kwargs)
+
+    monkeypatch.setattr(physics_module, "launch_mynn_surface_layer", capture)
+    driver._run_sfclay(atmosphere, cfg)
+    assert len(calls) == 2
+    fork = get_local_ice_tsk(
+        xice=_host(driver.fields["xice"]), sst=sst_before, tsk=tsk_before,
+        itimestep=1, xice_threshold=np.float32(params.xice_threshold))
+    np.testing.assert_array_equal(calls[0], fork["tsk_ice"])
+    row = calls[0][0]
+    if fractional_seaice:
+        # 0.03 and 0.05 below 0.1 under 263.15 K; 0.15 below 0.2 under
+        # 253.15 K; 0.01 is under the 0.02 threshold and keeps TSK.
+        assert row[0] == np.float32(263.15) and row[1] == np.float32(263.15)
+        assert row[2] == np.float32(253.15)
+        assert row[5] == np.float32(250.0)
+    else:
+        assert np.all(row[:4] == tsk_before[0, :4])

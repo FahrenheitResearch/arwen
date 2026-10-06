@@ -6,6 +6,58 @@ import numpy as np
 import pytest
 from conftest import requires_gpu
 DATA=Path(__file__).parent/"data/wrf471_diff_opt1"
+SOURCE_TRANSITION_SHA256="6ebec4f303d838f403000e873a593098e21ee981da8b2024ff117523c2b8b09f"
+
+
+def _measured_current_sources(receipt):
+    """Keep the original capture intact and admit only a measured transition.
+
+    Accepted staging changed relevant Smagorinsky FMA/rounding code after
+    the original capture. On node4 the actual current source reproduced
+    all 178128 original float32 words across 88 cases. The separate witness
+    binds source, compiler options, tools and every preserved array hash.
+    Re-measured for 1f625334f (32-bit Smagorinsky addressing, smag2d.cu and
+    dycore.py) on an RTX 5090, NVRTC 13.4: all 178128 words again, written
+    by tools/wrf_diffopt1_oracle/source_transition.py, which refuses on any
+    moved word.  Re-measured again for the 2.8.6 release tree (the sixth-order
+    edge-form workspace and order-5 transport fixes moved dycore.py) on node-4's
+    RTX 5070 Ti: all 178128 words.
+    """
+    import hashlib
+    from gpuwm.core.kernels import module_options
+    body=(DATA/"measured-source-transition.json").read_bytes()
+    assert hashlib.sha256(body).hexdigest()==SOURCE_TRANSITION_SHA256
+    transition=json.loads(body)
+    assert transition["schema"]=="gpuwm-diffopt1-measured-source-transition-v1"
+    assert transition["prior_module_source_sha256"]==receipt["module_source_sha256"]
+    assert transition["original_production_archive_sha256"]==receipt["archive_sha256"]
+    assert transition["new_capture_archive_sha256"]==receipt["archive_sha256"]
+    assert transition["native_archive_sha256"]==receipt["native_archive_sha256"]
+    assert (transition["case_count"],transition["field_count"],transition["words"],
+            transition["different_words"])==(88,272,178128,0)
+    assert transition["forecast_runs"]==0
+    for name,options in transition["module_options"].items():
+        assert list(module_options(name))==options
+    # These inputs participate in the coordinate capture. Unrelated solar,
+    # aerosol or MYNN registration changes are not diffusion source proof.
+    closure={"gpuwm/core/kernels/smag2d.cu","gpuwm/core/kernels/diff_opt1.cu",
+             "gpuwm/core/kernels/common.cuh","gpuwm/core/constants.py",
+             "gpuwm/core/dycore.py"}
+    recorded={row["path"]:row["sha256"] for row in transition["raw_source_inputs"]}
+    root=DATA.parents[2]
+    for name in closure:
+        assert hashlib.sha256((root/name).read_bytes()).hexdigest()==recorded[name]
+    fields=transition["different_by_field"]
+    assert len(fields)==272 and sum(row["words"] for row in fields)==178128
+    with np.load(DATA/"merged-gpu.npz") as arrays:
+        assert set(arrays.files)=={row["name"] for row in fields}
+        for row in fields:
+            value=arrays[row["name"]]
+            digest=hashlib.sha256(value.tobytes()).hexdigest()
+            assert value.dtype==np.float32 and value.size==row["words"]
+            assert row["different_words"]==0
+            assert digest==row["prior_array_sha256"]==row["current_array_sha256"]
+    return transition["current_module_source_sha256"]
 
 
 def test_merged_coordinate_receipt_is_sealed_to_native_and_production_source():
@@ -19,7 +71,7 @@ def test_merged_coordinate_receipt_is_sealed_to_native_and_production_source():
     assert proof["prior_archive_sha256"]==hashlib.sha256((DATA/"km2-gpu.npz").read_bytes()).hexdigest()
     assert len(receipt["cases"])==88
     assert sum(len(row["fields"]) for row in receipt["cases"])==272
-    for name,digest in receipt["module_source_sha256"].items():
+    for name,digest in _measured_current_sources(receipt).items():
         assert hashlib.sha256(module_source(name).encode()).hexdigest()==digest
 
 @pytest.mark.gpu

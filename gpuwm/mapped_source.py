@@ -3647,10 +3647,16 @@ def _validate_grid_declaration(
     grid = _object(
         raw,
         "mapping.grid",
-        allowed={"family", "parameters", "wind_basis"},
+        allowed={"family", "parameters", "wind_basis", "same_grid_pairing"},
         required={"family"},
     )
     family = grid["family"]
+    same_grid_pairing = grid.get("same_grid_pairing")
+    if same_grid_pairing is not None and (
+            same_grid_pairing != "identity" or family != GRID_FAMILY_LAMBERT):
+        raise ValueError(
+            "mapping.grid.same_grid_pairing must be 'identity' on a "
+            "declared Lambert grid; other sources retain projected pairing")
     if family == GRID_FAMILY_REGULAR:
         if grid.get("parameters") is not None:
             raise ValueError(
@@ -3727,6 +3733,8 @@ def _validate_grid_declaration(
         "family": GRID_FAMILY_LAMBERT,
         "wind_basis": wind_basis,
         "parameters": parameters,
+        **({"same_grid_pairing": same_grid_pairing}
+           if same_grid_pairing is not None else {}),
     }
 
 
@@ -6040,6 +6048,8 @@ def _frame_header(
                 **{key: parameters[key] for key in sorted(_LAMBERT_PARAMETER_KEYS)},
                 "axis_unit_m": PROJECTED_AXIS_UNIT_M,
                 "source_wind_basis": declaration["wind_basis"],
+                **({"same_grid_pairing": declaration["same_grid_pairing"]}
+                   if "same_grid_pairing" in declaration else {}),
             },
         )
     else:
@@ -7284,6 +7294,7 @@ def _regular_snapshot_field_items(frame, pressure, *, soil_land_repair,
         "surface_pressure": "PSFC",
         "terrain_height": "SOURCE_OROGRAPHY",
         "skin_temperature": "SKINTEMP",
+        "vegetation_fraction": "VEGFRA",
         "air_temperature_2m": "T2",
         "specific_humidity_2m": "Q2",
         "eastward_wind_10m": "U10",

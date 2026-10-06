@@ -279,7 +279,7 @@ def test_the_lake_bypass_change_carries_its_own_continuation_identity():
     from gpuwm.physics_registry import physics_registry
 
     identity = LAND_SURFACE_ALGORITHM_IDENTITIES[SF_SURFACE_PHYSICS]
-    assert identity == "ruc-lsm-wrf-v4.6.1-v3-soilprop-by-lineage"
+    assert identity == "ruc-lsm-wrf-v4.6.1-v6-default-selection"
     option = physics_registry()[
         "components"]["land_surface"]["options"]["ruc-lsm"]
     assert option["consumers"]["restart_algorithm_identity"] == identity

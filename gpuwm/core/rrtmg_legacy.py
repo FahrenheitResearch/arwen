@@ -98,11 +98,17 @@ from :mod:`gpuwm.core.cam_ozone`:
   same arithmetic, named so a report says the ozone came from the
   climatology on the child grid and not from the parent.
 
-SW aerosol: the batched CUDA SW engine builds WRF's neutral aer_opt=0
-optics (tauaer 0 / ssaaer 1 / asmaer 0, module_ra_rrtmg_sw.F:11333-11460)
-internally and REJECTS any other ``aer_opt`` (SW-audit item 1); the
-adapter pins ``aer_opt=0`` and passes no aerosol arrays because the
-batched entry deliberately has no such parameters.
+SW aerosol: with ``aer_opt = 0`` the batched CUDA SW engine builds WRF's
+neutral optics (tauaer 0 / ssaaer 1 / asmaer 0, module_ra_rrtmg_sw.F:
+11333-11460) internally, exactly as before.  With ``aer_opt = 3`` (the
+operational HRRR fork's Thompson aerosol branch) the adapter forms the
+per-band optics on the device from the radiation inputs and the Thompson
+numbers state.nwfa/state.nifa for each day-column chunk
+(gpuwm.core.rrtmg_aerosol_optics, held word for word to the fork's
+gt_aod and calc_aerosol_rrtmg_sw) and hands them to the engine, which
+feeds them to spcvmc unchanged (iaer = 10).  aer_opt 1 and 2 stay
+refused (SW-audit item 1).  The longwave takes no aerosol in that fork
+under any aer_opt without chemistry.
 
 Sequencing/VRAM shape: the LW and SW pipelines run SEQUENTIALLY per
 adapter chunk -- each chunk's prep outputs, device McICA slabs, and
@@ -136,6 +142,7 @@ from gpuwm.core import rrtmg_legacy_device as _prep_device
 from gpuwm.core import rrtmg_lw as _lw
 from gpuwm.core import rrtmg_mcica as _mcica
 from gpuwm.core import rrtmg_sw as _sw
+from gpuwm.core import rrtmg_aerosol_optics as _aer3
 
 __all__ = [
     "MAX_LONGWAVE_LAYERS", "MAX_SHORTWAVE_LAYERS",
@@ -166,8 +173,14 @@ _DPD = F(F(360.0) / F(365.0))
 
 #: The pinned WRF option combination this adapter implements (dossier
 #: section 1).  A config carrying any other explicit value fails closed.
+#: swint_opt is not here: it is a radiation-DRIVER option the physics
+#: driver carries (gpuwm.core.swint) and the adapter's call is the same
+#: for 0 and 1.  aer_opt = 3 (Thompson aerosol shortwave optics) is
+#: implemented by this adapter; validate_radiation_driver_options admits
+#: 0 and 3 and refuses 1 and 2 by name before a run starts.
 _PINNED_OPTIONS = {"icloud": 1, "cldovrlp": 2, "idcor": 0,
-                   "ghg_input": 0, "aer_opt": 0, "swint_opt": 0}
+                   "ghg_input": 0}
+_ADMITTED_AER_OPT = (0, 3)
 
 
 # ---------------------------------------------------------------------------
@@ -626,7 +639,8 @@ def legacy_shortwave_constant_bytes():
 def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
                                 ncol_day=None, lw_coefficients=None,
                                 longwave=True, shortwave=True,
-                                resident_threads=None, o3input=2):
+                                resident_threads=None, o3input=2,
+                                aer_opt=0):
     """Peak transient device bytes of ONE adapter call.
 
     Composes the engines' own accurate pricing functions
@@ -649,6 +663,12 @@ def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
     device profile without opening a CUDA context. Zero means an unknown
     device and prices the unchanged workspace ceilings; None retains the
     engines' live-device behavior for existing direct callers.
+
+    ``aer_opt = 3`` adds what the SW chunk holds for the aerosol: the
+    three (14 x nlay) optics slabs alive through the engine call, the
+    layer AOD and the two gathered Thompson number blocks (an upper bound:
+    the engine's own zero-aerosol constants are priced by the engine
+    function and not allocated on this path).
     """
     ncol = int(ncol)
     nz = int(nz)
@@ -698,6 +718,9 @@ def legacy_radiation_vram_bytes(*, ncol, nz, p_top, column_chunk=None,
         # tsfc, four albedos, coszen and scon.
         held_sw += (8 * s_nl_s + 2 * _r512(nc_sw * (nlay_sw + 1) * f)
                     + 7 * _r512(nc_sw * f))
+        if int(aer_opt) == 3:
+            held_sw += (3 * _r512(nc_sw * _sw.NBNDSW * nlay_sw * f)
+                        + 3 * _r512(nc_sw * nz * f))
         sw_gen = (held_sw + 5 * s_nl_s
                   + 4 * _r512(_mcica.NBNDSW * nc_sw * nlay_sw * f)
                   + _mcica.mcica_device_vram_bytes(
@@ -913,7 +936,7 @@ def _adapter_module():
     device = int(cp.cuda.Device().id)
     if device not in _ADAPTER_MODULE:
         import cupy as cp
-        from cupy.cuda import compiler as _cc
+        from gpuwm import nvrtc_ptx_cache as _cc
         path = (Path(__file__).resolve().parent / "kernels"
                 / "rrtmg_legacy_adapter.cu")
         ptx, _mapping = _cc.compile_using_nvrtc(
@@ -1206,16 +1229,15 @@ class RRTMGLegacyRadiation:
     #: driver reads to decide whether OLR exists at all.
     publishes_olr = True
 
-    # Read-time cache binding: the common tile gather and moving-grid routes
-    # may change latitude in place. The interpolation must follow that input.
-    geography_cache_dependencies = {
-        "_ozone_lat_interp": (("latitude_deg", "_ozone_latitude"),),
-    }
+    # No latitude-derived ozone is retained. The common tile gather and
+    # moving-grid routes change latitude in place, so every radiation call
+    # interpolates the CAM climatology from the live latitude_deg
+    # (wrf_ozone.ozn_latitude_time_int, two months per call).
 
     def __init__(self, start_time, latitude_deg, longitude_deg, *,
                  p_top=None, column_chunk=None, ozone_parent=None,
                  o3input=2, longwave=True, shortwave=True, trace_gas_overrides=None,
-                 ozone_routing=None):
+                 ozone_routing=None, aer_opt=0, smoke_provider=None):
         if not isinstance(start_time, datetime):
             raise TypeError("radiation_start_time must be a datetime")
         self.start_time = start_time
@@ -1223,6 +1245,23 @@ class RRTMGLegacyRadiation:
         self.shortwave = bool(shortwave)
         if not (self.longwave or self.shortwave):
             raise ValueError("radiation adapter needs at least one spectrum")
+        #: WRF aer_opt for the shortwave this adapter runs: 0 (zero
+        #: aerosol) or 3 (the Thompson aerosol optics,
+        #: gpuwm.core.rrtmg_aerosol_optics).  The longwave of the
+        #: operational HRRR fork takes no aerosol under aer_opt = 3
+        #: (module_ra_rrtmg_lw.F:12538-12560 fills tauaer from chemistry
+        #: only), so a longwave-only adapter carries 0.
+        self.aer_opt = int(aer_opt)
+        if self.aer_opt not in _ADMITTED_AER_OPT:
+            raise NotImplementedError(
+                f"rrtmg_legacy implements aer_opt in {_ADMITTED_AER_OPT}; "
+                f"got aer_opt={aer_opt!r}")
+        if self.aer_opt and not self.shortwave:
+            raise ValueError("aer_opt=3 acts on the shortwave; a "
+                             "longwave-only adapter carries aer_opt=0")
+        if smoke_provider is not None and not (self.shortwave and self.aer_opt == 3):
+            raise ValueError("prescribed smoke requires legacy shortwave with aer_opt=3")
+        self._smoke_provider = smoke_provider
         self.publishes_olr = self.longwave
         from gpuwm.core.trace_gases import (
             LEGACY_LW_GASES, LEGACY_SW_GASES, validate_trace_gas_overrides)
@@ -1290,27 +1329,23 @@ class RRTMGLegacyRadiation:
                 "ra_rrtmg_variant='rrtmg_legacy' is selected but the "
                 "packaged RRTMG_SW_DATA coefficients cannot be "
                 f"loaded/built: {exc}") from exc
-        self._ozone_latitude = None
         if self.o3input == 0:
             # O3DATA is evaluated independently inside lwrad/swrad prep and
             # does not read the CAM climatology or parent-routed o3rad field.
             self._ozone = None
             self._ozone_climo = None
-            self._ozone_lat_interp = None
         elif self._ozone_provider is None:
             # Root routing: the climatology chain runs here, on this
             # adapter's own grid.  WRF evaluates it for id == 1, which is
             # both a resident root and an offline child (that route's
             # domain is configured as a root and stamps parent_id = 0);
             # self.ozone_routing says which of the two this is.  The
-            # latitude interpolation is WRF's oznini-time work, cached
-            # while latitude is unchanged.
+            # latitude interpolation (WRF's oznini-time work) runs at each
+            # call on the live latitude, for the two months that call uses.
             try:
                 from gpuwm.ingest import wrf_ozone as _ozone
                 self._ozone = _ozone
                 self._ozone_climo = _ozone.load_ozone_climatology()
-                self._ozone_lat_interp = None
-                self._latitude_ozone()
             except Exception as exc:
                 raise RuntimeError(
                     "ra_rrtmg_variant='rrtmg_legacy' is selected but the "
@@ -1322,7 +1357,6 @@ class RRTMGLegacyRadiation:
             # parent-interpolated o3rad, never a fresh evaluation).
             self._ozone = None
             self._ozone_climo = None
-            self._ozone_lat_interp = None
         try:
             self._cuda_sw = (_cuda_sw(self._sw_tables)
                              if self.shortwave else None)
@@ -1397,7 +1431,7 @@ class RRTMGLegacyRadiation:
             "idcor": 0,
             "o3input": self.o3input,
             "ghg_input": 0,
-            "aer_opt": 0,
+            "aer_opt": self.aer_opt,
             "column_chunk": self.column_chunk,
             "p_top": self.p_top,
             "ozone_routing": self.ozone_routing,
@@ -1405,6 +1439,11 @@ class RRTMGLegacyRadiation:
                 "rrtmg_lw_statics.npz": RRTMG_LW_STATICS_SHA256,
             },
         }
+        if self.aer_opt == 3:
+            from gpuwm.core.rrtmg_aerosol_optics import AER3_TABLES_SHA256
+            identity["aer3_tables_sha256"] = AER3_TABLES_SHA256
+        if getattr(self, "_smoke_provider", None) is not None:
+            identity["prescribed_smoke"] = self._smoke_provider.identity()
         if self.o3input == 2:
             # Constant pins only -- importing wrf_ozone performs no file I/O;
             # a child adapter still never CALLS its climatology chain.
@@ -1432,6 +1471,21 @@ class RRTMGLegacyRadiation:
                     f"rrtmg_legacy implements only {name}={pinned} "
                     f"(dossier section 1); got {name}={value!r} -- no "
                     "silent option substitution is applied")
+        aer_opt = int(getattr(cfg, "aer_opt", 0))
+        if aer_opt not in _ADMITTED_AER_OPT:
+            raise NotImplementedError(
+                f"rrtmg_legacy implements aer_opt in {_ADMITTED_AER_OPT} "
+                f"(0: no aerosol; 3: Thompson water- and ice-friendly "
+                f"aerosol shortwave optics); got aer_opt={aer_opt!r} -- no "
+                "silent option substitution is applied")
+        if self.shortwave and aer_opt != self.aer_opt:
+            raise ValueError(
+                f"adapter was constructed for aer_opt={self.aer_opt} but the "
+                f"run config requests aer_opt={aer_opt}; rebuild the adapter "
+                "so its shortwave aerosol and restart identity match")
+        if self.shortwave and bool(getattr(cfg, "rrtmg_smoke_manifest", "")) != (
+                getattr(self, "_smoke_provider", None) is not None):
+            raise ValueError("prescribed smoke configuration differs from the bound radiation adapter")
         requested_o3input = int(getattr(cfg, "o3input", 2))
         if requested_o3input != self.o3input:
             raise ValueError(
@@ -1472,15 +1526,6 @@ class RRTMGLegacyRadiation:
                 "fix.  Resuming it requires the cloud-radiation seam "
                 "lane's restart migration; rrtmg_legacy will not silently "
                 "rescale or radiate at clip floors")
-
-    def _latitude_ozone(self):
-        """The CAM cache for the current latitude, including reused buffers."""
-        from gpuwm.core.geography_cache import geography_cache
-
-        return geography_cache(
-            self, "_ozone_lat_interp",
-            lambda: self._ozone.interp_ozone_to_latitudes(
-                self.latitude_deg.reshape(-1), self._ozone_climo))
 
     def _mcica_generator(self, gpu_entry):
         """Device McICA twin, resolved through the module attribute at
@@ -1540,6 +1585,27 @@ class RRTMGLegacyRadiation:
         g_pi3d = _device_grid(atmosphere["exner"], nz)
         g_dz8w = _device_grid(atmosphere["dz"], nz)
         g_zw = _device_grid(atmosphere["z_interface"], nz + 1)
+        smoke_gather = None
+        smoke_provider = getattr(self, "_smoke_provider", None)
+        if smoke_provider is not None:
+            profile = smoke_provider.at(float(state.elapsed_seconds),
+                latitude_deg=self.latitude_deg, longitude_deg=self.longitude_deg)
+            quantity = profile["quantity"]
+            if quantity == "layer_aod":
+                smoke_aod = profile["value"]
+            else:
+                smoke_mass = profile["value"]
+                if quantity == "posted_mass_concentration":
+                    smoke_mass = _aer3.smoke_dry_mixing_ratio_from_posted_density_device(
+                        smoke_mass, profile["donor_p"], profile["donor_t"])
+                # ALT is dry specific volume. The shared atmosphere rho
+                # includes vapor mass and is not the source dry density.
+                dry_density = _aer3.smoke_dry_air_density_device(state.alt)
+                smoke_aod = _aer3.smoke_aod_from_dry_mixing_ratio_device(
+                    smoke_mass, dry_density, atmosphere["dz"])
+                del smoke_mass, dry_density
+            smoke_gather = _ColumnGather((_device_grid(smoke_aod, nz),), ncol)
+            del profile, smoke_aod
 
         g_moist = {}
         f_flags = {}
@@ -1551,6 +1617,23 @@ class RRTMGLegacyRadiation:
             else:
                 g_moist[name] = _device_grid(value, nz)
                 f_flags[name] = True
+
+        # ---- aer_opt = 3: the Thompson aerosol numbers the shortwave
+        # optics read (gpuwm.core.rrtmg_aerosol_optics), gathered per SW
+        # chunk beside the wrapper inputs.
+        aer_gather = None
+        if self.shortwave and self.aer_opt == 3:
+            g_aer = []
+            for name in ("nwfa", "nifa"):
+                value = getattr(state, name, None)
+                if value is None:
+                    raise ValueError(
+                        f"aer_opt=3 reads the Thompson aerosol numbers "
+                        f"(state.nwfa, state.nifa; mp_physics=28) and this "
+                        f"state carries no {name}: the shortwave would run "
+                        "zero aerosol under aer_opt=3")
+                g_aer.append(_device_grid(value, nz))
+            aer_gather = _ColumnGather(g_aer, ncol)
 
         # ---- radii: MICRON state contract -> meters for the wrapper ---
         # has_req* follows WRF v4.6.1's SCHEME TABLE, not field presence
@@ -1677,8 +1760,8 @@ class RRTMGLegacyRadiation:
                 o33d.reshape(ny, nx, nz).transpose(2, 0, 1))
             grid_o3 = cp.asarray(self._o33d_grid.reshape(nz, ncol))
         else:
-            ozmixt = np.asarray(self._ozone.ozn_time_int(
-                julday, julian, self._latitude_ozone()))
+            ozmixt = np.asarray(self._ozone.ozn_latitude_time_int(
+                julday, julian, self.latitude_deg.reshape(-1), self._ozone_climo))
             pin = np.asarray(self._ozone_climo.plev)
             if pin.dtype != np.float32 or pin.ndim != 1:
                 raise ValueError("pin must be float32 (levsiz,)")
@@ -1710,6 +1793,7 @@ class RRTMGLegacyRadiation:
         shared = dict(
             icloud=1, warm_rain=warm_rain, cldovrlp=2, idcor=0,
             o3input=self.o3input,
+            rrtmg_cloud_optics_form=getattr(cfg, "rrtmg_cloud_optics_form", "wrf_461"),
             has_reqc=has_req["effc"], has_reqi=has_req["effi"],
             has_reqs=has_req["effs"], f_qc=f_flags["qc"],
             f_qr=f_flags["qr"], f_qi=f_flags["qi"], f_qs=f_flags["qs"],
@@ -1767,16 +1851,40 @@ class RRTMGLegacyRadiation:
                 bl = {k: blocks[k] for k in g_bl}
                 n = moist["qc"].size
                 null = np.uint64(0)
-                _adapter_kernel("rla_mynn")(
-                    *blk(n),
-                    (np.int64(n), moist["qc"], moist["qi"], bl["qc_bl"],
-                     bl["qi_bl"], bl["cldfra_bl"], cldfra,
-                     np.int32(1 if itimestep != 1 else 0),
-                     null if radii["re_cloud"] is None else radii["re_cloud"],
-                     null if radii["re_ice"] is None else radii["re_ice"],
-                     np.int32(1 if ice_rule else 0),
-                     F(MERGE_QC_BELOW), F(MERGE_QI_BELOW),
-                     F(MERGE_CLDFRA_BL_ABOVE)))
+                # The source cloud driver merges mass without rewriting
+                # microphysics radii (v4.1.21 radiation_driver.F:1256-1304).
+                source_bl = getattr(cfg, "bl_mynn_version", "wrf_461") == "gsd_41"
+                keep_source_radii = source_bl or getattr(
+                    cfg, "rrtmg_cloud_optics_form", "wrf_461") == "noaa_wrf39"
+                if source_bl:
+                    # GSD MYNN v4.1 hands radiation in-cloud QC_BL; its
+                    # merge multiplies by CLDFRA_BL and splits the phase
+                    # at radiation time (rla_mynn_gsd41).
+                    _adapter_kernel("rla_mynn_gsd41")(
+                        *blk(n),
+                        (np.int64(n), moist["qc"], moist["qi"], bl["qc_bl"],
+                         bl["cldfra_bl"], t3d, cldfra,
+                         np.int32(1 if itimestep == 1 else 0),
+                         null if keep_source_radii or radii["re_cloud"] is None
+                         else radii["re_cloud"],
+                         null if keep_source_radii or radii["re_ice"] is None
+                         else radii["re_ice"],
+                         np.int32(1 if ice_rule else 0),
+                         F(MERGE_QC_BELOW), F(MERGE_QI_BELOW),
+                         F(MERGE_CLDFRA_BL_ABOVE)))
+                else:
+                    _adapter_kernel("rla_mynn")(
+                        *blk(n),
+                        (np.int64(n), moist["qc"], moist["qi"],
+                         bl["qc_bl"], bl["qi_bl"], bl["cldfra_bl"], cldfra,
+                         np.int32(1 if itimestep != 1 else 0),
+                         null if keep_source_radii or radii["re_cloud"] is None
+                         else radii["re_cloud"],
+                         null if keep_source_radii or radii["re_ice"] is None
+                         else radii["re_ice"],
+                         np.int32(1 if ice_rule else 0),
+                         F(MERGE_QC_BELOW), F(MERGE_QI_BELOW),
+                         F(MERGE_CLDFRA_BL_ABOVE)))
                 del bl
             o33d = (blocks["o33d"] if grid_o3 is not None else
                     cp.zeros((nc, nz), dtype=cp.float32))
@@ -1883,6 +1991,35 @@ class RRTMGLegacyRadiation:
         for c0 in range(0, day_idx.size if self.shortwave else 0, chunk_sw):
             sel = day_idx_d[c0:c0 + chunk_sw]
             kw = chunk_inputs(sel)
+            # Optional qualification hook. Off, no extra arrays or transfers.
+            # It records all/clear flux at the same radiation-call sun; a
+            # per-step interpolated SWDOWN must not be mixed with held clear
+            # flux to infer cloud attenuation.
+            diagnostic_sink = getattr(self, "_sw_diagnostic_sink", None)
+            diagnostic_cloud = (kw["cldfra3d"] if diagnostic_sink else None)
+            diagnostic_aerosol = None
+            aerosol = None
+            if aer_gather is not None:
+                # The driver builds the optics from its own p, t, qv and
+                # dz8w before RRTMG_SWRAD runs (module_radiation_driver.F
+                # :975, :1890); the wrapper's layer above the model top
+                # stays 0/1/0, so the slabs span the SW engine's nz + 1.
+                nwfa_c, nifa_c = aer_gather(sel)
+                smoke_options = {}
+                if smoke_gather is not None:
+                    smoke_options = dict(smoke_aod=smoke_gather(sel)[0], smoke_feedback=True)
+                aerosol_result = _aer3.aer3_sw_optics_device(
+                    kw["p3d"], kw["t3d"], kw["qv3d"], kw["dz8w"], nwfa_c,
+                    nifa_c, nz + 1, **smoke_options)
+                aerosol = aerosol_result[:3]
+                if diagnostic_sink is not None:
+                    diagnostic_aerosol = dict(nwfa=nwfa_c, nifa=nifa_c,
+                                              taod550=aerosol_result[3])
+                    if smoke_options:
+                        diagnostic_aerosol["smoke_aod"] = smoke_options["smoke_aod"]
+                del smoke_options
+                del aerosol_result
+                del nwfa_c, nifa_c
             ps = _prep_device.swrad_prep_batch_device(
                 **kw, albedo=surf["albedo"][sel],
                 xcoszen=coszen_d[sel], solcon=solcon,
@@ -1905,9 +2042,19 @@ class RRTMGLegacyRadiation:
                 ps["liqflgsw"], ps["cldfmcl"], ps["taucmcl"],
                 ps["ssacmcl"], ps["asmcmcl"], ps["fsfcmcl"],
                 ps["ciwpmcl"], ps["clwpmcl"], ps["cswpmcl"],
-                ps["reicmcl"], ps["relqmcl"], ps["resnmcl"], aer_opt=0,
+                ps["reicmcl"], ps["relqmcl"], ps["resnmcl"],
+                aer_opt=0 if aerosol is None else 3, aerosol=aerosol,
                 column_chunk=chunk_sw, _stage_probe=self._stage_probe, mcica_layout="column")
-            del ps
+            del ps, aerosol
+            if diagnostic_sink is not None:
+                diagnostic_sink(
+                    elapsed_seconds=float(state.elapsed_seconds), shape=(ny, nx),
+                    indices=day_idx[c0:c0 + chunk_sw],
+                    coszen=coszen[day_idx[c0:c0 + chunk_sw]],
+                    swdnb=res["swdflx"][:, 0], swdnbc=res["swdflxc"][:, 0],
+                    cloud_fraction=diagnostic_cloud, aerosol=diagnostic_aerosol,
+                    adapter=self)
+            del diagnostic_cloud, diagnostic_aerosol
             if swddif is not None:
                 swddif[sel] = res["swdflx"][:, 0] - res["swdkdir"][:, 0]
             nlay_sw = int(res["swhr"].shape[1])
@@ -1930,6 +2077,14 @@ class RRTMGLegacyRadiation:
             # resident footprint is what it was before the workspace was
             # hoisted out of the chunk loop.
             _cuda_sw(self._sw_tables).release_scratch()
+            diagnostic_sink = getattr(self, "_sw_diagnostic_sink", None)
+            if diagnostic_sink is not None:
+                smoke_receipt = {}
+                if smoke_provider is not None:
+                    smoke_receipt["smoke_binding"] = smoke_provider.binding_receipt()
+                diagnostic_sink(elapsed_seconds=float(state.elapsed_seconds),
+                    shape=(ny, nx), coszen=coszen, adapter=self, finish=True,
+                    **smoke_receipt)
 
         # ---- driver-level SWDOWN = GSW/(1-ALBEDO) (driver line 2877) --
         swdown = cp.empty(ncol, dtype=cp.float32)

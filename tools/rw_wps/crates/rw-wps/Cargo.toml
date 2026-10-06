@@ -19,8 +19,8 @@ clap.workspace = true
 # `cargo test -p rw-wps` on this tip; deleting the donor snapshot stays
 # lane 1 / coordinator work.
 grib-core = { path = "../../../grib1_bridge/vendor/grib-core", default-features = false, features = ["jpeg2000"] }
-hdf5-reader = { path = "../../vendor/netcrust/vendor/hdf5-reader" }
-netcrust = { path = "../../vendor/netcrust" }
+hdf5-reader = { path = "../../../rustwx/vendor/netcrust/vendor/hdf5-reader" }
+netcrust = { path = "../../../rustwx/vendor/netcrust" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

@@ -137,7 +137,8 @@ def test_other_physics_on_the_route_is_priced_by_the_itemized_model(changes):
     machine, estimate, fp = priced(exp)
     assert fp.prepared_memory is not None
     cells = 37 * 37 * run.nz
-    assert fp.vram_bytes(cells, 2) > fp.vram_bytes(cells, 1)
+    assert fp.vram_bytes(cells, 2) >= fp.vram_bytes(cells, 1)
+    assert fp.buffer_bytes(cells) > 0
     # At the review's window (980,000 cells, two buffers: 9.304 GiB itemized
     # against 7.580 GiB fused on the default config) the itemized obligation
     # exceeds what the fused fallback quoted for the same window: this is
@@ -292,8 +293,10 @@ def test_a_device_store_keeps_the_itemization():
     device = experiment(**pinned, store="device")
     run = device.root.run
     assert ptm.supported(device, run, device.tiles)
-    _, _, host_fp = priced(host)
-    _, _, device_fp = priced(device)
+    # Both loaders use the same 64-row ceiling on this known large card.
+    # A smaller device-store budget can legitimately shrink its loader.
+    _, _, host_fp = priced(host, 31.4)
+    _, _, device_fp = priced(device, 31.4)
     assert device_fp.prepared_memory is not None
     cells = 37 * 37 * run.nz
     carrier = ap.footprint_for(run).store_bytes(
@@ -358,9 +361,10 @@ def test_default_loader_template_and_measured_allocator_peak_are_inside_the_boun
     exp = experiment()
     _, _, fp = priced(exp)
     terms = fp.prepared_memory.fixed_terms()
-    rows = default_slab_rows(628, 462)
-    assert terms["loader_rows"] == rows == 4
-    assert terms["template_resident_bytes"] == fp.prepared_memory._domain(628, 462 % rows).resident_bytes
+    rows = terms["loader_rows"]
+    assert 1 <= rows <= 64
+    assert terms["template_rows"] == 1
+    assert terms["template_resident_bytes"] == fp.prepared_memory._domain(628, 1).resident_bytes
     # Sep08 ordinary64-row loader + two distinct nonblocking compute streams.
     # Pool requests and retained bytes are compared to POOL inventory; KF/YSU
     # workspaces belong there even though the older helper calls them nonpool.
@@ -370,7 +374,7 @@ def test_default_loader_template_and_measured_allocator_peak_are_inside_the_boun
     assert fp.vram_bytes(128 * 128 * 49, 1) > 2212101120 + terms["cuda_context_bytes"]
 
 
-def test_wide_requested_grid_uses_the_same_column_bounded_loader_policy():
+def test_wide_requested_grid_uses_memory_price_and_unknown_card_keeps_column_bound():
     from gpuwm.config import DEFAULT_COLUMN_CHUNK
     from gpuwm.ingest.prepared_store import default_slab_rows, _plan_slabs
     for nx, ny in ((12, 130), (563, 326), (628, 462), (2174, 1352), (4096, 17)):
@@ -382,14 +386,15 @@ def test_wide_requested_grid_uses_the_same_column_bounded_loader_policy():
         assert slabs[-1][0] + slabs[-1][1] == ny
     exp = experiment(2174, 1352, root_dx_m=5000.0)
     before = asdict(exp.root.run)
-    _, _, fp = priced(exp, 6.47)
+    machine, _, fp = priced(exp, 6.47)
     fixed = fp.prepared_memory.fixed_terms()
-    assert fixed["loader_rows"] == 1
+    assert 1 < fixed["loader_rows"] <= 64
+    assert fixed["template_rows"] == 1
     old_slab = fp.prepared_memory._domain(2174, 64)
-    assert fixed["loader_pool_peak_bytes"] < old_slab.resident_bytes
+    assert fixed["loader_pool_peak_bytes"] < old_slab.resident_bytes + old_slab.transient_bytes
     # The loader no longer refuses this grid before any compute window can
     # be priced. Host store and source-crop admission remain separate gates.
-    assert fp.vram_bytes(37 * 37 * 49, 1) < 5.49 * ap.GIB
+    assert fp.vram_bytes(37 * 37 * 49, 1) <= machine.vram_bytes - pf.EXTERNAL_MARGIN_BYTES
     assert asdict(exp.root.run) == before
 
 

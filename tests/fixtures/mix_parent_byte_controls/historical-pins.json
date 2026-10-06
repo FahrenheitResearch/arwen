@@ -1,0 +1,505 @@
+{
+  "audit_parent": "1077c6e8abe502aab59de103d7e6d70dbb8588a1",
+  "cases": {
+    "explicit_true": {
+      "bytes": 3077,
+      "file": "explicit_true.toml",
+      "sha256": "02fbdce85caf563ad2206f4dfe490d1d097ead9bada8c2d337a0794f75ae064e"
+    },
+    "omitted": {
+      "bytes": 3219,
+      "file": "omitted.toml",
+      "sha256": "9e57a086e58bd64e5fd7bb02bcec3e3d78bd9d931f7acfb77d6a7b140c7ce67f"
+    },
+    "short_true": {
+      "bytes": 3218,
+      "file": "short_true.toml",
+      "sha256": "795899e94d962bb2ae7ca0ef44c1ce045f03e598f18478e4ae502de8267120bd"
+    }
+  },
+  "dependency_paths_sha256": "38b4b4cce98031d2d66c60e224247bf18438a9d5d22971fb9b1eccd51c3b4a09",
+  "existing_explicit_true_pin_reproduced": true,
+  "loaded_gpuwm_modules": {
+    "gpuwm": {
+      "bytes": 10966,
+      "git_blob": "a96249f1b4680e6371cae561c12583b3c83e38b8",
+      "path": "gpuwm/__init__.py",
+      "sha256": "10e6ddcb88fbff5a0a64ff04d6ee560b53ae059cf4b461411fe33f5fb20c92d7"
+    },
+    "gpuwm.checkpoint_identity": {
+      "bytes": 31760,
+      "git_blob": "8a54a7a17f89233861098a2a77a7be266b4c13a1",
+      "path": "gpuwm/checkpoint_identity.py",
+      "sha256": "ab6606d6b4e299320a8e1651ee0e2821ce41612f38108a7c1f2a6d84bb49cb7b"
+    },
+    "gpuwm.config": {
+      "bytes": 276912,
+      "git_blob": "0c3c9ea1d2f56328fc62ae62a1dc5563a5d8f120",
+      "path": "gpuwm/config.py",
+      "sha256": "e2e7bfb55694c2ce7652a9dfa95a4ed7573029db421ba1c691c7e52117f0c9a9"
+    },
+    "gpuwm.config_keys": {
+      "bytes": 7482,
+      "git_blob": "5e9ac72fd2a05920700b6089e2b55d86aee2aabe",
+      "path": "gpuwm/config_keys.py",
+      "sha256": "ae64cfb3f526b955c45f9c0eb6ef1dfc538a6b5695a154ae2f723f55ffc5cde2"
+    },
+    "gpuwm.core": {
+      "bytes": 0,
+      "git_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "path": "gpuwm/core/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "gpuwm.core.attribute_tracking": {
+      "bytes": 8597,
+      "git_blob": "d8010f7aa3434139cdcfc6e93c338ded913e9e87",
+      "path": "gpuwm/core/attribute_tracking.py",
+      "sha256": "b1dcba48fb4cf5848e9349e6f6145ff8110fed22633f3c23e674229303c81fb1"
+    },
+    "gpuwm.core.constants": {
+      "bytes": 2979,
+      "git_blob": "6184a83b562df1f82ebcb7c19359823ef6878765",
+      "path": "gpuwm/core/constants.py",
+      "sha256": "76c8c11d1a75d17fd54d0a80646cec9dde04f649247ec2347d3d32e6c0500e9e"
+    },
+    "gpuwm.core.devices": {
+      "bytes": 22210,
+      "git_blob": "34ed17e2ae786b2aa45181fcf8554433c303f3f7",
+      "path": "gpuwm/core/devices.py",
+      "sha256": "ad2a9a40ebf304a14095f87e271b08a350fdcfad4cd9f6f04208acebf421aaca"
+    },
+    "gpuwm.core.host_libm": {
+      "bytes": 7289,
+      "git_blob": "4717c57109df517cee8867aa32268d4e6ca74f67",
+      "path": "gpuwm/core/host_libm.py",
+      "sha256": "a1bd118c95aea370fdf6b7cf775fcf528d3b1a66937612c2ffb1ee7ddc953447"
+    },
+    "gpuwm.core.inflow_perturbation": {
+      "bytes": 25095,
+      "git_blob": "65e68903c233858f5bc04a263fa16c883f4f6d34",
+      "path": "gpuwm/core/inflow_perturbation.py",
+      "sha256": "7dc2e860f271a52daf66aefaba2502b8b692190a7f9652b6bf687ac6592cf8ba"
+    },
+    "gpuwm.core.microphysics_transition": {
+      "bytes": 71559,
+      "git_blob": "e3b5e591e48402adc78d3fb1e972188a0c3f863e",
+      "path": "gpuwm/core/microphysics_transition.py",
+      "sha256": "396343bc943153504018ca8998f640fc95ee9555a05a722a45a7ddf2e1818cf6"
+    },
+    "gpuwm.core.nest_lifecycle": {
+      "bytes": 25071,
+      "git_blob": "1b1b555cb8336d46e9bdc98f69266a178536e84e",
+      "path": "gpuwm/core/nest_lifecycle.py",
+      "sha256": "a66ad08ecef8942c7dbf151cab6006fedd09a2868f83923e3c32bdbc6b0cc721"
+    },
+    "gpuwm.core.noah": {
+      "bytes": 26410,
+      "git_blob": "97f6338ce6de4fd8824a4a5309d2fe15217b69f6",
+      "path": "gpuwm/core/noah.py",
+      "sha256": "ebf9ec0c77e6c55cb604bf618815ed17cc44f993fbd183b31ad62e86874c74a2"
+    },
+    "gpuwm.core.nssl2_contract": {
+      "bytes": 16569,
+      "git_blob": "a576092af495df9292a02b4b972b5afe8262bfcc",
+      "path": "gpuwm/core/nssl2_contract.py",
+      "sha256": "ad246e1008d6af2fc52bd4c7aaeab90149399525a2a9a6b40f8838817f10fe9f"
+    },
+    "gpuwm.core.ozone_contract": {
+      "bytes": 1052,
+      "git_blob": "a00ea072063c29564b02a2a7bed1111a52f847da",
+      "path": "gpuwm/core/ozone_contract.py",
+      "sha256": "11e6f0452dbdaa834674e591a5d365143fe438e58888fe3914e63a209f87ed4a"
+    },
+    "gpuwm.core.sase_limits": {
+      "bytes": 1799,
+      "git_blob": "8470840e35b17b2d60c8d16717e97e1991333c34",
+      "path": "gpuwm/core/sase_limits.py",
+      "sha256": "f53097a34ec031103c873c84792128586fd7f33fad7b51a2c1d2bd73ec72e1d3"
+    },
+    "gpuwm.core.storm_tracking": {
+      "bytes": 137294,
+      "git_blob": "1b92d757a6924ccc4de38c3340b37c99a8ee66f8",
+      "path": "gpuwm/core/storm_tracking.py",
+      "sha256": "0e10b9467399a4fff71fff20be91934b3e718d7373c922c07b1d39fec8d301b7"
+    },
+    "gpuwm.core.streaming": {
+      "bytes": 453395,
+      "git_blob": "e31a784bc4a6cb32106d0a4d24bcb2fa20176d55",
+      "path": "gpuwm/core/streaming.py",
+      "sha256": "befafcbbdaf1f817791a4dd0197b1fb78d23952f452da5c888c22e51516bcc20"
+    },
+    "gpuwm.core.thompson_aerosol_constants": {
+      "bytes": 1457,
+      "git_blob": "5e797da68eb2730dd7fd0b1cf1d2ac4179a11744",
+      "path": "gpuwm/core/thompson_aerosol_constants.py",
+      "sha256": "b5dead4740569cc3f2e0622c0be8e81179200cc12f58acec13f6f106f8042488"
+    },
+    "gpuwm.core.uh_diag": {
+      "bytes": 27013,
+      "git_blob": "3bf9ce2be9f0355b0a9af44ddaf67665b523f529",
+      "path": "gpuwm/core/uh_diag.py",
+      "sha256": "f6cfcc1ead031b567283d4fdc400a22be4a5a86db154f98a3fd9ad97405f3996"
+    },
+    "gpuwm.core.wdm6_constants": {
+      "bytes": 8858,
+      "git_blob": "c4d5fcb34c94c79af21c8d896c9f6afa31219874",
+      "path": "gpuwm/core/wdm6_constants.py",
+      "sha256": "e8c55cdd7eba4e8123f685ae92c0dbe1156ca4448b4630aab14d147a2776a2ea"
+    },
+    "gpuwm.core.wsm6_constants": {
+      "bytes": 6074,
+      "git_blob": "ad103d4eff70caf8b75ec5082d235e752d1bff86",
+      "path": "gpuwm/core/wsm6_constants.py",
+      "sha256": "4d110ed7f5a792f48d925fd0ff8e974305d870a11ebb31437ff4e6fce6d3c62d"
+    },
+    "gpuwm.cupy_windows_warning": {
+      "bytes": 4522,
+      "git_blob": "7ae4642ba58679ba40f2186dfd283856c5d5b96d",
+      "path": "gpuwm/cupy_windows_warning.py",
+      "sha256": "8467ea2029df71476bdb8df6e89e5cb24b4f1a789a99117dadf4fe05ce7c4084"
+    },
+    "gpuwm.ensemble": {
+      "bytes": 1966,
+      "git_blob": "1a26b028cebf564e91fa76a9c534d21a0124fe4f",
+      "path": "gpuwm/ensemble/__init__.py",
+      "sha256": "ba7d65c87861e31ebaac89a5c47a019ffca6d4acdcddf69f25525c064ec5ca30"
+    },
+    "gpuwm.ensemble.config": {
+      "bytes": 9121,
+      "git_blob": "10bd339df80a06edcdbf456c70ed6f4c07a65612",
+      "path": "gpuwm/ensemble/config.py",
+      "sha256": "b57a81479e764fdfb7d4352bb64e45cd9261a934f9b25de34049c70a3c00b4f8"
+    },
+    "gpuwm.ensemble.cycle": {
+      "bytes": 52172,
+      "git_blob": "f17f3782a54d489cb0b8e76f3669649142acd4c9",
+      "path": "gpuwm/ensemble/cycle.py",
+      "sha256": "1a1f7903df41e2c8108adfd1c87459782d85c5bbc1d24cd4a6e42d32de448602"
+    },
+    "gpuwm.ensemble.engine": {
+      "bytes": 17589,
+      "git_blob": "60e962ecd95ce63f65220131386cddfeb6f39108",
+      "path": "gpuwm/ensemble/engine.py",
+      "sha256": "c38e9e2b91ab918d61d8383ce7990c992409cdbc0746c7745564e4204c7bd4d3"
+    },
+    "gpuwm.ensemble.increments": {
+      "bytes": 40389,
+      "git_blob": "31815a881a05bef8e67cf51a875d08890aa826c7",
+      "path": "gpuwm/ensemble/increments.py",
+      "sha256": "a55a1c9a4c1540f464f5702e500b0c95ea5d11e16e94d8ebccc308bff77e24d3"
+    },
+    "gpuwm.ensemble.manifest": {
+      "bytes": 12827,
+      "git_blob": "1f1e289b2ba822e970de8d0b9289750d63db716f",
+      "path": "gpuwm/ensemble/manifest.py",
+      "sha256": "5e4427afd1ed21cda1acc09aacb0a50357447278b59f899564ae041d8694ef48"
+    },
+    "gpuwm.ensemble.seeds": {
+      "bytes": 1886,
+      "git_blob": "8bcd2ca755bb15e5b3922335feffce9029c629cc",
+      "path": "gpuwm/ensemble/seeds.py",
+      "sha256": "73da243d8b2091a110535382ca06a9fd87e3c3798d5a937433e0beb19afe10e0"
+    },
+    "gpuwm.ensemble.state_sha": {
+      "bytes": 8661,
+      "git_blob": "08159deab8ba96733307092662ef82a94ab9f763",
+      "path": "gpuwm/ensemble/state_sha.py",
+      "sha256": "37e9e67ccf4aefe892da48a79d3b67bebe890552bbaf0532160db69d6d1c878b"
+    },
+    "gpuwm.ensemble.stochastic": {
+      "bytes": 36900,
+      "git_blob": "4139091aee0b7a2f2890aea5bdd027e44b3c74ab",
+      "path": "gpuwm/ensemble/stochastic.py",
+      "sha256": "393a64fe0cbe5885f62690c246a927a53fa555802f65926bc88ea880d92be72f"
+    },
+    "gpuwm.ensemble.stochastic_seeds": {
+      "bytes": 2423,
+      "git_blob": "c072a24ea9ba53744a74d8187f945a378b2efa80",
+      "path": "gpuwm/ensemble/stochastic_seeds.py",
+      "sha256": "19992c988f8d09ccf1958cbe3f0ffe805aa742202a5730975dfb5ff4530aab83"
+    },
+    "gpuwm.ensemble.wrfout_inventory": {
+      "bytes": 20218,
+      "git_blob": "e9135f8ae884b9f9df659c8a0811c03381ffefde",
+      "path": "gpuwm/ensemble/wrfout_inventory.py",
+      "sha256": "3d4645293ae6dc57174dbbc3f45d7f464daed7b8a9ae6144b7c43db6ed5defe3"
+    },
+    "gpuwm.experiment": {
+      "bytes": 272276,
+      "git_blob": "223cd2370d88530089c8a4582eabac27ded30b84",
+      "path": "gpuwm/experiment.py",
+      "sha256": "943b0c9f623294a12e830505ae032d57e42554708b5c1a6f0c193eab5895e2ef"
+    },
+    "gpuwm.explain": {
+      "bytes": 16758,
+      "git_blob": "11b2afb67918fdf37e78881d298af0c8582d604a",
+      "path": "gpuwm/explain.py",
+      "sha256": "8771f60f95e5605aa52bca8af5226ab9cb5dd172be52dc9aa023fa0bef4920f2"
+    },
+    "gpuwm.fetch_endpoints": {
+      "bytes": 45746,
+      "git_blob": "85c0d64bb328c7a5ada10edc5c2380f56e406af2",
+      "path": "gpuwm/fetch_endpoints.py",
+      "sha256": "886adbfcdce8a5b9ecc0bf1e4f00eecc81b3194a21acdd28362ee1083553677c"
+    },
+    "gpuwm.fetch_guard": {
+      "bytes": 27252,
+      "git_blob": "ef9caa59765fcf568c5f07b603033f6315c58289",
+      "path": "gpuwm/fetch_guard.py",
+      "sha256": "f9a7b3f7251c7367e81caa662d23e589d24ab6981f003914e2ef7db843c2cbd8"
+    },
+    "gpuwm.first_products": {
+      "bytes": 81441,
+      "git_blob": "6668d685d727cc9c1dfa68dde1c89ec6fa5ba55d",
+      "path": "gpuwm/first_products.py",
+      "sha256": "7d8d8dd59e7f27016df14ce79ee5b6aa89340a0a224a466c3cb4a0566fafedc7"
+    },
+    "gpuwm.fortran_namelist": {
+      "bytes": 21656,
+      "git_blob": "14ce251ae1145c86731ae632132b72aaa4e12fbf",
+      "path": "gpuwm/fortran_namelist.py",
+      "sha256": "efb950f52c1df31428619f4155641309cc15c83ce22064d4e5b846654d408dfe"
+    },
+    "gpuwm.ingest": {
+      "bytes": 2801,
+      "git_blob": "2105be9e7d0bf5e19141b922876bd3eaef854755",
+      "path": "gpuwm/ingest/__init__.py",
+      "sha256": "091e7c0903a811bcc6f09371aa09a305827d113c9d8b6f71ba35c619e3460161"
+    },
+    "gpuwm.ingest.source_coverage": {
+      "bytes": 25089,
+      "git_blob": "12b59df5e17d5ed7b0276c45408a46184d39c5d3",
+      "path": "gpuwm/ingest/source_coverage.py",
+      "sha256": "4f8db4bf2748607b1ace3a15857884e06c4cff345e057b5c8f2c880cf5e2c2a3"
+    },
+    "gpuwm.io": {
+      "bytes": 0,
+      "git_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "path": "gpuwm/io/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "gpuwm.io.history_selection": {
+      "bytes": 31270,
+      "git_blob": "4f62c42d042a488dcdc5fde3e2b72ecfb3f95de5",
+      "path": "gpuwm/io/history_selection.py",
+      "sha256": "ee3176f28ac19dd92c220a325f4c4a1240d5ad499ddf52cb8425573c2f1088db"
+    },
+    "gpuwm.io.wrf_output_schema": {
+      "bytes": 48551,
+      "git_blob": "31c61818cda76532aa26a19ddf4c438b7d9f10af",
+      "path": "gpuwm/io/wrf_output_schema.py",
+      "sha256": "c66729530da7ba3af9d5c7274af575f4fb17aad8bf810dbc6425245a89f5296d"
+    },
+    "gpuwm.namelist_import": {
+      "bytes": 267069,
+      "git_blob": "08f8449795caf68cfe375984da1593fa6a3076e9",
+      "path": "gpuwm/namelist_import.py",
+      "sha256": "8a67cab5c9630f2865cec8e0e66372048f27673d703f78083f8d9130223c673c"
+    },
+    "gpuwm.namelist_stochastic": {
+      "bytes": 10516,
+      "git_blob": "55895a2e2cee074467fd332d4ba99cdb6a7b1cc0",
+      "path": "gpuwm/namelist_stochastic.py",
+      "sha256": "a03c9ee04a29a68699d201761cfc88b7b58c864fe82e4f4955d8f48e4a4a29c2"
+    },
+    "gpuwm.native_wrf_contract": {
+      "bytes": 29755,
+      "git_blob": "738cba420fb385a8250fba4b5df7ed4527c6cfac",
+      "path": "gpuwm/native_wrf_contract.py",
+      "sha256": "0c7b3a76dbe730656b68170c5e013efb893accc06d3a5e6ee02effa4c969844c"
+    },
+    "gpuwm.perf_timing": {
+      "bytes": 9271,
+      "git_blob": "e8ed5b3d227e69f1021b0d5359e30f32a0a78767",
+      "path": "gpuwm/perf_timing.py",
+      "sha256": "3f00c3b4d7adc4a30b81bf360ff49ebf0e8ac7b84248f15026f494015cdab3dd"
+    },
+    "gpuwm.physics_compat": {
+      "bytes": 188928,
+      "git_blob": "f5cf0991f34365fd9dd3b85eb28a8f37419d4416",
+      "path": "gpuwm/physics_compat.py",
+      "sha256": "5d1108d382e12ffc7a1e8d59c415159d335ac207e472d16090caf6a45c6892d4"
+    },
+    "gpuwm.physics_mode": {
+      "bytes": 16988,
+      "git_blob": "42283d8fc65c373c20161bfc5bc1e4d8b313aa62",
+      "path": "gpuwm/physics_mode.py",
+      "sha256": "650cd0ca3a9a94164cfc08fedb4911a68cbb8babebf6c99656386e82eabd9781"
+    },
+    "gpuwm.physics_registry": {
+      "bytes": 191480,
+      "git_blob": "50f36565f47369e76aa2755a171e8782c6cbd834",
+      "path": "gpuwm/physics_registry.py",
+      "sha256": "e699d0043e7d867329fc14c84eccdc431daa8b71116e26a96c600db987095e4e"
+    },
+    "gpuwm.physics_vertical_contract": {
+      "bytes": 9234,
+      "git_blob": "52a99d43039e155b69dea89cda3b580631688567",
+      "path": "gpuwm/physics_vertical_contract.py",
+      "sha256": "270dae21dcb57e0d30ecf7e0669795b7ce5e336b68996ea5d80fe0f1240574c6"
+    },
+    "gpuwm.provenance": {
+      "bytes": 40214,
+      "git_blob": "3cb8a6d48d614a49ab4fd5eed88e824c3bad4bcc",
+      "path": "gpuwm/provenance.py",
+      "sha256": "495172bc87824105ff457b9f9a6e80aba0819f689ad4622560bb6041d358681c"
+    },
+    "gpuwm.provenance_gate": {
+      "bytes": 32350,
+      "git_blob": "1d829719d2bf4f6a5271764a4ec675e1b0229b00",
+      "path": "gpuwm/provenance_gate.py",
+      "sha256": "21457d674f5321b4ea2bd30711c0ab4ce38db5fd142e5302267530dbb9368b6f"
+    },
+    "gpuwm.render_layout": {
+      "bytes": 39613,
+      "git_blob": "fe8aee5f57a0b84c1d9105db5949002619a0f389",
+      "path": "gpuwm/render_layout.py",
+      "sha256": "9b7afd406d1809cb3896e44b9ce85c6af3f2110eacf640b55557d873e84320fa"
+    },
+    "gpuwm.runtime_manifest": {
+      "bytes": 36617,
+      "git_blob": "c52a77bb905211a6fa4b8939eca878fd39007ed5",
+      "path": "gpuwm/runtime_manifest.py",
+      "sha256": "5e6148c69d4e7452fecac687788fe811493f3e5717c0a4837e570e736a09b7fe"
+    },
+    "gpuwm.simulated_radar_config": {
+      "bytes": 16600,
+      "git_blob": "43a47c0b679b7f224e69c39ad4f7ef2295d10178",
+      "path": "gpuwm/simulated_radar_config.py",
+      "sha256": "da47790ec448098e171e48eee0209aa311d20f0cc13e6207a2bdd02de5397f98"
+    },
+    "gpuwm.static": {
+      "bytes": 139,
+      "git_blob": "fc653de5c867473b11cbbe6c4bf6091ae94edde4",
+      "path": "gpuwm/static/__init__.py",
+      "sha256": "a0a31e5a543f285fc4ecb662c0339197f4c29824f6534c6370527bec94cb8c5b"
+    },
+    "gpuwm.static.build": {
+      "bytes": 86460,
+      "git_blob": "c663c672505385c584a98ce2949c0ea8e10a4c4c",
+      "path": "gpuwm/static/build.py",
+      "sha256": "0f13a556f6e266ad3fc43b1ca40adfa7a5567ba3c0d29fb2cc7606ffb84dcbd3"
+    },
+    "gpuwm.static.corridor": {
+      "bytes": 63858,
+      "git_blob": "008bde0a863c8dbbd2ac4de9887cfafc6cbb0133",
+      "path": "gpuwm/static/corridor.py",
+      "sha256": "59195cbfb3e5f2e98d975a87d4c42a92e84486bbcf9356f33568d9d725f1931c"
+    },
+    "gpuwm.static.geog": {
+      "bytes": 24875,
+      "git_blob": "5f8d2e54056a9b99bbd105062bb2eb80b156d256",
+      "path": "gpuwm/static/geog.py",
+      "sha256": "f761fec3ac56e2a77b0a141f31e223612bb5ac3cb5757414821b35505a5bc464"
+    },
+    "gpuwm.static.geog_stack": {
+      "bytes": 7655,
+      "git_blob": "a539b902aaccf123a523397124259fd4c03ac067",
+      "path": "gpuwm/static/geog_stack.py",
+      "sha256": "14138b83ab0cbae547e8b82671350d3cfa7efe7acaab1ab6ba150475c48e1ed7"
+    },
+    "gpuwm.static.highres": {
+      "bytes": 73255,
+      "git_blob": "134c5370f4280d369d6c6e894f838fbee2c9f968",
+      "path": "gpuwm/static/highres.py",
+      "sha256": "bff52825e125b67a729e5de780e503ea266a2f788ad653365418c3f686138b2c"
+    },
+    "gpuwm.static.highres_fetch": {
+      "bytes": 89516,
+      "git_blob": "c5e9e82a7e7a0b43bdc9873a671024235ed25c7e",
+      "path": "gpuwm/static/highres_fetch.py",
+      "sha256": "28bfbbe1b53f2d1b26f5597c3b2be9ab106a002a6d2c37d8f9d0b38ace020be3"
+    },
+    "gpuwm.static.highres_refusal": {
+      "bytes": 886,
+      "git_blob": "13a6c2aae31f6889310b76eaa4844e8ff1917cdd",
+      "path": "gpuwm/static/highres_refusal.py",
+      "sha256": "40ad3d52cb38a56529aa340892edfc04371079489fee2e148d81b7ae78d69ac9"
+    },
+    "gpuwm.static.lambert": {
+      "bytes": 9422,
+      "git_blob": "9b8c3daa5295316e423eae73b4ce6ced6c6f457a",
+      "path": "gpuwm/static/lambert.py",
+      "sha256": "162eeaef0f6a5440260fed06ccd527c6c3588f448f862354d645a89e793ff53d"
+    },
+    "gpuwm.static.projection": {
+      "bytes": 48245,
+      "git_blob": "c501be040f720184c90031cc4989ec0962dafa7c",
+      "path": "gpuwm/static/projection.py",
+      "sha256": "e1aafa640b2f0e4b0b38e26e2be84e79c2c7af316d7f9613fc4867261bfc456a"
+    },
+    "gpuwm.static.terrain_smoothing": {
+      "bytes": 29594,
+      "git_blob": "467e37569d92c033f0756a5fa21e43c76d0c7ab4",
+      "path": "gpuwm/static/terrain_smoothing.py",
+      "sha256": "04efc6191b90d64e12cf696d2ddd0cd15efa401edd3f25279206cfa727758eda"
+    },
+    "gpuwm.vertical_contract": {
+      "bytes": 7812,
+      "git_blob": "8cfc07a78280b7d02967f1b94692220801fe9578",
+      "path": "gpuwm/vertical_contract.py",
+      "sha256": "66f05040a1d97d03294b383f15e86a375187694c05a065328d179a3dbf37c2e3"
+    },
+    "gpuwm.wrf461_compatibility": {
+      "bytes": 18977,
+      "git_blob": "220f4d72c25b3b7102aa9aadc3ad0beb50c31294",
+      "path": "gpuwm/wrf461_compatibility.py",
+      "sha256": "f9864a24ddcbc373fafe6784df54cf75e538536552eadce3726ce070cd9d33cf"
+    },
+    "gpuwm.wrf_namelist_registry": {
+      "bytes": 2313,
+      "git_blob": "8b161dd81ee87fad956cc0e61359d85699f85375",
+      "path": "gpuwm/wrf_namelist_registry.py",
+      "sha256": "3039d3b060c0f5a273be13fbedc74a79e33b7799f8eafb4aebac74df94124c62"
+    }
+  },
+  "matrix_sha256": "af0c67e20722e35d53f14d79802fb3548b7e0f72de3bc8e43d1baa050bea5e01",
+  "mode": "baseline",
+  "schema": "mix-parent-byte-pins-v1",
+  "source_binding_metadata": {
+    "files": {
+      "METADATA": {
+        "bytes": 49,
+        "sha256": "3a065bc265e41312fda880a4dd1012ddbcea83161eb2bb5cf2ffa2c94ce93998"
+      },
+      "RECORD": {
+        "bytes": 75,
+        "sha256": "5aaefc5f71c0b71e9c0e301bdf620f04cc05d91564aa9b1bce4bf0f5a56514f7"
+      }
+    },
+    "pyproject_sha256": "db99c0d43bf6137670764030297ae32db6ff3bcf6b63e253552b606f3f01cab5",
+    "version": "2.8.4"
+  },
+  "source_manifest_sha256": "6184238585da9e650ce77bb88d0e9ca1808f1fa1f7af4baa96e32790e0525747",
+  "substitutions": {
+    "explicit_true": [],
+    "omitted": [
+      {
+        "gpuwm_key": "mix_full_fields",
+        "gpuwm_name": "full-field mixing on every domain",
+        "gpuwm_value": true,
+        "key": "mix_full_fields",
+        "reason": "WRF perturbation-field mixing is replaced by full-field mixing: ArWen has no perturbation-field mixing branch, so turbulent tendencies can differ.",
+        "wrf_name": "WRF perturbation/full-field mixing by domain",
+        "wrf_value": [
+          false,
+          false
+        ]
+      }
+    ],
+    "short_true": [
+      {
+        "gpuwm_key": "mix_full_fields",
+        "gpuwm_name": "full-field mixing on every domain",
+        "gpuwm_value": true,
+        "key": "mix_full_fields",
+        "reason": "WRF perturbation-field mixing is replaced by full-field mixing: ArWen has no perturbation-field mixing branch, so turbulent tendencies can differ.",
+        "wrf_name": "WRF perturbation/full-field mixing by domain",
+        "wrf_value": [
+          true,
+          false
+        ]
+      }
+    ]
+  }
+}

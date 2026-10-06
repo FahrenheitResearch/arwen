@@ -33,10 +33,26 @@ NVML's per-process accounting (``nvidia-smi --query-compute-apps``): the
 bytes THIS process holds, the bytes every OTHER process holds, and the
 device-wide figure, plus -- through the watcher's time-weighted
 ``nonzero_seconds`` -- how long the card was shared.  They are sampled
-on their own slow cadence (one ``nvidia-smi`` call every few seconds)
+on their own slow cadence (one ``nvidia-smi`` pass every few seconds)
 and are never strict: a host without ``nvidia-smi`` on PATH, or a WDDM
 driver that reports per-process memory as N/A, records that fact in the
 receipt and the forecast runs on.
+
+WHO WAITS FOR NVIDIA-SMI.  Only a background thread of its own.  The
+NVML views are ``background_only`` probes: the step-boundary
+``sample()`` the runners call on the forecast's main thread never reads
+them, and the 20 Hz peak thread never reads them either.  Measured
+defect this replaces (2026-10-05, shared 8-card box): ``sample()`` ran
+the due NVML probes inline, two ``nvidia-smi`` subprocesses every 2 s on
+the main thread; on a busy box one call takes 0.5 s to several seconds
+(the process sits in D state), and a 750 m city run that stepped in
+0.02 s per step took 4.5-8.8 s per outer step -- 240 s per forecast
+hour against about 24.  On an idle single-card host the same pair still
+cost about 2 x 50 ms of main-thread wall every 2 s.  The receipts keep
+every view; what changed is WHEN the NVML views are read: on the NVML
+thread's own 2 s cadence from ``start()`` until ``stop()``, no longer
+also at a boundary sample, and a pass still in flight when ``stop()`` is
+called is dropped rather than waited for (the summary says so).
 
 Overhead: one probe pass per tick.  The watcher machinery itself
 measures in single-digit microseconds per pass CPU-side; at the default
@@ -44,7 +60,9 @@ measures in single-digit microseconds per pass CPU-side; at the default
 counter reads per tick -- the same queries the boundary callbacks
 already issued, now on a fixed, low cadence instead of per event.  The
 NVML views add one ``nvidia-smi`` subprocess pair per
-:data:`NVIDIA_SMI_INTERVAL_SECONDS` from the daemon thread.
+:data:`NVIDIA_SMI_INTERVAL_SECONDS` from their own daemon thread, each
+call bounded by :data:`NVIDIA_SMI_TIMEOUT_SECONDS`; the main thread's
+boundary ``sample()`` costs three in-process counter reads.
 """
 
 from __future__ import annotations
@@ -69,6 +87,13 @@ DEFAULT_INTERVAL_SECONDS = 0.05
 #: resolves it while costing well under one percent of a host core.
 NVIDIA_SMI_INTERVAL_SECONDS = 2.0
 
+#: Upper bound on one ``nvidia-smi`` call, paid only by the NVML thread.
+#: A call that runs past it is a TRANSIENT failure (a busy box, the
+#: driver in D state): it is counted in the receipt and the next pass
+#: tries again, instead of retiring the per-process views for the rest
+#: of the run.
+NVIDIA_SMI_TIMEOUT_SECONDS = 10.0
+
 _MIB = 1024 ** 2
 
 
@@ -80,7 +105,15 @@ class MemoryProbe:
     every watcher tick and every boundary sample.  ``strict`` probes
     fail a boundary ``sample()`` loud (the pool and runtime views, which
     cannot fail on a working device); a non-strict probe's error is
-    recorded for the receipt and the probe retired, on either path.
+    recorded for the receipt and the probe retired, on either path,
+    unless it is a :class:`TransientProbeError`, which is counted and
+    retried on the next due pass.
+
+    ``background_only`` marks a probe whose read may block (a
+    subprocess, a slow driver query): it is read only on the watcher's
+    dedicated background thread, never by ``sample()`` -- which runs on
+    the forecast's main thread -- and never by the fast peak thread.
+    Such a probe cannot be strict: nothing on a boundary path reads it.
     """
 
     name: str
@@ -88,6 +121,7 @@ class MemoryProbe:
     read: Callable[[], int]
     interval_seconds: float | None = None
     strict: bool = True
+    background_only: bool = False
 
 
 def default_cupy_probes() -> tuple[MemoryProbe, ...]:
@@ -134,10 +168,23 @@ class ProcessMemoryUnavailable(RuntimeError):
     """NVML cannot attribute device memory to processes on this host."""
 
 
+class TransientProbeError(RuntimeError):
+    """A probe read that failed for now but may succeed on the next pass.
+
+    The watcher counts it in the receipt and does NOT retire the probe.
+    """
+
+
 def _run_nvidia_smi_text(arguments: list[str]) -> str:
-    result = subprocess.run(
-        ["nvidia-smi", *arguments], check=False, capture_output=True,
-        text=True, encoding="utf-8", errors="replace", timeout=20)
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", *arguments], check=False, capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=NVIDIA_SMI_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as error:
+        raise TransientProbeError(
+            f"nvidia-smi {' '.join(arguments)} ran past "
+            f"{NVIDIA_SMI_TIMEOUT_SECONDS:g} s") from error
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()[:200]
         raise ProcessMemoryUnavailable(
@@ -225,7 +272,9 @@ class _NvidiaSmiSnapshot:
 
     The watcher reads the probes of a pass within microseconds of each
     other; caching the snapshot for ``max_age_seconds`` keeps that pass
-    at one pair of subprocess calls instead of three.
+    at one pair of subprocess calls instead of three.  A failed pass is
+    cached the same way, so a timed-out ``nvidia-smi`` is not re-run by
+    the pass's second and third probe.
     """
 
     def __init__(self, *, pid: int, run: Callable[[list[str]], str],
@@ -235,21 +284,31 @@ class _NvidiaSmiSnapshot:
         self._max_age = float(max_age_seconds)
         self._lock = threading.Lock()
         self._reading: NvidiaSmiReading | None = None
+        self._error: BaseException | None = None
         self._read_at = float("-inf")
 
     def reading(self) -> NvidiaSmiReading:
         with self._lock:
-            now = time.perf_counter()
-            if self._reading is None or now - self._read_at > self._max_age:
-                apps = self._run([
-                    "--query-compute-apps=pid,used_memory,gpu_uuid",
-                    "--format=csv,noheader,nounits"])
-                gpus = self._run([
-                    "--query-gpu=uuid,memory.used",
-                    "--format=csv,noheader,nounits"])
-                self._reading = parse_nvidia_smi_views(
-                    apps, gpus, pid=self._pid)
-                self._read_at = now
+            if time.perf_counter() - self._read_at > self._max_age:
+                self._reading = None
+                self._error = None
+                try:
+                    apps = self._run([
+                        "--query-compute-apps=pid,used_memory,gpu_uuid",
+                        "--format=csv,noheader,nounits"])
+                    gpus = self._run([
+                        "--query-gpu=uuid,memory.used",
+                        "--format=csv,noheader,nounits"])
+                    self._reading = parse_nvidia_smi_views(
+                        apps, gpus, pid=self._pid)
+                except BaseException as error:  # noqa: BLE001 - re-raised
+                    self._error = error
+                # Stamped after the calls: a slow pass must not age out
+                # before its sibling probes read it.
+                self._read_at = time.perf_counter()
+            if self._error is not None:
+                raise self._error
+            assert self._reading is not None
             return self._reading
 
 
@@ -261,7 +320,9 @@ def nvidia_smi_process_probes(
     """The per-process split of the card, from NVML via ``nvidia-smi``.
 
     ``run`` is injectable for CPU-side tests; ``pid`` defaults to this
-    process.  The probes are non-strict and share one slow cadence.
+    process.  The probes are non-strict, share one slow cadence, and are
+    ``background_only``: a subprocess is never run on the thread that
+    calls the watcher's ``sample()``.
     """
     snapshot = _NvidiaSmiSnapshot(
         pid=os.getpid() if pid is None else int(pid),
@@ -272,20 +333,23 @@ def nvidia_smi_process_probes(
             scope=("NVML per-process accounting (nvidia-smi "
                    "--query-compute-apps): device bytes THIS process holds"),
             read=lambda: snapshot.reading().this_process_bytes,
-            interval_seconds=interval_seconds, strict=False),
+            interval_seconds=interval_seconds, strict=False,
+            background_only=True),
         MemoryProbe(
             name="nvml_other_processes_used",
             scope=("NVML per-process accounting: device bytes held by "
                    "every OTHER process on the same card; its "
                    "nonzero_seconds is how long the card was shared"),
             read=lambda: snapshot.reading().other_processes_bytes,
-            interval_seconds=interval_seconds, strict=False),
+            interval_seconds=interval_seconds, strict=False,
+            background_only=True),
         MemoryProbe(
             name="nvml_device_used",
             scope=("NVML device-wide memory.used of the card this process "
                    "runs on: every process included"),
             read=lambda: snapshot.reading().device_used_bytes,
-            interval_seconds=interval_seconds, strict=False),
+            interval_seconds=interval_seconds, strict=False,
+            background_only=True),
     )
 
 
@@ -300,6 +364,12 @@ class GpuPeakMemoryWatcher:
     retired while its siblings keep sampling.  Non-strict probes take
     the lenient path everywhere.  Either way the receipt can say what
     was measured, how often, and whether observation was complete.
+
+    Two daemon threads: the fast one polls the in-process probes every
+    ``interval_seconds``; a second one owns every ``background_only``
+    probe (the ``nvidia-smi`` views), so a subprocess that takes seconds
+    on a busy box neither stalls the fast peak thread nor ever runs on
+    the caller of ``sample()``.
 
     Beside the peak, every probe accumulates ``nonzero_seconds``: the
     wall time over which its last reading was above zero, weighted by
@@ -325,17 +395,33 @@ class GpuPeakMemoryWatcher:
                 raise ValueError(
                     f"probe {probe.name!r}: interval_seconds must be "
                     "positive")
+            if probe.background_only and probe.strict:
+                raise ValueError(
+                    f"probe {probe.name!r}: a background_only probe is "
+                    "never read on a boundary path, so it cannot be strict")
         self._probes = probes
+        self._boundary_probes = tuple(
+            probe for probe in probes if not probe.background_only)
+        self._background_probes = tuple(
+            probe for probe in probes if probe.background_only)
         self._interval = float(interval_seconds)
         self._lock = threading.Lock()
         self._peaks = {probe.name: 0 for probe in probes}
         self._counts = {probe.name: 0 for probe in probes}
         self._last_value: dict[str, int] = {}
         self._last_at: dict[str, float] = {}
+        self._attempted_at: dict[str, float] = {}
         self._nonzero_seconds = {probe.name: 0.0 for probe in probes}
         self._errors: dict[str, str] = {}
+        self._transient = {probe.name: 0 for probe in probes}
+        self._last_transient: dict[str, str] = {}
+        self._dropped_at_stop = 0
+        self._background_busy = False
+        self._in_flight_at_stop = False
         self._stop_event = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._started = False
+        self._threads: list[threading.Thread] = []
+        self._background_thread: threading.Thread | None = None
 
     # -- sampling ---------------------------------------------------------
 
@@ -356,38 +442,59 @@ class GpuPeakMemoryWatcher:
         if probe.interval_seconds is None:
             return True
         with self._lock:
-            last = self._last_at.get(probe.name)
+            last = self._attempted_at.get(probe.name)
         return last is None or (
             time.perf_counter() - last >= probe.interval_seconds)
+
+    def _attempt(self, probe: MemoryProbe) -> None:
+        if probe.interval_seconds is not None:
+            with self._lock:
+                self._attempted_at[probe.name] = time.perf_counter()
 
     def _read_lenient(self, probe: MemoryProbe) -> None:
         with self._lock:
             retired = probe.name in self._errors
         if retired:
             return
+        self._attempt(probe)
         try:
             value = int(probe.read())
+        except TransientProbeError as error:
+            with self._lock:
+                self._transient[probe.name] += 1
+                self._last_transient[probe.name] = str(error)
+            return
         except BaseException as error:  # noqa: BLE001 - receipt-recorded
             with self._lock:
                 self._errors[probe.name] = (
                     f"{type(error).__name__}: {error}")
             return
+        if probe.background_only and self._stop_event.is_set():
+            # The pass outlived stop(): the receipt is what was observed
+            # while the run was being watched, not a reading taken after.
+            with self._lock:
+                self._dropped_at_stop += 1
+            return
         self._fold(probe.name, value)
 
     def sample(self) -> None:
-        """Strict pass over every due probe; the first strict error
-        propagates.
+        """Strict pass over every due boundary probe; the first strict
+        error propagates.
 
-        Healthy probes are folded before the error is raised, so a
-        boundary sample never discards information it already read.
+        Never reads a ``background_only`` probe: this is called on the
+        forecast's main thread at step boundaries, and nothing here may
+        wait on a subprocess.  Healthy probes are folded before the
+        error is raised, so a boundary sample never discards
+        information it already read.
         """
         first_error: BaseException | None = None
-        for probe in self._probes:
+        for probe in self._boundary_probes:
             if not self._due(probe):
                 continue
             if not probe.strict:
                 self._read_lenient(probe)
                 continue
+            self._attempt(probe)
             try:
                 value = int(probe.read())
             except BaseException as error:  # noqa: BLE001 - re-raised below
@@ -398,32 +505,64 @@ class GpuPeakMemoryWatcher:
         if first_error is not None:
             raise first_error
 
-    def _sample_lenient(self) -> None:
-        for probe in self._probes:
-            if self._due(probe):
-                self._read_lenient(probe)
+    def _all_retired(self, probes: tuple[MemoryProbe, ...]) -> bool:
+        with self._lock:
+            return all(probe.name in self._errors for probe in probes)
 
     def _loop(self) -> None:
         while not self._stop_event.wait(self._interval):
-            self._sample_lenient()
-            with self._lock:
-                if len(self._errors) == len(self._probes):
-                    return  # every probe retired; nothing left to watch
+            for probe in self._boundary_probes:
+                if self._due(probe):
+                    self._read_lenient(probe)
+            if self._all_retired(self._boundary_probes):
+                return  # every probe retired; nothing left to watch
+
+    def _background_loop(self) -> None:
+        # Reads first, then waits: the run's first NVML pass lands as
+        # early as the driver answers.
+        while True:
+            for probe in self._background_probes:
+                if self._stop_event.is_set():
+                    return
+                if self._due(probe):
+                    self._background_busy = True
+                    try:
+                        self._read_lenient(probe)
+                    finally:
+                        self._background_busy = False
+            if self._all_retired(self._background_probes):
+                return
+            if self._stop_event.wait(self._interval):
+                return
 
     # -- lifecycle --------------------------------------------------------
 
     def start(self) -> None:
-        if self._thread is not None:
+        if self._started:
             raise RuntimeError("the memory watcher was already started")
-        self._thread = threading.Thread(
-            target=self._loop, name="gpu-mem-watch", daemon=True)
-        self._thread.start()
+        self._started = True
+        if self._boundary_probes:
+            thread = threading.Thread(
+                target=self._loop, name="gpu-mem-watch", daemon=True)
+            self._threads.append(thread)
+            thread.start()
+        if self._background_probes:
+            self._background_thread = threading.Thread(
+                target=self._background_loop, name="gpu-mem-watch-nvml",
+                daemon=True)
+            self._background_thread.start()
 
     def stop(self) -> None:
-        """Idempotent; safe whether or not the thread ever started."""
+        """Idempotent; safe whether or not the threads ever started.
+
+        Joins the fast thread (in-process reads only).  Does NOT wait
+        for the background thread: a pass still inside ``nvidia-smi``
+        finishes on its own, and its reading is dropped and counted.
+        """
+        if not self._stop_event.is_set():
+            self._in_flight_at_stop = bool(self._background_busy)
         self._stop_event.set()
-        thread = self._thread
-        if thread is not None:
+        for thread in self._threads:
             thread.join()
 
     # -- reporting --------------------------------------------------------
@@ -456,11 +595,14 @@ class GpuPeakMemoryWatcher:
     def summary(self) -> dict[str, object]:
         """Receipt-facing provenance: mechanism, cadence, per-probe
         peaks with their accurate scope labels, sample counts, time above
-        zero, and any mid-run observation failure."""
+        zero, where each probe is read, and any mid-run observation
+        failure."""
         with self._lock:
             return {
                 "mechanism": self._MECHANISM,
                 "interval_seconds": self._interval,
+                "background_pass_in_flight_at_stop": self._in_flight_at_stop,
+                "background_readings_dropped_at_stop": self._dropped_at_stop,
                 "probes": {
                     probe.name: {
                         "peak_bytes": self._peaks[probe.name],
@@ -469,10 +611,17 @@ class GpuPeakMemoryWatcher:
                         "interval_seconds": (
                             self._interval if probe.interval_seconds is None
                             else probe.interval_seconds),
+                        "read_on": (
+                            "background-thread-only"
+                            if probe.background_only
+                            else "boundary-samples+background-thread"),
                         "nonzero_seconds": round(
                             self._nonzero_seconds[probe.name], 3),
                         "last_bytes": self._last_value.get(probe.name),
                         "error": self._errors.get(probe.name),
+                        "transient_errors": self._transient[probe.name],
+                        "last_transient_error": self._last_transient.get(
+                            probe.name),
                     }
                     for probe in self._probes
                 },

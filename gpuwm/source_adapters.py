@@ -101,6 +101,15 @@ class SourceAdapter:
     packaged_profile: str | None = None
     # A recommendation only; runtime capability never depends on this name.
     default_physics_profile: str | None = None
+    #: Published static source selected by this source's configuration.
+    #: An absent declaration leaves existing configuration bytes unchanged.
+    static_source: str | None = None
+    #: Runtime surface records appended to a native source's soil stream.
+    #: Tuples are (engine name, product, index selector, units, numeric selector).
+    runtime_surface_fields: tuple[tuple, ...] = ()
+    #: Optional exact-lattice pairing for this source's own target grid.
+    #: Undeclared sources retain projected indices and coverage checks.
+    same_grid_pairing: str | None = None
     composition_requirement: str | None = None
     #: The packaged ``rw-wps.members.v1`` document (shipped in the wheel
     #: and pinned by SHA-256 in :mod:`gpuwm.source_authorities`) this
@@ -265,6 +274,10 @@ class SourceAdapter:
         return (self.display_name or "").strip() or self.source_id
 
     def __post_init__(self) -> None:
+        if self.same_grid_pairing not in (None, "identity"):
+            raise ValueError(
+                "same_grid_pairing must be 'identity' or None; an unknown "
+                "pairing cannot preserve the declared source indices")
         if type(self.forecast_time_cycle_argument) is not bool:
             raise TypeError("forecast_time_cycle_argument must be a boolean")
         for name in ("selection_owner", "forecast_time_owner"):
@@ -293,6 +306,12 @@ class SourceAdapter:
     def to_dict(self) -> dict[str, object]:
         value = asdict(self)
         value.pop("root_target_interior_axis")
+        if value["static_source"] is None:
+            value.pop("static_source")
+        if not value["runtime_surface_fields"]:
+            value.pop("runtime_surface_fields")
+        if value["same_grid_pairing"] is None:
+            value.pop("same_grid_pairing")
         value["source_kind"] = self.source_kind.value
         value["status"] = self.status.value
         # The name a consumer shows, resolved: a row that declares none
@@ -337,6 +356,9 @@ def _adapter(
     runner: str | None = None,
     packaged_profile: str | None = None,
     default_physics_profile: str | None = None,
+    static_source: str | None = None,
+    runtime_surface_fields: tuple[tuple, ...] = (),
+    same_grid_pairing: str | None = None,
     composition: str | None = None,
     member_set: str | None = None,
     ensemble_source: str | None = None,
@@ -388,6 +410,9 @@ def _adapter(
         runner=runner,
         packaged_profile=packaged_profile,
         default_physics_profile=default_physics_profile,
+        static_source=static_source,
+        runtime_surface_fields=runtime_surface_fields,
+        same_grid_pairing=same_grid_pairing,
         composition_requirement=composition,
         member_set=member_set,
         ensemble_source=ensemble_source,
@@ -640,6 +665,11 @@ _MSC_DATAMART_DOOR = ArchiveWindow(
 _ADAPTERS = (
     _adapter(
         "hrrr",
+        static_source="hrrr-conus-v4",
+        same_grid_pairing="identity",
+        runtime_surface_fields=(("VEGFRA", "sfc", "VEG:surface", "percent", (
+            ("discipline", 2), ("category", 0), ("parameter", 4),
+            ("level_type", 1), ("level_value", 0), ("pdt", 0))),),
         requires_ensemble_calibration=True,
         forecast_time_owner="hrrr_forecast_hours",
         forecast_time_cycle_argument=True,
@@ -677,7 +707,7 @@ _ADAPTERS = (
         # rather than imported because this table is read while the
         # route module is not: the menu asks the adapter what it
         # recommends (gpuwm.physics_menu._recommended_profile).
-        default_physics_profile="thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1",
+        default_physics_profile="thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1",
         forcing_interval_seconds=3600.0,
         # Hourly, and the walk-back is short on purpose: the
         # operational directories turn over quickly, and a cycle half
@@ -714,6 +744,11 @@ _ADAPTERS = (
     ),
     _adapter(
         "hrrr-prs",
+        static_source="hrrr-conus-v4",
+        same_grid_pairing="identity",
+        default_physics_profile=(
+            "thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1"
+        ),
         archives=(ArchiveWindow("aws", _HRRR_NATIVE_ARCHIVE.start,
                                 _HRRR_NATIVE_ARCHIVE.note,
                                 _HRRR_NATIVE_ARCHIVE.documentation),),
@@ -1365,6 +1400,11 @@ _ADAPTERS = (
     ),
     _adapter(
         "hrrr-native",
+        static_source="hrrr-conus-v4",
+        same_grid_pairing="identity",
+        default_physics_profile=(
+            "thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1"
+        ),
         name="HRRR native hybrid analysis (mapped)",
         aliases=("hrrr-mapped-native",), upstream_model_id="hrrr",
         default_product="wrfnat", max_hour=48,
@@ -1790,7 +1830,7 @@ _ADAPTERS = (
         default_product="si-subdaily-pressure+surface+subsurface",
         required_products=(
             "prsSI", "sfcSI", "2mSI", "10mSI", "subsfcSI",
-            "recovered invariant supplement",
+            "published invariant supplement",
         ),
         max_hour=0,
         upstream_ingest="declarative_mapping_v1_over_packaged_profile",
@@ -1808,7 +1848,7 @@ _ADAPTERS = (
         certified_source_top_pa=10000.0,
         notes=(
             "The publicly downloadable form of 20CRv3: NOAA PSL's sub-daily "
-            "NetCDF SI series, decoded through the Rust rw_netcdf bridge with "
+            "NetCDF SI/MO series, fetched through gpuwm fetch --source 20crv3-cf and decoded through the Rust rw_netcdf bridge with "
             "no per-source decode code -- the mapping, composition and "
             "provenance documents are packaged and pinned by SHA-256. "
             "Three-hourly analyses on 21 common pressure levels (1000-100 "
@@ -1824,12 +1864,13 @@ _ADAPTERS = (
             "not a dynamically balanced trajectory, while this is an analysis "
             "at its own valid time and is the only 20CRv3 form NOAA "
             "distributes as NetCDF -- but the difference is a judgement worth "
-            "reading before a study depends on it. (2) PSL publishes no "
-            "orography and no land mask for 20CRv3, so both are recovered "
-            "from 20CRv3's own published fields by "
-            "tools/build_pressure_level_invariant_supplement.py and carried "
-            "as a supplement whose provenance document states the method and "
-            "the divergence. Not yet accepted by unchanged stock WRF."
+            "reading before a study depends on it. (2) Native fetch binds "
+            "PSL's published time-invariant surface height and land fraction "
+            "to every primary time through Rust exact coordinate subsetting. "
+            "Soil temperature and moisture use the four published Noah layers; "
+            "ocean initialization uses published skin temperature as an "
+            "explicit SST proxy. No separate sub-daily SST is published. "
+            "Not yet accepted by unchanged stock WRF."
         ),
     ),
     _adapter(

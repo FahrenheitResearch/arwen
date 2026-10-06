@@ -117,13 +117,22 @@ pub fn pairwise_sum_by<F>(count: usize, value: &F) -> f64
 where
     F: Fn(usize) -> f64 + Sync,
 {
-    let blocks = count.div_ceil(REDUCTION_BUFFER);
+    pairwise_sum_by_with_buffer(count, value, REDUCTION_BUFFER)
+}
+
+/// The same ordered reduction with the caller's configured buffer size.
+pub fn pairwise_sum_by_with_buffer<F>(count: usize, value: &F, buffer: usize) -> f64
+where
+    F: Fn(usize) -> f64 + Sync,
+{
+    assert!(buffer > 0, "reduction buffer must be positive");
+    let blocks = count.div_ceil(buffer);
     if blocks <= 1 {
         return tree_sum_by(0, count, value);
     }
     let block_total = |block: usize| {
-        let start = block * REDUCTION_BUFFER;
-        tree_sum_by(start, REDUCTION_BUFFER.min(count - start), value)
+        let start = block * buffer;
+        tree_sum_by(start, buffer.min(count - start), value)
     };
     let totals: Vec<f64> = if blocks >= PARALLEL_BLOCK_FLOOR {
         (0..blocks).into_par_iter().map(block_total).collect()
@@ -140,6 +149,11 @@ where
 /// Sum a slice the way the reference reduces one.
 pub fn pairwise_sum(values: &[f64]) -> f64 {
     pairwise_sum_by(values.len(), &|index| values[index])
+}
+
+/// Sum a slice with the caller's configured reduction buffer.
+pub fn pairwise_sum_with_buffer(values: &[f64], buffer: usize) -> f64 {
+    pairwise_sum_by_with_buffer(values.len(), &|index| values[index], buffer)
 }
 
 /// The same reduction carried out in single precision, for parity with a

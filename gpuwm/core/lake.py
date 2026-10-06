@@ -42,6 +42,10 @@ class LakeModel:
     errors: Any
     _step_kernel: Any = None
     _needs_refresh: bool = False
+    #: WRF's xice_threshold as module_surface_driver.F:1365-1368 selects it
+    #: (0.5, or 0.02 under fractional_seaice = 1); lakeini and lake read
+    #: the same value the land-surface seam runs.
+    xice_threshold: float = 0.5
 
     @property
     def column_count(self) -> int:
@@ -111,7 +115,8 @@ class LakeModel:
             self._step_kernel = get_kernel("lake", "lake_step_columns")
         self._step_kernel(((n + 31) // 32,), (32,),
                           (n, self.forcing, self.columns, self.static,
-                           self.output, cp.float32(dt), self.errors))
+                           self.output, cp.float32(dt),
+                           cp.float32(self.xice_threshold), self.errors))
         self.check_errors()
         fields["lake_columns"].reshape(LAKE_STATE_WORDS, -1)[:, self.indices] = self.columns
         for row, (name, _) in enumerate(LAKE_OUTPUT_LAYOUT):
@@ -130,17 +135,24 @@ class LakeModel:
 def initialize_lake(
         fields, *, latitude, lake_depth=None, lake_depth_flag=None,
         use_lakedepth=LAKE_DEFAULT_USE_DEPTH,
-        lakedepth_default=LAKE_DEFAULT_DEPTH, iswater=17) -> LakeModel:
+        lakedepth_default=LAKE_DEFAULT_DEPTH, iswater=17,
+        xice_threshold: float = 0.5) -> LakeModel:
     """Run WRF lakeini for the explicit mask and retain restart storage.
 
     WRF defaults to using the bathymetry field. A missing bathymetry dataset
     fails by name; ``use_lakedepth=0`` explicitly selects the WRF 50 m default.
     Nonpositive values in an available field also use lakedepth_default,
     exactly as WRF does. A missing lake mask means no lake columns.
+    ``xice_threshold`` is the run's sea-ice threshold (0.5, or 0.02 under
+    ``fractional_seaice = 1``), read by lakeini and by every lake step.
     """
     import cupy as cp
     from gpuwm.core.kernels import get_kernel
 
+    threshold = float(xice_threshold)
+    if not (0.0 < threshold <= 1.0):
+        raise ValueError(
+            f"lake xice_threshold must be in (0, 1], got {xice_threshold!r}")
     shape = fields["tsk"].shape
     mask = cp.asarray(fields["lakemask"]) if "lakemask" in fields else cp.zeros(shape, cp.float32)
     if mask.shape != shape:
@@ -201,7 +213,8 @@ def initialize_lake(
         fields["lake_columns"] = cp.zeros((LAKE_STATE_WORDS, *shape), cp.float32)
         fields["lake_static"] = cp.zeros((LAKE_STATIC_WORDS, *shape), cp.float32)
         fields["lake_latitude"] = lat
-    owner = LakeModel(None, None, None, None, None, None, None)
+    owner = LakeModel(None, None, None, None, None, None, None,
+                      xice_threshold=threshold)
     owner.refresh_columns(fields)
     if n and not all(present):
         seed = cp.empty((5, n), cp.float32)
@@ -231,13 +244,17 @@ def initialize_lake(
         get_kernel("lake", "lake_init_columns")(
             ((n + 31) // 32,), (32,),
             (n, seed, owner.columns, owner.static, int(use_lakedepth), depth_flag,
-             cp.float32(lakedepth_default), owner.errors))
+             cp.float32(lakedepth_default), cp.float32(threshold), owner.errors))
         owner.check_errors()
         fields["lake_columns"].reshape(LAKE_STATE_WORDS, -1)[:, indices] = owner.columns
         fields["lake_static"].reshape(LAKE_STATIC_WORDS, -1)[:, indices] = owner.static
         # WRF lakeini:5040-5046 converts frozen masked lake points from the
-        # generic sea-ice branch to lake water before the first surface call.
-        frozen = seed[4] > cp.float32(0.5)
+        # generic sea-ice branch to lake water before the first surface call,
+        # at the run's threshold (the HRRR v4.1.21 fork's surface driver
+        # makes the same handover at :1452-1461, ``xice > xice_threshold``),
+        # so under fractional_seaice = 1 a lake cell above 0.02 leaves the
+        # sea-ice seam exactly as the lake kernel above saw it leave.
+        frozen = seed[4] > cp.float32(threshold)
         for name, value in (("ivgtyp", int(iswater)), ("xland", 2.0), ("xice", 0.0)):
             if name in fields:
                 target = fields[name].reshape(-1)

@@ -595,6 +595,7 @@ def test_run_experiment_front_door_lift_and_residual_refusals(
     from gpuwm import runtime
 
     from gpuwm.core.streaming import OFF as _STREAMING_OFF
+    from gpuwm.simulated_radar_config import OFF as RADAR_OFF
 
     manual = _manual_config((ScheduledRelocationMove(60.0, 1, 0),))
     # ``streaming`` is not decoration on this double: since preflight-ledger
@@ -604,7 +605,7 @@ def test_run_experiment_front_door_lift_and_residual_refusals(
     # defaults it to OFF); a double without it raises AttributeError from
     # inside the front door and never reaches the refusal under test.
     single = SimpleNamespace(relocation=manual, domains=(object(),),
-                             feedback=0, tiles=_STREAMING_OFF)
+                             feedback=0, tiles=_STREAMING_OFF, simulated_radar=RADAR_OFF)
     with pytest.raises(ValueError, match="no nest to move"):
         runtime.run_experiment(single, None, tmp_path / "out")
 
@@ -623,7 +624,7 @@ def test_run_experiment_front_door_lift_and_residual_refusals(
         wrfout_module, "quarantine_orphan_wrfouts", _sentinel)
     tree = SimpleNamespace(relocation=manual,
                            domains=(object(), object()), feedback=0,
-                           tiles=_STREAMING_OFF)
+                           tiles=_STREAMING_OFF, simulated_radar=RADAR_OFF)
     with pytest.raises(_ReachedPreparation):
         runtime.run_experiment(tree, None, tmp_path / "out2")
 
@@ -654,6 +655,7 @@ def test_run_route_wires_initializer_preparer_and_provenance(tmp_path):
     from gpuwm.ingest.relocation_init import (
         REAL_DATA_FOOTPRINT_REBUILT_STATICS, REAL_DATA_STRIP_FILL_SOURCE)
     from gpuwm.static.lambert import LambertGrid
+    from gpuwm.static.sampling_contract import current_sampling_contract
     from test_nest_relocation_staging import _scaffold
 
     exp = _scaffold()
@@ -669,7 +671,7 @@ def test_run_route_wires_initializer_preparer_and_provenance(tmp_path):
     model = SimpleNamespace(
         node=lambda gid: node, _input_catalog=object(),
         _prepared_by_grid_id={2: SimpleNamespace(static_sampling_contract=
-            "wps-sampling-portable-v1")},
+            current_sampling_contract())},
         schedule=SimpleNamespace(
             period_ticks=60, clock=SimpleNamespace(tick_den=1)))
     runner = build_real_relocation_runner(exp, None, model, tmp_path)

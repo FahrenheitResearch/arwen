@@ -153,6 +153,44 @@ extern "C" __global__ void rla_mynn(
     if (re_ice != nullptr && ice_rule && supplied_ice) re_ice[i] = 0.0f;
 }
 
+// The GSD MYNN v4.1 subgrid-cloud merge (bl_mynn_version = "gsd_41"),
+// NOAA-EMC WRF 3.9 module_radiation_driver.F:1256-1303.  On the first model
+// step the fraction takes CLDFRA_BL only where it exceeds 0.001; after it,
+// everywhere.  In-cloud QC_BL times CLDFRA_BL is added only where neither
+// resolved phase is present (qc < 1e-6 and qi < 1e-8) and CLDFRA_BL >
+// 0.001, split liquid/ice by MIN(1, MAX(0, (T-254)/15)).  The radii of the
+// layers it supplies are left unsized, as rla_mynn does.
+extern "C" __global__ void rla_mynn_gsd41(
+    long long n,
+    float* __restrict__ qc, float* __restrict__ qi,
+    const float* __restrict__ qc_bl, const float* __restrict__ cldfra_bl,
+    const float* __restrict__ t,
+    float* __restrict__ cldfra, int first_step,
+    float* __restrict__ re_cloud, float* __restrict__ re_ice, int ice_rule,
+    float qc_below, float qi_below, float cf_above)
+{
+    long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    float c = qc[i];
+    float e = qi[i];
+    float cb = qc_bl[i];
+    float fb = cldfra_bl[i];
+    if (cldfra != nullptr) {
+        if (!first_step || fb > cf_above) cldfra[i] = fb;
+    }
+    if (c < qc_below && e < qi_below && fb > cf_above) {
+        float x = RLA_DV(RLA_SU(t[i], 254.0f), 15.0f);
+        float liq = x > 0.0f ? x : 0.0f;
+        liq = liq < 1.0f ? liq : 1.0f;
+        float add_l = RLA_MU(RLA_MU(cb, liq), fb);
+        float add_i = RLA_MU(RLA_MU(cb, RLA_SU(1.0f, liq)), fb);
+        qc[i] = RLA_AD(c, add_l);
+        qi[i] = RLA_AD(e, add_i);
+        if (re_cloud != nullptr && add_l > 0.0f) re_cloud[i] = 0.0f;
+        if (re_ice != nullptr && ice_rule && add_i > 0.0f) re_ice[i] = 0.0f;
+    }
+}
+
 // ozn_p_int: one thread per column, the same top-down walk with the
 // carried kupper and the three branches (above the climatology top, below
 // its bottom, bracketed or pm == pin(1) with the stale kupper).  Element

@@ -34,6 +34,17 @@ path = "src/bin/ensbatch.rs"
 name = "rw_obsgrid"
 path = "src/bin/obsgrid.rs"
 
+# A run's products beside a reference model's own fields for the same
+# cycle and lead: two inputs of two formats on one grid and one colour
+# scale, which is neither one run's frames nor N members of one ensemble.
+[[bin]]
+name = "rw_compare"
+path = "src/bin/compare.rs"
+
+[[bin]]
+name = "rw_verify"
+path = "src/bin/verify.rs"
+
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 grib-core = { path = "../../../grib1_bridge/vendor/grib-core", default-features = false }
@@ -41,10 +52,19 @@ netcrust = { path = "../../vendor/netcrust" }
 rayon.workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+rw-obs = { path = "../rw-obs" }
 sha2 = "0.10"
 thiserror = { workspace = true }
 wrf-core = { git = "https://github.com/FahrenheitResearch/wrf-rust.git", rev = "93bd2ca670c13fec35bcfc27a58108e6fd71c627", package = "wrf-core", default-features = false, features = ["pure-rust-reader"] }
 rustwx-core = { path = "../rustwx-core" }
+# The GRIB2 selector extraction and the indexed public-bucket fetch
+# `rw_compare` reads its reference model's own messages with.  Already in
+# this crate's graph through rustwx-products; named here because the
+# binary calls it directly.
+rustwx-io = { path = "../rustwx-io" }
+# Reuse the audited anonymous archive listing, bounded gzip and cache transport.
+rw-nexrad = { path = "../rw-nexrad" }
 rustwx-cross-section = { path = "../rustwx-cross-section" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 rustwx-ensemble = { path = "../rustwx-ensemble" }
@@ -57,6 +77,7 @@ rw-store = { path = "../rw-store" }
 # The log-pressure column walk the pressure-level charts interpolate with,
 # shared with the ML exporter.
 rw-isobaric = { path = "../rw-isobaric" }
+wx-core = { path = "../../vendor/wx-core" }
 # The vendored WSR-88D site table.  `rw_obsgrid` labels an observation
 # file's radars by POSITION against it, because the two id-carrying fields
 # a `gpuwm-obs.radar-grid` file has are both unreadable through this

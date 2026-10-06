@@ -26,6 +26,7 @@ from gpuwm.core.thompson_contract import (
     AUXILIARY_TABLE_RECORDS,
     CLASSIC_TABLE_ASSETS,
     GENERATED_TABLE_FILES,
+    TABLE_SETS_BY_VERSION,
     ClassicTableSet,
     TableAsset,
     TableRecord,
@@ -61,10 +62,12 @@ class DeviceClassicColdSourceTables:
     identity_sha256: str
 
 
-def _classic_records() -> tuple[TableRecord, ...]:
+def _classic_records(version: str = "wrf_461") -> tuple[TableRecord, ...]:
+    generated_files = (GENERATED_TABLE_FILES if version == "wrf_461"
+                       else TABLE_SETS_BY_VERSION[version][0])
     records = tuple(
         record
-        for group in GENERATED_TABLE_FILES.values()
+        for group in generated_files.values()
         for record in group
     ) + AUXILIARY_TABLE_RECORDS
     names = tuple(record.name for record in records)
@@ -317,16 +320,26 @@ def load_classic_device_tables(
         path: str | Path, *, backend=None,
         verify_roundtrip: bool = True,
         cache: bool = True,
+        version: str = "wrf_461",
         ) -> DeviceClassicTableSet:
-    """Validate and upload every canonical classic-Thompson WRF table once."""
+    """Validate and upload every canonical classic-Thompson WRF table once.
+
+    ``version`` is RunConfig.thompson_version and picks the table set
+    (gpuwm.core.thompson_contract.TABLE_SETS_BY_VERSION): the WRF v4.6.1
+    set by default, the operational WRF 3.9 fork's for ``"wrf_39_noaa"``.
+    """
     if backend is None:
         import cupy as backend
 
+    if version not in TABLE_SETS_BY_VERSION:
+        raise ValueError(
+            f"no Thompson table set for thompson_version={version!r}")
     root = Path(path).resolve()
     cuda = getattr(backend, "cuda", None)
     device = getattr(cuda, "Device", None)
     device_id = int(device().id) if device is not None else None
-    key = (root, id(backend), device_id)
+    key = ((root, id(backend), device_id) if version == "wrf_461"
+           else (root, id(backend), device_id, version))
     # A split domain's slabs step on their own non-blocking streams, and the
     # first microphysics call of each loads these tables at once.
     # Each uploaded its own copy on its own stream,
@@ -345,11 +358,11 @@ def load_classic_device_tables(
 
         # This re-reads from canonical, content-addressed files.  A caller cannot
         # smuggle a manually constructed ClassicTableSet across the trust boundary.
-        table_set = load_validated_classic_tables(root)
+        table_set = load_validated_classic_tables(root, version)
         result = _upload_table_set(
             table_set, backend,
-            records=_classic_records(),
-            expected_assets=CLASSIC_TABLE_ASSETS,
+            records=_classic_records(version),
+            expected_assets=TABLE_SETS_BY_VERSION[version][1],
             device_id=device_id,
             verify_roundtrip=verify_roundtrip,
         )

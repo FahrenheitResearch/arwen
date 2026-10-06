@@ -1,0 +1,31 @@
+# HRRR v4.1.21 fork Thompson oracle receipt (tools/thompson_fork_oracle/build.sh)
+
+[fork_source]
+origin = https://github.com/NOAA-EMC/HRRR tag v4.1.21
+path = sorc/hrrr_wrfarw.fd/WRFV3.9/phys
+module_mp_thompson.F = 4d60011188443eb432294f7693beb64bdbc8f812541a15c7800013060c877283
+module_mp_radar.F = 08329c87604b234efab53f7986163a4f6050f58823da9099cb464163c1920f08
+CCN_ACTIVATE.BIN = f2b8d3916560f9046f89f8ac5f32c5292a1800498fd75301e422f147c82a3dbd
+
+[harness_source]
+build.sh = e454ac55c752c0f927fa457319a2364d1568bed8af9bff98650da696020558e3
+stub_wrf.F90 = e377d142027d294cb5d259f02c2c04ef68d698ff98816ba04de263af003396ba
+generate_tables.F90 = 65a0925b31003ae24135e1a0c69c48ccc08e03b0195c6a3c3282c3a5d0c03f77
+run_columns_fork.F90 = 442b42ff798cbca119dd72aca8b3e82d3d60601068869e5a0b2f138704e23660
+
+[toolchain]
+fortran = GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+libc = ldd (Ubuntu GLIBC 2.43-2ubuntu2.4) 2.43
+uname = Linux 7.0.0-29-generic x86_64
+opt_flags = -O2 -fno-tree-vectorize
+libmvec_symbols = 0
+
+[binaries]
+generate_tables = 5920c4ccfc4154f2296a1446be6618632b53ca4c2c0eff4e23f97a4aa44ce706
+run_columns_fork = d291bcbdf8be758385a127eaca645a78015ce6c6f39a904da2c5d55f882d160b
+
+[tables]
+qr_acr_qg.dat = 51518256 8b9b5039ec560748c6261cc9ecbc4366332473a9a1d0666ee5a7f04686abf402
+qr_acr_qs.dat = 33118944 39b4fd363d440a867cc8c37a22ebf2651c8ffcf54f8c05ab7a6f5e753e630ac0
+freezeH2O.dat = 254944848 28c12192251969cd79a02e08e3174f26113de51490689f728cfc44af9cf76b2c
+thompson_aux_tables.dat = 6164536 13d304911e5322fb5bcc2a0639effc20ad5381c59f076ced2386b56f2fb441ae

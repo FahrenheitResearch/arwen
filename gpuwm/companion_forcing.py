@@ -115,7 +115,7 @@ def edit_configuration(request):
     if "static" in raw:
         from gpuwm.static.highres_production import parse_static_table
         static = parse_static_table(raw["static"], source=str(authority.source), base_dir=authority.base_dir)
-        if static is not None:
+        if static is not None and "highres" in raw["static"]:
             raw["static"]["highres"]["cache_root"] = str(static.cache_root.resolve())
     exp = _build(raw, output)
     validate_boundary_timing(exp, cadence * 3600, source="ERA5 forcing edit")
@@ -204,7 +204,7 @@ def edit_schedule(request):
         from gpuwm.static.highres_production import parse_static_table
         static = parse_static_table(raw["static"], source=str(authority.source),
                                    base_dir=authority.base_dir)
-        if static is not None:
+        if static is not None and "highres" in raw["static"]:
             raw["static"]["highres"]["cache_root"] = str(static.cache_root.resolve())
     exp = _build(raw, output)
     if exp.start_time != original_exp.start_time or exp.run_seconds != run_seconds:

@@ -46,23 +46,23 @@ const CHUNK_BYTES: usize = 1 << 20;
 
 /// One variable's geometry, as the header declares it.
 #[derive(Debug)]
-struct ScanVar {
-    name: String,
-    ty: NcType,
+pub(crate) struct ScanVar {
+    pub(crate) name: String,
+    pub(crate) ty: NcType,
     /// Elements in the whole variable (fixed) or in one record slab.
-    elems: u64,
-    slab_bytes: u64,
+    pub(crate) elems: u64,
+    pub(crate) slab_bytes: u64,
     /// Absolute offset (fixed) or offset of the slab inside record 0.
-    begin: u64,
-    is_record: bool,
+    pub(crate) begin: u64,
+    pub(crate) is_record: bool,
 }
 
 /// What a classic header says about the file's data section.
 #[derive(Debug)]
-struct ScanHeader {
-    numrecs: u64,
-    recsize: u64,
-    vars: Vec<ScanVar>,
+pub(crate) struct ScanHeader {
+    pub(crate) numrecs: u64,
+    pub(crate) recsize: u64,
+    pub(crate) vars: Vec<ScanVar>,
 }
 
 /// Which float/double variables of the classic file at `path` hold a
@@ -246,7 +246,9 @@ impl HeaderReader<'_> {
     }
 }
 
-fn parse_header(reader: &mut BufReader<File>, path: &Path) -> Result<ScanHeader> {
+/// Parse a classic header. Shared with [`crate::patch`], which follows the
+/// same offsets to rewrite a variable in place.
+pub(crate) fn parse_header(reader: &mut BufReader<File>, path: &Path) -> Result<ScanHeader> {
     let label = path.display().to_string();
     let mut magic = [0u8; 4];
     reader.read_exact(&mut magic).map_err(|error| {

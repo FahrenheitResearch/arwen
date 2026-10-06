@@ -464,9 +464,14 @@ def test_node_plan_generates_the_mirrored_namelist_from_the_config(tmp_path):
     assert " mp_physics                          = 8," in namelist
     assert " cu_physics                          = 0," in namelist
     assert " bl_pbl_physics                      = 1," in namelist
-    # The stock twin's three documented deltas from the native namelist.
+    # The stock twin's documented deltas from the native namelist, and
+    # the one that is no longer one: the WRF arm integrates dry theta,
+    # as the export it runs from declares (EXPORT_USE_THETA_M).  It said
+    # 1 while that export's T_B* rows were dry-coupled, which a
+    # moist-theta wrf.exe read as a boundary colder than the analysis.
     assert " ra_lw_physics                       = 1," in namelist
-    assert " use_theta_m                         = 0," not in namelist
+    assert " use_theta_m                         = 0," in namelist
+    assert " use_theta_m                         = 1," not in namelist
     assert " ghg_input                           = 0," in namelist
 
     # WRF declares hypsometric_opt in &domains (Registry.EM_COMMON:2283,
@@ -574,9 +579,9 @@ def test_node_plan_mirrors_the_faithful_arms_radiation(tmp_path):
     """The mirrored WRF arm carries the battery's 4/4 RRTMG selection.
 
     Under the (4, 4) pair the documented longwave delta collapses --
-    both arms run 4 -- while use_theta_m 0 -> 1 and stock-only
-    ghg_input=0 remain, the latter mirroring what
-    gpuwm/core/rrtmg_legacy.py pins on the native side.
+    both arms run 4 -- while stock-only ghg_input=0 remains, mirroring
+    what gpuwm/core/rrtmg_legacy.py pins on the native side.  Both arms
+    declare dry theta.
     """
 
     outdir = tmp_path / "node"
@@ -588,7 +593,7 @@ def test_node_plan_mirrors_the_faithful_arms_radiation(tmp_path):
         assert " ra_lw_physics                       = 4," in text
         assert " ra_sw_physics                       = 4," in text
     assert " use_theta_m                         = 0," in native
-    assert " use_theta_m                         = 1," in stock
+    assert " use_theta_m                         = 0," in stock
     assert " ghg_input                           = 0," not in native
     assert " ghg_input                           = 0," in stock
 

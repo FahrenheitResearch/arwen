@@ -1,0 +1,20 @@
+{
+  "source": "module_advect_em.F",
+  "source_sha256": "3c347937a5d78e60f2fe7ff85e208ef144e79c7a6b46cc4b22fcaa2c98a9b5c1",
+  "output": "module_advect_em.hybrid.F",
+  "output_sha256": "4014756efc9e71e3e5a152bfc0dcc650375aaa831711c79c52c4139f95595177",
+  "expansions": {
+    "mub": 4,
+    "muu": 3,
+    "muv": 3,
+    "mut": 132,
+    "mu_old": 4
+  },
+  "macros": {
+    "mub": "(c1(k)*mub({args})+c2(k))",
+    "muu": "(c1(k)*muu({args})+c2(k))",
+    "muv": "(c1(k)*muv({args})+c2(k))",
+    "mut": "(c1(k)*mut({args})+c2(k))",
+    "mu_old": "(c1(k)*mu_old({args}))"
+  }
+}

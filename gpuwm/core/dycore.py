@@ -46,15 +46,23 @@ from gpuwm.core.acoustic import (_mass_w_boundary_zone,
                                  prepare_moist_cq)
 from gpuwm.core.advection import (add_advection_tendencies,
                                   launch_flux_div_scalar, launch_flux_div_u,
-                                  launch_flux_div_v, launch_flux_div_w)
+                                  launch_flux_div_v, launch_flux_div_w,
+                                  vertical_orders)
 from gpuwm.core.diagnostics import update_diagnostics
+from gpuwm.core.diff6_edge_workspace import (
+    DIFF6_EDGE_HALO, diff6_edge_slope,
+    field_values as diff6_edge_field_values,
+    phb_values as diff6_edge_phb_values,
+    plane_shapes as diff6_edge_plane_shapes,
+    planes_values as diff6_edge_planes_values)
 from gpuwm.core.diffusion import add_diffusion_tendencies
 from gpuwm.core import ieva
 from gpuwm.core.bandwidth_glue import (
     add_array, capture_theta_forcing, prepare_add_arrays,
     total_theta as _glue_total_theta)
 from gpuwm.core.ieva import stage_face_masses
-from gpuwm.core.kernels import get_kernel
+from gpuwm.core.kernels import get_kernel, get_kernel_int_defines
+from gpuwm.core.smag2d import scalar_index32_fits
 from gpuwm.core.microphysics import apply as apply_microphysics
 from gpuwm.core.moist import (SPECIES, WRF_MOIST_ARRAY_SPECIES,
                               extra_moist_species, advance_scalars_stage)
@@ -765,23 +773,24 @@ def _add_slow_tendencies(state: DomainState, cfg: RunConfig,
         theta_transport = _glue_total_theta(state)
     else:
         theta_transport = state.total_theta()
+    vsca, vmom = vertical_orders(cfg)
     launch_flux_div_scalar(theta_transport, ru, rv, ww, state.rth_t,
                            state, cfg.dx, cfg.dy,
                            open_x=_boundary_x(cfg), open_y=_boundary_y(cfg),
                            msf=state.msft, has_msf=state.has_msf,
-                           spec=_boundary_forced(cfg))
+                           spec=_boundary_forced(cfg), vorder=vsca)
     launch_flux_div_u(state.u, ru, rv, ww, state.ru_t, state, cfg.dx, cfg.dy,
                       open_x=_boundary_x(cfg), open_y=_boundary_y(cfg),
                       msf=state.msfu, has_msf=state.has_msf,
-                      spec=_boundary_forced(cfg))
+                      spec=_boundary_forced(cfg), vorder=vmom)
     launch_flux_div_v(state.v, ru, rv, ww, state.rv_t, state, cfg.dx, cfg.dy,
                       open_x=_boundary_x(cfg), open_y=_boundary_y(cfg),
                       msf=state.msfv, has_msf=state.has_msf,
-                      spec=_boundary_forced(cfg))
+                      spec=_boundary_forced(cfg), vorder=vmom)
     launch_flux_div_w(state.w, ru, rv, ww, state.rw_t, state, cfg.dx, cfg.dy,
                       open_x=_boundary_x(cfg), open_y=_boundary_y(cfg),
                       msf=state.msft, has_msf=state.has_msf,
-                      spec=_boundary_forced(cfg))
+                      spec=_boundary_forced(cfg), vorder=vsca)
 
     # Fused WRF horizontal_pressure_gradient.  dycore.cu retains every
     # former eager-CuPy FP32 operator boundary explicitly.
@@ -833,6 +842,10 @@ def _add_slow_tendencies_ieva(state: DomainState, cfg: RunConfig,
     receives the same sequence of adds it does on the default path.
     """
     wwE = ctx.wwE
+    # The explicit share runs WRF's vert_order ladder (the fork's
+    # zadvect_implicit = 1 sends only the explicit share through the
+    # vert_order fluxes; the implicit share is the first-order solve).
+    vsca, vmom = vertical_orders(cfg)
 
     def theta_flux(field, ru_, rv_, w_, tend):
         launch_flux_div_scalar(field, ru_, rv_, w_, tend,
@@ -840,22 +853,22 @@ def _add_slow_tendencies_ieva(state: DomainState, cfg: RunConfig,
                                open_x=_boundary_x(cfg),
                                open_y=_boundary_y(cfg),
                                msf=state.msft, has_msf=state.has_msf,
-                               spec=_boundary_forced(cfg))
+                               spec=_boundary_forced(cfg), vorder=vsca)
 
     theta_t = ieva.theta_minus_t0(state)
     theta_flux(theta_t, ru, rv, wwE, state.rth_t)
     launch_flux_div_u(state.u, ru, rv, wwE, state.ru_t, state, cfg.dx, cfg.dy,
                       open_x=_boundary_x(cfg), open_y=_boundary_y(cfg),
                       msf=state.msfu, has_msf=state.has_msf,
-                      spec=_boundary_forced(cfg))
+                      spec=_boundary_forced(cfg), vorder=vmom)
     launch_flux_div_v(state.v, ru, rv, wwE, state.rv_t, state, cfg.dx, cfg.dy,
                       open_x=_boundary_x(cfg), open_y=_boundary_y(cfg),
                       msf=state.msfv, has_msf=state.has_msf,
-                      spec=_boundary_forced(cfg))
+                      spec=_boundary_forced(cfg), vorder=vmom)
     launch_flux_div_w(state.w, ru, rv, wwE, state.rw_t, state, cfg.dx, cfg.dy,
                       open_x=_boundary_x(cfg), open_y=_boundary_y(cfg),
                       msf=state.msft, has_msf=state.has_msf,
-                      spec=_boundary_forced(cfg))
+                      spec=_boundary_forced(cfg), vorder=vsca)
     ieva.solve_u(state, cfg, ctx)
     ieva.solve_v(state, cfg, ctx)
     ieva.solve_theta(state, cfg, ctx)
@@ -1016,6 +1029,13 @@ def add_rhs_ph_hadv(state: DomainState, cfg: RunConfig,
     Radiative open boundaries with order 5 are not wired (they need WRF's
     boundary-row ph_old upwind terms, :2085-2178); config validation and
     this function both refuse the combination.
+
+    The VERTICAL term of ``rhs_ph`` is independent of every advection
+    order: WRF forms ``wdwn = 0.5*(ww(k)+ww(k-1))*rdnw(k-1)*(d(ph+phb))``
+    and subtracts ``fnm(k)*wdwn(k+1)+fnp(k)*wdwn(k)`` with no
+    ``vert_order`` branch (HRRR fork module_big_step_utilities_em.F
+    rhs_ph, ``advective_order = config_flags%h_sca_adv_order`` is the
+    only order it reads), so ``v_sca_adv_order`` does not reach it.
 
     Float64 mirror: ``gpuwm.verify.npref.np_rhs_ph_hadv``.
     """
@@ -1393,6 +1413,16 @@ def launch_wrf_smag3d_km(state: DomainState, cfg: RunConfig,
     return d11, d22, d12
 
 
+def _wrf_smag_scalar_kernel(name: str, nz: int, ny: int, nx: int):
+    """Select narrow addressing only for the range-checked scalar pair."""
+    if name not in ("wrf_smag_flux_s", "wrf_smag_hd_s"):
+        raise ValueError(f"not a Smagorinsky scalar kernel: {name!r}")
+    if scalar_index32_fits(nz, ny, nx):
+        return get_kernel_int_defines(
+            "smag2d", name, (("GPUWM_SMAG_INDEX32", 1),))
+    return get_kernel("smag2d", name)
+
+
 def launch_wrf_smag2d_hd(state: DomainState, cfg: RunConfig, f, xk, tend,
                           *, stagger: str, time_t: bool,
                           full_theta: bool = False,
@@ -1419,7 +1449,7 @@ def launch_wrf_smag2d_hd(state: DomainState, cfg: RunConfig, f, xk, tend,
         flux_x = state.scratch((nz, ny, nx + 1), "diff6_x")
         flux_y = state.scratch((nz, ny + 1, nx), "diff6_y")
         flux_grid = ((nx + 1 + _TPB - 1) // _TPB, ny + 1, nz)
-        get_kernel("smag2d", "wrf_smag_flux_s")(
+        _wrf_smag_scalar_kernel("wrf_smag_flux_s", nz, ny, nx)(
             flux_grid, (_TPB, 1, 1),
             tuple(common + [f, xk, state.thb, np.int32(full_theta),
                             np.int32(state.thb.ndim == 3),
@@ -1440,30 +1470,23 @@ def launch_wrf_smag2d_hd(state: DomainState, cfg: RunConfig, f, xk, tend,
     else:
         flux_x = state.scratch((nz, ny, nx + 1), "diff6_x")
         flux_y = state.scratch((nz, ny + 1, nx), "diff6_y")
-        # Preserve the pinned sm_120 coefficient and divergence graph.
-        # Primitive reuse retains the original order on other targets.
-        if str(state.w.device.compute_capability) == "120":
-            stress_grid = ((nx + 1 + _TPB - 1) // _TPB, ny + 1, nz)
-            get_kernel("smag2d", "wrf_smag_w_stress")(
-                stress_grid, (_TPB, 1, 1),
-                tuple(common + [xk, flux_x, flux_y] + tail))
-            get_kernel("smag2d", "wrf_smag_hd_w_stress")(
-                grid, (_TPB, 1, 1),
-                tuple(common + [flux_x, flux_y, tend] + tail))
-            return
-        # Fixed diffusion finishes before calc_coefs rewrites these buffers.
-        # Reuse their exact shapes rather than adding full-field allocations.
-        what = state.scratch((nz + 1, ny, nx), "acoustic_a")
-        rdz = state.scratch((nz, ny, nx), "acoustic_c2a")
-        cache = [what, rdz, flux_x, flux_y]
-        primitive_grid = ((nx + 1 + _TPB - 1) // _TPB, ny + 1, nz + 1)
-        get_kernel("smag2d", "wrf_smag_w_primitives")(
-            primitive_grid, (_TPB, 1, 1), tuple(common + cache + tail))
-        get_kernel("smag2d", "wrf_smag_hd_w_cached")(
+        # One W stress route on every GPU architecture (xnode-identity,
+        # 2026-10-04).  4d3c26f87 sent sm_120 through the stress kernels and
+        # every other target through wrf_smag_w_primitives/_hd_w_cached, a
+        # different operation order, so an RTX 4090 and an RTX 5090 left the
+        # same forecast at step 1's first acoustic stage.  The stress route is
+        # the sm_120 (Blackwell) answer and is now the only ordinary route.
+        stress_grid = ((nx + 1 + _TPB - 1) // _TPB, ny + 1, nz)
+        get_kernel("smag2d", "wrf_smag_w_stress")(
+            stress_grid, (_TPB, 1, 1),
+            tuple(common + [xk, flux_x, flux_y] + tail))
+        get_kernel("smag2d", "wrf_smag_hd_w_stress")(
             grid, (_TPB, 1, 1),
-            tuple(common + [xk] + cache + [tend] + tail))
+            tuple(common + [flux_x, flux_y, tend] + tail))
         return
-    get_kernel("smag2d", _WRF_SMAG_HD[stagger])(
+    kernel = (_wrf_smag_scalar_kernel(_WRF_SMAG_HD[stagger], nz, ny, nx)
+              if stagger == "" else get_kernel("smag2d", _WRF_SMAG_HD[stagger]))
+    kernel(
         grid, (_TPB, 1, 1), tuple(common + payload + tail))
 
 
@@ -1658,6 +1681,61 @@ def diff6_exempt_slots(cfg: RunConfig) -> frozenset[str]:
 _DIFF6_DRY_SLOTS = frozenset(("smag_ru", "smag_rv", "smag_rw", "smag_rth"))
 
 
+#: The sixth-order filter forms (``RunConfig.diff_6th_form``), by source.
+DIFF6_FORMS = ("wrf_461", "noaa_wrf39")
+
+#: The fork's Registry default for ``diff_6th_factor2`` (NOAA-EMC/HRRR
+#: v4.1.21 WRFV3.9 Registry/Registry.EM_COMMON:2629).
+DIFF6_FACTOR2_FORK_DEFAULT = 0.04
+
+#: Rows whose factor is ``diff_6th_factor`` under every form: the dry rows
+#: (``rk_tendency``) and TKE, which the fork's rk_scalar_tend call for
+#: tke_2 hands ``grid%diff_6th_factor`` (fork solve_em.F:2587), as it does
+#: the tracer array (:2831).  Every other row is a moist (:2418) or scalar
+#: (:2974) array row and takes ``diff_6th_factor2`` under the fork.
+_DIFF6_FACTOR1_SLOTS = frozenset(("smag_ru", "smag_rv", "smag_rw",
+                                  "smag_rth", "smag_rtke"))
+
+
+def diff6_fork(cfg: RunConfig) -> bool:
+    """True when the NOAA WRFV3.9 fork's filter form is selected."""
+    return getattr(cfg, "diff_6th_form", "wrf_461") == "noaa_wrf39"
+
+
+def _diff6_factor(cfg: RunConfig, slot: str) -> float:
+    """The clock-scaled filter factor one diff6 row takes.
+
+    ``wrf_461`` hands every row ``diff_6th_factor``.  The fork hands the
+    moist and scalar arrays ``diff_6th_factor2`` (solve_em.F:2418, :2974;
+    module_em.F:1409-1412 passes it to sixth_order_diffusion) and keeps
+    ``diff_6th_factor`` for u, v, w, theta and TKE.
+    """
+    if not diff6_fork(cfg) or slot in _DIFF6_FACTOR1_SLOTS:
+        return _clock_scaled_diff6_factor(cfg)
+    factor2 = (DIFF6_FACTOR2_FORK_DEFAULT if cfg.diff_6th_factor2 is None
+               else float(cfg.diff_6th_factor2))
+    return _clock_scale_factor(cfg, factor2, "diff_6th_factor2")
+
+
+def refresh_saved_wind_fluxes(state, cfg, ru, rv):
+    """Refresh only sumflux's horizontal reference fluxes after limiting.
+
+    The fork passes modified u_save/v_save to sumflux on its last acoustic
+    substep (solve_em.F:1743-1746, module_small_step_em.F:1867-1873).
+    The stage mass and map factors stay fixed; ww_lin stays unchanged.
+    Run this before small_step_finish overwrites the saved stage fields.
+    """
+    mux, muy = stage_face_masses(state, cfg, state.total_mu())
+    for wind, muface, msf, flux in ((state.u, mux, state.msfu, ru),
+                                    (state.v, muy, state.msfv, rv)):
+        kernel = _couple_momentum_kernel(
+            state.has_msf, WRF_EXACT and wind is state.v)
+        args = [wind, state.c1h, state.c2h, muface.reshape(-1)]
+        if state.has_msf:
+            args.append(msf.reshape(-1))
+        kernel(*args, np.int32(muface.size), flux)
+
+
 def _diff6_dt(cfg: RunConfig, slot: str) -> float:
     """The ``dt`` WRF hands ``sixth_order_diffusion`` for one row.
 
@@ -1672,8 +1750,20 @@ def _diff6_dt(cfg: RunConfig, slot: str) -> float:
     ``dt_rk = grid%dt/3.`` for ``rk_ord = 3`` (solve_em.F:596-600) -- the
     only order this dycore integrates (namelist_import.py pins it).  WRF's
     scalar filter is therefore three times the strength of its dry filter.
+
+    The NOAA WRFV3.9 fork (``diff_6th_form = "noaa_wrf39"``) builds the
+    full step inside rk_scalar_tend, ``dt = dt_rk*(rk_order - rk_step +
+    1)`` (fork module_em.F:1216-1217), and hands that to the filter
+    (:1409-1412), so every scalar row takes the full step there.  In
+    REAL arithmetic that is ``(grid%dt/3.)*3``, formed here in float32 as
+    the fork forms it (20 s gives exactly 20.0; another step need not).
     """
-    return cfg.dt if slot in _DIFF6_DRY_SLOTS else cfg.dt / 3.0
+    if slot in _DIFF6_DRY_SLOTS:
+        return cfg.dt
+    if diff6_fork(cfg):
+        return float(np.float32(np.float32(cfg.dt) / np.float32(3.0))
+                     * np.float32(3.0))
+    return cfg.dt / 3.0
 
 
 def _couple_dry_mixing_map_factor(state: DomainState, specs) -> None:
@@ -1970,7 +2060,7 @@ def prepare_fixed_tendencies(state: DomainState, cfg: RunConfig) -> None:
             state, cfg, km, kh, specs, time_t=True)
 
     if include_diff6:
-        factor = _clock_scaled_diff6_factor(cfg)
+        to_edge = diff6_to_edge(cfg)
         temp_slot = {"x": "diff6_x", "y": "diff6_y",
                      "z": "diff6_z", "": "diff6_m"}
         exempt = diff6_exempt_slots(cfg)
@@ -1982,23 +2072,28 @@ def prepare_fixed_tendencies(state: DomainState, cfg: RunConfig) -> None:
             # .false., Registry.EM_COMMON:2893).
             diff6_rows.append((state.tke0, None, None, state.c1h,
                                state.c2h, "smag_rtke", ""))
+        edge = ({"work": _diff6_edge_work(state, cfg)} if to_edge
+                else {})
         for f0, _tend, _xk, c1, c2, slot, stag in diff6_rows:
             tmp = state.scratch(f0.shape, temp_slot[stag])
             tmp[...] = 0
-            launch_diff6(f0, tmp, mu_t, c1, c2, factor,
-                         _diff6_dt(cfg, slot),
-                         cfg.diff_6th_opt, stagger=stag,
-                         phb=state.phb, msfu=state.msfu, msfv=state.msfv,
-                         msft=state.msft,
-                         slopeopt=cfg.diff_6th_slopeopt,
-                         thresh=cfg.diff_6th_thresh,
-                         dx=cfg.dx, dy=cfg.dy,
-                         # Boundary-aware reads: the outermost computed
-                         # staggered face takes WRF's accurate boundary
-                         # datum (u ide-3 / v jde-3); the width-3 mask
-                         # below is then exactly WRF's loop exclusion.
-                         bnd_x=_boundary_x(cfg), bnd_y=_boundary_y(cfg))
-            _zero_open_strips(tmp, cfg, 3)
+            launch = launch_diff6_to_edge if to_edge else launch_diff6
+            launch(f0, tmp, mu_t, c1, c2, _diff6_factor(cfg, slot),
+                   _diff6_dt(cfg, slot),
+                   cfg.diff_6th_opt, stagger=stag,
+                   phb=state.phb, msfu=state.msfu, msfv=state.msfv,
+                   msft=state.msft,
+                   slopeopt=cfg.diff_6th_slopeopt,
+                   thresh=cfg.diff_6th_thresh,
+                   dx=cfg.dx, dy=cfg.dy,
+                   # Boundary-aware reads: the outermost computed
+                   # staggered face takes WRF's accurate boundary
+                   # datum (u ide-3 / v jde-3); the width-3 mask
+                   # below is then exactly WRF's loop exclusion.  The
+                   # fork's edge-to-edge form needs neither.
+                   bnd_x=_boundary_x(cfg), bnd_y=_boundary_y(cfg), **edge)
+            if not to_edge:
+                _zero_open_strips(tmp, cfg, 3)
             target = state.scratch(f0.shape, slot)
             if not add_array(tmp, target):
                 target[:] += tmp
@@ -2405,15 +2500,182 @@ def _launch_diff6_seam(name, f, tend, mut, c1, c2, phb_arg, msfu_arg,
           np.int32(h0), np.int32(h1), np.int32(1 if bnd_cross else 0)))
 
 
+#: Halo cells the edge-to-edge form pads on each low side; the high side
+#: takes one more, so no read of a real point reaches the periodic wrap
+#: of the padded core (a staggered high face reads index n + 6 of n + 7).
+_DIFF6_EDGE_HALO = DIFF6_EDGE_HALO
+
+
+def _edge_pad_into(dst: cp.ndarray, src: cp.ndarray,
+                   low: int = _DIFF6_EDGE_HALO) -> cp.ndarray:
+    """Zero-gradient copies on the two horizontal axes (WRF set_physical_bc3d
+    under specified/nested boundaries, share/module_bc.F: dat(ids-1..ids-3)
+    = dat(ids), dat(ide..ide+2) = dat(ide-1) on mass points, dat(ide+1..
+    ide+3) = dat(ide) on a staggered axis): an exact copy of the edge.
+
+    Writes every element of ``dst`` (shape ``src`` plus ``low`` cells on
+    each low side and ``low + 1`` on each high side of the last two axes)
+    from ``src`` alone: the value at padded (j, i) is ``src`` at the
+    clipped index, which is what ``cp.pad(mode="edge")`` returns, and
+    nothing is allocated.
+    """
+    ny, nx = src.shape[-2:]
+    if dst.shape != src.shape[:-2] + (ny + 2 * low + 1, nx + 2 * low + 1):
+        raise ValueError(f"edge pad of {src.shape} into {dst.shape}")
+    j_lo, j_in, j_hi = slice(0, low), slice(low, low + ny), slice(low + ny, None)
+    i_lo, i_in, i_hi = slice(0, low), slice(low, low + nx), slice(low + nx, None)
+    dst[..., j_in, i_in] = src
+    dst[..., j_in, i_lo] = src[..., :, :1]
+    dst[..., j_in, i_hi] = src[..., :, -1:]
+    dst[..., j_lo, i_in] = src[..., :1, :]
+    dst[..., j_hi, i_in] = src[..., -1:, :]
+    dst[..., j_lo, i_lo] = src[..., :1, :1]
+    dst[..., j_lo, i_hi] = src[..., :1, -1:]
+    dst[..., j_hi, i_lo] = src[..., -1:, :1]
+    dst[..., j_hi, i_hi] = src[..., -1:, -1:]
+    return dst
+
+
+def _edge_take(buf: cp.ndarray, shape) -> cp.ndarray:
+    """A shaped prefix of one flat edge-form workspace buffer."""
+    n = math.prod(shape)
+    if n > buf.size:
+        raise ValueError(f"diff6 edge workspace holds {buf.size} values, "
+                         f"a {shape} row needs {n}")
+    return buf.reshape(-1)[:n].reshape(shape)
+
+
+def _diff6_edge_work(state: DomainState, cfg: RunConfig) -> dict:
+    """The edge form's declared workspace: the slots
+    :func:`gpuwm.core.diff6_edge_workspace.diff6_edge_slot_shapes` prices,
+    drawn through ``DomainState.scratch`` (priced by the preflight's
+    registry, listed in its lifetime audit)."""
+    nz, ny, nx = state.p.shape
+    n_field = diff6_edge_field_values(nz, ny, nx)
+    work = {
+        "field": state.scratch((n_field,), "diff6_edge_field"),
+        "tend": state.scratch((n_field,), "diff6_edge_tend"),
+        "planes": state.scratch((diff6_edge_planes_values(ny, nx),),
+                                "diff6_edge_planes"),
+        "phb": None,
+    }
+    if diff6_edge_slope(cfg) and state.phb.ndim == 3:
+        work["phb"] = state.scratch((diff6_edge_phb_values(nz, ny, nx),),
+                                    "diff6_edge_phb")
+    return work
+
+
+def _diff6_edge_transient_work(nlev: int, ny: int, nx: int,
+                               slope: bool) -> dict:
+    """Unpriced buffers for a direct launch with no ``DomainState``.
+
+    Only the verification callers reach this (tests/test_diff6_fork_form.py
+    and tools/wrf_diffusion_oracle/diff6_fork_oracle.py call
+    :func:`launch_diff6_to_edge` on bare arrays); both forecast callers
+    pass :func:`_diff6_edge_work`.  One flat allocation, partitioned.
+    """
+    n_field = diff6_edge_field_values(nlev, ny, nx)
+    n_planes = diff6_edge_planes_values(ny, nx)
+    n_phb = diff6_edge_phb_values(nlev, ny, nx) if slope else 0
+    flat = cp.empty(2 * n_field + n_planes + n_phb, dtype=DTYPE)
+    return {"field": flat[:n_field], "tend": flat[n_field:2 * n_field],
+            "planes": flat[2 * n_field:2 * n_field + n_planes],
+            "phb": flat[2 * n_field + n_planes:] if slope else None}
+
+
+def launch_diff6_to_edge(f, tend, mut, c1, c2, factor, dt, opt, stagger="",
+                         phb=None, msfu=None, msfv=None, msft=None,
+                         slopeopt=0, thresh=0.10, dx=0.0, dy=0.0,
+                         bnd_x=False, bnd_y=False, work=None) -> None:
+    """ADD the NOAA WRFV3.9 fork's sixth-order tendency for one field.
+
+    The fork's sixth_order_diffusion (HRRR v4.1.21 WRFV3.9
+    module_big_step_utilities_em.F:6596-6632) loops over every point of
+    the tile to the domain edge for every field and lets the stencil read
+    the halo, which ``set_physical_bc3d`` fills with zero-gradient copies
+    of the edge under specified and nested boundaries (share/module_bc.F,
+    ``open_xs``/``open_xe`` and the y analogues).  WRF v4.6.1 instead
+    stops three points short (:6327-6440), which :func:`launch_diff6`
+    plus the width-3 strip mask reproduces.
+
+    The arithmetic per point is :func:`launch_diff6`'s unchanged kernel:
+    every input is padded with three edge copies on each side (one more
+    on the high side), the kernel runs on the padded core, and the real
+    points are added into ``tend``.  No real point's stencil reaches the
+    padded core's periodic wrap, so the result is the fork's halo read.
+    ``bnd_x``/``bnd_y`` are accepted for the common call signature; the
+    edge form needs no seam pass.  Callers use this form only on a domain
+    whose two axes are both forced (see :func:`diff6_to_edge`).
+
+    ``work`` holds the padded buffers.  The forecast callers pass
+    :func:`_diff6_edge_work`, the declared workspace the run preflight
+    prices; a bare-array caller (verification only) gets
+    :func:`_diff6_edge_transient_work`.  The base geopotential is padded
+    only when the slope taper reads it (otherwise the kernel never
+    dereferences it), and an omitted map factor is written as identity
+    straight into its padded plane.
+    """
+    del bnd_x, bnd_y
+    nlev, nys, nxs = f.shape
+    nx = nxs - 1 if stagger == "x" else nxs
+    ny = nys - 1 if stagger == "y" else nys
+    h = _DIFF6_EDGE_HALO
+    pad = 2 * h + 1
+    slope = int(slopeopt) >= 1 and phb is not None and phb.ndim == 3
+    if work is None:
+        work = _diff6_edge_transient_work(
+            phb.shape[0] if slope else nlev, ny, nx, slope)
+    pshape = (nlev, nys + pad, nxs + pad)
+    fp = _edge_pad_into(_edge_take(work["field"], pshape), f)
+    tp = _edge_take(work["tend"], pshape)
+    tp.fill(0)
+    padded = []
+    offset = 0
+    for src, shape in zip((mut, msfu, msfv, msft),
+                          diff6_edge_plane_shapes(ny, nx)):
+        n = shape[0] * shape[1]
+        dst = work["planes"][offset:offset + n].reshape(shape)
+        offset += n
+        if src is None:
+            dst.fill(1)
+        else:
+            _edge_pad_into(dst, src)
+        padded.append(dst)
+    mutp, msfup, msfvp, msftp = padded
+    phbp = None
+    if slope:
+        phbp = _edge_pad_into(
+            _edge_take(work["phb"], (phb.shape[0], ny + pad, nx + pad)), phb)
+    launch_diff6(fp, tp, mutp, c1, c2, factor, dt, opt, stagger=stagger,
+                 phb=phbp, msfu=msfup, msfv=msfvp, msft=msftp,
+                 slopeopt=slopeopt, thresh=thresh, dx=dx, dy=dy,
+                 bnd_x=False, bnd_y=False)
+    tend += tp[:, h:h + nys, h:h + nxs]
+
+
+def diff6_to_edge(cfg: RunConfig) -> bool:
+    """True when the fork's edge-to-edge loops apply (fork form, and both
+    horizontal axes forced: specified or nested).  The fork's loop bounds
+    are the same on a periodic axis, where its halo is the periodic copy
+    that :func:`launch_diff6` already reads, and an open (radiative) edge
+    is not a configuration the fork's operational namelist runs."""
+    return diff6_fork(cfg) and _boundary_forced(cfg)
+
+
 def _clock_scaled_diff6_factor(cfg: RunConfig) -> float:
     """Per-step factor whose clock-interval composition equals WRF's."""
+    return _clock_scale_factor(cfg, float(cfg.diff_6th_factor),
+                               "diff_6th_factor")
+
+
+def _clock_scale_factor(cfg: RunConfig, factor: float, name: str) -> float:
+    """``factor`` rescaled so its clock-interval composition equals WRF's."""
     clock_dt = cfg.clock_dt if cfg.clock_dt > 0.0 else cfg.dt
-    factor = float(cfg.diff_6th_factor)
     if clock_dt == cfg.dt:
         return factor
     if not 0.0 <= factor <= 1.0:
         raise ValueError(
-            "clock-scaled diff_6th_factor must lie in [0, 1], got "
+            f"clock-scaled {name} must lie in [0, 1], got "
             f"{factor}")
     if factor == 1.0:
         return 1.0
@@ -2453,7 +2715,8 @@ def apply_diff6(state: DomainState, cfg: RunConfig) -> None:
     they drop out of the production row set (:func:`diff6_exempt_slots`), so
     the helper keeps measuring what production applies.
     """
-    factor, opt = _clock_scaled_diff6_factor(cfg), cfg.diff_6th_opt
+    opt = cfg.diff_6th_opt
+    to_edge = diff6_to_edge(cfg)
     mu_t = state.mub2d + state.mup0                # time-t mass (WRF mut)
     mu = state.total_mu()                          # post-step mass: uncouple
     c1h = state.c1h[:, None, None]
@@ -2478,21 +2741,25 @@ def apply_diff6(state: DomainState, cfg: RunConfig) -> None:
         targets += [(getattr(state, name + "0"), getattr(state, name), "",
                      state.c1h, state.c2h, chm, "diff6_m", "smag_r" + name)
                     for name in names]
+    edge = {"work": _diff6_edge_work(state, cfg)} if to_edge else {}
     for f0, f, stag, c1, c2, chmf, slot, normalization_slot in targets:
         tendf = state.scratch(f0.shape, slot)
         tendf[...] = 0
-        launch_diff6(f0, tendf, mu_t, c1, c2, factor,
-                     _diff6_dt(cfg, normalization_slot), opt,
-                     stagger=stag,
-                     # WRF diff_6th_slopeopt terrain taper (no-op with the
-                     # default 0 or a flat 1-D phb; the base-state slope
-                     # and per-face msf enter exactly as the Fortran).
-                     phb=state.phb, msfu=state.msfu, msfv=state.msfv,
-                     msft=state.msft,
-                     slopeopt=cfg.diff_6th_slopeopt,
-                     thresh=cfg.diff_6th_thresh, dx=cfg.dx, dy=cfg.dy,
-                     bnd_x=_boundary_x(cfg), bnd_y=_boundary_y(cfg))
-        _zero_open_strips(tendf, cfg, 3)        # WRF sixth_order_diffusion
+        launch = launch_diff6_to_edge if to_edge else launch_diff6
+        launch(f0, tendf, mu_t, c1, c2,
+               _diff6_factor(cfg, normalization_slot),
+               _diff6_dt(cfg, normalization_slot), opt,
+               stagger=stag,
+               # WRF diff_6th_slopeopt terrain taper (no-op with the
+               # default 0 or a flat 1-D phb; the base-state slope
+               # and per-face msf enter exactly as the Fortran).
+               phb=state.phb, msfu=state.msfu, msfv=state.msfv,
+               msft=state.msft,
+               slopeopt=cfg.diff_6th_slopeopt,
+               thresh=cfg.diff_6th_thresh, dx=cfg.dx, dy=cfg.dy,
+               bnd_x=_boundary_x(cfg), bnd_y=_boundary_y(cfg), **edge)
+        if not to_edge:
+            _zero_open_strips(tendf, cfg, 3)    # WRF sixth_order_diffusion
         f += DTYPE(cfg.dt) * tendf / chmf       # non-periodic loop bounds
 
 
@@ -2869,12 +3136,45 @@ _WRF_CFL_CALLS: dict[int, int] = {}
 # No additional device arrays: the existing ring is the accumulator.
 _WRF_CFL_DOMAIN_STEP: dict[int, dict] = {}
 
+# The step's fences are re-recorded on events that live as long as the
+# recording does, not created per step.  THE BREAKAGE THIS PREVENTS, measured
+# 2026-10-03 on a free-threaded 4-card run: the stepping thread created the
+# step's "slot is zeroed" events and a slab thread dropped the last reference,
+# so the interpreter handed their release back to the stepping thread, where
+# two cudaEventDestroy calls waited 10 and 13 ms behind other cards' blocking
+# readbacks while finished slabs waited for their halo exchange.  A wait takes
+# the event's most recent record at the time of the wait call, so recording
+# the same event again next step changes no ordering.
+_WRF_CFL_EVENTS: dict[tuple, object] = {}
+
+
+def _wrf_cfl_event(*key):
+    """The reusable event for ``key``, created on the current device."""
+    bank = _wrf_cfl_bank("_WRF_CFL_EVENTS")
+    event = bank.get(key)
+    if event is None:
+        event = bank[key] = cp.cuda.Event(disable_timing=True)
+    return event
+
+
+def _wrf_cfl_bank(name):
+    """Ordinary reduction banks, private to a scoped ensemble member."""
+    from gpuwm.core.cfl_member import current_cfl_member
+    owner = current_cfl_member()
+    return globals()[name] if owner is None else owner.banks[name]
+
+
+def _wrf_cfl_recording_enabled():
+    from gpuwm.core.cfl_member import current_cfl_member
+    owner = current_cfl_member()
+    return _WRF_CFL_PROBE if owner is None else owner.enabled
+
 
 def _wrf_cfl_buffers(grid_id):
     """The primary ring plus additional device rings, in device order."""
-    primary = _WRF_CFL_STAT.get(int(grid_id))
+    primary = _wrf_cfl_bank("_WRF_CFL_STAT").get(int(grid_id))
     buffers = [] if primary is None else [primary]
-    buffers.extend(buf for key, buf in _WRF_CFL_STAT.items()
+    buffers.extend(buf for key, buf in _wrf_cfl_bank("_WRF_CFL_STAT").items()
                    if isinstance(key, tuple) and key[0] == int(grid_id))
     return sorted(buffers, key=lambda buf: int(buf.device.id))
 
@@ -2882,14 +3182,14 @@ def _wrf_cfl_buffers(grid_id):
 def _wrf_cfl_buffer(cfg):
     grid = int(cfg.grid_id)
     dev = int(cp.cuda.runtime.getDevice())
-    primary = _WRF_CFL_STAT.get(grid)
+    primary = _wrf_cfl_bank("_WRF_CFL_STAT").get(grid)
     key = grid if primary is None or int(primary.device.id) == dev else (grid, dev)
-    buf = _WRF_CFL_STAT.get(key)
+    buf = _wrf_cfl_bank("_WRF_CFL_STAT").get(key)
     if buf is None:
         buf = cp.zeros((_WRF_CFL_SLOTS, _WRF_CFL_WORDS), dtype=cp.uint32)
-        _WRF_CFL_STAT[key] = buf
-        _WRF_CFL_CALLS.setdefault(grid, 0)
-        _WRF_CFL_LABEL[grid] = f"d{grid:02d} {cfg.nx}x{cfg.ny}x{cfg.nz} dx={cfg.dx:g}"
+        _wrf_cfl_bank("_WRF_CFL_STAT")[key] = buf
+        _wrf_cfl_bank("_WRF_CFL_CALLS").setdefault(grid, 0)
+        _wrf_cfl_bank("_WRF_CFL_LABEL")[grid] = f"d{grid:02d} {cfg.nx}x{cfg.ny}x{cfg.nz} dx={cfg.dx:g}"
     return buf
 
 
@@ -2900,23 +3200,23 @@ _WRF_CFL_THREAD = _thread_local()
 def _wrf_cfl_window(grid_id):
     key = int(grid_id)
     entry = getattr(_WRF_CFL_THREAD, "windows", {}).get(key)
-    ctx = _WRF_CFL_DOMAIN_STEP.get(key)
+    ctx = _wrf_cfl_bank("_WRF_CFL_DOMAIN_STEP").get(key)
     # A thread-local window from a retired step must not satisfy the next
     # step's owned-column contract if a worker forgot to install its window.
     return None if entry is None or entry[0] is not ctx else entry[1]
 
 
 def begin_wrf_cfl_domain_step(cfg, devices=None) -> None:
-    if not _WRF_CFL_PROBE:
+    if not _wrf_cfl_recording_enabled():
         return
     key = int(cfg.grid_id)
-    if key in _WRF_CFL_DOMAIN_STEP:
+    if key in _wrf_cfl_bank("_WRF_CFL_DOMAIN_STEP"):
         raise RuntimeError(f"d{key:02d} already has an open CFL domain step")
     devices = (cp.cuda.runtime.getDevice(),) if devices is None else tuple(dict.fromkeys(devices))
     for dev in devices:
         with cp.cuda.Device(dev):
             _wrf_cfl_buffer(cfg)
-    calls = _WRF_CFL_CALLS[key]
+    calls = _wrf_cfl_bank("_WRF_CFL_CALLS")[key]
     if calls % 3:
         raise RuntimeError(f"d{key:02d} CFL step starts inside an RK-stage group")
     slot = (calls // 3) % _WRF_CFL_SLOTS
@@ -2924,14 +3224,14 @@ def begin_wrf_cfl_domain_step(cfg, devices=None) -> None:
     for buf in _wrf_cfl_buffers(key):
         with cp.cuda.Device(buf.device.id):
             buf[slot].fill(0)
-            event = cp.cuda.Event(disable_timing=True)
+            event = _wrf_cfl_event("ready", key, int(buf.device.id))
             event.record()
             ready[int(buf.device.id)] = event
-    _WRF_CFL_DOMAIN_STEP[key] = dict(slot=slot, ready=ready, events={})
+    _wrf_cfl_bank("_WRF_CFL_DOMAIN_STEP")[key] = dict(slot=slot, ready=ready, events={})
 
 
 def set_wrf_cfl_tile_window(grid_id, spec) -> None:
-    ctx = _WRF_CFL_DOMAIN_STEP.get(int(grid_id))
+    ctx = _wrf_cfl_bank("_WRF_CFL_DOMAIN_STEP").get(int(grid_id))
     if ctx is None:
         return
     if not hasattr(_WRF_CFL_THREAD, "windows"):
@@ -2943,22 +3243,23 @@ def set_wrf_cfl_tile_window(grid_id, spec) -> None:
 
 
 def finish_wrf_cfl_tile(grid_id) -> None:
-    ctx = _WRF_CFL_DOMAIN_STEP.get(int(grid_id))
+    ctx = _wrf_cfl_bank("_WRF_CFL_DOMAIN_STEP").get(int(grid_id))
     if ctx is not None:
         stream = cp.cuda.get_current_stream()
-        event = cp.cuda.Event(disable_timing=True)
+        device = cp.cuda.runtime.getDevice()
+        event = _wrf_cfl_event("tile", int(grid_id), device, stream.ptr)
         event.record(stream)
-        ctx["events"][(cp.cuda.runtime.getDevice(), stream.ptr)] = event
+        ctx["events"][(device, stream.ptr)] = event
 
 
 def wrf_cfl_capture_key(grid_id):
-    ctx = _WRF_CFL_DOMAIN_STEP.get(int(grid_id))
+    ctx = _wrf_cfl_bank("_WRF_CFL_DOMAIN_STEP").get(int(grid_id))
     return None if ctx is None else (ctx["slot"], _wrf_cfl_window(grid_id))
 
 
 def finish_wrf_cfl_domain_step(grid_id, *, commit=True) -> None:
     key = int(grid_id)
-    ctx = _WRF_CFL_DOMAIN_STEP.pop(key, None)
+    ctx = _wrf_cfl_bank("_WRF_CFL_DOMAIN_STEP").pop(key, None)
     if ctx is None:
         return
     for dev in ctx["ready"]:
@@ -2968,14 +3269,14 @@ def finish_wrf_cfl_domain_step(grid_id, *, commit=True) -> None:
                 if event_dev == dev:
                     stream.wait_event(event)
     if commit:
-        _WRF_CFL_CALLS[key] += 3
+        _wrf_cfl_bank("_WRF_CFL_CALLS")[key] += 3
         if _WRF_CFL_PROBE_SYNC:
-            _WRF_CFL_LAST[key] = take_wrf_cfl(key)[0]
+            _wrf_cfl_bank("_WRF_CFL_LAST")[key] = take_wrf_cfl(key)[0]
 
 def record_wrf_vertical_cfl(state: DomainState, cfg: RunConfig,
                             ww: cp.ndarray) -> None:
     """Fold this stage's WRF vertical CFL into this step's slot."""
-    if not _WRF_CFL_PROBE:
+    if not _wrf_cfl_recording_enabled():
         return
     # KEYED ON grid_id, not id(state).  Relocation replaces the state
     # object -- measured: a 4-hour run split d02's series into SEVEN
@@ -2984,10 +3285,10 @@ def record_wrf_vertical_cfl(state: DomainState, cfg: RunConfig,
     # relocation, which is invariant (e) of the brief exactly.
     key = int(cfg.grid_id)
     buf = _wrf_cfl_buffer(cfg)
-    ctx = _WRF_CFL_DOMAIN_STEP.get(key)
-    calls = _WRF_CFL_CALLS[key]
+    ctx = _wrf_cfl_bank("_WRF_CFL_DOMAIN_STEP").get(key)
+    calls = _wrf_cfl_bank("_WRF_CFL_CALLS")[key]
     if ctx is None:
-        _WRF_CFL_CALLS[key] = calls + 1
+        _wrf_cfl_bank("_WRF_CFL_CALLS")[key] = calls + 1
         slot = (calls // 3) % _WRF_CFL_SLOTS
         if calls % 3 == 0:
             buf[slot].fill(0)
@@ -3013,7 +3314,7 @@ def record_wrf_vertical_cfl(state: DomainState, cfg: RunConfig,
         # End of a model step: read this step's CFL back the way a
         # controller would have to.  float() on a device scalar is a
         # blocking copy, which is the whole point of measuring it.
-        _WRF_CFL_LAST[key] = float(
+        _wrf_cfl_bank("_WRF_CFL_LAST")[key] = float(
             np.uint32(int(buf[slot][0])).view(np.float32))
 
 
@@ -3036,10 +3337,10 @@ def take_wrf_cfl(grid_id: int) -> tuple[float, float]:
     factor -- correct at t=0, where there is no CFL to respect, and
     exactly the overshoot the restart path must avoid (section 5).
     """
-    buf = _WRF_CFL_STAT.get(int(grid_id))
+    buf = _wrf_cfl_bank("_WRF_CFL_STAT").get(int(grid_id))
     if buf is None:
         return 0.0, 0.0
-    calls = _WRF_CFL_CALLS.get(int(grid_id), 0)
+    calls = _wrf_cfl_bank("_WRF_CFL_CALLS").get(int(grid_id), 0)
     if calls == 0:
         return 0.0, 0.0
     slot = ((calls - 1) // 3) % _WRF_CFL_SLOTS
@@ -3061,7 +3362,12 @@ def enable_wrf_cfl_recording() -> None:
     it switches it on rather than carrying a second copy of the kernel.
     """
     global _WRF_CFL_PROBE
-    _WRF_CFL_PROBE = True
+    from gpuwm.core.cfl_member import current_cfl_member
+    owner = current_cfl_member()
+    if owner is None:
+        _WRF_CFL_PROBE = True
+    else:
+        owner.enabled = True
 
 
 def reset_wrf_cfl_recording() -> None:
@@ -3076,13 +3382,19 @@ def reset_wrf_cfl_recording() -> None:
     three folds had landed.
     """
     global _WRF_CFL_PROBE
-    _WRF_CFL_PROBE = _env_flag("GPUWM_WRF_CFL_PROBE")
-    _WRF_CFL_DOMAIN_STEP.clear()
+    from gpuwm.core.cfl_member import current_cfl_member
+    owner = current_cfl_member()
+    if owner is None:
+        _WRF_CFL_PROBE = _env_flag("GPUWM_WRF_CFL_PROBE")
+    else:
+        owner.enabled = _env_flag("GPUWM_WRF_CFL_PROBE")
+    _wrf_cfl_bank("_WRF_CFL_DOMAIN_STEP").clear()
+    _wrf_cfl_bank("_WRF_CFL_EVENTS").clear()
     _WRF_CFL_THREAD.windows = {}
-    _WRF_CFL_STAT.clear()
-    _WRF_CFL_CALLS.clear()
-    _WRF_CFL_LABEL.clear()
-    _WRF_CFL_LAST.clear()
+    _wrf_cfl_bank("_WRF_CFL_STAT").clear()
+    _wrf_cfl_bank("_WRF_CFL_CALLS").clear()
+    _wrf_cfl_bank("_WRF_CFL_LABEL").clear()
+    _wrf_cfl_bank("_WRF_CFL_LAST").clear()
 
 
 def wrf_cfl_histogram_edges() -> list[float]:
@@ -3118,13 +3430,13 @@ def wrf_vertical_cfl_report() -> list[dict]:
     """Per-domain WRF vertical-CFL series, one entry per model step."""
     out = []
     from gpuwm.core.cfl_inventory import fold_cfl_words
-    for key in (k for k in _WRF_CFL_STAT if not isinstance(k, tuple)):
+    for key in (k for k in _wrf_cfl_bank("_WRF_CFL_STAT") if not isinstance(k, tuple)):
         arrays = []
         for buf in _wrf_cfl_buffers(key):
             with cp.cuda.Device(buf.device.id):
                 arrays.append(cp.asnumpy(buf))
         words = arrays[0] if len(arrays) == 1 else fold_cfl_words(arrays)
-        steps = max(1, (_WRF_CFL_CALLS.get(key, 0) + 2) // 3)
+        steps = max(1, (_wrf_cfl_bank("_WRF_CFL_CALLS").get(key, 0) + 2) // 3)
         steps = min(steps, _WRF_CFL_SLOTS)
         rows = words[:steps]
         series = rows[:, 0].view(np.float32).astype(float).tolist()
@@ -3160,7 +3472,7 @@ def wrf_vertical_cfl_report() -> list[dict]:
             se = (var / len(finite)) ** 0.5
         else:
             se = 0.0
-        out.append({"domain": _WRF_CFL_LABEL.get(key, "?"),
+        out.append({"domain": _wrf_cfl_bank("_WRF_CFL_LABEL").get(key, "?"),
                     "steps": int(steps),
                     "mean_vert_cfl": mean,
                     "se_vert_cfl": se,
@@ -3674,6 +3986,9 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
             # column-mass tendencies.
         # WRF small_step_finish: the h_diabatic removal runs on the final RK
         # step only, over dts*number_of_small_timesteps = dt.
+        if (scalars and cfg.damp_opt == 3
+                and getattr(cfg, "upper_wind_limiter_form", "wrf_461") == "noaa_wrf39"):
+            refresh_saved_wind_fluxes(state, cfg, ru, rv)
         small_step_finishes[istage]()
         if scalars:                                   # stage length nsub*dtau
             # WRF sumflux (iteration == number_of_small_timesteps): the

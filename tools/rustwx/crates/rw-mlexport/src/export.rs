@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+use rw_isobaric::InterfaceStencil;
 use serde_json::{json, Value};
 use wrf_core::WrfFile;
 
@@ -429,6 +430,10 @@ struct Base {
     phi_stag: Arc<[f64]>,
     temperature: Arc<[f64]>,
     p_top: Option<f64>,
+    /// Where each layer interface sits between the mass levels, when the
+    /// file states its eta levels (ZNW): geopotential is then read between
+    /// interfaces ([`Plan::apply_geopotential_between_interfaces`]).
+    stencil: Option<InterfaceStencil>,
 }
 
 fn require_fields(file: &WrfFile, fields: &[&str], why: &str) -> Result<()> {
@@ -454,7 +459,34 @@ fn read_base(file: &WrfFile, t: usize) -> Result<Base> {
     let temperature = file.temperature(t).map_err(|e| fail(format!("temperature: {e}")))?;
     let psfc = ops::read(file, t, "PSFC")?;
     let p_top = read_p_top(file, t)?;
-    Ok(Base { p, psfc, phi_stag, temperature, p_top })
+    let stencil = read_interface_stencil(file, t)?;
+    Ok(Base { p, psfc, phi_stag, temperature, p_top, stencil })
+}
+
+/// The file's interface stencil from ZNW (and ZNU when it carries it,
+/// otherwise the middle of each layer in ZNW, as WRF defines it), or `None`
+/// for a file that states no eta levels: a height-coordinate frame, whose
+/// mass level is the middle of its layer in height, so its layer-mean
+/// geopotential already belongs to the mass-level pressure.
+fn read_interface_stencil(file: &WrfFile, t: usize) -> Result<Option<InterfaceStencil>> {
+    if !file.has_var("ZNW") {
+        return Ok(None);
+    }
+    let eta_interface = ops::read(file, t, "ZNW")?;
+    let stencil = if file.has_var("ZNU") {
+        InterfaceStencil::new(&ops::read(file, t, "ZNU")?, &eta_interface)
+    } else {
+        InterfaceStencil::from_interfaces(&eta_interface)
+    }
+    .map_err(|e| refuse(format!("the history file's eta levels (ZNU, ZNW) cannot place its layer interfaces: {e}")))?;
+    if stencil.levels() != file.nz {
+        return Err(refuse(format!(
+            "the history file's eta levels describe {} layers and its fields {}, so geopotential cannot be read between its layer interfaces",
+            stencil.levels(),
+            file.nz
+        )));
+    }
+    Ok(Some(stencil))
 }
 
 fn read_p_top(file: &WrfFile, t: usize) -> Result<Option<f64>> {
@@ -664,9 +696,11 @@ fn init_domain(request: &Request, file: &WrfFile, meta: &FileMeta, t: usize, val
         && row_of(request, &v.id).kind == VariableKind::Level);
     let (mut kept, mut dropped, mut model_levels, mut eta) = (Vec::new(), Vec::new(), Vec::new(), None);
     let (mut lid_pa, mut lid_stated) = (0.0, false);
+    let mut geopotential_between_interfaces = false;
     match request.levels.kind {
         LevelKind::Pressure if has_level_fields => {
             let base = read_base(file, t)?;
+            geopotential_between_interfaces = base.stencil.is_some();
             let lid = match base.p_top {
                 Some(top) => Lid::PTop(top),
                 None => Lid::TopMassLevel,
@@ -748,6 +782,7 @@ fn init_domain(request: &Request, file: &WrfFile, meta: &FileMeta, t: usize, val
         eta,
         lid_pa,
         lid_stated,
+        geopotential_between_interfaces,
         levels_per_chunk,
         variables,
         latlon_version: Vec::new(),
@@ -907,6 +942,16 @@ fn export_frame(
         .iter()
         .any(|v| v.omitted.is_none() && row_of(request, &v.id).kind == VariableKind::Level);
     let base = if pressure_mode && any_level { Some(read_base(file, t)?) } else { None };
+    if let Some(b) = &base {
+        if b.stencil.is_some() != domain.geopotential_between_interfaces {
+            return Err(refuse(format!(
+                "domain {}'s first frame {} its eta levels (ZNW) and this frame {}; geopotential would be read between layer interfaces in some frames and at mass levels in others, two methods in one array",
+                meta.domain,
+                if domain.geopotential_between_interfaces { "states" } else { "does not state" },
+                if b.stencil.is_some() { "does" } else { "does not" }
+            )));
+        }
+    }
     let derived = base.as_ref().map(|b| {
         let t_bot: Vec<f64> = b.temperature[..cells].to_vec();
         let t_top: Vec<f64> = b.temperature[(nz - 1) * cells..nz * cells].to_vec();
@@ -966,8 +1011,17 @@ fn export_frame(
         match row.kind {
             VariableKind::Level => {
                 let field = ops::level_field(file, t, &op, scale)?;
-                let stack: Vec<f32> = match (&plan, &columns) {
-                    (Some(plan), Some(cols)) => plan.apply(&field, Rule::parse(row.below_ground.as_deref())?, cols),
+                let stencil = base.as_ref().and_then(|b| b.stencil.as_ref().map(|s| (b, s)));
+                let stack: Vec<f32> = match (&plan, &columns, &op, stencil) {
+                    (Some(plan), Some(cols), Op::Geopotential, Some((b, stencil))) => plan
+                        .apply_geopotential_between_interfaces(
+                            &b.phi_stag,
+                            &field,
+                            stencil,
+                            Rule::parse(row.below_ground.as_deref())?,
+                            cols,
+                        ),
+                    (Some(plan), Some(cols), _, _) => plan.apply(&field, Rule::parse(row.below_ground.as_deref())?, cols),
                     _ => vertical::select_model_levels(&field, cells, &model_levels),
                 };
                 drop(field);

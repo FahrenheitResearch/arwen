@@ -35,3 +35,34 @@ def holds_the_preset_root(source):
     along = (north - south) * KM_PER_DEGREE
     return (across >= tc.ROOT_DIMS[0] * tc.ROOT_DX_M / 1000.
             and along >= tc.ROOT_DIMS[1] * tc.ROOT_DX_M / 1000.)
+
+
+#: The cycle every cyclone door walk authors on unless a source cannot
+#: serve it.
+WALK_CYCLE = "2026090900"
+
+
+def cycle_for(source, default=WALK_CYCLE):
+    """A cycle the source can serve: ``default``, or one inside its archive.
+
+    A historical archive row (gpuwm.cf_archive_fetch) declares the first
+    and last analysis it holds; a walk that authored every source on one
+    recent cycle met that row's own, correct coverage refusal and read it
+    as a failure of the door.  Decided from the row's declared coverage,
+    never from a source name.
+    """
+    from datetime import datetime
+
+    from gpuwm import cf_archive_fetch
+
+    try:
+        metadata = cf_archive_fetch.row(source)
+    except KeyError:
+        return default
+    first = datetime.fromisoformat(metadata["coverage_start"])
+    last = datetime.fromisoformat(metadata["coverage_end"])
+    wanted = datetime.strptime(default, "%Y%m%d%H")
+    if first <= wanted <= last:
+        return default
+    # The same month, day and hour in the last full year the archive holds.
+    return wanted.replace(year=last.year - 1).strftime("%Y%m%d%H")

@@ -240,7 +240,7 @@ def emit_run_capsule(outdir: str | Path, *, emission_site: str,
     """
     try:
         capsule = build_capsule(emission_site=emission_site, **sections)
-        return emit_capsule(outdir, capsule,
+        path = emit_capsule(outdir, capsule,
                             certification_path=certification_path)
     except Exception as error:  # noqa: BLE001 - the run's outputs stand
         if certification_path:
@@ -252,7 +252,12 @@ def emit_run_capsule(outdir: str | Path, *, emission_site: str,
              why="The capsule is an audit artifact emitted after the "
                  "run completed; only `gpuwm certify` treats its "
                  "absence as a failure.")
-        return None
+        path = None
+    # Output work starts only after durable forecast output and its capsule.
+    # Its pending receipt is independent of the physical run's verdict.
+    from gpuwm.verification_visuals import finish_run
+    finish_run(outdir, sections=sections)
+    return path
 
 
 def load_certification_capsule(path: str | Path, *,

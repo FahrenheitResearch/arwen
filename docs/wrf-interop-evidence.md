@@ -60,9 +60,13 @@ runs. Publishing the receipt archives remains an evidence gap.
    seconds** — not forecast-skill runs and not WPS/METGRID numerical
    parity (masked surface/soil interpolation deliberately differs;
    `PROVENANCE.md`).  The longest proven integration is 60 s.
-2. Acceptance requires three receipt-bound namelist deltas
-   (`ra_lw_physics 0->1`, `use_theta_m 0->1`, stock-only `ghg_input=0`;
-   [native-wrf-direct-support-matrix.md](native-wrf-direct-support-matrix.md)).
+2. Acceptance requires two receipt-bound namelist deltas
+   (`ra_lw_physics 0->1`, stock-only `ghg_input=0`;
+   [native-wrf-direct-support-matrix.md](native-wrf-direct-support-matrix.md))
+   and `use_theta_m = 0` on both sides.  The receipts above recorded a
+   third, `use_theta_m 0->1`, on exports that declared `USE_THETA_M = 1`
+   over dry-coupled `T_B*` rows; since 2.8.5 the export is dry theta
+   throughout and declares it.
 3. Certification is confined to the WSM6+YSU+MM5-91+Noah 49-level
    slice, plus one narrow Thompson/Morrison 10-second gate on the
    hash-bound current-GFS d01-d04 export.

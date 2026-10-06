@@ -221,6 +221,11 @@ def test_explicit_host_math_receipt_is_owned_and_implicit_receipt_words_unchange
     monkeypatch.setattr(preprocess_backend, "_implementation_tree", lambda *_: {"original": True})
     monkeypatch.setattr(preprocess_backend, "_shared_contracts", lambda: {"original": True})
     monkeypatch.setattr(preprocess_backend, "_masked_chain_receipt", lambda *args, **kwargs: {"original": True})
+    # The parallelism block reads live host memory headroom, which moved between two receipts
+    # on the 2.8.6 gate host while the GPU shards ran beside Stage 1; this test is about the
+    # bridge scope, so the host is held still.
+    from gpuwm.ingest import preparation_workers
+    monkeypatch.setattr(preparation_workers, "host_available_bytes", lambda *args, **kwargs: 64 << 30)
     original = backend.receipt()
     with pm.cpu_bridge_scope(paths[0]):
         assert backend.receipt() == original

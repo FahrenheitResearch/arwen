@@ -138,7 +138,7 @@ class RunConfig:
     hill_height: float = 100.0
     hill_halfwidth: float = 10000.0
     # --- Phase 3 (Task 3): map projection.  0 = idealized/none (map factors
-    # 1, Coriolis parameters 0 — the bitwise Phase 2 state); nonzero uses
+    # 1, Coriolis parameters 0 â€” the bitwise Phase 2 state); nonzero uses
     # the WRF convention: 1 = Lambert conformal, 2 = polar stereographic,
     # 3 = Mercator (grids built by gpuwm.static.projection).  The dycore
     # consumes the projection only through the DomainState fields
@@ -278,16 +278,20 @@ class RunConfig:
     # RunConfig compatibility.
     isftcflx: int = 0
     iz0tlnd: int = 0
-    # Noah LSM options whose kernel branches already exist, so these expose
-    # an implemented capability rather than adding one.  ``usemonalb`` selects
-    # the monthly-climatology albedo instead of the table min/max endpoints
-    # (gpuwm/core/kernels/noah.cu:1112 and :1117), ``rdlai2d`` selects the
-    # read-in LAI field instead of the table endpoints (:1036, :1111, :1116),
-    # and ``opt_thcnd`` selects the Johansen (1) or McCumber-Pielke (2) soil
-    # thermal conductivity at :181.  Only the configuration path was missing;
-    # each default reproduces the previously pinned launcher value, so frozen
-    # trajectories are bitwise unchanged.  Appended to preserve positional
-    # RunConfig compatibility.
+    # Land-surface options whose branches exist in Noah AND RUC.
+    # ``usemonalb`` leaves real.exe's monthly ALBEDO12M background albedo
+    # in place instead of LANDUSE.TBL's seasonal row (WRF landuse_init,
+    # module_physics_init.F:1611; gpuwm/core/landuse.py initialize_landuse)
+    # and selects it inside Noah (gpuwm/core/kernels/noah.cu:1112, :1117);
+    # ``rdlai2d`` keeps the monthly LAI12M field interpolated to the start
+    # date instead of the VEGPARM table value: Noah at noah.cu:1036, :1111,
+    # :1116, RUC's soilvegin at gpuwm/core/kernels/ruc.cu:171, :178, :292
+    # and the fused driver (tools/ruc_fused/driver_body.cuh).  Operational
+    # HRRR runs both true (hrrr_wrf.nl:148-149).  ``opt_thcnd`` selects the
+    # Johansen (1) or McCumber-Pielke (2) soil thermal conductivity at
+    # noah.cu:181 and exists in Noah only.  Each default reproduces the
+    # previously pinned launcher value, so frozen trajectories are bitwise
+    # unchanged.  Appended to preserve positional RunConfig compatibility.
     usemonalb: bool = False
     rdlai2d: bool = False
     opt_thcnd: int = 1
@@ -930,8 +934,259 @@ class RunConfig:
     #: normalised by the moisture above the residual.  ``wrf_461`` (WRF
     #: v4.6.1): total moisture over porosity, 2.5 to 8 times the water
     #: diffusivity in dry soil, measured to wet a dry top soil level from
-    #: below by +0.026 m3/m3 in one afternoon hour.  Appended last.
+    #: below by +0.026 m3/m3 in one afternoon hour.  Appended after the
+    #: SPP consumer switches.
     ruc_soilprop: str = "wrf_45"
+    # APPENDED LAST, after ruc_soilprop, on the same discipline.
+    #: WRF ``&physics fractional_seaice`` (Registry.EM_COMMON, default 0).
+    #: Selects WHICH of WRF's two sea-ice thresholds the RUC seam runs
+    #: (module_surface_driver.F:1365-1368 of the HRRR v4.1.21 fork): 0 keeps
+    #: XICE_THRESHOLD = 0.5, the value every RUC run before this field was
+    #: pinned to, so frozen trajectories are unchanged; 1 runs 0.02, HRRR's
+    #: operational value, so every cell with 0.02 <= XICE <= 1 takes the ice
+    #: column, the open-water surface-layer call and the post-LSM blend the
+    #: seam already carries, and the CLM lake reads the same threshold.  The
+    #: blend machinery runs under both values: 0 is the previous pin, not
+    #: WRF's non-fractional surface treatment, and the RUC receipt names the
+    #: threshold that ran.  Read by the RUC LSM only (sf_surface_physics=3).
+    fractional_seaice: int = 0
+    #: Which generation of the MYNN surface layer (sf_sfclay_physics = 5)
+    #: runs (gpuwm.core.mynn_surface.MYNN_SFCLAY_VARIANTS).  ``wrf_461``:
+    #: WRF v4.6.1 module_sf_mynn.F.  ``gsl_wrf39``: the GSL WRF 3.9 fork's
+    #: module (NOAA-EMC/HRRR v4.1.21), a 5-pass secant z/L search that gives
+    #: up to 5 Ri / 8 Ri, z/L capped at 50, the Richardson number clamped at
+    #: 50 after step 1, zt in the heat log numerators and z0/L as psih's
+    #: lower limit.  Appended last.
+    mynn_sfclay_variant: str = "wrf_461"
+    #: Whether the engine's measured terrain rules may rewrite this
+    #: domain's clock at launch.  ``"measured"`` (the default, every
+    #: configuration before this field): the terrain clock
+    #: (:mod:`gpuwm.terrain_clock`) divides the step or raises the acoustic
+    #: substep count where its measured map saw a longer step stop under
+    #: the domain's steepest slope, crest height and crest-level wind, and
+    #: the steep-ground substep rule (:mod:`gpuwm.acoustic_adaptation`)
+    #: raises four substeps to six where its map says four fail.
+    #: ``"pinned"``: these launch rules preserve ``dt`` and
+    #: ``time_step_sound``; a fixed clock runs exactly as configured.
+    #: A selected adaptive controller still updates its live clock.
+    #: Both rules still read the domain and write what they
+    #: would have done into the run's receipt (``terrain_clock`` and
+    #: ``acoustic_substeps``, each row with ``clock = "pinned"`` and an
+    #: ``advice`` entry), and the run prints that advice, but nothing is
+    #: applied.  The off-centering floor is not a clock rule and is read
+    #: either way: a chosen ``epssm`` the measured map holds no substep
+    #: count at is refused by name in both modes, because WRF stops on it
+    #: too.  Pinned is what an operational WRF namelist means by its clock:
+    #: the step and count it names are the ones that integrate.  The
+    #: measured maps were taken on generated bell ridges and never on an
+    #: operational grid, so on such a grid their verdict is advice, and the
+    #: run's own stability evidence is the referee.  Nothing in preparation
+    #: reads it; a prepared tree carries the same state under either value.
+    terrain_clock: str = "measured"
+    #: Which WRF source's sixth-order filter runs (diff_6th_opt > 0;
+    #: gpuwm.core.dycore.DIFF6_FORMS).  ``wrf_461`` (WRF v4.6.1
+    #: sixth_order_diffusion and rk_scalar_tend): moisture, scalar and TKE
+    #: rows take ``diff_6th_factor`` on the RK3 first-stage step dt/3, and
+    #: the loops stop three points short of a specified or nested edge.
+    #: ``noaa_wrf39`` (the NOAA-EMC WRFV3.9 fork, HRRR v4.1.21
+    #: dyn_em/solve_em.F:2418/:2680/:2974, module_em.F:1217/:1409,
+    #: module_big_step_utilities_em.F:6596-6632): moisture and scalar rows
+    #: take ``diff_6th_factor2`` and every scalar row the full step, and
+    #: the filter runs to the domain edge reading zero-gradient halo copies.
+    #: Appended last.
+    diff_6th_form: str = "wrf_461"
+    #: The fork's second filter factor for the moist and scalar arrays
+    #: (fork Registry.EM_COMMON:2629, namelist ``&dynamics``, per domain).
+    #: ``None`` takes the fork Registry default 0.04 under ``noaa_wrf39``;
+    #: WRF v4.6.1 has no such key, so a value is refused under ``wrf_461``.
+    diff_6th_factor2: float | None = None
+    #: WRF ``mp_zero_out`` (Registry.EM_COMMON:2553, both sources; routine
+    #: phys/module_microphysics_zero_out.F identical in both): 0 off, 1
+    #: zero non-vapour species under ``mp_zero_out_thresh``, 2 also floor
+    #: vapour at zero; the outermost ring is floored at zero either way.
+    mp_zero_out: int = 0
+    mp_zero_out_thresh: float = 1.0e-8
+    #: WRF v4.6.1 ``mp_zero_out_all`` (Registry.EM_COMMON:2554): 1 also
+    #: applies the pass to the scalar (number) arrays.  The NOAA WRFV3.9
+    #: fork has no switch and always does (solve_em.F:4078-4141), which is
+    #: v4.6.1's 1.
+    mp_zero_out_all: int = 0
+    #: Source form of advance_w's upper-wind limiter. The NOAA WRFV3.9
+    #: fork damps saved stage winds above 110 m/s inside zdamp on every
+    #: acoustic substep (module_small_step_em.F:1703-1735). WRF v4.6.1
+    #: has no such limiter. Appended to preserve positional construction.
+    upper_wind_limiter_form: str = "wrf_461"
+    # Appended after all staged fields, on the same positional
+    # discipline.  WRF ``&dynamics`` advection orders (Registry.EM_COMMON,
+    # max_domains): the vertical face-flux ladder of module_advect_em.F.
+    #: WRF ``v_sca_adv_order``: the vertical order of every scalar (theta,
+    #: moisture, scalars, TKE) AND of w, because WRF's advect_w keys its
+    #: vertical order on the scalar order (module_advect_em.F
+    #: ``vert_order = config_flags%v_sca_adv_order`` in advect_w).  3 is
+    #: the ladder every earlier run took (2nd order one face in from the
+    #: eta boundaries, flux3 between).  5 is WRF's ``vert_order == 5``
+    #: ladder: faces kts+1 and ktf 2nd order, kts+2 and ktf-1 flux3,
+    #: kts+3 .. ktf-2 flux5 (the operational HRRR value, which runs it
+    #: with ``zadvect_implicit = 1``).
+    v_sca_adv_order: int = 3
+    #: WRF ``v_mom_adv_order``: the same ladder for u and v.
+    v_mom_adv_order: int = 3
+    #: WRF ``h_mom_adv_order``, declaration only: the u, v and w
+    #: horizontal stencils are WRF's flux5, so 5 is the only value the
+    #: kernels carry; the field exists so a namelist's dynamics block
+    #: maps one to one and any other value is refused by name.
+    h_mom_adv_order: int = 5
+    #: Which WRF lineage's LSMRUC irrigation rule holds root-layer soil
+    #: moisture up after SFCTMP (gpuwm.core.ruc_mosaic.IRRIGATION_FORMS).
+    #: ``wrf_45`` (WRF v4.0-4.5 and the operational RAP/HRRR branch): a
+    #: hard floor scaled by the cell's cropland fraction, gated on leaf area,
+    #: whatever mosaic_lu says (LANDUSEF fractions when the run carries them,
+    #: the dominant category as the whole cell when it does not).
+    #: ``wrf_461`` (WRF v4.6.1, under mosaic_lu=1): a per-step relaxation
+    #: to the full 1.1 x wilting point for any cell with any crop fraction
+    #: and a greenness factor above 0.75. This is the generic default;
+    #: importing the operational namelist or using its recipe selects wrf_45.
+    #: Appended last.
+    ruc_irrigation: str = "wrf_461"
+    #: LSMRUC's cold start of the ground vapour (gpuwm.core.ruc_tier.
+    #: RUC_QVG_COLD_START_FORMS).  ``wrf`` (public WRF, the default): an
+    #: invalid QVG starts from saturation at the skin times moisture
+    #: availability.  ``air`` (the operational RAP/HRRR branch's fallback):
+    #: from the lowest-level vapour, measured to pull the skin toward the
+    #: air's dewpoint on the first steps.  Read only on a cold start.
+    #: Appended last.
+    ruc_qvg_cold_start: str = "wrf"
+    #: How SFCDIAGS_RUCLSM writes T2, TH2 and Q2 (gpuwm.core.ruc_tier.
+    #: RUC_2M_DIAGNOSTIC_FORMS).  ``flux`` (public WRF, the default) or
+    #: ``log_profile`` (the operational RAP/HRRR branch's logarithmic
+    #: profile where the air is warmer or moister than the surface).
+    #: Appended last.
+    ruc_2m_diagnostic: str = "flux"
+    #: Which WRF lineage's RUC snow scheme runs (gpuwm.core.ruc_tier.
+    #: RUC_SNOW_FORMS).  ``wrf_45`` (WRF v4.0-4.5, carried by the
+    #: operational RAP/HRRR branch): constant snow
+    #: conductivity, cover from depth over a critical depth, fresh-snow
+    #: albedo from the depth on the ground, a step-independent melt cap.
+    #: ``wrf_461`` (WRF v4.6.1): the Sturm conductivity, the blended
+    #: depth/roughness cover rebuilt after the snow column, and the
+    #: density-gated melt limits. The generic default is wrf_461; the
+    #: operational namelist importer and recipe explicitly select wrf_45.
+    #: Appended last.
+    ruc_snow: str = "wrf_461"
+    #: Which generation of the MYNN boundary-layer scheme the column solver
+    #: runs (gpuwm.core.mynn_pbl_gpu.MYNN_VERSIONS).  ``wrf_461`` is WRF
+    #: v4.6.1 module_bl_mynn.F.  ``gsd_41`` is the GSD MYNN v4.1 carried by
+    #: the NOAA-EMC WRF 3.9 branch (tag v4.1.21 of its repository), ported
+    #: row by row: a downward surface vapour flux (dew, frost) reaches the
+    #: vapour equation instead of being deleted, and mixing length option 2
+    #: takes that generation's constants, caps and blend.  Rows not yet
+    #: ported run the v4.6.1 form under either name (docs/dev/
+    #: mynn-gsd41.md lists them).  Appended last.
+    bl_mynn_version: str = "wrf_461"
+    #: ``gsd_41`` mixing length option 2 converts the interface q to TKE as
+    #: 0.5*q (module_bl_mynn.F v4.1.21:995) where its own option 1 and every
+    #: later generation use 0.5*q**2.  True takes that line as written;
+    #: False (default) takes the squared form, so the default fork run
+    #: carries the fix.  Read only under bl_mynn_version = "gsd_41" with
+    #: bl_mynn_mixlength = 2.  Appended last.
+    bl_mynn_gsd41_unsquared_qtke: bool = False
+    #: Heat reconstruction and negative-condensate handling only. wrf_461
+    #: (default) uses the mixed condensate and conserves water through the
+    #: existing moisture repair. gsd_41 takes the fork's two defined defects
+    #: together: pre-mixing condensate in heat and tendency-only condensate
+    #: clipping (module_bl_mynn.F:3417-3421, 3449-3453, 3487-3497).
+    #: The defect form requires bl_mynn_version=gsd_41 and is never selected
+    #: automatically by an importer or recipe. Appended after staged fields.
+    bl_mynn_cloud_tendency_form: str = "wrf_461"
+
+    # WRF &physics radiation-driver options beyond the pinned RRTMG
+    # envelope (Registry.EM_COMMON:2389-2390; both single-valued, both
+    # default 0, which is WRF's own and leaves every earlier trajectory
+    # byte-identical).  Operational HRRR v4 runs swint_opt = 1 and
+    # aer_opt = 3 (hrrr_wrf.nl lines 114 and 156).
+    #   swint_opt = 1: the surface shortwave between radiation calls is a
+    #   per-column power-law fit in the solar zenith cosine, refitted at
+    #   every radiation call and evaluated on every step
+    #   (gpuwm.core.swint; module_radiation_driver.F
+    #   update_swinterp_parameters / interp_sw_radiation).  0 holds the
+    #   last radiation call's fluxes for the whole interval.
+    #   aer_opt = 3: the legacy RRTMG shortwave sees per-band aerosol
+    #   optics built from the Thompson water- and ice-friendly aerosol
+    #   numbers (gpuwm.core.rrtmg_aerosol_optics; the driver's gt_aod plus
+    #   module_ra_aerosol.F's calc_aerosol_rrtmg_sw).  0 runs zero
+    #   aerosol.  1 (the ECMWF six-type climatology, iaer = 6) and 2 (the
+    #   aer_aod550/angexp/ssa/asy auxinput path) are not transcribed and
+    #   refuse by name (validate_radiation_driver_options).
+    swint_opt: int = 0
+    aer_opt: int = 0
+    #: Sun-angle land albedo (WRF radiation driver's ALBSOL/ALBBCKSOL).
+    #: 0 preserves the previous albedo carrier. 1 updates the two fields
+    #: on radiation steps and supplies ALBSOL to shortwave and the RUC LSM.
+    alb_sol: int = 0
+    #: Which generation of the aerosol-aware Thompson microphysics
+    #: (mp_physics = 28) runs (gpuwm.core.thompson_aerosol_launch.
+    #: THOMPSON_VERSIONS).  ``wrf_461`` (WRF v4.6.1, the default): the
+    #: graupel number diagnosed from graupel content alone, the ice-to-snow
+    #: size 300 microns.  ``wrf_39_noaa`` (the operational WRF 3.9 fork,
+    #: NOAA-EMC/HRRR v4.1.21): the graupel intercept from graupel content
+    #: and supercooled rain, non-increasing downward, the ice-to-snow size
+    #: 200 microns, its own lookup tables
+    #: (gpuwm.physics_compat.thompson_fork_table_root).  An imported WRF
+    #: namelist that carries the fork's own keys selects it.  Appended last.
+    thompson_version: str = "wrf_461"
+    #: How melting snow falls under thompson_version = "wrf_39_noaa".
+    #: ``blend`` (the default): the rain-share blend of WRF v4.6.1, which the
+    #: fork itself carries commented out as the upstream bug fix.
+    #: ``wrf_39_noaa``: the fork's live expression, vts_boost 1.5 above 0 C
+    #: and a fall speed divided by (T - 273.15) just above +0.1 C, singular
+    #: there: a fork defect kept by name for the owner's ruling, never the
+    #: default.  Appended last.
+    thompson_fork_snow_fall: str = "blend"
+
+    #: Source form of the legacy RRTMG cloud wrapper. WRF v4.6.1 is the
+    #: frozen default; noaa_wrf39 selects the fork's liquid/ice shortwave
+    #: radius defaults and full snow ice fraction, plus Thompson's fork
+    #: cold-start effective radii. Appended to preserve positional calls.
+    rrtmg_cloud_optics_form: str = "wrf_461"
+    #: Explicit, immutable prescribed layer-smoke input for legacy SW.
+    #: Empty keeps the existing no-smoke trajectory. This is a forcing
+    #: sensitivity input, not an advected or emitted smoke chemistry state.
+    rrtmg_smoke_manifest: str = ""
+
+#: The two ways a domain's clock meets the measured terrain rules
+#: (:attr:`RunConfig.terrain_clock`).
+TERRAIN_CLOCK_MODES: tuple[str, ...] = ("measured", "pinned")
+
+
+#: WRF vertical advection orders the kernels carry (module_advect_em.F
+#: ``vert_order`` branches 3 and 5; 2, 4 and 6 are not transcribed).
+VERTICAL_ADV_ORDERS = (3, 5)
+
+
+def advection_order_refusal(*, v_sca_adv_order, v_mom_adv_order,
+                            h_mom_adv_order) -> str | None:
+    """Why the advection orders cannot run as set, or None.
+
+    Shared by :func:`validate_run_config` and the namelist importer.
+    The breakage each refusal prevents: a vertical order the kernels do
+    not carry would silently run the 3rd-order ladder under a namelist
+    that says otherwise, and a horizontal momentum order other than 5
+    would run WRF's flux5 under a namelist that asked for flux3/flux6.
+    """
+    for name, value in (("v_sca_adv_order", v_sca_adv_order),
+                        ("v_mom_adv_order", v_mom_adv_order)):
+        if isinstance(value, bool) or value not in VERTICAL_ADV_ORDERS:
+            return (f"{name} = {value!r}: the vertical flux ladder carries "
+                    "WRF's vert_order 3 (2nd order one face in from the eta "
+                    "boundaries, flux3 between) and 5 (2nd, flux3, flux5 "
+                    "interior) only; 2, 4 and 6 are not transcribed, so "
+                    "the run would not advect the way the namelist says.")
+    if isinstance(h_mom_adv_order, bool) or h_mom_adv_order != 5:
+        return (f"h_mom_adv_order = {h_mom_adv_order!r}: the u, v and w "
+                "horizontal stencils are WRF's 5th-order flux5 only "
+                "(gpuwm/core/kernels/advection.cu), so another order would "
+                "run flux5 under a namelist that asked for something else.")
+    return None
 
 
 #: The Noah-MP option identity gpuwm admits, field -> the only accepted
@@ -2039,6 +2294,116 @@ MP28_AEROSOL_SOURCE_OPTIONS: dict[str, tuple[int, str, str]] = {
 }
 
 
+def validate_radiation_driver_options(cfg: RunConfig) -> None:
+    """Radiation-driver options: the implemented values, by name.
+
+    * ``swint_opt`` is 0 or 1.  1 needs a shortwave scheme: the between-call
+      fit rewrites SWDOWN, SWDDIR, SWDDIF, SWDDNI and GSW on every step,
+      and with ``ra_sw_physics = 0`` it would overwrite a declared or
+      externally supplied SWDOWN with the fit of a flux nothing computed.
+    * ``aer_opt`` is 0 or 3.  3 is the Thompson-coupled branch, which WRF
+      gates on the water-friendly aerosol package being present
+      (``F_QNWFA``) and on RRTMG shortwave; it is transcribed for the
+      legacy RRTMG shortwave composition only.  Any other pairing would
+      run zero aerosol under a configuration whose receipt says aerosol-
+      aware radiation, which is the silent substitution this refuses.  1
+      and 2 are untranscribed WRF branches (the ECMWF six-type aerosol
+      climatology with its ``rrsw_aer`` tables; the aod550/Angstrom/ssa/
+      asymmetry namelist and auxinput path).
+    """
+    alb_sol = cfg.alb_sol
+    if type(alb_sol) is not int or alb_sol not in (0, 1):
+        raise ValueError(
+            f"alb_sol={alb_sol!r}: must be integer 0 (unchanged land "
+            "albedo) or 1 (sun-angle-dependent ALBSOL/ALBBCKSOL)")
+    cloud_form = cfg.rrtmg_cloud_optics_form
+    if cloud_form not in ("wrf_461", "noaa_wrf39"):
+        raise ValueError(
+            f"rrtmg_cloud_optics_form={cloud_form!r} must be 'wrf_461' "
+            "or 'noaa_wrf39': the source forms carry different cloud "
+            "radius defaults and snow ice fractions, so an unknown name "
+            "cannot select either")
+    swint = cfg.swint_opt
+    if isinstance(swint, bool) or swint not in (0, 1):
+        raise ValueError(
+            f"swint_opt={swint!r}: WRF defines 0 (hold the radiation call's "
+            "surface shortwave for the interval) and 1 (fit and interpolate "
+            "it on every step); nothing else is a WRF value")
+    aer = cfg.aer_opt
+    if isinstance(aer, bool) or aer not in (0, 1, 2, 3):
+        raise ValueError(
+            f"aer_opt={aer!r}: WRF defines 0, 1, 2 and 3 (Registry.EM_COMMON"
+            ":2389); nothing else is a WRF value")
+    if aer in (1, 2):
+        why = {
+            1: "the ECMWF six-type aerosol climatology (iaer = 6, the "
+               "rrsw_aer band tables and aer_time_int/aer_p_int) is not "
+               "transcribed",
+            2: "the aod550/Angstrom/ssa/asymmetry namelist and auxinput "
+               "path (aer_aod550_opt, aer_angexp_opt, aer_ssa_opt, "
+               "aer_asy_opt) is not transcribed",
+        }[aer]
+        raise ValueError(
+            f"aer_opt={aer}: {why}; the implemented values are 0 (no "
+            "aerosol) and 3 (Thompson water- and ice-friendly aerosol "
+            "optics)")
+    lw, sw = radiation_scheme_ids(cfg)
+    if alb_sol == 1 and int(sw) == 0:
+        raise ValueError(
+            "alb_sol=1 needs a shortwave scheme (ra_sw_physics != 0): "
+            "ALBSOL/ALBBCKSOL are updated at radiation calls and otherwise "
+            "would remain their allocation values")
+    smoke = cfg.rrtmg_smoke_manifest
+    if type(smoke) is not str:
+        raise ValueError("rrtmg_smoke_manifest must be a file path string; empty disables the forcing")
+    if smoke and (int(sw) != 4 or cfg.ra_rrtmg_variant != RRTMG_VARIANT_LEGACY
+                  or aer != 3 or int(cfg.mp_physics) != 28):
+        raise ValueError(
+            "rrtmg_smoke_manifest requires legacy RRTMG shortwave "
+            "(ra_sw_physics=4, ra_rrtmg_variant='rrtmg_legacy'), aer_opt=3 "
+            "and mp_physics=28: another path would discard the prescribed "
+            "smoke or omit its Thompson aerosol background")
+    if cloud_form != "wrf_461" and (
+            4 not in (int(lw), int(sw))
+            or cfg.ra_rrtmg_variant != RRTMG_VARIANT_LEGACY):
+        raise ValueError(
+            "rrtmg_cloud_optics_form='noaa_wrf39' needs the legacy RRTMG "
+            "path (ra_lw_physics=4 or ra_sw_physics=4 with "
+            f"ra_rrtmg_variant='{RRTMG_VARIANT_LEGACY}'); got "
+            f"ra_lw_physics={int(lw)}, ra_sw_physics={int(sw)}, "
+            f"ra_rrtmg_variant={cfg.ra_rrtmg_variant!r}, where the "
+            "selected cloud wrapper would be silently discarded")
+    if swint == 1 and int(sw) == 0:
+        raise ValueError(
+            "swint_opt=1 needs a shortwave scheme (ra_sw_physics != 0): the "
+            "between-call fit rewrites SWDOWN, SWDDIR, SWDDIF, SWDDNI and "
+            "GSW on every step and would overwrite a declared or external "
+            "SWDOWN with the fit of a flux nothing computed")
+    if swint == 1 and int(sw) != 4:
+        raise ValueError(
+            f"swint_opt=1 is wired for the RRTMG shortwave (ra_sw_physics=4), "
+            "which hands the fit its surface direct beam SWDDIR; with "
+            f"ra_sw_physics={int(sw)} WRF first forms SWDDIR by the "
+            "Ruiz-Arias split (module_radiation_driver.F:2329-2360), which "
+            "is not wired ahead of the fit here, so the direct-beam fit "
+            "would run on a zero SWDDIR")
+    if aer == 3:
+        if int(cfg.mp_physics) != 28:
+            raise ValueError(
+                f"aer_opt=3 needs the Thompson aerosol-aware numbers "
+                f"(mp_physics=28); with mp_physics={int(cfg.mp_physics)} "
+                "there is no QNWFA/QNIFA and WRF's driver would run zero "
+                "aerosol under a configuration claiming aerosol-aware "
+                "radiation")
+        if int(sw) != 4 or cfg.ra_rrtmg_variant != RRTMG_VARIANT_LEGACY:
+            raise ValueError(
+                "aer_opt=3 is transcribed for the legacy RRTMG shortwave "
+                f"composition only (ra_sw_physics=4 with ra_rrtmg_variant="
+                f"'{RRTMG_VARIANT_LEGACY}'); got ra_sw_physics={int(sw)}, "
+                f"ra_rrtmg_variant={cfg.ra_rrtmg_variant!r}, where the "
+                "aerosol optics would be silently discarded")
+
+
 def validate_aerosol_source_options(cfg: RunConfig) -> None:
     """Fail closed on any mp=28 aerosol-source selector ArWen cannot honour.
 
@@ -2225,10 +2590,11 @@ RUN_PREPARATION_PRECONDITIONS = (
 )
 
 
-def run_preparation_preconditions(cfg) -> tuple[str, ...]:
+def run_preparation_preconditions(cfg, *, pending_wif: bool = False) -> tuple[str, ...]:
     """Every machine-dependent precondition ``cfg`` does not meet."""
 
-    said = [check(cfg) for check in RUN_PREPARATION_PRECONDITIONS]
+    said = [check(cfg) for check in RUN_PREPARATION_PRECONDITIONS
+            if not (pending_wif and check is mp28_aerosol_lateral_forcing_precondition)]
     return tuple(sentence for sentence in said if sentence)
 
 
@@ -2252,7 +2618,7 @@ def validate_run_preparation(cfg) -> None:
         raise ValueError(sentence)
 
 
-def experiment_preparation_refusals(experiment) -> tuple[tuple[str, str], ...]:
+def experiment_preparation_refusals(experiment, *, pending_wif_domains=()) -> tuple[tuple[str, str], ...]:
     """``(domain label, sentence)`` for every unmet machine precondition.
 
     Reports rather than raises, so a door that wants to print all of them
@@ -2269,7 +2635,8 @@ def experiment_preparation_refusals(experiment) -> tuple[tuple[str, str], ...]:
         run = getattr(domain, "run", None)
         if run is None:
             continue
-        for sentence in run_preparation_preconditions(run):
+        for sentence in run_preparation_preconditions(
+                run, pending_wif=grid_id in pending_wif_domains):
             said.append((label, sentence))
     # An enabled [simulated_radar] needs a current rw_simradar and a scan
     # the host memory holds; asked here, before the fetch, rather than at
@@ -2282,7 +2649,7 @@ def experiment_preparation_refusals(experiment) -> tuple[tuple[str, str], ...]:
     return tuple(said)
 
 
-def validate_experiment_preparation(experiment) -> None:
+def validate_experiment_preparation(experiment, *, pending_wif_domains=()) -> None:
     """Refuse, BEFORE THE FETCH, what this machine cannot prepare.
 
     WHY THIS EXISTS AND NOT ONLY THE RUN DOOR.  ``initialize_real`` is the
@@ -2309,7 +2676,11 @@ def validate_experiment_preparation(experiment) -> None:
     one of them.
     """
 
-    for label, sentence in experiment_preparation_refusals(experiment):
+    # Only a fetch that owns WIF acquisition may name pending domains.
+    # Every other precondition remains enforced; preparation itself and
+    # initialization call this without a pending acquisition allowance.
+    for label, sentence in experiment_preparation_refusals(
+            experiment, pending_wif_domains=pending_wif_domains):
         raise ValueError(f"{label}: {sentence}")
 
 
@@ -2507,11 +2878,12 @@ def load_streaming_options(path: str | Path):
 #: keep resolving to the same string, or restarts and experiment
 #: identities move underneath runs that were never reconfigured.
 CONFIG_RELATIVE_FILE_KEYS: tuple[str, ...] = (
-    "wif_climatology_path",
+    "wif_climatology_path", "rrtmg_smoke_manifest",
 )
 
 
-def _anchor_config_file_paths(merged: dict, config_path: str | Path) -> None:
+def _anchor_config_file_paths(merged: dict, config_path: str | Path,
+                              *, keys=CONFIG_RELATIVE_FILE_KEYS) -> None:
     """Rewrite relative file values that resolve only beside the config.
 
     A value that is empty, absolute, or already a file from the working
@@ -2521,7 +2893,7 @@ def _anchor_config_file_paths(merged: dict, config_path: str | Path) -> None:
     """
 
     base = Path(config_path).resolve().parent
-    for key in CONFIG_RELATIVE_FILE_KEYS:
+    for key in keys:
         value = merged.get(key, "")
         if not value or not isinstance(value, str):
             continue
@@ -3037,6 +3409,25 @@ _DYNAMICS_RANGES: dict[str, tuple] = {
 #: so ``damp_opt = 2`` used to run with the damping layer switched off
 #: while the config said it was on.
 _DYNAMICS_CHOICES: dict[str, tuple] = {
+    "upper_wind_limiter_form": (("wrf_461", "noaa_wrf39"),
+        "'wrf_461' (no upper-wind limiter) or 'noaa_wrf39' (the "
+        "WRFV3.9 fork's 110 m/s limiter in the damping layer)"),
+    "diff_6th_form": (("wrf_461", "noaa_wrf39"),
+                      "'wrf_461' (WRF v4.6.1 sixth_order_diffusion) or "
+                      "'noaa_wrf39' (the NOAA-EMC WRFV3.9 fork: a second "
+                      "factor on the full step for moisture and scalars, "
+                      "filtered to the domain edge); the two filter "
+                      "moisture by different amounts, so an unknown name "
+                      "cannot select either"),
+    "mp_zero_out": ((0, 1, 2),
+                    "0 (off), 1 (zero non-vapour species below "
+                    "mp_zero_out_thresh) or 2 (also floor vapour at "
+                    "zero), WRF module_microphysics_zero_out; another "
+                    "value would run as 0 in WRF's routine"),
+    "mp_zero_out_all": ((0, 1),
+                        "0 (moist array only, WRF v4.6.1 default) or 1 "
+                        "(also the scalar number arrays, as the NOAA "
+                        "WRFV3.9 fork always does)"),
     "zadvect_implicit_variant": (("wrf_471", "wrf_legacy"),
                                  "'wrf_471' (module_ieva_em) or "
                                  "'wrf_legacy' (module_advect_em); the "
@@ -3327,20 +3718,46 @@ def validate_km_opt(cfg: RunConfig) -> None:
         # (the parent's TKE stays on the parent); gpuwm.experiment, the
         # only place that knows the parent, admits that tree with a
         # not-yet-verified warning.
-    if cfg.diff_opt == 2 and not cfg.mix_full_fields:
-        # After the closure refusals, which name the more basic problem.
-        # The metric operator mixes full fields only (smag2d.cu, and the
-        # importer substitutes true for a namelist's false here).  Admitted,
-        # false would be recorded in the run's configuration and checkpoint
-        # while the run mixed full fields: a WRF perturbation-mixing
-        # experiment that silently is not one.
-        raise ValueError(
-            "mix_full_fields = false selects WRF's perturbation mixing (the "
-            "base-state profile subtracted before mixing), which diff_opt=2 "
-            "does not implement: this run would mix full fields while its "
-            "configuration says otherwise. Set mix_full_fields = true, or "
-            "diff_opt = 1, whose coordinate operator mixes theta relative to "
-            "its initial field at either value")
+    # mix_full_fields = false under diff_opt 2 is admitted at either value.
+    # A refusal used to stand here ("this run would mix full fields while
+    # its configuration says otherwise").  It retired with the reading of
+    # the operational HRRR source (NOAA-EMC/HRRR v4.1.21, WRFV3.9): WRF's
+    # perturbation branch subtracts the 1-D base-state wind profiles
+    # u_base/v_base from du/dz and dv/dz in cal_deform_and_div
+    # (dyn_em/module_diffusion_em.F:842-860 and :1017-1035) and the 1-D
+    # t_base/qv_base profiles from theta and qv in vertical_diffusion_2
+    # (:3694-3712 and :3778-3792), which module_first_rk_step_part2.F:
+    # 925-927 calls only with bl_pbl_physics = 0.  real.exe never assigns
+    # any of the four profiles (Registry.EM_COMMON:372 and :1247-1249 name
+    # them "BASE STATE ... IN IDEALIZED CASES"; only the
+    # module_initialize_<ideal>.F routines and module_force_scm.F write
+    # them) and WRF's allocation zero-fills them
+    # (frame/wrf_num_bytes_between.c:43-48 through
+    # frame/module_alloc_space.h:139, head grid setinitval 3 at
+    # frame/module_domain.F:782), so for every real-data initialization
+    # the perturbation operand is ``((u - 0) - u(k-1)) + 0``: the
+    # full-field arithmetic to the bit (the sign of an exact zero aside:
+    # compiled WRF cal_deform_and_div, byte-identical in the fork and
+    # v4.7.1, differs between the two branches in 7 of 966,854 tensor
+    # words over the 14 deformation fixtures, all of them signed zeros in
+    # D23 of one zero-flow fixture; lane 286-mix-full-fields receipt; with
+    # a nonzero profile 237,319 D13/D23 words move).  The metric
+    # operator therefore IS WRF's operator at either value for real-data
+    # runs, and the value is recorded as declared.  The one input that
+    # would differ, an ideal.exe wrfinput whose base-state profile is not
+    # zero, is refused by name at the wrfinput door
+    # (gpuwm/ingest/wrfinput.py, require_zero_base_state_profiles).  WRF
+    # calls cal_deform_and_div under diff_opt 1 too
+    # (module_first_rk_step_part2.F:448), but under diff_opt 1 only
+    # smag_km (km_opt 3, refused just above) reads D13/D23: tke_rhs runs
+    # only under diff_opt 2 (:888).  diff_opt 1 with no PBL scheme also
+    # subtracts u_base/v_base/qv_base at either value, scaled by kvdif
+    # (module_em.F:844-853, :1381-1385), and kvdif > 0 is refused for
+    # km_opt 2-4 (the khdif/kvdif check in validate_config).
+    # base_state_profiles_read names every one of those paths, so the
+    # door stays exact if either refusal retires.  The
+    # engine's own idealized cases (``gpuwm verify``) run fixed
+    # configurations with mix_full_fields = true and take no override.
     if cfg.km_opt in (1, 2, 3, 4):
         return
     if producer is None and ack != KM_OPT_ZERO_ACK:
@@ -3902,6 +4319,14 @@ def _validate_adaptive_time_step(cfg: RunConfig) -> None:
         raise ValueError("adaptive_nest_lattice must be true or false")
     if cfg.adaptive_nest_lattice and not cfg.use_adaptive_time_step:
         raise ValueError("adaptive_nest_lattice needs use_adaptive_time_step = true")
+    if cfg.terrain_clock not in TERRAIN_CLOCK_MODES:
+        raise ValueError(
+            f"terrain_clock={cfg.terrain_clock!r} is not one of "
+            f"{list(TERRAIN_CLOCK_MODES)}: \"measured\" lets the terrain "
+            "clock and the steep-ground substep rule rewrite the clock at "
+            "launch where their measured maps saw a step stop; \"pinned\" "
+            "runs dt and time_step_sound exactly as configured and records "
+            "what those rules would have done as advice in the receipt")
     if not cfg.use_adaptive_time_step:
         return
 
@@ -4001,6 +4426,7 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
         sf_urban_physics=cfg.sf_urban_physics)
     if why is not None:
         raise ValueError(why)
+    validate_radiation_driver_options(cfg)
     for name in ("slope_rad", "topo_shading"):
         value = getattr(cfg, name)
         if isinstance(value, bool) or value not in (0, 1):
@@ -4193,12 +4619,39 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             f"sf_surface_physics={cfg.sf_surface_physics}."
         )
     validate_noah_mosaic_config(cfg)
-    if cfg.sf_surface_physics != 2 and (
-            cfg.usemonalb or cfg.rdlai2d or cfg.opt_thcnd != 1):
+    if cfg.sf_surface_physics not in (2, 3) and (
+            cfg.usemonalb or cfg.rdlai2d):
         raise ValueError(
-            "usemonalb/rdlai2d/opt_thcnd are Noah LSM options and require "
+            "usemonalb/rdlai2d are implemented by the Noah LSM "
+            "(sf_surface_physics=2) and the RUC LSM (sf_surface_physics=3); "
+            "Noah-MP and the slab carry no branch that reads the monthly "
+            "albedo or LAI field, so the flag would be accepted and ignored. "
+            f"The selected land-surface model is sf_surface_physics="
+            f"{cfg.sf_surface_physics}."
+        )
+    if cfg.sf_surface_physics != 2 and cfg.opt_thcnd != 1:
+        raise ValueError(
+            "opt_thcnd is a Noah LSM option (the soil thermal conductivity "
+            "branch at gpuwm/core/kernels/noah.cu:181) and requires "
             "sf_surface_physics=2; the selected land-surface model is "
             f"sf_surface_physics={cfg.sf_surface_physics}."
+        )
+    if (type(cfg.fractional_seaice) is not int
+            or cfg.fractional_seaice not in (0, 1)):
+        raise ValueError(
+            f"fractional_seaice={cfg.fractional_seaice!r} must be the integer "
+            "0 (sea-ice threshold 0.5) or 1 (threshold 0.02), WRF's two "
+            "values (module_surface_driver.F fractional_seaice select)."
+        )
+    if cfg.fractional_seaice == 1 and cfg.sf_surface_physics != 3:
+        raise ValueError(
+            "fractional_seaice=1 is implemented by the RUC seam only "
+            "(sf_surface_physics=3): it alone carries the open-water second "
+            "surface-layer call and the post-LSM flux blend that the 0.02 "
+            "threshold admits cells into (gpuwm/core/physics.py _run_sfclay, "
+            "gpuwm/core/ruc_runtime.py).  Noah, Noah-MP and the slab would "
+            "accept the flag and run their XICE >= 0.5 branch unchanged. "
+            f"Got sf_surface_physics={cfg.sf_surface_physics}."
         )
     # Surface coupling.  The registry has always refused these two through
     # land_surface/pbl requires_components while this battery accepted them,
@@ -4494,6 +4947,80 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "the water and ice columns at or above it, and a threshold "
             "that is not a finite number selects none of them, or every "
             "one with the ocean among them.")
+    if cfg.thompson_version not in ("wrf_461", "wrf_39_noaa"):
+        raise ValueError(
+            f"thompson_version={cfg.thompson_version!r} must be 'wrf_461' "
+            "(WRF v4.6.1's Thompson) or 'wrf_39_noaa' (the operational WRF "
+            "3.9 fork's): the two size graupel, snow and ice differently, "
+            "so an unknown name cannot select either.")
+    if cfg.thompson_fork_snow_fall not in ("blend", "wrf_39_noaa"):
+        raise ValueError(
+            f"thompson_fork_snow_fall={cfg.thompson_fork_snow_fall!r} must "
+            "be 'blend' (melting snow blends with the rain fall speed) or "
+            "'wrf_39_noaa' (the fork's singular expression): the two move "
+            "snow below the freezing level differently.")
+    if (cfg.thompson_fork_snow_fall != "blend"
+            and cfg.thompson_version != "wrf_39_noaa"):
+        raise ValueError(
+            "thompson_fork_snow_fall='wrf_39_noaa' is the WRF 3.9 fork's "
+            "snow fall speed and only the fork generation carries it; "
+            f"thompson_version={cfg.thompson_version!r} would ignore it.  "
+            "Set thompson_version = 'wrf_39_noaa' as well, or leave the "
+            "snow fall at 'blend'.")
+    if cfg.thompson_version != "wrf_461" and cfg.mp_physics != 28:
+        raise ValueError(
+            f"thompson_version={cfg.thompson_version!r} is ported for the "
+            f"aerosol-aware scheme (mp_physics = 28) only; mp_physics="
+            f"{cfg.mp_physics} would run its WRF v4.6.1 kernels under the "
+            "fork's name.  Use mp_physics = 28, or leave thompson_version "
+            "at 'wrf_461'.")
+    if cfg.bl_mynn_version not in ("wrf_461", "gsd_41"):
+        raise ValueError(
+            f"bl_mynn_version={cfg.bl_mynn_version!r} must be 'wrf_461' "
+            "(WRF v4.6.1 MYNN) or 'gsd_41' (the GSD MYNN v4.1 of the "
+            "NOAA-EMC WRF 3.9 branch): the two delete or keep a dew flux "
+            "and mix with different lengths, so an unknown name cannot "
+            "select either.")
+    if cfg.bl_mynn_cloud_tendency_form not in ("wrf_461", "gsd_41"):
+        raise ValueError("bl_mynn_cloud_tendency_form must be 'wrf_461' or 'gsd_41'")
+    if cfg.bl_mynn_cloud_tendency_form == "gsd_41" and cfg.bl_mynn_version != "gsd_41":
+        raise ValueError("bl_mynn_cloud_tendency_form='gsd_41' requires bl_mynn_version='gsd_41': "
+                         "the generic kernel has no fork cloud tendency branch")
+    if type(cfg.bl_mynn_gsd41_unsquared_qtke) is not bool:
+        raise ValueError(
+            "bl_mynn_gsd41_unsquared_qtke must be true or false: it picks "
+            "one of two TKE conversions inside the gsd_41 mixing length, "
+            "and a non-boolean value names neither.")
+    if (cfg.bl_mynn_version == "gsd_41" and cfg.bl_pbl_physics == 5
+            and cfg.icloud_bl > 0 and radiation_enabled(cfg)
+            and (radiation_scheme_ids(cfg) != (4, 4)
+                 or cfg.ra_rrtmg_variant != RRTMG_VARIANT_LEGACY)):
+        raise ValueError(
+            "bl_mynn_version='gsd_41' hands radiation in-cloud QC_BL, and "
+            "only the legacy WRF RRTMG pair (ra_physics=4, ra_rrtmg_variant="
+            f"'{RRTMG_VARIANT_LEGACY}') carries its merge (QC_BL times "
+            "CLDFRA_BL where no resolved cloud is present); the other "
+            "radiation couplings add QC_BL as a grid mean and would make "
+            "every subgrid cloud 1/CLDFRA_BL times too thick.  Select that "
+            "pair, or bl_mynn_version='wrf_461'.")
+    if cfg.bl_mynn_version == "gsd_41" and cfg.bl_mynn_mixscalars == 1:
+        raise ValueError(
+            "bl_mynn_version='gsd_41' with bl_mynn_mixscalars=1: the scalar "
+            "plume transport runs the mass flux from its sibling unit, which "
+            "carries the v4.6.1 shallow-cumulus cloud only, so a gsd_41 run "
+            "would hand radiation grid-mean plume water as in-cloud water.")
+    if cfg.bl_mynn_version == "gsd_41" and cfg.spp_pbl == 1:
+        raise ValueError(
+            "bl_mynn_version='gsd_41' with spp_pbl=1: the stochastic MYNN "
+            "kernels are specialised from the WRF v4.6.1 source only, so "
+            "the gsd_41 rows (dew flux, mixing length) would be absent from "
+            "every perturbed step while the run claimed them.")
+    if cfg.mynn_sfclay_variant not in ("wrf_461", "gsl_wrf39"):
+        raise ValueError(
+            f"mynn_sfclay_variant={cfg.mynn_sfclay_variant!r} must be "
+            "'wrf_461' (WRF v4.6.1's MYNN surface layer) or 'gsl_wrf39' "
+            "(the GSL WRF 3.9 fork's): the two solve different equations "
+            "for z/L, so an unknown name cannot select either.")
     if cfg.ruc_soilprop not in ("wrf_45", "wrf_461"):
         raise ValueError(
             f"ruc_soilprop={cfg.ruc_soilprop!r} must be 'wrf_45' (the WRF "
@@ -4501,6 +5028,33 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "residual) or 'wrf_461' (the WRF v4.6.1 form over total "
             "porosity): the two move different water between soil levels, "
             "so an unknown name cannot select either.")
+    if cfg.ruc_snow not in ("wrf_45", "wrf_461"):
+        raise ValueError(
+            f"ruc_snow={cfg.ruc_snow!r} must be 'wrf_45' (the WRF v4.0-4.5 "
+            "snow scheme the operational RAP/HRRR branch carries) or "
+            "'wrf_461' (the WRF v4.6.1 rewrite): the two differ in snow "
+            "conductivity, cover, melt and albedo, so an unknown name cannot "
+            "select either.")
+    if cfg.ruc_2m_diagnostic not in ("flux", "log_profile"):
+        raise ValueError(
+            f"ruc_2m_diagnostic={cfg.ruc_2m_diagnostic!r} must be 'flux' "
+            "(public WRF's 2 m flux form) or 'log_profile' (the operational "
+            "RAP/HRRR branch's logarithmic profile): the two write different "
+            "2 m values, so an unknown name cannot select either.")
+    if cfg.ruc_qvg_cold_start not in ("air", "wrf"):
+        raise ValueError(
+            f"ruc_qvg_cold_start={cfg.ruc_qvg_cold_start!r} must be 'air' "
+            "(the ground vapour starts from the lowest-level air) or 'wrf' "
+            "(from saturation at the skin times moisture availability): the "
+            "two start different surface humidity, so an unknown name "
+            "cannot select either.")
+    if cfg.ruc_irrigation not in ("wrf_45", "wrf_461"):
+        raise ValueError(
+            f"ruc_irrigation={cfg.ruc_irrigation!r} must be 'wrf_45' (the "
+            "WRF v4.0-4.5 crop-fraction-scaled soil moisture floor) or "
+            "'wrf_461' (the WRF v4.6.1 per-step relaxation to 1.1 x "
+            "wilting point): the two add different soil water, so an "
+            "unknown name cannot select either.")
     for name in ("mosaic_lu", "mosaic_soil"):
         value = getattr(cfg, name)
         if type(value) is not int or value not in (0, 1):
@@ -4965,6 +5519,12 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "are implemented (the open branch additionally needs the "
             "boundary-row ph_old upwind terms)."
         )
+    why = advection_order_refusal(
+        v_sca_adv_order=cfg.v_sca_adv_order,
+        v_mom_adv_order=cfg.v_mom_adv_order,
+        h_mom_adv_order=cfg.h_mom_adv_order)
+    if why is not None:
+        raise ValueError(why)
     if cfg.spec_zone < 1 or cfg.relax_zone < 2:
         raise ValueError("spec_zone must be >= 1 and relax_zone must be >= 2")
     if cfg.spec_bdy_width < cfg.spec_zone + cfg.relax_zone:
@@ -5007,6 +5567,28 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "positive-definite transport limiter; use the monotonic "
             "diff_6th_opt=2."
         )
+    if cfg.diff_6th_factor2 is not None:
+        if cfg.diff_6th_form != "noaa_wrf39":
+            raise ValueError(
+                f"diff_6th_factor2={cfg.diff_6th_factor2!r} is read only by "
+                "the NOAA WRFV3.9 fork's filter (diff_6th_form = "
+                "'noaa_wrf39'); WRF v4.6.1 has no second factor, so under "
+                f"diff_6th_form = {cfg.diff_6th_form!r} the value would be "
+                "silently ignored.")
+        if (isinstance(cfg.diff_6th_factor2, bool)
+                or not isinstance(cfg.diff_6th_factor2, (int, float))
+                or not math.isfinite(cfg.diff_6th_factor2)
+                or cfg.diff_6th_factor2 < 0.0):
+            raise ValueError(
+                "diff_6th_factor2 must be a finite non-negative filter "
+                f"factor (fork Registry default 0.04), got "
+                f"{cfg.diff_6th_factor2!r}.")
+    if (isinstance(cfg.mp_zero_out_thresh, bool)
+            or not isinstance(cfg.mp_zero_out_thresh, (int, float))
+            or not math.isfinite(cfg.mp_zero_out_thresh)):
+        raise ValueError(
+            "mp_zero_out_thresh must be a finite mixing ratio in kg/kg "
+            f"(WRF Registry default 1e-8), got {cfg.mp_zero_out_thresh!r}.")
     if not isinstance(cfg.moist_mix6_off, bool):
         raise ValueError(
             "moist_mix6_off must be a boolean (WRF v4.6.1 declares it "

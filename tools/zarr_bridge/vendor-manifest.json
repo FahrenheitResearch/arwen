@@ -1,6 +1,6 @@
 {
   "schema": "arwen.zarr-vendor.v1",
-  "lock_sha256": "574f7e854ccc64316f7fe003702d2324a9975816d44fb214d1522bafa5b26068",
+  "lock_sha256": "ede24c77959987eb9df504486b5a593cd22b9c068f75a6c3bf1fed130f326729",
   "command": "cd tools/zarr_bridge && cargo vendor --locked --offline --versioned-dirs vendor/crates-io",
   "packages": [
     {
@@ -732,13 +732,6 @@
       "license_file": null
     },
     {
-      "name": "lru",
-      "version": "0.18.4",
-      "package_sha256": "ff9840bcc50b71349309900da0ce7279aa336ae71d73250b07998932c7d97c25",
-      "license": "MIT",
-      "license_file": null
-    },
-    {
       "name": "lz4-sys",
       "version": "1.11.1+lz4-1.10.0",
       "package_sha256": "6bd8c0d6c6ed0cd30b3652886bb8711dc4bb01d637a68105a3d5158039b418e6",
@@ -833,13 +826,6 @@
       "name": "ndarray",
       "version": "0.17.2",
       "package_sha256": "520080814a7a6b4a6e9070823bb24b4531daac8c4627e08ba5de8c5ef2f2752d",
-      "license": "MIT OR Apache-2.0",
-      "license_file": null
-    },
-    {
-      "name": "netcdf-reader",
-      "version": "0.3.0",
-      "package_sha256": "d7eb7a0b389fcc97f37522c28e475de5809a40860028fb0d7fb29f91367973e9",
       "license": "MIT OR Apache-2.0",
       "license_file": null
     },

@@ -38,7 +38,9 @@ def test_resident_mosaic_columns_match_wrf_bits():
 
 @pytest.mark.parametrize("mosaic_lu,mosaic_soil", [(1, 0), (0, 1), (1, 1)])
 @pytest.mark.parametrize("lakemodel", [0, 1])
-def test_fused_mosaic_runtime_matches_resident_columns(mosaic_lu, mosaic_soil, lakemodel):
+@pytest.mark.parametrize("irrigation", ["wrf_45", "wrf_461"])
+def test_fused_mosaic_runtime_matches_resident_columns(mosaic_lu, mosaic_soil, lakemodel,
+                                                       irrigation):
     import cupy as cp
     from types import SimpleNamespace
     from test_ruc_lsm_fused import _case, _copy, _equal
@@ -68,6 +70,62 @@ def test_fused_mosaic_runtime_matches_resident_columns(mosaic_lu, mosaic_soil, l
                            precipitation=SurfacePrecipitationForcing.from_fields(target),
                            dt=12.0, itimestep=k, mosaic_lu=mosaic_lu,
                            mosaic_soil=mosaic_soil, flag_sm_adj=0,
-                           spp_lsm=0, lakemodel=lakemodel))
+                           spp_lsm=0, lakemodel=lakemodel,
+                           ruc_irrigation=irrigation))
+        assert results[0] == results[1]
+        _equal(driver.fields, reference)
+
+
+@pytest.mark.parametrize("qvg_cold_start", ["wrf", "air"])
+def test_fused_qvg_cold_start_matches_the_host_twin(qvg_cold_start):
+    """Both QVG cold starts, fused against the reference driver, from k=1."""
+    import cupy as cp
+    from types import SimpleNamespace
+    from test_ruc_lsm_fused import _case, _copy, _equal
+    from gpuwm.core.ruc_runtime import ruc_lsm_step, _ruc_lsm_step_reference
+    from gpuwm.core.surface_forcing import SurfacePrecipitationForcing
+
+    bench, driver, atmosphere, cold = _case(1499, 9, "mixed")
+    shape = driver.fields["tsk"].shape
+    driver.fields["qvg"][...] = cp.float32(0.0)
+    driver.fields["qcg"][...] = cp.float32(0.0)
+    reference = _copy(driver.fields)
+    for k in range(1, 4):
+        bench.forcing(driver, k, 11, shape, cold)
+        bench.forcing(SimpleNamespace(fields=reference), k, 11, shape, cold)
+        results = []
+        for function, target in ((ruc_lsm_step, driver.fields),
+                                 (_ruc_lsm_step_reference, reference)):
+            results.append(function(target, atmosphere, params=driver.ruc_params,
+                           precipitation=SurfacePrecipitationForcing.from_fields(target),
+                           dt=12.0, itimestep=k, mosaic_lu=0, mosaic_soil=0,
+                           flag_sm_adj=0, spp_lsm=0, lakemodel=0,
+                           ruc_qvg_cold_start=qvg_cold_start))
+        assert results[0] == results[1]
+        _equal(driver.fields, reference)
+
+
+@pytest.mark.parametrize("diagnostic", ["flux", "log_profile"])
+def test_fused_2m_diagnostic_matches_the_host_twin(diagnostic):
+    """Both 2 m forms, fused epilogue against the host SFCDIAGS twin."""
+    from types import SimpleNamespace
+    from test_ruc_lsm_fused import _case, _copy, _equal
+    from gpuwm.core.ruc_runtime import ruc_lsm_step, _ruc_lsm_step_reference
+    from gpuwm.core.surface_forcing import SurfacePrecipitationForcing
+
+    bench, driver, atmosphere, cold = _case(1499, 9, "mixed")
+    shape = driver.fields["tsk"].shape
+    reference = _copy(driver.fields)
+    for k in range(1, 4):
+        bench.forcing(driver, k, 11, shape, cold)
+        bench.forcing(SimpleNamespace(fields=reference), k, 11, shape, cold)
+        results = []
+        for function, target in ((ruc_lsm_step, driver.fields),
+                                 (_ruc_lsm_step_reference, reference)):
+            results.append(function(target, atmosphere, params=driver.ruc_params,
+                           precipitation=SurfacePrecipitationForcing.from_fields(target),
+                           dt=12.0, itimestep=k, mosaic_lu=0, mosaic_soil=0,
+                           flag_sm_adj=0, spp_lsm=0, lakemodel=0,
+                           ruc_2m_diagnostic=diagnostic))
         assert results[0] == results[1]
         _equal(driver.fields, reference)

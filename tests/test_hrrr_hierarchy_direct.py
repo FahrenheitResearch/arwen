@@ -7,6 +7,7 @@ from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +25,7 @@ from gpuwm.hrrr_hierarchy_direct import (
 )
 from gpuwm.ingest.hrrr_target import HrrrTargetDomain
 from gpuwm.native_wrf_contract import CERTIFIED_ETA_LEVELS
+from gpuwm.wrf_physics_inventory import EXPORT_USE_THETA_M
 from gpuwm.core.devices import DeviceOptions, DEVICES_OFF
 from gpuwm.simulated_radar import SimulatedRadarOptions, OFF as RADAR_OFF
 
@@ -310,13 +312,15 @@ def test_highres_fetch_receipts_stay_under_the_windows_path_limit_at_depth(
     original_replace = os.replace
 
     def replace_spy(source, target):
-        replaced.extend((str(source), str(target)))
+        if Path(target).parent == Path(resolved.cache_root) / "receipts":
+            replaced.extend((str(source), str(target)))
         return original_replace(source, target)
 
     grid = _target().grid()
     receipts = []
     with monkeypatch.context() as spying:
-        spying.setattr(os, "replace", replace_spy)
+        spying.setattr(owner, "os", SimpleNamespace(
+            replace=replace_spy, getpid=os.getpid))
         # Every source a configuration can name enters the receipt name.
         for terrain in owner._TERRAIN_SOURCE_CHOICES:
             for landcover in owner._LANDCOVER_SOURCE_CHOICES:
@@ -609,12 +613,13 @@ def test_deepest_receipt_path_is_the_longest_partial_a_receipt_writes(
     original_replace = os.replace
 
     def replace_spy(source, target):
-        written.append(str(source))
+        if Path(target).parent == config.cache_root / "receipts":
+            written.append(str(source))
         return original_replace(source, target)
 
     with monkeypatch.context() as spying:
-        spying.setattr(os, "replace", replace_spy)
-        spying.setattr(os, "getpid", lambda: WINDOWS_WIDEST_PID)
+        spying.setattr(owner, "os", SimpleNamespace(
+            replace=replace_spy, getpid=lambda: WINDOWS_WIDEST_PID))
         for terrain in owner._TERRAIN_SOURCE_CHOICES:
             for landcover in owner._LANDCOVER_SOURCE_CHOICES:
                 asked = replace(config, terrain_source=terrain,
@@ -749,6 +754,10 @@ class _Experiment:
     spec_bdy_width: int = 5
     devices: DeviceOptions = DEVICES_OFF
     simulated_radar: SimulatedRadarOptions = RADAR_OFF
+    # 18fb332a0, lane/recover-physics-params: the recovered optional set
+    # belongs to ExperimentConfig. No set stays absent from its document;
+    # this stock-comparison fixture must carry the same default explicitly.
+    physics_params: object | None = None
 
 
 def _native() -> _Experiment:
@@ -1521,17 +1530,21 @@ def test_raw_namelist_gate_allows_only_explicit_runtime_deltas(
         encoding="ascii")
     stock.write_text(
         _raw_runtime_namelist(
-            max_dom, longwave=1, theta_m=1, ghg_input=0, do_radar_ref=1),
+            max_dom, longwave=1, theta_m=0, ghg_input=0, do_radar_ref=1),
         encoding="ascii")
     receipt = _require_raw_stock_delta(native, stock)
     assert set(receipt["allowed_deltas"]) == {
-        "physics.ra_lw_physics", "dynamics.use_theta_m",
+        "physics.ra_lw_physics",
         "physics.ghg_input", "physics.do_radar_ref"}
+    # Not a delta: both halves declare the export's dry theta.
+    assert receipt["shared_dry_theta"] == {
+        "dynamics.use_theta_m": [EXPORT_USE_THETA_M]}
+    assert receipt["schema"] == "gpuwm-native-to-stock-namelist-delta-v5"
     assert receipt["max_dom"] == max_dom
 
     stock.write_text(
         _raw_runtime_namelist(
-            max_dom, longwave=1, theta_m=1, ghg_input=0, do_radar_ref=1,
+            max_dom, longwave=1, theta_m=0, ghg_input=0, do_radar_ref=1,
             run_hours=6),
         encoding="ascii")
     with pytest.raises(ValueError, match="time_control/run_hours"):
@@ -1539,7 +1552,7 @@ def test_raw_namelist_gate_allows_only_explicit_runtime_deltas(
 
     stock.write_text(
         _raw_runtime_namelist(
-            max_dom, longwave=1, theta_m=1, ghg_input=1, do_radar_ref=1),
+            max_dom, longwave=1, theta_m=0, ghg_input=1, do_radar_ref=1),
         encoding="ascii")
     with pytest.raises(ValueError, match="stock-only ghg_input=0"):
         _require_raw_stock_delta(native, stock)
@@ -1550,14 +1563,14 @@ def test_raw_namelist_gate_allows_only_explicit_runtime_deltas(
     # present and says the wrong thing.  Both refuse.
     stock.write_text(
         _raw_runtime_namelist(
-            max_dom, longwave=1, theta_m=1, ghg_input=0),
+            max_dom, longwave=1, theta_m=0, ghg_input=0),
         encoding="ascii")
     with pytest.raises(ValueError, match="do_radar_ref"):
         _require_raw_stock_delta(native, stock)
 
     stock.write_text(
         _raw_runtime_namelist(
-            max_dom, longwave=1, theta_m=1, ghg_input=0, do_radar_ref=0),
+            max_dom, longwave=1, theta_m=0, ghg_input=0, do_radar_ref=0),
         encoding="ascii")
     with pytest.raises(ValueError, match="stock-only do_radar_ref=1"):
         _require_raw_stock_delta(native, stock)
@@ -1571,10 +1584,42 @@ def test_raw_namelist_gate_allows_only_explicit_runtime_deltas(
         encoding="ascii")
     stock.write_text(
         _raw_runtime_namelist(
-            max_dom, longwave=1, theta_m=1, ghg_input=0, do_radar_ref=1),
+            max_dom, longwave=1, theta_m=0, ghg_input=0, do_radar_ref=1),
         encoding="ascii")
     with pytest.raises(ValueError, match="do_radar_ref must be omitted"):
         _require_raw_stock_delta(native, stock)
+
+
+@pytest.mark.parametrize("native_theta, stock_theta", [
+    (0, 1), (1, 1), (1, 0)])
+def test_raw_namelist_gate_refuses_a_moist_theta_half(
+        tmp_path, native_theta, stock_theta):
+    """Both halves declare dry theta, and the refusal says what breaks.
+
+    The stock arm's files are the direct export, which holds dry theta
+    and says so in its header.  A stock namelist that says 1 (every pair
+    generated before the export wrote dry theta) stops wrf.exe at its
+    input gate, so the route names that before it prepares anything.
+    """
+
+    assert EXPORT_USE_THETA_M == 0
+    native = tmp_path / "native.input"
+    stock = tmp_path / "stock.input"
+    native.write_text(
+        _raw_runtime_namelist(2, longwave=0, theta_m=native_theta),
+        encoding="ascii")
+    stock.write_text(
+        _raw_runtime_namelist(
+            2, longwave=1, theta_m=stock_theta, ghg_input=0,
+            do_radar_ref=1),
+        encoding="ascii")
+    with pytest.raises(ValueError) as refusal:
+        _require_raw_stock_delta(native, stock)
+    text = str(refusal.value)
+    assert "use_theta_m = 0 (dry theta)" in text
+    assert f"native [{native_theta}], stock [{stock_theta}]" in text
+    assert "use_theta_m values must be consistent" in text
+    assert "regenerate the pair" in text
 
 
 @pytest.mark.parametrize(
@@ -1601,7 +1646,7 @@ def test_raw_namelist_gate_rejects_dropped_runtime_drift(
     stock = tmp_path / "stock.input"
     native_text = _raw_runtime_namelist(4, longwave=0, theta_m=0)
     stock_text = _raw_runtime_namelist(
-        4, longwave=1, theta_m=1, ghg_input=0, do_radar_ref=1)
+        4, longwave=1, theta_m=0, ghg_input=0, do_radar_ref=1)
     assert old in native_text and old in stock_text
     native.write_text(native_text.replace(old, new), encoding="ascii")
     stock.write_text(stock_text.replace(old, new), encoding="ascii")
@@ -1623,7 +1668,7 @@ def test_the_soil_pin_follows_the_land_surface(tmp_path, land_surface, soil_laye
     native.write_text(_raw_runtime_namelist(
         3, longwave=0, theta_m=0, land_surface=land_surface, soil_layers=soil_layers), encoding="ascii")
     stock.write_text(_raw_runtime_namelist(
-        3, longwave=1, theta_m=1, ghg_input=0, do_radar_ref=1, land_surface=land_surface,
+        3, longwave=1, theta_m=0, ghg_input=0, do_radar_ref=1, land_surface=land_surface,
         soil_layers=soil_layers), encoding="ascii")
     if refused:
         with pytest.raises(ValueError, match="num_soil_layers"):
@@ -1639,7 +1684,7 @@ def test_the_soil_pin_refuses_a_tree_without_one_land_surface(tmp_path):
     native = tmp_path / "native.input"
     stock = tmp_path / "stock.input"
     good_native = _raw_runtime_namelist(2, longwave=0, theta_m=0)
-    good_stock = _raw_runtime_namelist(2, longwave=1, theta_m=1, ghg_input=0, do_radar_ref=1)
+    good_stock = _raw_runtime_namelist(2, longwave=1, theta_m=0, ghg_input=0, do_radar_ref=1)
     for old, new in ((" sf_surface_physics = 2, 2,\n", " sf_surface_physics = 2, 3,\n"),
                      (" sf_surface_physics = 2, 2,\n", "")):
         assert old in good_native and old in good_stock

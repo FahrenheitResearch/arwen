@@ -1,0 +1,4 @@
+# Downloaded source tarballs (fetch_sources.sh); pinned by SOURCES*.sha256.
+src/
+src-run/
+src-pins/

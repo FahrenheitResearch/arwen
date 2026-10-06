@@ -22,9 +22,14 @@ resolution mechanism shared by ingest (:func:`gpuwm.ingest.grib
    are version-matched by construction while a fetched bundle is only
    as fresh as the last ``gpuwm fetch-bridges``;
 5. the user-level default directory :func:`default_bridge_dir`
-   (``~/.gpuwm/bridges``), which ``gpuwm fetch-bridges``
-   (:mod:`gpuwm.bridge_assets`) stages the release's prebuilt bundle
-   into, and where a wheel user otherwise copies their own build once.
+   (``~/.gpuwm/bridges/<release>-<bundle digest>`` for a pinned
+   install, the flat ``~/.gpuwm/bridges`` otherwise), which ``gpuwm
+   fetch-bridges`` (:mod:`gpuwm.bridge_assets`) stages the release's
+   prebuilt bundle into, and where a wheel user otherwise copies their
+   own build once;
+6. for a pinned install only, the flat legacy ``~/.gpuwm/bridges``
+   (:func:`legacy_bridge_candidates`), read when its bytes are this
+   release's pin and never written.
 
 The ``py3-none-any`` fallback wheel -- the one pip resolves on a
 platform with no published bundle -- carries no rung 4, and every
@@ -102,6 +107,8 @@ CRATE_RELATIVE = "tools/grib1_bridge"
 #: line naming the argument vector), never a version number, which a
 #: rebuild bumps whether or not anything changed.
 BRIDGE_ABI_MARKERS = {
+    "rw_verify": b"gpuwm.verify-visuals.request.v1",
+    "rw_compare": b"gpuwm.reference-input.v1",
     "rw_simradar": (b"rw_simradar --request REQUEST.json "
                    b"schema=simulated-radar.request/v1 manifest=simulated-radar.manifest/v1 "
                    b"volume_paths=v1 scene_shapes=v1"),
@@ -159,9 +166,10 @@ BRIDGE_ABI_MARKERS = {
     # surface-nearest search.  A build predating them loads cleanly,
     # answers the ABI probe with 1 and maps every other field, and then
     # cannot map the land surface or assemble a water temperature at all.
-    # Spelled to match gpuwm.ingest.cpu_backend.MASKED_NEAREST_ENTRY; a
-    # test binds the two.
-    "gpuwm_preprocess_cpu": b"gpuwm_masked_nearest_f32",
+    # The host Noah cold start also uses this library. A build without
+    # its soil-liquid-water entry cannot prepare a frozen soil column.
+    # Spelled to match gpuwm.noah_init_bridge.NOAH_SH2O_ENTRY.
+    "gpuwm_preprocess_cpu": b"gpuwm_noah_initialize_sh2o_f64",
     # The NetCDF writer cdylib behind the DEFAULT wrfout engine AND the
     # DEFAULT wrfinput/wrfbdy export.  A library, so the literal is an
     # exported symbol name, and it names the newest capability a default
@@ -208,6 +216,18 @@ BRIDGE_ABI_MARKERS = {
     # -- whose tie-breaking is traversal order -- while reporting the
     # Rust engine as present.
     "obs_regrid": b"gpuwm_obsregrid_build_plan",
+    "obs_score": b"gpuwm_obsscore_masked_fss",
+    "rw_mpas_geometry": b"rw_mpas_geometry --protocol hex-geometry-v1",
+    "rw_mpas_hostprep": b"rw_mpas_hostprep --protocol hex-hostprep-v1",
+    # The isobaric-height reader cdylib (tools/rustwx/crates/rw-isobaric),
+    # behind every Python consumer of a height on a pressure surface (the
+    # vortex tracker on a host state, the GNSS-RO operator, the
+    # verification maps, the flagship products).  A library, so the
+    # literal is an exported symbol name: a build that answers the version
+    # probe but predates the height reader cannot read one surface.
+    # Spelled to match gpuwm.isobaric_bridge.ABI_MARKER; a test binds the
+    # two.
+    "rw_isobaric": b"gpuwm_isobaric_heights",
     # The MPAS mesh generator behind `gpuwm mesh`.  The marker is its
     # ARGUMENT VECTOR, spelled out, because that is the literal which
     # changes exactly when the request contract changes: a binary built
@@ -862,10 +882,119 @@ class quiet_loader_errors:  # noqa: N801 - a context manager, used as a verb
         return False
 
 
-def default_bridge_dir() -> Path:
-    """User-level directory for prebuilt bridges: ``~/.gpuwm/bridges``."""
+def legacy_bridge_dir() -> Path:
+    """The shared, unversioned ``~/.gpuwm/bridges``.
+
+    Every release before 2.8.6 staged its bundle flat into this one
+    directory, and a source checkout (whose pins declare no release) or
+    a platform with no published bundle still stages there.  It is
+    also the PARENT of every versioned staging directory.
+
+    It is shared by every gpuwm install under this home, which is the
+    defect the versioned layout closes: on 2026-10-05 a PyPI 2.8.0 venv
+    on node-2 found the flat ``rw_netcdf`` stamped by a local build
+    (``fc5b34e26``), auto-fetched 2.8.0's bundle and overwrote all 31
+    files, breaking the other install that relied on them.  A pinned
+    install now only READS a file here, and only when its bytes are the
+    ones that install's own release pinned; it never writes here.
+    """
 
     return Path.home() / ".gpuwm" / "bridges"
+
+
+#: Characters allowed in a versioned staging directory name.  A release
+#: name is a git tag, which may carry ``/``; anything outside this set
+#: becomes ``_`` so the name is always one path component.
+_TAG_SAFE = re.compile(r"[^A-Za-z0-9._+-]")
+
+
+def staged_version_tag() -> str | None:
+    """This install's versioned staging directory name, or None.
+
+    ``<release>-<first 12 hex of this platform's bundle SHA-256>``: the
+    release names it for a reader, the bundle digest makes it exact, so
+    two installs that both call themselves the same release but carry
+    different pins (a local re-cut, a private mirror) still never share
+    a directory.  None when this install carries no pins for this
+    platform -- a source checkout, or a platform with no bundle -- and
+    then there is nothing to fetch and nothing to version: such an
+    install keeps staging into :func:`legacy_bridge_dir` exactly as
+    before.
+    """
+
+    try:
+        from gpuwm import bridge_assets
+
+        pins = bridge_assets.load_pins()
+        bundle = pins.bundle_for(bridge_assets.host_platform())
+    except Exception:                                # noqa: BLE001
+        return None
+    if bundle is None or not pins.release:
+        return None
+    release = _TAG_SAFE.sub("_", str(pins.release)).strip(".") or "release"
+    return f"{release}-{bundle.sha256[:12]}"
+
+
+def default_bridge_dir() -> Path:
+    """THIS install's staging directory for prebuilt bridges.
+
+    ``~/.gpuwm/bridges/<release>-<bundle digest>`` for an install that
+    carries release pins for this platform: ``gpuwm fetch-bridges`` and
+    the automatic refresh write there and nowhere else, so two engine
+    versions on one machine (two venvs, a user and a lane, an upgrade
+    side by side) each own their own directory and can never replace
+    each other's files.  An install with no pins keeps the flat
+    :func:`legacy_bridge_dir`.
+    """
+
+    tag = staged_version_tag()
+    root = legacy_bridge_dir()
+    return root if tag is None else root / tag
+
+
+def staging_location_note() -> str:
+    """Where this engine stages and reads bridges, in one sentence.
+
+    For ``gpuwm doctor``: the resolved directory, not the
+    ``~/.gpuwm/bridges`` spelling, because on a machine with two engine
+    versions the question a reader is asking is WHICH directory this one
+    uses.
+    """
+
+    own = default_bridge_dir()
+    if staged_version_tag() is None:
+        return (f"this engine stages bridges in {own} (the flat layout: "
+                "this install carries no release pins to version it by)")
+    return (f"this engine stages bridges in {own}, its own versioned "
+            f"directory; the shared flat {legacy_bridge_dir()} is read only "
+            "for a file whose bytes are this release's pin, and never "
+            "written")
+
+
+def legacy_bridge_candidates(filename: str) -> tuple[Path, ...]:
+    """The flat-layout rung that follows :func:`default_bridge_dir`.
+
+    Empty when this install's staging directory IS the flat one (no
+    pins).  Otherwise the flat copy of ``filename``, which every ladder
+    lists right after the versioned one so an estate staged by an older
+    release keeps working without a download -- but only while its bytes
+    are this release's pin: :func:`require_release_pin` judges it, and a
+    mismatch is fetched into the versioned directory instead, leaving
+    the flat file exactly as it was.
+    """
+
+    # Decided by the pins, not only by comparing directories: an install
+    # with no pins never versioned anything, so there is no older layout
+    # for it to fall back to and its staging directory IS the flat one.
+    if staged_version_tag() is None:
+        return ()
+    root = legacy_bridge_dir()
+    try:
+        if default_bridge_dir().resolve() == root.resolve():
+            return ()
+    except (OSError, ValueError):
+        return ()
+    return (root / filename,)
 
 
 #: Directory INSIDE the package that a platform wheel stages its
@@ -1031,7 +1160,7 @@ def _stale_refusal(status, *, refresh_note: str | None = None) -> str:
         lines.append(refresh_note)
     lines.append("remedy:")
     lines.append("  gpuwm fetch-bridges")
-    lines.append(f"  # re-stages {status.release}'s bundle over "
+    lines.append(f"  # stages {status.release}'s bundle into its own "
                  f"{default_bridge_dir()}, verifying every artifact's")
     lines.append("  # size and SHA-256 against the pins packaged in this "
                  "install")
@@ -1063,7 +1192,8 @@ def _refresh_staged_estate(status) -> str | None:
 
     warn(f"the staged {status.pin.artifact} is not {status.release}'s "
          f"binary ({status.provenance()}); fetching {status.release}'s "
-         "bridge bundle before this run continues")
+         f"bridge bundle into {default_bridge_dir()} before this run "
+         f"continues (the file at {status.path} is left as it is)")
     try:
         bridge_assets.refresh_staged_bundle(
             progress=lambda message: print(message, file=sys.stderr))
@@ -1085,9 +1215,10 @@ def _refresh_staged_estate(status) -> str | None:
 def require_release_pin(path: Path) -> Path:
     """``path`` is bytes this release published, or it is not used.
 
-    Asked of ONE rung: :func:`default_bridge_dir`.  That is the
-    directory ``gpuwm fetch-bridges`` writes and the only one a wheel
-    upgrade leaves behind -- ``pip install -U gpuwm`` replaces the
+    Asked of the staged rungs only: :func:`default_bridge_dir` and the
+    shared :func:`legacy_bridge_dir` beneath it.  Those are the
+    directories ``gpuwm fetch-bridges`` writes (today, or under an older
+    release) and the only ones a wheel upgrade leaves behind -- ``pip install -U gpuwm`` replaces the
     Python half and never looks at it -- so it is where new Python ends
     up driving an older release's binaries.  Everything above it on the
     ladder is exempt by construction and stays exempt: an environment
@@ -1103,17 +1234,18 @@ def require_release_pin(path: Path) -> Path:
     what they do with it -- doctor reports, a door acts -- so they
     cannot disagree again.
 
-    Default is to fix it: re-fetch this release's bundle, verified by
-    size and SHA-256 exactly as the command does, and carry on with the
-    new bytes.  Offline, that becomes the refusal.
+    Default is to fix it: fetch this release's bundle into this
+    release's own versioned directory, verified by size and SHA-256
+    exactly as the command does, and carry on with the new bytes --
+    returning that path, which is not ``path`` when the stale file sat
+    in the shared flat layout.  The stale file itself is never
+    replaced: it may be exactly what another install on this machine
+    runs.  Offline, that becomes the refusal.
     """
 
     if _INSPECTION_ONLY:
         return path
-    try:
-        if not path.resolve().is_relative_to(default_bridge_dir().resolve()):
-            return path
-    except (OSError, ValueError):
+    if not _staged_rung(path):
         return path
     from gpuwm import bridge_assets
 
@@ -1131,17 +1263,40 @@ def require_release_pin(path: Path) -> Path:
                  f"{status.describe()}")
         return path
     if policy == "refresh":
+        # The refresh writes THIS install's directory and nothing else.
+        # A stale file found anywhere else under the shared root -- the
+        # flat legacy layout, or (never listed by a ladder, but judged
+        # the same if handed here) another release's directory -- is
+        # left byte-for-byte as it was, and the door gets this release's
+        # copy of the same filename instead.
+        own = default_bridge_dir() / path.name
         failure = _refresh_staged_estate(status)
         if failure is None:
-            after = bridge_assets.staged_pin_status(path)
-            if after is None or after.matches:
-                return path
+            after = bridge_assets.staged_pin_status(own)
+            if after is not None and after.matches:
+                return own
             raise StaleBridgeError(_stale_refusal(
-                after, refresh_note=(
+                after or status, refresh_note=(
                     "the automatic refresh ran and this artifact still "
                     "does not match its pin.")))
         raise StaleBridgeError(_stale_refusal(status, refresh_note=failure))
     raise StaleBridgeError(_stale_refusal(status))
+
+
+def _staged_rung(path: Path) -> bool:
+    """Is ``path`` in a directory a fetch stages into (own or shared)?
+
+    This install's own :func:`default_bridge_dir`, or anywhere under the
+    shared :func:`legacy_bridge_dir` root.  Never raises.
+    """
+
+    try:
+        resolved = path.resolve()
+        return any(resolved.is_relative_to(directory.resolve())
+                   for directory in (default_bridge_dir(),
+                                     legacy_bridge_dir()))
+    except (OSError, ValueError):
+        return False
 
 
 def accept_resolved(path: Path, *, executable: bool = True) -> Path:
@@ -1642,6 +1797,7 @@ def artifact_candidates(env_var: str, filename: str) -> tuple[Path, ...]:
         root / "libexec" / "bridges" / filename,
         packaged_bridge_dir() / filename,
         default_bridge_dir() / filename,
+        *legacy_bridge_candidates(filename),
     ))
     return tuple(candidates)
 
@@ -2234,7 +2390,8 @@ __all__ = [
     "cargo_missing_refusal", "classify_cargo_failure",
     "build_from_clone_hint", "cargo_activation_command",
     "cargo_executable", "cargo_is_installed", "crate_dir",
-    "default_bridge_dir",
+    "default_bridge_dir", "legacy_bridge_dir", "legacy_bridge_candidates",
+    "staged_version_tag", "staging_location_note",
     "executable_name", "find_artifact", "find_bridge",
     "StaleBridgeError", "accept_resolved", "inspection_only",
     "require_release_pin",

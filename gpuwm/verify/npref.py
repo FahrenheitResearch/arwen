@@ -125,6 +125,17 @@ def _flux3(qm2, qm1, q0, qp1, vel):
             + np.abs(vel) * (3.0 * (q0 - qm1) - (qp1 - qm2))) / 12.0
 
 
+def _flux5v(qm3, qm2, qm1, q0, qp1, qp2, vel):
+    """VERTICAL 5th-order face flux: WRF ``flux5`` called with ``-vel``
+    (module_advect_em.F ``vert_order == 5``), so its dissipation carries
+    the Omega-signed sign of ``_flux3``, opposite to ``_flux5``'s.
+    Mirrors the kernels' ``flux5v``.
+    """
+    return (vel * (37.0 * (q0 + qm1) - 8.0 * (qp1 + qm2) + (qp2 + qm3))
+            + np.abs(vel) * (10.0 * (q0 - qm1) - 5.0 * (qp1 - qm2)
+                             + (qp2 - qm3))) / 60.0
+
+
 def _flux3h(qm2, qm1, q0, qp1, vel):
     """HORIZONTAL 3rd-order face flux (WRF ``flux3`` with the ``flux5``
     upwinding sign): used two cells in from an open lateral boundary where
@@ -223,17 +234,21 @@ def _open_cell_term(q, vel, d, axis):
     return t_low, t_high
 
 
-def _fz_half_levels(q, vel, fnm, fnp):
+def _fz_half_levels(q, vel, fnm, fnp, vorder=3):
     """Vertical fluxes at w-levels 0..nz for a half-level field ``q``.
 
     ``vel (nz+1, ...)`` is the advecting flux at the w-levels.  Zero flux
     at the boundary faces, WRF's stretched-grid fnm/fnp-weighted 2nd-order
     face value one face in (module_advect_em.F vert_order 3, vflux =
     rom*(fzm(k)*f(k)+fzp(k)*f(k-1)) at k=kts+1/ktf; 0.5/0.5 on a uniform
-    grid), 3rd-order upwind in the interior — exactly the kernels'
-    ``zface_half``.  ``fnm``/``fnp`` are the (nz,) weight arrays
+    grid), then the ``vorder`` ladder — exactly the kernels'
+    ``zface_half``: 3 is 3rd-order upwind in the interior; 5 is WRF's
+    ``vert_order == 5`` ladder (flux3 at faces 2 and nz-2, ``_flux5v`` at
+    faces 3 .. nz-3).  ``fnm``/``fnp`` are the (nz,) weight arrays
     (``coord.fnm``/``coord.fnp``).
     """
+    if vorder not in (3, 5):
+        raise ValueError(f"vorder must be 3 or 5, got {vorder!r}")
     nz = q.shape[0]
     fnm = np.asarray(fnm, dtype=np.float64)
     fnp = np.asarray(fnp, dtype=np.float64)
@@ -244,11 +259,15 @@ def _fz_half_levels(q, vel, fnm, fnp):
                                     + fnp[nz - 1] * q[nz - 2])
         fz[2:nz - 1] = _flux3(q[0:nz - 3], q[1:nz - 2], q[2:nz - 1], q[3:nz],
                               vel[2:nz - 1])
+    if vorder == 5 and nz >= 6:
+        fz[3:nz - 2] = _flux5v(q[0:nz - 5], q[1:nz - 4], q[2:nz - 3],
+                               q[3:nz - 2], q[4:nz - 1], q[5:nz],
+                               vel[3:nz - 2])
     return fz
 
 
 def np_flux_div_scalar(q, ru, rv, rw, coord, dx, dy,
-                       open_x=False, open_y=False, msf=None, spec=False):
+                       open_x=False, open_y=False, msf=None, spec=False, vorder=3):
     """Mirror of ``flux_div_scalar`` (gpuwm/core/kernels/advection.cu).
 
     Returns the tendency increment ``-dFx/dx - dFy/dy - dFeta/deta`` for a
@@ -295,13 +314,13 @@ def np_flux_div_scalar(q, ru, rv, rw, coord, dx, dy,
         qy = lambda off: q[:, (yf + off) % ny, :]
         fy = _flux5(qy(-3), qy(-2), qy(-1), qy(0), qy(1), qy(2), rv)
         ty = m * (-(fy[:, 1:, :] - fy[:, :-1, :]) / dy)
-    fz = _fz_half_levels(q, rw, coord.fnm, coord.fnp)
+    fz = _fz_half_levels(q, rw, coord.fnm, coord.fnp, vorder)
     rdnw = np.asarray(coord.rdnw, dtype=np.float64)[:, None, None]
     return tx + ty - (fz[1:] - fz[:-1]) * rdnw
 
 
 def np_flux_div_u(u, ru, rv, rw, coord, dx, dy, open_x=False, open_y=False,
-                  msf=None, spec=False):
+                  msf=None, spec=False, vorder=3):
     """Mirror of ``flux_div_u``: tendency increment at u-points.
 
     ``msf`` (Task 3) is the u-point map factor ``msfu (ny, nx+1)`` — WRF
@@ -347,7 +366,7 @@ def np_flux_div_u(u, ru, rv, rw, coord, dx, dy, open_x=False, open_y=False,
         ty = -(fy[:, 1:, :] - fy[:, :-1, :]) / dy
         # z-faces at corners (w-level, u-point column).
         velz = 0.5 * (np.roll(rw, 1, axis=2) + rw)
-        fz = _fz_half_levels(uu, velz, coord.fnm, coord.fnp)
+        fz = _fz_half_levels(uu, velz, coord.fnm, coord.fnp, vorder)
         tz = -(fz[1:] - fz[:-1]) * rdnw
         hor = tx + ty
         if msf is not None:
@@ -425,7 +444,7 @@ def np_flux_div_u(u, ru, rv, rw, coord, dx, dy, open_x=False, open_y=False,
 
     # ---- z advection.
     velz = 0.5 * (rw[:, :, im] + rw[:, :, ip])
-    fz = _fz_half_levels(uf, velz, coord.fnm, coord.fnp)
+    fz = _fz_half_levels(uf, velz, coord.fnm, coord.fnp, vorder)
     tz = -(fz[1:] - fz[:-1]) * rdnw
     out[:, :, faces] += tz
     if not open_x:
@@ -436,13 +455,13 @@ def np_flux_div_u(u, ru, rv, rw, coord, dx, dy, open_x=False, open_y=False,
         # Fortran bounds exclude them.
         for face, cell in ((0, 0), (nx, nx - 1)):
             fzb = _fz_half_levels(u[:, :, face], rw[:, :, cell],
-                                  coord.fnm, coord.fnp)
+                                  coord.fnm, coord.fnp, vorder)
             out[:, :, face] += -(fzb[1:] - fzb[:-1]) * rdnw[:, :, 0]
     return out
 
 
 def np_flux_div_v(v, ru, rv, rw, coord, dx, dy, open_x=False, open_y=False,
-                  msf=None, spec=False):
+                  msf=None, spec=False, vorder=3):
     """Mirror of ``flux_div_v``: tendency increment at v-points.
 
     ``msf`` (Task 3) is the v-point map factor ``msfv (ny+1, nx)`` (WRF
@@ -477,7 +496,7 @@ def np_flux_div_v(v, ru, rv, rw, coord, dx, dy, open_x=False, open_y=False,
         ty = -(fy - np.roll(fy, 1, axis=1)) / dy
         # z-faces at corners (w-level, v-point row).
         velz = 0.5 * (np.roll(rw, 1, axis=1) + rw)
-        fz = _fz_half_levels(vv, velz, coord.fnm, coord.fnp)
+        fz = _fz_half_levels(vv, velz, coord.fnm, coord.fnp, vorder)
         tz = -(fz[1:] - fz[:-1]) * rdnw
         hor = tx + ty
         if msf is not None:
@@ -553,7 +572,7 @@ def np_flux_div_v(v, ru, rv, rw, coord, dx, dy, open_x=False, open_y=False,
 
     # ---- z advection: excluded at the boundary-normal faces under open_y.
     velz = 0.5 * (rw[:, jm, :] + rw[:, jp, :])
-    fz = _fz_half_levels(vf, velz, coord.fnm, coord.fnp)
+    fz = _fz_half_levels(vf, velz, coord.fnm, coord.fnp, vorder)
     tz = -(fz[1:] - fz[:-1]) * rdnw
     out[:, faces, :] += tz
     if not open_y:
@@ -562,7 +581,7 @@ def np_flux_div_v(v, ru, rv, rw, coord, dx, dy, open_x=False, open_y=False,
 
 
 def np_flux_div_w(w, ru, rv, rw, coord, dx, dy, open_x=False, open_y=False,
-                  msf=None, spec=False):
+                  msf=None, spec=False, vorder=3):
     """Mirror of ``flux_div_w``: tendency increment at w-points.
 
     ``msf`` (Task 3) is the mass-point map factor ``msft (ny, nx)`` (WRF
@@ -629,6 +648,16 @@ def np_flux_div_w(w, ru, rv, rw, coord, dx, dy, open_x=False, open_y=False,
     fzm[nz - 1] = 0.5 * velz[nz - 1] * (w[nz] + w[nz - 1])
     fzm[1:nz - 1] = _flux3(w[0:nz - 2], w[1:nz - 1], w[2:nz], w[3:nz + 1],
                            velz[1:nz - 1])
+    if vorder not in (3, 5):
+        raise ValueError(f"vorder must be 3 or 5, got {vorder!r}")
+    if vorder == 5 and nz >= 5:
+        # WRF advect_w vert_order 5: flux5 on w(k-3..k+2) for k = kts+3 ..
+        # ktf-1, i.e. mass faces m = 2 .. nz-3 on w[m-2 .. m+3]; faces 1
+        # and nz-2 keep flux3, 0 and nz-1 the 2nd-order form.  A column
+        # with nz < 5 has no flux5 face and runs the order-3 faces.
+        fzm[2:nz - 2] = _flux5v(w[0:nz - 4], w[1:nz - 3], w[2:nz - 2],
+                                w[3:nz - 1], w[4:nz], w[5:nz + 1],
+                                velz[2:nz - 2])
     rdn = np.asarray(coord.rdn, dtype=np.float64)[1:nz, None, None]
     tz = -(fzm[1:] - fzm[:-1]) * rdn
     out[1:nz] = tx + ty + tz
@@ -684,7 +713,7 @@ def _flux_upwind(qm1, q0, cr):
 
 
 def np_pd_fluxes(q, q0, ru, rv, rw, mut, coord, dx, dy, dt, msft=None,
-                 open_x=False, open_y=False):
+                 open_x=False, open_y=False, vorder=3):
     """Mirror of ``pd_fluxes`` (gpuwm/core/kernels/pd_advection.cu).
 
     ``msft`` (Task 3) is the mass-point map factor: the horizontal upwind
@@ -696,7 +725,7 @@ def np_pd_fluxes(q, q0, ru, rv, rw, mut, coord, dx, dy, dt, msft=None,
     (Skamarock 2006): at every face, the CFL-clamped 1st-order upwind flux
     of the *time-t* scalar ``q0`` (WRF ``field_old``) and the correction
     ``F_corr = F_high - F_upwind1``, where F_high is exactly the unlimited
-    5th-order horizontal / 3rd-order vertical flux of the RK stage estimate
+    5th-order horizontal / vorder-ladder vertical flux of the RK stage estimate
     ``q`` used by ``flux_div_scalar`` (including gpuwm's 0.5-centered
     ``flux2`` faces one cell in from the eta boundaries, where WRF's PD
     routine uses fnm/fnp weights -- identical on the uniform grid; keeping
@@ -762,7 +791,7 @@ def np_pd_fluxes(q, q0, ru, rv, rw, mut, coord, dx, dy, dt, msft=None,
     fyc = fyh - fyl
 
     rw = np.asarray(rw, dtype=np.float64)
-    fzh = _fz_half_levels(q, rw, coord.fnm, coord.fnp)
+    fzh = _fz_half_levels(q, rw, coord.fnm, coord.fnp, vorder)
     fzl = np.zeros_like(fzh)
     if nz >= 2:
         kf = np.arange(1, nz)
@@ -771,6 +800,19 @@ def np_pd_fluxes(q, q0, ru, rv, rw, mut, coord, dx, dy, dt, msft=None,
         crz = rw[1:nz] * dt / (dzf * mfz)
         fzl[1:nz] = mfz * (dzf / dt) * _flux_upwind(q0[:nz - 1], q0[1:],
                                                     crz)
+        if vorder == 5:
+            # Production order 5 (kernels/pd_vertical_sl.cu): the upwind
+            # flux above stands at face Courant <= 1; the fork's
+            # semi-Lagrangian upstream sum replaces it above Courant 1.
+            for face in range(2, nz - 1):
+                vel = rw[face]
+                cr = vel*dt/dzf[face-1]/mfz[face-1]
+                lower, upper = (-2 if face == nz-2 else -3), (2 if face == 2 else 3)
+                shift = np.clip(np.floor(np.abs(cr))*np.sign(cr), lower, upper).astype(int)
+                for j, i in np.argwhere(np.abs(cr) > 1.0):
+                    first = face-shift[j,i] if cr[j,i] > 1.0 else face
+                    last = face-1 if cr[j,i] > 1.0 else face-shift[j,i]-1
+                    fzl[face,j,i] = vel[j,i]*q0[first:last+1,j,i].sum()/abs(cr[j,i])
     fzc = fzh - fzl
     return fxl, fxc, fyl, fyc, fzl, fzc
 
@@ -787,7 +829,7 @@ def np_pd_renorm_apply(q0, mu_old, fxl, fxc, fyl, fyc, fzl, fzc,
     "un-canceled" msftx).
 
     Per cell: the upwind-updated coupled scalar ``ph_low = (c1h*mu_old +
-    c2h)*q0 - dt*div(F_upwind1)`` (nonnegative by construction) and the
+    c2h)*q0 - dt*div(F_low)`` and the
     total outgoing correction ``flux_out``; where applying the full
     corrections would overdraw the cell (``flux_out > ph_low``), ALL
     outgoing correction fluxes of that cell are scaled by ``r =

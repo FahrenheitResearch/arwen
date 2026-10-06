@@ -158,6 +158,42 @@ def test_refractivity_uses_tangent_height_and_shared_operator():
     assert batches[0].simulated[(0, *idx)] == pytest.approx(expected)
 
 
+def _eta_column(nz=24, psfc=100000., p_top=5000., scale_height=7600.):
+    """An isothermal eta column: interface pressures linear in eta, each
+    mass level at the arithmetic mean of its two interfaces, interface
+    heights ``H ln(psfc / p_w)``.  The layer-mean height is NOT the mass
+    level's height here, as on any WRF eta grid."""
+    znw = 1.0 - (np.arange(nz + 1) / nz) ** 1.3
+    p_w = p_top + znw * (psfc - p_top)
+    p_m = 0.5 * (p_w[:-1] + p_w[1:])
+    z_w = scale_height * np.log(psfc / p_w)
+    full = lambda data, n: np.broadcast_to(np.asarray(data)[:, None, None], (n, 3, 3)).copy()
+    g = SimpleNamespace(nz=nz, ny=3, nx=3, terrain_m=np.zeros((3, 3)), z_w=full(z_w, nz + 1),
+                        mass_index=lambda lat, lon: (np.asarray(lon), np.asarray(lat)))
+    col = dict(p=full(p_m, nz), t=full(np.full(nz, 250.), nz), q=full(np.zeros(nz), nz),
+               u=full(np.zeros(nz), nz), v=full(np.zeros(nz), nz))
+    return g, [col, col], np.diff(znw), (psfc, scale_height)
+
+
+def test_refractivity_pressure_is_read_between_layer_interfaces():
+    """THE 2.8.6 DEFECT, pinned: with the eta layer thicknesses the RO
+    operator's pressure at the tangent height is the column's own; the
+    layer-mean heights it used without them put each mass-level pressure
+    too high in the column, so the pressure read there was too high."""
+    from arwen_global.obs_operators import refractivity_n
+    g, cols, dnw, (psfc, scale_height) = _eta_column()
+    height = 5500.
+    truth = float(refractivity_n(psfc * np.exp(-height / scale_height), 250., 0.))
+    common = dict(grid=g, columns=cols, states=[{}, {}])
+    rows = [row(variable='refractivity_n', measurement='ro_refractivity_tangent_point',
+                elevation_m=height, value=truth, error=5.)]
+    batches, _ = adapt(rows, setup={'dnw': dnw}, **common)
+    idx = tuple(np.argwhere(batches[0].mask)[0])
+    assert batches[0].simulated[(0, *idx)] == pytest.approx(truth, rel=1e-9)
+    paired, _ = adapt(rows, setup={}, **common)
+    assert paired[0].simulated[(0, *idx)] > truth * (1 + 1e-4)
+
+
 def test_surface_sensor_height_semantics_not_guessed():
     batches, receipt = adapt([row(level_pa=None, measurement='platform_temperature')],
                             surface={'t2': np.full((2, 3, 3), 281.)})

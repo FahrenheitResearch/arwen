@@ -97,7 +97,8 @@ import sys
 import tempfile
 
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
-                           default_bridge_dir, lazy_build_hints,
+                           default_bridge_dir,
+                           legacy_bridge_candidates, lazy_build_hints,
                            rustwx_build_hint,
                            accept_resolved, executable_name,
                            packaged_bridge_dir)
@@ -223,6 +224,7 @@ class MpasBridge:
             _repo_root() / "libexec" / "bridges" / filename,
             packaged_bridge_dir() / filename,
             default_bridge_dir() / filename,
+            *legacy_bridge_candidates(filename),
         ))
         return tuple(candidates)
 
@@ -315,6 +317,24 @@ INIT = MpasBridge(
     abi_marker=INIT_ABI_MARKER,
 )
 
+#: Reconstruction vectors and coefficients used by the hex init door.
+GEOMETRY = MpasBridge(
+    name="rw_mpas_geometry",
+    env_var="GPUWM_RW_MPAS_GEOMETRY",
+    subject="the MPAS reconstruction geometry builder",
+    abi_marker="rw_mpas_geometry --protocol hex-geometry-v1",
+)
+
+
+#: Exact connectivity, terrain and initialized-momentum host preparation.
+HOSTPREP = MpasBridge(
+    name="rw_mpas_hostprep",
+    env_var="GPUWM_RW_MPAS_HOSTPREP",
+    subject="the MPAS forecast host preparation builder",
+    abi_marker="rw_mpas_hostprep --protocol hex-hostprep-v1",
+)
+
+
 #: The history converter onto the renderer's tape.
 CONVERT = MpasBridge(
     name="rw_mpas_convert",
@@ -342,7 +362,7 @@ LBC = MpasBridge(
 #: ``gpuwm doctor`` and by the bundle-coverage test, so a sixth binary
 #: is a row here and is reported without a second edit.
 BRIDGES: dict[str, MpasBridge] = {
-    bridge.name: bridge for bridge in (MESH, STATIC, INIT, CONVERT, LBC)}
+    bridge.name: bridge for bridge in (MESH, STATIC, INIT, GEOMETRY, HOSTPREP, CONVERT, LBC)}
 
 
 # ---------------------------------------------------------------------------
@@ -1678,7 +1698,7 @@ def mesh_main(args) -> int:
 
 
 __all__ = [
-    "BRIDGES", "CONVERT", "CONVERT_ABI_MARKER", "CardCapacity", "INIT",
+    "BRIDGES", "CONVERT", "CONVERT_ABI_MARKER", "CardCapacity", "GEOMETRY", "INIT",
     "INIT_ABI_MARKER", "LBC", "LBC_ABI_MARKER",
     "MESH", "MESH_ABI_MARKER", "MeshRequestError", "TRIANGULATION_ARMS",
     "MeshRoughnessError", "MpasBridge", "SIZING_DATA_PATH", "SIZING_SCHEMA",

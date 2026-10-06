@@ -28,6 +28,7 @@ def tui_candidates() -> tuple[Path, ...]:
         root / "libexec" / "bridges" / filename,
         bridges.packaged_bridge_dir() / filename,
         bridges.default_bridge_dir() / filename,
+        *bridges.legacy_bridge_candidates(filename),
     )
 
 

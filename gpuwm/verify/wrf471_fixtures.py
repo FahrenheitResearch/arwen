@@ -7,6 +7,13 @@ a source checkout under ``tests/data`` (``wrf471_advect``,
 ``gpuwm/data`` they made the 2.8.2 pure wheel 184 MB, over the
 100,000,000-byte per-file distribution limit, and no runtime code reads them.
 
+The physics oracle fixtures under ``tests/data/oracles`` (``gf``,
+``ntiedtke``, ``urban``, ``uh``, ``noah_mosaic``) followed in 2.8.6 for the
+same limit: under ``gpuwm/data`` they were 16.7 MB of compressed wheel, and
+the 2.8.6 platform wheels measured 114,055,460 B (manylinux) and
+105,828,076 B (win_amd64).  Only the ``gpuwm.verify`` oracle readers and
+the tests read them.
+
 An installed gpuwm therefore carries these harness modules without their
 fixtures, and :func:`require_fixture_dir` is the refusal for that case.
 """
@@ -15,7 +22,8 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def require_fixture_dir(directory, oracle: str) -> Path:
+def require_fixture_dir(directory, oracle: str, *,
+                        source: str = "WRF v4.7.1") -> Path:
     """Return ``directory``, or refuse by name when it does not exist.
 
     Breakage prevented: an installed gpuwm has no ``tests/data``, so an
@@ -27,7 +35,7 @@ def require_fixture_dir(directory, oracle: str) -> Path:
     directory = Path(directory)
     if not directory.is_dir():
         raise FileNotFoundError(
-            f"The compiled WRF v4.7.1 {oracle} oracle fixtures are missing: "
+            f"The compiled {source} {oracle} oracle fixtures are missing: "
             f"{directory} does not exist, so there are no compiled WRF "
             "reference words to compare against.  These fixtures are test "
             "data in a source checkout's tests/data and are not shipped in "

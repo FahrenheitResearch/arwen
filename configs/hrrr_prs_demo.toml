@@ -20,6 +20,9 @@ restart_interval_s = 0.0
 #   gpuwm sim DIR --experiment-config THIS
 #       --wps-namelist THIS.namelist.wps --outdir OUT
 #
+# The surface uses MYNN PBL and MYNN surface layer with the GSL WRF39
+# surface generation, while retaining Noah and legacy RRTMG.
+# Prior YSU/MM5 suite measurements, before selecting MYNN below:
 # sized for a 10 GiB card: `gpuwm check --budget-gib 8.75 --vram-gib 10`
 # PASSes with a forecast peak envelope of 5.17 GiB against an 8.24 GiB
 # budget -- 3.07 GiB of headroom, the widest margin of the four HRRR-family
@@ -40,6 +43,14 @@ truelat2 = 60.0
 stand_lon = -97.5
 
 [shared]
+mynn_sfclay_variant = "gsl_wrf39"
+terrain_clock = "pinned"
+diff_6th_form = "noaa_wrf39"
+diff_6th_factor2 = 0.04
+mp_zero_out = 2
+mp_zero_out_thresh = 1e-12
+mp_zero_out_all = 1
+upper_wind_limiter_form = "noaa_wrf39"
 nz = 49
 ztop = 20000.0
 # HRRR's wrfprs ladder reaches 50 hPa on every mapped field, so the model
@@ -80,17 +91,20 @@ spec_zone = 1
 relax_zone = 4
 terrain_opt = 1
 map_proj = 1
-sf_sfclay_physics = 91
+sf_sfclay_physics = 5
 sf_surface_physics = 2
-bl_pbl_physics = 1
+bl_pbl_physics = 5
 wrf_rrtmg_compatibility = "wrf-rrtmg-4-4-legacy-v1"
 ra_rrtmg_variant = "rrtmg_legacy"
 ra_physics = 0
 ra_lw_physics = 4
 ra_sw_physics = 4
+alb_sol = 1
 bldt = 0.0
 
 [[domain]]
+v_sca_adv_order = 5
+v_mom_adv_order = 5
 grid_id = 1
 parent_id = 0
 i_parent_start = 1

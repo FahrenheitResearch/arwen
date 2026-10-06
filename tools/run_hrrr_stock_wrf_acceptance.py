@@ -36,6 +36,7 @@ from gpuwm.ingest.hrrr_target import (  # noqa: E402
     load_hrrr_target_domain,
 )
 from gpuwm.wrf_direct import _dimensions, _load_contract  # noqa: E402
+from gpuwm.wrf_physics_inventory import EXPORT_USE_THETA_M  # noqa: E402
 
 
 EXPORT_SCHEMA = "gpuwm-native-direct-wrf-export-v2"
@@ -262,6 +263,27 @@ def _assert_close(label: str, actual: object, expected: float) -> None:
         raise AcceptanceFailure(f"{label} mismatch: {value} != {expected}")
 
 
+def require_export_theta_declaration(path_name: str, declared) -> None:
+    """Refuse a file whose ``USE_THETA_M`` is not the acceptance namelist's.
+
+    The namelist this run is given declares the exporter's own
+    representation (tools/write_hrrr_stock_wrf_namelist.py), and wrf.exe
+    stops at its input gate when a file says otherwise.  Named here, with
+    what to do, rather than left to a FATAL in rsl.error: the one way to
+    hold such a file is an export written before the exporter wrote dry
+    theta, whose ``T_B*`` rows are dry-coupled under a moist header.
+    """
+
+    if int(declared) != EXPORT_USE_THETA_M:
+        raise AcceptanceFailure(
+            f"{path_name} declares USE_THETA_M = {int(declared)}; the "
+            f"acceptance namelist says use_theta_m = {EXPORT_USE_THETA_M}, "
+            "and stock WRF stops on that difference ('use_theta_m values "
+            "must be consistent'). This export was written before the "
+            "exporter wrote dry theta: its T_B* rows are dry-coupled under "
+            "a moist header. Export it again")
+
+
 def _expected_identity_attrs(path_name: str, target: HrrrTargetDomain,
                              valid_time: str) -> dict[str, object]:
     attrs: dict[str, object] = {
@@ -306,6 +328,8 @@ def _validate_dataset(path: Path, contract: Mapping[str, object], *,
         for name, expected in expected_attrs.items():
             if dataset.getncattr(name) != expected:
                 raise AcceptanceFailure(f"{path.name} {name} mismatch")
+        require_export_theta_declaration(
+            path.name, dataset.getncattr("USE_THETA_M"))
         grid = target.grid()
         float_attrs = {
             "DX": target.dx_m,

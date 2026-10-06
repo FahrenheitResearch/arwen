@@ -170,8 +170,16 @@ def test_spp_specializations_leave_default_compiler_sources_frozen():
     from gpuwm.core.kernels import module_source
     from gpuwm.core.spp_kernel_sources import specialized_source
     pins = {"gf": "53785cdbe6d07c950bb4d8017ecf84a83d0f3bc84b81875e96bcda14ee8d9191",
-            "mynn_pbl": "8771aadac8ba94ec75772d616db2acb0fd8fd768fba4b032595c3d07185fa6b2",
-            "mynn_surface": "698e7f36bac844c7727b2fee5f15b5673276c87bfb4b36edbf367b0369aa87a4"}
+            # Accepted staging adds source-selected GSD41 entry points.
+            # This pins the actual default compiler string and checks that
+            # constructing an SPP specialization leaves that string intact.
+            # It does not claim unchanged default PTX from the older source.
+            "mynn_pbl": "ecf106fc09e1f3982a9fa8c2b277b3959dbc7af102cc1500b4e64dbad6fd6d25",
+            # Match test_mp8_frozen's accepted staging source: selectable
+            # GSL WRF 3.9 stability solver plus explicitly rounded ordinary
+            # mynn_table interpolation. The SPP construction remains inert
+            # for the default compiler string; the table source has changed.
+            "mynn_surface": "dc759001e1fbb3886d0c8d066596d31a78b9c57cea51b2fbd62ecdad35ccd650"}
     for name, pin in pins.items():
         baseline = module_source(name)
         assert hashlib.sha256(baseline.encode()).hexdigest() == pin

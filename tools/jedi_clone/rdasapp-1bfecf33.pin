@@ -1,0 +1,23 @@
+# JEDI pin: NOAA-EMC/RDASApp at the commit the RRFS v2 workflow builds.
+#
+# Source (PUBLIC, read 2026-10-03): NOAA-EMC/rrfs-workflow branch
+# rrfs-mpas-jedi at 85ea55c0, sorc/RDASApp submodule = 1bfecf33 (GitHub
+# git-trees API). The submodules (oops, saber, ioda, ufo, vader, crtm, mpas,
+# mpas-jedi, ...) are pinned by the gitlinks of that RDASApp commit.
+PIN_NAME=rdasapp-1bfecf33
+RDASAPP_REPO=https://github.com/NOAA-EMC/RDASApp.git
+RDASAPP_COMMIT=1bfecf33f005c7ca3c41414aba0d155ba1f8bc29
+# build.sh -m MPAS: the MPAS-JEDI bundle only (no FV3-JEDI).
+DYCORE=MPAS
+# build.sh -t NO: no RRFS test data (git-lfs), as NOAA's own build notes
+# advise when JCSDA's LFS budget is exhausted (rrfs-workflow
+# doc/build_and_run.md lines 9-11 at 85ea55c0).
+BUILD_RRFS_TEST=NO
+# The toolchain. RDASApp at this commit names spack-stack 1.9.3 on NOAA's
+# machines (modulefiles/RDAS/*.lua) and ships no generic-host module file.
+# JCSDA's public JEDI development image carries spack-stack 1.9 with the
+# jedi-mpas-env set (gcc 13.3.0, Open MPI 5.0.5), pinned here by digest.
+BASE_CONTAINER=docker.io/jcsda/docker-gnu-openmpi-dev@sha256:69d7552277b2205903e8f3b784b8b93a11f576dd56f76209291809ab820541e9
+# The image the build runs in: BASE_CONTAINER with ESMF's module files moved
+# out of the shared include folder (Containerfile.toolchain says why).
+CONTAINER=localhost/rdasapp-toolchain:jedi-1.9

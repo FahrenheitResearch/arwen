@@ -49,7 +49,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from gpuwm.core.kernels import get_kernel
+from gpuwm.core.thompson_aerosol_launch import aerosol_kernel
 from gpuwm.core.thompson_aerosol_launch import (
     COLD_MODULE,
     launch_grid,
@@ -94,6 +94,24 @@ CLOUD_FREEZING_TABLE_NAMES = ("cloud_to_ice_mass", "cloud_to_ice_number")
 
 RAIN_SNOW_TABLE_SHAPE = (37, 9, 37, 37)
 RAIN_GRAUPEL_TABLE_SHAPE = (37, 37, 1, 37, 37)
+#: The operational WRF 3.9 fork's shapes (thompson_version = "wrf_39_noaa",
+#: gpuwm.core.thompson_contract.FORK_GENERATED_TABLE_FILES).
+WRF39_RAIN_SNOW_TABLE_SHAPE = (28, 9, 37, 37)
+WRF39_RAIN_GRAUPEL_TABLE_SHAPE = (28, 28, 37, 37)
+
+
+def _rain_snow_shape():
+    from gpuwm.core.thompson_aerosol_launch import active_thompson_version
+    return (WRF39_RAIN_SNOW_TABLE_SHAPE
+            if active_thompson_version() == "wrf_39_noaa"
+            else RAIN_SNOW_TABLE_SHAPE)
+
+
+def _rain_graupel_shape():
+    from gpuwm.core.thompson_aerosol_launch import active_thompson_version
+    return (WRF39_RAIN_GRAUPEL_TABLE_SHAPE
+            if active_thompson_version() == "wrf_39_noaa"
+            else RAIN_GRAUPEL_TABLE_SHAPE)
 #: ``(ntb_r, ntb_r1, 45, ntb_IN)``.  The last axis is ``idx_IN``; mp=8 only
 #: ever reads slice 27 of it.
 RAIN_FREEZING_TABLE_SHAPE = (37, 37, 45, 55)
@@ -165,9 +183,9 @@ def launch_aa_cold_network(
 
     groups = (
         ("rain_snow_tables", rain_snow_tables, RAIN_SNOW_TABLE_NAMES,
-         RAIN_SNOW_TABLE_SHAPE),
+         _rain_snow_shape()),
         ("rain_graupel_tables", rain_graupel_tables,
-         RAIN_GRAUPEL_TABLE_NAMES, RAIN_GRAUPEL_TABLE_SHAPE),
+         RAIN_GRAUPEL_TABLE_NAMES, _rain_graupel_shape()),
         ("rain_freezing_tables", rain_freezing_tables,
          RAIN_FREEZING_TABLE_NAMES, RAIN_FREEZING_TABLE_SHAPE),
         ("cloud_freezing_tables", cloud_freezing_tables,
@@ -192,7 +210,7 @@ def launch_aa_cold_network(
 
     # Use the measured block width; each thread still evaluates one unchanged cell.
     grid, block = launch_grid(size, threads=32)
-    get_kernel(COLD_MODULE, COLD_NETWORK_KERNEL)(
+    aerosol_kernel(COLD_MODULE, COLD_NETWORK_KERNEL)(
         grid, block,
         (qi, ni, qs, qg, qr, nr, qc, temperature, pressure, qv,
          nc_entry, nwfa_entry, nifa_entry,
@@ -305,7 +323,7 @@ def probe_cold_warm_loop(
                             "prr_wau", "pnr_wau")}
 
     grid, block = launch_grid(size)
-    get_kernel(COLD_MODULE, COLD_WARM_LOOP_PROBE_KERNEL)(
+    aerosol_kernel(COLD_MODULE, COLD_WARM_LOOP_PROBE_KERNEL)(
         grid, block,
         (qc, nc_entry, qr, nr, nwfa_entry, nifa_entry,
          temperature, pressure, qv, rain_cloud_efficiency,

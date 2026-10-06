@@ -646,9 +646,18 @@ class DomainState:
                     # driver classic and aerosol-aware Thompson share), so
                     # the background a radiation call sees before the first
                     # microphysics step is identical.
-                    self.effc[...] = DTYPE(2.49)
-                    self.effi[...] = DTYPE(4.99)
-                    self.effs[...] = DTYPE(9.99)
+                    # Public v4.1.21 module_physics_init.F:1010-1039 seeds
+                    # 2.51/5.01/10.01 for mp=28 under the NOAA WRF 3.9 cloud
+                    # optics.  Micron carriers, not meter inputs.  Chosen by
+                    # value so this chain stays a membership ladder (gate
+                    # named above).
+                    noaa_wrf39 = (cfg.mp_physics == 28 and getattr(
+                        cfg, "rrtmg_cloud_optics_form", "wrf_461") == "noaa_wrf39")
+                    c_bg, i_bg, s_bg = ((2.51, 5.01, 10.01) if noaa_wrf39
+                                        else (2.49, 4.99, 9.99))
+                    self.effc[...] = DTYPE(c_bg)
+                    self.effi[...] = DTYPE(i_bg)
+                    self.effs[...] = DTYPE(s_bg)
                 elif cfg.mp_physics in (9, 10):
                     self.effc[...] = DTYPE(2.5)
                     self.effi[...] = DTYPE(5.0)

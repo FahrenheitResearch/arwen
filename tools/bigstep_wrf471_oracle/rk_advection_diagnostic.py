@@ -38,6 +38,10 @@ def wrf_flux_order(source):
 
 
 def wrf_scalar_accumulation(source):
+    # zface_half takes the kernel's own trailing vorder (WRF vert_order, 3
+    # or 5), so the control follows whichever vertical order the replayed
+    # launch carries.  tests/test_rk_advection_diagnostic_sources.py compiles
+    # every variant, so a helper signature change cannot strand this splice.
     start = source.index("    if (open_x || open_y) {", source.index("void flux_div_scalar("))
     end = source.index("\n    real fx[2]", start)
     # This control is only invoked on the fixture's specified boundary path.
@@ -59,8 +63,8 @@ def wrf_scalar_accumulation(source):
             real mrdx = msf[(size_t)j * nx + i] * dx_inv;
             t = t - mrdx * (fx1 - fx0);
         }
-        real fz0 = zface_half(q, rw[I3(k, j, i, ny, nx)], k, j, i, nz, ny, nx, fnm, fnp);
-        real fz1 = zface_half(q, rw[I3(k + 1, j, i, ny, nx)], k + 1, j, i, nz, ny, nx, fnm, fnp);
+        real fz0 = zface_half(q, rw[I3(k, j, i, ny, nx)], k, j, i, nz, ny, nx, fnm, fnp, vorder);
+        real fz1 = zface_half(q, rw[I3(k + 1, j, i, ny, nx)], k + 1, j, i, nz, ny, nx, fnm, fnp, vorder);
         t = t - rdnw[k] * (fz1 - fz0);
         tend_out[IDX3(k, j, i)] = t;
         return;
@@ -69,12 +73,21 @@ def wrf_scalar_accumulation(source):
     return source[:start] + code + source[end:]
 
 
+#: The options every transient variant is compiled with.
+VARIANT_OPTIONS = ("-std=c++17", "--fmad=false")
+
+
+def variant_sources(baseline):
+    """Variant name -> transient module source (None = the production kernel)."""
+    return {"production": None, "no_fma": baseline,
+            "wrf_flux_order_no_fma": wrf_flux_order(baseline),
+            "wrf_flux_and_accumulation_order_no_fma": wrf_scalar_accumulation(wrf_flux_order(baseline))}
+
+
 def main(output,fixture="rk-tendency.npz"):
     arrays, metadata = load_rk_tendency_oracle(fixture)
     baseline = module_source("advection")
-    variants = {"production": None, "no_fma": baseline,
-                "wrf_flux_order_no_fma": wrf_flux_order(baseline),
-                "wrf_flux_and_accumulation_order_no_fma": wrf_scalar_accumulation(wrf_flux_order(baseline))}
+    variants = variant_sources(baseline)
     original = advection.get_kernel
     table = {}
     try:
@@ -82,7 +95,7 @@ def main(output,fixture="rk-tendency.npz"):
             if source is None:
                 advection.get_kernel = original
             else:
-                module = cp.RawModule(code=source, options=("-std=c++17", "--fmad=false"))
+                module = cp.RawModule(code=source, options=VARIANT_OPTIONS)
                 advection.get_kernel = lambda name, function: (module.get_function(function) if name == "advection" else original(name, function))
             table[variant] = {}
             for case in metadata["cases"]:

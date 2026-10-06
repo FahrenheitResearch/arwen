@@ -15,9 +15,9 @@
  dx = 3000,
  dy = 3000,
  map_proj = 'lambert',
- ref_lat   = 35.3,
- ref_lon   = -97.5,
- truelat1  = 25.3,
- truelat2  = 45.3,
+ ref_lat   = 35.30404923695053,
+ ref_lon   = -97.51650693799445,
+ truelat1  = 38.5,
+ truelat2  = 38.5,
  stand_lon = -97.5,
 /

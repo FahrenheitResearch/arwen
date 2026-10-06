@@ -1,4 +1,4 @@
-"""Cached w stresses preserve the direct production kernel's output words."""
+"""Cached W stresses preserve the explicitly rounded direct evaluator's words."""
 
 from dataclasses import replace
 
@@ -79,12 +79,11 @@ def test_cached_w_stress_matches_direct_kernel_words(
         stagger="z", time_t=time_t)
     if dycore.WRF_EXACT:
         assert launches == [("smag2d", "wrf_smag_hd_w")]
-    elif str(state.w.device.compute_capability) == "120":
+    else:
+        # One route on every architecture (xnode-identity): the former
+        # non-sm_120 primitive route broke cross-card byte identity.
         assert launches == [("smag2d", "wrf_smag_w_stress"),
                             ("smag2d", "wrf_smag_hd_w_stress")]
-    else:
-        assert ("smag2d", "wrf_smag_w_primitives") in launches
-        assert ("smag2d", "wrf_smag_hd_w_cached") in launches
     np.testing.assert_array_equal(
         cp.asnumpy(actual).view(np.uint32),
         cp.asnumpy(reference).view(np.uint32))

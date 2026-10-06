@@ -103,6 +103,8 @@ WATCH_MIN_AGE_SECONDS = 120.0
 # Every number below cites the run that produced it.  Where the run that
 # would settle a number has not finished, the number is LEFT ALONE and
 # said so -- see "Pending measurement" in docs/da-nowcast-demo.md.
+# The archived receipts explicitly use WSM6/Dudhia with longwave off.
+# They do not qualify the current MP28/GSD4.1 suite's skill or card fit.
 # ---------------------------------------------------------------------------
 
 #: Ensemble size.  MEASURED, not assumed: three N-ladders on the same
@@ -153,22 +155,15 @@ DEFAULT_MEMBERS = 10
 #: because ``gpuwm domain`` had written the declaration into it on the
 #: user's behalf.
 #:
-#: The replacement is the HRRR route's own default
-#: (:data:`gpuwm.hrrr_route_inputs.ROUTE_DEFAULT_PHYSICS_PROFILE`):
-#: Thompson microphysics with RTE+RRTMGP longwave AND shortwave and no
-#: cumulus parameterization.  Chosen because the nowcast's background is
-#: HRRR permanently (project ruling, 2026-08-06) and a product must not
-#: default to a different suite from the route that prepares its
-#: background; the two are held equal by test.  It is not free -- full
-#: radiation on a 12-minute cadence per member instead of a 1-minute
-#: shortwave-only call, and mp8 carries more species than mp6 -- so a
-#: member-count or VRAM plan measured under the old default has to be
-#: re-measured rather than extrapolated.  The radiation engine moved to
-#: RTE+RRTMGP with the route on 2026-09-19; the legacy RRTMG arm is still
-#: a named profile.  ``--physics-profile`` still takes any shipped
-#: profile, the retired one included, and a daylight validation window is
-#: exactly where it belongs.
-NOWCAST_DEFAULT_PHYSICS_PROFILE = "thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1"
+#: The nowcast background is HRRR by default (project ruling, 2026-08-06),
+#: so this named product follows the HRRR route's authoritative suite.
+#: 4193eb0da, lane/286-fork-mynn, selects GSD4.1/MP28/RUC with both legacy
+#: RRTMG streams and no cumulus. This is source-selected configuration,
+#: not new nowcast forecast qualification. Old member/card measurements
+#: must be remeasured for this composition; explicit --physics-profile
+#: retains the earlier MP8/RTE suite for archival reproduction.
+from gpuwm.hrrr_route_inputs import (
+    ROUTE_DEFAULT_PHYSICS_PROFILE as NOWCAST_DEFAULT_PHYSICS_PROFILE)
 
 #: The LETKF chunk workspace, in MiB.  This is the ONE term in the
 #: memory model an operator controls, which is why it is reachable from
@@ -2337,6 +2332,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--members", type=int, default=DEFAULT_MEMBERS,
                      help=f"ensemble size (default {DEFAULT_MEMBERS}; "
                           "demo-grade). Measured 2026-08-05 on two "
+                          "cards with archived WSM6/Dudhia, longwave off; "
+                          "current MP28/GSD4.1 requires remeasurement. "
+                          "On those archived "
                           "cards: N=20 scores +0.0018 (analysis-only) "
                           "for +82%% wall clock, inside a 0.0062-0.0074 "
                           "across-member scatter, and N=36 scores BELOW "
@@ -2492,7 +2490,10 @@ def build_parser() -> argparse.ArgumentParser:
                           "measured end to end on a 16,376 MiB RTX "
                           "4080 -- it returns the 32 GB card's answer "
                           "(FSS 0.7397 vs 0.7403 over six leads) and "
-                          "peaks at 15,888 MiB, 97.0%% of the card. A "
+                          "peaks at 15,888 MiB, 97.0%% of the card. "
+                          "These measurements used WSM6/Dudhia with "
+                          "longwave off; they do not certify current "
+                          "MP28/GSD4.1 card fit. A "
                           "profile only fills in arguments the caller "
                           "left at their defaults")
     run.add_argument("--memory-budget-mib", type=float,
@@ -2506,7 +2507,10 @@ def build_parser() -> argparse.ArgumentParser:
                           "a 16 GB card peaks at 97.0%% with 488 MiB "
                           "spare, so lower it if you want margin -- "
                           "the ladder that would pick a better default "
-                          "had not finished when this was set")
+                          "had not finished when this was set. Those "
+                          "measurements used archived WSM6/Dudhia with "
+                          "longwave off; current MP28/GSD4.1 card fit "
+                          "requires remeasurement")
     run.add_argument("--history-interval-seconds", type=float,
                      default=None,
                      help="how often the georeference forecast writes a "

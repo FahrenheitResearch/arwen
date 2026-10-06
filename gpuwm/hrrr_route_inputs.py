@@ -31,11 +31,14 @@ from datetime import timedelta
 from fractions import Fraction
 import json
 from pathlib import Path
+from types import MappingProxyType
+from typing import Mapping
 
 from gpuwm.config import (GRELL_FREITAS_CU_PHYSICS, effective_radt_minutes,
                           radiation_scheme_ids)
 from gpuwm.core.microphysics_transition import PORTED_MP_PHYSICS
 from gpuwm.ingest.hrrr_target import TARGET_DOMAIN_SCHEMA
+from gpuwm.wrf_physics_inventory import EXPORT_USE_THETA_M
 
 #: The route's fixed forcing cadence.  HRRR publishes hourly and the
 #: raw-WPS/raw-runtime contract gates pin the integer 3600 in both
@@ -77,21 +80,20 @@ SUPPORTED_MICROPHYSICS = frozenset(PORTED_MP_PHYSICS)
 
 #: The recommended default. It does not restrict other valid suites.
 #:
-#: RTE+RRTMGP is the default radiation arm on every route (owner
-#: ruling 2026-09-19). This route used to mirror the operational
-#: composition it is named for, which pinned the legacy RRTMG
-#: engines here while the other sources already defaulted to the
-#: modern pair; that made the radiation engine a property of which
-#: source a user picked. The suite is otherwise unchanged --
-#: Thompson mp8, YSU, classic MM5, Noah, no cumulus -- and the
-#: legacy arm remains selectable by name wherever it was,
-#: thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1 included.
-ROUTE_DEFAULT_PHYSICS_PROFILE = "thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1"
+#: The configuration-door ruling selects the fork source version here.
+#: Its in-cloud water requires the fork's legacy radiation merge. Other
+#: sources and existing generic compositions retain their defaults.
+ROUTE_DEFAULT_PHYSICS_PROFILE = "thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1"
 
-#: The four -- and only four -- differences between the native namelist
+#: The three -- and only three -- differences between the native namelist
 #: gpuwm integrates and the stock-WRF namelist beside it.  The route
 #: compares the two parsed files key for key and refuses any other
 #: difference, so they are generated from one renderer with one switch.
+#: ``use_theta_m`` used to be a fourth (0 -> 1).  It is 0 on both halves
+#: now: the engine integrates dry theta, the export the stock arm runs
+#: from holds dry theta (gpuwm.wrf_physics_inventory.EXPORT_USE_THETA_M),
+#: and a stock arm told 1 either stops at WRF's input gate or, on the
+#: older mixed export, reads dry boundary rows as moist theta.
 #: Under the (4, 4) RRTMG pair the longwave delta collapses -- both
 #: arms run 4 -- and the two stock-only keys stay stock-only for the
 #: same reason: each names a setting the native arm answers in CODE, so
@@ -107,9 +109,15 @@ ROUTE_DEFAULT_PHYSICS_PROFILE = "thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1"
 #: (:func:`gpuwm.hrrr_hierarchy_direct._require_raw_stock_delta`)
 #: requires both ABSENT from the native namelist and pins both in the
 #: stock one; it is the enforcing half of this sentence.
+#: When selected, the fork-only alb_sol is native-only. Stock WRF 4.6.1
+#: has no such namelist key, so its surface keeps solar albedo disabled.
 _STOCK_DELTAS = ("ra_lw_physics 0->1 (native longwave off only), "
-                 "use_theta_m 0->1, stock-only ghg_input=0, stock-only "
-                 "do_radar_ref=1")
+                 "stock-only ghg_input=0, stock-only do_radar_ref=1")
+
+STOCK_ALB_SOL_REASON = (
+    "WRF 4.6.1 has no &physics alb_sol namelist key; including it makes "
+    "the stock Fortran namelist read fail. The stock arm omits the key "
+    "and runs without the fork's sun-angle land-albedo correction.")
 
 
 class HrrrRouteInputError(ValueError):
@@ -525,6 +533,49 @@ def _adaptive_clock_rows(runs) -> list[str]:
     return rows
 
 
+def _terrain_radiation_and_mosaic_rows(runs) -> list[str]:
+    """WRF &physics rows for slope radiation, terrain shading and Noah mosaic.
+
+    All five are stock WRF 4.6.1 &physics keys the route's importer reads
+    (``slope_rad`` and ``topo_shading`` per-domain columns, ``shadlen``,
+    ``sf_surface_mosaic`` and ``mosaic_cat`` run-wide), so both halves of
+    the pair carry them alike and the hierarchy's raw native-to-stock
+    delta is unchanged.  Before these rows the renderer never wrote them:
+    a TOML with ``slope_rad = 1`` or ``sf_surface_mosaic = 1`` emitted a
+    pair that said 0, so the root preparation, the hierarchy stage and the
+    mirrored WRF arm ran without the setting the forecast integrated.
+    Each row is written only where the configuration leaves WRF's
+    default, so every emission that does not use them keeps its bytes.
+    """
+
+    rows: list[str] = []
+    for key in ("slope_rad", "topo_shading"):
+        column = [int(getattr(run, key)) for run in runs]
+        if any(column):
+            rows.append(f" {key:<35} = {_column(column)}")
+    for key in ("shadlen", "sf_surface_mosaic"):
+        values = {getattr(run, key) for run in runs}
+        if len(values) > 1:
+            raise HrrrRouteInputError(
+                f"{key} differs between domains; WRF reads one value for "
+                f"the whole run and the domains carry {sorted(values)}")
+    if float(runs[0].shadlen) != 25000.0:
+        rows.append(f" {'shadlen':<35} = {_f(runs[0].shadlen)},")
+    if int(runs[0].sf_surface_mosaic):
+        # mosaic_cat is read only while mosaic is on (the importer writes
+        # it only then, and the experiment fingerprint drops it when off,
+        # gpuwm/core/model.py), so it rides with the switch.
+        categories = {int(run.mosaic_cat) for run in runs}
+        if len(categories) > 1:
+            raise HrrrRouteInputError(
+                "mosaic_cat differs between domains; WRF reads one value "
+                f"for the whole run and the domains carry {sorted(categories)}")
+        rows.append(f" {'sf_surface_mosaic':<35} = "
+                    f"{int(runs[0].sf_surface_mosaic)},")
+        rows.append(f" {'mosaic_cat':<35} = {categories.pop()},")
+    return rows
+
+
 def render_namelist_input(exp, *, stock: bool = False) -> str:
     """One WRF ``namelist.input`` for this experiment.
 
@@ -532,11 +583,38 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
     native file in exactly three ways -- the route parses both and
     refuses a fourth -- so both come out of this one function.
     """
+    from gpuwm.config import RunConfig
+    from gpuwm.physics_source_defaults import recipe_physics_defaults
+
     validate_route_physics(exp)
     domains = list(exp.domains)
     count = len(domains)
     root = domains[0]
     runs = [domain.run for domain in domains]
+    factor2 = [run.diff_6th_factor2 for run in runs]
+    # The importer's recipe fill for the standard WRF keys written below
+    # (the fork inferences touch only the RUC and Thompson generations,
+    # which are handled after the sections are rendered).  A standard key
+    # it fills differently from the TOML is written even at its WRF
+    # default: an omitted mp_zero_out or alb_sol was read back as the
+    # recipe's 2 or 1.
+    recipe = recipe_physics_defaults(ROUTE_REQUEST_SOURCE)
+
+    def recipe_fills_otherwise(key, value) -> bool:
+        return key in recipe and value != recipe[key]
+
+    for key in ("fractional_seaice",):
+        values = {getattr(run, key) for run in runs}
+        if len(values) > 1:
+            raise HrrrRouteInputError(
+                f"{key} differs between domains; WRF reads one value for "
+                f"the whole run and the domains carry {sorted(values)}")
+    if any(value is None for value in factor2) and any(
+            value is not None for value in factor2):
+        raise HrrrRouteInputError(
+            "diff_6th_factor2 is set on only some domains; a WRF column "
+            "cannot carry an omitted factor between numeric entries. "
+            "Set it explicitly on every domain or omit the whole column")
 
     start = exp.start_time
     end = start + timedelta(seconds=float(exp.run_seconds))
@@ -585,7 +663,11 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
     shortwave = [int(shortwave) for _, shortwave in pairs]
     longwave = ([1 if value == 0 else value for value in native_lw]
                 if stock else native_lw)
-    theta_m = 1 if stock else 0
+    # Dry theta on both halves: the native one because the engine
+    # integrates it, the stock one because the export it runs from is
+    # written that way and WRF's input gate stops a namelist that
+    # disagrees with its files (EXPORT_USE_THETA_M).
+    theta_m = EXPORT_USE_THETA_M if stock else 0
     ghg = " ghg_input                           = 0,\n" if stock else ""
     # STOCK-ONLY, and mandatory there: the mirrored arm has to PRODUCE
     # what the registration scores.  gpuwm evaluates REFL_10CM at output
@@ -615,11 +697,20 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
     # without a domain index.
     radar_ref = " do_radar_ref                        = 1," if stock else ""
 
+    stock_deltas = _STOCK_DELTAS
+    if int(getattr(root.run, "alb_sol", 0)) == 1:
+        stock_deltas += ", native-only alb_sol=1 (absent from stock WRF 4.6.1)"
+    elif recipe_fills_otherwise("alb_sol", int(getattr(root.run, "alb_sol", 0))):
+        # The native half writes alb_sol = 0 below so the route's recipe
+        # fill cannot read it as 1; stock WRF 4.6.1 has no key and runs
+        # without the correction, so the two halves run the same physics.
+        stock_deltas += (", native-only alb_sol=0 (absent from stock WRF "
+                         "4.6.1, which runs the same physics without it)")
     lines = [
         "! Generated by `gpuwm domain --source hrrr`.  This is the "
         + ("stock-WRF" if stock else "native gpuwm")
         + " half of the pair;",
-        "! the two differ only by " + _STOCK_DELTAS + ", which the "
+        "! the two differ only by " + stock_deltas + ", which the "
         "HRRR hierarchy",
         "! route verifies key for key before it prepares anything.",
         "&time_control",
@@ -699,12 +790,16 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         f" num_metgrid_levels                  = {NUM_METGRID_LEVELS},",
         f" num_metgrid_soil_levels             = "
         f"{NUM_METGRID_SOIL_LEVELS},",
+        *([f" wif_input_opt                       = {root.run.wif_input_opt},"]
+          if root.run.bl_mynn_version == "gsd_41" else []),
         " sfcp_to_sfcp                        = .true.,",
         "/",
         "",
         "&physics",
         f" mp_physics                          = "
         f"{_column(r.mp_physics for r in runs)}",
+        *([f" use_aero_icbc                       = {_logical(root.run.aer_init_opt == 1)},"]
+          if root.run.bl_mynn_version == "gsd_41" else []),
         f" ra_lw_physics                       = "
         f"{_column(longwave)}",
         f" ra_sw_physics                       = {_column(shortwave)}",
@@ -730,6 +825,10 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         # preparation refused the drift it was right to refuse.
         f" bl_pbl_physics                      = "
         f"{_column(r.bl_pbl_physics for r in runs)}",
+        *([f" bl_mynn_mixlength                   = {root.run.bl_mynn_mixlength},",
+           " bl_mynn_tkebudget                   = 0,",
+           f" scalar_pblmix                       = {root.run.scalar_pblmix},"]
+          if root.run.bl_mynn_version == "gsd_41" else []),
         f" bldt                                = "
         f"{_column(_f(r.bldt) for r in runs)}",
         f" cu_physics                          = {_column(r.cu_physics for r in runs)}",
@@ -739,6 +838,23 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         " ifsnow                              = 1,",
         " surface_input_source                = 1,",
         f" num_soil_layers                     = {root.run.num_soil_layers},",
+        *[
+            f" {key:<35} = "
+            + (_f(getattr(root.run, key)) if key == "mp_zero_out_thresh"
+               else str(int(getattr(root.run, key)))) + ","
+            for key, default in (("mp_zero_out", 0),
+                                 ("mp_zero_out_thresh", 1e-8),
+                                 ("mp_zero_out_all", 0))
+            if getattr(root.run, key) != default
+            or recipe_fills_otherwise(key, getattr(root.run, key))
+        ],
+        # WRF &physics fractional_seaice (Registry single-valued, default
+        # 0): which sea-ice threshold the RUC seam runs.  Written when the
+        # config moves it; omitted at 0, so every default emission keeps
+        # its bytes.  Unwritten, a configured 1 was read back as 0.
+        *([f" fractional_seaice                   = "
+           f"{int(root.run.fractional_seaice)},"]
+          if int(root.run.fractional_seaice) != 0 else []),
         " num_land_cat                        = 21,",
         f" sf_urban_physics                    = {_repeated(0, count)}",
         " sst_update                          = 0,",
@@ -766,6 +882,41 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         lines.append(ghg.rstrip("\n"))
     if radar_ref:
         lines.append(radar_ref)
+    # Preserve the analyzed aerosol donor request when this route writes
+    # the namelist it will later run.  The importer maps this public pair
+    # back to use_rap_aero_icbc and mp28_aerosol_source='analysis'.
+    # With the switch off no row is added, retaining the existing bytes.
+    analyzed_aerosol = {bool(getattr(r, "use_rap_aero_icbc", False)) for r in runs}
+    if len(analyzed_aerosol) > 1:
+        raise ValueError(
+            "use_rap_aero_icbc is one value for the whole run in WRF; "
+            "the domains request different analyzed aerosol sources")
+    if True in analyzed_aerosol:
+        lines.extend([
+            " use_aero_icbc                       = .true.,",
+            " use_rap_aero_icbc                   = .true.,",
+        ])
+    # WRF's radiation-driver options (single-valued
+    # in WRF's Registry), written when the config leaves WRF's default 0.
+    # The route runs from these files, so a configured 1 or 3 left
+    # unwritten would run at 0 unnoticed; omitted at 0, so every default
+    # emission keeps its bytes.
+    for key in ("swint_opt", "aer_opt", "alb_sol"):
+        values = {int(getattr(r, key, 0) or 0) for r in runs}
+        if len(values) > 1:
+            raise ValueError(
+                f"{key} is one value for the whole run in WRF (Registry "
+                f"single-valued); the domains carry {sorted(values)}")
+        (value,) = values
+        # alb_sol belongs to the operational fork. The stock comparison
+        # must omit it because WRF 4.6.1's namelist reader has no key.
+        # The paired raw-delta receipt records this physical difference.
+        # A 0 the recipe fills as 1 is written in the native half as well,
+        # which the hierarchy's raw delta records as physics-equivalent.
+        if ((value or recipe_fills_otherwise(key, value))
+                and not (stock and key == "alb_sol")):
+            lines.append(f" {key:<36s}= {value},")
+    lines.extend(_terrain_radiation_and_mosaic_rows(runs))
     lines.extend([
         "/",
         "",
@@ -800,6 +951,10 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         f"{_column(r.diff_6th_opt for r in runs)}",
         f" diff_6th_factor                     = "
         f"{_column(_f(r.diff_6th_factor) for r in runs)}",
+        *([
+            " diff_6th_factor2                    = "
+            + _column(_f(value) for value in factor2),
+        ] if factor2[0] is not None else []),
         f" diff_6th_slopeopt                   = "
         f"{_column(r.diff_6th_slopeopt for r in runs)}",
         # WRF's own moist-filter switch (Registry.EM_COMMON:2889,
@@ -864,6 +1019,18 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         f"{_column(_f(r.emdiv) for r in runs)}",
         f" h_sca_adv_order                     = "
         f"{_column(r.h_sca_adv_order for r in runs)}",
+        # WRF's vertical advection orders, written when any domain leaves
+        # the Registry default 3.  The route runs from these files, not
+        # the TOML, and the round trip compares the prepared identity the
+        # orders do not enter, so a configured 5 left unwritten would run
+        # at 3 unnoticed.  Omitted at 3, so every default emission keeps
+        # its bytes.
+        *([f" v_mom_adv_order                     = "
+           f"{_column(r.v_mom_adv_order for r in runs)}",
+           f" v_sca_adv_order                     = "
+           f"{_column(r.v_sca_adv_order for r in runs)}"]
+          if any(r.v_mom_adv_order != 3 or r.v_sca_adv_order != 3
+                 for r in runs) else []),
         "/",
         "",
         "&bdy_control",
@@ -889,6 +1056,75 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         "",
     ])
     text = "\n".join(lines)
+    from gpuwm.physics_source_defaults import (
+        PHYSICS_SELECTOR_VALUES, with_physics_selector_comment)
+    # Use the exact rendered WRF sections so generation selection follows
+    # every admitted fork signature, including a factor2 request.
+    from gpuwm.namelist_import import (operational_fork_ruc_defaults,
+        operational_fork_thompson_defaults, parse_namelist_text)
+    rendered_sections = parse_namelist_text(text)
+    inferred_ruc = operational_fork_ruc_defaults(rendered_sections)
+    inferred_thompson = operational_fork_thompson_defaults(rendered_sections)
+    # The importer treats these monthly surface choices as shared.
+    # A mixed tree cannot be represented by one namelist value without
+    # changing a domain's selected surface physics.
+    for key in ("rdlai2d", "usemonalb"):
+        values = [getattr(run, key) for run in runs]
+        if any(value != values[0] for value in values[1:]):
+            raise HrrrRouteInputError(
+                f"{key} differs between domains; the namelist monthly "
+                "surface setting carries one value for the entire tree")
+    # What the route's importer fills where this namelist is silent: the
+    # recipe table's settings for the route's request source and the fork
+    # inferences from these sections.  A value that differs from it has
+    # to be written, or the route reads the recipe's value instead of the
+    # TOML's.
+    fallback = route_fallback_settings(rendered_sections)
+
+    def importer_fills_otherwise(key, value) -> bool:
+        return value != fallback.get(
+            key, RunConfig.__dataclass_fields__[key].default)
+
+    # Carry monthly surface fields for the land schemes that read them
+    # when they are on, and wherever the importer would otherwise fill a
+    # different value.  A RUC fork signature also needs explicit false
+    # values so inference cannot change a roundtrip, and so does the
+    # recipe's prescribed-monthly request: a TOML that leaves them off
+    # (Noah or RUC without the monthly fields) was read back as on.
+    prescribed_rows = [
+        f" {key:<35} = {_logical(getattr(root.run, key))},"
+        for key in ("rdlai2d", "usemonalb")
+        if (root.run.sf_surface_physics in (2, 3)
+            and (getattr(root.run, key) or inferred_ruc))
+        or importer_fills_otherwise(key, getattr(root.run, key))]
+    if prescribed_rows:
+        text = text.replace(
+            "&physics\n", "&physics\n" + "\n".join(prescribed_rows) + "\n", 1)
+    selectors = {}
+    for key in PHYSICS_SELECTOR_VALUES:
+        default = RunConfig.__dataclass_fields__[key].default
+        values = [getattr(run, key, default) for run in runs]
+        if any(value != values[0] for value in values[1:]):
+            raise HrrrRouteInputError(
+                f"{key} differs between domains; the namelist generation "
+                "comment carries one value for the entire tree")
+        # A second filter factor also identifies the fork's limiter to
+        # the importer. Carry a deliberately selected legacy limiter even
+        # at its default value so that heuristic cannot change the run.
+        explicit_legacy_limiter = (
+            key == "upper_wind_limiter_form" and factor2[0] is not None)
+        # A generation the recipe table fills differently is carried as
+        # well: a TOML on the generic RUC snow or filter form was read
+        # back as the recipe's fork form when the comment left it out.
+        # ruc_soilprop joined the comment after the inferred RUC keys had
+        # fixed their bytes, so it is carried only where it is needed:
+        # its default is already the fork's wrf_45.
+        inferred = ((key in inferred_ruc and key != "ruc_soilprop")
+                    or key in inferred_thompson)
+        if (values[0] != default or explicit_legacy_limiter or inferred
+                or importer_fills_otherwise(key, values[0])):
+            selectors[key] = values[0]
+    text = with_physics_selector_comment(text, selectors)
     verify_axis_authored_keys(exp, text, stock=stock)
     return text
 
@@ -942,7 +1178,13 @@ def route_input_paths(config_path: Path) -> dict[str, Path]:
 #: tree-wide setting, instead of letting the round trip below refuse the
 #: same edit in the importer's words with no way out.
 ROUTE_SHARED_DOMAIN_KEYS = ("bldt", "diff_6th_opt", "isfflx",
-                            "mp_physics", "sf_sfclay_physics")
+                            "mp_physics", "sf_sfclay_physics",
+                            "mynn_sfclay_variant", "terrain_clock",
+                            "diff_6th_form", "upper_wind_limiter_form",
+                            "mp_zero_out", "mp_zero_out_thresh",
+                            "mp_zero_out_all", "ruc_irrigation", "ruc_snow",
+                            "ruc_qvg_cold_start", "ruc_2m_diagnostic",
+                            "thompson_version", "thompson_fork_snow_fall")
 
 
 def route_shared_domain_keys(source) -> frozenset[str]:
@@ -996,6 +1238,137 @@ def route_implicit_switches(source, switches) -> dict[str, object]:
     return {key: implicit[key] for key in ROUTE_IMPLICIT_SWITCHES}
 
 
+#: The request source this route's namelists are read under, by
+#: :func:`verify_round_trip` here and by the hierarchy stage
+#: (:func:`gpuwm.hrrr_hierarchy_direct._native_experiment`).  The
+#: importer fills every setting the recipe table declares for it
+#: (``gpuwm/data/physics_sources/request-defaults.v1.toml``) wherever the
+#: namelist is silent, so the emission has to state any value that
+#: differs from that fill.
+ROUTE_REQUEST_SOURCE = "hrrr"
+
+#: The fork Registry default a ``diff_6th_factor2`` of ``None`` runs under
+#: ``diff_6th_form = "noaa_wrf39"`` (RunConfig's own documentation of the
+#: field; the integrator reads it as
+#: :data:`gpuwm.core.dycore.DIFF6_FACTOR2_FORK_DEFAULT`, and a test binds
+#: the two).  Restated here only so the emission path does not import the
+#: GPU dycore to compare two spellings of one setting.
+DIFF6_FACTOR2_FORK_DEFAULT = 0.04
+
+
+def route_fallback_settings(rendered_sections) -> dict[str, object]:
+    """What the route's importer fills for a setting the namelist omits.
+
+    The recipe table's defaults for :data:`ROUTE_REQUEST_SOURCE`, with the
+    fork inferences the importer makes from the rendered sections on top
+    (the operational RUC and Thompson generations a fork signature
+    selects).  A RunConfig field absent here falls back to its RunConfig
+    default.
+    """
+
+    from gpuwm.namelist_import import (operational_fork_ruc_defaults,
+                                       operational_fork_thompson_defaults)
+    from gpuwm.physics_source_defaults import (land_scoped_defaults,
+                                               recipe_physics_defaults)
+
+    surface = rendered_sections.get("physics", {}).get(
+        "sf_surface_physics", [None])
+    fallback = land_scoped_defaults(
+        recipe_physics_defaults(ROUTE_REQUEST_SOURCE), surface[0])
+    fallback.update(operational_fork_ruc_defaults(rendered_sections))
+    fallback.update(operational_fork_thompson_defaults(rendered_sections))
+    return fallback
+
+
+#: Run fields the WOOF forecast reads from the TOML itself and no namelist
+#: of this pair can spell, each with where the forecast reads it.
+#:
+#: Every RunConfig field falls in one of three groups on this route:
+#:
+#: (a) a field the route's importer reads from the namelist pair (a WRF
+#:     key, a native-only key, or the selector comment).  The pair is what
+#:     the root preparation, the hierarchy stage and the mirrored WRF arm
+#:     run, so :func:`verify_round_trip` holds every such field to the
+#:     TOML and refuses a drift by name;
+#: (b) a field with no spelling in the pair that the forecast reads from
+#:     the TOML it is bound to (``--experiment-config``: the tree runner's
+#:     ``load_experiment`` in gpuwm/prepared_domain_tree_forecast.py, and
+#:     the single-domain root's ``resolve_root_experiment`` in
+#:     gpuwm/hrrr_configuration.py).  Such a value reaches the model
+#:     without the pair, so the round trip does not compare it.  This
+#:     table is that group, together with the write cadences and output
+#:     diagnostics :func:`round_trip_exempt_run_fields` adds;
+#: (c) a field neither the pair nor the forecast carries: a TOML setting
+#:     that silently never reaches the model.  That is a defect to fix in
+#:     the emission or the reader, never an exemption, and the round trip
+#:     refuses it like (a) until it is fixed.
+#:
+#: The breakage a (b) entry would hide if it were wrong is a value the
+#: preparation stamps differently from the TOML, so every entry must be
+#: one the prepared-cache identity rules preparation-inert
+#: (``PREPARATION_INERT_RUN_FIELDS``): preparation reads it nowhere, and
+#: the forecast's own cache comparison drops it.
+#: tests/test_route_round_trip_fields.py holds each entry to that, to its
+#: cited reader naming the field, and to the importer having no spelling
+#: for it.  Before this table the round trip either compared none of
+#: these (the prepared identity drops them) or, briefly, all of them,
+#: which refused the shipped tornado LES configs for an
+#: ``inflow_perturbation`` the forecast does run.
+ROUTE_FORECAST_TOML_FIELDS: Mapping[str, str] = MappingProxyType({
+    "inflow_perturbation": (
+        "gpuwm/core/inflow_perturbation.py build_inflow_perturbation, "
+        "constructed per child by the NestCoupler (gpuwm/core/nest.py)"),
+    "inflow_perturbation_seed": (
+        "gpuwm/core/inflow_perturbation.py build_inflow_perturbation"),
+    "inflow_perturbation_amplitude_scale": (
+        "gpuwm/core/inflow_perturbation.py build_inflow_perturbation"),
+    "inflow_perturbation_faces": (
+        "gpuwm/core/inflow_perturbation.py build_inflow_perturbation"),
+    "sase_moist_n2": "gpuwm/core/sase.py, the SASE closure",
+    "sase_stable_dissipation": "gpuwm/core/sase.py, the SASE closure",
+    "sase_additive_dissipation": "gpuwm/core/sase.py, the SASE closure",
+    "bl_mynn_gsd41_unsquared_qtke": (
+        "gpuwm/core/mynn_pbl_gpu.py, the gsd_41 MYNN column solver"),
+    "zadvect_implicit_variant": (
+        "gpuwm/core/ieva.py, the final RK stage's implicit vertical "
+        "advection"),
+    "min_time_step_sound": (
+        "gpuwm/core/adaptive_clock.py, the adaptive clock's substep floor"),
+    "adaptive_nest_lattice": (
+        "gpuwm/core/adaptive_clock.py, the adaptive clock's nest lattice"),
+    "rrtmg_smoke_manifest": (
+        "gpuwm/core/rrtmg_smoke_manifest.py, prescribed smoke in the "
+        "radiation call"),
+})
+
+
+def round_trip_exempt_run_fields() -> frozenset[str]:
+    """Run fields the round trip does not compare: group (b) above.
+
+    :data:`ROUTE_FORECAST_TOML_FIELDS`, plus the write cadences and the
+    output-only diagnostic toggles, read from the two tables the prepared
+    cache and the restart identity already publish for them
+    (``NON_TRAJECTORY_IDENTITY_FIELDS`` and
+    ``INERT_DIAGNOSTIC_IDENTITY_FIELDS``) rather than listed a third time.
+    None of the cadences changes one model step, and the namelist pair is
+    not their authority: preparation writes no frame, and the forecast
+    takes when and what it writes from the TOML it is bound to
+    (``--experiment-config``).  ``run_seconds`` is compared on its own
+    below.  Comparing them anyway refused every emission, measured:
+    the pair states no ``nwp_diagnostics`` or ``restart_interval``, and
+    writing them would change every default emission's bytes.
+    """
+
+    from gpuwm.ingest.prepared_cache import (
+        INERT_DIAGNOSTIC_IDENTITY_FIELDS, NON_TRAJECTORY_IDENTITY_FIELDS)
+
+    return frozenset(
+        path.partition(".")[2]
+        for path in NON_TRAJECTORY_IDENTITY_FIELDS
+        | INERT_DIAGNOSTIC_IDENTITY_FIELDS
+        if path.startswith("run.")) | frozenset(ROUTE_FORECAST_TOML_FIELDS)
+
+
 def verify_round_trip(exp, wps_namelist: Path, namelist_input: Path) -> None:
     """Re-import what was just written and demand the same experiment.
 
@@ -1006,8 +1379,10 @@ def verify_round_trip(exp, wps_namelist: Path, namelist_input: Path) -> None:
     that cannot drift from what the route will do.
     """
     from gpuwm.experiment import build_experiment
+    from dataclasses import fields as dataclass_fields
     from gpuwm.ingest.prepared_cache import (
-        effective_prepared_domain_config, prepared_domain_config_identity)
+        _json_copy, effective_prepared_domain_config,
+        prepared_domain_config_identity)
     from gpuwm.namelist_import import import_namelists
     import tomllib
 
@@ -1042,6 +1417,7 @@ def verify_round_trip(exp, wps_namelist: Path, namelist_input: Path) -> None:
     compatibility = getattr(exp.root.run, "wrf_rrtmg_compatibility", None)
     text, _report = import_namelists(
         wps_namelist, namelist_input, name=exp.name,
+        request_source=ROUTE_REQUEST_SOURCE,
         acknowledgements=tuple(exp.acknowledgements),
         **({} if variant is None else {"rrtmg_variant": variant}),
         **({} if compatibility is None
@@ -1049,12 +1425,52 @@ def verify_round_trip(exp, wps_namelist: Path, namelist_input: Path) -> None:
     imported = build_experiment(
         tomllib.loads(text),
         source=f"round trip of {namelist_input.name}")
+    exempt = round_trip_exempt_run_fields()
 
     def identity(candidate):
-        return [
-            effective_prepared_domain_config(
+        # EVERY RunConfig field of groups (a) and (c) above, not the
+        # prepared-cache identity's subset; group (b), the fields the
+        # forecast reads from the TOML alone, is ``exempt``.
+        # That identity drops the preparation-inert fields because
+        # preparation never reads them, and comparing through it is what
+        # let an emission whose namelist the importer reads differently
+        # from the TOML pass silently: 1ec83bf01's stability policy first
+        # (a nest epssm of 0.1 against a config of 0.5), then rdlai2d,
+        # usemonalb, the RUC and filter generations and the rest, which
+        # the importer fills from the recipe table wherever the namelist
+        # is silent.  The namelist pair is what the preparation and the
+        # mirrored WRF arm run, so a field it reads differently is a
+        # different tree from the TOML beside it, refused here by name.
+        # The prepared identity's normalizations (one radiation cadence,
+        # a dead cumulus interval, the radiation aggregate) still apply:
+        # each equates two spellings of one forecast.
+        rows = []
+        for domain in candidate.domains:
+            effective = effective_prepared_domain_config(
                 prepared_domain_config_identity(domain))
-            for domain in candidate.domains]
+            run = effective.setdefault("run", {})
+            every_field = _json_copy({
+                field.name: getattr(domain.run, field.name)
+                for field in dataclass_fields(domain.run)})
+            for key, value in every_field.items():
+                if key not in exempt:
+                    run.setdefault(key, value)
+            # Dead Noah-mosaic state, on the experiment fingerprint's own
+            # rule (gpuwm/core/model.py): with mosaic off nothing reads the
+            # tile count or the canopy rule, and the importer writes
+            # mosaic_cat only while mosaic is on, so a TOML mosaic_cat
+            # beside mosaic off is one forecast with the omitted one.
+            if not run.get("sf_surface_mosaic", 0):
+                run.pop("mosaic_cat", None)
+                run.pop("mosaic_urban_canopy", None)
+            # Two spellings of one filter: an omitted second factor runs
+            # the fork Registry's 0.04 under the fork form, the value the
+            # importer states for it.
+            if (run.get("diff_6th_form") == "noaa_wrf39"
+                    and run.get("diff_6th_factor2") is None):
+                run["diff_6th_factor2"] = DIFF6_FACTOR2_FORK_DEFAULT
+            rows.append(effective)
+        return rows
 
     differences = []
     #: Per field, the value each domain's namelist column carries where
@@ -1108,8 +1524,16 @@ def verify_round_trip(exp, wps_namelist: Path, namelist_input: Path) -> None:
             # names.  Nothing here is a workaround for the defect this
             # module exists to fix: it is what to do with a setting this
             # route has no spelling for.
-            + ". This route runs the namelists rather than the TOML, so "
-            "the namelist value above is what would run. Next: set each "
+            # Not "this route runs the namelists rather than the TOML":
+            # the forecast does read the TOML, and the fields it reads
+            # from there alone are exempt above (ROUTE_FORECAST_TOML_FIELDS).
+            # What reads the namelists is the preparation, the hierarchy
+            # stage and the mirrored WRF arm, which is what the sentence
+            # has to say.
+            + ". This route prepares the tree from these namelists and "
+            "its mirrored WRF arm runs them, so the namelist value above "
+            "is what they would use while the forecast read the TOML's. "
+            "Next: set each "
             "field to the value its namelist column carries"
             + (f" ({_settings_phrase(stated)})" if stated else "")
             + ", or keep the setting and run this forecast on a source "
@@ -1225,7 +1649,7 @@ def run_route_inputs(config_path, exp, *, raw, into=None):
             siblings = configuration_reading_sources(
                 (raw.get("fetch") or {}).get("source"))
             raise HrrrRouteInputError(
-                f"the HRRR route runs WRF namelists rather than the TOML, "
+                f"the HRRR route prepares from WRF namelists written from the TOML, "
                 f"{config_path.name} has none beside it ({', '.join(missing)} "
                 "missing), and they cannot be written from it without "
                 "changing the forecast it describes: " + str(error).rstrip(".")

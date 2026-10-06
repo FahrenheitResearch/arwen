@@ -12,5 +12,19 @@
  },
  "time_policy": "decoded at every valid time and required invariant",
  "member_policy": "HRRR is deterministic; no member identity exists",
- "input_identity": "dynamic file paths and SHA-256 values are owned by gpuwm-mapped-composition-inputs-v1"
+ "input_identity": "dynamic file paths and SHA-256 values are owned by gpuwm-mapped-composition-inputs-v1",
+ "runtime_vegetation": {
+  "source": "same-cycle wrfsfc analysis",
+  "selector": {
+   "format": "grib2",
+   "discipline": 2,
+   "category": 0,
+   "parameter": 4,
+   "level_type": 1,
+   "level_value": 0,
+   "pdt": 0
+  },
+  "units": "percent",
+  "time_policy": "source cycle analysis is broadcast as the initial vegetation fraction"
+ }
 }

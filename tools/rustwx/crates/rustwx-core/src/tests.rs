@@ -65,33 +65,14 @@ fn grid_shape_rejects_overflow_ceiling_and_invalid_deserialization() {
 }
 
 #[test]
-fn dense_volume_products_are_checked_and_bounded() {
+fn dense_volume_products_accept_large_arrays_and_check_address_space() {
     assert_eq!(checked_volume_elements(37, 1_000).unwrap(), 37_000);
-    let max_37_level_cells = MAX_VOLUME_ELEMENTS / 37;
-    assert_eq!(
-        checked_volume_elements(37, max_37_level_cells).unwrap(),
-        37 * max_37_level_cells
-    );
-    assert!(matches!(
-        checked_volume_elements(37, max_37_level_cells + 1),
-        Err(RustwxError::VolumeTooLarge {
-            levels: 37,
-            cells,
-            max_elements: MAX_VOLUME_ELEMENTS,
-        }) if cells == max_37_level_cells + 1
-    ));
-    assert!(matches!(
-        checked_volume_elements(usize::MAX, 2),
-        Err(RustwxError::VolumeTooLarge { .. })
-    ));
-    assert!(matches!(
-        checked_volume_elements(6, MAX_GRID_CELLS),
-        Err(RustwxError::VolumeTooLarge {
-            levels: 6,
-            cells: MAX_GRID_CELLS,
-            max_elements: MAX_VOLUME_ELEMENTS
-        })
-    ));
+    assert_eq!(checked_volume_elements(50, 2695 * 1585).unwrap(), 213_578_750);
+    assert_eq!(checked_volume_elements(6, MAX_GRID_CELLS).unwrap(), 150_000_000);
+    for (levels, cells) in [(usize::MAX, 2), (1, isize::MAX as usize / 4 + 1)] {
+        assert!(matches!(checked_volume_elements(levels, cells),
+            Err(RustwxError::VolumeAddressSpace { .. })));
+    }
 }
 
 #[test]

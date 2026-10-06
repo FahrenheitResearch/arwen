@@ -3086,8 +3086,15 @@ def validate_physics_plan(
             and parameter_is_implemented(spec)
         }
         template_parameters = template.get("parameters", {})
+        # The template's own values, kept so they can be re-applied over
+        # the component options below: a template that pins a knob its
+        # component also sets (the GSD MYNN 4.1 suite's bl_mynn_mixlength
+        # 2 and scalar_pblmix 1 against the mynn option's 1 and 0) must
+        # win, or the suite silently runs the component's value.
+        template_layer: dict[str, object] = {}
         if isinstance(template_parameters, dict):
             settings.update(template_parameters)
+            template_layer.update(template_parameters)
         # Per-domain template values, indexed by depth below the tree root.
         # Several WRF knobs are max_domains in the Registry and were varied
         # down the nest chain by the verified runs (sixth-order diffusion
@@ -3120,6 +3127,7 @@ def validate_physics_plan(
                             )
                             continue
                         settings[name] = value
+                        template_layer[name] = value
         domain_parameters = domain.get("parameters", {})
         if not isinstance(domain_parameters, dict):
             errors.append(
@@ -3198,7 +3206,13 @@ def validate_physics_plan(
             if isinstance(selectors, dict):
                 settings.update(selectors)
             if isinstance(parameters, dict):
-                settings.update(parameters)
+                # An unchanged component keeps the named template's explicit
+                # settings. Generic option defaults must not silently select
+                # another trajectory for a composed template.
+                for name, value in parameters.items():
+                    if (template_components.get(component_id) != option_id
+                            or name not in template_parameters):
+                        settings[name] = value
             requirements = option.get("asset_requirements", [])
             if isinstance(requirements, list):
                 for requirement in requirements:
@@ -3211,6 +3225,10 @@ def validate_physics_plan(
                         asset_domains[key][1].append(domain_id)
                     if index not in asset_domains[key][2]:
                         asset_domains[key][2].append(index)
+
+        # Template, then per-depth template columns, over component options;
+        # explicit domain parameters below still win over both.
+        settings.update(template_layer)
 
         for name, value in domain_parameters.items():
             spec = parameter_specs.get(name)

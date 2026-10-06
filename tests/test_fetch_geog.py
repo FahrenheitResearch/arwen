@@ -226,6 +226,60 @@ def test_uncopied_optional_archive_uses_upstream_and_records_actual_source(tmp_p
     assert record["url"].startswith(geog_assets.NCAR_BASE_URL)
 
 
+@pytest.mark.parametrize("dataset,size,digest,unpacked", [
+    ("bnu_soiltype_top", 8198836,
+     "7a7eb86d585c3dc6b32297f1ea4622d929aacadc70f16e14e0193a06f233038a",
+     933120270),
+    ("bnu_soiltype_bot", 8078617,
+     "49306298749e3ed2a6172dfe7af0023a5be0e9f5f5230a2cfd6421ebce3e81b1",
+     933120273),
+])
+def test_bnu_soil_pins_are_optional_ncar_data(dataset, size, digest, unpacked):
+    archive = geog_assets.archive_for(dataset)
+    assert archive.filename == f"{dataset}.tar.bz2"
+    assert archive.archive_bytes == size
+    assert archive.archive_sha256 == digest
+    assert archive.extracted_bytes == unpacked
+    assert archive.required_by == ()
+    assert archive.optional_for == (geog_assets.GEOG_CONSUMER_WRF,)
+    assert archive.available_sources == ("ncar",)
+    assert not archive.in_mandatory_bundle
+    assert parse_datasets(dataset) == (dataset,)
+    assert dataset not in parse_datasets("wrf")
+    assert dataset not in geog_assets.MANDATORY_BUNDLE_DATASETS
+    assert archive_url(archive.filename, "ncar") == (
+        f"https://www2.mmm.ucar.edu/wrf/src/wps_files/{dataset}.tar.bz2")
+
+
+def test_explicit_bnu_soil_fetch_uses_ncar_and_records_both_archives(
+        tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    datasets = ("bnu_soiltype_top", "bnu_soiltype_bot")
+    files = {}
+    pins = []
+    for dataset in datasets:
+        payload = _build_archive((dataset,))
+        archive = geog_assets.archive_for(dataset)
+        pins.append(replace(archive, archive_bytes=len(payload),
+                            archive_sha256=hashlib.sha256(payload).hexdigest(),
+                            extracted_bytes=4096))
+        files[archive.filename] = payload
+    monkeypatch.setattr(geog_assets, "GEOG_ARCHIVES", tuple(pins))
+    transport = _fake_transport(files)
+    assert fetch_geog(root=tmp_path, datasets=datasets, source="ncar",
+                      urlopen_fn=transport, progress=lambda message: None) == 2
+    assert len(transport.calls) == 2
+    manifest = json.loads((tmp_path / GEOG_FETCH_MANIFEST_NAME).read_text())
+    for archive in pins:
+        record = manifest["archives"][archive.filename]
+        assert record["source"] == "ncar"
+        assert record["url"] == archive_url(archive.filename, "ncar")
+        assert (tmp_path / archive.dataset / "index").is_file()
+    assert all(request.full_url.startswith(geog_assets.NCAR_BASE_URL)
+               for request in transport.calls)
+
+
 def test_the_mesh_column_carries_every_dataset_the_mesh_door_opens():
     # rw_mpas_static's required list is dataset DIRECTORIES; the pin table
     # is ARCHIVES, and one archive carries seven directories.  The two are
@@ -357,7 +411,8 @@ def test_a_consumer_name_selects_that_doors_datasets():
     # and it composes with explicit names, in canonical order
     assert parse_datasets("wrf,soilgrids") == tuple(
         archive.dataset for archive in geog_assets.GEOG_ARCHIVES if archive.required_by)
-    assert parse_datasets("wrf,soilgrids,lake_depth") == geog_assets.geog_datasets()
+    explicit = "wrf,soilgrids,lake_depth,bnu_soiltype_top,bnu_soiltype_bot"
+    assert parse_datasets(explicit) == geog_assets.geog_datasets()
 
 
 def test_resolve_source_defaults_and_bundle_rules():

@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, fields, is_dataclass
+from datetime import date, datetime, timezone
 from operator import index
 import struct
 from types import MappingProxyType
@@ -41,6 +42,7 @@ _CLOCK_FIELDS = frozenset({
 _CONTROLS = frozenset({
     "physics", "lateral_boundaries", "_scratch", "_scratch_arena",
     "_host_setup_state", "_phb_host",
+    "_ensemble_surface_state",
 })
 _BATCH_ATTRIBUTES = frozenset({
     "cfg", "storage", "plan", "members", "clock", "scalars",
@@ -54,10 +56,33 @@ class BatchStateUnsupported(ValueError):
     """Prepared state cannot be packed without changing member semantics."""
 
 
+def _temporal_key(value):
+    """Typed calendar identity, retaining wall time, fold and timezone policy."""
+    if type(value) is date:
+        return ("date", value.isoformat())
+    if type(value) is not datetime:
+        return None
+    zone = value.tzinfo
+    if zone is None:
+        zone_key = None
+    elif type(zone) is timezone:
+        offset = zone.utcoffset(value)
+        zone_key = ("fixed_offset", offset.days, offset.seconds, offset.microseconds, value.tzname())
+    else:
+        from zoneinfo import ZoneInfo
+        if type(zone) is not ZoneInfo or not isinstance(zone.key, str):
+            raise BatchStateUnsupported("calendar timezone has no immutable named transition authority; joined members cannot substitute future calendar transitions")
+        zone_key = ("zoneinfo", zone.key)
+    return ("datetime", value.isoformat(timespec="microseconds"), value.fold, zone_key)
+
+
 def _exact_key(value):
     """Typed byte comparison, including NaN payloads and signed scalar zero."""
     if isinstance(value, np.generic):
         return ("numpy", value.dtype.str, value.tobytes())
+    calendar = _temporal_key(value)
+    if calendar is not None:
+        return calendar
     if type(value) is float:
         return ("float", struct.pack("!d", value))
     if value is None or type(value) in (bool, int, str, bytes):

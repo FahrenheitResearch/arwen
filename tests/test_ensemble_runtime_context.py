@@ -110,6 +110,9 @@ def test_single_streamed_history_consumes_each_due_reflectivity_handoff_once(tmp
             pass
         def write_frame(self, valid, frame):
             written.append(frame["REFL_10CM"].tobytes())
+
+        def complete_output_identity(self):
+            return None
     monkeypatch.setattr(wrfout, "WrfoutWriter", Writer)
     capture = MemberOutputCapture(lambda **row: frames.append(row), 17)
     start = datetime(2024, 1, 1)

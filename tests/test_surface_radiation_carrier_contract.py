@@ -732,10 +732,14 @@ def _hand_built_compute_driver(monkeypatch, *, carriers):
             "psfc": -123.0, "tsk": 290.0, "hfx": 0.0, "qfx": 0.0,
             "qsfc": 0.0, "chs2": 0.0, "cqs2": 0.0,
             "t2": -999.0, "q2": -999.0, "th2": -999.0,
+            "xland": 1.0,
         }.items()
     }
     driver.surface_enabled = True
     driver.carriers = carriers
+    # The normal constructor carries this inactive slot on radiation-off
+    # runs; the synthetic compute driver must reach the carrier contract.
+    driver.swint = None
     driver.stepbl = 1
     driver.radt_minutes = 12.0
     driver.radt_seconds = 720.0

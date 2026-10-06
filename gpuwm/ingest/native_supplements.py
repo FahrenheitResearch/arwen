@@ -44,6 +44,17 @@ def gate_supplement_fields(gate):
     return fields
 
 
+def gate_soil_surface_fields(gate):
+    """The optional surface payloads declared by the native soil decoder."""
+    fields = tuple(gate.get("optional_soil_surface_fields", "").split(","))
+    if fields == ("",):
+        return ()
+    if (fields != ("VEGFRA",)
+            or gate.get("optional_soil_surface_units") != "VEGFRA=percent"):
+        raise ValueError("native optional soil surface fields have invalid units")
+    return fields
+
+
 def verify_supplement_receipt(receipt):
     """Recheck external donor bytes before sealing their decoded publication."""
     import hashlib

@@ -434,7 +434,10 @@ def test_go_says_a_step_heard_in_its_process_as_a_step_not_a_warning(tmp_path, m
 
     monkeypatch.setattr(runplan, "_run_fetch", fetch)
     capsys.readouterr()
-    assert main(["go", str(config), "--outdir", str(tmp_path / "run"), "--run-stamp", "off"]) == 1
+    # This callback supplies the preparation stream from the fetch itself,
+    # which models the whole-cycle door.
+    assert main(["go", str(config), "--outdir", str(tmp_path / "run"),
+                 "--run-stamp", "off", "--whole-cycle"]) == 1
     said = capsys.readouterr()
     assert "warning: Start state and boundaries" not in said.err
     assert "go: Start state and boundaries\n" in said.out

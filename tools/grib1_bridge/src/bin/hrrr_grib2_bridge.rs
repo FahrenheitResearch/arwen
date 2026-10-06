@@ -325,6 +325,13 @@ const SURFACE_SPECS: [SurfaceSpec; 11] = [
     },
 ];
 
+// Optional analyzed fields carried beside the soil subset. The fetch source
+// metadata declares which records it appends; selection is numeric here.
+const OPTIONAL_SOIL_SURFACE_SPECS: [SurfaceSpec; 1] = [SurfaceSpec {
+    name: "VEGFRA", parameter: Parameter { discipline: 2, category: 0, number: 4 },
+    level_type: SURFACE_LEVEL_TYPE, level_value: 0.0, nonnegative: true,
+}];
+
 #[derive(Clone, Debug)]
 struct SelectedField {
     index: usize,
@@ -348,6 +355,7 @@ struct AtmosInventory {
 #[derive(Clone, Debug)]
 struct SoilInventory {
     selected: Vec<SelectedField>,
+    optional_surface: Vec<SelectedField>,
     reference_time: String,
     forecast_hour: u32,
     grid: GridFingerprint,
@@ -668,8 +676,28 @@ fn inventory_soil(
         )
         .into());
     }
+    let mut optional_surface = Vec::new();
+    for spec in OPTIONAL_SOIL_SURFACE_SPECS {
+        let matches: Vec<_> = file.messages.iter().enumerate().filter(|(_, message)| {
+            parameter_matches(message, spec.parameter) && message.product.template == 0
+                && message.product.level_type == spec.level_type
+                && level_matches(message.product.level_value, spec.level_value)
+        }).collect();
+        if matches.len() > 1 {
+            return Err(format!("duplicate optional surface {} in soil input", spec.name).into());
+        }
+        if let Some((index, message)) = matches.first() {
+            validate_message_common(message, expected_cycle, forecast_hour)?;
+            if common_grid.as_ref() != Some(&GridFingerprint::from_grid(&message.grid)) {
+                return Err(format!("optional surface {} grid differs from soil", spec.name).into());
+            }
+            optional_surface.push(SelectedField { index: *index, variable: spec.name,
+                level_value: spec.level_value, parameter: spec.parameter });
+        }
+    }
     Ok(SoilInventory {
         selected,
+        optional_surface,
         reference_time: expected_cycle.to_owned(),
         forecast_hour,
         grid: common_grid.ok_or("empty soil inventory")?,
@@ -745,6 +773,13 @@ fn compare_soil_inventory(
         .iter()
         .map(|field| (field.variable, field.level_value.to_bits(), field.parameter))
         .collect();
+    let optional_left: Vec<_> = reference.optional_surface.iter()
+        .map(|field| (field.variable, field.parameter)).collect();
+    let optional_right: Vec<_> = candidate.optional_surface.iter()
+        .map(|field| (field.variable, field.parameter)).collect();
+    if optional_left != optional_right {
+        return Err(format!("soil f{expected_forecast_hour:02} optional surface inventory differs from the first frame").into());
+    }
     if left != right || left.len() != 18 {
         let missing: Vec<_> = left.iter().filter(|key| !right.contains(key)).collect();
         let extra: Vec<_> = right.iter().filter(|key| !left.contains(key)).collect();
@@ -1108,6 +1143,22 @@ fn write_soil(
             )?;
         }
         writer.flush()?;
+    }
+    for selected in &inventory.optional_surface {
+        let message = file.messages.get(selected.index)
+            .ok_or("selected optional surface index disappeared on reopen")?;
+        let path = output.join(format!("{}.f32le", selected.variable));
+        let mut writer = BufWriter::new(File::create(&path)?);
+        let stats = decode_crop_write(message, &mut writer, window,
+            selected.variable, true, false)?;
+        if stats.maximum > 100.0 {
+            return Err(format!("{} exceeds 100 percent", selected.variable).into());
+        }
+        writer.flush()?;
+        writeln!(manifest, "{}", manifest_row(role, selected.index,
+            selected.variable, selected.level_value, message.product.level_type,
+            message.data_rep.template, message.bitmap.is_some(), stats,
+            &path.file_name().unwrap().to_string_lossy()))?;
     }
     Ok(())
 }
@@ -1606,7 +1657,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     if supplemented != 0 && supplemented != inputs.len() {
         return Err("PMSL donor coverage must include every requested forcing time".into());
     }
-    let payload_files = 24 + usize::from(supplemented != 0);
+    let payload_files = 24 + usize::from(supplemented != 0)
+        + soil_reference.optional_surface.len();
 
     let parent = output.parent().unwrap_or_else(|| Path::new("."));
     let stem = output
@@ -1653,6 +1705,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             writeln!(gate, "supplement_units\tPMSL=Pa")?;
         }
         writeln!(gate, "hybrid_levels\t{N_HYBRID_LEVELS}")?;
+        if !soil_reference.optional_surface.is_empty() {
+            let names = soil_reference.optional_surface.iter().map(|field| field.variable)
+                .collect::<Vec<_>>().join(",");
+            writeln!(gate, "optional_soil_surface_fields\t{names}")?;
+            writeln!(gate, "optional_soil_surface_units\tVEGFRA=percent")?;
+        }
         writeln!(
             gate,
             "soil_selected_per_time\t{}",

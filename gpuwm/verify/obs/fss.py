@@ -60,7 +60,7 @@ from typing import Mapping, Sequence
 
 import numpy as np
 
-from gpuwm.verify import field_metrics
+from gpuwm import obs_score_bridge
 
 #: Boundary treatments for the neighborhood boxcar.  ``ZERO_BOUNDARY`` says
 #: outside the array was not observed; ``EDGE_BOUNDARY`` is the existing
@@ -114,15 +114,13 @@ def shared_validity(*masks: np.ndarray) -> np.ndarray:
     if not masks:
         raise ValueError("shared validity needs at least one mask")
     shape = np.asarray(masks[0]).shape
-    result = np.ones(shape, dtype=bool)
     for mask in masks:
         array = np.asarray(mask)
         if array.shape != shape:
             raise ValueError("validity masks must share one shape")
         if array.dtype != np.bool_:
             raise ValueError("a validity mask must be boolean")
-        result &= array
-    return result
+    return obs_score_bridge.shared_validity(masks)
 
 
 def _boxcar(field: np.ndarray, half_width: int, boundary: str) -> np.ndarray:
@@ -134,18 +132,11 @@ def _boxcar(field: np.ndarray, half_width: int, boundary: str) -> np.ndarray:
     which makes the result exactly the zero-padded local sum divided by the
     full box area.
     """
-    width = 2 * int(half_width) + 1
-    if boundary == EDGE_BOUNDARY:
-        return field_metrics.boxcar(field, width)
-    if boundary != ZERO_BOUNDARY:
+    if boundary not in BOUNDARIES:
         raise ValueError(f"unknown boundary {boundary!r}; expected {BOUNDARIES}")
-    if half_width == 0:
-        return np.asarray(field, dtype=np.float64)
-    padded = np.pad(np.asarray(field, dtype=np.float64),
-                    ((half_width, half_width), (half_width, half_width)),
-                    mode="constant", constant_values=0.0)
-    smoothed = field_metrics.boxcar(padded, width)
-    return smoothed[half_width:-half_width, half_width:-half_width]
+    if half_width < 0:
+        raise ValueError("neighborhood half-width must be non-negative")
+    return obs_score_bridge.boxcar(field, int(half_width), boundary)
 
 
 def masked_neighborhood_fraction(events: np.ndarray, valid: np.ndarray,
@@ -164,13 +155,10 @@ def masked_neighborhood_fraction(events: np.ndarray, valid: np.ndarray,
         raise ValueError("events and validity must be common-shape 2-D fields")
     if half_width < 0:
         raise ValueError("neighborhood half-width must be non-negative")
-    counted = _boxcar((events & valid).astype(np.float64), int(half_width),
-                      boundary)
-    denominator = _boxcar(valid.astype(np.float64), int(half_width), boundary)
-    fraction = np.zeros_like(counted)
-    populated = denominator > 0.0
-    np.divide(counted, denominator, out=fraction, where=populated)
-    return fraction, denominator
+    if boundary not in BOUNDARIES:
+        raise ValueError(f"unknown boundary {boundary!r}; expected {BOUNDARIES}")
+    return obs_score_bridge.neighborhood_fraction(
+        events, valid, int(half_width), boundary)
 
 
 def frequency_matched_threshold(field: np.ndarray, valid: np.ndarray,
@@ -188,17 +176,8 @@ def frequency_matched_threshold(field: np.ndarray, valid: np.ndarray,
     zero coverage returns a threshold above the field maximum (nothing
     exceeds it), and full coverage returns one at or below the minimum.
     """
-    values = np.asarray(field, dtype=np.float64)[np.asarray(valid, dtype=bool)]
-    if values.size == 0:
-        raise ValueError("frequency matching has no valid cells to rank")
-    target = float(target_fraction)
-    if not 0.0 <= target <= 1.0:
-        raise ValueError("target exceedance fraction must lie in [0, 1]")
-    if target <= 0.0:
-        return float(np.nextafter(values.max(), np.inf))
-    if target >= 1.0:
-        return float(values.min())
-    return float(np.quantile(values, 1.0 - target, method="linear"))
+    return obs_score_bridge.frequency_threshold(field, valid,
+                                                float(target_fraction))
 
 
 def masked_fss(model: np.ndarray, obs: np.ndarray, *, valid: np.ndarray,
@@ -232,47 +211,19 @@ def masked_fss(model: np.ndarray, obs: np.ndarray, *, valid: np.ndarray,
             raise ValueError("the scored-region mask must match the fields")
     if boundary not in BOUNDARIES:
         raise ValueError(f"unknown boundary {boundary!r}; expected {BOUNDARIES}")
-    if not valid.any():
-        raise ValueError("FSS has no valid cells")
-
-    obs_events = (obs >= float(threshold)) & valid
-    denominator_cells = int(np.count_nonzero(valid & scored))
-    if denominator_cells == 0:
-        raise ValueError("FSS has no cells inside both the mask and the region")
-    observed_rate = float(
-        np.count_nonzero(obs_events & scored) / denominator_cells)
-
-    model_threshold = float(threshold)
-    if frequency_matched:
-        model_threshold = frequency_matched_threshold(
-            model, valid & scored, observed_rate)
-    model_events = (model >= model_threshold) & valid
-    model_rate = float(
-        np.count_nonzero(model_events & scored) / denominator_cells)
-
-    model_fraction, counts = masked_neighborhood_fraction(
-        model_events, valid, half_width, boundary=boundary)
-    obs_fraction, _ = masked_neighborhood_fraction(
-        obs_events, valid, half_width, boundary=boundary)
-    region = scored & (counts > 0.0)
-    scored_cells = int(np.count_nonzero(region))
-    if scored_cells == 0:
-        raise ValueError("no scored cell has a populated neighborhood")
-    difference = model_fraction[region] - obs_fraction[region]
-    numerator = float(np.sum(difference * difference, dtype=np.float64))
-    reference = float(np.sum(model_fraction[region] ** 2
-                             + obs_fraction[region] ** 2, dtype=np.float64))
-    fss = 1.0 if reference == 0.0 else 1.0 - numerator / reference
-    if not math.isfinite(fss):
-        raise ValueError("FSS is non-finite")
+    if half_width < 0:
+        raise ValueError("neighborhood half-width must be non-negative")
+    values, scored_cells = obs_score_bridge.masked_fss(
+        model, obs, valid, scored, float(threshold), int(half_width), boundary,
+        frequency_matched)
     return FssResult(
-        fss=float(min(1.0, max(0.0, fss))),
-        threshold_model=model_threshold,
-        threshold_obs=float(threshold),
+        fss=float(values[0]),
+        threshold_model=float(values[1]),
+        threshold_obs=float(values[2]),
         half_width=int(half_width),
-        observed_base_rate=observed_rate,
-        model_base_rate=model_rate,
-        fss_useful=0.5 + observed_rate / 2.0,
+        observed_base_rate=float(values[3]),
+        model_base_rate=float(values[4]),
+        fss_useful=float(values[5]),
         scored_cells=scored_cells,
         frequency_matched=bool(frequency_matched),
     )
@@ -312,7 +263,7 @@ def mean_fss(results: Sequence[FssResult]) -> float:
         raise ValueError("an FSS mean needs at least one scored time")
     if any(not math.isfinite(value) for value in values):
         raise ValueError("an FSS series carries a non-finite score")
-    return float(np.mean(values, dtype=np.float64))
+    return obs_score_bridge.reduce(values)[0]
 
 
 def matrix_records(matrix: Mapping[tuple[float, int], FssResult], *,

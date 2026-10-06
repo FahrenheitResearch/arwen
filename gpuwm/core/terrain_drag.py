@@ -103,7 +103,7 @@ def _module(device: int):
     kernels to WRF.  ``-arch`` is left to CuPy (NVRTC 13 refuses it twice).
     """
     import cupy as cp
-    from cupy.cuda import compiler
+    from gpuwm import nvrtc_ptx_cache as compiler
 
     from gpuwm.certify.kernel_manifest import record_module
     from gpuwm.kernel_compile_notice import observe_module_compile

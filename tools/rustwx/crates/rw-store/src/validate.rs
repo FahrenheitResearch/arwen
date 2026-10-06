@@ -14,7 +14,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 
 use memmap2::Mmap;
-use rustwx_core::{MAX_GRID_CELLS, MAX_VOLUME_ELEMENTS};
+use rustwx_core::{MAX_GRID_CELLS, checked_volume_elements};
 
 use crate::codec::MISSING_Q;
 use crate::error::{RwResult, RwStoreError};
@@ -700,25 +700,13 @@ fn check_hour_file(data: &[u8], depth: ValidateDepth, report: &mut ValidationRep
             geometry_bad = true;
         }
         if var.kind == "pressure3d" {
-            match nx
-                .checked_mul(ny)
-                .and_then(|cells| cells.checked_mul(var.levels_hpa.len()))
-            {
-                Some(elements) if elements <= MAX_VOLUME_ELEMENTS => {}
-                Some(elements) => {
-                    report.error(format!(
-                        "variable '{}': nx*ny*levels={elements} exceeds supported volume ceiling {MAX_VOLUME_ELEMENTS}",
-                        var.name
-                    ));
-                    geometry_bad = true;
-                }
-                None => {
-                    report.error(format!(
-                        "variable '{}': nx*ny*levels overflows usize",
-                        var.name
-                    ));
-                    geometry_bad = true;
-                }
+            let valid = nx.checked_mul(ny)
+                .ok_or_else(|| "nx*ny overflows usize".to_string())
+                .and_then(|cells| checked_volume_elements(var.levels_hpa.len(), cells)
+                    .map_err(|error| error.to_string()));
+            if let Err(error) = valid {
+                report.error(format!("variable '{}': {error}", var.name));
+                geometry_bad = true;
             }
         }
     }
@@ -2202,7 +2190,7 @@ mod tests {
     }
 
     #[test]
-    fn pressure_volume_over_supported_ceiling_is_reported() {
+    fn pressure_volume_above_old_limit_reaches_index_validation() {
         let meta_json = r#"{
             "schema": "rw-store.hour.v1",
             "model": "hrrr",
@@ -2224,18 +2212,17 @@ mod tests {
             "writer": {"name": "test", "version": "0", "build": "0"}
         }"#;
         let bytes = build_file_with_meta(meta_json);
-        let dir = test_dir("volume-ceiling");
-        let path = write_corrupt(&dir, "volume-ceiling.rws", &bytes);
+        let dir = test_dir("large-volume");
+        let path = write_corrupt(&dir, "large-volume.rws", &bytes);
 
         let report = validate_hour_file(&path, ValidateDepth::Structural).unwrap();
-        assert!(
-            report
-                .errors
-                .iter()
-                .any(|error| error.contains("volume ceiling")),
-            "unexpected errors: {:?}",
-            report.errors
-        );
+        // The synthetic metadata declares 150 million values, but its index
+        // is deliberately empty. Shape validation must admit the large volume
+        // and report the absent chunks at the next format boundary.
+        assert!(report.errors.iter().any(|error| error.contains("expected 97969 chunks, found 0")),
+            "unexpected errors: {:?}", report.errors);
+        assert!(!report.errors.iter().any(|error| error.contains("volume ceiling")),
+            "the retired element limit returned: {:?}", report.errors);
         let _ = fs::remove_dir_all(&dir);
     }
 

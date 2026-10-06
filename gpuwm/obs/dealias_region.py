@@ -284,7 +284,8 @@ def region_bridge_candidates() -> tuple[Path, ...]:
     shared, the crate is not.
     """
 
-    from gpuwm.bridges import default_bridge_dir, packaged_bridge_dir
+    from gpuwm.bridges import (default_bridge_dir, legacy_bridge_candidates,
+                               packaged_bridge_dir)
 
     filename = library_name()
     candidates: list[Path] = []
@@ -298,6 +299,7 @@ def region_bridge_candidates() -> tuple[Path, ...]:
         root / "libexec" / "bridges" / filename,
         packaged_bridge_dir() / filename,
         default_bridge_dir() / filename,
+        *legacy_bridge_candidates(filename),
     ))
     return tuple(candidates)
 

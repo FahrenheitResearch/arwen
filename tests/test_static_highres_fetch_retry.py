@@ -266,7 +266,7 @@ def test_a_reset_then_a_cut_body_resumes_to_the_whole_tile(
     # The third request resumed the bytes the cut body delivered.
     assert server.ranges == [None, None, f"bytes={half}-"]
     assert waits == [2.0, 4.0]
-    assert not target.with_name(target.name + ".partial").exists()
+    assert not list(target.parent.glob(target.name + ".partial-*"))
 
 
 def test_a_body_cut_short_is_never_cached_as_whole(tmp_path, waits,
@@ -317,7 +317,7 @@ def test_two_preparations_on_one_cache_download_a_tile_once(
         first.start()
         # The second arrives while the first is mid-body on the tile.
         deadline = time.monotonic() + 10.0
-        while (not target.with_name(target.name + ".partial").exists()
+        while (not highres_fetch._partial_progress(target)[0]
                and time.monotonic() < deadline):
             time.sleep(0.005)
         second = threading.Thread(target=fetch, args=(1,))
@@ -410,7 +410,6 @@ def _holder_downloading(kind: str, target: Path, release: Path, *,
                         stall_after: int | None = None):
     """Start the first preparation's download and yield once it has bytes
     staged; on leaving, let it finish and check that it did."""
-    partial = target.with_name(target.name + ".partial")
     outcome: list[object] = []
     if kind == "process":
         child = subprocess.Popen(
@@ -446,11 +445,13 @@ def _holder_downloading(kind: str, target: Path, release: Path, *,
                 outcome[0], highres_fetch.FetchedFile), outcome
     try:
         deadline = time.monotonic() + 120
-        while (highres_fetch._staged_bytes(partial) == 0
+        while (sum(size for _, size in
+                   highres_fetch._partial_progress(target)[0]) == 0
                and time.monotonic() < deadline):
             assert alive() or target.exists(), "the holder stopped early"
             time.sleep(0.01)
-        assert highres_fetch._staged_bytes(partial) > 0, \
+        assert sum(size for _, size in
+                   highres_fetch._partial_progress(target)[0]) > 0, \
             "the holder never staged a byte"
         yield
     finally:
@@ -502,8 +503,8 @@ def test_a_download_that_stops_growing_is_refused_after_the_budget(
         with pytest.raises(PreparationRefusal) as caught:
             fetch_file(_LANDCOVER_URL, target, urlopen=_never_downloads)
         elapsed = time.monotonic() - started
-        staged = highres_fetch._staged_bytes(
-            target.with_name(target.name + ".partial"))
+        staged = sum(size for _, size in
+                     highres_fetch._partial_progress(target)[0])
 
     message = str(caught.value)
     assert isinstance(caught.value, highres_fetch.HighresFetchRefusal)

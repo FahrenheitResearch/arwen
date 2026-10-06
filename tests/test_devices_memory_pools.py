@@ -228,6 +228,27 @@ def test_only_reachable_fallout_tiers_reserve_local_memory(microphysics, levels)
         assert "thompson_aerosol_sed" not in frames
 
 
+@pytest.mark.parametrize("levels", [50, 64, 65, 128])
+def test_the_fork_thompson_generation_is_priced_at_its_own_fallout_frames(levels):
+    """thompson_version = "wrf_39_noaa" compiles a wider sedimentation frame.
+
+    Breakage prevented: the HRRR configuration recipes select the fork
+    generation; priced at the wrf_461 rows, the sedimentation row under-states
+    the fork build by 2,048 B per resident thread, and the reservation inherits
+    that error as soon as the classic unit's equal frame stops covering it (the
+    gpu gate tests/test_kernel_local_bounds.py reads both rows off the
+    driver)."""
+    exp = experiment_from_run_config(
+        _config(mp_physics=28, nz=levels, thompson_version="wrf_39_noaa"),
+        datetime(2026, 1, 1))
+    frames = pf.kernel_local_frame_bytes(exp)
+    assert frames["thompson_aerosol_sed"] == (2816 if levels <= 64 else 11264)
+    assert frames["thompson"] == (2816 if levels <= 64 else 11264)
+    default = pf.kernel_local_frame_bytes(experiment_from_run_config(
+        _config(mp_physics=28, nz=levels), datetime(2026, 1, 1)))
+    assert default["thompson_aerosol_sed"] == (2304 if levels <= 64 else 9216)
+
+
 def test_deep_other_physics_does_not_raise_a_shallow_fallout_tier():
     """A deep non-Thompson domain cannot select Thompson's deep kernels."""
     exp = experiment_from_run_config(_config(), datetime(2026, 1, 1))

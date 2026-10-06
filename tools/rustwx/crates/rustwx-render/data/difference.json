@@ -1,0 +1,36 @@
+{
+  "_doc": "How a run difference (run A minus run B, one product, one grid, one valid time) is coloured. Read by rustwx-render/src/difference.rs. The bar is symmetric about zero with `bands` equal bands; the `neutral_bands` nearest zero take the neutral colour, so a difference smaller than one band reads as no difference. The half range is the table row for the product in the units it is drawn in; with no row, it is the `percentile` of the absolute difference over the cells where the difference is defined, rounded up so one band is a 1, 2 or 5 step. A theme's own `colormaps.diverging` replaces `colors`. Only the filled field is differenced and overlays are dropped, so a product that draws overlays is titled by its filled field: its `titles` row, or else its title up to the first ` / `.",
+  "bands": 10,
+  "neutral_bands": 2,
+  "percentile": 99.0,
+  "colors": [
+    "#053061",
+    "#2166ac",
+    "#4393c3",
+    "#92c5de",
+    "#f7f7f7",
+    "#f7f7f7",
+    "#f4a582",
+    "#d6604d",
+    "#b2182b",
+    "#67001f"
+  ],
+  "rows": [
+    { "product": "composite_reflectivity", "units": "dBZ", "half_range": 50 },
+    { "product": "2m_temperature", "units": "°F", "half_range": 10 },
+    { "product": "2m_temperature", "units": "°C", "half_range": 5 },
+    { "product": "2m_temperature", "units": "K", "half_range": 5 },
+    { "product": "2m_dewpoint", "units": "°F", "half_range": 10 },
+    { "product": "2m_dewpoint", "units": "°C", "half_range": 5 },
+    { "product": "2m_dewpoint", "units": "K", "half_range": 5 },
+    { "product": "10m_wind_speed_and_direction", "units": "kt", "half_range": 10 },
+    { "product": "10m_wind_speed_and_direction", "units": "m/s", "half_range": 5 },
+    { "product": "mslp_10m_winds", "units": "hPa", "half_range": 5 },
+    { "product": "sbcape", "units": "J/kg", "half_range": 1000 },
+    { "product": "mlcape", "units": "J/kg", "half_range": 1000 },
+    { "product": "mucape", "units": "J/kg", "half_range": 1000 }
+  ],
+  "titles": [
+    { "product": "10m_wind_speed_and_direction", "title": "10m AGL Wind Speed" }
+  ]
+}

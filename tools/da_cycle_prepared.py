@@ -459,7 +459,8 @@ def plan_radar_assimilation(args, mp_physics, *, analysis_fields,
             DEFAULT_VELOCITY_DISPERSION_RATIO),
         velocity_dispersion_batch_ratio=getattr(
             args, "velocity_dispersion_batch_gate",
-            DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO))
+            DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO),
+        precip_analysis=getattr(args, "precip_analysis", "off"))
 
 
 def planned_analysis_fields(args, mp_physics) -> tuple:
@@ -916,9 +917,39 @@ def merge_hotstart_increments(filter_increments, hot_increments, *, prior,
     return merged, overlap, receipt
 
 
+def rain_snapshot(driver) -> dict:
+    """The restart-owned surface rain accumulators, in native millimetres.
+
+    The physics output owner supplies both RAINC and RAINNC even when a
+    producer is disabled. Neither field is reset at a DA leg boundary.
+    A decrease in saved accumulations is therefore a scoring refusal,
+    rather than a negative increment that a consumer may clip to zero.
+    """
+    fields = driver.output_fields()
+    return {name: to_host(fields[name]).astype(np.float32)
+            for name in ("RAINC", "RAINNC")}
+
+
+def _write_rain_composite(npz_path, *, state, driver, grid, cfg,
+                          elapsed_seconds, exp, label, domain=None):
+    """Save a native two-dimensional score frame without modifying state."""
+    from gpuwm.da import obsop
+
+    rain = rain_snapshot(driver)
+    composite = to_host(obsop.simulated_reflectivity(state, cfg)).astype(
+        np.float32).max(axis=0)
+    npz_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(npz_path, refl_colmax=composite, **rain,
+                        elapsed_seconds=np.float64(elapsed_seconds),
+                        rain_reset_id=np.int64(0))
+    return _write_composite_wrfout(
+        npz_path, composite, grid, cfg, elapsed_seconds, exp,
+        label=label, domain=domain, rain=rain)
+
+
 def _write_composite_wrfout(npz_path, refl_colmax, grid, cfg,
                             elapsed_seconds: float, exp, *, label: str,
-                            domain=None):
+                            domain=None, rain=None):
     """A real wrfout beside a composite ``.npz``; the path, or ``None``.
 
     ``domain`` is the CHILD's ``DomainConfig`` when this frame belongs to
@@ -954,6 +985,8 @@ def _write_composite_wrfout(npz_path, refl_colmax, grid, cfg,
             "XLONG": np.asarray(lon, np.float32),
             "REFL_COMPOSITE": np.asarray(refl_colmax, np.float32),
         }
+        if rain is not None:
+            snapshot.update(rain)
         start = getattr(exp, "start_time", None)
         if not isinstance(start, datetime.datetime):
             start = datetime.datetime(1970, 1, 1)
@@ -971,6 +1004,11 @@ def _write_composite_wrfout(npz_path, refl_colmax, grid, cfg,
         # stamped its own start there would label the same instant with a
         # different lead than the parent frame beside it.
         attrs = wrf_global_attrs(grid, start, dt=float(cfg.dt), **topology)
+        if rain is not None:
+            attrs["GPUWM_RAIN_RESET_ID"] = 0
+            attrs["GPUWM_RAIN_ACCUMULATION_SEMANTICS"] = (
+                "cumulative native mm; complete restart joins preserve "
+                "RAINC and RAINNC; no accumulator reset in this lineage")
         report = write_surface_wrfout(
             snapshot_wrfout_path(npz_path), snapshot, time_str=stamp,
             dx=float(cfg.dx), dy=float(cfg.dy), global_attrs=attrs,
@@ -1077,6 +1115,12 @@ def cycle(stages: list) -> int:
               "refusal, and the divergence is recorded in the report"))
     # -- the cycle ------------------------------------------------------
     parser.add_argument("--leg-seconds", type=float, default=3600.0)
+    parser.add_argument(
+        "--leg-durations-seconds", type=float, nargs="+", default=None,
+        help=("explicit duration of every observed and free leg, in order. "
+              "A clean no-DA control can use the observed arm's exact "
+              "spin-up and issuance clock without assimilating its files. "
+              "When present, this replaces the scalar leg-duration flags"))
     parser.add_argument(
         "--final-leg-seconds", type=float, default=None,
         help=("duration of the LAST leg only (default: --leg-seconds). "
@@ -1270,6 +1314,21 @@ def cycle(stages: list) -> int:
                              "assessment; a file without one is refused "
                              "rather than having zeroes inferred from its "
                              "echo mask")
+    parser.add_argument("--precip-analysis", default="off",
+                        choices=("off", "clear"),
+                        help="the radar half of the GSD cloud analysis on "
+                             "the device after the solve "
+                             "(gpuwm.da.hydrometeor_analysis), run on every "
+                             "ensemble member: 'clear' removes rain, snow "
+                             "and graupel and their number moments where "
+                             "radar observes no echo, the step NOAA gives "
+                             "every ensemble member. The trim and build "
+                             "rule is a deterministic analysis's and this "
+                             "cycle analyses no deterministic member, so it "
+                             "is not offered here. Off by default (opt-in "
+                             "until a rain-scored real case); the removed "
+                             "water is a declared sink. Needs an "
+                             "observation file with a clear-air assessment")
     parser.add_argument("--z0-thin-cells", type=int, default=4,
                         help="clear air is the majority of any volume and "
                              "is smooth, so it starves the filter's rank "
@@ -1375,7 +1434,50 @@ def cycle(stages: list) -> int:
         help="surface localization override; both --sfc-*-loc-m or "
              "neither (default: the run's --horizontal/vertical-loc-m)")
     parser.add_argument("--sfc-vertical-loc-m", type=float, default=None)
+    # -- radar latent heating (default OFF) ---------------------------------
+    # HRRR's mp_tend_radar kernel: on each observed leg every member's
+    # theta takes a radar-derived tendency in place of the microphysics
+    # heating where the radar covers, built on the card by
+    # gpuwm.da.radar_tten from the leg's observation file and the member's
+    # own state.  HRRR forces its deterministic pre-forecast and NOT its
+    # ensemble; forcing the members here is a declared research
+    # divergence, stated in the help, the report and the leg records.
+    # Kept LAST in this list so flags added elsewhere merge without
+    # touching it.
+    parser.add_argument(
+        "--radar-tten", action="store_true",
+        help="RESEARCH, and the reverse of HRRR's arrangement: force each "
+             "ENSEMBLE MEMBER's theta with radar latent heating on every "
+             "observed leg whose analysis is applied. HRRR forces only its "
+             "deterministic pre-forecast (parm/conus/hrrr_wrfpre.nl:109) "
+             "and runs its ensemble members unforced "
+             "(parm/hrrrdas/hrrrdas_wrf.nl:101); this cycle has no "
+             "analysed deterministic member, so the members are forced. "
+             "Each observation is then used twice inside the ensemble "
+             "(the forcing, then the analysis at the end of the same "
+             "leg), and member spread in theta shrinks where the radar "
+             "covers (measured by tools/radar_tten_proof/spread.py). One "
+             "slot per leg, built from the leg's observation file (valid "
+             "at its end) and the member's state at the start of the leg; "
+             "observed clear air gets zero heating, no coverage keeps the "
+             "microphysics, which runs under HRRR's companion clamp "
+             "mp_tend_lim = 0.07 K/s (hrrr_wrfpre.nl:108) while forced. "
+             "The control and the free legs are never forced. OFF unless "
+             "given")
     args = parser.parse_args()
+    if args.radar_tten and not args.obs:
+        parser.error(
+            "--radar-tten builds its heating from the observation files, "
+            "and this run has no --obs: every leg would run unforced while "
+            "the report recorded a forced run")
+    if args.radar_tten and (args.nest_half_width_km is not None
+                            or args.nest_nx is not None
+                            or args.nest_ny is not None):
+        parser.error(
+            "--radar-tten forces the root domain's microphysics heating, "
+            "and a nest runs its own: inside the nest the parent would be "
+            "heated by radar and the child by its scheme, two answers for "
+            "the same columns")
     if args.surface_obs is not None:
         if args.sfc_t2_sigma_k is None and args.sfc_wspd_sigma_ms is None:
             parser.error(
@@ -1482,6 +1584,14 @@ def cycle(stages: list) -> int:
             "the georeference they were gridded onto, and pairing them by "
             "position is the caller's statement of which is which")
     legs = len(args.obs) + args.free_legs
+    if args.leg_durations_seconds is not None:
+        import math
+        if (len(args.leg_durations_seconds) != legs or any(
+                not math.isfinite(value) or value <= 0
+                for value in args.leg_durations_seconds)):
+            parser.error(
+                "--leg-durations-seconds needs one finite positive duration "
+                "per observed or free leg; clocks cannot be dropped or reordered")
     authority = (args.authority_dir if args.authority_dir is not None
                  else args.prepared_root.parent / "authority")
 
@@ -1511,7 +1621,7 @@ def cycle(stages: list) -> int:
     from gpuwm.core.model import (DomainNode, ExperimentState,
                                   ModelRuntimeStatus, execute_experiment)
     from gpuwm.da import (cycle_admission, moments, nested_forecast, obsop,
-                          perturb)
+                          perturb, radar_tten)
     from gpuwm.da.hotstart import HotStartConfig, hotstart_increments
     from gpuwm.da.letkf import Localization
     from gpuwm.da.obs_radar import read_document
@@ -1640,6 +1750,8 @@ def cycle(stages: list) -> int:
         ``--leg-seconds`` except the last, which may be longer.
         """
 
+        if args.leg_durations_seconds is not None:
+            return float(args.leg_durations_seconds[index])
         if free_leg_seconds is not None and index >= n_obs:
             return free_leg_seconds
         return final_leg_seconds if index == legs - 1 else leg_seconds
@@ -2150,6 +2262,12 @@ def cycle(stages: list) -> int:
     unsolvable = cycle_admission.unsolvable_analysis_message(analysis_price)
     if unsolvable is not None:
         raise SystemExit(unsolvable)
+    if args.radar_tten and int(cfg.mp_physics) == 0:
+        raise SystemExit(
+            "--radar-tten replaces the microphysics heating increment, and "
+            "this case runs mp_physics = 0: no microphysics call would read "
+            "the heating, and every forced member would refuse at its first "
+            "leg after the ensemble was already built")
     mass_shape = (int(cfg.nz), int(cfg.ny), int(cfg.nx))
     admission = cycle_admission.price_cycle(
         (nested_forecast.nested_experiment(exp, nest_child_dc)
@@ -2164,7 +2282,9 @@ def cycle(stages: list) -> int:
                     cfg_perturb, mass_shape, cp))
             if resumed_from is None and int(args.members) > 0 else 0),
         profile=local_memory_profile_from_device(cp),
-        analysis=analysis_price)
+        analysis=analysis_price,
+        radar_tten_points=(int(cfg.nz) * int(cfg.ny) * int(cfg.nx)
+                           if args.radar_tten else 0))
     free_bytes, _total_bytes = device_free_and_total_bytes()
     try:
         admission = cycle_admission.admit_cycle(admission,
@@ -2180,6 +2300,28 @@ def cycle(stages: list) -> int:
           f"({admission.analysis_route or 'none on the card'}) within "
           f"{admission.budget_bytes:,} of {admission.free_bytes:,} free",
           flush=True)
+    if args.radar_tten:
+        report["radar_tten"] = {
+            "arrangement": "ensemble members forced on observed legs whose "
+                           "analysis is applied; the control and free legs "
+                           "unforced",
+            "declared_divergence": (
+                "HRRR forces only its deterministic pre-forecast "
+                "(parm/conus/hrrr_wrfpre.nl:109, mp_tend_radar = 1) and runs "
+                "its ensemble members unforced (parm/hrrrdas/"
+                "hrrrdas_wrf.nl:101, mp_tend_radar = 0). This cycle forces "
+                "the members instead: each observation is used twice inside "
+                "the ensemble (the forcing, then the analysis at the end of "
+                "the same leg) and member spread in theta shrinks where the "
+                "radar covers. Research line, not HRRR's product."),
+            "spread_measurement": "tools/radar_tten_proof/spread.py",
+            "mp_tend_lim_k_per_s": radar_tten.HRRR_MP_TEND_LIM,
+            "case_mp_tend_lim_k_per_s": float(cfg.mp_tend_lim),
+            "mp_tend_lim_rule": (
+                "while a member is forced its microphysics runs under "
+                "HRRR's companion clamp (parm/conus/hrrr_wrfpre.nl:108); "
+                "the control and unforced legs keep the case's"),
+        }
 
     for leg in range(legs):
         t_start = leg_starts[leg]
@@ -2232,6 +2374,21 @@ def cycle(stages: list) -> int:
             document = None
             analysis_due = False
             verification_only = False
+        # Radar latent heating: the leg's reflectivity in NOAA's convention,
+        # once per leg; each member builds its own slot from it.  Only on a
+        # leg whose analysis is applied: a verification-only leg's file is
+        # the score, and forcing the forecast with it would grade the
+        # forecast against the observations that drove it.
+        tten_reflectivity = tten_source = None
+        if args.radar_tten and document is not None and analysis_due:
+            tten_reflectivity, tten_source = \
+                radar_tten.reflectivity_from_document(document)
+            leg_record["radar_tten_observations"] = tten_source
+        elif args.radar_tten:
+            leg_record["radar_tten_observations"] = (
+                "none: a free leg" if document is None else
+                "none: this leg's observations verify the run and are "
+                "not used to force it")
         z_obs_cp = z_mask_cp = None
         if document is not None and not args.no_hotstart:
             z_obs_cp = cp.asarray(np.asarray(
@@ -2492,10 +2649,66 @@ def cycle(stages: list) -> int:
                 model._resume_committed_history_grid_ids = frozenset(
                     model.nodes_by_grid_id)
 
-            execute_experiment(model, history_handler=None,
-                               progress_callback=None, validate_state=True,
-                               skip_feedback_path=True)
+            # An exact issuance endpoint is needed before differencing
+            # accumulations. The first free leg starts after the final
+            # pending analysis has been applied, so its reflectivity is
+            # the issued analysis rather than the pre-analysis forecast.
+            if args.save_composites and (leg == 0 or leg == len(args.obs)):
+                start_name = (out / "composites" /
+                              f"start{leg_number(leg):02d}_{name}.npz")
+                _write_rain_composite(
+                    start_name, state=state, driver=driver,
+                    grid=inputs.grid, cfg=cfg, elapsed_seconds=t_start,
+                    exp=exp, label=f"start leg {leg_number(leg)} member {name}")
+                if child_node is not None:
+                    _write_rain_composite(
+                        start_name.with_name(
+                            start_name.stem + f"_d{nest_child_dc.grid_id:02d}.npz"),
+                        state=child_node.state, driver=child_driver,
+                        grid=child_node.grid, cfg=child_dc_leg.run,
+                        elapsed_seconds=t_start, exp=exp,
+                        label=f"start leg {leg_number(leg)} member {name} nest",
+                        domain=child_dc_leg)
+
+            # -- radar latent heating for this leg --------------------------
+            # External data, like the boundary data: attached for the
+            # integration and detached before anything reads the state as
+            # a whole (the restart set below would refuse an unclassified
+            # attribute).  Members only; the control stays the no-DA arm.
+            tten_forcing = None
+            if tten_reflectivity is not None and name != CONTROL:
+                background = radar_tten.background_from_state(state)
+                tten_slot, tten_receipt = radar_tten.build_tendency(
+                    tten_reflectivity, **background)
+                del background
+                tten_forcing = radar_tten.RadarTtenForcing(
+                    [tten_slot], [leg_length(leg) / 60.0],
+                    receipts=[tten_receipt],
+                    provenance={"observations": str(obs_path),
+                                "background": "member state at leg start"},
+                    mp_tend_lim=radar_tten.HRRR_MP_TEND_LIM)
+                radar_tten.attach(state, tten_forcing, cfg)
+            try:
+                execute_experiment(model, history_handler=None,
+                                   progress_callback=None,
+                                   validate_state=True,
+                                   skip_feedback_path=True)
+            finally:
+                if tten_forcing is not None:
+                    radar_tten.detach(state)
             cp.cuda.Stream.null.synchronize()
+            if tten_forcing is not None:
+                tten_record = tten_forcing.receipt()
+                leg_record["trajectories"].setdefault(str(name), {})[
+                    "radar_tten"] = tten_record
+                if not (sum(tten_record["calls_by_slot"])
+                        + tten_record["calls_skipped_no_mp_heating"]):
+                    raise RuntimeError(
+                        f"leg {leg} {name}: the radar heating was attached "
+                        "for the leg and no microphysics call read it, so "
+                        "the member ran unforced while this record says "
+                        "forced")
+                del tten_forcing, tten_slot
 
             # -- the leg join: this trajectory's restart set --------------
             #
@@ -2551,9 +2764,11 @@ def cycle(stages: list) -> int:
                 comp_dir.mkdir(parents=True, exist_ok=True)
                 composite_npz = (comp_dir /
                                  f"leg{leg_number(leg):02d}_{name}.npz")
+                rain = rain_snapshot(driver)
                 np.savez_compressed(
                     composite_npz,
                     refl_colmax=refl_host.max(axis=0),
+                    **rain, rain_reset_id=np.int64(0),
                     elapsed_seconds=np.float64(
                         node.clock.elapsed_seconds))
                 # ...and the same composite as a real wrfout beside it, so
@@ -2564,7 +2779,7 @@ def cycle(stages: list) -> int:
                 _write_composite_wrfout(
                     composite_npz, refl_host.max(axis=0), inputs.grid, cfg,
                     node.clock.elapsed_seconds, exp,
-                    label=f"leg {leg_number(leg):02d} member {name}")
+                    label=f"leg {leg_number(leg):02d} member {name}", rain=rain)
             # -- the nest's own leg-end product ------------------------------
             #
             # Written under a d02 name beside the parent's rather than
@@ -2592,9 +2807,11 @@ def cycle(stages: list) -> int:
                                 f"leg{leg_number(leg):02d}_{name}_d"
                                 f"{nest_child_dc.grid_id:02d}.npz")
                     nest_colmax = refl_nest_host.max(axis=0)
+                    nest_rain = rain_snapshot(child_driver)
                     np.savez_compressed(
                         nest_npz,
                         refl_colmax=nest_colmax,
+                        **nest_rain, rain_reset_id=np.int64(0),
                         elapsed_seconds=np.float64(
                             child_node.clock.elapsed_seconds),
                         dx_m=np.float64(nest_child_dc.run.dx),
@@ -2617,7 +2834,7 @@ def cycle(stages: list) -> int:
                         child_node.clock.elapsed_seconds, exp,
                         label=(f"leg {leg_number(leg):02d} member {name} "
                                f"d{nest_child_dc.grid_id:02d}"),
-                        domain=nest_child_dc)
+                        domain=nest_child_dc, rain=nest_rain)
             entry["wall_seconds"] = round(time.time() - t_leg, 1)
             entry["elapsed_seconds"] = float(node.clock.elapsed_seconds)
             if document is not None:

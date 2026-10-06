@@ -3,6 +3,14 @@ from __future__ import annotations
 from typing import Any
 
 
+def local_input_requested(hints) -> bool:
+    """An explicit staged root remains usable when a source gains acquisition."""
+    from gpuwm import fetch_routes
+    source = hints.get("source")
+    return bool(drivability_for(source).get("requires_source_root") or
+                (hints.get("source_root") and fetch_routes.source_root_layout(str(source)) is not None))
+
+
 def drivability_for(source: object) -> dict[str, Any]:
     """The drivability verdict for a configuration's own spelling.
 

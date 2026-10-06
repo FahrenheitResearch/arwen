@@ -2,6 +2,9 @@
 
 DYCORE_PARITY_FILES = {
     "tests/test_advect_wrf471_parity.py",
+    # The HRRR fork (WRFV3.9) module_advect_em at vert_order 5: the same
+    # compiled-routine comparison against the fork operational HRRR runs.
+    "tests/test_advect_wrf_legacy_parity.py",
     "tests/test_smallstep_bookkeeping_wrf471_parity.py",
     "tests/test_smallstep_horizontal_wrf471_parity.py",
     "tests/test_smallstep_vertical_wrf471_parity.py",
@@ -25,6 +28,7 @@ DYCORE_CPU_FILES = DYCORE_PARITY_FILES | {"tests/test_smallstep_oracle_contract.
 # in the test module itself.
 DEVICE_ORACLE_IMPORTS = {
     "tests/test_advect_wrf471_parity.py": "gpuwm.verify.advect_oracle",
+    "tests/test_advect_wrf_legacy_parity.py": "gpuwm.verify.advect_oracle",
     "tests/test_smallstep_bookkeeping_wrf471_parity.py": "gpuwm.verify.smallstep_bookkeeping_oracle",
     "tests/test_smallstep_horizontal_wrf471_parity.py": "gpuwm.verify.smallstep_horizontal_oracle",
     "tests/test_smallstep_vertical_wrf471_parity.py": "gpuwm.verify.smallstep_vertical_oracle",

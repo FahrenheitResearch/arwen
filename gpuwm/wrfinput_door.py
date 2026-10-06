@@ -270,6 +270,48 @@ ADMITTED_DECLARED_DIVERGENCES = frozenset({
 })
 
 
+def producing_wrf_line(metadata: Mapping[int, WrfinputMetadata]) -> str | None:
+    """The WRF line ("3" or "4") the files' own ``TITLE`` names, or None.
+
+    real.exe stamps its release into every wrfinput (share/output_wrf.F:
+    ``TITLE`` = "OUTPUT FROM REAL_EM V<release> PREPROCESSOR"), and the
+    namelist that produced the files resolved its omitted keys against
+    THAT release's Registry.  An omitted ``&dynamics/use_theta_m`` is the
+    one key whose default moved between the lines (V3.9
+    Registry.EM_COMMON:2633 says 0; V4 says 1), so the door reads the line
+    here rather than assuming V4: an operational HRRR v4 run directory
+    (WRFV3.9) whose namelist omits the key resolves to the dry theta its
+    files declare, with no flag.  Files that disagree, or that carry no
+    readable release, return None, and the importer keeps its V4 reading.
+    """
+    line, _title = producing_wrf_line_and_title(metadata)
+    return line
+
+
+def producing_wrf_line_and_title(
+        metadata: Mapping[int, WrfinputMetadata]) -> tuple[str | None, str]:
+    """:func:`producing_wrf_line` with the ``TITLE`` that named it.
+
+    The import report records what chose the WRF line; on this door that
+    is the files' own ``TITLE``, and the receipt quotes it.  The title is
+    the lowest domain's (the files agree on the line or there is none).
+    """
+    import re
+
+    lines = set()
+    for item in metadata.values():
+        title = str(item.global_attributes.get("TITLE", ""))
+        found = re.search(r"\bV(\d+)\.\d", title)
+        lines.add(found.group(1) if found else None)
+    if len(lines) != 1:
+        return None, ""
+    (line,) = lines
+    if line not in ("3", "4"):
+        return None, ""
+    return line, str(
+        metadata[min(metadata)].global_attributes.get("TITLE", "")).strip()
+
+
 def require_preserved_wrf_selectors(report):
     """A reachable WRF door must not replace an explicit physics package.
 
@@ -330,13 +372,17 @@ def resolve_wrfinput_run(directory: str | Path, *, name: str | None = None,
             raise ValueError('WRF input files disagree on the producing run land-use identity')
         landuse_identity = identity
     wps_text = synthesize_wps_namelist(metadata)
+    line, title = producing_wrf_line_and_title(metadata)
     toml_text, report = _import_with_synthesized_wps(
         wps_text, namelist, inherited_eta=identities[min(identities)].eta_levels, name=name, rrtmg_variant=rrtmg_variant,
         acknowledgements=tuple(acknowledgements), landuse_identity=landuse_identity,
         wrfinput_qv_domains=tuple(
             grid_id for grid_id, item in metadata.items()
             if getattr(item, "has_qv", False)),
-        wrf_boundary_use_theta_m=int(metadata[min(metadata)].global_attributes['USE_THETA_M']))
+        wrf_boundary_use_theta_m=int(metadata[min(metadata)].global_attributes['USE_THETA_M']),
+        **({} if line is None else {
+            "wrf_version": line,
+            "wrf_version_source": f"the files' own TITLE ({title!r})"}))
     require_preserved_wrf_selectors(report)
     # ``import_namelists`` has already validated this text through
     # ``build_experiment``; building it again is how the door gets the

@@ -109,18 +109,41 @@ impl<'a> BitReader<'a> {
     }
 }
 
-// A simple-packed, explicitly all-missing bitmap has no coded values in
-// Sections 5/7. Keep the missing field, without inventing its reference value.
-// A missing/malformed bitmap or nonempty payload is still a decode error.
-fn all_missing_simple_field(msg: &Grib2Message, num_points: usize) -> bool {
-    num_points > 0
-        && num_points <= 100_000_000
-        && msg.data_rep.template == 0
-        && msg.data_rep.section5_num_data_points == 0
-        && msg.raw_data.is_empty()
-        && msg.bitmap.as_ref().is_some_and(|bitmap| {
-            bitmap.len() == num_points && bitmap.iter().all(|present| !present)
-        })
+// Section 5 counts coded values, so a complete all-missing bitmap declares
+// zero. Complex packing has zero groups; spatial packing may retain only its
+// canonical zero initial/minimum descriptors. Never turn data bytes or a
+// malformed bitmap/group table into a missing field.
+fn all_missing_bitmap_field(msg: &Grib2Message, num_points: usize) -> bool {
+    let dr = &msg.data_rep;
+    if num_points == 0 || num_points > 100_000_000 || dr.section5_num_data_points != 0 {
+        return false;
+    }
+    let Some(bitmap) = msg.bitmap.as_ref() else { return false; };
+    // Some parsers retain the final octet's unused bits. Both representations
+    // must cover exactly this grid, with canonical zero padding.
+    let padded_points = (num_points + 7) / 8 * 8;
+    if (bitmap.len() != num_points && bitmap.len() != padded_points)
+        || bitmap.iter().any(|present| *present) {
+        return false;
+    }
+    if dr.template == 0 {
+        return msg.raw_data.is_empty();
+    }
+    if !matches!(dr.template, 2 | 3) || dr.num_groups != 0
+        || dr.bits_per_value != 0 || dr.group_width_ref != 0 || dr.group_width_bits != 0
+        || dr.last_group_length != 0 || dr.group_length_bits != 0
+        || dr.group_splitting_method != 1 || dr.missing_value_management != 0
+        || !matches!(dr.original_field_type, 0 | 1) || !dr.reference_value.is_finite() {
+        return false;
+    }
+    if dr.template == 2 {
+        return dr.spatial_diff_order == 0 && dr.spatial_diff_bytes == 0 && msg.raw_data.is_empty();
+    }
+    if !matches!(dr.spatial_diff_order, 1 | 2) || dr.spatial_diff_bytes > 8 {
+        return false;
+    }
+    let descriptor_bytes = (dr.spatial_diff_order as usize + 1) * dr.spatial_diff_bytes as usize;
+    msg.raw_data.len() == descriptor_bytes && msg.raw_data.iter().all(|byte| *byte == 0)
 }
 
 /// Unpack a GRIB2 message's data section to floating-point values.
@@ -157,11 +180,11 @@ pub fn unpack_message(msg: &Grib2Message) -> crate::Result<Vec<f64>> {
     }
     let declared_values = dr.section5_num_data_points as usize;
     if declared_values == 0 {
-        if all_missing_simple_field(msg, num_points) {
+        if all_missing_bitmap_field(msg, num_points) {
             return Ok(vec![f64::NAN; num_points]);
         }
         return Err(crate::GribError::Unpack(
-            "Section 5 declares 0 data points".to_string(),
+            "Section 5 declares 0 data points without an exact all-missing bitmap and canonical empty packing".to_string(),
         ));
     }
     if dr.template == 0 {
@@ -383,11 +406,11 @@ pub fn unpack_message_scan_normalized_row_window(
     let dr = &msg.data_rep;
     let declared_values = dr.section5_num_data_points as usize;
     if declared_values == 0 {
-        if all_missing_simple_field(msg, nx.checked_mul(ny).unwrap_or(usize::MAX)) {
+        if all_missing_bitmap_field(msg, nx.checked_mul(ny).unwrap_or(usize::MAX)) {
             return Ok(vec![f64::NAN; nx * (y_end - y_start)]);
         }
         return Err(crate::GribError::Unpack(
-            "Section 5 declares 0 data points".to_string(),
+            "Section 5 declares 0 data points without an exact all-missing bitmap and canonical empty packing".to_string(),
         ));
     }
     if dr.template == 0 {

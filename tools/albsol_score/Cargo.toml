@@ -1,0 +1,18 @@
+[package]
+name = "solar-albedo-score"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+grib-core = { path = "../grib1_bridge/vendor/grib-core", default-features = false }
+netcrust = { path = "../rustwx/vendor/netcrust" }
+serde_json = "1"
+sha2 = "0.10"
+zip = { version = "8.6", default-features = false }
+
+[patch.crates-io]
+hdf5-reader = { path = "../rustwx/vendor/netcrust/vendor/hdf5-reader" }
+
+[profile.release]
+strip = "debuginfo"

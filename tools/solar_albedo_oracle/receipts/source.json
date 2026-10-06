@@ -1,0 +1,9 @@
+{
+  "module": "solar_albedo",
+  "file_sha256": "056fb00313f426f294e6da9577e0ed1d05be071f150ec6d1c402b497fbb87d24",
+  "module_source_sha256": "ef358038ad24967ccfab48a8ef022fab368626d65627722d43769165999f5b6f",
+  "module_source_bytes": 2385,
+  "module_options": [
+    "-std=c++17"
+  ]
+}

@@ -181,3 +181,86 @@ def test_has_counter_reports_exact_tick_member_and_geometry_without_cuda(tmp_pat
     assert not collector.has_rain_counter(start, 1, 0, 1, latitude, longitude)
     assert not collector.has_rain_counter(start, 1, 0, 0, latitude + np.float32(1), longitude)
     assert collector._kernels == {} and collector.workspaces == {}
+
+
+def test_independent_process_collector_keeps_committed_full_roster_for_parent(tmp_path):
+    from datetime import datetime
+    request = FieldProducts("wind10", "m s-1", (25,))
+    collector = HeadlineDiagnosticCollector(tmp_path, members=1, member_order=(3,),
+        renderer="rw_wrfbatch", start_time=datetime(2026, 10, 4), requests=(request,),
+        array_module=np, defer_replay=True)
+    coords = np.zeros((3, 5), np.float32)
+    spool = NativeDiagnosticSpool(tmp_path, members=1, member_order=(3,), requests=(request,),
+        latitude=coords, longitude=coords, renderer="rw_wrfbatch")
+    valid = "2026-10-04_00:00:00"
+    spool.frames[valid] = {"valid_time": valid, "domain": "d01", "status": "pending",
+        "members_received": [3], "members_expected": 1, "packs": [], "products": [], "maps": []}
+    collector.spools[("d01", "geometry")] = spool
+    collector.cohorts[(1, 0, valid)] = {"geometry": {"members": {3}, "spool": spool}}
+    collector.finish_run()
+    receipt = collector.require_complete()
+    assert receipt["deferred_replay"] and spool.frames[valid]["status"] == "pending"
+    assert receipt["native_product_consumer"]["frames"] == []
+    from gpuwm.ensemble.production import PreparedEnsembleSession
+    spool._manifest()
+    child = PreparedEnsembleSession.__new__(PreparedEnsembleSession)
+    child.member_order = (0,)
+    child.collector = collector
+    child.last_output_directory = tmp_path
+    child.last_manifest = {"status": "PASS", "products": receipt}
+    assert child.completed_products() == receipt
+
+
+def test_roster_check_waits_for_the_scheduled_replay_of_a_complete_hour(tmp_path):
+    # The native pack checks its products as soon as its last step lands.
+    # A complete roster's hour is still "pending" until the product
+    # consumer replays it; the check used to report the whole roster as
+    # incomplete ("received [0, 1] of 2") instead of waiting for it.
+    from datetime import datetime
+    import threading
+    request = FieldProducts("wind10", "m s-1", (25,))
+    collector = HeadlineDiagnosticCollector(tmp_path, members=2, renderer="rw_wrfbatch",
+        start_time=datetime(2026, 10, 2), requests=(request,), array_module=np)
+    coords = np.zeros((3, 5), np.float32)
+    spool = NativeDiagnosticSpool(tmp_path, members=2, requests=(request,), latitude=coords,
+        longitude=coords, renderer="rw_wrfbatch")
+    valid = "2026-10-02_00:00:00"
+    spool.frames[valid] = {"valid_time": valid, "domain": "d01", "status": "pending",
+        "members_received": [0, 1], "members_expected": 2, "packs": [], "products": [], "maps": []}
+    collector.spools[("d01", "geometry")] = spool
+    release = threading.Event()
+    def replay():
+        release.wait(5)
+        spool.frames[valid]["status"] = "complete"
+    collector.product_consumer.submit(("d01", valid), device=0, replay=replay)
+    threading.Timer(0.2, release.set).start()
+    receipt = collector.require_complete()
+    assert receipt["pending_rosters"] == [] and spool.frames[valid]["status"] == "complete"
+    collector.finish_run()
+
+
+def test_private_worker_coordinates_leave_the_tree_and_published_ones_stay(tmp_path):
+    # finish_in_subprocess writes coordinates.nc only as the isolated
+    # worker's input. Without export_coordinates it is owned scratch and
+    # used to survive every finished run under .ensemble-diagnostics.
+    from datetime import datetime
+    request = FieldProducts("wind10", "m s-1", (25,))
+    coords = np.zeros((3, 5), np.float32)
+    for published in (False, True):
+        root = tmp_path / ("published" if published else "private")
+        collector = HeadlineDiagnosticCollector(root, members=2, renderer="rw_wrfbatch",
+            start_time=datetime(2026, 10, 2), requests=(request,), array_module=np)
+        spool = NativeDiagnosticSpool(root, members=2, requests=(request,), latitude=coords,
+            longitude=coords, renderer="rw_wrfbatch", export_coordinates=published)
+        coordinate = spool._ensure_coordinate_file()
+        path = root / coordinate["path"]
+        assert path.is_file()
+        collector.spools[("d01", "geometry")] = spool
+        collector.finish_run()
+        manifest = json.loads(spool.manifest_path.read_text(encoding="utf-8"))
+        if published:
+            assert path.is_file() and manifest["coordinates_file"] == coordinate
+        else:
+            assert not path.exists() and spool.coordinate_file is None
+            assert {"path": coordinate["path"], "bytes": coordinate["bytes"]} in manifest["deleted_scratch"]
+            assert not list((root / ".ensemble-diagnostics").rglob("*.nc"))

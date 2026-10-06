@@ -29,9 +29,12 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import timezone
 from typing import Callable, Iterable, Mapping, Sequence
 
 import numpy as np
+
+from gpuwm import obs_score_bridge
 
 from gpuwm.verify.obs.contracts import (
     SCORED_SURFACE_VARIABLES, Station, StationObsSet, StationReport,
@@ -95,21 +98,9 @@ def sample_field(field: np.ndarray, position: StationPosition, *,
         raise ValueError(
             f"station {position.station_id} at ({x:g}, {y:g}) is outside the "
             f"{ny}x{nx} grid; it should have been dropped before scoring")
-    if method == NEAREST:
-        return float(array[int(round(y)), int(round(x))])
-    if method != BILINEAR:
+    if method not in INTERPOLATIONS:
         raise ValueError(f"unknown interpolation {method!r}; expected {INTERPOLATIONS}")
-    i0 = min(int(math.floor(x)), nx - 2) if nx > 1 else 0
-    j0 = min(int(math.floor(y)), ny - 2) if ny > 1 else 0
-    i1 = min(i0 + 1, nx - 1)
-    j1 = min(j0 + 1, ny - 1)
-    tx = x - i0
-    ty = y - j0
-    return float(
-        array[j0, i0] * (1.0 - tx) * (1.0 - ty)
-        + array[j0, i1] * tx * (1.0 - ty)
-        + array[j1, i0] * (1.0 - tx) * ty
-        + array[j1, i1] * tx * ty)
+    return obs_score_bridge.sample(array, x, y, method)
 
 
 def screen_report(report: StationReport) -> tuple[str, ...]:
@@ -119,18 +110,26 @@ def screen_report(report: StationReport) -> tuple[str, ...]:
     the dewpoint, because a supersaturated surface report is a bad dewpoint
     far more often than it is a bad temperature.
     """
-    failed: list[str] = []
     values = dict(report.values)
-    for name, (low, high) in GROSS_RANGE.items():
-        if name in values and not (low <= float(values[name]) <= high):
-            failed.append(name)
-    temperature = values.get("temperature_2m")
-    dewpoint = values.get("dewpoint_2m")
-    if (temperature is not None and dewpoint is not None
-            and float(dewpoint) > float(temperature)
-            and "dewpoint_2m" not in failed):
-        failed.append("dewpoint_2m")
-    return tuple(sorted(failed))
+    names = tuple(GROSS_RANGE)
+    failed = obs_score_bridge.screen_report(
+        [float(values[name]) if name in values else 0.0 for name in names],
+        [name in values for name in names])
+    return tuple(sorted(name for name, flag in zip(names, failed) if flag))
+
+
+def _screen_reports(reports: Iterable[StationReport]) -> list[tuple[str, ...]]:
+    """Pack report values once for a native batch quality screen."""
+    names = tuple(GROSS_RANGE)
+    reports = list(reports)
+    values = [[float(report.values[name]) if name in report.values else 0.0
+               for name in names] for report in reports]
+    present = [[name in report.values for name in names] for report in reports]
+    if not reports:
+        return []
+    failed = obs_score_bridge.screen_reports(values, present)
+    return [tuple(sorted(name for name, flag in zip(names, row) if flag))
+            for row in failed]
 
 
 def match_reports(observations: StationObsSet, valid_times: Sequence[str], *,
@@ -143,22 +142,20 @@ def match_reports(observations: StationObsSet, valid_times: Sequence[str], *,
     """
     if tolerance_seconds <= 0:
         raise ValueError("the report matching tolerance must be positive")
-    targets = [(text, parse_valid_time(text)) for text in valid_times]
+    targets = [(text, int(parse_valid_time(text).replace(
+        tzinfo=timezone.utc).timestamp())) for text in valid_times]
     matched: dict[tuple[str, str], StationReport] = {}
     for station_id, reports in observations.by_station().items():
-        stamped = [(parse_valid_time(report.valid_time), report)
-                   for report in reports]
-        for text, target in targets:
-            best: tuple[float, str, StationReport] | None = None
-            for instant, report in stamped:
-                offset = abs((instant - target).total_seconds())
-                if offset > tolerance_seconds:
-                    continue
-                candidate = (offset, report.valid_time, report)
-                if best is None or candidate[:2] < best[:2]:
-                    best = candidate
-            if best is not None:
-                matched[(station_id, text)] = best[2]
+        stamped = [int(parse_valid_time(report.valid_time).replace(
+            tzinfo=timezone.utc).timestamp()) for report in reports]
+        ranks = {text: index for index, text in enumerate(sorted(
+            {report.valid_time for report in reports}))}
+        indices = obs_score_bridge.match_reports(
+            stamped, [ranks[report.valid_time] for report in reports],
+            [seconds for _, seconds in targets], float(tolerance_seconds))
+        for (text, _), index in zip(targets, indices):
+            if index >= 0:
+                matched[(station_id, text)] = reports[int(index)]
     return matched
 
 
@@ -215,6 +212,7 @@ def freeze_station_set(
         raise ValueError("a frozen station set needs at least one valid time")
     matched = match_reports(observations, hours,
                             tolerance_seconds=match_tolerance_seconds)
+    screens = dict(zip(matched, _screen_reports(matched.values())))
 
     kept: list[str] = []
     drops: list[dict[str, object]] = []
@@ -248,9 +246,9 @@ def freeze_station_set(
                           "reason": DROP_TERRAIN_MISMATCH,
                           "detail": f"{offset:+.1f} m"})
             continue
-        reports = [matched[(station.station_id, hour)] for hour in hours
+        reports = [(station.station_id, hour) for hour in hours
                    if (station.station_id, hour) in matched]
-        fired = sum(1 for report in reports if screen_report(report))
+        fired = sum(1 for key in reports if screens[key])
         if reports and fired / len(reports) > float(maximum_screen_fraction):
             drops.append({"station_id": station.station_id,
                           "reason": DROP_SCREEN,
@@ -336,10 +334,7 @@ class VariableScore:
 
 
 def _rmse(values: Iterable[float]) -> float:
-    array = np.asarray(list(values), dtype=np.float64)
-    if array.size == 0:
-        raise ValueError("RMSE over an empty sample is undefined")
-    return float(np.sqrt(np.mean(array * array, dtype=np.float64)))
+    return obs_score_bridge.reduce(list(values))[1]
 
 
 def surface_scores(
@@ -361,49 +356,54 @@ def surface_scores(
     *climate*, not a displaced storm.
     """
     scores: dict[str, VariableScore] = {}
+    screens = dict(zip(matched, _screen_reports(matched.values())))
     for variable in variables:
-        residual_by_station: dict[str, list[float]] = {}
-        residual_by_hour: dict[int, list[float]] = {}
-        all_residuals: list[float] = []
+        forecast: list[float] = []
+        observed: list[float] = []
+        pairs: list[tuple[str, str]] = []
         for station_id in frozen.station_ids:
             for text in valid_times:
                 report = matched.get((station_id, text))
                 if report is None:
                     continue
-                if variable in screen_report(report):
+                if variable in screens[(station_id, text)]:
                     continue
                 if variable not in report.values:
                     continue
                 modelled = model_value(station_id, text, variable)
                 if modelled is None:
                     continue
-                residual = float(modelled) - float(report.values[variable])
-                if not math.isfinite(residual):
-                    raise ValueError(
-                        f"{variable} residual at {station_id}/{text} is "
-                        f"non-finite")
-                residual_by_station.setdefault(station_id, []).append(residual)
-                residual_by_hour.setdefault(
-                    parse_valid_time(text).hour, []).append(residual)
-                all_residuals.append(residual)
-        if not all_residuals:
+                forecast.append(float(modelled))
+                observed.append(float(report.values[variable]))
+                pairs.append((station_id, text))
+        if not pairs:
             raise ValueError(
                 f"{variable} has no matched (station, hour) pairs to score")
+        all_residuals, invalid = obs_score_bridge.residuals(forecast, observed)
+        if invalid is not None:
+            station_id, text = pairs[invalid]
+            raise ValueError(
+                f"{variable} residual at {station_id}/{text} is non-finite")
+        residual_by_station: dict[str, list[float]] = {}
+        residual_by_hour: dict[int, list[float]] = {}
+        for (station_id, text), residual in zip(pairs, all_residuals):
+            residual_by_station.setdefault(station_id, []).append(residual)
+            residual_by_hour.setdefault(
+                parse_valid_time(text).hour, []).append(residual)
         per_station = {station_id: _rmse(values)
                        for station_id, values in residual_by_station.items()}
         scores[variable] = VariableScore(
             variable=variable,
-            bias=float(np.mean(all_residuals, dtype=np.float64)),
+            bias=obs_score_bridge.reduce(all_residuals)[0],
             rmse=_rmse(all_residuals),
             sample_count=len(all_residuals),
             station_count=len(per_station),
-            median_station_rmse=float(
-                np.median(np.asarray(sorted(per_station.values()),
-                                     dtype=np.float64))),
+            median_station_rmse=obs_score_bridge.reduce(
+                sorted(per_station.values()))[2],
             station_rmse=per_station,
             hourly_rmse={hour: _rmse(values)
                          for hour, values in residual_by_hour.items()},
-            hourly_bias={hour: float(np.mean(values, dtype=np.float64))
+            hourly_bias={hour: obs_score_bridge.reduce(values)[0]
                          for hour, values in residual_by_hour.items()},
         )
     return scores

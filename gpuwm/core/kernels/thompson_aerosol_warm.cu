@@ -446,8 +446,12 @@ __device__ __forceinline__ void thompson_aa_warm_rain_rates(
             THOMPSON_AA_OBMR);
         float mvd_c = (float)(
             (double)((3.0f + (float)out->nu_c) + 0.672f) / out->lamc);
+#if defined(THOMPSON_AA_WRF39)
+        out->mvd_c = mvd_c;              // fork :2096, no hold (audit T20)
+#else
         out->mvd_c = fmaxf(
             THOMPSON_AA_D0C, fminf(mvd_c, THOMPSON_AA_D0R));
+#endif
     }
 
     float rain_number;
@@ -508,6 +512,14 @@ __device__ __forceinline__ void thompson_aa_warm_rain_rates(
             (double)(cloud_mass * inverse_dt),
             (double)thompson_aa_div(zeta, tau));
         // :2192.  The 12.0f at thompson.cu:3241 IS nu_c.
+#if defined(THOMPSON_AA_WRF39)
+        // fork :2111, am_r*nu_c*D0r*D0r*D0r (audit T6).
+        out->pnr_wau = out->prr_wau
+            / (double)thompson_aa_mul(
+                thompson_aa_mul(
+                    thompson_aa_mul(am_r, (float)nu_c), THOMPSON_AA_D0R),
+                thompson_aa_mul(THOMPSON_AA_D0R, THOMPSON_AA_D0R));
+#else
         out->pnr_wau = out->prr_wau
             / (double)thompson_aa_mul(
                 thompson_aa_mul(
@@ -515,6 +527,7 @@ __device__ __forceinline__ void thompson_aa_warm_rain_rates(
                         thompson_aa_mul(am_r, (float)nu_c), 10.0f),
                     THOMPSON_AA_D0R),
                 thompson_aa_mul(THOMPSON_AA_D0R, THOMPSON_AA_D0R));
+#endif
         // :2193-2194.  NEW under mp=28: droplets consumed by autoconversion.
         out->pnc_wau = fmin(
             (double)(out->nc_m3 * inverse_dt),
@@ -548,7 +561,11 @@ __device__ __forceinline__ void thompson_aa_warm_rain_rates(
         int rain_bin = 1 + (int)(100.0
             * log((double)rain_mvd / first) / log(last / first));
         rain_bin = min(rain_bin, 100);
+#if defined(THOMPSON_AA_WRF39)
+        const int cloud_bin = min(100, (int)(out->mvd_c * 1.0e6f));
+#else
         const int cloud_bin = (int)(out->mvd_c * 1.0e6f);
+#endif
         const float efficiency = (float)t_efrw[
             (rain_bin - 1) + 100 * (cloud_bin - 1)];
         out->prr_rcw = fmin(
@@ -749,7 +766,11 @@ __device__ __forceinline__ void thompson_aa_frozen_collect_rates(
     ThompsonAaFrozen* out)
 {
     const float pi = THOMPSON_AA_PI;
+#if defined(THOMPSON_AA_WRF39)
+    const float am_g = thompson_aa_wrf39_am_g();
+#else
     const float am_g = pi * 400.0f / 6.0f;
+#endif
     const float tempc = temp_k - 273.15f;
     const float t1_qs_qc = pi * 0.25f * THOMPSON_AA_AV_S;
     const float t1_qg_qc = pi * 0.25f * THOMPSON_AA_AV_G
@@ -808,8 +829,20 @@ __device__ __forceinline__ void thompson_aa_frozen_collect_rates(
     }
 
     // --- graupel distribution, :1915-1949 then :2135-2139 ----------------
+#if defined(THOMPSON_AA_WRF39)
+    // fork :2031-2054: the slope from the column intercept the entry pass
+    // left in graupel_number_per_kg_v (an N0_exp, not a number), on every
+    // level (rg = R1 placeholder where L_qg fails), as the fork's loop runs.
+    thompson_aa_wrf39_graupel_slope(graupel_number_per_kg_v, graupel_mass,
+                                    &out->lamg, &out->ilamg, &out->n0_g);
+    out->ng_m3 = 0.0f;
+    (void)am_g;
+    if (false) {
+        float ng = THOMPSON_AA_R2;
+#else
     float ng = THOMPSON_AA_R2;              // :1946, the L_qg = .false. value
     if (out->l_qg) {
+#endif
         ng = fmaxf(THOMPSON_AA_R2, graupel_number_per_kg_v * rho);
         double lamg;
         // :1924-1928.  A WHOLE BRANCH mp=8's kernel has no counterpart for.
@@ -840,6 +873,7 @@ __device__ __forceinline__ void thompson_aa_frozen_collect_rates(
                 graupel_mass, lamg, am_g);
         }
     }
+#if !defined(THOMPSON_AA_WRF39)
     out->ng_m3 = ng;
     // :2135-2139.  WRF's own kte->kts loop, UNGUARDED: it re-derives lamg
     // from the POST-clamp ng on every level, graupel-free ones included
@@ -854,6 +888,7 @@ __device__ __forceinline__ void thompson_aa_frozen_collect_rates(
         out->ilamg = 1.0 / lamg_final;
         out->n0_g = (double)ng * lamg_final;
     }
+#endif
 
     // visco(k), :1991-1996.  The sub-freezing branch carries an extra
     // -1.2e-5*tempc**2 term.  thompson.cu's warm network drops it because
@@ -870,12 +905,23 @@ __device__ __forceinline__ void thompson_aa_frozen_collect_rates(
            - 1.2e-5f * tempc * tempc) * 1.0e-5f;
 
     // --- snow and graupel collecting cloud water, :2402-2440 -------------
+#if defined(THOMPSON_AA_WRF39)
+    // fork :205, :864: D0s = 200 microns and the snow bins built from it;
+    // fork :271-284: r_s(1) = r_g(1) = 1.e-5.
+    const float snow_d0 = THOMPSON_AA_WRF39_D0S;
+    const double snow_d0_d = (double)THOMPSON_AA_WRF39_D0S;
+    const float frozen_first = THOMPSON_AA_WRF39_R_SG_FIRST;
+#else
+    const float snow_d0 = THOMPSON_AA_D0S;
+    const double snow_d0_d = 300.0e-6;
+    const float frozen_first = THOMPSON_AA_R2;
+#endif
     if (l_qc && cloud_mvd > THOMPSON_AA_D0C) {
-        if (out->xds > THOMPSON_AA_D0S) {
-            const double diameter_ratio = 0.02 / 300.0e-6;
+        if (out->xds > snow_d0) {
+            const double diameter_ratio = 0.02 / snow_d0_d;
             const double log_ratio = log(diameter_ratio);
-            const double first = 300.0e-6 * exp(0.5 / 100.0 * log_ratio);
-            const double last = 300.0e-6 * exp(99.5 / 100.0 * log_ratio);
+            const double first = snow_d0_d * exp(0.5 / 100.0 * log_ratio);
+            const double last = snow_d0_d * exp(99.5 / 100.0 * log_ratio);
             int snow_bin = 1 + (int)(100.0
                 * log((double)out->xds / first) / log(last / first));
             snow_bin = max(1, min(snow_bin, 100));
@@ -894,7 +940,7 @@ __device__ __forceinline__ void thompson_aa_frozen_collect_rates(
                     * out->ef_sw * cloud_number * out->smoe));
         }
         // :2415.  Note >= here and > for the scavenging gate at :2460.
-        if (graupel_mass >= THOMPSON_AA_R2) {
+        if (graupel_mass >= frozen_first) {
             // xDg = (bm_g + mu_g + 1.)*ilamg; the REAL(4) sum is exactly 4.
             out->xdg = (float)(4.0 * out->ilamg);
             out->vtg = (float)(
@@ -912,7 +958,14 @@ __device__ __forceinline__ void thompson_aa_frozen_collect_rates(
             } else if (out->stoke_g > 10.0f) {
                 efficiency = 0.77f;
             }
+#if defined(THOMPSON_AA_WRF39)
+            // fork :2319: only graupel larger than D0g = 250 microns
+            // collects cloud water, at full efficiency (audit T13).
+            (void)wet_bulb;
+            if (!(out->xdg > THOMPSON_AA_WRF39_D0G)) efficiency = 0.0f;
+#else
             if (wet_bulb > 273.15f) efficiency *= 0.1f;
+#endif
             out->ef_gw = efficiency;
             const double fall_kernel = pow(
                 out->ilamg, THOMPSON_AA_WARM_CGE9);
@@ -936,7 +989,7 @@ __device__ __forceinline__ void thompson_aa_frozen_collect_rates(
     // Gate is rs > r_s(1) = 1e-6, NOT the D0s riming gate above, and it sits
     // OUTSIDE WRF's L_qc/mvd_c branch: aerosol is scavenged from a
     // cloud-free level too.
-    if (snow_mass > THOMPSON_AA_R2) {
+    if (snow_mass > frozen_first) {
         const float ef_ccn = thompson_aa_eff_aero(
             out->xds, 0.04e-6f, viscosity_aero, rho, temp_k,
             THOMPSON_AA_SPECIES_SNOW);
@@ -952,7 +1005,7 @@ __device__ __forceinline__ void thompson_aa_frozen_collect_rates(
     }
 
     // --- graupel collecting aerosols, :2460-2471 -------------------------
-    if (graupel_mass > THOMPSON_AA_R2) {
+    if (graupel_mass > frozen_first) {
         out->xdg = (float)(4.0 * out->ilamg);
         const double fall_kernel = pow(out->ilamg, THOMPSON_AA_WARM_CGE9);
         const float ef_ccn = thompson_aa_eff_aero(
@@ -1141,16 +1194,29 @@ extern "C" __global__ void thompson_aa_warm_source_network(
             * rain_lambda * rain_lambda;
         const int rain_intercept_bin =
             thompson_aa_decade_index_double(rain_intercept, 6, 37);
-        if (snow_mass >= 1.0e-6f) {
+#if defined(THOMPSON_AA_WRF39)
+        const int ntb_sg = THOMPSON_AA_WRF39_NTB_SG;
+        const int sg_exp0 = THOMPSON_AA_WRF39_SG_EXP0;
+        const float sg_first = THOMPSON_AA_WRF39_R_SG_FIRST;
+        // fork :2365, :2402: the dry-bulb temperature picks the branch, and
+        // this kernel owns only levels at or above 0 C (audit T3).
+        const bool freezing_branch = false;
+#else
+        const int ntb_sg = 37;
+        const int sg_exp0 = -6;
+        const float sg_first = 1.0e-6f;
+        const bool freezing_branch = wet_bulb < 273.15f;
+#endif
+        if (snow_mass >= sg_first) {
             const int snow_bin = thompson_aa_decade_index(
-                snow_mass, -6, 37);
+                snow_mass, sg_exp0, ntb_sg);
             const int raw_temp_bin = (int)(__fdiv_rn((tempc - 2.5f), 5.0f)) - 1;
             const int temp_bin = min(9, max(1, -raw_temp_bin)) - 1;
             const size_t table_idx = (size_t)snow_bin
-                + (size_t)37 * ((size_t)temp_bin
+                + (size_t)ntb_sg * ((size_t)temp_bin
                 + (size_t)9 * ((size_t)rain_intercept_bin
                 + (size_t)37 * (size_t)rain_bin));
-            if (wet_bulb < 273.15f) {
+            if (freezing_branch) {
                 rain_snow_rain_rate = -(tmr_racs2[table_idx]
                     + tcr_sacr2[table_idx] + tmr_racs1[table_idx]
                     + tcr_sacr1[table_idx]);
@@ -1183,11 +1249,43 @@ extern "C" __global__ void thompson_aa_warm_source_network(
                     (double)(-snow_mass * inverse_dt),
                     rain_snow_snow_rate);
                 rain_snow_rain_rate = -rain_snow_snow_rate;
+#if defined(THOMPSON_AA_WRF39)
+                // fork :2392-2395: rain number is removed in the melting
+                // branch too (audit T7).
+                rain_snow_number_rate = fmin(
+                    (double)(rain_number * inverse_dt),
+                    tnr_racs2[table_idx] + tnr_sacr2[table_idx]);
+#endif
             }
         }
+#if defined(THOMPSON_AA_WRF39)
+        // fork :2249-2270 and :2401-2416: the fork's graupel axes, tables
+        // (28,28,37,37) with no density axis; above 0 C always the melting
+        // branch, with the break-up source 5*tnr_gacr (audit T7).
+        if (graupel_mass >= sg_first) {
+            const int graupel_mass_bin = thompson_aa_decade_index(
+                graupel_mass, sg_exp0, ntb_sg);
+            const int graupel_intercept_bin =
+                thompson_aa_decade_index_double(
+                    thompson_aa_wrf39_table_intercept(
+                        graupel_mass, frozen.ilamg),
+                    THOMPSON_AA_WRF39_NG1_EXP0, ntb_sg);
+            const size_t table_idx = (size_t)graupel_intercept_bin
+                + (size_t)ntb_sg * ((size_t)graupel_mass_bin
+                + (size_t)ntb_sg * ((size_t)rain_intercept_bin
+                + (size_t)37 * (size_t)rain_bin));
+            rain_graupel_rain_rate = fmin(
+                (double)(graupel_mass * inverse_dt), tcg_racg[table_idx]);
+            rain_graupel_graupel_rate = -rain_graupel_rain_rate;
+            rain_graupel_rain_number_rate = -5.0 * tnr_gacr[table_idx];
+        }
+        if (false) {
+            const int graupel_mass_bin = 0;
+#else
         if (graupel_mass >= 1.0e-6f) {
             const int graupel_mass_bin = thompson_aa_decade_index(
                 graupel_mass, -6, 37);
+#endif
             // WRF bins on N0_exp (:2364-2366), which is algebraically
             // identical to N0_g = ng*ogg2*lamg**cge(2,1) because
             // cgg(3,1)*ogg2*ogg1 is exactly 1 and ng itself was diagnosed
@@ -1254,6 +1352,21 @@ extern "C" __global__ void thompson_aa_warm_source_network(
                 * snow_ventilation_moment;
         snow_melt_rate = (double)((tempc * conductivity
             - 2.5e6f * diffusivity * vapor_deficit) * melt_moment);
+#if defined(THOMPSON_AA_WRF39)
+        // fork :2639-2645: the collision enhancement on the dry-bulb
+        // temperature and unconditional, then the melted-drop number at
+        // 10**(-0.25*tempc), capped at the snow number.
+        snow_melt_rate += (double)(4218.0f * inverse_fusion * tempc)
+            * (rain_snow_rain_rate + snow_cloud_rate);
+        snow_melt_rate = fmin(
+            (double)(snow_mass * inverse_dt),
+            fmax(0.0, snow_melt_rate));
+        snow_melt_number_rate = (double)(snow_number / snow_mass)
+            * snow_melt_rate
+            * (double)thompson_aa_powf_cr(10.0f, -0.25f * tempc);
+        snow_melt_number_rate = fmin(
+            (double)(snow_number * inverse_dt), snow_melt_number_rate);
+#else
         if (snow_melt_rate > 0.0) {
             snow_melt_rate += 4218.0 * (double)inverse_fusion
                 * (double)(wet_bulb - 273.15f)
@@ -1268,6 +1381,7 @@ extern "C" __global__ void thompson_aa_warm_source_network(
                 * (double)powf(
                     10.0f, -0.25f * (wet_bulb - 273.15f));
         }
+#endif
     }
 
     double graupel_melt_rate = 0.0;
@@ -1276,7 +1390,12 @@ extern "C" __global__ void thompson_aa_warm_source_network(
         const double inverse_lambda = frozen.ilamg;
         const double graupel_intercept = frozen.n0_g;
         double melt_intercept = graupel_intercept;
+#if defined(THOMPSON_AA_WRF39)
+        // fork :2657: no floor on the melting intercept.
+        if (false) {
+#else
         if (graupel_mass * graupel_number < 1.0e-4f) {
+#endif
             // :2804-2806.  WRF re-forms lamg as 1./ilamg(k) here rather
             // than reusing its own local, and ogg2 is exactly 1 while
             // cge(2,1) is exactly 1 so lamg**cge(2,1) is lamg.
@@ -1296,12 +1415,20 @@ extern "C" __global__ void thompson_aa_warm_source_network(
         graupel_melt_rate = fmin(
             (double)(graupel_mass * inverse_dt),
             fmax(0.0, graupel_melt_rate));
+#if defined(THOMPSON_AA_WRF39)
+        // fork :2663-2664: N0_g*cgg(2)*ilamg**cge(2)/rg * prr_gml *
+        // 10**(-0.5*tempc), the graupel number from the fork's intercept.
+        graupel_melt_number_rate = graupel_intercept * inverse_lambda
+            / (double)graupel_mass * graupel_melt_rate
+            * (double)thompson_aa_powf_cr(10.0f, -0.5f * tempc);
+#else
         if (graupel_melt_rate > 0.0) {
             graupel_melt_number_rate = graupel_melt_rate
                 * (double)graupel_number / (double)graupel_mass
                 * (double)powf(
                     10.0f, -0.33f * (wet_bulb - 273.15f));
         }
+#endif
     }
 
     // Above freezing WRF sublimates snow/graupel only when the corresponding
@@ -1313,8 +1440,18 @@ extern "C" __global__ void thompson_aa_warm_source_network(
     double snow_vapor_rate = 0.0;
     double graupel_vapor_rate = 0.0;
     double graupel_vapor_number_rate = 0.0;
-    if (ssati < 0.0f
-            && (snow_melt_rate <= 0.0 || graupel_melt_rate <= 0.0)) {
+#if defined(THOMPSON_AA_WRF39)
+    // fork :2648-2652, :2667-2672: snow and graupel sublimate whenever the
+    // air is subsaturated, melting or not, snow with C_cube = 0.5.
+    const bool snow_sublimates = l_qs;
+    const bool graupel_sublimates = l_qg;
+    const float snow_capacitance = 0.5f;
+#else
+    const bool snow_sublimates = l_qs && snow_melt_rate <= 0.0;
+    const bool graupel_sublimates = l_qg && graupel_melt_rate <= 0.0;
+    const float snow_capacitance = 0.15f;
+#endif
+    if (ssati < 0.0f && (snow_sublimates || graupel_sublimates)) {
         const float inverse_temp = 1.0f / temp0;
         const float saturated_density = rho * qvsi;
         const float slope_term = inverse_temp
@@ -1339,17 +1476,18 @@ extern "C" __global__ void thompson_aa_warm_source_network(
                + 2.0f * alpha2 * xsat2
                - 5.0f * alpha2 * alpha * xsat2 * ssati)
             / (1.0f + gamma);
-        if (l_qs && snow_melt_rate <= 0.0) {
+        if (snow_sublimates) {
             const float ventilation = 0.28f * schmidt_cuberoot
                 * sqrtf(40.0f) * rho_factor_sqrt * viscosity_factor;
-            snow_vapor_rate = (double)(0.15f * geometry * diffusivity
+            snow_vapor_rate = (double)(snow_capacitance * geometry
+                * diffusivity
                 * ssati * saturated_density
                 * (0.86f * snow_first_moment
                    + ventilation * snow_ventilation_moment));
             snow_vapor_rate = fmax(
                 (double)(-snow_mass * inverse_dt), snow_vapor_rate);
         }
-        if (l_qg && graupel_melt_rate <= 0.0) {
+        if (graupel_sublimates) {
             const double inverse_lambda = frozen.ilamg;
             const double graupel_intercept = frozen.n0_g;
             const float ventilation = 0.28f * schmidt_cuberoot
@@ -1368,8 +1506,14 @@ extern "C" __global__ void thompson_aa_warm_source_network(
         }
 
         const double vapor_sum = snow_vapor_rate + graupel_vapor_rate;
+#if defined(THOMPSON_AA_WRF39)
+        // fork :2701, no density (audit T16).
+        const double vapor_limit = (double)((qv0 - qvsi)
+            * inverse_dt * 0.999f);
+#else
         const double vapor_limit = (double)((qv0 - qvsi) * rho
             * inverse_dt * 0.999f);
+#endif
         if (vapor_sum < -1.0e-15 && vapor_sum < vapor_limit) {
             const double ratio = vapor_limit / vapor_sum;
             snow_vapor_rate *= ratio;
@@ -1434,7 +1578,11 @@ extern "C" __global__ void thompson_aa_warm_source_network(
         graupel_melt_rate *= ratio;
     }
     double paired;
+#if defined(THOMPSON_AA_WRF39)
+    if (temp0 > 273.15f) {
+#else
     if (wet_bulb > 273.15f) {
+#endif
         paired = fmin(
             fabs(rain_snow_rain_rate), fabs(rain_snow_snow_rate));
         rain_snow_rain_rate = copysign(paired, rain_snow_rain_rate);
@@ -1503,9 +1651,13 @@ extern "C" __global__ void thompson_aa_warm_source_network(
     // Keep classic ng1d raw through source and fallout tendencies.  WRF
     // diagnoses a separate qg-based number for fallout velocity and applies
     // the private moment's sole size bound only in the final state pass.
+#if defined(THOMPSON_AA_WRF39)
+    (void)graupel_number_rate;
+#else
     graupel_number_per_kg[idx] = thompson_aa_add(
         graupel_number_per_kg[idx],
         thompson_aa_mul((float)(graupel_number_rate * (double)orho), dt));
+#endif
     const double vapor_rate = snow_vapor_rate + graupel_vapor_rate;
     // The entry vapour plus the tendency, unfloored: WRF floors the running
     // vapour once, at the terminal apply (:3974); see the cold network.
@@ -1529,6 +1681,11 @@ extern "C" __global__ void thompson_aa_warm_source_network(
     // reads that number: without the balance the saved reflectivity differs
     // from WRF v4.6.1 by up to 8.7 dB in 505 to 939 cells of every saved
     // forecast frame, and graupel at or below R1 as a concentration survives.
+#if defined(THOMPSON_AA_WRF39)
+    (void)qg_entry_wrf;
+    (void)ng_entry_wrf;
+    if (false)
+#endif
     {
         const float xrg = thompson_aa_mul(qg[idx], rho);
         if (!(xrg > THOMPSON_AA_R1)) {

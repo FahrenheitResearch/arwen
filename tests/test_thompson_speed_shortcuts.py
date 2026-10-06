@@ -128,7 +128,10 @@ def test_empty_and_active_columns_match_base_bits(monkeypatch, nz, species, held
                 function(((ncol + 31) // 32,), (32,), arguments)
             return launch
         return _reference(unit).get_function(symbol)
-    monkeypatch.setattr(module, "get_kernel", reference_kernel)
+    # The aerosol-aware units launch through aerosol_kernel (the active
+    # generation's build, b0556bd76); classic Thompson through get_kernel.
+    monkeypatch.setattr(module, "aerosol_kernel" if module is aerosol else "get_kernel",
+                        reference_kernel)
     expected = run()
     for a, b in zip(actual, expected):
         np.testing.assert_array_equal(a, b)

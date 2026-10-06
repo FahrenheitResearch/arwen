@@ -750,6 +750,12 @@ def fetch_front_door_sources() -> tuple[str, ...]:
     return fetch_routes.all_fetchable_sources()
 
 
+def native_cf_fetch_contract(source: str) -> str | None:
+    """Capability probe for annual CF acquisition and bound native preparation."""
+    from gpuwm.cf_archive_fetch import contract
+    return contract(fetch_routes.canonical_source(source))
+
+
 def fetch_accepts_area(source: str) -> bool:
     """Can ``gpuwm fetch --source SOURCE`` be handed a crop box?
 
@@ -764,8 +770,9 @@ def fetch_accepts_area(source: str) -> bool:
     the namelist geometry is the crop.
     """
 
+    from gpuwm.cf_archive_fetch import sources
     return fetch_routes.canonical_source(source) in (
-        fetch_routes.LEGACY_ROUTE_SOURCES)
+        fetch_routes.LEGACY_ROUTE_SOURCES + sources())
 
 
 def fetch_accepts_cadence(source: str) -> bool:
@@ -1994,6 +2001,11 @@ def resolve_latest_cycle(source: str, last_hour: int, *,
     the operational server yields no complete cycle at all.
     """
 
+    if native_cf_fetch_contract(source) is not None:
+        from gpuwm.cf_archive_fetch import latest_cycle
+        if start_hour or member is not None or provider is not None or transport is not None:
+            raise ValueError("Annual CF analyses have no forecast lead, member or alternate provider axis")
+        return latest_cycle(fetch_routes.canonical_source(source),last_hour,cadence)
     transport = fetch_endpoints.policy_transport(source, transport)
     if as_posted is None:
         as_posted = fetch_endpoints.aws_fetch_policy()
@@ -5528,6 +5540,9 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
     bar_kinds = {"atmosphere": "hrrr-atmosphere", "soil": "hrrr-soil"}
     expected_counts = {"atmosphere": range_transport.ATMOSPHERE_RECORD_COUNT,
                        "soil": range_transport.SOIL_RECORD_COUNT}
+    from gpuwm.source_adapters import get_source_adapter
+    runtime_adapter = get_source_adapter("hrrr")
+    runtime_rows = runtime_adapter.runtime_surface_fields
     # Seeded, not empty: a completed resume downloads nothing and would
     # otherwise republish record_bars as [], erasing an accepted
     # inventory change the directory's files really were fetched under.
@@ -5635,6 +5650,8 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
         # fall back to the certified subset count when the manifest
         # predates that key.
         expected = prior_records.get(dest_name, expected_counts[kind])
+        if kind == "soil" and runtime_rows and dest_name not in prior_records:
+            expected += len(runtime_rows)
         label = f"f{hour:02d} {kind}"
         # The stopwatch starts on the WHOLE product, not on the download
         # alone: a verify-skip re-hashes the file on disk and walks its
@@ -5642,11 +5659,19 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
         # manifest is entitled to see.
         file_started = time.perf_counter()
         digest = None
+        runtime_binding = None
         if dest.exists() and not force:
             digest = _existing_hrrr_digest(
                 dest, expected_count=expected,
                 prior_digest=prior_digests.get(dest_name),
                 progress=progress, label=label)
+            if kind == "soil" and runtime_rows:
+                prior_runtime = (prior_entries.get(dest_name) or {}).get("runtime_surface")
+                if (not isinstance(prior_runtime, list)
+                        or {row.get("field") for row in prior_runtime} != {row[0] for row in runtime_rows}):
+                    digest = None
+                else:
+                    runtime_binding = prior_runtime
         # Decided HERE, while `digest` still means "the existing file
         # passed every bar", and not inferred later from the seconds:
         # dividing bytes by seconds means bandwidth for a download and
@@ -5739,6 +5764,12 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
                     continue
                 bars[bar_kinds[kind]] = bar
                 break
+            if kind == "soil" and runtime_rows:
+                from gpuwm.runtime_surface_fetch import append_runtime_surface_records
+                runtime_binding = append_runtime_surface_records(
+                    dest, adapter=runtime_adapter, cycle=cycle, lead=hour, host=chosen,
+                    binary=engine_bin if engine == "rust" else None,
+                    cache_dir=cache_dir, progress=progress, streams=streams)
             digest = sha256_file(dest)
             if engine != "rust":
                 # The Rust route has already said this, with the
@@ -5760,6 +5791,7 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
             # GiB over the network published the same receipt, and a
             # caller could not tell a user which one had happened.
             "downloaded": downloaded,
+            **({"runtime_surface": runtime_binding} if runtime_binding else {}),
         }
 
     products = []
@@ -6795,6 +6827,16 @@ def _fetch_main(args) -> int:
     _posting_flag_refusal(args, requested_as_posted(args))
     if getattr(args, "readiness", False):
         return _readiness_main(args, source)
+    if getattr(args, "wif", False):
+        from gpuwm.table_assets import stage_wif_dataset
+
+        if stage_wif_dataset() != 0:
+            from gpuwm.config import MP28_AEROSOL_LATERAL_FORCING_PRECONDITION
+
+            print("fetch: " + MP28_AEROSOL_LATERAL_FORCING_PRECONDITION
+                  + " Automatic acquisition failed before forcing transfer. "
+                    "Offline: gpuwm fetch-tables --wif --from DIR.", file=sys.stderr)
+            return 2
     if (getattr(args, "retrieve", False)
             and not source_adapters.get_source_adapter(source).fetch_requires_retrieve):
         raise ValueError(_retrieve_inapplicable_refusal(source))
@@ -6806,6 +6848,9 @@ def _fetch_main(args) -> int:
     if era5_product is not None and source != "era5":
         raise ValueError("--era5-product applies to --source era5 only")
     era5_product = era5_product or "reanalysis"
+    if native_cf_fetch_contract(source) is not None:
+        from gpuwm.cf_archive_fetch import cli
+        return cli(args)
     if source in fetch_routes.route_ids():
         # A table route refuses the flags it does not take, then validates
         # its window with the same validator.
@@ -7600,6 +7645,8 @@ FETCH_HINT_ROWS = key_rows(
            "the crop radius around point, in kilometres; needs point"),
     KeyRow("out", "string", None,
            "the download directory"),
+    KeyRow("wif", "boolean", False,
+           "stage the pinned monthly aerosol climatology before forcing transfer"),
     KeyRow("cadence", "integer", None,
            "hours between boundary times; absent takes the source's own"),
     KeyRow("forecast_start_hour", "integer", 0,
@@ -7770,8 +7817,8 @@ def validate_fetch_hints(table: dict, *, source: str) -> None:
     known = _fetch_hint_sources()
     local_source = False
     if isinstance(table.get("source"), str):
-        from gpuwm.source_drivability import drivability_for
-        local_source = bool(drivability_for(table["source"]).get("requires_source_root"))
+        from gpuwm.source_drivability import local_input_requested
+        local_source = local_input_requested(table)
     if "source" not in table:
         raise ValueError(f"{prefix} must carry source = {'|'.join(known)}")
     name = (fetch_routes.canonical_source(str(table["source"]))
@@ -7867,6 +7914,10 @@ def validate_fetch_hints(table: dict, *, source: str) -> None:
             step = 6 if cadence is None else cadence
             if hours is not None:
                 _era5_times(cycle or datetime(2000, 1, 1), hours, step)
+        elif native_cf_fetch_contract(name) is not None and not local_source:
+            from gpuwm.cf_archive_fetch import validate_window
+            if hours is not None:
+                validate_window(name, cycle or datetime(2000, 1, 1), hours, cadence)
         elif name in GFS_CONTAINER_SOURCES:
             step = container_default_cadence(name) if cadence is None else cadence
             if name == "gdas":
@@ -7948,6 +7999,11 @@ def register_cli(subparsers) -> None:
              "does not (a reanalysis published on a delay has a latest, "
              "and it is that delay).  A source that declares neither is "
              "refused by name")
+    parser.add_argument(
+        "--wif", action="store_true",
+        help="stage the SHA-256-verified monthly aerosol climatology in its "
+             "shared cache before forcing transfer; implied by the native "
+             "forecast chain when its selected physics needs that dataset")
     parser.add_argument(
         "--hours", type=int, default=None, metavar="N",
         help="forecast window length: hours 0..N are fetched.  gdas is "

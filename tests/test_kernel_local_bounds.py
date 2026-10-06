@@ -82,11 +82,37 @@ def test_thompson_selected_shallow_frames_bound_the_production_exports():
         symbols = re.findall(
             r'extern\s+"C"\s+__global__\s+void\s+(\w+)\s*\(',
             module_source(module))
-        shallow = [name for name in symbols if "_256" not in name]
+        # The ``*_wrf39_*`` exports exist only in the THOMPSON_AA_WRF39
+        # build (thompson_version = "wrf_39_noaa"); that generation is
+        # priced by THOMPSON_WRF39_KERNEL_FRAMES and gated below.
+        shallow = [name for name in symbols
+                   if "_256" not in name and "_wrf39_" not in name]
         assert shallow
         measured = {name: int(get_kernel(module, name).attributes["local_size_bytes"])
                     for name in shallow}
         assert max(measured.values()) <= bound, measured
+
+
+def test_thompson_wrf39_frames_bound_the_fork_generation_exports():
+    """The fork generation's frames, read off the driver, are what preflight
+    prices for it: a fork frame above THOMPSON_WRF39_KERNEL_FRAMES is an
+    unpriced local reservation on the HRRR recipes, the same device OOM the
+    shallow gate above prevents."""
+    import re
+    from gpuwm.core.kernels import get_kernel_int_defines, module_source
+    from gpuwm.core.thompson_aerosol_launch import WRF39_DEFINES
+
+    for module, (deep, shallow_bound) in pf.THOMPSON_WRF39_KERNEL_FRAMES.items():
+        symbols = re.findall(
+            r'extern\s+"C"\s+__global__\s+void\s+(\w+)\s*\(',
+            module_source(module))
+        measured = {name: int(get_kernel_int_defines(module, name, WRF39_DEFINES)
+                              .attributes["local_size_bytes"])
+                    for name in symbols}
+        assert max(measured.values()) <= deep, measured
+        assert max(v for n, v in measured.items() if "_256" not in n) <= shallow_bound, measured
+        assert deep >= pf.KERNEL_MAX_LOCAL_SIZE_BYTES[module]
+        assert shallow_bound >= pf.THOMPSON_SHALLOW_KERNEL_FRAMES[module]
 
 
 def test_the_specialized_frames_are_what_preflight_prices():

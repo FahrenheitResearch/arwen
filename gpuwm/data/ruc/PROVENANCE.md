@@ -708,3 +708,106 @@ inputs to the reference and not undefined:
 * The Noah source bucket at :1930-1934 weights the four source layers
   0.1/0.2/0.7/1.0.  Those are **not** Noah's own `dzs` (0.1/0.3/0.6/1.0 from
   `init_soil_depth_2`); the 2 m total agrees, the middle two do not.
+
+## Operational-branch oracle (`oracle_fork/`)
+
+`oracle_fork/` holds the WRF v4.6.1 harnesses above
+(`tools/ruc_wrf461_oracle/run_*.F90`, unchanged) compiled against the
+operational RAP/HRRR branch's `module_sf_ruclsm.F` (NOAA-EMC/HRRR v4.1.21,
+`sorc/hrrr_wrfarw.fd/WRFV3.9/phys`) instead of WRF v4.6.1's, with that
+branch's `run/` tables.  The inputs are the v4.6.1 oracle's, so each case runs
+the same column through the other lineage.  `tests/test_ruc_fork_oracle.py`
+grades the port's `wrf_45` names (`ruc_soilprop`, `ruc_snow`, `ruc_irrigation`
+and `ruc_qvg_cold_start = "air"`) against it: SOILPROP, the snow-free soil
+step, SNOWTEMP and SNOWSOIL bit for bit. SFCTMP and LSMRUC retain their
+documented, pinned residues; their SNOWFALLAC increments are compared after
+conversion from the branch's metres to the port's millimetres. The fork
+device decks in `tests/test_ruc_fork_gpu.py` also hold SNOWTEMP and SNOWSOIL
+to every oracle output word. Routines the two lineages share give the same numbers under
+both builds and are not repeated.  Rebuild with
+
+```
+tools/ruc_hrrr_fork_oracle/build.sh HRRR_WRF_ROOT BUILD_DIR [OUT_DIR]
+```
+
+Built with GNU Fortran 15.2.0.  The CSVs write exponents as `E-05` where the
+v4.6.1 files (gfortran 13.3) write `E-5`; the values are what is compared.
+
+```
+cb2b54114afc247e16ea03d547a510b19842e2ee012da1202eba19105bef6aab  phys/module_sf_ruclsm.F (branch)
+ed5478afbe49af51492256c1eb6cf88b3948590308525b32df1ddec28687b40e  VEGPARM.TBL
+1e2275a32d8cd3b48ca693d22c0816df0013f83b6594ac632716361db337d58f  SOILPARM.TBL
+9c02832a0e4a2ecaf47fcee485539aad95cd732c379c5c258161a88eb3d25ea2  GENPARM.TBL
+4959df0195b0902146d039f20dfd8685eb5d584d22374be8143475fcf85a0426  lsmruc.csv
+26b3a96eb4b3fae544e31eafce3641b966ecb687b8be0a8f18449ea9274e1fbe  lsmruc_stackfill.csv
+a7c51ddc3b77d949c988490c0b70a3b39367aa2361abf2fe346e971ad2246f9d  sfctmp.csv
+2e937c231b1da72cc42a79a773086c2f178c077658c5fe3426e7333848d4b148  sfctmp_stackfill.csv
+cf1d6172ca674e2978109ac1f3835b5939b26f1e42e7165f3255c978f18ec31b  snowsoil_contract.csv
+984a6fd6c1c2b2ea8842ec0723c898236ac31d454c70957fc62c9fb58db3129d  snowsoil.csv
+7fa08bc1652ec447bf1bf95e4a0c2145dd9b73422bb645d07d65dadc26bc3103  snowtemp.csv
+ea56de1023f1319945c48db22a981d7103d160a339b9474646029bce9d287c46  soil.csv
+1e39e78c9df541922498cf94bc8af95f47f7945dd8b710890dc5a951705d4740  soilprop.csv
+4fd6d3d45cc8ba2e4ccd2907aa79e953e6606f14710f506b311bd55c34b01ba6  step.csv
+```
+
+`snowtemp_contract.csv` reproduces except one harness column, `qcg_before`
+of the `melt_dense_dry_evap` case, which the harness prints from a local it
+never sets (0 in the committed file); `snowtemp` overwrites `qcg` before
+reading it, so no output depends on it.
+
+## Prescribed monthly surface fields
+
+`oracle/monthly_interp.json` contains 525 float32 outputs for 35 columns
+on 15 dates, including the year wrap and leap day. The generator
+`tools/ruc_wrf461_oracle/build_monthly_interp.py` compiles the unchanged
+`monthly_interp_to_date` routine at lines 7545-7611 of the v4.1.21 fork.
+The source SHA256 is
+`e45234bd25dbc7a5d747384cb78781da1feda92f97bdcf6f691f3807c3b006d2`.
+Calendar conversion and the interior-point predicate are the only stubs.
+GNU Fortran 15.2.0, `-O0`, generated the fixture.
+
+The prescribed LAI and monthly background albedo paths round each REAL
+multiply, sum and division to float32. The historical float64 seed remains
+when `rdlai2d` is false. `tests/test_ruc_veg_albedo_seaice.py` compares every
+output bit with this fixture and verifies that using the float64 seed is a
+detectable negative control.
+
+## The driver under the operational HRRR surface switches
+
+`oracle/lsmruc_hrrr_switches.csv` is the same unmodified `LSMRUC`
+(`module_sf_ruclsm.F` sha256
+`3265f810d08dcbddfaf198371dc7f652e78e8d3a788f703a515c555a3bbb2a12`) driven by
+`tools/ruc_wrf461_oracle/run_lsmruc_frac.F90`, built by `build_lsmruc_frac.sh`:
+`run_lsmruc.F90` with `xice_threshold = 0.02` (the value the surface driver
+passes under `fractional_seaice = 1`) and `rdlai2d = .true.` in both runs, the
+sea-ice columns at xice 0.25, 0.04 (run 1) and 0.45, 0.12 (run 2), inside the
+band the switch opens, and two land columns at 0.01 and 0.015, below it.
+
+The HRRR v4.1.21 fork's `LSMRUC` (`sorc/hrrr_wrfarw.fd/WRFV3.9/phys/
+module_sf_ruclsm.F`, sha256
+`cb2b54114afc247e16ea03d547a510b19842e2ee012da1202eba19105bef6aab`) reads
+`xice_threshold` in the same two expressions as this module (fork :845 and
+:1127, here :860 and :1106) and `rdlai2d` only to skip the table LAI in
+`SOILVEGIN` (fork :7028, :7042, :7061, :7075; here :6867, :6880, :6899,
+:6913). This confirms the decision expressions and the 4.6.1 wiring proof.
+It does not make the whole 4.6.1 column a substitute for the older fork.
+
+A direct v4.1.21 build with the same driver and the fork's own tables was
+also replayed with `soilprop="wrf_45"`. It differed in 866 returned words;
+the LAI field remained bitwise identical. A stack-fill control changed
+four TSNAV column outputs. These are whole-column differences beyond the
+monthly-field and threshold wiring. The result is not a column parity
+qualification for the older fork.
+
+Toolchain: GNU Fortran 13.4.0 and 15.2.0 give byte-identical CSVs (sha256
+`6eef7b59a6eb0f8fe0dc94a20d3a4fefb5ff96cfbcf519c8e02e349d28b7229f`) on glibc
+2.43, not the 13.3.0 / glibc 2.39 build that pinned `lsmruc.csv`.  The libm
+change moves the residue map: the same build run on `run_lsmruc.F90` differs
+from the pinned `lsmruc.csv` in 455 words (snow density, snow fraction, ground
+flux and the surface fluxes of the snow columns), and the port's own replay of
+that rebuilt fixture leaves 31 words, max 26 ULP, in the same classes.  The
+switch fixture leaves 30 words, max 26 ULP, in the same classes; on the eight
+sea-ice groups the switch moves, every word is WRF's bit for bit except one
+1-ULP `qsg` word that the rebuilt 0.5-threshold fixture also leaves on the same
+column.  `tests/test_ruc_lsmruc_hrrr_switches.py` pins the map and runs the two
+negative controls (the 0.5 pin and the table LAI each break the fixture).

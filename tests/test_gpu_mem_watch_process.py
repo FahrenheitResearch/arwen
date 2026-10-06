@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+import threading
 import time
 
 import pytest
@@ -25,7 +26,9 @@ from gpuwm.core.gpu_mem_watch import (
     GpuPeakMemoryWatcher,
     MemoryProbe,
     NVIDIA_SMI_INTERVAL_SECONDS,
+    NVIDIA_SMI_TIMEOUT_SECONDS,
     ProcessMemoryUnavailable,
+    TransientProbeError,
     nvidia_smi_process_probes,
     parse_nvidia_smi_views,
     process_memory_receipt,
@@ -101,6 +104,7 @@ def test_probes_share_one_nvidia_smi_pass_and_are_never_strict():
     assert set(probes) == {"nvml_this_process_used",
                            "nvml_other_processes_used", "nvml_device_used"}
     assert all(not p.strict for p in probes.values())
+    assert all(p.background_only for p in probes.values())
     assert all(p.interval_seconds == NVIDIA_SMI_INTERVAL_SECONDS
                for p in probes.values())
     assert probes["nvml_this_process_used"].read() == 8194 * _MIB
@@ -203,16 +207,213 @@ def test_receipt_rows_say_none_when_nvml_could_not_be_read():
 def test_receipt_rows_carry_the_split_and_the_shared_time():
     run = _smi(f"1, 8194, {_CARD}\n2, 15214, {_CARD}\n", f"{_CARD}, 23409\n")
     watcher = GpuPeakMemoryWatcher(
-        nvidia_smi_process_probes(pid=1, run=run, interval_seconds=0.001))
-    watcher.sample()
-    time.sleep(0.15)  # the receipt rounds shared time to 0.1 s
-    watcher.sample()
+        nvidia_smi_process_probes(pid=1, run=run, interval_seconds=0.001),
+        interval_seconds=0.001)
+    watcher.start()
+    try:
+        # The receipt rounds shared time to 0.1 s.
+        assert _wait_for(lambda: watcher.nonzero_seconds(
+            "nvml_other_processes_used") >= 0.15)
+    finally:
+        watcher.stop()
     rows = process_memory_receipt(watcher)
     assert rows["this_process_peak_bytes_nvml"] == 8194 * _MIB
     assert rows["other_processes_peak_bytes_nvml"] == 15214 * _MIB
     assert rows["device_wide_peak_bytes_nvml"] == 23409 * _MIB
     assert rows["card_shared"] is True
     assert rows["card_shared_seconds"] > 0.0
+
+
+# ---------------------------------------------------------------------------
+# Who waits for nvidia-smi: only the NVML thread.
+#
+# Defect pinned here (2026-10-05, shared 8-card box): the boundary
+# ``sample()`` the runners call on the forecast's MAIN thread ran the due
+# NVML probes inline -- two nvidia-smi subprocesses every 2 s.  One call
+# took 0.5 s to several seconds on the busy box, and a 750 m city run that
+# stepped in 0.02 s per step took 4.5-8.8 s per outer step (240 s per
+# forecast hour against about 24).
+# ---------------------------------------------------------------------------
+
+def _wait_for(predicate, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.005)
+    return True
+
+
+class _SlowSmi:
+    """An nvidia-smi stand-in that blocks until released, and records
+    which thread called it."""
+
+    def __init__(self, apps, gpus):
+        self.apps, self.gpus = apps, gpus
+        self.release = threading.Event()
+        self.entered = threading.Event()
+        self.threads = []
+
+    def __call__(self, arguments):
+        self.threads.append(threading.current_thread().name)
+        self.entered.set()
+        assert self.release.wait(timeout=30.0)
+        if arguments[0].startswith("--query-compute-apps"):
+            return self.apps
+        return self.gpus
+
+
+def test_boundary_sample_never_runs_nvidia_smi():
+    smi = _SlowSmi(f"1, 10, {_CARD}\n", f"{_CARD}, 10\n")
+    smi.release.set()
+    watcher = GpuPeakMemoryWatcher(
+        (MemoryProbe(name="pool", scope="s", read=lambda: 3),)
+        + nvidia_smi_process_probes(pid=1, run=smi))
+    for _ in range(20):
+        watcher.sample()
+    assert smi.threads == [], "a boundary sample ran nvidia-smi"
+    assert watcher.peak_bytes("pool") == 3
+    assert watcher.peak_bytes_observed("nvml_this_process_used") is None
+
+
+def test_a_blocked_nvidia_smi_costs_the_main_thread_nothing():
+    """The measured defect, CPU-side: nvidia-smi hangs, the step-boundary
+    samples keep their microsecond cost, and the fast peak thread keeps
+    folding the in-process views."""
+    smi = _SlowSmi(f"1, 8194, {_CARD}\n2, 15214, {_CARD}\n",
+                   f"{_CARD}, 23409\n")
+    fast_reads = {"n": 0}
+
+    def pool():
+        fast_reads["n"] += 1
+        return 7
+
+    watcher = GpuPeakMemoryWatcher(
+        (MemoryProbe(name="pool", scope="s", read=pool),)
+        + nvidia_smi_process_probes(pid=1, run=smi, interval_seconds=0.001),
+        interval_seconds=0.001)
+    watcher.start()
+    try:
+        assert smi.entered.wait(timeout=10.0)
+        started = time.perf_counter()
+        for _ in range(200):
+            watcher.sample()
+        boundary_wall = time.perf_counter() - started
+        before = fast_reads["n"]
+        assert _wait_for(lambda: fast_reads["n"] > before + 50), (
+            "the fast peak thread stalled behind nvidia-smi")
+        smi.release.set()
+        assert _wait_for(
+            lambda: watcher.observed("nvml_other_processes_used"))
+    finally:
+        smi.release.set()
+        watcher.stop()
+    # 200 boundary samples while nvidia-smi was blocked: no subprocess
+    # wait in them (the defect cost 0.5 s and more per call).
+    assert boundary_wall < 0.25, boundary_wall
+    assert set(smi.threads) == {"gpu-mem-watch-nvml"}
+    assert watcher.peak_bytes("nvml_other_processes_used") == 15214 * _MIB
+
+
+def test_stop_does_not_wait_for_an_nvidia_smi_in_flight():
+    smi = _SlowSmi(f"1, 10, {_CARD}\n", f"{_CARD}, 10\n")
+    watcher = GpuPeakMemoryWatcher(
+        (MemoryProbe(name="pool", scope="s", read=lambda: 3),)
+        + nvidia_smi_process_probes(pid=1, run=smi))
+    watcher.start()
+    try:
+        assert smi.entered.wait(timeout=10.0)
+        started = time.perf_counter()
+        watcher.stop()
+        assert time.perf_counter() - started < 1.0
+    finally:
+        smi.release.set()
+    watcher.sample()  # the end-of-run boundary sample, still subprocess-free
+    watcher._background_thread.join(timeout=10.0)
+    summary = watcher.summary()
+    assert summary["background_pass_in_flight_at_stop"] is True
+    assert summary["background_readings_dropped_at_stop"] >= 1
+    # Dropped, not folded after the run: the receipt says "not measured".
+    assert watcher.peak_bytes_observed("nvml_this_process_used") is None
+    assert summary["probes"]["nvml_this_process_used"]["read_on"] == (
+        "background-thread-only")
+    assert summary["probes"]["pool"]["read_on"] == (
+        "boundary-samples+background-thread")
+
+
+def test_a_timed_out_nvidia_smi_is_transient_not_a_retirement():
+    calls = {"n": 0}
+
+    def run(arguments):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # One timed-out pass; its sibling probes must not re-run it.
+            raise TransientProbeError("nvidia-smi ran past 10 s")
+        if arguments[0].startswith("--query-compute-apps"):
+            return f"1, 8194, {_CARD}\n"
+        return f"{_CARD}, 8194\n"
+
+    watcher = GpuPeakMemoryWatcher(
+        nvidia_smi_process_probes(pid=1, run=run, interval_seconds=0.001),
+        interval_seconds=0.001)
+    watcher.start()
+    try:
+        assert _wait_for(lambda: all(
+            watcher.observed(name) for name in (
+                "nvml_this_process_used", "nvml_other_processes_used",
+                "nvml_device_used")))
+    finally:
+        watcher.stop()
+    probes = watcher.summary()["probes"]
+    for name in ("nvml_this_process_used", "nvml_other_processes_used",
+                 "nvml_device_used"):
+        assert probes[name]["error"] is None
+        assert probes[name]["transient_errors"] >= 1
+        assert "ran past" in probes[name]["last_transient_error"]
+    assert watcher.peak_bytes("nvml_this_process_used") == 8194 * _MIB
+
+
+def test_the_nvidia_smi_call_carries_a_timeout_that_reads_as_transient(
+        monkeypatch):
+    import subprocess
+
+    from gpuwm.core import gpu_mem_watch
+
+    seen = {}
+
+    def fake_run(command, **kwargs):
+        seen.update(kwargs)
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(gpu_mem_watch.subprocess, "run", fake_run)
+    with pytest.raises(TransientProbeError, match="ran past"):
+        gpu_mem_watch._run_nvidia_smi_text(["--query-gpu=uuid"])
+    assert seen["timeout"] == NVIDIA_SMI_TIMEOUT_SECONDS
+
+
+def test_a_failed_pass_is_not_rerun_by_its_sibling_probes():
+    calls = []
+
+    def run(arguments):
+        calls.append(arguments[0])
+        raise ProcessMemoryUnavailable("no nvidia-smi on PATH")
+
+    watcher = GpuPeakMemoryWatcher(
+        nvidia_smi_process_probes(pid=1, run=run, interval_seconds=60.0),
+        interval_seconds=0.001)
+    watcher.start()
+    try:
+        assert _wait_for(lambda: all(
+            row["error"] for row in watcher.summary()["probes"].values()))
+    finally:
+        watcher.stop()
+    assert len(calls) == 1
+
+
+def test_a_background_only_probe_cannot_be_strict():
+    with pytest.raises(ValueError, match="background_only"):
+        GpuPeakMemoryWatcher([MemoryProbe(
+            name="nvml", scope="s", read=lambda: 1, background_only=True)])
 
 
 # ---------------------------------------------------------------------------

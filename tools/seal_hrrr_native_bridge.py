@@ -84,9 +84,12 @@ def main():
     for key, expected in required.items():
         if gate.get(key) != expected:
             raise ValueError(f"gate {key}={gate.get(key)!r}, expected {expected!r}")
-    from gpuwm.ingest.native_supplements import gate_supplement_fields, verify_supplement_receipt
+    from gpuwm.ingest.native_supplements import (
+        gate_supplement_fields, gate_soil_surface_fields, verify_supplement_receipt)
     from tools.hrrr_pipeline import _parse_series
     fields = gate_supplement_fields(gate)
+    soil_surface_fields = gate_soil_surface_fields(gate)
+    ny, nx = map(int, args.expected_window_shape.split("x"))
     series_rows = _parse_series(args.series)
     if any(bool(len(row) > 3) != bool(fields) for row in series_rows):
         raise ValueError("native supplement publication differs from declared series inputs")
@@ -104,12 +107,19 @@ def main():
         if not (args.root / "supplement-inventory.tsv").is_file():
             raise ValueError("native supplement publication lacks its GRIB selection receipt")
     for hour in hours:
-        for role, expected_files in (("atmosphere", 22 + len(fields)), ("soil", 2)):
+        for role, expected_files in (("atmosphere", 22 + len(fields)),
+                                     ("soil", 2 + len(soil_surface_fields))):
             directory = args.root / f"{role}-f{hour:02d}"
             files = sorted(directory.glob("*.f32le"))
             if len(files) != expected_files:
                 raise ValueError(
                     f"{directory} has {len(files)} payloads, expected {expected_files}")
+        for name in soil_surface_fields:
+            payload = args.root / f"soil-f{hour:02d}" / f"{name}.f32le"
+            if not payload.is_file() or payload.stat().st_size != 4 * ny * nx:
+                raise ValueError(
+                    f"{payload} must carry one float32 {ny}x{nx} surface; "
+                    "another payload shape would read the wrong vegetated area")
     manifest = args.root / "SHA256SUMS"
     if manifest.exists():
         raise FileExistsError(f"refusing to overwrite {manifest}")

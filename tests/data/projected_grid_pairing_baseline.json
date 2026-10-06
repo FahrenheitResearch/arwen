@@ -1,0 +1,9 @@
+{
+  "revision": "bf8a9a71d93e24748a872f04bea23d5bfe818ecd",
+  "source_adapters_sha256": "9b7a54e06429022fcbc1c2de69eab80271405010365bfb7152dce490f8f8ed0c",
+  "frame_header_sha256": "834081c12b05041e1cadf2011ba4b10d56613b77a5eaef600e927a9d5a05e8eb",
+  "source_files": [
+    "gpuwm/source_adapters.py",
+    "gpuwm/mapped_source.py"
+  ]
+}

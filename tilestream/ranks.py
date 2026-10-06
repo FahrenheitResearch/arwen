@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import fields, replace
+import os
 from queue import Queue
+import sys
 from threading import Thread
 from time import perf_counter
 
@@ -14,10 +16,29 @@ class RankedRunError(driver.TiledRunError):
     pass
 
 
-def choose_transports(devices, requested, peers):
-    """Resolve ordered card pairs without allocating or importing CUDA."""
+def spans_numa_nodes(nodes):
+    """True when the known NUMA nodes of a run's cards are not all one node."""
+    return len({int(n) for n in (nodes or {}).values()
+                if n is not None and int(n) >= 0}) > 1
+
+
+def choose_transports(devices, requested, peers, nodes=None):
+    """Resolve ordered card pairs without allocating or importing CUDA.
+
+    ``auto`` takes peer copies when both directions can reach the other card,
+    EXCEPT when the run's cards sit on more than one NUMA node: then every
+    cross-card pair is staged.  THE BREAKAGE THIS PREVENTS, measured
+    2026-10-03 on a two-socket 4 x RTX PRO 6000 box (cards 0-2 on node 0,
+    card 3 on node 2): the HRRR 2x2 exchange's eight concurrent 140 MiB peer
+    copies took 245 ms, against 14.8 ms staged; peer copies inside one node
+    or only across the link were each fast alone (17 and 8 ms), and it is
+    the mix that collapses.  The halo exchange sits between every two model
+    steps, so four cards ran slower than two.  ``nodes`` maps card to its
+    sysfs NUMA node (None or -1 when unknown, which never counts as a node).
+    """
     if requested not in ("auto", "peer", "staged", "host"):
         raise RankedRunError(f"unknown ranked transport {requested!r}")
+    cross_node = requested == "auto" and spans_numa_nodes(nodes)
     paths = {}
     for src in devices:
         for dst in devices:
@@ -31,9 +52,79 @@ def choose_transports(devices, requested, peers):
                     "directions must support peer access to prevent a staged "
                     "copy being reported as direct peer transport")
             else:
-                paths[pair] = ("peer" if both else "staged") \
+                paths[pair] = ("peer" if both and not cross_node else "staged") \
                     if requested == "auto" else requested
     return paths
+
+
+def _gil_enabled_now():
+    from gpuwm.free_threading import gil_enabled
+    return gil_enabled()
+
+
+def rank_placements(devices):
+    """Per rank: the host CPUs its thread runs on, from the card's own locality.
+
+    THE BREAKAGE THIS PREVENTS: on a two-socket box the rank threads and the
+    pinned buffers they fill floated across sockets (measured on a 4 x RTX
+    PRO 6000 box: rank threads seen on NUMA node 2 while cards 0-2 sit on
+    node 0), so every launch, readback and pinned copy for a card crossed the
+    socket link.  Each rank's thread is bound to the CPUs sysfs lists as local
+    to its card, intersected with what this process may use.
+
+    Nothing is bound on a one-node box or when the firmware reports no
+    locality (``numa_node`` -1 is "unknown", never node 0); the receipt says
+    which.  Binding changes where host code runs, never what it computes.
+    """
+    rows = [dict(card=int(dev), numa_node=None, cpus=None, applied=False,
+                 reason=None) for dev in devices]
+    if not sys.platform.startswith("linux") or not hasattr(os, "sched_setaffinity"):
+        for row in rows:
+            row["reason"] = "thread CPU affinity is unavailable on this platform"
+        return rows
+    from tilestream import node_probe
+    try:
+        local = {int(item["device"]): item for item in node_probe.gpu_affinity()}
+        allowed = set(os.sched_getaffinity(0))
+    except Exception as exc:  # locality is advice; an unreadable probe binds nothing
+        for row in rows:
+            row["reason"] = f"card locality could not be read: {exc}"
+        return rows
+    for row in rows:
+        item = local.get(row["card"])
+        if item is None:
+            row["reason"] = "card absent from the locality probe; left unbound"
+            continue
+        row["numa_node"] = item["numa_node"]
+        if not item["binding_required"]:
+            row["reason"] = "one NUMA node, or no locality reported; left unbound"
+            continue
+        cpus = sorted(allowed.intersection(item["local_cpus"] or ()))
+        if not cpus:
+            row["reason"] = "no card-local CPU is allowed to this process; left unbound"
+            continue
+        row["cpus"] = cpus
+    return rows
+
+
+_GIL_NOTICE_GIVEN = False
+
+
+def _gil_notice(ranks, report):
+    """Say once per process that rank threads are taking turns."""
+    global _GIL_NOTICE_GIVEN
+    if ranks < 2 or not report["gil_enabled"] or _GIL_NOTICE_GIVEN:
+        return
+    _GIL_NOTICE_GIVEN = True
+    if report["free_threaded_build"]:
+        why = ("this free-threaded Python re-enabled its interpreter lock "
+               "(PYTHON_GIL=%s); start it with PYTHON_GIL=0"
+               % (report["python_gil_env"] or "unset, and an extension import"))
+    else:
+        why = ("Python %s is a GIL build; run under a free-threaded "
+               "python3.14t to step the cards at once" % report["python"])
+    print(f"[devices] {ranks} rank threads share one interpreter lock, so the "
+          f"cards take turns on the host: {why}", file=sys.stderr, flush=True)
 
 
 class RankedRun(multigpu.MultiGPUDomain):
@@ -58,6 +149,10 @@ class RankedRun(multigpu.MultiGPUDomain):
         self.nz, self.ny, self.nx = int(cfg.nz), int(cfg.ny), int(cfg.nx)
         self.devices = list(options.device_ids())
         self.ngpu = self.nbuffers = len(self.devices)
+        from gpuwm.free_threading import host_threads_report
+        self.host_threads = host_threads_report()
+        _gil_notice(self.ngpu, self.host_threads)
+        self.placements = rank_placements(self.devices)
         from gpuwm.core.devices_memory import FRAME_SNAPSHOT_LIMIT_BYTES
         self._snapshot_limit = FRAME_SNAPSHOT_LIMIT_BYTES
         if snapshot_limits is None:
@@ -105,7 +200,9 @@ class RankedRun(multigpu.MultiGPUDomain):
             raise RankedRunError(f"rank cards {self.devices} exceed {available} available cards")
         peers = multigpu.peer_access_matrix(self.devices)
         self._peers = peers
-        self._paths = choose_transports(self.devices, self.transport, peers)
+        self._card_nodes = {row["card"]: row["numa_node"] for row in self.placements}
+        self._paths = choose_transports(self.devices, self.transport, peers,
+                                        nodes=self._card_nodes)
         self.inventory_fn = streaming.streamed_store_inventory()
         self.volatile_inventory = True
         self._home = store
@@ -229,6 +326,7 @@ class RankedRun(multigpu.MultiGPUDomain):
                                   frame_download_bytes=0, frame_issue_seconds=[],
                                   frame_wait_seconds=[], scratch_zeroes=0,
                                   frame_snapshot_bytes=0, fallback_downloads=0)
+        self._caller_events = {}
         self._jobs = [Queue() for _ in self.tiles]
         self._done = Queue()
         self._workers = [Thread(target=self._worker, args=(rank,),
@@ -266,21 +364,36 @@ class RankedRun(multigpu.MultiGPUDomain):
         self._transfers_per_exchange = sum(ch.n_transfers_packed for ch in self.channels)
 
     def transport_report(self):
+        across = self.transport == "auto" and spans_numa_nodes(self._card_nodes)
+        nodes = sorted({int(n) for n in self._card_nodes.values()
+                        if n is not None and int(n) >= 0})
         return [dict(src_dev=src, dst_dev=dst, requested=self.transport,
                      can_access_peer=bool(self._peers.get((src, dst), False)),
                      actual=path, transfer_legs=2 if path == "host" else 1,
-                     host_legs=(2 if path == "host" else 1 if path == "staged" else 0))
+                     host_legs=(2 if path == "host" else 1 if path == "staged" else 0),
+                     **({"auto_staged_reason": f"cards span NUMA nodes {nodes}"}
+                        if across and src != dst else {}))
                 for (src, dst), path in sorted(self._paths.items())]
 
     def devices_report(self):
         return dict(ranks=self.ngpu, grid=list(self.grid), devices=list(self.devices),
                     halo=self.halo, rank_shapes=[[s.cny, s.cnx] for s in self.specs],
                     mynn_column_chunks=list(self._mynn_column_chunks),
+                    host_threads=dict(self.host_threads,
+                                      gil_enabled_now=_gil_enabled_now()),
+                    rank_placements=[dict(row) for row in self.placements],
                     seam_bytes_per_exchange=self._seam_bytes,
                     transfers_per_exchange=self._transfers_per_exchange,
                     transport=self.transport_report())
 
     def _worker(self, rank):
+        placement = self.placements[rank]
+        if placement["cpus"]:
+            try:
+                os.sched_setaffinity(0, placement["cpus"])
+                placement["applied"] = True
+            except OSError as exc:
+                placement["reason"] = f"binding refused by the kernel: {exc}"
         while True:
             job = self._jobs[rank].get()
             if job is None:
@@ -603,7 +716,12 @@ class RankedRun(multigpu.MultiGPUDomain):
         events = []
         for dev in dict.fromkeys([int(cp.cuda.Device().id), *self.devices]):
             with cp.cuda.Device(dev):
-                event = cp.cuda.Event(disable_timing=True)
+                # One event per card for the run's life, re-recorded each
+                # sweep; a per-sweep event is four creations and four
+                # cudaEventDestroy calls on the stepping thread every step.
+                event = self._caller_events.get(dev)
+                if event is None:
+                    event = self._caller_events[dev] = cp.cuda.Event(disable_timing=True)
                 event.record(cp.cuda.get_current_stream())
                 events.append(event)
         for dev, stream in zip(self.devices, self.compute_streams):
@@ -716,11 +834,30 @@ class RankedRun(multigpu.MultiGPUDomain):
                 if timing:
                     self.sync_all()
                     start = perf_counter()
+                schedule = None
                 if self.step_mode == "threads":
                     for jobs in self._jobs:
                         jobs.put((kwargs, physics_control))
-                    errors = [self._done.get() for _ in self.tiles]
-                    errors = sorted((rank, exc) for rank, exc in errors if exc is not None)
+                    # A timed sweep keeps the whole exchange after the step
+                    # so the two durations stay separable.  So does a run
+                    # whose exchange_events was replaced on the instance: the
+                    # rank gate's no-exchange and stale-exchange controls and
+                    # the delayed-download test replace it, and a sweep that
+                    # exchanged behind their back would pass a broken control.
+                    replaced = "exchange_events" in vars(self)
+                    schedule = None if timing or replaced else self.exchange_schedule()
+                    errors = []
+                    for _ in self.tiles:
+                        rank, exc = self._done.get()
+                        if exc is None and schedule is not None and not errors:
+                            try:
+                                # This slab's seams move while others still step.
+                                schedule.rank_ready(rank)
+                            except BaseException as failure:
+                                exc = failure
+                        if exc is not None:
+                            errors.append((rank, exc))
+                    errors.sort(key=lambda row: row[0])
                     if errors:
                         rank, exc = errors[0]
                         # DRAIN BEFORE ABORTING: queued work may retain arrays.
@@ -741,7 +878,10 @@ class RankedRun(multigpu.MultiGPUDomain):
                     self.sync_all()
                     middle = perf_counter()
                     step_seconds += middle - start
-                self.exchange_events()
+                if schedule is None:
+                    self.exchange_events()
+                else:
+                    schedule.finish()
                 if timing:
                     self.sync_all()
                     exchange_seconds += perf_counter() - middle
@@ -774,6 +914,7 @@ class RankedRun(multigpu.MultiGPUDomain):
         self._events = None
         self.compute_streams = self.copy_streams = self.unpack_streams = []
         self._streams = []
+        self._caller_events = {}
         self._frame_snapshots = []
         self._snapshot_budgets = []
         self._snapshot_done = []

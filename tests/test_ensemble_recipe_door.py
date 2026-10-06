@@ -64,6 +64,59 @@ def _case(tmp_path, stem=HOURLY, *, hours=None, fetch="", table=""):
     return config
 
 
+def _nested_case(tmp_path):
+    """The shipped quick config with a feedback child on the same source trajectory."""
+    from gpuwm.companion_domains import candidate_wps_text
+    from gpuwm.experiment import load_experiment
+    from gpuwm.toml_document import emit_experiment_toml
+
+    config = _case(tmp_path)
+    raw = tomllib.loads(config.read_text(encoding="utf-8"))
+    raw["experiment"]["feedback"] = 1
+    raw["domain"].append({
+        "grid_id": 2, "parent_id": 1, "i_parent_start": 25, "j_parent_start": 25,
+        "parent_grid_ratio": 3, "parent_time_step_ratio": 3, "nx": 72, "ny": 72,
+        "specified": False, "nested": True, "history_interval_s": 900.0,
+        "radt": 12.0, "cu_physics": 0, "diff_6th_factor": 0.12})
+    config.write_text(emit_experiment_toml(raw), encoding="utf-8")
+    exp = load_experiment(config)
+    config.with_name(config.stem + ".namelist.wps").write_text(
+        candidate_wps_text(raw, exp, exp, config), encoding="utf-8")
+    return config
+
+
+def _roster_case(tmp_path, *, variants=None):
+    from gpuwm.toml_document import emit_experiment_toml
+    config = _nested_case(tmp_path)
+    raw = tomllib.loads(config.read_text(encoding="utf-8"))
+    raw["fetch"]["source"] = "hrrr-prs"
+    raw["fetch"].pop("area", None)
+    raw["shared"].update(sf_surface_physics=3, num_soil_layers=6,
+        bl_pbl_physics=5, sf_sfclay_physics=5, ra_rrtmg_variant="rte-rrtmgp",
+        wrf_rrtmg_compatibility="wrf-rrtmg-4-4-to-rte-rrtmgp-v2",
+        use_adaptive_time_step=True)
+    if variants is None:
+        variants = [
+            {"name": "ruc-control"},
+            {"name": "ruc-dry20", "surface": {"soil_moisture_scale": 0.8}},
+            {"name": "ruc-dry40", "surface": {"soil_moisture_scale": 0.6}},
+            {"name": "ruc-wet20", "surface": {"soil_moisture_scale": 1.2}},
+            {"name": "ruc-sst-warm1", "surface": {"sst_offset_k": 1.0}},
+            {"name": "ruc-sst-cold1", "surface": {"sst_offset_k": -1.0}},
+            {"name": "noah-control"},
+            {"name": "noah-dry20", "surface": {"soil_moisture_scale": 0.8}},
+            {"name": "noah-sst-warm1", "surface": {"sst_offset_k": 1.0}},
+            {"name": "noah-dry20-sst-warm1", "surface": {"soil_moisture_scale": 0.8, "sst_offset_k": 1.0}},
+        ]
+        for variant in variants:
+            if variant["name"].startswith("noah-"):
+                variant["physics"] = {"sf_surface_physics": 2, "num_soil_layers": 4}
+    raw["ensemble"] = {"members": len(variants), "recipe": "member-roster", "member_variants": variants,
+                       "base_seed": 20261004, "member_device_ids": [0, 1, 2, 3]}
+    config.write_text(emit_experiment_toml(raw), encoding="utf-8")
+    return config
+
+
 def _listed(tmp_path, entries, name="members.json"):
     path = tmp_path / name
     path.write_text(json.dumps(entries), encoding="utf-8")
@@ -129,8 +182,8 @@ def stages(monkeypatch):
         return record.forecast_result
 
     @contextmanager
-    def scope(request, *, output_directory, session_factory=None):
-        record.session = SimpleNamespace(request=request, input_provider=None, member_roster=None,
+    def scope(request, *, output_directory, session_factory=None, input_provider=None):
+        record.session = SimpleNamespace(request=request, input_provider=input_provider, member_roster=None,
                                          completed_products=lambda: {"frames": 1})
         yield record.session
 
@@ -163,6 +216,21 @@ def test_recipe_flag_and_config_table_select_the_same_request():
     assert flag == table == bare
     assert flag.recipe == "time-lagged" and flag.receipt()["recipe"] == "time-lagged"
     assert EnsembleRequest.from_mapping(flag.receipt()) == flag
+
+
+def test_nested_recipe_scope_binds_one_reviewed_provider_and_refuses_replacement(tmp_path):
+    from gpuwm.ensemble.production import PreparedEnsembleSession
+    from gpuwm.ensemble.runtime_context import ensemble_scope
+    request = EnsembleRequest(2, recipe="time-lagged")
+    session = PreparedEnsembleSession(request, output_directory=tmp_path)
+    provider = lambda **unused: object()
+    with ensemble_scope(session):
+        with REAL_RUN_SCOPE(request, output_directory=tmp_path, input_provider=provider) as bound:
+            assert bound is session and bound.input_provider is provider
+        with pytest.raises(ValueError, match="another member input owner"):
+            with REAL_RUN_SCOPE(request, output_directory=tmp_path, input_provider=lambda **unused: None):
+                pass
+    assert session.input_provider is provider
 
 
 def test_trajectory_list_selects_multi_model_and_counts_its_members():
@@ -232,8 +300,6 @@ def test_plan_refusals_name_what_would_break():
     request = EnsembleRequest(2, recipe="time-lagged")
     with pytest.raises(recipe_door.RecipeRefusal, match=r"no \[fetch\] source and cycle"):
         recipe_door.plan_recipe(request, {"case_data": {}}, experiment())
-    with pytest.raises(recipe_door.RecipeRefusal, match="one domain per member"):
-        recipe_door.plan_recipe(request, payload(), experiment(domains=2))
     with pytest.raises(recipe_door.RecipeRefusal, match="forecast_start_hour"):
         recipe_door.plan_recipe(request, payload(forecast_start_hour=3), experiment())
     one_model = [{"source": "hrrr", "cycle": "2026-10-01T18"}, {"source": "hrrr", "cycle": "2026-10-01T17"}]
@@ -398,6 +464,37 @@ def test_member_inputs_reapply_the_shared_preflight_to_the_members_bundle(tmp_pa
         "profile", 3600.0, 900.0)
 
 
+def test_nested_member_inputs_bind_its_own_sealed_tree_and_config(tmp_path, monkeypatch):
+    from gpuwm import prepared_domain_tree_forecast, stage_cli
+
+    seen = {}
+    member_config = tmp_path / "member.toml"
+    monkeypatch.setattr(stage_cli, "resolve_bundle", lambda root: {
+        "layout": "tree", "source": "hrrr", "root": root})
+
+    def digests(bundle, config):
+        assert bundle["root"] == (tmp_path / "member").resolve()
+        assert config == member_config
+        return {"preparation_receipt": "p" * 64, "experiment_config": "c" * 64}
+
+    monkeypatch.setattr(stage_cli, "tree_digests", digests)
+    monkeypatch.setattr(prepared_domain_tree_forecast, "preflight_prepared_tree",
+                        lambda **arguments: seen.update(arguments) or "member-tree")
+    shared = SimpleNamespace(preflight_arguments={
+        "prepared_root": tmp_path / "base", "experiment_config": tmp_path / "base.toml",
+        "experiment_config_sha256": "0" * 64, "prepared_head_sha256": "h" * 64,
+        "physics_profile": None, "devices": 1, "simulated_radar": False})
+    prepared = {"prepared_root": str(tmp_path / "member"),
+                "experiment_config": str(member_config), "wps_namelist": None}
+    assert recipe_door.member_inputs(shared, prepared) == "member-tree"
+    assert seen["prepared_root"] == (tmp_path / "member").resolve()
+    assert seen["experiment_config"] == member_config
+    assert seen["preparation_receipt_sha256"] == "p" * 64
+    assert seen["experiment_config_sha256"] == "c" * 64
+    assert "prepared_head_sha256" not in seen
+    assert (seen["devices"], seen["simulated_radar"]) == (1, False)
+
+
 # ---- the door body: dry run, member configs, a whole run ------------------------
 
 @pytest.mark.parametrize("command", ["ensemble", "go"])
@@ -510,6 +607,245 @@ def test_a_whole_recipe_run_records_every_member_and_completes(tmp_path, door, s
     assert len(stages.forecast) == 1 and stages.session.input_provider is not None
     assert stages.sim[0]["outdir"].parts[-2:] == (run.name, "run")
     assert stages.sim[0]["render_products"] == "none"
+
+
+def test_nested_recipe_prepares_every_members_complete_tree_and_uses_tree_runner(
+        tmp_path, door, stages, monkeypatch):
+    from gpuwm import prepared_domain_tree_forecast, prepared_single_domain_forecast, stage_cli
+
+    config = _nested_case(tmp_path)
+    original = tomllib.loads(config.read_text(encoding="utf-8"))
+    out = tmp_path / "out"
+    monkeypatch.setattr(stage_cli, "resolve_bundle", lambda root: {
+        "layout": "tree", "source": "hrrr", "root": Path(root), "domains": 2})
+    monkeypatch.setattr(prepared_domain_tree_forecast, "main",
+                        lambda argv, observer=None: stages.forecast.append(list(argv)) or 0)
+
+    def wrong_runner(*args, **kwargs):
+        pytest.fail("a nested recipe dispatched the single-domain runner")
+
+    monkeypatch.setattr(prepared_single_domain_forecast, "main", wrong_runner)
+    result = door("ensemble", config, *RECIPE_FLAGS, "--outdir", out, "--products", "none")
+    assert result.code == 0, result.text
+    _run, receipt = _receipt(out)
+    assert receipt["status"] == "complete"
+    assert [row["fetch"]["cycle"] for row in stages.prepared] == [
+        "2026-08-20T00", "2026-08-19T23"]
+    for row in stages.prepared:
+        member = tomllib.loads(row["config"].read_text(encoding="utf-8"))
+        assert member["domain"] == original["domain"]
+        assert member["shared"] == original["shared"]
+        assert member["experiment"] == original["experiment"]
+        assert member["experiment"]["feedback"] == 1
+        assert row["prepare_only"]
+    assert len(stages.forecast) == 1
+    assert stages.session.input_provider is not None
+
+
+def test_nested_recipe_accepts_prepare_only_result_without_a_wps_handoff(
+        tmp_path, door, stages, monkeypatch):
+    from gpuwm import prepared_domain_tree_forecast, stage_cli
+
+    config = _nested_case(tmp_path)
+    prepare = recipe_door.prepare_member
+
+    def tree_member(*args, **kwargs):
+        result = prepare(*args, **kwargs)
+        result["wps_namelist"] = None
+        return result
+
+    monkeypatch.setattr(recipe_door, "prepare_member", tree_member)
+    monkeypatch.setattr(stage_cli, "resolve_bundle", lambda root: {
+        "layout": "tree", "source": "hrrr", "root": Path(root), "domains": 2})
+    monkeypatch.setattr(prepared_domain_tree_forecast, "main", lambda *args, **kwargs: 0)
+    result = door("ensemble", config, *RECIPE_FLAGS, "--outdir", tmp_path / "out")
+    assert result.code == 0, result.text
+    assert stages.sim[0]["wps_namelist"] is None
+
+
+def test_surface_recipe_shares_one_unchanged_preparation_for_all_seeded_members(
+        tmp_path, door, stages):
+    config = _case(tmp_path, table=(
+        '\n[ensemble]\nmembers=4\nrecipe="surface-state"\n'
+        '[ensemble.perturbation]\nkind="surface-state"\n'
+        'soil_moisture_scale=[0.8,1.2]\nsst_offset_k=[-1.0,1.0]\n'))
+    result = door("ensemble", config, "--outdir", tmp_path / "out", "--products", "none")
+    assert result.code == 0, result.text
+    _run, receipt = _receipt(tmp_path / "out")
+    assert [row["member"] for row in stages.prepared] == [0]
+    assert len(receipt["members"]) == 4
+    assert len({row["seed"] for row in receipt["members"]}) == 4
+    assert len({row["prepared_root"] for row in receipt["members"]}) == 1
+    assert len({row["experiment_config"] for row in receipt["members"]}) == 1
+    assert "preparation_reused_from_member" not in receipt["members"][0]
+    assert [row["preparation_reused_from_member"] for row in receipt["members"][1:]] == [0, 0, 0]
+    shared = object()
+    assert stages.session.input_provider(shared_inputs=shared, member_id=3,
+        request=stages.session.request) is shared
+
+
+@pytest.mark.parametrize("command", ["go", "ensemble", "run"])
+def test_surface_recipe_post_preparation_binds_inputs_before_real_session_construction(
+        command, tmp_path, door, stages, monkeypatch):
+    """The real constructor must accept the seeded recipe after its one preparation."""
+    from gpuwm import prepared_domain_tree_forecast, stage_cli
+    from gpuwm.ensemble import door as door_module, production
+    from gpuwm.ensemble.runtime_context import current_session
+    from gpuwm.experiment import load_experiment
+    from gpuwm.toml_document import emit_experiment_toml
+
+    config = _nested_case(tmp_path)
+    raw = tomllib.loads(config.read_text(encoding="utf-8"))
+    raw["ensemble"] = {
+        "members": 2, "recipe": "surface-state", "base_seed": 20261004,
+        "member_device_ids": [0], "max_ordinary_members_per_device": 2,
+        "perturbation": {"kind": "surface-state", "soil_moisture_scale": [0.8, 1.2],
+                         "sst_offset_k": [-1.0, 1.0]},
+    }
+    config.write_text(emit_experiment_toml(raw), encoding="utf-8")
+    monkeypatch.setattr(door_module, "production_run_scope", REAL_RUN_SCOPE)
+    monkeypatch.setattr(stage_cli, "resolve_bundle", lambda root: {
+        "layout": "tree", "source": "hrrr", "root": Path(root), "domains": 2})
+    monkeypatch.setattr(recipe_door, "member_inputs", lambda *unused: pytest.fail(
+        "seeded surface members must reuse their one unchanged preparation"))
+    observed = []
+
+    def forecast(argv, observer=None):
+        session = current_session()
+        assert isinstance(session, production.PreparedEnsembleSession)
+        assert callable(session.input_provider)
+        assert session.request.recipe == "surface-state"
+        assert session.request.max_ordinary_members_per_device == 2
+        shared = SimpleNamespace(experiment=load_experiment(stages.prepared[0]["config"]))
+        for member in range(2):
+            assert session.input_provider(shared_inputs=shared, member_id=member,
+                                          request=session.request) is shared
+            assert callable(session._initialization_callback(member))
+            observed.append(member)
+        return 0
+
+    monkeypatch.setattr(prepared_domain_tree_forecast, "main", forecast)
+    monkeypatch.setattr(production.PreparedEnsembleSession, "completed_products", lambda self: {"frames": 1})
+    result = door(command, config, "--outdir", tmp_path / "out")
+    assert result.code == 0, result.text
+    _run, receipt = _receipt(tmp_path / "out")
+    assert observed == [0, 1]
+    assert [row["member"] for row in stages.prepared] == [0]
+    assert len({row["prepared_root"] for row in receipt["members"]}) == 1
+    assert len({row["seed"] for row in receipt["members"]}) == 2
+    assert receipt["members"][1]["preparation_reused_from_member"] == 0
+
+
+def test_named_roster_binds_actual_two_domain_four_and_six_layer_configurations(tmp_path):
+    from gpuwm.ensemble.door import request_for_config
+    from gpuwm.ingest.prepared_cache import prepared_domain_config_identity
+
+    config = _roster_case(tmp_path)
+    request = request_for_config(config)
+    recipe, plans = _reviewed(config, request, tmp_path / "review")
+    assert recipe.kind == "member-roster" and len(recipe.member_variants) == 10
+    assert len({plan.member.trajectory.identity for plan in plans}) == 1
+    assert len({plan.preparation_key for plan in plans}) == 2
+    for plan in plans:
+        identities = [prepared_domain_config_identity(domain) for domain in plan.experiment.domains]
+        expected = (3, 6) if plan.member.index < 6 else (2, 4)
+        assert [(row["run"]["sf_surface_physics"], row["run"]["num_soil_layers"]) for row in identities] == [expected, expected]
+        assert all(row["run"]["bl_pbl_physics"] == 5 and row["run"]["sf_sfclay_physics"] == 5
+                   and row["run"]["ra_rrtmg_variant"] == "rte-rrtmgp"
+                   and row["run"]["use_adaptive_time_step"] for row in identities)
+        assert plan.experiment.feedback == 1
+        assert plan.variant_name == recipe.member_variants[plan.member.index]["name"]
+
+
+def test_named_roster_prepares_two_banks_and_shares_one_source_acquisition(
+        tmp_path, door, stages, monkeypatch):
+    from gpuwm import prepared_domain_tree_forecast, stage_cli
+
+    config = _roster_case(tmp_path)
+    monkeypatch.setattr(stage_cli, "resolve_bundle", lambda root: {
+        "layout": "tree", "source": "hrrr-prs", "root": Path(root), "domains": 2})
+    monkeypatch.setattr(prepared_domain_tree_forecast, "main", lambda *args, **kwargs: 0)
+    result = door("ensemble", config, "--outdir", tmp_path / "out", "--products", "none")
+    assert result.code == 0, result.text
+    _run, receipt = _receipt(tmp_path / "out")
+    assert [row["member"] for row in stages.prepared] == [0, 6]
+    assert len({row["run_options"]["data_dir"] for row in stages.prepared}) == 1
+    assert len({row["prepared_root"] for row in receipt["members"][:6]}) == 1
+    assert len({row["prepared_root"] for row in receipt["members"][6:]}) == 1
+    assert receipt["members"][0]["prepared_root"] != receipt["members"][6]["prepared_root"]
+    assert [row["variant"]["name"] for row in receipt["members"]] == [
+        item["name"] for item in receipt["request"]["member_variants"]]
+    assert stages.session.request.member_device_ids == (0, 1, 2, 3)
+    bound = []
+    monkeypatch.setattr(recipe_door, "member_inputs", lambda shared, prepared: bound.append(prepared) or "noah")
+    shared = object()
+    provider = stages.session.input_provider
+    assert provider(shared_inputs=shared, member_id=2, request=stages.session.request) is shared
+    assert provider(shared_inputs=shared, member_id=8, request=stages.session.request) == "noah"
+    assert bound[0]["prepared_root"] == receipt["members"][6]["prepared_root"]
+
+
+def test_named_roster_refuses_effectively_identical_loaded_member_states_before_fetch(
+        tmp_path, door, stages):
+    config = _roster_case(tmp_path, variants=[{"name": "control"},
+        {"name": "copy", "physics": {"sf_surface_physics": 3, "num_soil_layers": 6}}])
+    result = door("ensemble", config, "--dry-run")
+    assert result.code == 2
+    assert "fabricate ensemble size" in result.err
+    assert not stages.prepared
+
+
+@pytest.mark.parametrize("command", ["go", "ensemble", "run"])
+def test_named_roster_post_preparation_binds_every_input_before_real_session_construction(
+        command, tmp_path, door, stages, monkeypatch):
+    """The actual scope must construct a bound session after both soil banks."""
+    from gpuwm import prepared_domain_tree_forecast, stage_cli
+    from gpuwm.ensemble import door as door_module, production
+    from gpuwm.ensemble.runtime_context import current_session
+    from gpuwm.experiment import load_experiment
+    from gpuwm.toml_document import emit_experiment_toml
+
+    config = _roster_case(tmp_path)
+    raw = tomllib.loads(config.read_text(encoding="utf-8"))
+    raw["ensemble"]["member_variants"] = raw["ensemble"]["member_variants"][:8]
+    raw["ensemble"]["members"] = 8
+    raw["ensemble"]["member_device_ids"] = list(range(8))
+    config.write_text(emit_experiment_toml(raw), encoding="utf-8")
+    monkeypatch.setattr(door_module, "production_run_scope", REAL_RUN_SCOPE)
+    monkeypatch.setattr(stage_cli, "resolve_bundle", lambda root: {
+        "layout": "tree", "source": "hrrr-prs", "root": Path(root), "domains": 2})
+    rebound, member_rows = [], []
+    def sealed_reader(shared, prepared):
+        rebound.append(dict(prepared))
+        return SimpleNamespace(experiment=load_experiment(prepared["experiment_config"]),
+                               authority=dict(prepared))
+    monkeypatch.setattr(recipe_door, "member_inputs", sealed_reader)
+    def forecast(argv, observer=None):
+        session = current_session()
+        assert isinstance(session, production.PreparedEnsembleSession)
+        assert callable(session.input_provider)
+        shared = SimpleNamespace(experiment=load_experiment(stages.prepared[0]["config"]),
+                                 authority={"prepared_root": "ordinary-base"})
+        for member in range(8):
+            inputs = session.input_provider(shared_inputs=shared, member_id=member, request=session.request)
+            expected = (3, 6) if member < 6 else (2, 4)
+            assert all((row.run.sf_surface_physics, row.run.num_soil_layers) == expected
+                       for row in inputs.experiment.domains)
+            member_rows.append((member, inputs))
+        session._remember_member_land_layouts(dict(member_rows))
+        assert session._initialization_callback(0) is None
+        assert session._variant_receipt(7)["resolved_land"][1]["num_soil_layers"] == 4
+        return 0
+    monkeypatch.setattr(prepared_domain_tree_forecast, "main", forecast)
+    monkeypatch.setattr(production.PreparedEnsembleSession, "completed_products", lambda self: {"frames": 1})
+    result = door(command, config, "--outdir", tmp_path / "out")
+    assert result.code == 0, result.text
+    assert [row["member"] for row in stages.prepared] == [0, 6]
+    assert len({row["run_options"]["data_dir"] for row in stages.prepared}) == 1
+    assert [member for member, _ in member_rows] == list(range(8))
+    assert all(inputs is member_rows[0][1] for _, inputs in member_rows[:6])
+    assert member_rows[6][1] is member_rows[7][1]
+    assert len(rebound) == 1
 
 
 # ---- gpuwm go / ensemble flags on the recipe route -------------------------------
@@ -627,7 +963,7 @@ def test_a_host_a_member_source_cannot_pin_is_refused_in_the_plan(tmp_path, door
 
 @pytest.mark.parametrize("flag, value", [
     ("--prepared-root", "DIR"), ("--restart", "FILE"), ("--data-dir", "DIR"),
-    ("--supplement", "PMSL=FILE"), ("--section", "35.0,-98.0,36.0,-97.0"), ("--keep-checkpoints", "0")])
+    ("--supplement", "PMSL=FILE"), ("--section", "35.0,-98.0,36.0,-97.0")])
 def test_go_flags_the_recipe_route_cannot_use_are_refused_by_name(flag, value, tmp_path, door, stages):
     """Breakage it prevents: each was parsed and read by nothing, so a
     restart became a fresh fetch and forecast at exit 0."""
@@ -645,6 +981,23 @@ def test_go_flags_the_recipe_route_cannot_use_are_refused_by_name(flag, value, t
 def test_no_probe_still_belongs_to_readiness_on_the_recipe_route(tmp_path, door, stages):
     result = door("go", _case(tmp_path), *RECIPE_FLAGS, "--no-probe", "--dry-run")
     assert result.code == 2 and "--no-probe belongs to --readiness" in result.err
+
+
+def test_recipe_consumes_checkpoint_retention_for_its_original_member_writers(tmp_path, door, stages, monkeypatch):
+    import os
+    from gpuwm.ensemble import recipe_door
+    from gpuwm.resume import KEEP_CHECKPOINTS_ENV
+    original, seen = recipe_door.run_recipe_ensemble, []
+    monkeypatch.setenv(KEEP_CHECKPOINTS_ENV, "7")
+    def record(*args, **kwargs):
+        seen.append(os.environ[KEEP_CHECKPOINTS_ENV])
+        return original(*args, **kwargs)
+    monkeypatch.setattr(recipe_door, "run_recipe_ensemble", record)
+    result = door("go", _case(tmp_path), *RECIPE_FLAGS, "--outdir", tmp_path / "out",
+                  "--products", "none", "--keep-checkpoints", "2")
+    assert result.code == 0, result.text
+    assert seen == ["2"]
+    assert os.environ[KEEP_CHECKPOINTS_ENV] == "7"
 
 
 # ---- gpuwm run: unsupervised, and its supervision flags ---------------------------
@@ -816,8 +1169,9 @@ def real_session(monkeypatch, stages):
     record = SimpleNamespace(fail={}, ran=[], refuse_inputs={}, collector=_Collector())
     real_session_class = production.PreparedEnsembleSession
 
-    def session(request, *, output_directory):
+    def session(request, *, output_directory, input_provider=None):
         return real_session_class(request, output_directory=output_directory,
+            input_provider=input_provider,
             cards=(CardBudget(0, 1000),), device_scope=lambda _: nullcontext(),
             memory_model=EnsembleMemoryModel((MemoryComponent("ordinary", "ordinary", fixed_bytes=100),)),
             collector=record.collector)
@@ -1064,6 +1418,42 @@ def test_disk_admission_prices_every_members_download_and_bundle(tmp_path, monke
     assert rows[:2] == [("2026-08-20T00", "prepared:hrrr", 0), ("2026-08-19T23", "prepared:hrrr", 0)]
 
 
+def test_surface_recipe_disk_admission_prices_one_source_preparation(tmp_path, monkeypatch):
+    from gpuwm import disk_budget
+
+    gib = 2 ** 30
+    monkeypatch.setattr(disk_budget, "projected_run_bytes", lambda *args, **kwargs: {
+        "download_bytes": 10 * gib, "preparation_bytes": gib, "history_bytes": 2 * gib,
+        "compose_scratch_bytes": 0, "compose_scratch_min_bytes": 0, "compose_scratch": {},
+        "download": {"basis": "measured"}})
+    config = _case(tmp_path)
+    request = EnsembleRequest(8, recipe="surface-state",
+        perturbation={"kind": "surface-state", "soil_moisture_scale": [0.8, 1.2]})
+    _recipe, plans = _reviewed(config, request, tmp_path / "scratch")
+    monkeypatch.setattr(disk_budget, "free_bytes", lambda path: 12 * gib)
+    assert recipe_door.disk_refusal(plans, case_root=tmp_path / "out", request=request) is None
+    monkeypatch.setattr(disk_budget, "free_bytes", lambda path: 10 * gib)
+    assert recipe_door.disk_refusal(plans, case_root=tmp_path / "out", request=request) is not None
+
+
+def test_named_roster_disk_admission_prices_two_soil_banks_and_one_download(tmp_path, monkeypatch):
+    from gpuwm import disk_budget
+    from gpuwm.ensemble.door import request_for_config
+
+    gib = 2 ** 30
+    monkeypatch.setattr(disk_budget, "projected_run_bytes", lambda *args, **kwargs: {
+        "download_bytes": 10 * gib, "preparation_bytes": gib, "history_bytes": 2 * gib,
+        "compose_scratch_bytes": 0, "compose_scratch_min_bytes": 0, "compose_scratch": {},
+        "download": {"basis": "measured"}})
+    config = _roster_case(tmp_path)
+    request = request_for_config(config)
+    _recipe, plans = _reviewed(config, request, tmp_path / "review")
+    monkeypatch.setattr(disk_budget, "free_bytes", lambda path: 13 * gib)
+    assert recipe_door.disk_refusal(plans, case_root=tmp_path / "out", request=request) is None
+    monkeypatch.setattr(disk_budget, "free_bytes", lambda path: 11 * gib)
+    assert recipe_door.disk_refusal(plans, case_root=tmp_path / "out", request=request) is not None
+
+
 # ---- run-plan: one door for every chain, refused where it cannot run ----------------
 
 def _plan(tmp_path, config, *, route="prepared", **run_options):
@@ -1182,7 +1572,7 @@ def test_a_recipe_does_not_admit_random_perturbations(table):
 
 def _guarded(argv):
     from tests.test_ensemble_calibration_admission import _GUARD
-    environment = dict(os.environ, CUDA_VISIBLE_DEVICES="", GPUWM_NO_LOCAL_GPU="1",
+    environment = dict(os.environ, CUDA_VISIBLE_DEVICES="-1", GPUWM_NO_LOCAL_GPU="1",
                        PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="utf-8",
                        PYTHONPATH=os.pathsep.join([str(REPO), os.environ.get("PYTHONPATH", "")]))
     return subprocess.run([sys.executable, "-c", _GUARD, "gpuwm", *argv], cwd=REPO, env=environment,

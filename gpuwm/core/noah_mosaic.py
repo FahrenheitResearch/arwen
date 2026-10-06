@@ -116,7 +116,22 @@ def real_exe_landusef(landusef, *, landmask, xice, iswater: int, islake: int,
     if landmask.shape != f.shape[1:] or xice.shape != f.shape[1:]:
         raise ValueError("LANDMASK/XICE shape differs from LANDUSEF; real.exe edits would address other columns")
     if islake >= 0:
-        f[iswater - 1] = f[iswater - 1] + f[islake - 1]
+        water, lake = f[iswater - 1], f[islake - 1]
+        merged = water + lake
+        # Geogrid multiplies category counts by a float32 reciprocal.
+        # An entirely water-covered cell with 1 and 6 of 7 source pixels
+        # therefore merges to the next float above one. Its combined area
+        # is exactly one. Preserve ordinary merge bits and repair only this
+        # endpoint when both source weights are valid and no land is present.
+        rounded_full_water = (
+            (merged == np.nextafter(np.float32(1), np.float32(np.inf)))
+            & (water >= np.float32(0)) & (water <= np.float32(1))
+            & (lake >= np.float32(0)) & (lake <= np.float32(1)))
+        for category in range(f.shape[0]):
+            if category not in (iswater - 1, islake - 1):
+                rounded_full_water &= f[category] == np.float32(0)
+        merged[rounded_full_water] = np.float32(1)
+        f[iswater - 1] = merged
         f[islake - 1] = np.float32(0)
     # adjust_for_seaice_pre, module_soil_pre.F:149-157, runs before post.
     xice = np.where(landmask > np.float32(.5), np.float32(0), xice)

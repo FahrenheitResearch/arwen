@@ -150,7 +150,7 @@ CHANGEABLE_SETTINGS = (
 #: looking for a rule that does not exist.
 _KNOWN_TABLES = ("experiment", "shared", "projection", "domain",
                  "relocation", "perturbation", "tiles", "devices", "output", "simulated_radar",
-                 "fetch", "case_data", "static", "ingest")
+                 "fetch", "case_data", "static", "ingest", "physics_params")
 
 #: Tables whose string values name files on disk, resolved by
 #: :func:`gpuwm.experiment.load_experiment` against the CONFIG FILE's own
@@ -447,6 +447,14 @@ def _rebase_declared_paths(raw: dict, base_dir: Path) -> list[dict]:
     for table in _PATH_TABLES:
         if isinstance(raw.get(table), dict):
             walk(raw[table], (table,))
+    parameters = raw.get("physics_params")
+    if isinstance(parameters, dict) and isinstance(parameters.get("set"), str):
+        value = parameters["set"]
+        moved = _rebase(value, base_dir)
+        if moved is not None:
+            parameters["set"] = moved
+            rebased.append({"setting": "physics_params.set",
+                            "from": value, "to": moved})
     return rebased
 
 

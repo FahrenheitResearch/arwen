@@ -99,7 +99,15 @@ pub fn unpack_message(msg: &Grib2Message) -> crate::error::Result<Vec<f64>> {
     let dr = &msg.data_rep;
 
     let num_points = msg.grid.nx as usize * msg.grid.ny as usize;
-    let values = match dr.template {
+    let packed_count = msg.bitmap.as_ref().map_or(num_points, |bitmap| {
+        bitmap.iter().take(num_points).filter(|v| **v).count()
+    });
+    let mut values = match dr.template {
+        0 if dr.bits_per_value == 0 => vec![
+            dr.reference_value as f64
+                * 10.0_f64.powi(-(dr.decimal_scale as i32));
+            packed_count
+        ],
         0 => unpack_simple(&msg.raw_data, dr).map_err(crate::RustmetError::Unpack)?,
         2 => unpack_complex(&msg.raw_data, dr).map_err(crate::RustmetError::Unpack)?,
         3 => unpack_complex_spatial(&msg.raw_data, dr).map_err(crate::RustmetError::Unpack)?,
@@ -118,10 +126,11 @@ pub fn unpack_message(msg: &Grib2Message) -> crate::error::Result<Vec<f64>> {
             })
         }
     };
+    values.truncate(packed_count); // discard Section 7's final octet padding
 
     // Apply bitmap if present
     let values = if let Some(ref bitmap) = msg.bitmap {
-        let n = bitmap.len();
+        let n = num_points;
         let mut result = vec![f64::NAN; n];
         let mut val_idx = 0;
         for i in 0..n {

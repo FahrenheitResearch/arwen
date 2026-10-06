@@ -3826,7 +3826,7 @@ def _gpu_module():
     device = int(cp.cuda.Device().id)
     if device not in _GPU_MODULE:
         import cupy as cp
-        from cupy.cuda import compiler as _cc
+        from gpuwm import nvrtc_ptx_cache as _cc
         ptx, _mapping = _cc.compile_using_nvrtc(
             _gpu_source(),
             ("-std=c++17", "--ftz=false"),

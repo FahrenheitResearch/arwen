@@ -12,8 +12,9 @@ The acceptance that matters is NEGATIVE: every nine-level configuration that
 ran before must compile the same translation unit it compiled before.  Four
 independent instruments say so here, and every one of them is CPU-only:
 
-1. **The mechanism is inert at nine.**  :func:`ruc_module_defines` is EMPTY at
-   9, so the launcher takes the unspecialized loader and the string handed to
+1. **The geometry mechanism is inert at nine.**  With snow explicitly at
+   ``wrf_45``, :func:`ruc_module_defines` is EMPTY at 9, so the launcher takes
+   the unspecialized loader and the string handed to
    NVRTC is byte-identical to ``module_source("ruc")`` -- the exact string the
    pre-ladder launcher produced.  Digested and compared.
 
@@ -212,6 +213,289 @@ SOILPROP_LINEAGE_EDITS = (
 )
 
 
+#: The snow lineage switch (ruc_snow, 2.8.6), each hunk with the v4.6.1
+#: text it replaced, generated from the diff and kept verbatim.  Both arms
+#: are oracle-verified on their own (tests/test_ruc.py and test_ruc_gpu.py
+#: under wrf_461, tests/test_ruc_fork_oracle.py under wrf_45), so the switch
+#: is undone here before the historical geometry proof.
+SNOW_LINEAGE_EDITS = (
+    ("""// module_sf_ruclsm.F:63-69 sncovfac, read only when isncovr_opt==3.
+// The snow scheme by WRF lineage (ruc_snow, gpuwm/core/ruc_tier.py).  The
+// default compile is WRF v4.0-4.5, which the operational RAP/HRRR branch
+// carries; GPUWM_SNOW_WRF461 compiles WRF v4.6.1.  GPUWM_RUC_SNOW_V461 is the same
+// choice as a value, for the arms written as conditions; the generated
+// fused sfctmp kernel reads it too.
+#ifdef GPUWM_SNOW_WRF461
+#define GPUWM_RUC_SNOW_V461 true
+#else
+#define GPUWM_RUC_SNOW_V461 false
+#endif
+
+__device__ static const real ruc_sncovfac[30] = {
+""",
+     """// module_sf_ruclsm.F:63-69 sncovfac, read only when isncovr_opt==3.
+__device__ static const real ruc_sncovfac[30] = {
+"""),
+    ("""    // :1504 - the mosaic flag from the previous step's snow fraction.
+    if (GPUWM_RUC_SNOW_V461 && snowfrac < 0.75f) snow_mosaic = one;
+
+""",
+     """    // :1504 - the mosaic flag from the previous step's snow fraction.
+    if (snowfrac < 0.75f) snow_mosaic = one;
+
+"""),
+    ("""
+#ifndef GPUWM_SNOW_WRF461
+    // Branch :1675-1679: the critical depths from the density this step
+    // built, and the mosaic flag from the depth before new snow.
+    snhei_crit = __fdiv_rn(critical_depth_coefficient, rhosn);
+    snhei_crit_newsn = __fdiv_rn(new_snow_depth_coefficient, rhosn);
+    snowfrac = fminf(one, __fdiv_rn(snhei, __fmul_rn(2.0f, snhei_crit)));
+    if (snowfrac < 0.75f) snow_mosaic = one;
+#endif
+
+    // :1580-1598 fresh snow onto the ground.
+""",
+     """
+    // :1580-1598 fresh snow onto the ground.
+"""),
+    ("""        iland = isice;
+#ifndef GPUWM_SNOW_WRF461
+        // Branch :1708-1719.  isncovr_opt is not read.
+        snowfrac = fminf(one, __fdiv_rn(snhei, __fmul_rn(2.0f, snhei_crit)));
+        if (ivgtyp == urban) snowfrac = fminf(0.75f, snowfrac);
+        if (snowfrac < 0.75f) snow_mosaic = one;
+        if (newsn > zero) {
+            snowfracnewsn = fminf(one, __fdiv_rn(snhei, snhei_crit_newsn));
+        }
+        keep_snow_albedo = zero;
+        if (newsn > zero && snowfracnewsn > 0.99f) {
+            keep_snow_albedo = one;
+            snow_mosaic = zero;
+        }
+#else
+        if (isncovr_opt == 1) {
+""",
+     """        iland = isice;
+        if (isncovr_opt == 1) {
+"""),
+    ("""        }
+#endif
+        // :1672-1680 roughness blend toward the snow/ice class.
+""",
+     """        }
+        // :1672-1680 roughness blend toward the snow/ice class.
+"""),
+    ("""                // pass.  Transcribed to stay faithful.
+                // The branch has no 0.7 floor, here or below.
+                if (GPUWM_RUC_SNOW_V461 && keep_snow_albedo > 0.9f && albsn < 0.4f) {
+                    albsn = 0.7f;
+                }
+                emiss = emissn;
+""",
+     """                // pass.  Transcribed to stay faithful.
+                if (keep_snow_albedo > 0.9f && albsn < 0.4f) albsn = 0.7f;
+                emiss = emissn;
+"""),
+    ("""                        alb_snow));
+                if (GPUWM_RUC_SNOW_V461 && newsn > zero && keep_snow_albedo > 0.9f
+                    && albsn < 0.4f) {
+                    albsn = 0.7f;
+""",
+     """                        alb_snow));
+                if (newsn > zero && keep_snow_albedo > 0.9f && albsn < 0.4f) {
+                    albsn = 0.7f;
+"""),
+    ("""
+// module_sf_ruclsm.F:5046-5072, repeated verbatim at :5587-5610.  The snow
+// scheme by WRF lineage (ruc_snow, gpuwm/core/ruc_tier.py): the default is
+// WRF v4.0-4.5, which the operational RAP/HRRR branch carries (branch
+// :5235, :5738): a constant conductivity, thdifsn = 0.265/rhocsn.
+// GPUWM_SNOW_WRF461 compiles WRF v4.6.1, whose :49 fixes isncond_opt = 2:
+// the Sturm et al. (1997) effective conductivity.
+__device__ __forceinline__
+""",
+     """
+// module_sf_ruclsm.F:5046-5072, repeated verbatim at :5587-5610.  :49 fixes
+// isncond_opt = 2, so the constant 0.265/rhocsn branch is dead and the Sturm
+// et al. (1997) effective conductivity always applies.
+__device__ __forceinline__
+"""),
+    ("""{
+#ifndef GPUWM_SNOW_WRF461
+    return __fdiv_rn(0.265f, rhocsn);
+#endif
+    const real fact = 1.0f;
+""",
+     """{
+    const real fact = 1.0f;
+"""),
+    ("""        soilt = ts1;
+        // wrf_45 (the branch) has neither freezing clamp on the second pass.
+        if (GPUWM_RUC_SNOW_V461 && nmelt == 1 && snowfrac == one && snwe > zero
+            && soilt > freeze) {
+            soilt = fminf(freeze, soilt);
+""",
+     """        soilt = ts1;
+        if (nmelt == 1 && snowfrac == one && snwe > zero && soilt > freeze) {
+            soilt = fminf(freeze, soilt);
+"""),
+    ("""        }
+        if (GPUWM_RUC_SNOW_V461 && nmelt == 1 && snowfrac == one) {
+            soilt1 = fminf(freeze, soilt1);
+""",
+     """        }
+        if (nmelt == 1 && snowfrac == one) {
+            soilt1 = fminf(freeze, soilt1);
+"""),
+    ("""
+#ifdef GPUWM_SNOW_WRF461
+        bool melts = soilt > freeze && beta == one && snhei > zero;
+#else
+        // Branch :5586: melt while the pack outlasts the step's evaporation.
+        bool melts = soilt > freeze
+            && __fsub_rn(
+                   snwepr,
+                   __fmul_rn(__fmul_rn(__fmul_rn(beta, epot), ras), delt))
+               > zero
+            && snhei > zero;
+#endif
+        if (melts) {
+            // :5414-5553 top melt.
+""",
+     """
+        if (soilt > freeze && beta == one && snhei > zero) {
+            // :5414-5553 top melt.
+"""),
+    ("""                qsg, __fdiv_rn(ruc_qsn_lookup(soiltfrac, tbq), pp));
+#ifdef GPUWM_SNOW_WRF461
+            qvg = __fadd_rn(
+""",
+     """                qsg, __fdiv_rn(ruc_qsn_lookup(soiltfrac, tbq), pp));
+            qvg = __fadd_rn(
+"""),
+    ("""                __fmul_rn(__fsub_rn(one, snowfrac), qvg));
+#else
+            qvg = qsg;  // branch :5590, saturated at melt
+#endif
+            // :5419-5421 t3/upflux/xinet are dead: xinet is never read.
+""",
+     """                __fmul_rn(__fsub_rn(one, snowfrac), qvg));
+            // :5419-5421 t3/upflux/xinet are dead: xinet is never read.
+"""),
+    ("""            smelt = __fmul_rn(__fdiv_rn(snoh, xlmelt), milli);
+            // :5530 the Koren et al. (1999) retained fraction, both lineages.
+            real rsmfrac = fminf(
+                0.18f,
+                fmaxf(
+                    0.08f,
+                    __fmul_rn(__fdiv_rn(snwepr, 0.10f), 0.13f)));
+#ifndef GPUWM_SNOW_WRF461
+            {
+                // Branch :5652-5698, straight-line: the cap does not scale
+                // with the step or depend on density, and liquid is
+                // retained whenever the pack is deeper than 1 cm.
+                real available = __fsub_rn(
+                    __fdiv_rn(snwepr, delt),
+                    __fmul_rn(__fmul_rn(beta, epot), ras));
+                smelt = fminf(smelt, available);
+                smelt = fmaxf(zero, smelt);
+                real limit = __fmul_rn(5.6e-8f, meltfactor);
+                limit = __fmul_rn(
+                    limit, fmaxf(one, __fsub_rn(soilt, freeze)));
+                smelt = fminf(smelt, limit);
+                real rr = fmaxf(zero, available);
+                smelt = fminf(smelt, rr);
+                snoh = __fmul_rn(__fmul_rn(smelt, xlmelt), thousand);
+                if (snhei > 0.01f) {
+                    rsm = __fmul_rn(__fmul_rn(rsmfrac, smelt), delt);
+                } else {
+                    rsm = zero;
+                }
+                smelt = fmaxf(zero, __fsub_rn(smelt, __fdiv_rn(rsm, delt)));
+                snwe = fmaxf(
+                    zero,
+                    __fsub_rn(
+                        snwepr,
+                        __fmul_rn(
+                            __fadd_rn(
+                                smelt,
+                                __fmul_rn(__fmul_rn(beta, epot), ras)),
+                            delt)));
+            }
+#else
+            real potential = __fmul_rn(__fmul_rn(epot, ras), delt);
+""",
+     """            smelt = __fmul_rn(__fdiv_rn(snoh, xlmelt), milli);
+            real potential = __fmul_rn(__fmul_rn(epot, ras), delt);
+"""),
+    ("""                // :5529-5543 Koren et al. (1999) liquid retention.
+                if (snhei > 0.01f && rhosn < 350.0f) {
+""",
+     """                // :5529-5543 Koren et al. (1999) liquid retention.
+                real rsmfrac = fminf(
+                    0.18f,
+                    fmaxf(
+                        0.08f,
+                        __fmul_rn(__fdiv_rn(snwepr, 0.10f), 0.13f)));
+                if (snhei > 0.01f && rhosn < 350.0f) {
+"""),
+    ("""            }
+#endif
+        } else {
+            // :5557-5567 no melt: sublimation or condensation only.  The
+            // branch updates any pack and never zeroes one here.
+            if (snhei != zero && (beta == one || !GPUWM_RUC_SNOW_V461)) {
+                epot = -__fmul_rn(qkms, __fsub_rn(qvatm, qsg));
+""",
+     """            }
+        } else {
+            // :5557-5567 no melt: sublimation or condensation only.
+            if (snhei != zero && beta == one) {
+                epot = -__fmul_rn(qkms, __fsub_rn(qvatm, qsg));
+"""),
+    ("""                            __fmul_rn(__fmul_rn(beta, epot), ras), delt)));
+            } else if (GPUWM_RUC_SNOW_V461) {
+                snwe = zero;
+""",
+     """                            __fmul_rn(__fmul_rn(beta, epot), ras), delt)));
+            } else {
+                snwe = zero;
+"""),
+    ("""        real smeltg = __fmul_rn(__fdiv_rn(snohg, xlmelt), milli);
+        // :5658-5660 the Egglston bottom-melt limit; unconditional in the
+        // branch.
+        if (!GPUWM_RUC_SNOW_V461
+            || ((rhosn < 350.0f || (newsnow > zero && rhonewsn < 450.0f))
+                && soilt < 283.0f)) {
+            smeltg = fminf(smeltg, 5.8e-9f);
+""",
+     """        real smeltg = __fmul_rn(__fdiv_rn(snohg, xlmelt), milli);
+        // :5658-5660 the Egglston bottom-melt limit.
+        if ((rhosn < 350.0f || (newsnow > zero && rhonewsn < 450.0f))
+            && soilt < 283.0f) {
+            smeltg = fminf(smeltg, 5.8e-9f);
+"""),
+    ("""        snhei = __fdiv_rn(__fmul_rn(snwe, thousand), rhosn);
+        // The branch keeps the bottom melt water out of smelt.
+        if (GPUWM_RUC_SNOW_V461) smelt = __fadd_rn(smelt, smeltg);
+        if (snhei > zero) tso[0] = soiltfrac;
+""",
+     """        snhei = __fdiv_rn(__fmul_rn(snwe, thousand), rhosn);
+        smelt = __fadd_rn(smelt, smeltg);
+        if (snhei > zero) tso[0] = soiltfrac;
+"""),
+)
+
+
+def _reconstruct_pre_snow(text: str) -> str:
+    """Undo the snow lineage switch, hunk by hunk."""
+    for shipped, original in SNOW_LINEAGE_EDITS:
+        assert text.count(shipped) == 1, shipped
+        text = text.replace(shipped, original)
+    return text
+
+
 def _reconstruct_pre_soilprop(text: str) -> str:
     """Undo the SOILPROP lineage switch: its comment block and five edits."""
     start = text.index("    // SOILPROP by WRF lineage (ruc_soilprop")
@@ -229,7 +513,7 @@ def _reconstruct_pre_mosaic(text: str) -> str:
     The rest of the historical geometry proof remains pinned to its original
     hash. This prevents unrelated leaf edits hiding inside a mosaic update.
     """
-    text = _reconstruct_pre_soilprop(text)
+    text = _reconstruct_pre_soilprop(_reconstruct_pre_snow(text))
     previous = (ROOT / "tests/data/ruc_surface_pre_mosaic.cu").read_text()
     text = _replace_sentinel_block(text, "RUC MOSAIC SURFACE", previous + "\n")
     current = (
@@ -260,13 +544,13 @@ def _reconstruct_pre_fix(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 def test_the_shipped_geometry_injects_no_define_at_all():
-    """The emptiness IS the mechanism; if it is not empty, nine has moved."""
-    assert ruc_module_defines(NUM_SOIL_LAYERS) == ()
+    """Isolate the geometry ladder from the separately selected snow form."""
+    assert ruc_module_defines(NUM_SOIL_LAYERS, snow="wrf_45") == ()
     assert NUM_SOIL_LAYERS == 9
 
 
 def test_the_six_level_geometry_asks_for_exactly_one_define():
-    assert ruc_module_defines(6) == (("RUC_NZS", 6),)
+    assert ruc_module_defines(6, snow="wrf_45") == (("RUC_NZS", 6),)
 
 
 @pytest.mark.parametrize("nzs", [0, 1, 4, 5, 7, 8, 10, 12, -9])
@@ -277,14 +561,14 @@ def test_a_geometry_wrf_does_not_define_is_refused(nzs):
 
 def test_every_admitted_geometry_has_a_tier():
     for count in WRF_SUPPORTED_NUM_SOIL_LAYERS:
-        defines = ruc_module_defines(count)
+        defines = ruc_module_defines(count, snow="wrf_45")
         assert defines == (() if count == NUM_SOIL_LAYERS
                            else (("RUC_NZS", count),))
 
 
 def test_the_nine_level_source_is_the_unspecialized_module_byte_for_byte():
-    """Leg 1: no nine-level run can see a different translation unit."""
-    generated = ruc_kernel_source(NUM_SOIL_LAYERS)
+    """Leg 1: geometry adds no byte at nine under the same snow selection."""
+    generated = ruc_kernel_source(NUM_SOIL_LAYERS, snow="wrf_45")
     unspecialized = module_source("ruc")
     assert generated == unspecialized
     assert (hashlib.sha256(generated.encode("utf-8")).hexdigest()
@@ -298,7 +582,7 @@ def test_a_six_level_source_adds_exactly_one_line_and_nothing_else():
     Removing the one injected define must recover the unspecialized string
     byte for byte, so a tiered compile cannot smuggle in any other edit.
     """
-    generated = ruc_kernel_source(6)
+    generated = ruc_kernel_source(6, snow="wrf_45")
     unspecialized = module_source("ruc")
     assert generated != unspecialized
     injected = "#define RUC_NZS 6\n"

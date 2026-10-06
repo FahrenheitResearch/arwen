@@ -23,16 +23,28 @@ def test_single_output_uses_current_store_without_reading_stale_device_fields(mo
         def history_fields(self):
             return dict(live)
 
+    class PresenceOnlyMoisture:
+        def __array__(self, *_args, **_kwargs):
+            raise AssertionError("output converted stale resident moisture")
+
+        def __getattr__(self, _name):
+            raise AssertionError("output read stale resident moisture")
+
+        def __add__(self, _other):
+            raise AssertionError("output calculated from stale resident moisture")
+
+        __radd__ = __sub__ = __rsub__ = __mul__ = __rmul__ = __add__
+        __truediv__ = __rtruediv__ = __pow__ = __rpow__ = __add__
+
     class ForbiddenState:
         _streamed_domain = Store()
+        qv = PresenceOnlyMoisture()
 
-        @property
-        def physics(self):
-            raise AssertionError("output read the stale prepared driver")
+        def __init__(self):
+            self.physics = SimpleNamespace(refl_10cm=None)
 
-        @property
-        def qv(self):
-            raise AssertionError("output read stale resident reflectivity operands")
+        def __getattr__(self, _name):
+            raise AssertionError("output read stale resident weather state")
 
     class Writer:
         def __init__(self, path, **kwargs):
@@ -46,6 +58,9 @@ def test_single_output_uses_current_store_without_reading_stale_device_fields(mo
 
         def __exit__(self, *args):
             closed.append(self.path)
+
+        def complete_output_identity(self):
+            return None
 
     def forbidden(*args, **kwargs):
         raise AssertionError("output read the stale prepared state")
@@ -61,9 +76,13 @@ def test_single_output_uses_current_store_without_reading_stale_device_fields(mo
         grid=object(), static_fields={})
     start = datetime(2026, 5, 29, 18)
     for index in range(2):
+        state = prepared.initial_result.state
+        state.physics.refl_10cm = live["REFL_10CM"]
         runtime.write_case_output(prepared, tmp_path, start + timedelta(hours=index),
                                   start_time=start, title="live store", expect_refl_10cm=expect_refl)
         assert len(closed) == index + 1
+        if expect_refl:
+            assert state.physics.refl_10cm is None
         live["T"] += np.float32(10.0)
         live["RAINNC"] += np.float32(1.0)
     assert [float(frame["T"].item()) for _, frame in observed] == [3.0, 13.0]

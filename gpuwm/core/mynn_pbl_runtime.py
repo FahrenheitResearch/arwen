@@ -30,6 +30,7 @@ from gpuwm.core.mynn_pbl_gpu import (
     _flag_mask,
     _nonfinite,
     mynn_bl_driver_cuda,
+    mynn_pbl_kernel,
 )
 from gpuwm.core.mynn_pbl_scratch import (
     MYNN_PBL_COLUMN_CHUNK,
@@ -225,7 +226,8 @@ def mynn_pbl_step(
         tendencies = {name: cp.zeros((nz, ny, nx), dtype=DTYPE)
                       for name in MYNN_PBL_TENDENCY_FIELDS}
     else:
-        work = MynnPblScratch.from_state(state, chunk, nz)
+        work = MynnPblScratch.from_state(state, chunk, nz,
+                                        bl_mynn_version=options.get("bl_mynn_version", "wrf_461"))
         tendencies = {
             name: state.scratch(shape, slot) for name, (slot, shape) in zip(
                 MYNN_PBL_TENDENCY_FIELDS,
@@ -305,6 +307,8 @@ def mynn_pbl_step(
         values = {name: stage[name] for name in
                   ("dz", "u", "v", "w", "th", "sqv", "sqc", "sqi", "sqs",
                    "p", "exner", "rho", "tk")}
+        if options.get("bl_mynn_version", "wrf_461") == "gsd_41":
+            values.update({name: stage[name] for name in ("qv", "qc", "qi")})
         for solver_name in _STATE_FIELD:
             values[solver_name] = stage[solver_name]
         values["dx"] = spacing
@@ -331,7 +335,10 @@ def mynn_pbl_step(
         )
 
         # --- module_bl_mynn_wrapper.F:587-607 specific -> mixing ratio -----
-        get_kernel("mynn_pbl", "mynn_wrapper_from_specific")(
+        # gsd_41 already returns mixing-ratio tendencies from the updated
+        # vapour and keeps its in-cloud QC_BL as written.
+        mynn_pbl_kernel("mynn_wrapper_from_specific",
+                        options.get("bl_mynn_version", "wrf_461"))(
             (blocks,), (_TPB,),
             (stage["sqv"], out["rqvblten"], out["rqcblten"],
              out["rqiblten"], out["qc_bl"], out["qi_bl"], np.int32(count)),
@@ -385,6 +392,18 @@ def mynn_pbl_step(
 #: ``full+MYNN`` and ``full+MYNN+Noah-MP`` rungs cannot run on two cards in
 #: one process at all.
 _VALIDITY_FLAGS: dict[tuple[int, int], cp.ndarray] = {}
+
+
+def release_mynn_stream_scratch(*, device_id, stream):
+    """Retire the completed member queue's mutable tendency validity words."""
+    device_id = int(device_id)
+    if int(cp.cuda.runtime.getDevice()) != device_id:
+        raise ValueError("MYNN scratch release requires the owning CUDA device")
+    stream.synchronize()
+    key = (device_id, int(stream.ptr))
+    present = key in _VALIDITY_FLAGS
+    _VALIDITY_FLAGS.pop(key, None)
+    return {"validity_flags": int(present)}
 
 
 def _validity_flags() -> cp.ndarray:

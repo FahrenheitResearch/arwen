@@ -161,7 +161,7 @@ _TIER2_PATH_ALLOWANCE = frozenset({
 #: commits only) and never pushes to any remote, so the branch route this
 #: module's message test governs is closed by law rather than by wording.
 #: Pinned by full SHA with the reason, so a second entry is a decision.
-_MESSAGE_ALLOWANCE = {
+_MESSAGE_ALLOWANCE_PINNED = {
     "ccd11d67f31a6a26e9b6490182b046db16e991cb":
         "the 2026-09-01 law commit that sanctioned the private package; "
         "rewording is banned here and the branch is never pushed",
@@ -170,6 +170,43 @@ _MESSAGE_ALLOWANCE = {
         "the company-bound package and named the company in its subject; "
         "rewording is banned here and the branch is never pushed",
 }
+
+#: The GENERATED half of the allowance: every commit up to a recorded cutoff
+#: whose message or author/committer identity the scan flags, written by
+#: tools/register_message_allowance.py and never by hand.  The gate ruling of
+#: 2026-10-05 (2.8.6, ruling 2) registered them instead of rewriting history,
+#: after checking that every public repository holds release snapshot commits
+#: only, so no commit in this range is reachable from any public ref.
+#: ``test_the_generated_message_allowance_is_exactly_its_history`` re-derives
+#: the list on every run, so the file can neither gain a commit by hand nor
+#: reach past its cutoff: any commit after the cutoff that names the
+#: subsystem still fails the message test below.
+MESSAGE_ALLOWANCE_FILE = (
+    ROOT / "tests" / "data" / "excluded_subsystem_message_allowance.json")
+MESSAGE_ALLOWANCE_SCHEMA = "gpuwm.excluded-subsystem-message-allowance.v1"
+MESSAGE_ALLOWANCE_REASON = "internal history only; public releases are snapshots"
+
+
+def _generated_message_allowance() -> dict:
+    """The generated file, read whole; a missing or malformed file is an error."""
+
+    import json
+
+    return json.loads(MESSAGE_ALLOWANCE_FILE.read_text(encoding="utf-8"))
+
+
+try:
+    _GENERATED = _generated_message_allowance()
+except FileNotFoundError:
+    # Registers nothing, so the message test reports every flagged commit,
+    # and the history test below fails on the missing file by name.  The
+    # generator also needs this module importable before its first write.
+    _GENERATED = {"reason": MESSAGE_ALLOWANCE_REASON, "commits": []}
+_MESSAGE_ALLOWANCE = {
+    **{sha: _GENERATED["reason"] for sha in _GENERATED["commits"]},
+    **_MESSAGE_ALLOWANCE_PINNED,
+}
+del _GENERATED
 
 #: The innocent English words that contain a Tier-1 token: the noun every
 #: page of this project uses, and the verb in the Creative Commons
@@ -217,12 +254,39 @@ _RADAR_WRITER_NAME = re.compile(
     + "|" + "re" + "cast[-_]radar[A-Za-z0-9_-]*", re.I)
 
 
-def _radar_writer_masked(name: str, text: str) -> str:
-    """``text`` with the vendored radar writers' own identifiers masked, in pinned files only."""
+#: The second sanctioned use: the product's display label.  Drew, 2026-10-05
+#: (relayed to the integrator by the lead session, to be confirmed at the
+#: release yes): the renderer's two built-in product themes print the
+#: product's public display label, and the documents and tests that state
+#: that label repeat it.  Breakage the pin prevents is the same as above:
+#: the label is admitted ONLY in these files and ONLY as that exact
+#: two-word phrase, capitalised as printed.  The prefix alone, any other
+#: spelling or case, and any use in any other file still fail.  A new file
+#: here is a decision, not a fix.  The phrase is spelled in halves below.
+_DISPLAY_LABEL_FILES = frozenset((
+    "docs/render-output-layout.md",
+    "tests/test_renderer_theme_sections.py",
+    "tools/rustwx/crates/rustwx-products/src/shared_context.rs",
+    "tools/rustwx/crates/rustwx-render/src/theme.rs",
+    "tools/rustwx/crates/rustwx-render/themes/woof-dark.json",
+    "tools/rustwx/crates/rustwx-render/themes/woof-light.json",
+    "tools/rustwx/crates/rw-wrfbatch/src/bin/compare.rs",
+    "tools/rustwx/crates/rw-wrfbatch/src/section.rs",
+    "tools/rustwx/crates/rw-wrfbatch/src/store_render.rs",
+))
+_DISPLAY_LABEL = re.compile("Re" + "cast" + " WOOF")
 
+
+def _radar_writer_masked(name: str, text: str) -> str:
+    """``text`` with the two sanctioned spellings masked, in their pinned files only."""
+
+    if name in _DISPLAY_LABEL_FILES:
+        text = _DISPLAY_LABEL.sub("DISPLAYLABEL", text)
     if name not in _RADAR_WRITER_FILES:
         return text
     return _RADAR_WRITER_NAME.sub("RADARWRITER", text)
+
+
 _TIER2_RE = re.compile("|".join(re.escape(t) for t in _TIER2), re.I)
 
 #: An added line longer than this is not hand-written source.  It is a
@@ -387,6 +451,11 @@ def _is_checkout() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _is_checkout(), reason="the tracked-file scan needs a checkout")
+
+
+# The display-label allowance test lives in
+# tests/test_excluded_subsystem_label_pin.py: it needs no checkout, and
+# the skip above would silence it on every run without one.
 
 
 def test_no_tracked_path_names_the_excluded_subsystem():
@@ -618,6 +687,70 @@ def test_the_generated_document_carve_out_still_catches_a_NEW_name():
     assert _tier1_match(carried + "".join(("wx", "mod"))) is not None
 
 
+#: One raw commit object per record.  ``git cat-file --batch`` is read
+#: instead of a formatted ``git log`` because a formatted log has no field
+#: separator a message cannot also contain: the earlier parser took any
+#: 40-hex message line for the start of a new commit, so a message that
+#: quoted a registered SHA on its own line excused every line after it.
+def _commit_objects(revision_range: str) -> list[tuple[str, str]]:
+    """``(sha, raw commit text)`` for every commit in ``revision_range``."""
+
+    shas = subprocess.check_output(
+        ["git", "rev-list", revision_range],
+        cwd=ROOT, stderr=subprocess.DEVNULL).decode("ascii").split()
+    if not shas:
+        return []
+    raw = subprocess.run(
+        ["git", "cat-file", "--batch"], cwd=ROOT, check=True,
+        input=("\n".join(shas) + "\n").encode("ascii"),
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+    records: list[tuple[str, str]] = []
+    at = 0
+    for expected in shas:
+        header_end = raw.index(b"\n", at)
+        sha, kind, size = raw[at:header_end].decode("ascii").split(" ")
+        assert sha == expected and kind == "commit", (sha, expected, kind)
+        body_start = header_end + 1
+        body_end = body_start + int(size)
+        records.append((sha, raw[body_start:body_end].decode("utf-8", "replace")))
+        at = body_end + 1  # the newline cat-file writes after each object
+    return records
+
+
+def _message_hits(text: str) -> list[tuple[str, str]]:
+    """``(token, line)`` for every line of a raw commit naming the subsystem.
+
+    The raw object's header carries the author and committer lines
+    (``author NAME <ADDRESS> TIME ZONE``) besides tree and parent ids, which
+    are hexadecimal and cannot hold a Tier-1 token, so reading every line
+    reads the identities and the whole message.
+    """
+
+    hits = []
+    for line in text.splitlines():
+        token = _tier1_match(line)
+        if token is not None:
+            hits.append((token, line))
+    return hits
+
+
+def _flagged_commits(records: list[tuple[str, str]]) -> list[str]:
+    """Every commit the message scan flags, allowance ignored."""
+
+    return [sha for sha, text in records if _message_hits(text)]
+
+
+def _message_offenders(records: list[tuple[str, str]],
+                       allowance: dict) -> list[str]:
+    offenders: list[str] = []
+    for sha, text in records:
+        if sha in allowance:
+            continue
+        for token, line in _message_hits(text):
+            offenders.append(f"{sha[:9]}: {token!r} in: {line.strip()[:110]}")
+    return offenders
+
+
 def test_no_new_commit_MESSAGE_names_the_excluded_subsystem():
     """The fourth surface, and the one the first three cannot see.
 
@@ -650,38 +783,111 @@ def test_no_new_commit_MESSAGE_names_the_excluded_subsystem():
     SHA with its reason, and this test stays red on any message that is
     not.  Write commit messages on this line without the subsystem's name;
     the allowance is for the past, not a style.
-    """
 
+    The author and committer identities are read too, because a commit
+    whose author address carries the org prefix publishes that prefix as
+    surely as its subject line.  2026-10-01 to 10-04 left 277 such commits
+    on this line.  They are in the generated allowance with the reason that
+    holds for all of them (internal history only; public releases are
+    snapshots), checked against every public repository's refs before they
+    were registered.
+    """
     try:
-        log = subprocess.check_output(
-            ["git", "log", "--format=%H%n%an <%ae>%n%cn <%ce>%n%B%n",
-             CLEAN_BASE + "..HEAD"],
-            cwd=ROOT, stderr=subprocess.DEVNULL)
+        records = _commit_objects(CLEAN_BASE + "..HEAD")
     except (OSError, subprocess.CalledProcessError):
         pytest.skip("the clean base is not present in this clone")
 
-    offenders: list[str] = []
-    current = ""
-    current_full = ""
-    for line in log.decode("utf-8", "replace").splitlines():
-        if len(line) == 40 and all(c in "0123456789abcdef" for c in line):
-            current = line[:9]
-            current_full = line
-            continue
-        if current_full in _MESSAGE_ALLOWANCE:
-            continue
-        token = _tier1_match(line)
-        if token is not None:
-            offenders.append(f"{current}: {token!r} in: {line.strip()[:110]}")
+    offenders = _message_offenders(records, _MESSAGE_ALLOWANCE)
     assert not offenders, (
-        "a commit message on this branch names the excluded subsystem.  "
+        "a commit message or author/committer identity on this branch names "
+        "the excluded subsystem.  "
         "Commit messages are not files: the path, content and diff scans "
         "in this module cannot see them, and they ship with the branch to "
         "anyone it is pushed to.  The snapshot builder is unaffected (it "
         "archives the tree, not the history); publishing the BRANCH is "
-        "not.  These must be reworded before this branch is shared, which "
-        "rewrites every SHA from the earliest one onward:\n  "
+        "not.  Rewording is banned here (forward commits only), so a commit "
+        "already merged is registered by tools/register_message_allowance.py "
+        "with a new --cutoff, which is a decision for the lead, and a commit "
+        "not yet merged is re-made without the name before it lands:\n  "
         + "\n  ".join(offenders))
+
+
+def _is_ancestor(older: str, newer: str) -> bool:
+    return subprocess.run(
+        ["git", "merge-base", "--is-ancestor", older, newer], cwd=ROOT,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+
+
+def test_the_generated_message_allowance_is_exactly_its_history():
+    """The generated allowance is the generator's output, to the commit.
+
+    THE CONCRETE BREAKAGE.  An allowance is a hole by construction.  If its
+    list could be extended by hand, or regenerated silently at a later
+    cutoff, a commit that names the subsystem tomorrow would be excused by
+    the same mechanism that excused the past, and the message test above
+    would read green on exactly the leak it exists for.  So the list is
+    re-derived here from the recorded clean base and cutoff with this
+    module's own scan, and must match exactly: a SHA added by hand, a SHA
+    past the cutoff, or a flagged commit the file dropped each fails by
+    name.  Moving the cutoff is a visible change to the file.
+    """
+
+    data = _generated_message_allowance()
+    assert data["schema"] == MESSAGE_ALLOWANCE_SCHEMA, data["schema"]
+    assert data["reason"] == MESSAGE_ALLOWANCE_REASON, data["reason"]
+    assert data["generated_by"] == "tools/register_message_allowance.py"
+    commits = data["commits"]
+    assert commits == sorted(set(commits)), "the list is not sorted and unique"
+    assert not set(commits) & set(_MESSAGE_ALLOWANCE_PINNED), (
+        "a pinned entry is repeated in the generated file")
+    try:
+        records = _commit_objects(data["clean_base"] + ".." + data["cutoff"])
+    except (OSError, subprocess.CalledProcessError):
+        if not _is_ancestor(CLEAN_BASE, "HEAD"):
+            pytest.skip("the clean base is not present in this clone")
+        raise AssertionError(
+            f"the allowance cutoff {data['cutoff']} is not in this clone, but "
+            "the clean base is; the file names history this branch lacks")
+    assert data["clean_base"] == CLEAN_BASE, (
+        f"the allowance was generated from {data['clean_base']} but this "
+        f"module scans from {CLEAN_BASE}; regenerate it")
+    assert _is_ancestor(data["cutoff"], "HEAD"), (
+        f"the allowance cutoff {data['cutoff']} is not an ancestor of HEAD")
+    derived = sorted(set(_flagged_commits(records))
+                     - set(_MESSAGE_ALLOWANCE_PINNED))
+    assert commits == derived, (
+        "the generated allowance differs from what the scan derives over "
+        f"{data['clean_base'][:9]}..{data['cutoff'][:9]}; registered but not "
+        f"flagged: {sorted(set(commits) - set(derived))[:10]}; flagged but "
+        f"not registered: {sorted(set(derived) - set(commits))[:10]}")
+
+
+def test_the_message_scan_still_reports_a_new_commit():
+    """The allowance excuses its own SHAs and nothing else.
+
+    Proved on records built here rather than on the tree, so it holds
+    whatever the history currently contains.  Three ways a new commit
+    names the subsystem: in its subject, in its author address, and in a
+    message line that follows a line quoting a registered SHA, which is
+    the case the earlier line-based parser excused.
+    """
+
+    name = "".join(("wx", "mod"))
+    prefix = "".join(("re", "cast"))
+    registered = next(iter(_MESSAGE_ALLOWANCE))
+    fresh = "f" * 40
+    plain = ("tree " + "0" * 40 + "\nauthor A <a@example.org> 1 +0000\n"
+             "committer A <a@example.org> 1 +0000\n\n")
+    subject = (fresh, plain + "wire the " + name + " hooks\n")
+    identity = (fresh, plain.replace("a@example.org", "a@" + prefix + "x.example")
+                + "an ordinary subject\n")
+    quoted = (fresh, plain + "follow-up to\n" + registered + "\nadds " + name + "\n")
+    for record in (subject, identity, quoted):
+        assert _message_offenders([record], _MESSAGE_ALLOWANCE), record[1]
+        # The same text under a registered SHA is excused, and only there.
+        assert not _message_offenders([(registered, record[1])], _MESSAGE_ALLOWANCE)
+    assert not _message_offenders([(fresh, plain + "an ordinary subject\n")],
+                                  _MESSAGE_ALLOWANCE)
 
 
 def test_the_diff_scans_tier1_pattern_fires_on_a_code_line():

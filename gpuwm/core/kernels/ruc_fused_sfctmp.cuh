@@ -526,12 +526,12 @@ __device__ __forceinline__ real ruc_fused_max(real a, real b) { return (isnan(a)
 #define a517 ((real*)ptrs[517])
 #define a518 ((bool*)ptrs[518])
 #define a519 ((real*)ptrs[519])
-#define a520 ((real*)ptrs[520])
-#define a521 ((real*)ptrs[521])
-#define a522 ((real*)ptrs[522])
-#define a523 ((real*)ptrs[523])
+#define a520 ((bool*)ptrs[520])
+#define a521 ((bool*)ptrs[521])
+#define a522 ((bool*)ptrs[522])
+#define a523 ((bool*)ptrs[523])
 #define a524 ((real*)ptrs[524])
-#define a525 ((real*)ptrs[525])
+#define a525 ((int*)ptrs[525])
 #define a526 ((real*)ptrs[526])
 #define a527 ((real*)ptrs[527])
 #define a528 ((real*)ptrs[528])
@@ -542,13 +542,13 @@ __device__ __forceinline__ real ruc_fused_max(real a, real b) { return (isnan(a)
 #define a533 ((real*)ptrs[533])
 #define a534 ((real*)ptrs[534])
 #define a535 ((real*)ptrs[535])
-#define a536 ((bool*)ptrs[536])
+#define a536 ((real*)ptrs[536])
 #define a537 ((real*)ptrs[537])
 #define a538 ((real*)ptrs[538])
 #define a539 ((real*)ptrs[539])
 #define a540 ((real*)ptrs[540])
 #define a541 ((real*)ptrs[541])
-#define a542 ((real*)ptrs[542])
+#define a542 ((bool*)ptrs[542])
 #define a543 ((real*)ptrs[543])
 #define a544 ((real*)ptrs[544])
 #define a545 ((real*)ptrs[545])
@@ -669,10 +669,10 @@ __device__ __forceinline__ real ruc_fused_max(real a, real b) { return (isnan(a)
 #define a660 ((real*)ptrs[660])
 #define a661 ((real*)ptrs[661])
 #define a662 ((real*)ptrs[662])
-#define a663 ((bool*)ptrs[663])
-#define a664 ((bool*)ptrs[664])
-#define a665 ((bool*)ptrs[665])
-#define a666 ((bool*)ptrs[666])
+#define a663 ((real*)ptrs[663])
+#define a664 ((real*)ptrs[664])
+#define a665 ((real*)ptrs[665])
+#define a666 ((real*)ptrs[666])
 #define a667 ((real*)ptrs[667])
 #define a668 ((real*)ptrs[668])
 #define a669 ((real*)ptrs[669])
@@ -684,33 +684,33 @@ __device__ __forceinline__ real ruc_fused_max(real a, real b) { return (isnan(a)
 #define a675 ((real*)ptrs[675])
 #define a676 ((real*)ptrs[676])
 #define a677 ((real*)ptrs[677])
-#define a678 ((bool*)ptrs[678])
-#define a679 ((bool*)ptrs[679])
+#define a678 ((real*)ptrs[678])
+#define a679 ((real*)ptrs[679])
 #define a680 ((real*)ptrs[680])
 #define a681 ((real*)ptrs[681])
 #define a682 ((real*)ptrs[682])
 #define a683 ((real*)ptrs[683])
 #define a684 ((real*)ptrs[684])
-#define a685 ((real*)ptrs[685])
-#define a686 ((real*)ptrs[686])
-#define a687 ((real*)ptrs[687])
-#define a688 ((real*)ptrs[688])
-#define a689 ((real*)ptrs[689])
-#define a690 ((real*)ptrs[690])
+#define a685 ((bool*)ptrs[685])
+#define a686 ((bool*)ptrs[686])
+#define a687 ((bool*)ptrs[687])
+#define a688 ((bool*)ptrs[688])
+#define a689 ((bool*)ptrs[689])
+#define a690 ((bool*)ptrs[690])
 #define a691 ((real*)ptrs[691])
-#define a692 ((bool*)ptrs[692])
-#define a693 ((bool*)ptrs[693])
-#define a694 ((bool*)ptrs[694])
-#define a695 ((bool*)ptrs[695])
-#define a696 ((bool*)ptrs[696])
-#define a697 ((bool*)ptrs[697])
-#define a698 ((bool*)ptrs[698])
-#define a699 ((bool*)ptrs[699])
-#define a700 ((bool*)ptrs[700])
-#define a701 ((bool*)ptrs[701])
-#define a702 ((real*)ptrs[702])
-#define a703 ((real*)ptrs[703])
-#define a704 ((real*)ptrs[704])
+#define a692 ((real*)ptrs[692])
+#define a693 ((real*)ptrs[693])
+#define a694 ((real*)ptrs[694])
+#define a695 ((real*)ptrs[695])
+#define a696 ((real*)ptrs[696])
+#define a697 ((real*)ptrs[697])
+#define a698 ((real*)ptrs[698])
+#define a699 ((real*)ptrs[699])
+#define a700 ((real*)ptrs[700])
+#define a701 ((real*)ptrs[701])
+#define a702 ((bool*)ptrs[702])
+#define a703 ((bool*)ptrs[703])
+#define a704 ((bool*)ptrs[704])
 #define a705 ((real*)ptrs[705])
 #define a706 ((real*)ptrs[706])
 #define a707 ((real*)ptrs[707])
@@ -722,41 +722,41 @@ __device__ __forceinline__ real ruc_fused_max(real a, real b) { return (isnan(a)
 #define a713 ((real*)ptrs[713])
 #define a714 ((real*)ptrs[714])
 #define a715 ((real*)ptrs[715])
-#define a716 ((bool*)ptrs[716])
-#define a717 ((bool*)ptrs[717])
-#define a718 ((bool*)ptrs[718])
+#define a716 ((real*)ptrs[716])
+#define a717 ((real*)ptrs[717])
+#define a718 ((real*)ptrs[718])
 #define a719 ((real*)ptrs[719])
 #define a720 ((real*)ptrs[720])
 #define a721 ((real*)ptrs[721])
 #define a722 ((real*)ptrs[722])
 #define a723 ((real*)ptrs[723])
-#define a724 ((real*)ptrs[724])
-#define a725 ((real*)ptrs[725])
-#define a726 ((real*)ptrs[726])
+#define a724 ((bool*)ptrs[724])
+#define a725 ((bool*)ptrs[725])
+#define a726 ((bool*)ptrs[726])
 #define a727 ((bool*)ptrs[727])
 #define a728 ((bool*)ptrs[728])
 #define a729 ((bool*)ptrs[729])
 #define a730 ((bool*)ptrs[730])
-#define a731 ((real*)ptrs[731])
-#define a732 ((real*)ptrs[732])
-#define a733 ((real*)ptrs[733])
-#define a734 ((bool*)ptrs[734])
-#define a735 ((bool*)ptrs[735])
-#define a736 ((bool*)ptrs[736])
-#define a737 ((bool*)ptrs[737])
-#define a738 ((bool*)ptrs[738])
-#define a739 ((bool*)ptrs[739])
-#define a740 ((bool*)ptrs[740])
+#define a731 ((bool*)ptrs[731])
+#define a732 ((bool*)ptrs[732])
+#define a733 ((bool*)ptrs[733])
+#define a734 ((real*)ptrs[734])
+#define a735 ((real*)ptrs[735])
+#define a736 ((real*)ptrs[736])
+#define a737 ((real*)ptrs[737])
+#define a738 ((real*)ptrs[738])
+#define a739 ((real*)ptrs[739])
+#define a740 ((real*)ptrs[740])
 #define a741 ((real*)ptrs[741])
 #define a742 ((real*)ptrs[742])
 #define a743 ((real*)ptrs[743])
 #define a744 ((real*)ptrs[744])
 #define a745 ((real*)ptrs[745])
 #define a746 ((real*)ptrs[746])
-#define a747 ((bool*)ptrs[747])
-#define a748 ((real*)ptrs[748])
-#define a749 ((real*)ptrs[749])
-#define a750 ((real*)ptrs[750])
+#define a747 ((real*)ptrs[747])
+#define a748 ((bool*)ptrs[748])
+#define a749 ((bool*)ptrs[749])
+#define a750 ((bool*)ptrs[750])
 #define a751 ((real*)ptrs[751])
 #define a752 ((real*)ptrs[752])
 #define a753 ((real*)ptrs[753])
@@ -765,44 +765,44 @@ __device__ __forceinline__ real ruc_fused_max(real a, real b) { return (isnan(a)
 #define a756 ((real*)ptrs[756])
 #define a757 ((real*)ptrs[757])
 #define a758 ((real*)ptrs[758])
-#define a759 ((real*)ptrs[759])
-#define a760 ((real*)ptrs[760])
-#define a761 ((real*)ptrs[761])
+#define a759 ((bool*)ptrs[759])
+#define a760 ((bool*)ptrs[760])
+#define a761 ((bool*)ptrs[761])
 #define a762 ((bool*)ptrs[762])
-#define a763 ((bool*)ptrs[763])
-#define a764 ((bool*)ptrs[764])
+#define a763 ((real*)ptrs[763])
+#define a764 ((real*)ptrs[764])
 #define a765 ((real*)ptrs[765])
-#define a766 ((real*)ptrs[766])
-#define a767 ((real*)ptrs[767])
-#define a768 ((real*)ptrs[768])
-#define a769 ((real*)ptrs[769])
-#define a770 ((real*)ptrs[770])
-#define a771 ((real*)ptrs[771])
-#define a772 ((real*)ptrs[772])
+#define a766 ((bool*)ptrs[766])
+#define a767 ((bool*)ptrs[767])
+#define a768 ((bool*)ptrs[768])
+#define a769 ((bool*)ptrs[769])
+#define a770 ((bool*)ptrs[770])
+#define a771 ((bool*)ptrs[771])
+#define a772 ((bool*)ptrs[772])
 #define a773 ((real*)ptrs[773])
 #define a774 ((real*)ptrs[774])
 #define a775 ((real*)ptrs[775])
 #define a776 ((real*)ptrs[776])
 #define a777 ((real*)ptrs[777])
 #define a778 ((real*)ptrs[778])
-#define a779 ((real*)ptrs[779])
+#define a779 ((bool*)ptrs[779])
 #define a780 ((real*)ptrs[780])
 #define a781 ((real*)ptrs[781])
 #define a782 ((real*)ptrs[782])
 #define a783 ((real*)ptrs[783])
-#define a784 ((bool*)ptrs[784])
+#define a784 ((real*)ptrs[784])
 #define a785 ((real*)ptrs[785])
 #define a786 ((real*)ptrs[786])
 #define a787 ((real*)ptrs[787])
 #define a788 ((real*)ptrs[788])
 #define a789 ((real*)ptrs[789])
 #define a790 ((real*)ptrs[790])
-#define a791 ((bool*)ptrs[791])
-#define a792 ((bool*)ptrs[792])
-#define a793 ((bool*)ptrs[793])
+#define a791 ((real*)ptrs[791])
+#define a792 ((real*)ptrs[792])
+#define a793 ((real*)ptrs[793])
 #define a794 ((bool*)ptrs[794])
-#define a795 ((real*)ptrs[795])
-#define a796 ((real*)ptrs[796])
+#define a795 ((bool*)ptrs[795])
+#define a796 ((bool*)ptrs[796])
 #define a797 ((real*)ptrs[797])
 #define a798 ((real*)ptrs[798])
 #define a799 ((real*)ptrs[799])
@@ -814,13 +814,45 @@ __device__ __forceinline__ real ruc_fused_max(real a, real b) { return (isnan(a)
 #define a805 ((real*)ptrs[805])
 #define a806 ((real*)ptrs[806])
 #define a807 ((real*)ptrs[807])
-#define a808 ((bool*)ptrs[808])
+#define a808 ((real*)ptrs[808])
 #define a809 ((real*)ptrs[809])
 #define a810 ((real*)ptrs[810])
 #define a811 ((real*)ptrs[811])
 #define a812 ((real*)ptrs[812])
 #define a813 ((real*)ptrs[813])
 #define a814 ((real*)ptrs[814])
+#define a815 ((real*)ptrs[815])
+#define a816 ((bool*)ptrs[816])
+#define a817 ((real*)ptrs[817])
+#define a818 ((real*)ptrs[818])
+#define a819 ((real*)ptrs[819])
+#define a820 ((real*)ptrs[820])
+#define a821 ((real*)ptrs[821])
+#define a822 ((real*)ptrs[822])
+#define a823 ((bool*)ptrs[823])
+#define a824 ((bool*)ptrs[824])
+#define a825 ((bool*)ptrs[825])
+#define a826 ((bool*)ptrs[826])
+#define a827 ((real*)ptrs[827])
+#define a828 ((real*)ptrs[828])
+#define a829 ((real*)ptrs[829])
+#define a830 ((real*)ptrs[830])
+#define a831 ((real*)ptrs[831])
+#define a832 ((real*)ptrs[832])
+#define a833 ((real*)ptrs[833])
+#define a834 ((real*)ptrs[834])
+#define a835 ((real*)ptrs[835])
+#define a836 ((real*)ptrs[836])
+#define a837 ((real*)ptrs[837])
+#define a838 ((real*)ptrs[838])
+#define a839 ((real*)ptrs[839])
+#define a840 ((bool*)ptrs[840])
+#define a841 ((real*)ptrs[841])
+#define a842 ((real*)ptrs[842])
+#define a843 ((real*)ptrs[843])
+#define a844 ((real*)ptrs[844])
+#define a845 ((real*)ptrs[845])
+#define a846 ((real*)ptrs[846])
 __device__ __forceinline__ void ruc_sfctmp_zero_outputs(const unsigned long long* ptrs, int n, int c) {
     for (int k = 0; k < RUC_NZS; ++k) a128[k * n + c] = 0;
     for (int k = 0; k < RUC_NZS; ++k) a129[k * n + c] = 0;
@@ -828,7 +860,7 @@ __device__ __forceinline__ void ruc_sfctmp_zero_outputs(const unsigned long long
     for (int k = 0; k < RUC_NZS; ++k) a131[k * n + c] = 0;
     for (int k = 0; k < RUC_NZS; ++k) a132[k * n + c] = 0;
     for (int k = 0; k < RUC_NZS; ++k) a133[k * n + c] = 0;
-    a181[c] = 0;
+    a525[c] = 0;
     a134[c] = 0;
     a135[c] = 0;
     a136[c] = 0;
@@ -842,7 +874,7 @@ __device__ __forceinline__ void ruc_sfctmp_zero_outputs(const unsigned long long
     a144[c] = 0;
     a145[c] = 0;
     a146[c] = 0;
-    a147[c] = 0;
+    a524[c] = 0;
     a148[c] = 0;
     a149[c] = 0;
     a150[c] = 0;
@@ -1945,6 +1977,12 @@ real delt, real c1sn, real c2sn, real rsmax, int isice, int urban, int ncategory
     if (a219[c]) { for (int k = 0; k < RUC_NZS; ++k) { a132[k * n + c] = __int_as_float(0x3f800000); } }
     if (a219[c]) { for (int k = 0; k < RUC_NZS; ++k) { a130[k * n + c] = __int_as_float(0x3f800000); } }
     if (a219[c]) { for (int k = 0; k < RUC_NZS; ++k) { a131[k * n + c] = __int_as_float(0x00000000); } }
+    if (true) { a520[c] = (a135[c] == __int_as_float(0x00000000)); }
+    if (true) { a521[c] = (a184[c] && a520[c]); }
+    if (true) { a522[c] = !(GPUWM_RUC_SNOW_V461); }
+    if (true) { a523[c] = (a521[c] && a522[c]); }
+    if (true) { a524[c] = (a523[c] ? a24[c] : a147[c]); }
+    if (true) { a525[c] = (a523[c] ? a70[c] : a181[c]); }
     alive[c] = true;
 }
 extern "C" __global__ void ruc_sfctmp_stage2(
@@ -1956,234 +1994,268 @@ real delt, real c1sn, real c2sn, real rsmax, int isice, int urban, int ncategory
     alive[c] = false;
     if (!run[c]) { ruc_sfctmp_zero_outputs(ptrs, n, c); return; }
     bool failed = false;
-    if (a214[c]) { a520[c] = __fsub_rn(__int_as_float(0x3f800000), a136[c]); }
-    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a521[k * n + c] = __fmul_rn(a186[k * n + c], a520[c]); } }
-    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a522[k * n + c] = __fmul_rn(a128[k * n + c], a136[c]); } }
-    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a523[k * n + c] = __fadd_rn(a521[k * n + c], a522[k * n + c]); } }
-    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a128[k * n + c] = a523[k * n + c]; } }
-    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a524[k * n + c] = __fmul_rn(a188[k * n + c], a520[c]); } }
-    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a525[k * n + c] = __fmul_rn(a130[k * n + c], a136[c]); } }
-    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a526[k * n + c] = __fadd_rn(a524[k * n + c], a525[k * n + c]); } }
-    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a130[k * n + c] = a526[k * n + c]; } }
-    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a527[k * n + c] = __fmul_rn(a190[k * n + c], a520[c]); } }
-    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a528[k * n + c] = __fmul_rn(a132[k * n + c], a136[c]); } }
+    if (a214[c]) { a526[c] = __fsub_rn(__int_as_float(0x3f800000), a136[c]); }
+    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a527[k * n + c] = __fmul_rn(a186[k * n + c], a526[c]); } }
+    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a528[k * n + c] = __fmul_rn(a128[k * n + c], a136[c]); } }
     if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a529[k * n + c] = __fadd_rn(a527[k * n + c], a528[k * n + c]); } }
-    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a132[k * n + c] = a529[k * n + c]; } }
-    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a530[k * n + c] = __fmul_rn(a191[k * n + c], a520[c]); } }
-    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a531[k * n + c] = __fmul_rn(a133[k * n + c], a136[c]); } }
+    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a128[k * n + c] = a529[k * n + c]; } }
+    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a530[k * n + c] = __fmul_rn(a188[k * n + c], a526[c]); } }
+    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a531[k * n + c] = __fmul_rn(a130[k * n + c], a136[c]); } }
     if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a532[k * n + c] = __fadd_rn(a530[k * n + c], a531[k * n + c]); } }
-    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a133[k * n + c] = a532[k * n + c]; } }
-    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a533[k * n + c] = __fmul_rn(a187[k * n + c], a520[c]); } }
-    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a534[k * n + c] = __fmul_rn(a129[k * n + c], a136[c]); } }
+    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a130[k * n + c] = a532[k * n + c]; } }
+    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a533[k * n + c] = __fmul_rn(a190[k * n + c], a526[c]); } }
+    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a534[k * n + c] = __fmul_rn(a132[k * n + c], a136[c]); } }
     if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a535[k * n + c] = __fadd_rn(a533[k * n + c], a534[k * n + c]); } }
-    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a129[k * n + c] = a535[k * n + c]; } }
-    if (a214[c]) { a536[c] = (a136[c] > __int_as_float(0x3f000000)); }
-    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a537[k * n + c] = (a536[c] ? a131[k * n + c] : a189[k * n + c]); } }
-    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a131[k * n + c] = a537[k * n + c]; } }
-    if (a214[c]) { a538[c] = __fmul_rn(a192[c], a520[c]); }
-    if (a214[c]) { a539[c] = __fmul_rn(a153[c], a136[c]); }
-    if (a214[c]) { a540[c] = __fadd_rn(a538[c], a539[c]); }
-    if (a214[c]) { a153[c] = a540[c]; }
-    if (a214[c]) { a541[c] = __fmul_rn(a193[c], a520[c]); }
-    if (a214[c]) { a542[c] = __fmul_rn(a150[c], a136[c]); }
-    if (a214[c]) { a543[c] = __fadd_rn(a541[c], a542[c]); }
-    if (a214[c]) { a150[c] = a543[c]; }
-    if (a214[c]) { a544[c] = __fmul_rn(a194[c], a520[c]); }
-    if (a214[c]) { a545[c] = __fmul_rn(a154[c], a136[c]); }
+    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a132[k * n + c] = a535[k * n + c]; } }
+    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a536[k * n + c] = __fmul_rn(a191[k * n + c], a526[c]); } }
+    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a537[k * n + c] = __fmul_rn(a133[k * n + c], a136[c]); } }
+    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a538[k * n + c] = __fadd_rn(a536[k * n + c], a537[k * n + c]); } }
+    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a133[k * n + c] = a538[k * n + c]; } }
+    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a539[k * n + c] = __fmul_rn(a187[k * n + c], a526[c]); } }
+    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a540[k * n + c] = __fmul_rn(a129[k * n + c], a136[c]); } }
+    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a541[k * n + c] = __fadd_rn(a539[k * n + c], a540[k * n + c]); } }
+    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a129[k * n + c] = a541[k * n + c]; } }
+    if (a214[c]) { a542[c] = (a136[c] > __int_as_float(0x3f000000)); }
+    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a543[k * n + c] = (a542[c] ? a131[k * n + c] : a189[k * n + c]); } }
+    if (a214[c]) { for (int k = 0; k < RUC_NZS; ++k) { a131[k * n + c] = a543[k * n + c]; } }
+    if (a214[c]) { a544[c] = __fmul_rn(a192[c], a526[c]); }
+    if (a214[c]) { a545[c] = __fmul_rn(a153[c], a136[c]); }
     if (a214[c]) { a546[c] = __fadd_rn(a544[c], a545[c]); }
-    if (a214[c]) { a154[c] = a546[c]; }
-    if (a214[c]) { a547[c] = __fmul_rn(a195[c], a520[c]); }
-    if (a214[c]) { a548[c] = __fmul_rn(a155[c], a136[c]); }
+    if (a214[c]) { a153[c] = a546[c]; }
+    if (a214[c]) { a547[c] = __fmul_rn(a193[c], a526[c]); }
+    if (a214[c]) { a548[c] = __fmul_rn(a150[c], a136[c]); }
     if (a214[c]) { a549[c] = __fadd_rn(a547[c], a548[c]); }
-    if (a214[c]) { a155[c] = a549[c]; }
-    if (a214[c]) { a550[c] = __fmul_rn(a196[c], a520[c]); }
-    if (a214[c]) { a551[c] = __fmul_rn(a156[c], a136[c]); }
+    if (a214[c]) { a150[c] = a549[c]; }
+    if (a214[c]) { a550[c] = __fmul_rn(a194[c], a526[c]); }
+    if (a214[c]) { a551[c] = __fmul_rn(a154[c], a136[c]); }
     if (a214[c]) { a552[c] = __fadd_rn(a550[c], a551[c]); }
-    if (a214[c]) { a156[c] = a552[c]; }
-    if (a214[c]) { a553[c] = __fmul_rn(a197[c], a520[c]); }
-    if (a214[c]) { a554[c] = __fmul_rn(a163[c], a136[c]); }
+    if (a214[c]) { a154[c] = a552[c]; }
+    if (a214[c]) { a553[c] = __fmul_rn(a195[c], a526[c]); }
+    if (a214[c]) { a554[c] = __fmul_rn(a155[c], a136[c]); }
     if (a214[c]) { a555[c] = __fadd_rn(a553[c], a554[c]); }
-    if (a214[c]) { a163[c] = a555[c]; }
-    if (a214[c]) { a556[c] = __fmul_rn(a198[c], a520[c]); }
-    if (a214[c]) { a557[c] = __fmul_rn(a164[c], a136[c]); }
+    if (a214[c]) { a155[c] = a555[c]; }
+    if (a214[c]) { a556[c] = __fmul_rn(a196[c], a526[c]); }
+    if (a214[c]) { a557[c] = __fmul_rn(a156[c], a136[c]); }
     if (a214[c]) { a558[c] = __fadd_rn(a556[c], a557[c]); }
-    if (a214[c]) { a164[c] = a558[c]; }
-    if (a214[c]) { a559[c] = __fmul_rn(a211[c], a520[c]); }
-    if (a214[c]) { a560[c] = __fmul_rn(a148[c], a136[c]); }
+    if (a214[c]) { a156[c] = a558[c]; }
+    if (a214[c]) { a559[c] = __fmul_rn(a197[c], a526[c]); }
+    if (a214[c]) { a560[c] = __fmul_rn(a163[c], a136[c]); }
     if (a214[c]) { a561[c] = __fadd_rn(a559[c], a560[c]); }
-    if (a214[c]) { a148[c] = a561[c]; }
-    if (a214[c]) { a562[c] = __fmul_rn(a199[c], a520[c]); }
-    if (a214[c]) { a563[c] = __fmul_rn(a165[c], a136[c]); }
+    if (a214[c]) { a163[c] = a561[c]; }
+    if (a214[c]) { a562[c] = __fmul_rn(a198[c], a526[c]); }
+    if (a214[c]) { a563[c] = __fmul_rn(a164[c], a136[c]); }
     if (a214[c]) { a564[c] = __fadd_rn(a562[c], a563[c]); }
-    if (a214[c]) { a165[c] = a564[c]; }
-    if (a214[c]) { a565[c] = __fmul_rn(a200[c], a520[c]); }
-    if (a214[c]) { a566[c] = __fmul_rn(a166[c], a136[c]); }
+    if (a214[c]) { a164[c] = a564[c]; }
+    if (a214[c]) { a565[c] = __fmul_rn(a211[c], a526[c]); }
+    if (a214[c]) { a566[c] = __fmul_rn(a148[c], a136[c]); }
     if (a214[c]) { a567[c] = __fadd_rn(a565[c], a566[c]); }
-    if (a214[c]) { a166[c] = a567[c]; }
-    if (a214[c]) { a568[c] = __fmul_rn(a201[c], a520[c]); }
-    if (a214[c]) { a569[c] = __fmul_rn(a167[c], a136[c]); }
+    if (a214[c]) { a148[c] = a567[c]; }
+    if (a214[c]) { a568[c] = __fmul_rn(a199[c], a526[c]); }
+    if (a214[c]) { a569[c] = __fmul_rn(a165[c], a136[c]); }
     if (a214[c]) { a570[c] = __fadd_rn(a568[c], a569[c]); }
-    if (a214[c]) { a167[c] = a570[c]; }
-    if (a214[c]) { a571[c] = __fmul_rn(a202[c], a520[c]); }
-    if (a214[c]) { a572[c] = __fmul_rn(a168[c], a136[c]); }
+    if (a214[c]) { a165[c] = a570[c]; }
+    if (a214[c]) { a571[c] = __fmul_rn(a200[c], a526[c]); }
+    if (a214[c]) { a572[c] = __fmul_rn(a166[c], a136[c]); }
     if (a214[c]) { a573[c] = __fadd_rn(a571[c], a572[c]); }
-    if (a214[c]) { a168[c] = a573[c]; }
-    if (a214[c]) { a574[c] = __fmul_rn(a203[c], a520[c]); }
-    if (a214[c]) { a575[c] = __fmul_rn(a169[c], a136[c]); }
+    if (a214[c]) { a166[c] = a573[c]; }
+    if (a214[c]) { a574[c] = __fmul_rn(a201[c], a526[c]); }
+    if (a214[c]) { a575[c] = __fmul_rn(a167[c], a136[c]); }
     if (a214[c]) { a576[c] = __fadd_rn(a574[c], a575[c]); }
-    if (a214[c]) { a169[c] = a576[c]; }
-    if (a214[c]) { a577[c] = __fmul_rn(a205[c], a520[c]); }
-    if (a214[c]) { a578[c] = __fmul_rn(a172[c], a136[c]); }
+    if (a214[c]) { a167[c] = a576[c]; }
+    if (a214[c]) { a577[c] = __fmul_rn(a202[c], a526[c]); }
+    if (a214[c]) { a578[c] = __fmul_rn(a168[c], a136[c]); }
     if (a214[c]) { a579[c] = __fadd_rn(a577[c], a578[c]); }
-    if (a214[c]) { a172[c] = a579[c]; }
-    if (a214[c]) { a580[c] = __fmul_rn(a206[c], a520[c]); }
-    if (a214[c]) { a581[c] = __fmul_rn(a173[c], a136[c]); }
+    if (a214[c]) { a168[c] = a579[c]; }
+    if (a214[c]) { a580[c] = __fmul_rn(a203[c], a526[c]); }
+    if (a214[c]) { a581[c] = __fmul_rn(a169[c], a136[c]); }
     if (a214[c]) { a582[c] = __fadd_rn(a580[c], a581[c]); }
-    if (a214[c]) { a173[c] = a582[c]; }
-    if (a214[c]) { a583[c] = __fmul_rn(a204[c], a520[c]); }
-    if (a214[c]) { a171[c] = a583[c]; }
-    if (a214[c]) { a584[c] = __fmul_rn(a170[c], a136[c]); }
-    if (a214[c]) { a170[c] = a584[c]; }
-    if (a214[c]) { a585[c] = __fmul_rn(a116[c], a147[c]); }
-    if (a214[c]) { a586[c] = __fsub_rn(a147[c], a24[c]); }
-    if (a214[c]) { a587[c] = __fmul_rn(a586[c], a136[c]); }
-    if (a214[c]) { a588[c] = __fadd_rn(a24[c], a587[c]); }
-    if (a214[c]) { a589[c] = ruc_fused_min(a588[c], a147[c]); }
-    if (a214[c]) { a590[c] = ruc_fused_max(a585[c], a589[c]); }
-    if (a214[c]) { a147[c] = a590[c]; }
-    if (a214[c]) { a591[c] = __fmul_rn(a116[c], a114[c]); }
-    if (a214[c]) { a592[c] = __fsub_rn(a114[c], a115[c]); }
+    if (a214[c]) { a169[c] = a582[c]; }
+    if (a214[c]) { a583[c] = __fmul_rn(a205[c], a526[c]); }
+    if (a214[c]) { a584[c] = __fmul_rn(a172[c], a136[c]); }
+    if (a214[c]) { a585[c] = __fadd_rn(a583[c], a584[c]); }
+    if (a214[c]) { a172[c] = a585[c]; }
+    if (a214[c]) { a586[c] = __fmul_rn(a206[c], a526[c]); }
+    if (a214[c]) { a587[c] = __fmul_rn(a173[c], a136[c]); }
+    if (a214[c]) { a588[c] = __fadd_rn(a586[c], a587[c]); }
+    if (a214[c]) { a173[c] = a588[c]; }
+    if (a214[c]) { a589[c] = __fmul_rn(a204[c], a526[c]); }
+    if (a214[c]) { a171[c] = a589[c]; }
+    if (a214[c]) { a590[c] = __fmul_rn(a170[c], a136[c]); }
+    if (a214[c]) { a170[c] = a590[c]; }
+    if (a214[c]) { a591[c] = __fmul_rn(a116[c], a524[c]); }
+    if (a214[c]) { a592[c] = __fsub_rn(a524[c], a24[c]); }
     if (a214[c]) { a593[c] = __fmul_rn(a592[c], a136[c]); }
-    if (a214[c]) { a594[c] = __fadd_rn(a115[c], a593[c]); }
-    if (a214[c]) { a595[c] = ruc_fused_min(a594[c], a114[c]); }
+    if (a214[c]) { a594[c] = __fadd_rn(a24[c], a593[c]); }
+    if (a214[c]) { a595[c] = ruc_fused_min(a594[c], a524[c]); }
     if (a214[c]) { a596[c] = ruc_fused_max(a591[c], a595[c]); }
-    if (a214[c]) { a145[c] = a596[c]; }
-    if (a214[c]) { a597[c] = __fmul_rn(a207[c], a520[c]); }
-    if (a214[c]) { a598[c] = __fmul_rn(a174[c], a136[c]); }
-    if (a214[c]) { a599[c] = __fadd_rn(a597[c], a598[c]); }
-    if (a214[c]) { a174[c] = a599[c]; }
-    if (a214[c]) { a600[c] = __fmul_rn(a208[c], a520[c]); }
-    if (a214[c]) { a601[c] = __fmul_rn(a175[c], a136[c]); }
-    if (a214[c]) { a602[c] = __fadd_rn(a600[c], a601[c]); }
-    if (a214[c]) { a175[c] = a602[c]; }
-    if (a214[c]) { a603[c] = __fmul_rn(a209[c], a520[c]); }
-    if (a214[c]) { a604[c] = __fadd_rn(a603[c], a136[c]); }
-    if (a214[c]) { a146[c] = a604[c]; }
-    if (a214[c]) { a605[c] = __fmul_rn(a210[c], a520[c]); }
-    if (a214[c]) { a606[c] = __fmul_rn(a176[c], a136[c]); }
-    if (a214[c]) { a607[c] = __fadd_rn(a605[c], a606[c]); }
-    if (a214[c]) { a176[c] = a607[c]; }
-    if (a216[c]) { a608[c] = __fsub_rn(__int_as_float(0x3f800000), a136[c]); }
-    if (a216[c]) { for (int k = 0; k < RUC_NZS; ++k) { a609[k * n + c] = __fmul_rn(a187[k * n + c], a608[c]); } }
-    if (a216[c]) { for (int k = 0; k < RUC_NZS; ++k) { a610[k * n + c] = __fmul_rn(a129[k * n + c], a136[c]); } }
-    if (a216[c]) { for (int k = 0; k < RUC_NZS; ++k) { a611[k * n + c] = __fadd_rn(a609[k * n + c], a610[k * n + c]); } }
-    if (a216[c]) { for (int k = 0; k < RUC_NZS; ++k) { a129[k * n + c] = a611[k * n + c]; } }
-    if (a216[c]) { a612[c] = __fmul_rn(a192[c], a608[c]); }
-    if (a216[c]) { a613[c] = __fmul_rn(a153[c], a136[c]); }
-    if (a216[c]) { a614[c] = __fadd_rn(a612[c], a613[c]); }
-    if (a216[c]) { a153[c] = a614[c]; }
-    if (a216[c]) { a615[c] = __fmul_rn(a193[c], a608[c]); }
-    if (a216[c]) { a616[c] = __fmul_rn(a150[c], a136[c]); }
-    if (a216[c]) { a617[c] = __fadd_rn(a615[c], a616[c]); }
-    if (a216[c]) { a150[c] = a617[c]; }
-    if (a216[c]) { a618[c] = __fmul_rn(a194[c], a608[c]); }
-    if (a216[c]) { a619[c] = __fmul_rn(a154[c], a136[c]); }
-    if (a216[c]) { a620[c] = __fadd_rn(a618[c], a619[c]); }
-    if (a216[c]) { a154[c] = a620[c]; }
-    if (a216[c]) { a621[c] = __fmul_rn(a195[c], a608[c]); }
-    if (a216[c]) { a622[c] = __fmul_rn(a155[c], a136[c]); }
-    if (a216[c]) { a623[c] = __fadd_rn(a621[c], a622[c]); }
-    if (a216[c]) { a155[c] = a623[c]; }
-    if (a216[c]) { a624[c] = __fmul_rn(a196[c], a608[c]); }
-    if (a216[c]) { a625[c] = __fmul_rn(a156[c], a136[c]); }
-    if (a216[c]) { a626[c] = __fadd_rn(a624[c], a625[c]); }
-    if (a216[c]) { a156[c] = a626[c]; }
-    if (a216[c]) { a627[c] = __fmul_rn(a200[c], a608[c]); }
-    if (a216[c]) { a628[c] = __fmul_rn(a166[c], a136[c]); }
-    if (a216[c]) { a629[c] = __fadd_rn(a627[c], a628[c]); }
-    if (a216[c]) { a166[c] = a629[c]; }
-    if (a216[c]) { a630[c] = __fmul_rn(a201[c], a608[c]); }
-    if (a216[c]) { a631[c] = __fmul_rn(a167[c], a136[c]); }
-    if (a216[c]) { a632[c] = __fadd_rn(a630[c], a631[c]); }
-    if (a216[c]) { a167[c] = a632[c]; }
-    if (a216[c]) { a633[c] = __fmul_rn(a202[c], a608[c]); }
-    if (a216[c]) { a634[c] = __fmul_rn(a168[c], a136[c]); }
-    if (a216[c]) { a635[c] = __fadd_rn(a633[c], a634[c]); }
-    if (a216[c]) { a168[c] = a635[c]; }
-    if (a216[c]) { a636[c] = __fmul_rn(a203[c], a608[c]); }
-    if (a216[c]) { a637[c] = __fmul_rn(a169[c], a136[c]); }
-    if (a216[c]) { a638[c] = __fadd_rn(a636[c], a637[c]); }
-    if (a216[c]) { a169[c] = a638[c]; }
+    if (a214[c]) { a524[c] = a596[c]; }
+    if (a214[c]) { a597[c] = __fmul_rn(a116[c], a114[c]); }
+    if (a214[c]) { a598[c] = __fsub_rn(a114[c], a115[c]); }
+    if (a214[c]) { a599[c] = __fmul_rn(a598[c], a136[c]); }
+    if (a214[c]) { a600[c] = __fadd_rn(a115[c], a599[c]); }
+    if (a214[c]) { a601[c] = ruc_fused_min(a600[c], a114[c]); }
+    if (a214[c]) { a602[c] = ruc_fused_max(a597[c], a601[c]); }
+    if (a214[c]) { a145[c] = a602[c]; }
+    if (a214[c]) { a603[c] = __fmul_rn(a207[c], a526[c]); }
+    if (a214[c]) { a604[c] = __fmul_rn(a174[c], a136[c]); }
+    if (a214[c]) { a605[c] = __fadd_rn(a603[c], a604[c]); }
+    if (a214[c]) { a174[c] = a605[c]; }
+    if (a214[c]) { a606[c] = __fmul_rn(a208[c], a526[c]); }
+    if (a214[c]) { a607[c] = __fmul_rn(a175[c], a136[c]); }
+    if (a214[c]) { a608[c] = __fadd_rn(a606[c], a607[c]); }
+    if (a214[c]) { a175[c] = a608[c]; }
+    if (a214[c]) { a609[c] = __fmul_rn(a157[c], a136[c]); }
+    if (a214[c]) { a610[c] = (GPUWM_RUC_SNOW_V461 ? a157[c] : a609[c]); }
+    if (a214[c]) { a157[c] = a610[c]; }
+    if (a214[c]) { a611[c] = __fmul_rn(a158[c], a136[c]); }
+    if (a214[c]) { a612[c] = (GPUWM_RUC_SNOW_V461 ? a158[c] : a611[c]); }
+    if (a214[c]) { a158[c] = a612[c]; }
+    if (a214[c]) { a613[c] = __fmul_rn(a159[c], a136[c]); }
+    if (a214[c]) { a614[c] = (GPUWM_RUC_SNOW_V461 ? a159[c] : a613[c]); }
+    if (a214[c]) { a159[c] = a614[c]; }
+    if (a214[c]) { a615[c] = __fmul_rn(a160[c], a136[c]); }
+    if (a214[c]) { a616[c] = (GPUWM_RUC_SNOW_V461 ? a160[c] : a615[c]); }
+    if (a214[c]) { a160[c] = a616[c]; }
+    if (a214[c]) { a617[c] = __fmul_rn(a209[c], a526[c]); }
+    if (a214[c]) { a618[c] = __fadd_rn(a617[c], a136[c]); }
+    if (a214[c]) { a146[c] = a618[c]; }
+    if (a214[c]) { a619[c] = __fmul_rn(a210[c], a526[c]); }
+    if (a214[c]) { a620[c] = __fmul_rn(a176[c], a136[c]); }
+    if (a214[c]) { a621[c] = __fadd_rn(a619[c], a620[c]); }
+    if (a214[c]) { a176[c] = a621[c]; }
+    if (a216[c]) { a622[c] = __fsub_rn(__int_as_float(0x3f800000), a136[c]); }
+    if (a216[c]) { for (int k = 0; k < RUC_NZS; ++k) { a623[k * n + c] = __fmul_rn(a187[k * n + c], a622[c]); } }
+    if (a216[c]) { for (int k = 0; k < RUC_NZS; ++k) { a624[k * n + c] = __fmul_rn(a129[k * n + c], a136[c]); } }
+    if (a216[c]) { for (int k = 0; k < RUC_NZS; ++k) { a625[k * n + c] = __fadd_rn(a623[k * n + c], a624[k * n + c]); } }
+    if (a216[c]) { for (int k = 0; k < RUC_NZS; ++k) { a129[k * n + c] = a625[k * n + c]; } }
+    if (a216[c]) { a626[c] = __fmul_rn(a192[c], a622[c]); }
+    if (a216[c]) { a627[c] = __fmul_rn(a153[c], a136[c]); }
+    if (a216[c]) { a628[c] = __fadd_rn(a626[c], a627[c]); }
+    if (a216[c]) { a153[c] = a628[c]; }
+    if (a216[c]) { a629[c] = __fmul_rn(a193[c], a622[c]); }
+    if (a216[c]) { a630[c] = __fmul_rn(a150[c], a136[c]); }
+    if (a216[c]) { a631[c] = __fadd_rn(a629[c], a630[c]); }
+    if (a216[c]) { a150[c] = a631[c]; }
+    if (a216[c]) { a632[c] = __fmul_rn(a194[c], a622[c]); }
+    if (a216[c]) { a633[c] = __fmul_rn(a154[c], a136[c]); }
+    if (a216[c]) { a634[c] = __fadd_rn(a632[c], a633[c]); }
+    if (a216[c]) { a154[c] = a634[c]; }
+    if (a216[c]) { a635[c] = __fmul_rn(a195[c], a622[c]); }
+    if (a216[c]) { a636[c] = __fmul_rn(a155[c], a136[c]); }
+    if (a216[c]) { a637[c] = __fadd_rn(a635[c], a636[c]); }
+    if (a216[c]) { a155[c] = a637[c]; }
+    if (a216[c]) { a638[c] = __fmul_rn(a196[c], a622[c]); }
+    if (a216[c]) { a639[c] = __fmul_rn(a156[c], a136[c]); }
+    if (a216[c]) { a640[c] = __fadd_rn(a638[c], a639[c]); }
+    if (a216[c]) { a156[c] = a640[c]; }
+    if (a216[c]) { a641[c] = __fmul_rn(a200[c], a622[c]); }
+    if (a216[c]) { a642[c] = __fmul_rn(a166[c], a136[c]); }
+    if (a216[c]) { a643[c] = __fadd_rn(a641[c], a642[c]); }
+    if (a216[c]) { a166[c] = a643[c]; }
+    if (a216[c]) { a644[c] = __fmul_rn(a201[c], a622[c]); }
+    if (a216[c]) { a645[c] = __fmul_rn(a167[c], a136[c]); }
+    if (a216[c]) { a646[c] = __fadd_rn(a644[c], a645[c]); }
+    if (a216[c]) { a167[c] = a646[c]; }
+    if (a216[c]) { a647[c] = __fmul_rn(a202[c], a622[c]); }
+    if (a216[c]) { a648[c] = __fmul_rn(a168[c], a136[c]); }
+    if (a216[c]) { a649[c] = __fadd_rn(a647[c], a648[c]); }
+    if (a216[c]) { a168[c] = a649[c]; }
+    if (a216[c]) { a650[c] = __fmul_rn(a203[c], a622[c]); }
+    if (a216[c]) { a651[c] = __fmul_rn(a169[c], a136[c]); }
+    if (a216[c]) { a652[c] = __fadd_rn(a650[c], a651[c]); }
+    if (a216[c]) { a169[c] = a652[c]; }
     if (a216[c]) { a170[c] = a166[c]; }
-    if (a216[c]) { a639[c] = __fmul_rn(a205[c], a608[c]); }
-    if (a216[c]) { a640[c] = __fmul_rn(a172[c], a136[c]); }
-    if (a216[c]) { a641[c] = __fadd_rn(a639[c], a640[c]); }
-    if (a216[c]) { a172[c] = a641[c]; }
-    if (a216[c]) { a642[c] = __fmul_rn(a206[c], a608[c]); }
-    if (a216[c]) { a643[c] = __fmul_rn(a173[c], a136[c]); }
-    if (a216[c]) { a644[c] = __fadd_rn(a642[c], a643[c]); }
-    if (a216[c]) { a173[c] = a644[c]; }
-    if (a216[c]) { a645[c] = __fmul_rn(a116[c], a147[c]); }
-    if (a216[c]) { a646[c] = __fsub_rn(a147[c], a24[c]); }
-    if (a216[c]) { a647[c] = __fmul_rn(a646[c], a136[c]); }
-    if (a216[c]) { a648[c] = __fadd_rn(a112[c], a647[c]); }
-    if (a216[c]) { a649[c] = ruc_fused_min(a648[c], a147[c]); }
-    if (a216[c]) { a650[c] = ruc_fused_max(a645[c], a649[c]); }
-    if (a216[c]) { a147[c] = a650[c]; }
-    if (a216[c]) { a651[c] = __fmul_rn(a116[c], a114[c]); }
-    if (a216[c]) { a652[c] = __fsub_rn(a114[c], a115[c]); }
-    if (a216[c]) { a653[c] = __fmul_rn(a652[c], a136[c]); }
-    if (a216[c]) { a654[c] = __fadd_rn(a115[c], a653[c]); }
-    if (a216[c]) { a655[c] = ruc_fused_min(a654[c], a114[c]); }
-    if (a216[c]) { a656[c] = ruc_fused_max(a651[c], a655[c]); }
-    if (a216[c]) { a145[c] = a656[c]; }
-    if (a216[c]) { a657[c] = __fmul_rn(a207[c], a608[c]); }
-    if (a216[c]) { a658[c] = __fmul_rn(a174[c], a136[c]); }
-    if (a216[c]) { a659[c] = __fadd_rn(a657[c], a658[c]); }
-    if (a216[c]) { a174[c] = a659[c]; }
-    if (a216[c]) { a660[c] = __fmul_rn(a208[c], a608[c]); }
-    if (a216[c]) { a661[c] = __fmul_rn(a175[c], a136[c]); }
-    if (a216[c]) { a662[c] = __fadd_rn(a660[c], a661[c]); }
-    if (a216[c]) { a175[c] = a662[c]; }
-    if (true) { a663[c] = (a135[c] == __int_as_float(0x00000000)); }
-    if (true) { a664[c] = (a184[c] && a663[c]); }
-    if (a664[c]) { a147[c] = a24[c]; }
-    if (a664[c]) { a181[c] = a70[c]; }
-    if (true) { a665[c] = !(a664[c]); }
-    if (true) { a666[c] = (a184[c] && a665[c]); }
-    if (a666[c]) { a667[c] = __fmul_rn(__int_as_float(0x40000000), a87[c]); }
-    if (a666[c]) { a668[c] = __fdiv_rn(a135[c], a667[c]); }
-    if (a666[c]) { a669[c] = ruc_fused_min(__int_as_float(0x3f800000), a668[c]); }
-    if (a666[c]) { a670[c] = ruc_fused_min(__int_as_float(0x3e4ccccd), a149[c]); }
-    if (a666[c]) { a671[c] = __fmul_rn(__int_as_float(0x40200000), a670[c]); }
-    if (a666[c]) { a672[c] = __fdiv_rn(a137[c], a138[c]); }
-    if (a666[c]) { a673[c] = __fmul_rn(a671[c], a672[c]); }
-    if (a666[c]) { a674[c] = __fdiv_rn(a135[c], a673[c]); }
-    if (a666[c]) { ruc_tanhf_glibc_array(a674, a675, n); }
-    if (a666[c]) { a676[c] = __fadd_rn(a669[c], a675[c]); }
-    if (a666[c]) { a677[c] = __fmul_rn(__int_as_float(0x3f000000), a676[c]); }
-    if (a666[c]) { a136[c] = a677[c]; }
-    if (true) { a678[c] = (a70[c] == urban); }
-    if (true) { a679[c] = (a184[c] && a678[c]); }
-    if (a679[c]) { a680[c] = ruc_fused_min(__int_as_float(0x3f400000), a136[c]); }
-    if (a679[c]) { a136[c] = a680[c]; }
-    if (a184[c]) { a681[c] = __fmul_rn(a92[c], __int_as_float(0x447a0000)); }
-    if (a184[c]) { a682[c] = __fadd_rn(a161[c], a681[c]); }
-    if (a184[c]) { a161[c] = a682[c]; }
-    if (true) { a683[c] = 0; }
-    if (true) { a684[c] = 0; }
+    if (a216[c]) { a653[c] = __fmul_rn(a205[c], a622[c]); }
+    if (a216[c]) { a654[c] = __fmul_rn(a172[c], a136[c]); }
+    if (a216[c]) { a655[c] = __fadd_rn(a653[c], a654[c]); }
+    if (a216[c]) { a172[c] = a655[c]; }
+    if (a216[c]) { a656[c] = __fmul_rn(a206[c], a622[c]); }
+    if (a216[c]) { a657[c] = __fmul_rn(a173[c], a136[c]); }
+    if (a216[c]) { a658[c] = __fadd_rn(a656[c], a657[c]); }
+    if (a216[c]) { a173[c] = a658[c]; }
+    if (a216[c]) { a659[c] = __fmul_rn(a116[c], a524[c]); }
+    if (a216[c]) { a660[c] = __fsub_rn(a524[c], a24[c]); }
+    if (a216[c]) { a661[c] = __fmul_rn(a660[c], a136[c]); }
+    if (a216[c]) { a662[c] = __fadd_rn(a112[c], a661[c]); }
+    if (a216[c]) { a663[c] = ruc_fused_min(a662[c], a524[c]); }
+    if (a216[c]) { a664[c] = ruc_fused_max(a659[c], a663[c]); }
+    if (a216[c]) { a524[c] = a664[c]; }
+    if (a216[c]) { a665[c] = __fmul_rn(a116[c], a114[c]); }
+    if (a216[c]) { a666[c] = __fsub_rn(a114[c], a115[c]); }
+    if (a216[c]) { a667[c] = __fmul_rn(a666[c], a136[c]); }
+    if (a216[c]) { a668[c] = __fadd_rn(a115[c], a667[c]); }
+    if (a216[c]) { a669[c] = ruc_fused_min(a668[c], a114[c]); }
+    if (a216[c]) { a670[c] = ruc_fused_max(a665[c], a669[c]); }
+    if (a216[c]) { a145[c] = a670[c]; }
+    if (a216[c]) { a671[c] = __fmul_rn(a207[c], a622[c]); }
+    if (a216[c]) { a672[c] = __fmul_rn(a174[c], a136[c]); }
+    if (a216[c]) { a673[c] = __fadd_rn(a671[c], a672[c]); }
+    if (a216[c]) { a174[c] = a673[c]; }
+    if (a216[c]) { a674[c] = __fmul_rn(a208[c], a622[c]); }
+    if (a216[c]) { a675[c] = __fmul_rn(a175[c], a136[c]); }
+    if (a216[c]) { a676[c] = __fadd_rn(a674[c], a675[c]); }
+    if (a216[c]) { a175[c] = a676[c]; }
+    if (a216[c]) { a677[c] = __fmul_rn(a157[c], a136[c]); }
+    if (a216[c]) { a678[c] = (GPUWM_RUC_SNOW_V461 ? a157[c] : a677[c]); }
+    if (a216[c]) { a157[c] = a678[c]; }
+    if (a216[c]) { a679[c] = __fmul_rn(a158[c], a136[c]); }
+    if (a216[c]) { a680[c] = (GPUWM_RUC_SNOW_V461 ? a158[c] : a679[c]); }
+    if (a216[c]) { a158[c] = a680[c]; }
+    if (a216[c]) { a681[c] = __fmul_rn(a159[c], a136[c]); }
+    if (a216[c]) { a682[c] = (GPUWM_RUC_SNOW_V461 ? a159[c] : a681[c]); }
+    if (a216[c]) { a159[c] = a682[c]; }
+    if (a216[c]) { a683[c] = __fmul_rn(a160[c], a136[c]); }
+    if (a216[c]) { a684[c] = (GPUWM_RUC_SNOW_V461 ? a160[c] : a683[c]); }
+    if (a216[c]) { a160[c] = a684[c]; }
+    if (true) { a685[c] = (a135[c] == __int_as_float(0x00000000)); }
+    if (true) { a686[c] = (a184[c] && a685[c]); }
+    if (true) { a687[c] = (a686[c] && GPUWM_RUC_SNOW_V461); }
+    if (a687[c]) { a524[c] = a24[c]; }
+    if (a687[c]) { a525[c] = a70[c]; }
+    if (true) { a688[c] = !(a686[c]); }
+    if (true) { a689[c] = (a184[c] && a688[c]); }
+    if (true) { a690[c] = (a689[c] && GPUWM_RUC_SNOW_V461); }
+    if (a690[c]) { a691[c] = __fmul_rn(__int_as_float(0x40000000), a87[c]); }
+    if (a690[c]) { a692[c] = __fdiv_rn(a135[c], a691[c]); }
+    if (a690[c]) { a693[c] = ruc_fused_min(__int_as_float(0x3f800000), a692[c]); }
+    if (a690[c]) { a694[c] = ruc_fused_min(__int_as_float(0x3e4ccccd), a149[c]); }
+    if (a690[c]) { a695[c] = __fmul_rn(__int_as_float(0x40200000), a694[c]); }
+    if (a690[c]) { a696[c] = __fdiv_rn(a137[c], a138[c]); }
+    if (a690[c]) { a697[c] = __fmul_rn(a695[c], a696[c]); }
+    if (a690[c]) { a698[c] = __fdiv_rn(a135[c], a697[c]); }
+    if (a690[c]) { ruc_tanhf_glibc_array(a698, a699, n); }
+    if (a690[c]) { a700[c] = __fadd_rn(a693[c], a699[c]); }
+    if (a690[c]) { a701[c] = __fmul_rn(__int_as_float(0x3f000000), a700[c]); }
+    if (a690[c]) { a136[c] = a701[c]; }
+    if (true) { a702[c] = (a70[c] == urban); }
+    if (true) { a703[c] = (a184[c] && a702[c]); }
+    if (true) { a704[c] = (a703[c] && GPUWM_RUC_SNOW_V461); }
+    if (a704[c]) { a705[c] = ruc_fused_min(__int_as_float(0x3f400000), a136[c]); }
+    if (a704[c]) { a136[c] = a705[c]; }
+    if (a184[c]) { a706[c] = __fdiv_rn(__int_as_float(0x447a0000), a138[c]); }
+    if (a184[c]) { a707[c] = __fmul_rn(a706[c], a157[c]); }
+    if (a184[c]) { a708[c] = __fmul_rn(a707[c], delt); }
+    if (a184[c]) { a709[c] = __fmul_rn(a708[c], a93[c]); }
+    if (a184[c]) { a710[c] = __fsub_rn(a92[c], a709[c]); }
+    if (a184[c]) { a711[c] = ruc_fused_max(__int_as_float(0x00000000), a710[c]); }
+    if (a184[c]) { a712[c] = (GPUWM_RUC_SNOW_V461 ? a92[c] : a711[c]); }
+    if (a184[c]) { a713[c] = __fmul_rn(a712[c], __int_as_float(0x447a0000)); }
+    if (a184[c]) { a714[c] = __fadd_rn(a161[c], a713[c]); }
+    if (a184[c]) { a161[c] = a714[c]; }
+    if (true) { a715[c] = 0; }
+    if (true) { a716[c] = 0; }
     if (a220[c]) { a180[c] = __int_as_float(0x00000000); }
     if (a220[c]) { a179[c] = __int_as_float(0x00000000); }
     if (a220[c]) { a157[c] = __int_as_float(0x00000000); }
-    if (a220[c]) { a685[c] = __fmul_rn(__int_as_float(0x33738beb), a150[c]); }
-    if (a220[c]) { a686[c] = __fmul_rn(a685[c], a150[c]); }
-    if (a220[c]) { a687[c] = __fmul_rn(a686[c], a150[c]); }
-    if (a220[c]) { a688[c] = __fmul_rn(a687[c], a150[c]); }
-    if (a220[c]) { a689[c] = __fsub_rn(a43[c], a688[c]); }
-    if (a220[c]) { a690[c] = __fmul_rn(a145[c], a689[c]); }
-    if (a220[c]) { a691[c] = __fadd_rn(a13[c], a690[c]); }
-    if (a220[c]) { a683[c] = a691[c]; }
-    if (a220[c]) { a684[c] = a690[c]; }
+    if (a220[c]) { a717[c] = __fmul_rn(__int_as_float(0x33738beb), a150[c]); }
+    if (a220[c]) { a718[c] = __fmul_rn(a717[c], a150[c]); }
+    if (a220[c]) { a719[c] = __fmul_rn(a718[c], a150[c]); }
+    if (a220[c]) { a720[c] = __fmul_rn(a719[c], a150[c]); }
+    if (a220[c]) { a721[c] = __fsub_rn(a43[c], a720[c]); }
+    if (a220[c]) { a722[c] = __fmul_rn(a145[c], a721[c]); }
+    if (a220[c]) { a723[c] = __fadd_rn(a13[c], a722[c]); }
+    if (a220[c]) { a715[c] = a723[c]; }
+    if (a220[c]) { a716[c] = a722[c]; }
     if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a128[k * n + c])) { failed = true; atomicOr(flags + 10, 1ull << 2); } } }
     if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a129[k * n + c])) { failed = true; atomicOr(flags + 10, 1ull << 3); } } }
     if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a130[k * n + c])) { failed = true; atomicOr(flags + 10, 1ull << 4); } } }
@@ -2198,7 +2270,7 @@ real delt, real c1sn, real c2sn, real rsmax, int isice, int urban, int ncategory
     if (a223[c]) { if (!isfinite(a13[c])) { failed = true; atomicOr(flags + 10, 1ull << 13); } }
     if (a223[c]) { if (!isfinite(a111[c])) { failed = true; atomicOr(flags + 10, 1ull << 14); } }
     if (a223[c]) { if (!isfinite(a145[c])) { failed = true; atomicOr(flags + 10, 1ull << 15); } }
-    if (a223[c]) { if (!isfinite(a683[c])) { failed = true; atomicOr(flags + 10, 1ull << 16); } }
+    if (a223[c]) { if (!isfinite(a715[c])) { failed = true; atomicOr(flags + 10, 1ull << 16); } }
     if (a223[c]) { if (!isfinite(a44[c])) { failed = true; atomicOr(flags + 10, 1ull << 17); } }
     if (a223[c]) { if (!isfinite(a45[c])) { failed = true; atomicOr(flags + 10, 1ull << 18); } }
     if (a223[c]) { if (!isfinite(a46[c])) { failed = true; atomicOr(flags + 10, 1ull << 19); } }
@@ -2225,40 +2297,40 @@ real delt, real c1sn, real c2sn, real rsmax, int isice, int urban, int ncategory
     if (a223[c]) { if (!isfinite(a155[c])) { failed = true; atomicOr(flags + 10, 1ull << 40); } }
     if (a223[c]) { if (!isfinite(a156[c])) { failed = true; atomicOr(flags + 10, 1ull << 41); } }
     if (a223[c]) { if (!isfinite(a47[c])) { failed = true; atomicOr(flags + 10, 1ull << 42); } }
-    if (a223[c]) { a692[c] = (a50[c] <= __int_as_float(0x00000000)); }
-    if (a223[c]) { if (a692[c]) { failed = true; atomicOr(flags + 10, 1ull << 43); } }
-    if (a223[c]) { a693[c] = (a54[c] >= __int_as_float(0x00000000)); }
-    if (a223[c]) { if (a693[c]) { failed = true; atomicOr(flags + 10, 1ull << 44); } }
-    if (a223[c]) { a694[c] = (a55[c] <= __int_as_float(0x00000000)); }
-    if (a223[c]) { if (a694[c]) { failed = true; atomicOr(flags + 10, 1ull << 45); } }
-    if (a223[c]) { a695[c] = (a20[c] <= __int_as_float(0x00000000)); }
-    if (a223[c]) { if (a695[c]) { failed = true; atomicOr(flags + 10, 1ull << 46); } }
-    if (a223[c]) { a696[c] = (a42[c] <= __int_as_float(0x00000000)); }
-    if (a223[c]) { a697[c] = (a39[c] <= __int_as_float(0x00000000)); }
-    if (a223[c]) { a698[c] = (a696[c] || a697[c]); }
-    if (a223[c]) { if (a698[c]) { failed = true; atomicOr(flags + 10, 1ull << 47); } }
-    if (a223[c]) { a699[c] = (a47[c] < __int_as_float(0x00000000)); }
-    if (a223[c]) { a700[c] = (a47[c] > __int_as_float(0x3f800000)); }
-    if (a223[c]) { a701[c] = (a699[c] || a700[c]); }
-    if (a223[c]) { if (a701[c]) { failed = true; atomicOr(flags + 10, 1ull << 48); } }
+    if (a223[c]) { a724[c] = (a50[c] <= __int_as_float(0x00000000)); }
+    if (a223[c]) { if (a724[c]) { failed = true; atomicOr(flags + 10, 1ull << 43); } }
+    if (a223[c]) { a725[c] = (a54[c] >= __int_as_float(0x00000000)); }
+    if (a223[c]) { if (a725[c]) { failed = true; atomicOr(flags + 10, 1ull << 44); } }
+    if (a223[c]) { a726[c] = (a55[c] <= __int_as_float(0x00000000)); }
+    if (a223[c]) { if (a726[c]) { failed = true; atomicOr(flags + 10, 1ull << 45); } }
+    if (a223[c]) { a727[c] = (a20[c] <= __int_as_float(0x00000000)); }
+    if (a223[c]) { if (a727[c]) { failed = true; atomicOr(flags + 10, 1ull << 46); } }
+    if (a223[c]) { a728[c] = (a42[c] <= __int_as_float(0x00000000)); }
+    if (a223[c]) { a729[c] = (a39[c] <= __int_as_float(0x00000000)); }
+    if (a223[c]) { a730[c] = (a728[c] || a729[c]); }
+    if (a223[c]) { if (a730[c]) { failed = true; atomicOr(flags + 10, 1ull << 47); } }
+    if (a223[c]) { a731[c] = (a47[c] < __int_as_float(0x00000000)); }
+    if (a223[c]) { a732[c] = (a47[c] > __int_as_float(0x3f800000)); }
+    if (a223[c]) { a733[c] = (a731[c] || a732[c]); }
+    if (a223[c]) { if (a733[c]) { failed = true; atomicOr(flags + 10, 1ull << 48); } }
     if (a223[c]) { if (failed) { ruc_sfctmp_zero_outputs(ptrs, n, c); return; } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { a702[k * n + c] = a128[k * n + c]; } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { a703[k * n + c] = a129[k * n + c]; } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { a704[k * n + c] = a130[k * n + c]; } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { a705[k * n + c] = a131[k * n + c]; } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { a706[k * n + c] = a703[k * n + c]; } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { a707[k * n + c] = a702[k * n + c]; } }
-    if (a223[c]) { ruc_soil_phase_partition(a702, a703, a704, a705, a50, a51, a54, a55, 1, a708, a709, a710, a711, a712, a713, a714, a715, n); }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a715[k * n + c])) { failed = true; atomicOr(flags + 10, 1ull << 49); } } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a714[k * n + c])) { failed = true; atomicOr(flags + 10, 1ull << 50); } } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a710[k * n + c])) { failed = true; atomicOr(flags + 10, 1ull << 51); } } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a705[k * n + c])) { failed = true; atomicOr(flags + 10, 1ull << 52); } } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a702[k * n + c])) { failed = true; atomicOr(flags + 10, 1ull << 53); } } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a708[k * n + c])) { failed = true; atomicOr(flags + 10, 1ull << 54); } } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a709[k * n + c])) { failed = true; atomicOr(flags + 10, 1ull << 55); } } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a711[k * n + c])) { failed = true; atomicOr(flags + 10, 1ull << 56); } } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a712[k * n + c])) { failed = true; atomicOr(flags + 10, 1ull << 57); } } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a713[k * n + c])) { failed = true; atomicOr(flags + 10, 1ull << 58); } } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { a734[k * n + c] = a128[k * n + c]; } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { a735[k * n + c] = a129[k * n + c]; } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { a736[k * n + c] = a130[k * n + c]; } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { a737[k * n + c] = a131[k * n + c]; } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { a738[k * n + c] = a735[k * n + c]; } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { a739[k * n + c] = a734[k * n + c]; } }
+    if (a223[c]) { ruc_soil_phase_partition(a734, a735, a736, a737, a50, a51, a54, a55, 1, a740, a741, a742, a743, a744, a745, a746, a747, n); }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a747[k * n + c])) { failed = true; atomicOr(flags + 10, 1ull << 49); } } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a746[k * n + c])) { failed = true; atomicOr(flags + 10, 1ull << 50); } } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a742[k * n + c])) { failed = true; atomicOr(flags + 10, 1ull << 51); } } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a737[k * n + c])) { failed = true; atomicOr(flags + 10, 1ull << 52); } } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a734[k * n + c])) { failed = true; atomicOr(flags + 10, 1ull << 53); } } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a740[k * n + c])) { failed = true; atomicOr(flags + 10, 1ull << 54); } } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a741[k * n + c])) { failed = true; atomicOr(flags + 10, 1ull << 55); } } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a743[k * n + c])) { failed = true; atomicOr(flags + 10, 1ull << 56); } } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a744[k * n + c])) { failed = true; atomicOr(flags + 10, 1ull << 57); } } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a745[k * n + c])) { failed = true; atomicOr(flags + 10, 1ull << 58); } } }
     if (a223[c]) { if (!isfinite(a48[c])) { failed = true; atomicOr(flags + 10, 1ull << 59); } }
     if (a223[c]) { if (!isfinite(a49[c])) { failed = true; atomicOr(flags + 10, 1ull << 60); } }
     if (a223[c]) { if (!isfinite(a50[c])) { failed = true; atomicOr(flags + 10, 1ull << 61); } }
@@ -2266,16 +2338,16 @@ real delt, real c1sn, real c2sn, real rsmax, int isice, int urban, int ncategory
     if (a223[c]) { if (!isfinite(a54[c])) { failed = true; atomicOr(flags + 10, 1ull << 63); } }
     if (a223[c]) { if (!isfinite(a55[c])) { failed = true; atomicOr(flags + 11, 1ull << 0); } }
     if (a223[c]) { if (!isfinite(a56[c])) { failed = true; atomicOr(flags + 11, 1ull << 1); } }
-    if (a223[c]) { a716[c] = (a55[c] <= __int_as_float(0x00000000)); }
-    if (a223[c]) { if (a716[c]) { failed = true; atomicOr(flags + 11, 1ull << 2); } }
-    if (a223[c]) { a717[c] = (a54[c] >= __int_as_float(0x00000000)); }
-    if (a223[c]) { if (a717[c]) { failed = true; atomicOr(flags + 11, 1ull << 3); } }
-    if (a223[c]) { a718[c] = (a56[c] < __int_as_float(0x00000000)); }
-    if (a223[c]) { if (a718[c]) { failed = true; atomicOr(flags + 11, 1ull << 4); } }
+    if (a223[c]) { a748[c] = (a55[c] <= __int_as_float(0x00000000)); }
+    if (a223[c]) { if (a748[c]) { failed = true; atomicOr(flags + 11, 1ull << 2); } }
+    if (a223[c]) { a749[c] = (a54[c] >= __int_as_float(0x00000000)); }
+    if (a223[c]) { if (a749[c]) { failed = true; atomicOr(flags + 11, 1ull << 3); } }
+    if (a223[c]) { a750[c] = (a56[c] < __int_as_float(0x00000000)); }
+    if (a223[c]) { if (a750[c]) { failed = true; atomicOr(flags + 11, 1ull << 4); } }
     if (a223[c]) { if (failed) { ruc_sfctmp_zero_outputs(ptrs, n, c); return; } }
-    if (a223[c]) { ruc_soil_properties(a715, a714, a710, a705, a702, a708, a709, a711, a712, a713, a48, a49, a50, a51, a54, a55, a56, __int_as_float(0x3f666667), a719, a720, a721, a722, n); }
-    if (a223[c]) { ruc_soil_canopy_setup(a702, a40, a155, a154, a44, a148, a20, a57, a51, a52, a723, a724, a725, a726, n); }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a708[k * n + c])) { failed = true; atomicOr(flags + 11, 1ull << 5); } } }
+    if (a223[c]) { ruc_soil_properties(a747, a746, a742, a737, a734, a740, a741, a743, a744, a745, a48, a49, a50, a51, a54, a55, a56, __int_as_float(0x3f666667), a751, a752, a753, a754, n); }
+    if (a223[c]) { ruc_soil_canopy_setup(a734, a40, a155, a154, a44, a148, a20, a57, a51, a52, a755, a756, a757, a758, n); }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a740[k * n + c])) { failed = true; atomicOr(flags + 11, 1ull << 5); } } }
     if (a223[c]) { if ((a72[c] < 1 || a72[c] >= RUC_NZS)) { failed = true; atomicOr(flags + 11, 1ull << 6); atomicMin(flags + RUC_SFCTMP_FLAG_WORDS + 710, ((unsigned long long)c << 32) | (unsigned int)a72[c]); } }
     if (a223[c]) { if (!isfinite(a14[c])) { failed = true; atomicOr(flags + 11, 1ull << 7); } }
     if (a223[c]) { if (!isfinite(a19[c])) { failed = true; atomicOr(flags + 11, 1ull << 8); } }
@@ -2285,18 +2357,18 @@ real delt, real c1sn, real c2sn, real rsmax, int isice, int urban, int ncategory
     if (a223[c]) { if (!isfinite(a52[c])) { failed = true; atomicOr(flags + 11, 1ull << 12); } }
     if (a223[c]) { if (!isfinite(a53[c])) { failed = true; atomicOr(flags + 11, 1ull << 13); } }
     if (a223[c]) { if (!isfinite(a46[c])) { failed = true; atomicOr(flags + 11, 1ull << 14); } }
-    if (a223[c]) { a727[c] = (a181[c] < 1); }
-    if (a223[c]) { a728[c] = (a181[c] > ncategory); }
-    if (a223[c]) { a729[c] = (a727[c] || a728[c]); }
-    if (a223[c]) { if (a729[c]) { failed = true; atomicOr(flags + 11, 1ull << 15); atomicMin(flags + RUC_SFCTMP_FLAG_WORDS + 719, (a181[c] < 1 ? (unsigned long long)(unsigned int)(a181[c] + 2147483648u) : (0x100000000ull | (unsigned int)(0xffffffffu - (unsigned int)(a181[c] + 2147483648u))))); } }
-    if (a223[c]) { a730[c] = (a52[c] <= a53[c]); }
-    if (a223[c]) { if (a730[c]) { failed = true; atomicOr(flags + 11, 1ull << 16); } }
+    if (a223[c]) { a759[c] = (a525[c] < 1); }
+    if (a223[c]) { a760[c] = (a525[c] > ncategory); }
+    if (a223[c]) { a761[c] = (a759[c] || a760[c]); }
+    if (a223[c]) { if (a761[c]) { failed = true; atomicOr(flags + 11, 1ull << 15); atomicMin(flags + RUC_SFCTMP_FLAG_WORDS + 719, (a525[c] < 1 ? (unsigned long long)(unsigned int)(a525[c] + 2147483648u) : (0x100000000ull | (unsigned int)(0xffffffffu - (unsigned int)(a525[c] + 2147483648u))))); } }
+    if (a223[c]) { a762[c] = (a52[c] <= a53[c]); }
+    if (a223[c]) { if (a762[c]) { failed = true; atomicOr(flags + 11, 1ull << 16); } }
     if (a223[c]) { if (failed) { ruc_sfctmp_zero_outputs(ptrs, n, c); return; } }
-    if (a223[c]) { ruc_transpiration(a708, a14, a19, a111, a50, a51, a52, a53, a46, a181, a0, a1, a5, a72, rsmax, a731, a732, n); }
-    if (true) { a733[c] = 1; }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a719[k * n + c])) { failed = true; atomicOr(flags + 11, 1ull << 17); } } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a722[k * n + c])) { failed = true; atomicOr(flags + 11, 1ull << 18); } } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a703[k * n + c])) { failed = true; atomicOr(flags + 11, 1ull << 19); } } }
+    if (a223[c]) { ruc_transpiration(a740, a14, a19, a111, a50, a51, a52, a53, a46, a525, a0, a1, a5, a72, rsmax, a763, a764, n); }
+    if (true) { a765[c] = 1; }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a751[k * n + c])) { failed = true; atomicOr(flags + 11, 1ull << 17); } } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a754[k * n + c])) { failed = true; atomicOr(flags + 11, 1ull << 18); } } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a735[k * n + c])) { failed = true; atomicOr(flags + 11, 1ull << 19); } } }
     if (a223[c]) { if ((a72[c] < 1 || a72[c] >= RUC_NZS)) { failed = true; atomicOr(flags + 11, 1ull << 20); atomicMin(flags + RUC_SFCTMP_FLAG_WORDS + 724, ((unsigned long long)c << 32) | (unsigned int)a72[c]); } }
     if (a223[c]) { if (!isfinite(a16[c])) { failed = true; atomicOr(flags + 11, 1ull << 21); } }
     if (a223[c]) { if (!isfinite(a97[c])) { failed = true; atomicOr(flags + 11, 1ull << 22); } }
@@ -2305,20 +2377,20 @@ real delt, real c1sn, real c2sn, real rsmax, int isice, int urban, int ncategory
     if (a223[c]) { if (!isfinite(a40[c])) { failed = true; atomicOr(flags + 11, 1ull << 25); } }
     if (a223[c]) { if (!isfinite(a41[c])) { failed = true; atomicOr(flags + 11, 1ull << 26); } }
     if (a223[c]) { if (!isfinite(a145[c])) { failed = true; atomicOr(flags + 11, 1ull << 27); } }
-    if (a223[c]) { if (!isfinite(a683[c])) { failed = true; atomicOr(flags + 11, 1ull << 28); } }
+    if (a223[c]) { if (!isfinite(a715[c])) { failed = true; atomicOr(flags + 11, 1ull << 28); } }
     if (a223[c]) { if (!isfinite(a44[c])) { failed = true; atomicOr(flags + 11, 1ull << 29); } }
     if (a223[c]) { if (!isfinite(a45[c])) { failed = true; atomicOr(flags + 11, 1ull << 30); } }
     if (a223[c]) { if (!isfinite(a46[c])) { failed = true; atomicOr(flags + 11, 1ull << 31); } }
     if (a223[c]) { if (!isfinite(a42[c])) { failed = true; atomicOr(flags + 11, 1ull << 32); } }
     if (a223[c]) { if (!isfinite(a101[c])) { failed = true; atomicOr(flags + 11, 1ull << 33); } }
     if (a223[c]) { if (!isfinite(a19[c])) { failed = true; atomicOr(flags + 11, 1ull << 34); } }
-    if (a223[c]) { if (!isfinite(a725[c])) { failed = true; atomicOr(flags + 11, 1ull << 35); } }
-    if (a223[c]) { if (!isfinite(a724[c])) { failed = true; atomicOr(flags + 11, 1ull << 36); } }
-    if (a223[c]) { if (!isfinite(a732[c])) { failed = true; atomicOr(flags + 11, 1ull << 37); } }
-    if (a223[c]) { if (!isfinite(a723[c])) { failed = true; atomicOr(flags + 11, 1ull << 38); } }
+    if (a223[c]) { if (!isfinite(a757[c])) { failed = true; atomicOr(flags + 11, 1ull << 35); } }
+    if (a223[c]) { if (!isfinite(a756[c])) { failed = true; atomicOr(flags + 11, 1ull << 36); } }
+    if (a223[c]) { if (!isfinite(a764[c])) { failed = true; atomicOr(flags + 11, 1ull << 37); } }
+    if (a223[c]) { if (!isfinite(a755[c])) { failed = true; atomicOr(flags + 11, 1ull << 38); } }
     if (a223[c]) { if (!isfinite(a47[c])) { failed = true; atomicOr(flags + 11, 1ull << 39); } }
-    if (a223[c]) { if (!isfinite(a726[c])) { failed = true; atomicOr(flags + 11, 1ull << 40); } }
-    if (a223[c]) { if (!isfinite(a733[c])) { failed = true; atomicOr(flags + 11, 1ull << 41); } }
+    if (a223[c]) { if (!isfinite(a758[c])) { failed = true; atomicOr(flags + 11, 1ull << 40); } }
+    if (a223[c]) { if (!isfinite(a765[c])) { failed = true; atomicOr(flags + 11, 1ull << 41); } }
     if (a223[c]) { if (!isfinite(a50[c])) { failed = true; atomicOr(flags + 11, 1ull << 42); } }
     if (a223[c]) { if (!isfinite(a51[c])) { failed = true; atomicOr(flags + 11, 1ull << 43); } }
     if (a223[c]) { if (!isfinite(a55[c])) { failed = true; atomicOr(flags + 11, 1ull << 44); } }
@@ -2326,122 +2398,122 @@ real delt, real c1sn, real c2sn, real rsmax, int isice, int urban, int ncategory
     if (a223[c]) { if (!isfinite(a154[c])) { failed = true; atomicOr(flags + 11, 1ull << 46); } }
     if (a223[c]) { if (!isfinite(a155[c])) { failed = true; atomicOr(flags + 11, 1ull << 47); } }
     if (a223[c]) { if (!isfinite(a156[c])) { failed = true; atomicOr(flags + 11, 1ull << 48); } }
-    if (a223[c]) { a734[c] = (a719[0 * n + c] <= __int_as_float(0x00000000)); }
-    if (a223[c]) { if (a734[c]) { failed = true; atomicOr(flags + 11, 1ull << 49); } }
-    if (a223[c]) { a735[c] = (a722[0 * n + c] <= __int_as_float(0x00000000)); }
-    if (a223[c]) { if (a735[c]) { failed = true; atomicOr(flags + 11, 1ull << 50); } }
-    if (a223[c]) { a736[c] = (a39[c] <= __int_as_float(0x00000000)); }
-    if (a223[c]) { if (a736[c]) { failed = true; atomicOr(flags + 11, 1ull << 51); } }
-    if (a223[c]) { a737[c] = (a42[c] <= __int_as_float(0x00000000)); }
-    if (a223[c]) { if (a737[c]) { failed = true; atomicOr(flags + 11, 1ull << 52); } }
-    if (a223[c]) { a738[c] = (a47[c] < __int_as_float(0x00000000)); }
-    if (a223[c]) { a739[c] = (a47[c] > __int_as_float(0x3f800000)); }
-    if (a223[c]) { a740[c] = (a738[c] || a739[c]); }
-    if (a223[c]) { if (a740[c]) { failed = true; atomicOr(flags + 11, 1ull << 53); } }
+    if (a223[c]) { a766[c] = (a751[0 * n + c] <= __int_as_float(0x00000000)); }
+    if (a223[c]) { if (a766[c]) { failed = true; atomicOr(flags + 11, 1ull << 49); } }
+    if (a223[c]) { a767[c] = (a754[0 * n + c] <= __int_as_float(0x00000000)); }
+    if (a223[c]) { if (a767[c]) { failed = true; atomicOr(flags + 11, 1ull << 50); } }
+    if (a223[c]) { a768[c] = (a39[c] <= __int_as_float(0x00000000)); }
+    if (a223[c]) { if (a768[c]) { failed = true; atomicOr(flags + 11, 1ull << 51); } }
+    if (a223[c]) { a769[c] = (a42[c] <= __int_as_float(0x00000000)); }
+    if (a223[c]) { if (a769[c]) { failed = true; atomicOr(flags + 11, 1ull << 52); } }
+    if (a223[c]) { a770[c] = (a47[c] < __int_as_float(0x00000000)); }
+    if (a223[c]) { a771[c] = (a47[c] > __int_as_float(0x3f800000)); }
+    if (a223[c]) { a772[c] = (a770[c] || a771[c]); }
+    if (a223[c]) { if (a772[c]) { failed = true; atomicOr(flags + 11, 1ull << 53); } }
     if (a223[c]) { if (!isfinite(a69[c])) { failed = true; atomicOr(flags + 11, 1ull << 54); } }
-    if (a223[c]) { a747[c] = (a69[c] < __int_as_float(0x00000000)); }
-    if (a223[c]) { if (a747[c]) { failed = true; atomicOr(flags + 11, 1ull << 55); } }
+    if (a223[c]) { a779[c] = (a69[c] < __int_as_float(0x00000000)); }
+    if (a223[c]) { if (a779[c]) { failed = true; atomicOr(flags + 11, 1ull << 55); } }
     if (a223[c]) { if (failed) { ruc_sfctmp_zero_outputs(ptrs, n, c); return; } }
-    if (a223[c]) { ruc_soil_temperature_step(a719, a722, a703, a16, a97, a39, a14, a40, a145, a683, a44, a45, a42, a101, a725, a724, a732, a47, a726, a150, a154, a72, a4, delt, a69, __int_as_float(0x4a7f4f60), a741, a742, a743, a744, a745, a746, n); }
-    if (a223[c]) { ruc_soil_phase_partition(a702, a741, a704, a705, a50, a51, a54, a55, 0, a748, a749, a750, a751, a752, a753, a754, a755, n); }
-    if (a223[c]) { ruc_soil_prepare_moisture(a40, a744, a44, a42, a101, a725, a731, a72, a108, a756, a757, a758, a759, a760, n); }
-    if (true) { a761[c] = 0; }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a720[k * n + c])) { failed = true; atomicOr(flags + 11, 1ull << 56); } } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a721[k * n + c])) { failed = true; atomicOr(flags + 11, 1ull << 57); } } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a756[k * n + c])) { failed = true; atomicOr(flags + 11, 1ull << 58); } } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a749[k * n + c])) { failed = true; atomicOr(flags + 11, 1ull << 59); } } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a702[k * n + c])) { failed = true; atomicOr(flags + 11, 1ull << 60); } } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a748[k * n + c])) { failed = true; atomicOr(flags + 11, 1ull << 61); } } }
-    if (a223[c]) { if (!isfinite(a744[c])) { failed = true; atomicOr(flags + 11, 1ull << 62); } }
-    if (a223[c]) { if (!isfinite(a743[c])) { failed = true; atomicOr(flags + 11, 1ull << 63); } }
-    if (a223[c]) { if (!isfinite(a745[c])) { failed = true; atomicOr(flags + 12, 1ull << 0); } }
+    if (a223[c]) { ruc_soil_temperature_step(a751, a754, a735, a16, a97, a39, a14, a40, a145, a715, a44, a45, a42, a101, a757, a756, a764, a47, a758, a150, a154, a72, a4, delt, a69, __int_as_float(0x4a7f4f60), a773, a774, a775, a776, a777, a778, n); }
+    if (a223[c]) { ruc_soil_phase_partition(a734, a773, a736, a737, a50, a51, a54, a55, 0, a780, a781, a782, a783, a784, a785, a786, a787, n); }
+    if (a223[c]) { ruc_soil_prepare_moisture(a40, a776, a44, a42, a101, a757, a763, a72, a108, a788, a789, a790, a791, a792, n); }
+    if (true) { a793[c] = 0; }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a752[k * n + c])) { failed = true; atomicOr(flags + 11, 1ull << 56); } } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a753[k * n + c])) { failed = true; atomicOr(flags + 11, 1ull << 57); } } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a788[k * n + c])) { failed = true; atomicOr(flags + 11, 1ull << 58); } } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a781[k * n + c])) { failed = true; atomicOr(flags + 11, 1ull << 59); } } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a734[k * n + c])) { failed = true; atomicOr(flags + 11, 1ull << 60); } } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a780[k * n + c])) { failed = true; atomicOr(flags + 11, 1ull << 61); } } }
+    if (a223[c]) { if (!isfinite(a776[c])) { failed = true; atomicOr(flags + 11, 1ull << 62); } }
+    if (a223[c]) { if (!isfinite(a775[c])) { failed = true; atomicOr(flags + 11, 1ull << 63); } }
+    if (a223[c]) { if (!isfinite(a777[c])) { failed = true; atomicOr(flags + 12, 1ull << 0); } }
     if (a223[c]) { if (!isfinite(a41[c])) { failed = true; atomicOr(flags + 12, 1ull << 1); } }
     if (a223[c]) { if (!isfinite(a40[c])) { failed = true; atomicOr(flags + 12, 1ull << 2); } }
-    if (a223[c]) { if (!isfinite(a759[c])) { failed = true; atomicOr(flags + 12, 1ull << 3); } }
+    if (a223[c]) { if (!isfinite(a791[c])) { failed = true; atomicOr(flags + 12, 1ull << 3); } }
     if (a223[c]) { if (!isfinite(a44[c])) { failed = true; atomicOr(flags + 12, 1ull << 4); } }
     if (a223[c]) { if (!isfinite(a102[c])) { failed = true; atomicOr(flags + 12, 1ull << 5); } }
-    if (a223[c]) { if (!isfinite(a758[c])) { failed = true; atomicOr(flags + 12, 1ull << 6); } }
-    if (a223[c]) { if (!isfinite(a761[c])) { failed = true; atomicOr(flags + 12, 1ull << 7); } }
+    if (a223[c]) { if (!isfinite(a790[c])) { failed = true; atomicOr(flags + 12, 1ull << 6); } }
+    if (a223[c]) { if (!isfinite(a793[c])) { failed = true; atomicOr(flags + 12, 1ull << 7); } }
     if (a223[c]) { if (!isfinite(a101[c])) { failed = true; atomicOr(flags + 12, 1ull << 8); } }
-    if (a223[c]) { if (!isfinite(a761[c])) { failed = true; atomicOr(flags + 12, 1ull << 9); } }
-    if (a223[c]) { if (!isfinite(a726[c])) { failed = true; atomicOr(flags + 12, 1ull << 10); } }
+    if (a223[c]) { if (!isfinite(a793[c])) { failed = true; atomicOr(flags + 12, 1ull << 9); } }
+    if (a223[c]) { if (!isfinite(a758[c])) { failed = true; atomicOr(flags + 12, 1ull << 10); } }
     if (a223[c]) { if (!isfinite(a50[c])) { failed = true; atomicOr(flags + 12, 1ull << 11); } }
     if (a223[c]) { if (!isfinite(a51[c])) { failed = true; atomicOr(flags + 12, 1ull << 12); } }
     if (a223[c]) { if (!isfinite(a52[c])) { failed = true; atomicOr(flags + 12, 1ull << 13); } }
     if (a223[c]) { if (!isfinite(a56[c])) { failed = true; atomicOr(flags + 12, 1ull << 14); } }
-    if (a223[c]) { if (!isfinite(a760[c])) { failed = true; atomicOr(flags + 12, 1ull << 15); } }
-    if (a223[c]) { a762[c] = (a50[c] <= __int_as_float(0x00000000)); }
-    if (a223[c]) { if (a762[c]) { failed = true; atomicOr(flags + 12, 1ull << 16); } }
-    if (a223[c]) { a763[c] = (a52[c] <= a51[c]); }
-    if (a223[c]) { if (a763[c]) { failed = true; atomicOr(flags + 12, 1ull << 17); } }
-    if (a223[c]) { a764[c] = (a56[c] < __int_as_float(0x00000000)); }
-    if (a223[c]) { if (a764[c]) { failed = true; atomicOr(flags + 12, 1ull << 18); } }
+    if (a223[c]) { if (!isfinite(a792[c])) { failed = true; atomicOr(flags + 12, 1ull << 15); } }
+    if (a223[c]) { a794[c] = (a50[c] <= __int_as_float(0x00000000)); }
+    if (a223[c]) { if (a794[c]) { failed = true; atomicOr(flags + 12, 1ull << 16); } }
+    if (a223[c]) { a795[c] = (a52[c] <= a51[c]); }
+    if (a223[c]) { if (a795[c]) { failed = true; atomicOr(flags + 12, 1ull << 17); } }
+    if (a223[c]) { a796[c] = (a56[c] < __int_as_float(0x00000000)); }
+    if (a223[c]) { if (a796[c]) { failed = true; atomicOr(flags + 12, 1ull << 18); } }
     if (a223[c]) { if (failed) { ruc_sfctmp_zero_outputs(ptrs, n, c); return; } }
-    if (a223[c]) { ruc_soil_moisture_step(a720, a721, a756, a749, a702, a748, a744, a743, a745, a41, a40, a759, a44, a102, a758, a761, a101, a761, a726, a50, a51, a52, a56, a760, delt, a765, a766, a767, a768, a769, a770, a771, n); }
-    if (a223[c]) { ruc_soil_finalize(a749, a741, a706, a765, a707, a705, a719, a722, a148, a758, a742, a743, a744, a745, a757, a724, a726, a760, a45, a42, a14, a39, a44, a40, a101, a683, a16, a746, delt, a772, a773, a774, a775, a776, a777, a778, a779, a780, a781, a782, a783, n); }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a765[k * n + c])) { failed = true; atomicOr(flags + 12, 1ull << 19); } } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a741[k * n + c])) { failed = true; atomicOr(flags + 12, 1ull << 20); } } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a704[k * n + c])) { failed = true; atomicOr(flags + 12, 1ull << 21); } } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a705[k * n + c])) { failed = true; atomicOr(flags + 12, 1ull << 22); } } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a749[k * n + c])) { failed = true; atomicOr(flags + 12, 1ull << 23); } } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a766[k * n + c])) { failed = true; atomicOr(flags + 12, 1ull << 24); } } }
-    if (a223[c]) { if (!isfinite(a772[c])) { failed = true; atomicOr(flags + 12, 1ull << 25); } }
-    if (a223[c]) { if (!isfinite(a758[c])) { failed = true; atomicOr(flags + 12, 1ull << 26); } }
-    if (a223[c]) { if (!isfinite(a742[c])) { failed = true; atomicOr(flags + 12, 1ull << 27); } }
-    if (a223[c]) { if (!isfinite(a743[c])) { failed = true; atomicOr(flags + 12, 1ull << 28); } }
-    if (a223[c]) { if (!isfinite(a744[c])) { failed = true; atomicOr(flags + 12, 1ull << 29); } }
-    if (a223[c]) { if (!isfinite(a745[c])) { failed = true; atomicOr(flags + 12, 1ull << 30); } }
-    if (a223[c]) { if (!isfinite(a773[c])) { failed = true; atomicOr(flags + 12, 1ull << 31); } }
-    if (a223[c]) { if (!isfinite(a774[c])) { failed = true; atomicOr(flags + 12, 1ull << 32); } }
-    if (a223[c]) { if (!isfinite(a775[c])) { failed = true; atomicOr(flags + 12, 1ull << 33); } }
-    if (a223[c]) { if (!isfinite(a776[c])) { failed = true; atomicOr(flags + 12, 1ull << 34); } }
-    if (a223[c]) { if (!isfinite(a777[c])) { failed = true; atomicOr(flags + 12, 1ull << 35); } }
-    if (a223[c]) { if (!isfinite(a778[c])) { failed = true; atomicOr(flags + 12, 1ull << 36); } }
-    if (a223[c]) { if (!isfinite(a779[c])) { failed = true; atomicOr(flags + 12, 1ull << 37); } }
-    if (a223[c]) { if (!isfinite(a780[c])) { failed = true; atomicOr(flags + 12, 1ull << 38); } }
-    if (a223[c]) { if (!isfinite(a781[c])) { failed = true; atomicOr(flags + 12, 1ull << 39); } }
-    if (a223[c]) { if (!isfinite(a782[c])) { failed = true; atomicOr(flags + 12, 1ull << 40); } }
-    if (a223[c]) { if (!isfinite(a768[c])) { failed = true; atomicOr(flags + 12, 1ull << 41); } }
-    if (a223[c]) { if (!isfinite(a769[c])) { failed = true; atomicOr(flags + 12, 1ull << 42); } }
-    if (a223[c]) { if (!isfinite(a767[c])) { failed = true; atomicOr(flags + 12, 1ull << 43); } }
-    if (a223[c]) { if (!isfinite(a770[c])) { failed = true; atomicOr(flags + 12, 1ull << 44); } }
-    if (a223[c]) { if (!isfinite(a783[c])) { failed = true; atomicOr(flags + 12, 1ull << 45); } }
+    if (a223[c]) { ruc_soil_moisture_step(a752, a753, a788, a781, a734, a780, a776, a775, a777, a41, a40, a791, a44, a102, a790, a793, a101, a793, a758, a50, a51, a52, a56, a792, delt, a797, a798, a799, a800, a801, a802, a803, n); }
+    if (a223[c]) { ruc_soil_finalize(a781, a773, a738, a797, a739, a737, a751, a754, a148, a790, a774, a775, a776, a777, a789, a756, a758, a792, a45, a42, a14, a39, a44, a40, a101, a715, a16, a778, delt, a804, a805, a806, a807, a808, a809, a810, a811, a812, a813, a814, a815, n); }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a797[k * n + c])) { failed = true; atomicOr(flags + 12, 1ull << 19); } } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a773[k * n + c])) { failed = true; atomicOr(flags + 12, 1ull << 20); } } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a736[k * n + c])) { failed = true; atomicOr(flags + 12, 1ull << 21); } } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a737[k * n + c])) { failed = true; atomicOr(flags + 12, 1ull << 22); } } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a781[k * n + c])) { failed = true; atomicOr(flags + 12, 1ull << 23); } } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a798[k * n + c])) { failed = true; atomicOr(flags + 12, 1ull << 24); } } }
+    if (a223[c]) { if (!isfinite(a804[c])) { failed = true; atomicOr(flags + 12, 1ull << 25); } }
+    if (a223[c]) { if (!isfinite(a790[c])) { failed = true; atomicOr(flags + 12, 1ull << 26); } }
+    if (a223[c]) { if (!isfinite(a774[c])) { failed = true; atomicOr(flags + 12, 1ull << 27); } }
+    if (a223[c]) { if (!isfinite(a775[c])) { failed = true; atomicOr(flags + 12, 1ull << 28); } }
+    if (a223[c]) { if (!isfinite(a776[c])) { failed = true; atomicOr(flags + 12, 1ull << 29); } }
+    if (a223[c]) { if (!isfinite(a777[c])) { failed = true; atomicOr(flags + 12, 1ull << 30); } }
+    if (a223[c]) { if (!isfinite(a805[c])) { failed = true; atomicOr(flags + 12, 1ull << 31); } }
+    if (a223[c]) { if (!isfinite(a806[c])) { failed = true; atomicOr(flags + 12, 1ull << 32); } }
+    if (a223[c]) { if (!isfinite(a807[c])) { failed = true; atomicOr(flags + 12, 1ull << 33); } }
+    if (a223[c]) { if (!isfinite(a808[c])) { failed = true; atomicOr(flags + 12, 1ull << 34); } }
+    if (a223[c]) { if (!isfinite(a809[c])) { failed = true; atomicOr(flags + 12, 1ull << 35); } }
+    if (a223[c]) { if (!isfinite(a810[c])) { failed = true; atomicOr(flags + 12, 1ull << 36); } }
+    if (a223[c]) { if (!isfinite(a811[c])) { failed = true; atomicOr(flags + 12, 1ull << 37); } }
+    if (a223[c]) { if (!isfinite(a812[c])) { failed = true; atomicOr(flags + 12, 1ull << 38); } }
+    if (a223[c]) { if (!isfinite(a813[c])) { failed = true; atomicOr(flags + 12, 1ull << 39); } }
+    if (a223[c]) { if (!isfinite(a814[c])) { failed = true; atomicOr(flags + 12, 1ull << 40); } }
+    if (a223[c]) { if (!isfinite(a800[c])) { failed = true; atomicOr(flags + 12, 1ull << 41); } }
+    if (a223[c]) { if (!isfinite(a801[c])) { failed = true; atomicOr(flags + 12, 1ull << 42); } }
+    if (a223[c]) { if (!isfinite(a799[c])) { failed = true; atomicOr(flags + 12, 1ull << 43); } }
+    if (a223[c]) { if (!isfinite(a802[c])) { failed = true; atomicOr(flags + 12, 1ull << 44); } }
+    if (a223[c]) { if (!isfinite(a815[c])) { failed = true; atomicOr(flags + 12, 1ull << 45); } }
     if (a223[c]) { if (failed) { ruc_sfctmp_zero_outputs(ptrs, n, c); return; } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { a128[k * n + c] = a765[k * n + c]; } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { a129[k * n + c] = a741[k * n + c]; } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { a130[k * n + c] = a704[k * n + c]; } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { a131[k * n + c] = a705[k * n + c]; } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { a132[k * n + c] = a749[k * n + c]; } }
-    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { a133[k * n + c] = a766[k * n + c]; } }
-    if (a223[c]) { a148[c] = a772[c]; }
-    if (a223[c]) { a153[c] = a758[c]; }
-    if (a223[c]) { a150[c] = a742[c]; }
-    if (a223[c]) { a154[c] = a743[c]; }
-    if (a223[c]) { a155[c] = a744[c]; }
-    if (a223[c]) { a156[c] = a745[c]; }
-    if (a223[c]) { a163[c] = a773[c]; }
-    if (a223[c]) { a164[c] = a774[c]; }
-    if (a223[c]) { a165[c] = a775[c]; }
-    if (a223[c]) { a166[c] = a776[c]; }
-    if (a223[c]) { a167[c] = a777[c]; }
-    if (a223[c]) { a168[c] = a778[c]; }
-    if (a223[c]) { a169[c] = a779[c]; }
-    if (a223[c]) { a171[c] = a780[c]; }
-    if (a223[c]) { a172[c] = a781[c]; }
-    if (a223[c]) { a173[c] = a782[c]; }
-    if (a223[c]) { a174[c] = a768[c]; }
-    if (a223[c]) { a175[c] = a769[c]; }
-    if (a223[c]) { a146[c] = a767[c]; }
-    if (a223[c]) { a177[c] = a783[c]; }
-    if (a223[c]) { a176[c] = a770[c]; }
-    if (a225[c]) { a784[c] = (a147[c] != a112[c]); }
-    if (a225[c]) { a785[c] = __fsub_rn(__int_as_float(0x3f800000), a147[c]); }
-    if (a225[c]) { a786[c] = __fdiv_rn(a13[c], a785[c]); }
-    if (a225[c]) { a787[c] = __fsub_rn(__int_as_float(0x3f800000), a112[c]); }
-    if (a225[c]) { a788[c] = __fmul_rn(a786[c], a787[c]); }
-    if (a225[c]) { a789[c] = (a784[c] ? a788[c] : a13[c]); }
-    if (a225[c]) { a147[c] = a112[c]; }
-    if (a225[c]) { a790[c] = __fadd_rn(a789[c], a684[c]); }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { a128[k * n + c] = a797[k * n + c]; } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { a129[k * n + c] = a773[k * n + c]; } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { a130[k * n + c] = a736[k * n + c]; } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { a131[k * n + c] = a737[k * n + c]; } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { a132[k * n + c] = a781[k * n + c]; } }
+    if (a223[c]) { for (int k = 0; k < RUC_NZS; ++k) { a133[k * n + c] = a798[k * n + c]; } }
+    if (a223[c]) { a148[c] = a804[c]; }
+    if (a223[c]) { a153[c] = a790[c]; }
+    if (a223[c]) { a150[c] = a774[c]; }
+    if (a223[c]) { a154[c] = a775[c]; }
+    if (a223[c]) { a155[c] = a776[c]; }
+    if (a223[c]) { a156[c] = a777[c]; }
+    if (a223[c]) { a163[c] = a805[c]; }
+    if (a223[c]) { a164[c] = a806[c]; }
+    if (a223[c]) { a165[c] = a807[c]; }
+    if (a223[c]) { a166[c] = a808[c]; }
+    if (a223[c]) { a167[c] = a809[c]; }
+    if (a223[c]) { a168[c] = a810[c]; }
+    if (a223[c]) { a169[c] = a811[c]; }
+    if (a223[c]) { a171[c] = a812[c]; }
+    if (a223[c]) { a172[c] = a813[c]; }
+    if (a223[c]) { a173[c] = a814[c]; }
+    if (a223[c]) { a174[c] = a800[c]; }
+    if (a223[c]) { a175[c] = a801[c]; }
+    if (a223[c]) { a146[c] = a799[c]; }
+    if (a223[c]) { a177[c] = a815[c]; }
+    if (a223[c]) { a176[c] = a802[c]; }
+    if (a225[c]) { a816[c] = (a524[c] != a112[c]); }
+    if (a225[c]) { a817[c] = __fsub_rn(__int_as_float(0x3f800000), a524[c]); }
+    if (a225[c]) { a818[c] = __fdiv_rn(a13[c], a817[c]); }
+    if (a225[c]) { a819[c] = __fsub_rn(__int_as_float(0x3f800000), a112[c]); }
+    if (a225[c]) { a820[c] = __fmul_rn(a818[c], a819[c]); }
+    if (a225[c]) { a821[c] = (a816[c] ? a820[c] : a13[c]); }
+    if (a225[c]) { a524[c] = a112[c]; }
+    if (a225[c]) { a822[c] = __fadd_rn(a821[c], a716[c]); }
     if (a225[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a85[k * n + c])) { failed = true; atomicOr(flags + 12, 1ull << 46); } } }
     if (a225[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a86[k * n + c])) { failed = true; atomicOr(flags + 12, 1ull << 47); } } }
     if (a225[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a129[k * n + c])) { failed = true; atomicOr(flags + 12, 1ull << 48); } } }
@@ -2450,7 +2522,7 @@ real delt, real c1sn, real c2sn, real rsmax, int isice, int urban, int ncategory
     if (a225[c]) { if (!isfinite(a39[c])) { failed = true; atomicOr(flags + 12, 1ull << 51); } }
     if (a225[c]) { if (!isfinite(a40[c])) { failed = true; atomicOr(flags + 12, 1ull << 52); } }
     if (a225[c]) { if (!isfinite(a145[c])) { failed = true; atomicOr(flags + 12, 1ull << 53); } }
-    if (a225[c]) { if (!isfinite(a790[c])) { failed = true; atomicOr(flags + 12, 1ull << 54); } }
+    if (a225[c]) { if (!isfinite(a822[c])) { failed = true; atomicOr(flags + 12, 1ull << 54); } }
     if (a225[c]) { if (!isfinite(a44[c])) { failed = true; atomicOr(flags + 12, 1ull << 55); } }
     if (a225[c]) { if (!isfinite(a45[c])) { failed = true; atomicOr(flags + 12, 1ull << 56); } }
     if (a225[c]) { if (!isfinite(a42[c])) { failed = true; atomicOr(flags + 12, 1ull << 57); } }
@@ -2458,53 +2530,53 @@ real delt, real c1sn, real c2sn, real rsmax, int isice, int urban, int ncategory
     if (a225[c]) { if (!isfinite(a150[c])) { failed = true; atomicOr(flags + 12, 1ull << 59); } }
     if (a225[c]) { if (!isfinite(a154[c])) { failed = true; atomicOr(flags + 12, 1ull << 60); } }
     if (a225[c]) { if (!isfinite(a155[c])) { failed = true; atomicOr(flags + 12, 1ull << 61); } }
-    if (a225[c]) { a791[c] = (a86[0 * n + c] <= __int_as_float(0x00000000)); }
-    if (a225[c]) { if (a791[c]) { failed = true; atomicOr(flags + 12, 1ull << 62); } }
-    if (a225[c]) { a792[c] = (a85[0 * n + c] <= __int_as_float(0x00000000)); }
-    if (a225[c]) { if (a792[c]) { failed = true; atomicOr(flags + 12, 1ull << 63); } }
-    if (a225[c]) { a793[c] = (a39[c] <= __int_as_float(0x00000000)); }
-    if (a225[c]) { if (a793[c]) { failed = true; atomicOr(flags + 13, 1ull << 0); } }
-    if (a225[c]) { a794[c] = (a42[c] <= __int_as_float(0x00000000)); }
-    if (a225[c]) { if (a794[c]) { failed = true; atomicOr(flags + 13, 1ull << 1); } }
+    if (a225[c]) { a823[c] = (a86[0 * n + c] <= __int_as_float(0x00000000)); }
+    if (a225[c]) { if (a823[c]) { failed = true; atomicOr(flags + 12, 1ull << 62); } }
+    if (a225[c]) { a824[c] = (a85[0 * n + c] <= __int_as_float(0x00000000)); }
+    if (a225[c]) { if (a824[c]) { failed = true; atomicOr(flags + 12, 1ull << 63); } }
+    if (a225[c]) { a825[c] = (a39[c] <= __int_as_float(0x00000000)); }
+    if (a225[c]) { if (a825[c]) { failed = true; atomicOr(flags + 13, 1ull << 0); } }
+    if (a225[c]) { a826[c] = (a42[c] <= __int_as_float(0x00000000)); }
+    if (a225[c]) { if (a826[c]) { failed = true; atomicOr(flags + 13, 1ull << 1); } }
     if (a225[c]) { if (!isfinite(a69[c])) { failed = true; atomicOr(flags + 13, 1ull << 2); } }
-    if (a225[c]) { a808[c] = (a69[c] < __int_as_float(0x00000000)); }
-    if (a225[c]) { if (a808[c]) { failed = true; atomicOr(flags + 13, 1ull << 3); } }
+    if (a225[c]) { a840[c] = (a69[c] < __int_as_float(0x00000000)); }
+    if (a225[c]) { if (a840[c]) { failed = true; atomicOr(flags + 13, 1ull << 3); } }
     if (a225[c]) { if (failed) { ruc_sfctmp_zero_outputs(ptrs, n, c); return; } }
-    if (a225[c]) { ruc_sea_ice_step(a85, a86, a129, a16, a97, a39, a40, a145, a790, a44, a45, a42, a14, a150, a154, a155, a4, delt, a69, __int_as_float(0x4a7f4f60), 0, a795, a796, a797, a798, a799, a800, a801, a802, a803, a804, a805, a806, a807, n); }
-    if (true) { for (int k = 0; k < RUC_NZS; ++k) { a809[k * n + c] = __int_as_float(0x3f800000); } }
-    if (true) { for (int k = 0; k < RUC_NZS; ++k) { a810[k * n + c] = __int_as_float(0x00000000); } }
-    if (true) { for (int k = 0; k < RUC_NZS; ++k) { a811[k * n + c] = __int_as_float(0x3f800000); } }
-    if (true) { for (int k = 0; k < RUC_NZS; ++k) { a812[k * n + c] = __int_as_float(0x3f800000); } }
-    if (true) { for (int k = 0; k < RUC_NZS; ++k) { a813[k * n + c] = __int_as_float(0x00000000); } }
-    if (a225[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a795[k * n + c])) { failed = true; atomicOr(flags + 13, 1ull << 4); } } }
-    if (a225[c]) { if (!isfinite(a796[c])) { failed = true; atomicOr(flags + 13, 1ull << 5); } }
-    if (a225[c]) { if (!isfinite(a797[c])) { failed = true; atomicOr(flags + 13, 1ull << 6); } }
-    if (a225[c]) { if (!isfinite(a798[c])) { failed = true; atomicOr(flags + 13, 1ull << 7); } }
-    if (a225[c]) { if (!isfinite(a799[c])) { failed = true; atomicOr(flags + 13, 1ull << 8); } }
-    if (a225[c]) { if (!isfinite(a800[c])) { failed = true; atomicOr(flags + 13, 1ull << 9); } }
-    if (a225[c]) { if (!isfinite(a801[c])) { failed = true; atomicOr(flags + 13, 1ull << 10); } }
-    if (a225[c]) { if (!isfinite(a802[c])) { failed = true; atomicOr(flags + 13, 1ull << 11); } }
-    if (a225[c]) { if (!isfinite(a803[c])) { failed = true; atomicOr(flags + 13, 1ull << 12); } }
-    if (a225[c]) { if (!isfinite(a804[c])) { failed = true; atomicOr(flags + 13, 1ull << 13); } }
-    if (a225[c]) { if (!isfinite(a805[c])) { failed = true; atomicOr(flags + 13, 1ull << 14); } }
-    if (a225[c]) { if (!isfinite(a806[c])) { failed = true; atomicOr(flags + 13, 1ull << 15); } }
-    if (a225[c]) { if (!isfinite(a807[c])) { failed = true; atomicOr(flags + 13, 1ull << 16); } }
+    if (a225[c]) { ruc_sea_ice_step(a85, a86, a129, a16, a97, a39, a40, a145, a822, a44, a45, a42, a14, a150, a154, a155, a4, delt, a69, __int_as_float(0x4a7f4f60), 0, a827, a828, a829, a830, a831, a832, a833, a834, a835, a836, a837, a838, a839, n); }
+    if (true) { for (int k = 0; k < RUC_NZS; ++k) { a841[k * n + c] = __int_as_float(0x3f800000); } }
+    if (true) { for (int k = 0; k < RUC_NZS; ++k) { a842[k * n + c] = __int_as_float(0x00000000); } }
+    if (true) { for (int k = 0; k < RUC_NZS; ++k) { a843[k * n + c] = __int_as_float(0x3f800000); } }
+    if (true) { for (int k = 0; k < RUC_NZS; ++k) { a844[k * n + c] = __int_as_float(0x3f800000); } }
+    if (true) { for (int k = 0; k < RUC_NZS; ++k) { a845[k * n + c] = __int_as_float(0x00000000); } }
+    if (a225[c]) { for (int k = 0; k < RUC_NZS; ++k) { if (!isfinite(a827[k * n + c])) { failed = true; atomicOr(flags + 13, 1ull << 4); } } }
+    if (a225[c]) { if (!isfinite(a828[c])) { failed = true; atomicOr(flags + 13, 1ull << 5); } }
+    if (a225[c]) { if (!isfinite(a829[c])) { failed = true; atomicOr(flags + 13, 1ull << 6); } }
+    if (a225[c]) { if (!isfinite(a830[c])) { failed = true; atomicOr(flags + 13, 1ull << 7); } }
+    if (a225[c]) { if (!isfinite(a831[c])) { failed = true; atomicOr(flags + 13, 1ull << 8); } }
+    if (a225[c]) { if (!isfinite(a832[c])) { failed = true; atomicOr(flags + 13, 1ull << 9); } }
+    if (a225[c]) { if (!isfinite(a833[c])) { failed = true; atomicOr(flags + 13, 1ull << 10); } }
+    if (a225[c]) { if (!isfinite(a834[c])) { failed = true; atomicOr(flags + 13, 1ull << 11); } }
+    if (a225[c]) { if (!isfinite(a835[c])) { failed = true; atomicOr(flags + 13, 1ull << 12); } }
+    if (a225[c]) { if (!isfinite(a836[c])) { failed = true; atomicOr(flags + 13, 1ull << 13); } }
+    if (a225[c]) { if (!isfinite(a837[c])) { failed = true; atomicOr(flags + 13, 1ull << 14); } }
+    if (a225[c]) { if (!isfinite(a838[c])) { failed = true; atomicOr(flags + 13, 1ull << 15); } }
+    if (a225[c]) { if (!isfinite(a839[c])) { failed = true; atomicOr(flags + 13, 1ull << 16); } }
     if (a225[c]) { if (failed) { ruc_sfctmp_zero_outputs(ptrs, n, c); return; } }
-    if (a225[c]) { for (int k = 0; k < RUC_NZS; ++k) { a129[k * n + c] = a795[k * n + c]; } }
-    if (a225[c]) { a153[c] = a796[c]; }
-    if (a225[c]) { a150[c] = a797[c]; }
-    if (a225[c]) { a154[c] = a798[c]; }
-    if (a225[c]) { a155[c] = a799[c]; }
-    if (a225[c]) { a156[c] = a800[c]; }
-    if (a225[c]) { a166[c] = a801[c]; }
-    if (a225[c]) { a167[c] = a802[c]; }
-    if (a225[c]) { a168[c] = a803[c]; }
-    if (a225[c]) { a169[c] = a804[c]; }
-    if (a225[c]) { a171[c] = a805[c]; }
-    if (a225[c]) { a172[c] = a806[c]; }
-    if (a225[c]) { a173[c] = a807[c]; }
-    if (a225[c]) { a814[c] = __fmul_rn(a166[c], __int_as_float(0x3a83126f)); }
-    if (a225[c]) { a163[c] = a814[c]; }
+    if (a225[c]) { for (int k = 0; k < RUC_NZS; ++k) { a129[k * n + c] = a827[k * n + c]; } }
+    if (a225[c]) { a153[c] = a828[c]; }
+    if (a225[c]) { a150[c] = a829[c]; }
+    if (a225[c]) { a154[c] = a830[c]; }
+    if (a225[c]) { a155[c] = a831[c]; }
+    if (a225[c]) { a156[c] = a832[c]; }
+    if (a225[c]) { a166[c] = a833[c]; }
+    if (a225[c]) { a167[c] = a834[c]; }
+    if (a225[c]) { a168[c] = a835[c]; }
+    if (a225[c]) { a169[c] = a836[c]; }
+    if (a225[c]) { a171[c] = a837[c]; }
+    if (a225[c]) { a172[c] = a838[c]; }
+    if (a225[c]) { a173[c] = a839[c]; }
+    if (a225[c]) { a846[c] = __fmul_rn(a166[c], __int_as_float(0x3a83126f)); }
+    if (a225[c]) { a163[c] = a846[c]; }
     if (a225[c]) { a164[c] = __int_as_float(0x00000000); }
     if (a225[c]) { a165[c] = __int_as_float(0x00000000); }
     if (a225[c]) { a174[c] = a16[c]; }
@@ -2536,7 +2608,7 @@ real delt, real c1sn, real c2sn, real rsmax, int isice, int urban, int ncategory
     if (true) { if (!isfinite(a144[c])) { failed = true; atomicOr(flags + 13, 1ull << 33); } }
     if (true) { if (!isfinite(a145[c])) { failed = true; atomicOr(flags + 13, 1ull << 34); } }
     if (true) { if (!isfinite(a146[c])) { failed = true; atomicOr(flags + 13, 1ull << 35); } }
-    if (true) { if (!isfinite(a147[c])) { failed = true; atomicOr(flags + 13, 1ull << 36); } }
+    if (true) { if (!isfinite(a524[c])) { failed = true; atomicOr(flags + 13, 1ull << 36); } }
     if (true) { if (!isfinite(a148[c])) { failed = true; atomicOr(flags + 13, 1ull << 37); } }
     if (true) { if (!isfinite(a149[c])) { failed = true; atomicOr(flags + 13, 1ull << 38); } }
     if (true) { if (!isfinite(a150[c])) { failed = true; atomicOr(flags + 13, 1ull << 39); } }
@@ -3387,3 +3459,35 @@ real delt, real c1sn, real c2sn, real rsmax, int isice, int urban, int ncategory
 #undef a812
 #undef a813
 #undef a814
+#undef a815
+#undef a816
+#undef a817
+#undef a818
+#undef a819
+#undef a820
+#undef a821
+#undef a822
+#undef a823
+#undef a824
+#undef a825
+#undef a826
+#undef a827
+#undef a828
+#undef a829
+#undef a830
+#undef a831
+#undef a832
+#undef a833
+#undef a834
+#undef a835
+#undef a836
+#undef a837
+#undef a838
+#undef a839
+#undef a840
+#undef a841
+#undef a842
+#undef a843
+#undef a844
+#undef a845
+#undef a846

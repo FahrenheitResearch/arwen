@@ -1832,6 +1832,10 @@ class PhysicsDriver:
         # WRF's topo_wind / gwd_opt; initialize_physics attaches it where
         # either is on (restart: rebuilt from the prepared statics).
         self.terrain_drag = None
+        # WRF's swint_opt = 1 carrier (gpuwm.core.swint); initialize_physics
+        # attaches it where the config asks for it (restart: rebuilt; its
+        # eleven state fields ride ``fields``).
+        self.swint = None
         self.lake = None
         self.o3rad = None
         self.fields = fields
@@ -2424,8 +2428,39 @@ class PhysicsDriver:
     def _run_radiation(self, atmosphere: Mapping[str, cp.ndarray],
                        state: DomainState, cfg: RunConfig) -> None:
         """Invoke and capture one due radiation result."""
+        radiation_fields = self.fields
+        if int(getattr(cfg, "alb_sol", 0)) == 1:
+            # The fork's radiation driver updates ALBSOL before shortwave,
+            # at the same interval-midpoint sun as legacy RRTMG. RUC owns
+            # these live arrays between calls; ALBEDO remains independent.
+            from gpuwm.core.solar_albedo import update_solar_albedo_cuda
+            from gpuwm.core.swint import calendar_scalars
+            from gpuwm.core.rrtmg_legacy import radconst, calc_coszen
+            geometry = self.radiation_callable
+            if any(not hasattr(geometry, name) for name in (
+                    "start_time", "latitude_deg", "longitude_deg")):
+                raise ValueError(
+                    "alb_sol=1 needs the radiation callable's UTC start time, "
+                    "latitude_deg and longitude_deg to evaluate local sun angle")
+            julian, xtime, gmt = calendar_scalars(
+                geometry.start_time, state.elapsed_seconds)
+            minutes = np.float32(cfg.radt if cfg.radt > 0.0
+                                 else cfg.radt_minutes)
+            declin, _ = radconst(julian)
+            def host(value):
+                return cp.asnumpy(value) if isinstance(value, cp.ndarray) else value
+            cosine = calc_coszen(
+                julian, xtime + minutes * np.float32(0.5), gmt,
+                np.asarray(host(geometry.latitude_deg), np.float32).reshape(-1),
+                np.asarray(host(geometry.longitude_deg), np.float32).reshape(-1),
+                declin)
+            update_solar_albedo_cuda(
+                self.fields, cp.asarray(cosine).reshape(self.fields["albedo"].shape),
+                initialize=(float(state.elapsed_seconds) == float(
+                    getattr(state, "domain_start_offset", 0.0) or 0.0)))
+            radiation_fields = dict(self.fields, albedo=self.fields["albsol"])
         result = self.radiation_callable(
-            atmosphere=atmosphere, fields=self.fields, state=state, cfg=cfg)
+            atmosphere=atmosphere, fields=radiation_fields, state=state, cfg=cfg)
         if not isinstance(result, RadiationResult):
             raise TypeError("radiation callable must return RadiationResult")
         nz, ny, nx = state.p.shape
@@ -2475,6 +2510,29 @@ class PhysicsDriver:
                     "callable")
             self.fields["coszen"][...] = _checked_array(
                 result.coszen, (ny, nx), "radiation COSZEN")
+        if self.swint is not None:
+            # WRF swint_opt = 1, the radiation-step half: fit this call's
+            # SWDDIR/SWDOWN against the stored reference at the call's own
+            # coszen, store the call as the reference, then evaluate the
+            # fit at the current sun (module_radiation_driver.F:2403-2409
+            # and :2422-2440; gpuwm.core.swint).  SWDOWN, SWDDIR, SWDDIF,
+            # SWDDNI and GSW leave this call as the interpolation's
+            # values, exactly as they leave WRF's driver on a radiation
+            # step.
+            if result.coszen is None:
+                raise ValueError(
+                    "swint_opt=1 needs the radiation call's COSZEN (the "
+                    "interval-midpoint zenith cosine the fit is anchored "
+                    "to); this radiation callable returned none")
+            self.swint.radiation_step(
+                self.fields,
+                albedo=radiation_fields["albedo"],
+                coszen=_checked_array(result.coszen, (ny, nx),
+                                      "radiation COSZEN"),
+                swddir=(None if result.swddir is None else _checked_array(
+                    result.swddir, (ny, nx), "radiation SWDDIR")),
+                elapsed_seconds=float(state.elapsed_seconds))
+            self._swdd_from_scheme = True
         # CARRIER CONTRACT.  Stamped HERE rather than at the consumer
         # because this is the one place that knows a carrier was actually
         # RECOMPUTED rather than re-read.  The consumer's freshness
@@ -2973,7 +3031,8 @@ class PhysicsDriver:
             itimestep = int(np.floor(
                 float(self.state.elapsed_seconds) / cfg.dt + 0.5)) + 1
             ice_component = (
-                (f["xice"] >= DTYPE(0.5)) & (f["xice"] <= DTYPE(1.0))
+                (f["xice"] >= DTYPE(self.ruc_params.xice_threshold))
+                & (f["xice"] <= DTYPE(1.0))
                 if self.ruc_params is not None else
                 cp.zeros_like(f["xice"], dtype=cp.bool_)
             )
@@ -3019,6 +3078,17 @@ class PhysicsDriver:
                      - (DTYPE(1.0) - f["xice"]) * f["tsk_sea"])
                     / denominator,
                     DTYPE(221.4))
+                # :6816-6821 of the HRRR v4.1.21 fork (module_surface_driver
+                # get_local_ice_tsk), after the TICE_MIN floor: a low ice
+                # fraction under a cold blended TSK takes 253.15 K, then
+                # 263.15 K below 0.1.  Unreachable at the 0.5 threshold;
+                # live under fractional_seaice = 1 (threshold 0.02).
+                diagnosed_ice = cp.where(
+                    (f["xice"] < DTYPE(0.2)) & (f["tsk"] < DTYPE(253.15)),
+                    DTYPE(253.15), diagnosed_ice)
+                diagnosed_ice = cp.where(
+                    (f["xice"] < DTYPE(0.1)) & (f["tsk"] < DTYPE(263.15)),
+                    DTYPE(263.15), diagnosed_ice)
                 tsk_local = cp.where(
                     ice_component, diagnosed_ice, f["tsk"]).astype(DTYPE)
             if itimestep == 1:
@@ -3076,6 +3146,7 @@ class PhysicsDriver:
                 spp_pbl=cfg.spp_pbl,
                 pattern_spp_pbl=(self.spp_patterns["pbl"][0]
                                  if cfg.spp_pbl else None),
+                variant=cfg.mynn_sfclay_variant,
             )
             if fractional_ruc:
                 # module_surface_driver.F:5441-5506.  Force the second call
@@ -3113,6 +3184,7 @@ class PhysicsDriver:
                     spp_pbl=cfg.spp_pbl,
                     pattern_spp_pbl=(self.spp_patterns["pbl"][0]
                                      if cfg.spp_pbl else None),
+                    variant=cfg.mynn_sfclay_variant,
                 )
 
                 # :5508-5554.  These diagnostics become grid-cell values
@@ -3140,7 +3212,8 @@ class PhysicsDriver:
             atmosphere["pressure"][0], atmosphere["dz"][0],
             atmosphere["p_interface"][0],
             (cp.where(
-                (f["xice"] >= DTYPE(0.5)) & (f["xice"] <= DTYPE(1.0)),
+                (f["xice"] >= DTYPE(self.ruc_params.xice_threshold))
+                & (f["xice"] <= DTYPE(1.0)),
                 f["tsk_save"], f["tsk"]).astype(DTYPE)
              if self.ruc_params is not None else f["tsk"]),
             f["pblh"], f["mavail"], f["xland"], f["lakemask"],
@@ -3148,7 +3221,7 @@ class PhysicsDriver:
             isfflx=bool(cfg.isfflx),
             isftcflx=cfg.isftcflx, iz0tlnd=cfg.iz0tlnd)
         if self.ruc_params is not None:
-            ice_component = ((f["xice"] >= DTYPE(0.5))
+            ice_component = ((f["xice"] >= DTYPE(self.ruc_params.xice_threshold))
                              & (f["xice"] <= DTYPE(1.0)))
             if bool(cp.any(ice_component)):
                 # WRF's SFCLAY*_SEAICE_WRAPPER runs the same surface layer
@@ -3565,8 +3638,13 @@ class PhysicsDriver:
             dt=self.bldt_seconds, itimestep=itimestep,
             mosaic_lu=cfg.mosaic_lu, mosaic_soil=cfg.mosaic_soil,
             lakemodel=cfg.sf_lake_physics,
+            ruc_irrigation=cfg.ruc_irrigation,
             ruc_soilprop=cfg.ruc_soilprop,
+            ruc_qvg_cold_start=cfg.ruc_qvg_cold_start,
+            ruc_2m_diagnostic=cfg.ruc_2m_diagnostic,
+            ruc_snow=cfg.ruc_snow,
             flag_sm_adj=cfg.flag_sm_adj, spp_lsm=cfg.spp_lsm,
+            alb_sol=int(getattr(cfg, "alb_sol", 0)),
             pattern_spp_lsm=(self.spp_patterns.get("lsm")
                              if cfg.spp_lsm else None),
             field_sf=f.get("field_sf"))
@@ -3924,7 +4002,14 @@ class PhysicsDriver:
             bl_mynn_mixqt=cfg.bl_mynn_mixqt,
             bl_mynn_output=cfg.bl_mynn_output,
             bl_mynn_tkeadvect=cfg.bl_mynn_tkeadvect,
-            icloud_bl=cfg.icloud_bl)
+            icloud_bl=cfg.icloud_bl,
+            # Passed only off their defaults, so a wrf_461 run hands the
+            # driver exactly the options it was handed before the selector.
+            **({"bl_mynn_version": cfg.bl_mynn_version,
+                "bl_mynn_gsd41_unsquared_qtke":
+                    cfg.bl_mynn_gsd41_unsquared_qtke,
+                "bl_mynn_cloud_tendency_form": cfg.bl_mynn_cloud_tendency_form}
+               if cfg.bl_mynn_version != "wrf_461" else {}))
         validate_mynn_tendencies(out)
         self.pbl_tendencies = self._couple_pbl_slot(
             cfg, out, atmosphere=atmosphere)
@@ -4981,6 +5066,14 @@ class PhysicsDriver:
                     self.carriers.declare("o3rad", source="cam_ozone",
                                           model_time=state.elapsed_seconds)
 
+        if self.swint is not None and not radiation_due:
+            # WRF swint_opt = 1, the every-step half: the surface shortwave
+            # at the current sun from the fit the last radiation call
+            # stored (module_radiation_driver.F:2422-2440).  A radiation
+            # step evaluated it inside _run_radiation already.
+            self.swint.between_calls(
+                self.fields, elapsed_seconds=float(state.elapsed_seconds))
+
         # WRF fixed-dt surface/PBL cadence: the mandatory ITIMESTEP=1 call
         # is followed by calls where MOD(ITIMESTEP, STEPBL) == 0.
         if (self.surface_enabled
@@ -5129,9 +5222,17 @@ class PhysicsDriver:
                 # WRF's common post-surface writer, after LSM/urban Q2 and
                 # before the PBL (module_surface_driver.F:4443-4457).
                 # Omitting it published the uncapped Noah flux inversion.
-                surface_humidity.cap_land_q2(
-                    self.fields["q2"], atmosphere["qv"][0],
-                    self.fields["xland"], xp=cp)
+                if int(cfg.sf_surface_physics) == 3:
+                    # The fork diagnostic set applies the final Q2 bound
+                    # to water too, after the lake writer (:4117-4127).
+                    surface_humidity.cap_surface_q2(
+                        self.fields["q2"], atmosphere["qv"][0],
+                        self.fields["xland"], xp=cp,
+                        include_water=cfg.ruc_2m_diagnostic == "log_profile")
+                else:
+                    surface_humidity.cap_land_q2(
+                        self.fields["q2"], atmosphere["qv"][0],
+                        self.fields["xland"], xp=cp)
             # SURFACE-MOISTURE LEDGER (opt-in, off by default).  Placed here
             # because this is the instant after the FINAL writer of Q2 has
             # run and before the PBL scheme can touch the column, which is
@@ -6084,10 +6185,28 @@ def initialize_physics(
         # six-level config and a run on the wrong soil depths, and it made
         # the geometry unreachable rather than safe: this is the line that
         # makes the two the same run.
+        # A [physics_params] set that scales VEGPARM columns hands its
+        # edited bundle here; without one (every default run) the helper
+        # returns None and the parameters load the pinned tables exactly
+        # as before.
+        from gpuwm.physics_params import ruc_bundle_for_forecast
+        from gpuwm.core.ruc import load_ruc_parameters
+        from gpuwm.core.physics_param_gpu import scale_physics_param_values
         ruc_params = RucRuntimeParameters(
+            ruc_bundle_for_forecast(load_ruc_parameters, scale_physics_param_values),
             dataset_identifier=landuse_dataset,
             seaice_albedo_default=cfg.seaice_albedo_default,
-            num_soil_layers=n_soil)
+            num_soil_layers=n_soil,
+            rdlai2d=bool(cfg.rdlai2d),
+            fractional_seaice=int(cfg.fractional_seaice))
+        if ruc_params.rdlai2d:
+            # rdlai2d keeps the LAI a road seeds from LAI12M at the start
+            # date (real.exe, module_initialize_real.F:1197) and SOILVEGIN
+            # never overwrites it (module_sf_ruclsm.F:7075).  The 2.0
+            # allocation default is no leaf area any source carries, so the
+            # field starts not-a-number and ruc_lsm_step refuses, at its
+            # first call, a road that seeded none.
+            f["lai"].fill(np.nan)
         # Fractions are immutable geography. Validate their values once,
         # avoiding a full-grid device reduction at every surface call.
         from gpuwm.core.ruc_mosaic import mosaic_fractions
@@ -6107,8 +6226,9 @@ def initialize_physics(
     if xice_threshold is not None and int(cfg.sf_surface_physics) != 4:
         raise ValueError(
             "xice_threshold is the Noah-MP sea-ice classification "
-            "threshold (sf_surface_physics=4); RUC pins its own in "
-            f"gpuwm/core/ruc_runtime.py.  Got sf_surface_physics="
+            "threshold (sf_surface_physics=4); RUC resolves its own from "
+            "RunConfig.fractional_seaice (gpuwm/core/ruc_runtime.py).  Got "
+            "sf_surface_physics="
             f"{cfg.sf_surface_physics}")
     noahmp_params = None
     noahmp_geometry = None
@@ -6193,6 +6313,24 @@ def initialize_physics(
                 CARRIER_SOURCE_EXTERNAL_ARRAY
                 if hasattr(swdown, "shape") and getattr(swdown, "ndim", 0)
                 else CARRIER_SOURCE_DECLARED_CONSTANT))
+    if int(getattr(cfg, "swint_opt", 0)) == 1:
+        # WRF swint_opt = 1 (gpuwm.core.swint): the fit coefficients, the
+        # reference call, SWDDIR/SWDDIF/SWDDNI and the radiation-call
+        # albedo, zero at the start as WRF's misc state is, serialized
+        # with the surface inventory.  GSW joins too where the land
+        # surface did not already allocate it: interp_sw_radiation writes
+        # it on every step.
+        from gpuwm.core.swint import STATE_FIELDS as _swint_fields
+        for name in (*_swint_fields, "gsw"):
+            if name not in f:
+                f[name] = cp.zeros(shape, dtype=DTYPE)
+    if int(getattr(cfg, "alb_sol", 0)) == 1:
+        if landuse_dataset not in ("MODIFIED_IGBP_MODIS_NOAH", "MODI-RUC"):
+            raise ValueError(
+                "alb_sol=1 needs the 21-category MODIS vegetation table: "
+                f"{landuse_dataset!r} assigns different meanings to IVGTYP")
+        f["albsol"] = f["albedo"].copy()
+        f["albbcksol"] = f["albbck"].copy()
     if "gsw" in f:
         carriers.declare("gsw", source=CARRIER_SOURCE_UNWRITTEN)
     if "coszen" in f:
@@ -6268,20 +6406,30 @@ def initialize_physics(
                     raise ValueError(
                         "lake initialization needs the land-use table's ISWATER "
                         "category to convert frozen lake cells")
+        # The surface's sea-ice threshold (module_surface_driver.F:1365-1368):
+        # RUC resolved it from fractional_seaice; every other LSM runs 0.5.
+        lake_xice_threshold = (ruc_params.xice_threshold
+                               if ruc_params is not None else 0.5)
         if (lake_mask_flag is not None and int(lake_mask_flag) == 0
                 or lake_mask_flag is None and lakemask is None and landuse is None):
             # lakeini's LAKEFLAG=0 branch: inland water and elevated ice
-            # become lakes. An explicit zero flag overrides a supplied mask.
+            # become lakes (module_sf_lake.F:5257-5259 of the HRRR fork,
+            # ``xice > xice_threshold``). An explicit zero flag overrides a
+            # supplied mask.
             f["lakemask"][...] = (
                 ((f["ivgtyp"] == int(lake_iswater))
-                 | (f["xice"] > DTYPE(0.5)))
+                 | (f["xice"] > DTYPE(lake_xice_threshold)))
                 & (state.ht >= DTYPE(cfg.lake_min_elev))).astype(DTYPE)
         driver.lake = initialize_lake(
             f, latitude=(noahmp_geometry.latitude_deg
                          if noahmp_geometry is not None else radiation_latitude),
             lake_depth=lake_depth, lake_depth_flag=lake_depth_flag,
             use_lakedepth=cfg.use_lakedepth,
-            lakedepth_default=cfg.lakedepth_default, iswater=lake_iswater)
+            lakedepth_default=cfg.lakedepth_default, iswater=lake_iswater,
+            # The lake reads the land-surface seam's threshold
+            # (module_surface_driver.F:1365-1368); 0.5 for every LSM but
+            # RUC, whose parameters resolved it from fractional_seaice.
+            xice_threshold=lake_xice_threshold)
     if int(getattr(cfg, "sf_urban_physics", 0)) > 0:
         # urban_param_init + urban_var_init, after the LSM's own init and
         # on its initialized TSK/TSLB/TMN/SMOIS, exactly where
@@ -6320,6 +6468,23 @@ def initialize_physics(
             state=state, cfg=cfg, fields=f, latitude=radiation_latitude,
             longitude=radiation_longitude, start_time=radiation_start_time)
         request_surface_diffuse(driver.radiation_callable)
+    if int(getattr(cfg, "swint_opt", 0)) == 1:
+        # WRF's swint_opt = 1 carrier (gpuwm.core.swint): the per-step
+        # zenith cosine and the fit kernels, on this domain's own
+        # latitude, longitude and start time.  Only where the config asks
+        # for it, so every other driver is built exactly as before.
+        from gpuwm.core.swint import ShortwaveInterpolation
+        if (radiation_latitude is None or radiation_longitude is None
+                or radiation_start_time is None):
+            raise ValueError(
+                "swint_opt = 1 needs the domain's latitude, longitude and "
+                "UTC start time (radiation_latitude/radiation_longitude/"
+                "radiation_start_time): the between-call surface shortwave "
+                "is evaluated at the local solar zenith angle every step")
+        driver.swint = ShortwaveInterpolation(
+            start_time=radiation_start_time,
+            latitude_deg=radiation_latitude,
+            longitude_deg=radiation_longitude, shape=shape)
     # WRF's topo_wind / gwd_opt (gpuwm.core.terrain_drag): the topo_wind
     # coefficients from this domain's terrain (start_em.F:1539-1626) and the
     # gwd_opt statistics, on the device once.  Only where either is on, so

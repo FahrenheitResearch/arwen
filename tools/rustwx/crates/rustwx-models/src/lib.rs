@@ -439,7 +439,11 @@ const SREF_CYCLE_HOURS: &[u8] = &[3, 9, 15, 21];
 const HOURLY_ANALYSIS_CYCLE_HOURS: &[u8] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
 ];
-const RRFS_CYCLE_HOURS: &[u8] = &[0, 6, 12, 18];
+const RRFS_CYCLE_HOURS: &[u8] = HOURLY_ANALYSIS_CYCLE_HOURS;
+const RRFS_CYCLE_HORIZONS: [u16; 24] = [
+    84, 18, 18, 18, 18, 18, 84, 18, 18, 18, 18, 18,
+    84, 18, 18, 18, 18, 18, 84, 18, 18, 18, 18, 18,
+];
 const RRFS_A_CYCLE_HOURS: &[u8] = &[
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
 ];
@@ -595,7 +599,7 @@ const AIFS_SOURCES: &[SourceDescriptor] = &[
     },
 ];
 
-// Same CONUS filename contract, separate operational and historical namespaces.
+// Same CONUS filename contract, separate v1.0 and historical namespaces.
 const RRFS_CONUS_BASES: &[(ModelId, SourceId, &str)] = &[
     (ModelId::Rrfs, SourceId::Aws, "https://noaa-rrfs-ops-pds.s3.amazonaws.com"),
     (ModelId::Rrfs, SourceId::Nomads, "https://nomads.ncep.noaa.gov/pub/data/nccf/com/rrfs/v1.0"),
@@ -604,9 +608,9 @@ const RRFS_CONUS_BASES: &[(ModelId, SourceId, &str)] = &[
 
 const RRFS_SOURCES: &[SourceDescriptor] = &[
     SourceDescriptor { id: SourceId::Aws, idx_available: true, priority: 1, max_age_hours: None,
-        notes: "NOAA operational RRFS archive (noaa-rrfs-ops-pds)" },
+        notes: "NOAA RRFS v1.0 archive (noaa-rrfs-ops-pds)" },
     SourceDescriptor { id: SourceId::Nomads, idx_available: true, priority: 2, max_age_hours: Some(48),
-        notes: "NCEP operational RRFS prslev and 2dfld products" },
+        notes: "NCEP RRFS v1.0 prslev and 2dfld products" },
 ];
 
 const RRFS_A_SOURCES: &[SourceDescriptor] = &[SourceDescriptor {
@@ -832,7 +836,7 @@ const MODELS: &[ModelSummary] = &[
     },
     ModelSummary {
         id: ModelId::Rrfs,
-        description: "Operational RRFS 3 km CONUS deterministic forecast",
+        description: "NOAA RRFS v1.0 3 km CONUS deterministic forecast",
         default_product: "prs-conus",
         cycle_hours_utc: RRFS_CYCLE_HOURS,
         max_forecast_hour: 84,
@@ -6452,7 +6456,10 @@ pub fn supported_forecast_hours(model: ModelId, cycle_hour_utc: u8) -> Vec<u16> 
         ModelId::Rtma | ModelId::Urma => vec![0],
         ModelId::Nbm => (1..=264).collect(),
         ModelId::RrfsA => (0..=60).collect(),
-        ModelId::Rrfs => if RRFS_CYCLE_HOURS.contains(&cycle_hour_utc) { (0..=84).collect() } else { Vec::new() },
+        ModelId::Rrfs => RRFS_CYCLE_HORIZONS
+            .get(usize::from(cycle_hour_utc))
+            .map(|last| (0..=*last).collect())
+            .unwrap_or_default(),
         ModelId::RrfsPublic => (0..=60).collect(),
         ModelId::Refs => (1..=60).collect(),
         ModelId::RrfsFireWx => (0..=36).collect(),

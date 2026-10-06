@@ -191,6 +191,30 @@ def terrain_smoothed_mslp(mslp_hpa: np.ndarray,
     return np.where(weight > 0.0, mslp + weight * (candidate - mslp), mslp)
 
 
+def _interface_heights(ds, phi: np.ndarray, pressure_pa: np.ndarray):
+    """``level_hpa -> (ny, nx)`` isobaric height (m), read between the
+    frame's layer interfaces by the Rust ``rw-isobaric`` reader
+    (:mod:`gpuwm.isobaric_bridge`) every chart of the run uses.
+
+    A frame that states no eta levels (ZNW) is a height-coordinate frame,
+    whose mass level is its layer's middle in height: the layer mean is
+    then the mass level's own height and is read at its pressure.
+    """
+    from gpuwm import isobaric_bridge
+
+    if "ZNW" not in ds.variables:
+        layer_mean = 0.5 * (phi[:-1] + phi[1:]) / isobaric_bridge.STANDARD_GRAVITY
+        return lambda level: _interpolate_to_pressure(
+            layer_mean, pressure_pa / 100.0, level)
+    eta = dict(eta_interface=_read_wrf_field(ds, "ZNW"),
+               eta_mass=(_read_wrf_field(ds, "ZNU") if "ZNU" in ds.variables
+                         else None))
+    ph, phb = _read_wrf_field(ds, "PH"), _read_wrf_field(ds, "PHB")
+    return lambda level: isobaric_bridge.isobaric_heights(
+        ph, pressure_pa, (float(level) * 100.0,), interface_plus=phb,
+        per_metre=isobaric_bridge.STANDARD_GRAVITY, **eta)[0]
+
+
 def _wrf_diagnostics(path: Path) -> dict[str, object]:
     """Read comparison and map fields without a wrf-python dependency."""
     from gpuwm import netcdf_bridge
@@ -208,7 +232,11 @@ def _wrf_diagnostics(path: Path) -> dict[str, object]:
         u = 0.5 * (u_stag[..., :-1] + u_stag[..., 1:])
         v = 0.5 * (v_stag[:, :-1, :] + v_stag[:, 1:, :])
         phi = _read_wrf_field(ds, "PH") + _read_wrf_field(ds, "PHB")
-        height = 0.5 * (phi[:-1] + phi[1:]) / 9.81
+        # Isobaric height between layer interfaces, in geopotential metres
+        # (standard gravity), as every chart reads it: the layer-mean
+        # height paired with the mass-level pressure read 500 hPa about
+        # 5 m high, and dividing by the model's 9.81 put it 2 m low.
+        interface_heights = _interface_heights(ds, phi, pressure_pa)
         qv = _read_wrf_field(ds, "QVAPOR")
         # Audit R16: the previous single-level exponential lift left a
         # terrain-correlated deviation vs the standard diagnostic (rms
@@ -228,7 +256,7 @@ def _wrf_diagnostics(path: Path) -> dict[str, object]:
                     temperature, pressure, level),
                 "u": _interpolate_to_pressure(u, pressure, level),
                 "v": _interpolate_to_pressure(v, pressure, level),
-                "height": _interpolate_to_pressure(height, pressure, level),
+                "height": interface_heights(level),
             }
         return {
             "pressure": pressure, "levels": levels, "mslp": mslp,

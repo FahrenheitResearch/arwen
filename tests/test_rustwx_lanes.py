@@ -39,11 +39,13 @@ def _built(name: str) -> Path | None:
 
 _ENSEMBLE = _built(rustwx_lanes.ENSEMBLE_NAME)
 _OBSGRID = _built(rustwx_lanes.OBSGRID_NAME)
+_COMPARE = _built(rustwx_lanes.COMPARE_NAME)
 _BUILD_HINT = ("this checkout has not built the rustwx workspace (cd "
                "tools/rustwx && cargo build --release --locked --offline)")
 
 needs_ensemble = pytest.mark.skipif(_ENSEMBLE is None, reason=_BUILD_HINT)
 needs_obsgrid = pytest.mark.skipif(_OBSGRID is None, reason=_BUILD_HINT)
+needs_compare = pytest.mark.skipif(_COMPARE is None, reason=_BUILD_HINT)
 
 
 # ---------------------------------------------------------------------------
@@ -74,10 +76,18 @@ def test_the_obsgrid_marker_is_the_built_binary_s_own_answer():
     assert probe.stdout.strip() == rustwx_lanes.OBSGRID_ABI_MARKER
 
 
+@needs_compare
+def test_the_compare_marker_is_the_built_binary_s_own_answer():
+    probe = subprocess.run([str(_COMPARE), "--abi"], capture_output=True,
+                           text=True, errors="replace", timeout=60)
+    assert probe.returncode == 0, probe.stderr
+    assert probe.stdout.strip() == rustwx_lanes.COMPARE_ABI_MARKER
+
+
 def test_no_two_bundled_binaries_pin_the_same_marker():
     """The renderer was the odd one out once; nothing may be again.
 
-    Five binaries now answer ``--abi``.  If two of them pinned the same
+    Six binaries now answer ``--abi``.  If two of them pinned the same
     line, one would verify against the other's contract and a bundle
     could ship the wrong pair with every probe green.
     """
@@ -91,6 +101,7 @@ def test_no_two_bundled_binaries_pin_the_same_marker():
         "rw_wrfbatch": rustwx.RENDERER_ABI_MARKER,
         "rw_ensbatch": rustwx_lanes.ENSEMBLE_ABI_MARKER,
         "rw_obsgrid": rustwx_lanes.OBSGRID_ABI_MARKER,
+        "rw_compare": rustwx_lanes.COMPARE_ABI_MARKER,
     }
     for name, marker in markers.items():
         assert isinstance(marker, str) and marker.strip(), name
@@ -112,6 +123,19 @@ def test_a_binary_that_predates_the_handshake_is_refused(monkeypatch,
     assert ok is False
     assert "--abi does not match the contract" in evidence
     assert "cargo build" in evidence
+
+
+def test_compare_rejects_a_binary_that_cannot_apply_the_selected_theme(monkeypatch, tmp_path):
+    from gpuwm import bridges
+
+    monkeypatch.setattr(bridges, "launchable", lambda path: (True, "ok"))
+    old_marker = rustwx_lanes.COMPARE_ABI_MARKER.split(
+        "\tgpuwm-rw-compare-presentation-v1", 1)[0]
+    monkeypatch.setattr(rustwx_lanes.subprocess, "run", lambda *a, **k:
+        SimpleNamespace(returncode=0, stdout=old_marker + "\n", stderr=""))
+    ok, evidence = rustwx_lanes.probe_compare_bin(tmp_path / "rw_compare")
+    assert ok is False
+    assert "--abi does not match the contract" in evidence
 
 
 def test_a_binary_answering_the_right_contract_is_accepted(monkeypatch,

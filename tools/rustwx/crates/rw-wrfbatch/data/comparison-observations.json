@@ -1,0 +1,47 @@
+[
+  {
+    "name": "mrms",
+    "label": "MRMS",
+    "source_label": "NOAA MRMS, noaa-mrms-pds",
+    "bucket": "noaa-mrms-pds",
+    "region": "CONUS",
+    "file_prefix": "MRMS_",
+    "parameter_table": "https://www.nssl.noaa.gov/projects/mrms/operational/tables.php",
+    "products": [
+      {
+        "product": "refc",
+        "message": "QC composite reflectivity",
+        "candidates": ["MergedReflectivityQCComposite_00.50"],
+        "parameters": [[209, 10, 0]],
+        "center": 161,
+        "subcenter": 0,
+        "level_type": 102,
+        "level_value": 500.0,
+        "units": "dBZ",
+        "message_template": 0,
+        "forecast_time": 0,
+        "valid_time_basis": "reference_time",
+        "missing_values": [-99.0, -999.0],
+        "time": {"kind": "nearest", "tolerance_seconds": 120},
+        "accumulation_seconds": null
+      },
+      {
+        "product": "qpf1h",
+        "message": "Multi-sensor QPE, 1 h",
+        "candidates": ["MultiSensor_QPE_01H_Pass2_00.00", "MultiSensor_QPE_01H_Pass1_00.00"],
+        "parameters": [[209, 6, 37], [209, 6, 30]],
+        "center": 161,
+        "subcenter": 0,
+        "level_type": 102,
+        "level_value": 0.0,
+        "units": "mm",
+        "message_template": 0,
+        "forecast_time": 0,
+        "valid_time_basis": "reference_time",
+        "missing_values": [-1.0, -3.0],
+        "time": {"kind": "exact_hour_end"},
+        "accumulation_seconds": 3600
+      }
+    ]
+  }
+]

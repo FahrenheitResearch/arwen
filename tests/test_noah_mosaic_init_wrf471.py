@@ -9,7 +9,7 @@ from gpuwm.core.noah_mosaic import (
 )
 from gpuwm.verify.noah_mosaic_oracle import load, wrf_to_gpuwm
 
-ROOT = Path(__file__).resolve().parents[1] / "gpuwm/data/noah_mosaic/oracle/mosaic_init"
+ROOT = Path(__file__).resolve().parents[1] / "tests/data/oracles/noah_mosaic/mosaic_init"
 INPUTS = ("ivgtyp xland xice tsk tslb smois sh2o snow snowc snowh canwat "
           "albedo albbck emiss embck znt").split()
 

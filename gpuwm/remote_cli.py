@@ -477,6 +477,8 @@ def register_cli(subparsers) -> None:
             command.add_argument("--products", help="render catalog selectors separated by commas; omit for this run's own selection, empty for the node's default set")
             command.add_argument("--width", type=int, help="panel width in pixels, 256..4096; default 1200")
             command.add_argument("--height", type=int, help="panel height in pixels, 256..4096; default 900")
+            command.add_argument("--theme", help="built-in theme or theme JSON path on the node; files may extend woof-light or woof-dark")
+            command.add_argument("--layout", choices=("auto", "fixed"), help="auto sizes each canvas from its domain; fixed keeps the requested size, default 1200x900")
         if action == "sync-processed-frame":
             command.add_argument("--cache-root", required=True, help="owned local directory for immutable native processed stores")
             command.add_argument("--sequence", type=int, help="exact native output commit sequence; omit for latest")

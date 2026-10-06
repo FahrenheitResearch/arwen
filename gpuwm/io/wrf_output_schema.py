@@ -823,8 +823,16 @@ PHYSICS_SELECTOR_GLOBALS: tuple[WrfSelectorGlobal, ...] = (
 #: of them would mean two schemes disagreeing about one array's identity; the
 #: merge refuses that rather than letting dict order decide.
 SCHEME_OUTPUT_FIELDS: dict[str, WrfOutputField] = {}
+SOLAR_ALBEDO_OUTPUT_FIELDS = {
+    "albsol": WrfOutputField(
+        "ALBSOL", "f4", "", "albedo corrected for solar angle", "",
+        "Registry.EM_COMMON:1586 (HRRR v4.1.21)", wrf_history=True),
+    "albbcksol": WrfOutputField(
+        "ALBBCKSOL", "f4", "", "BACKGROUND ALBEDO corrected for solar angle", "",
+        "Registry.EM_COMMON:1587 (HRRR v4.1.21)", wrf_history=True),
+}
 for _group in (MYNN_PBL_OUTPUT_FIELDS, NOAHMP_OUTPUT_FIELDS,
-               RUC_OUTPUT_FIELDS):
+               RUC_OUTPUT_FIELDS, SOLAR_ALBEDO_OUTPUT_FIELDS):
     for _key, _field in _group.items():
         _clash = SCHEME_OUTPUT_FIELDS.get(_key)
         if _clash is not None and _clash != _field:
@@ -1036,6 +1044,7 @@ REGISTRY_VAR_META: dict[str, tuple[str, str]] = {
                  "m2 s-1"),
     "PBLH": ("PBL HEIGHT", "m"),
     "GRDFLX": ("GROUND HEAT FLUX", "W m-2"),
+    "GSW": ("NET SHORTWAVE FLUX AT GROUND", "W m-2"),
     "PSIM": ("SIMILARITY STABILITY FUNCTION FOR MOMENTUM", ""),
     "PSIH": ("SIMILARITY STABILITY FUNCTION FOR HEAT", ""),
     "XLAT": ("LATITUDE, SOUTH IS NEGATIVE", "degree_north"),

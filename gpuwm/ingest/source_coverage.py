@@ -44,6 +44,84 @@ SOURCE_COVERAGE_EXIT_CODE = 78
 #: cannot make this run" with one number whatever the reason was.
 PREPARATION_REFUSAL_EXIT_CODE = SOURCE_COVERAGE_EXIT_CODE
 
+#: An explicitly selected identity pairing: a target that IS a declared
+#: source grid, with the same mass dimensions and every point on its own
+#: source cell, copies index for index instead of interpolating.
+#: Maximum residual in source cells against either declared lattice.
+#: This covers rounding of the geographic anchor, rather than an
+#: arbitrary shift of the target.
+LATTICE_IDENTITY_ANCHOR_CELLS = 1.0e-4
+#: ... and every point must project strictly closer than this to its own
+#: lattice position, the geometric limit past which a point belongs to
+#: another cell.  A grid spelled on WPS's sphere and the same grid's GRIB
+#: header on another sphere drift apart with distance from the anchor
+#: (MEASURED on the 1799 x 1059 3 km CONUS grid: +0.347 / +0.204 cells in
+#: x / y at its far corner, 6,370 km against 6,371.229 km).
+LATTICE_IDENTITY_LIMIT_CELLS = 0.5
+
+
+def lattice_identity(y_index, x_index, *, nx: int, ny: int,
+                     sphere_scale: float = 1.0):
+    """The source lattice indices of a target that IS the source grid.
+
+    Callers select this geometric check only for sources whose metadata
+    declares identity pairing. Unmarked sources keep their prior indices.
+
+    ``y_index``/``x_index`` are a target staggering's zero-based
+    fractional source indices, as the declared projection maps them; the
+    source grid has ``ny x nx`` mass points.  The target is the source
+    grid's own mass points (shape ``(ny, nx)``), its u faces (``(ny, nx +
+    1)``, face ``i`` at ``i - 1/2``) or its v faces (``(ny + 1, nx)``),
+    with every point within :data:`LATTICE_IDENTITY_ANCHOR_CELLS` of
+    either the exact lattice or that lattice scaled by the declared
+    source sphere's radius divided by the WPS radius (``sphere_scale``).
+    This allows rounded source anchors and the two declared sphere
+    conventions, without accepting an arbitrary spacing change, shift
+    or local distortion.  Every point must also lie strictly within
+    :data:`LATTICE_IDENTITY_LIMIT_CELLS` of its own cell.  The exact indices
+    are returned, the outermost faces (half a cell past the grid's edge)
+    clamped onto the edge cell, so mass points copy their own cell and an
+    interior face reads its two neighbours.  ``None`` for every other
+    target, which keeps the projected indices it came with.
+
+    Breakage it removes: the native grid as a target was refused by every
+    coverage guard, because its outermost faces and cell corners sit half
+    a cell past the source's outermost points, and the advice was a one-
+    row trim that moved the boundary relaxation zone one row inward of
+    the grid's own.
+    """
+
+    y_index = np.asarray(y_index, dtype=np.float64)
+    x_index = np.asarray(x_index, dtype=np.float64)
+    shape = tuple(y_index.shape)
+    nx, ny = int(nx), int(ny)
+    offsets = {(ny, nx): (0.0, 0.0), (ny, nx + 1): (0.0, -0.5),
+               (ny + 1, nx): (-0.5, 0.0)}.get(shape)
+    if offsets is None or tuple(x_index.shape) != shape:
+        return None
+    if not (np.isfinite(y_index).all() and np.isfinite(x_index).all()):
+        return None
+    offset_y, offset_x = offsets
+    rows, cols = np.indices(shape, dtype=np.float64)
+    lattice_y = rows + offset_y
+    lattice_x = cols + offset_x
+    if not np.isfinite(sphere_scale) or sphere_scale <= 0.0:
+        return None
+    matched = any(
+        max(float(np.abs(y_index - lattice_y * scale).max()),
+            float(np.abs(x_index - lattice_x * scale).max()))
+        <= LATTICE_IDENTITY_ANCHOR_CELLS
+        for scale in (1.0, float(sphere_scale)))
+    if not matched:
+        return None
+    drift = max(float(np.abs(y_index - lattice_y).max()),
+                float(np.abs(x_index - lattice_x).max()))
+    if not drift < LATTICE_IDENTITY_LIMIT_CELLS:
+        return None
+    return (np.clip(lattice_y, 0.0, float(ny - 1)),
+            np.clip(lattice_x, 0.0, float(nx - 1)))
+
+
 #: What to DO about it.  Both branches are named because the message
 #: above distinguishes them and they do not share a fix.
 SOURCE_COVERAGE_REMEDY = (
@@ -573,6 +651,7 @@ __all__ = [
     "compose_scratch_folder",
     "compose_scratch_override_refusal",
     "existing_output_root_refusal",
+    "lattice_identity",
     "outside_source_grid_message",
     "owns_source_coverage_refusal",
     "recorded_preparation_refusal",

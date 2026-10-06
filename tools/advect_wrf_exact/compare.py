@@ -9,10 +9,19 @@ from types import ModuleType
 PIN_RECEIPT={}
 
 
-def verify_fixture_pins():
+def verify_fixture_pins(directory=None):
     """Reject comparison against altered input or compiled-reference archives."""
     from gpuwm.verify.advect_oracle import ADVECT_ORACLE_DIR
     root=Path(__file__).resolve().parents[2]
+    if directory is not None:
+        # Another fixture directory (the HRRR-fork fixture): its manifest
+        # pins the shared 4.7.1 inputs and its own references are read
+        # through the same loader; record their digests here.
+        directory=Path(directory)
+        checked={}
+        for path in sorted(directory.glob("*.npz"))+[directory/"cases.json"]:
+            checked[path.as_posix()]=hashlib.sha256(path.read_bytes()).hexdigest()
+        return {"manifest_sha256":checked[(directory/"cases.json").as_posix()],"files":checked}
     manifest=ADVECT_ORACLE_DIR/"oracle-sha256sums.txt"
     checked={}
     for line in manifest.read_text(encoding="utf-8").splitlines():
@@ -81,12 +90,18 @@ def exact_pd_diagnostics(case,a,coord,fluxes,variant):
     return h,z
 
 
-def compare():
+def compare(directory=None,outputs=None):
+    """Measure every supported routine of every case against its reference.
+
+    ``directory`` selects another fixture directory (default: the WRF 4.7.1
+    fixture); when ``outputs`` is a dict it receives each case's CUDA
+    outputs by case name, for comparisons against a second reference.
+    """
     global PIN_RECEIPT
     from gpuwm.wrf_exact import ADVECTION_ENABLED
     if not ADVECTION_ENABLED:
         raise RuntimeError("Set GPUWM_WRF_EXACT=1 and GPUWM_WRF_EXACT_ADVECTION=1 before import")
-    PIN_RECEIPT=verify_fixture_pins()
+    PIN_RECEIPT=verify_fixture_pins(directory)
     from gpuwm.verify import advect_oracle as original
     source=Path(original.__file__).read_text(encoding="utf-8")
     source=source.replace('coord = SimpleNamespace(**{key: a[key] for key in ("rdnw", "rdn", "fnm", "fnp", "c1h", "c2h")})',
@@ -100,17 +115,20 @@ def compare():
     exec(compile(source,original.__file__,"exec"),adapter.__dict__)
     adapter._pd_diagnostics=exact_pd_diagnostics
     result={}
-    for case in adapter.load_advect_cases():
-        outputs=adapter.advect_port_outputs(case)
-        result[case.name]=adapter.measure_advect_parity(case,outputs)
+    for case in adapter.load_advect_cases(directory):
+        words=adapter.advect_port_outputs(case)
+        if outputs is not None:
+            outputs[case.name]=words
+        result[case.name]=adapter.measure_advect_parity(case,words)
     return result
 
 
 def main():
     p=argparse.ArgumentParser()
     p.add_argument("--output",type=Path,required=True)
+    p.add_argument("--directory",type=Path,default=None)
     a=p.parse_args()
-    result=compare()
+    result=compare(a.directory)
     a.output.write_text(json.dumps(result,indent=2)+"\n",encoding="utf-8")
     a.output.with_suffix(".pins.json").write_text(json.dumps(PIN_RECEIPT,indent=2)+"\n",encoding="utf-8")
     print(json.dumps({case:{routine:{k:v for k,v in metric.items() if k in

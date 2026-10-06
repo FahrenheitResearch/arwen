@@ -72,6 +72,7 @@ def test_all_front_door_presets_route_without_changing_their_switches():
     {"use_adaptive_time_step": True}, {"bldt": 5.0},
     {"sf_surface_mosaic": 1}, {"sf_urban_physics": 1},
     {"topo_wind": 1}, {"gwd_opt": 3}, {"slope_rad": 1},
+    {"swint_opt": 1}, {"aer_opt": 3},
 ])
 def test_unqualified_piece_uses_original_route_and_preserves_config(changes):
     cfg = replace(_cfg(), **changes)

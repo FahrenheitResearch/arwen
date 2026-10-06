@@ -11,7 +11,7 @@ of the perturbation momenta/Omega'' plus the stage-reference fluxes from
 stage fluxes exactly as WRF's ``rk_tendency`` does; moisture never
 re-derives Omega (Task 5 retired the ``rw = -(mu*w)`` placeholder in
 advection.py).
-Stages 1-2 use the unlimited 5th/3rd-order flux divergence
+Stages 1-2 use the unlimited flux divergence (v_sca_adv_order vertical)
 (advection.py/advection.cu); the RK3 FINAL stage only -- exactly as WRF
 applies its PD filter -- decomposes every face flux as ``F = F_upwind1 +
 F_corr`` and renormalizes the outgoing corrections of any cell they would
@@ -19,7 +19,13 @@ overdraw (kernels/pd_advection.cu: ``pd_fluxes`` + ``pd_renorm_apply``;
 float64 mirrors ``np_pd_fluxes``/``np_pd_renorm_apply`` in
 gpuwm.verify.npref).
 
-The renormalization is exactly positive in exact arithmetic; the final
+The renormalization is positive in exact arithmetic at both vertical
+orders.  Order 5 replaces the low-order eta flux above face Courant 1 with
+the fork's semi-Lagrangian sum of the upstream cells; below it keeps the
+upwind flux.  (The fork's own small-Courant branch takes the downstream
+cell, drains empty cells and, through the clamp below, manufactured
+scalar mass; only the strict WRF verification build carries it,
+kernels/pd_vertical_sl.cu.)  The final
 stage update clamps FP32 rounding residuals (order 1 ulp of the
 renormalized outflow, in cells the limiter already drove to ~0) at zero,
 which perturbs total scalar mass far below the 1e-6 relative conservation
@@ -69,7 +75,7 @@ import numpy as np
 
 from gpuwm.config import RunConfig
 from gpuwm.core import constants as c
-from gpuwm.core.advection import launch_flux_div_scalar
+from gpuwm.core.advection import launch_flux_div_scalar, vertical_orders
 from gpuwm.core.grid import BaseState, VerticalCoord
 from gpuwm.grid_requirements import FIFTH_ORDER_STENCIL_AXIS
 from gpuwm.core.kernels import get_kernel
@@ -287,7 +293,7 @@ def _mut2d(mu, ny: int, nx: int) -> cp.ndarray:
 def launch_pd_fluxes(q, q0, ru, rv, rw, mut, coord, dx, dy, dt,
                      fxl, fxc, fyl, fyc, fzl, fzc,
                      msft=None, has_msf=None,
-                     open_x=False, open_y=False) -> None:
+                     open_x=False, open_y=False, vorder=3) -> None:
     """Fill the six PD flux arrays for scalar ``q`` (see pd_advection.cu).
 
     ``q`` is the RK stage estimate (high-order fluxes), ``q0`` the time-t
@@ -299,9 +305,20 @@ def launch_pd_fluxes(q, q0, ru, rv, rw, mut, coord, dx, dy, dt,
     ``advect_scalar_pd``).  ``open_x``/``open_y`` select WRF's
     specified/open boundary treatment along that axis (zero boundary-normal
     faces + degraded near-boundary stencils, no wrap); an open axis needs
-    >= 7 cells so the degrade bands cannot overlap.
+    >= 7 cells so the degrade bands cannot overlap.  ``vorder`` is WRF's
+    ``v_sca_adv_order`` (3 or 5): the high-order vertical flux the
+    limiter corrects against takes that ladder. At order 5 a separate
+    kernel replaces the upwind low-order flux with the fork's
+    semi-Lagrangian upstream sum on faces above Courant 1; every other face
+    keeps the upwind flux (the fork's downstream cell there is confined to
+    the strict WRF verification build: it drained empty cells and the
+    final clamp turned that into mass). Order 3 never loads that kernel.
     """
     nz, ny, nx = q.shape
+    if vorder not in (3, 5):
+        raise ValueError(
+            f"vorder must be 3 or 5 (WRF vert_order ladders the PD kernel "
+            f"carries), got {vorder!r}")
     if open_x and nx < FIFTH_ORDER_STENCIL_AXIS:
         raise ValueError(f"open_x PD advection needs nx >= 7, got {nx}")
     if open_y and ny < FIFTH_ORDER_STENCIL_AXIS:
@@ -312,8 +329,7 @@ def launch_pd_fluxes(q, q0, ru, rv, rw, mut, coord, dx, dy, dt,
         msft = cp.ones((ny, nx), dtype=DTYPE)
     kern = get_kernel("pd_advection", "pd_fluxes")
     grid = ((nx + 1 + _TPB - 1) // _TPB, ny + 1, nz + 1)
-    kern(grid, (_TPB, 1, 1),
-         (q, q0, ru, rv, rw, _mut2d(mut, ny, nx),
+    args = (q, q0, ru, rv, rw, _mut2d(mut, ny, nx),
           cp.asarray(coord.c1h, dtype=DTYPE),
           cp.asarray(coord.c2h, dtype=DTYPE),
           cp.asarray(coord.rdnw, dtype=DTYPE),
@@ -322,7 +338,11 @@ def launch_pd_fluxes(q, q0, ru, rv, rw, mut, coord, dx, dy, dt,
           DTYPE(dx), DTYPE(dy), DTYPE(dt),
           fxl, fxc, fyl, fyc, fzl, fzc,
           np.int32(nz), np.int32(ny), np.int32(nx), np.int32(has_msf),
-          np.int32(open_x), np.int32(open_y)))
+          np.int32(open_x), np.int32(open_y), np.int32(vorder))
+    kern(grid, (_TPB, 1, 1), args)
+    if vorder == 5:
+        get_kernel("pd_vertical_sl", "pd_vertical_sl")(
+            grid, (_TPB, 1, 1), args)
 
 
 def launch_pd_renorm_apply(q0, mu_old, fxl, fxc, fyl, fyc, fzl, fzc,
@@ -744,7 +764,8 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
             launch_pd_fluxes(q, q0_eff, ru, rv, ww_explicit, mu, state,
                              cfg.dx, cfg.dy, dt_eff, *bufs,
                              msft=state.msft, has_msf=state.has_msf,
-                             open_x=boundary_x, open_y=boundary_y)
+                             open_x=boundary_x, open_y=boundary_y,
+                             vorder=vertical_orders(cfg)[0])
             launch_pd_renorm_apply(q0_eff, mu0, *bufs, tend=tend,
                                    coord=state,
                                    dx=cfg.dx, dy=cfg.dy, dt=dt_eff,
@@ -769,7 +790,8 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
                                    cfg.dx, cfg.dy,
                                    open_x=boundary_x, open_y=boundary_y,
                                    msf=state.msft, has_msf=state.has_msf,
-                                   spec=boundary_forced)
+                                   spec=boundary_forced,
+                                   vorder=vertical_orders(cfg)[0])
             if implicit is not None:
                 _ieva_scalar(state, tend, q0, implicit, mu0, mu, dt_eff)
             if export_advective_forcing and name == "qv":
@@ -847,7 +869,8 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
                 launch_pd_fluxes(q, q0_eff, ru, rv, ww_explicit, mu, state,
                                  cfg.dx, cfg.dy, dt_eff, *bufs,
                                  msft=state.msft, has_msf=state.has_msf,
-                                 open_x=boundary_x, open_y=boundary_y)
+                                 open_x=boundary_x, open_y=boundary_y,
+                                 vorder=vertical_orders(cfg)[0])
                 launch_pd_renorm_apply(q0_eff, mu0, *bufs, tend=tend,
                                        coord=state,
                                        dx=cfg.dx, dy=cfg.dy, dt=dt_eff,
@@ -871,7 +894,8 @@ def advance_scalars_stage(state: DomainState, cfg: RunConfig,
                                        open_x=boundary_x, open_y=boundary_y,
                                        msf=state.msft,
                                        has_msf=state.has_msf,
-                                       spec=boundary_forced)
+                                       spec=boundary_forced,
+                                       vorder=vertical_orders(cfg)[0])
                 if implicit is not None:
                     _ieva_scalar(state, tend, q0, implicit, mu0, mu, dt_eff)
                 held = held_lbc.get(name)
@@ -1087,7 +1111,8 @@ def advance_tke_stage(state: DomainState, cfg: RunConfig,
         launch_pd_fluxes(q, q0_eff, ru, rv, ww, mu, state,
                          cfg.dx, cfg.dy, dt_eff, *bufs,
                          msft=state.msft, has_msf=state.has_msf,
-                         open_x=boundary_x, open_y=boundary_y)
+                         open_x=boundary_x, open_y=boundary_y,
+                         vorder=vertical_orders(cfg)[0])
         launch_pd_renorm_apply(q0_eff, mu0, *bufs, tend=tend,
                                coord=state,
                                dx=cfg.dx, dy=cfg.dy, dt=dt_eff,
@@ -1106,7 +1131,8 @@ def advance_tke_stage(state: DomainState, cfg: RunConfig,
                                cfg.dx, cfg.dy,
                                open_x=boundary_x, open_y=boundary_y,
                                msf=state.msft, has_msf=state.has_msf,
-                               spec=(cfg.specified or cfg.nested))
+                               spec=(cfg.specified or cfg.nested),
+                               vorder=vertical_orders(cfg)[0])
         if implicit is not None:
             _ieva_scalar(state, tend, q0, implicit, mu0, mu, dt_eff)
         if state.has_msf:

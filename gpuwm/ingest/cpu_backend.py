@@ -34,6 +34,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 import os
 from pathlib import Path
+from threading import RLock
+import weakref
 from typing import Final
 
 import numpy as np
@@ -43,6 +45,8 @@ CPU_BACKEND_ABI: Final[int] = 1
 CPU_BRIDGE_ENV: Final[str] = "GPUWM_CPU_PREPROCESS_BRIDGE"
 _selected_cpu_bridge = ContextVar("selected_preparation_cpu_bridge", default=None)
 _selected_cpu_worker_cap = ContextVar("selected_preparation_cpu_worker_cap", default=None)
+_vertical_geometry_lock = RLock()
+_vertical_geometry_bytes = 0
 
 
 @contextmanager
@@ -65,7 +69,10 @@ _ERRORS = {
     3: "non-finite value or invalid pressure",
     4: "source pressure is not strictly descending",
     5: "no source level is above the surface",
-    6: "target pressure lies above the source top",
+    6: ("target pressure lies above the source top by more than the "
+        "2^-16 co-location tolerance: its values would have to be "
+        "extrapolated past the top of the source analysis, where there is "
+        "no data.  Raise p_top or supply a source that reaches higher"),
     7: "no interpolation window fits the assembled column",
     8: "input file could not be opened or read",
     9: "input file is not the declared intermediate format",
@@ -422,6 +429,66 @@ class _CpuIndexedDonorPlan:
         ))
         self.backend._raise(code, "indexed-donor horizontal interpolation")
         return output.reshape((*leading_shape, *self.target_shape))
+
+
+def _release_vertical_geometry(release, handle, nbytes):
+    global _vertical_geometry_bytes
+    with _vertical_geometry_lock:
+        release(ctypes.c_void_p(handle))
+        _vertical_geometry_bytes -= nbytes
+
+
+class _NativeVerticalGeometry:
+    """Own immutable Rust geometry while each field keeps its original checks."""
+
+    def __init__(self, backend, handle, source_shape, target_shape, nbytes):
+        self.backend = backend
+        self.handle = handle
+        self.source_shape = source_shape
+        self.target_shape = target_shape
+        self.nbytes = nbytes
+        self._lock = RLock()
+        release = backend._library.gpuwm_wrf_vertical_plan_free
+        release.argtypes = [ctypes.c_void_p]
+        release.restype = None
+        self._release = weakref.finalize(
+            self, _release_vertical_geometry, release, handle, nbytes)
+
+    def close(self):
+        with self._lock:
+            self._release()
+
+    def apply(self, field, surface_value, source_pressure, surface_pressure,
+              target_pressure, *, extrap, vboundb, workers):
+        with self._lock:
+            return self._apply(field, surface_value, source_pressure,
+                surface_pressure, target_pressure, extrap=extrap,
+                vboundb=vboundb, workers=workers)
+
+    def _apply(self, field, surface_value, source_pressure, surface_pressure,
+               target_pressure, *, extrap, vboundb, workers):
+        if extrap not in ("constant", "temperature"):
+            raise ValueError("extrap must be 'constant' or 'temperature'")
+        values, source, sv, sp, target = (
+            _host_f32(value) for value in
+            (field, source_pressure, surface_value, surface_pressure, target_pressure))
+        if (values.shape != self.source_shape or source.shape != self.source_shape
+                or sv.shape != self.source_shape[1:] or sp.shape != sv.shape
+                or target.shape != self.target_shape or not self._release.alive):
+            return None
+        output = np.empty(target.shape, dtype=np.float32)
+        entry = self.backend._library.gpuwm_wrf_vertical_plan_apply
+        pointer, size = ctypes.c_void_p, ctypes.c_size_t
+        entry.argtypes = [pointer] * 7 + [ctypes.c_int32, size, size]
+        entry.restype = ctypes.c_int32
+        code = int(entry(ctypes.c_void_p(self.handle),
+            *[ctypes.c_void_p(value.ctypes.data) for value in
+              (values, sv, source, sp, target, output)],
+            int(extrap == "temperature"), int(vboundb), _workers(workers, sp.size)))
+        if code == 126:
+            return None
+        self.backend._raise(code, "vertical interpolation")
+        return output
 
 
 class CpuPreprocessBackend:
@@ -1631,6 +1698,49 @@ class CpuPreprocessBackend:
 
         return _CpuIndexedDonorPlan(
             self, source_shape, donor_y, donor_x, fraction_y, fraction_x)
+
+    def prepare_vertical_geometry(self, source_pressure, surface_pressure,
+            target_pressure, *, interp_in_logp=True, force_sfc_in_vinterp=1,
+            zap_close_levels=500.0, workers=None):
+        """Optional bounded geometry cache; every decline keeps the old ABI."""
+        global _vertical_geometry_bytes
+        entry = getattr(self._library, "gpuwm_wrf_vertical_plan_new", None)
+        if entry is None or not isinstance(interp_in_logp, (bool, np.bool_)):
+            return None
+        source, surface, target = (_host_f32(value) for value in
+                                  (source_pressure, surface_pressure, target_pressure))
+        if (source.ndim != 3 or target.ndim != 3 or surface.shape != source.shape[1:]
+                or target.shape[1:] != surface.shape or source.shape[0] < 2
+                or target.shape[0] == 0 or surface.size == 0
+                or not 0 <= int(force_sfc_in_vinterp) <= target.shape[0]):
+            return None
+        from gpuwm.ingest.preparation_workers import host_available_bytes
+        handle, nbytes = ctypes.c_void_p(), ctypes.c_size_t()
+        pointer, size = ctypes.c_void_p, ctypes.c_size_t
+        entry.argtypes = [pointer, pointer, pointer, size, size, size,
+            ctypes.c_int32, size, ctypes.c_float, size, size,
+            ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_size_t)]
+        entry.restype = ctypes.c_int32
+        with _vertical_geometry_lock:
+            available = host_available_bytes()
+            # All live plans together receive one eighth of capacity that
+            # is currently free or already held by this geometry cache.
+            # Other preparation allocations reduce the next allowance.
+            if available is None:
+                return None
+            budget = max(0, (int(available) + _vertical_geometry_bytes) // 8
+                         - _vertical_geometry_bytes)
+            code = int(entry(*[ctypes.c_void_p(value.ctypes.data) for value in
+                               (source, surface, target)],
+                source.shape[0], target.shape[0], surface.size, int(interp_in_logp),
+                int(force_sfc_in_vinterp), float(zap_close_levels),
+                _workers(workers, surface.size), budget,
+                ctypes.byref(handle), ctypes.byref(nbytes)))
+            if code or not handle.value:
+                return None
+            _vertical_geometry_bytes += int(nbytes.value)
+            return _NativeVerticalGeometry(self, handle.value, source.shape,
+                                            target.shape, int(nbytes.value))
 
     def wrf_vertical_interpolate(
             self, field, surface_value, source_pressure, surface_pressure,

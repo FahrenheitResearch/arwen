@@ -384,13 +384,15 @@ def test_a_remedy_label_names_exactly_the_edit_its_remedy_settings_makes(
                 assert named <= set(settings), (option_id, label)
     # Coordinate TKE retains the metric operator's PBL-off refusal as
     # one conditional rule with a machine-applicable remedy, and the run
-    # door's two diffusion-selector refusals are stated on the closures:
+    # door's diffusion-selector refusal is stated on the closures:
     # diff_opt=1 on the three that supply no coordinate coefficients
-    # (km_opt 0, 1, 3) and mix_full_fields=false under diff_opt=2 on all
-    # five.  Terrain admission adds one topo_wind and one gwd_opt remedy
-    # on each of those five closures; their labels name only the selector
-    # their edit sets to zero.  1 + 3 + 5 + 5 + 5.
-    assert checked == 19
+    # (km_opt 0, 1, 3).  mix_full_fields=false under diff_opt=2 carries
+    # no rule any more (the run door admits it; WRF's perturbation branch
+    # subtracts base-state profiles real.exe leaves at zero).  Terrain
+    # admission adds one topo_wind and one gwd_opt remedy on each of the
+    # five closures; their labels name only the selector their edit sets
+    # to zero.  1 + 3 + 5 + 5.
+    assert checked == 14
 
 
 def test_the_builder_refuses_a_remedy_label_that_promises_a_second_edit(

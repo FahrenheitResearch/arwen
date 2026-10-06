@@ -1,0 +1,53 @@
+schema = "gpuwm-physics-request-defaults-v1"
+
+[[request]]
+source = "gsl_wrf39"
+namelist_names = ["hrrr_wrf.nl", "hrrr_wrf.nl.*"]
+recipe_sources = ["hrrr", "hrrr-native", "hrrr-prs"]
+
+[request.defaults]
+mynn_sfclay_variant = "gsl_wrf39"
+terrain_clock = "pinned"
+diff_6th_form = "noaa_wrf39"
+diff_6th_factor2 = 0.04
+mp_zero_out = 2
+mp_zero_out_thresh = 1e-12
+mp_zero_out_all = 1
+upper_wind_limiter_form = "noaa_wrf39"
+alb_sol = 1
+mix_full_fields = false
+
+[request.root_defaults]
+v_sca_adv_order = 5
+v_mom_adv_order = 5
+
+[[request]]
+source = "noaa_wrf39_radiation"
+namelist_names = ["hrrr_wrf.nl", "hrrr_wrf.nl.*"]
+
+[request.defaults]
+ra_rrtmg_variant = "rrtmg_legacy"
+rrtmg_cloud_optics_form = "noaa_wrf39"
+
+[[request]]
+source = "gsd_41"
+namelist_names = ["hrrr_wrf.nl", "hrrr_wrf.nl.*"]
+
+[request.defaults]
+bl_mynn_version = "gsd_41"
+
+# Recipe requests select the qualified RUC forms. Namelist requests retain
+# the content signature rule, so a public namelist's filename alone does
+# not choose another snow or irrigation generation.
+[[request]]
+source = "gsl_wrf39_ruc"
+recipe_sources = ["hrrr", "hrrr-native", "hrrr-prs"]
+
+[request.defaults]
+ruc_soilprop = "wrf_45"
+ruc_irrigation = "wrf_45"
+ruc_snow = "wrf_45"
+ruc_qvg_cold_start = "air"
+ruc_2m_diagnostic = "log_profile"
+rdlai2d = true
+usemonalb = true

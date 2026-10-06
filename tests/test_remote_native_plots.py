@@ -262,3 +262,75 @@ def test_a_sections_only_run_draws_no_gallery_of_default_maps(prepared):
     # The flag a terminal reads to answer with that note, instead of saying
     # the gallery is still being prepared for a run that will never draw one.
     assert value["map_products"] is False and value["waiting"] is True
+
+
+
+def test_explicit_theme_and_auto_layout_reach_the_compact_renderer(prepared):
+    c = prepared.case
+    generic = plots.render_selection(c.record)
+    assert generic["width"] == 1200 and generic["height"] == 900
+    assert "theme" not in generic and "layout" not in generic
+    assert generic["render_id"] == ra._sha(ra._encoded({
+        "selection_id": generic["selection_id"], "width": 1200, "height": 900}))
+    public = plots.render_selection(c.record, {"theme": "woof-light", "layout": "auto"})
+    assert public["width"] is None and public["height"] is None
+    assert public["render_id"] != generic["render_id"]
+    plots.work_once(c.tmp_path, c.record["id"], selection=public)
+    request = prepared.renders[-1]
+    assert request["theme"] == "woof-light"
+    assert request["width"] is None and request["height"] is None
+    assert len(prepared.native.calls) == 1, "the theme reuses the prepared compact store"
+
+
+def test_remote_theme_and_layout_are_explicit_parser_options():
+    from gpuwm.cli import build_parser
+    args = build_parser().parse_args([
+        "remote", "sync-native-plots", "--host", "node-1", "--python", "/python",
+        "--workspace", "/work", "--job", "job-1", "--sequence", "3", "--cache-root", "cache",
+        "--theme", "/site/theme.json", "--layout", "auto"])
+    assert plots.request_options(args) == {"theme": "/site/theme.json", "layout": "auto"}
+
+
+@pytest.mark.parametrize("presentation, message", [
+    ({"layout": "auto", "width": 800}, "omit width and height"),
+    ({"layout": "other"}, "auto or fixed"),
+    ({"theme": " "}, "nonblank"),
+    ({"theme": {"extends": "woof-light"}}, "nonblank"),
+])
+def test_remote_presentation_options_refuse_ignored_or_invalid_values(presentation, message):
+    with pytest.raises(ValueError, match=message):
+        plots.render_selection({"products": "2m_temperature"}, presentation)
+
+
+def test_theme_edits_and_parent_assets_get_new_gallery_identities(tmp_path):
+    parent = tmp_path / "parent.json"
+    child_dir = tmp_path / "child"
+    child_dir.mkdir()
+    child = child_dir / "site.json"
+    font = tmp_path / "font.ttf"
+    font.write_bytes(b"font content A; configuration fingerprint fixture")
+    parent.write_text(json.dumps({"extends": "woof-light", "fonts": {"regular": "font.ttf"}}))
+    child.write_text(json.dumps({"extends": "../parent.json"}))
+    record = {"products": "2m_temperature"}
+    request = {"theme": str(child)}
+    first = plots.render_selection(record, request)
+    assert plots.render_selection(record, request)["render_id"] == first["render_id"]
+    parent.write_text(json.dumps({"extends": "woof-dark", "fonts": {"regular": "font.ttf"}}))
+    second = plots.render_selection(record, request)
+    assert second["render_id"] != first["render_id"]
+    with pytest.raises(ValueError, match="changed after gallery selection"):
+        plots._check_theme_selection(first)
+    font.write_bytes(b"font content B; configuration fingerprint fixture")
+    third = plots.render_selection(record, request)
+    assert third["render_id"] != second["render_id"]
+    child.write_text(json.dumps({"extends": "../parent.json", "text": {"model_label": "PUBLIC"}}))
+    fourth = plots.render_selection(record, request)
+    assert fourth["render_id"] != third["render_id"]
+
+
+def test_a_remote_theme_parent_cycle_is_bounded(tmp_path):
+    first, second = tmp_path / "first.json", tmp_path / "second.json"
+    first.write_text(json.dumps({"extends": "second.json"}))
+    second.write_text(json.dumps({"extends": "first.json"}))
+    with pytest.raises(ValueError, match="deeper than eight themes"):
+        plots.render_selection({"products": "2m_temperature"}, {"theme": str(first)})

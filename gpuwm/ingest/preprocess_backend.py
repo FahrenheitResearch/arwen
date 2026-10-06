@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from functools import wraps
 import gc
 import hashlib
@@ -29,6 +29,7 @@ import inspect
 import json
 import os
 from pathlib import Path
+from threading import RLock
 from types import MappingProxyType
 
 import numpy as np
@@ -51,7 +52,13 @@ from gpuwm.ingest.cpu_backend import (
 PREPROCESS_IMPLEMENTATION_SCHEMA = "gpuwm-preprocess-implementation-v2"
 PSFC_MAPPING_POLICY = "canonical-f32-coordinate-f64-bilinear-single-round-v1"
 VERTICAL_STENCIL_POLICY = "wrf-v4.6.1-strict-fp32-zap-close-levels-v1"
-VERTICAL_ENDPOINT_POLICY = "native-pressure-top-colocation-four-fp32-epsilon-v1"
+#: v2 widened the co-location bound from 2^-21 (four FP32 epsilons,
+#: rounding only) to 2^-16, which also holds the vapour weight a native
+#: full-pressure top level carries over its dry target.
+VERTICAL_ENDPOINT_POLICY = "native-pressure-top-colocation-relative-2pow-16-v2"
+#: The bound itself, shared with gpuwm.ingest.vert and the Rust/CUDA
+#: operators.
+VERTICAL_ENDPOINT_RELATIVE_TOLERANCE = 2.0 ** -16
 
 
 @contextmanager
@@ -192,7 +199,7 @@ def _shared_contracts() -> dict[str, object]:
             "zap_close_levels_pa": 500.0,
             "predicate": "separation < zap_close_levels",
             "top_endpoint_policy": VERTICAL_ENDPOINT_POLICY,
-            "top_endpoint_relative_roundoff": 4.0 * float(np.finfo(np.float32).eps),
+            "top_endpoint_relative_tolerance": VERTICAL_ENDPOINT_RELATIVE_TOLERANCE,
         },
     }
 
@@ -467,11 +474,50 @@ class _CpuVerticalPlan:
     source_pressure: np.ndarray
     surface_pressure: np.ndarray
     target_pressure: np.ndarray
+    _geometry: dict = dataclass_field(default_factory=dict, compare=False, repr=False)
+    _geometry_lock: object = dataclass_field(default_factory=RLock, compare=False, repr=False)
 
     def apply(self, field, surface_value, **options):
+        with self._geometry_lock:
+            return self._apply(field, surface_value, **options)
+
+    def _apply(self, field, surface_value, **options):
         # CUDA can skip a redundant finite-value scan after a caller-side
         # validation.  The native CPU ABI always validates at its boundary.
         options.pop("values_are_finite", None)
+        known = {"interp_in_logp", "extrap", "force_sfc_in_vinterp",
+                 "zap_close_levels", "vboundb"}
+        geometry_types = (isinstance(options.get("interp_in_logp", True), (bool, np.bool_))
+            and isinstance(options.get("force_sfc_in_vinterp", 1), (int, np.integer))
+            and isinstance(options.get("zap_close_levels", 500.0), (int, float, np.integer, np.floating)))
+        if not (set(options) - known) and geometry_types:
+            logp = options.get("interp_in_logp", True)
+            force = options.get("force_sfc_in_vinterp", 1)
+            zap = options.get("zap_close_levels", 500.0)
+            key = (bool(logp), int(force), float(zap))
+            native = self._geometry.get(key)
+            if key not in self._geometry:
+                # One immutable geometry per plan, with all retained native
+                # bytes priced. A mode change releases the previous owner.
+                for previous in self._geometry.values():
+                    if previous is not None:
+                        previous.close()
+                self._geometry.clear()
+                native = self.backend._native.prepare_vertical_geometry(
+                    self.source_pressure, self.surface_pressure,
+                    self.target_pressure, interp_in_logp=logp,
+                    force_sfc_in_vinterp=force, zap_close_levels=zap,
+                    workers=self.backend.workers)
+                self._geometry[key] = native
+            if native is not None:
+                result = native.apply(field, surface_value,
+                    self.source_pressure, self.surface_pressure, self.target_pressure,
+                    extrap=options.get("extrap", "constant"),
+                    vboundb=options.get("vboundb", 4), workers=self.backend.workers)
+                if result is not None:
+                    return result
+                native.close()
+                self._geometry[key] = None
         return self.backend._native.wrf_vertical_interpolate(
             field, surface_value, self.source_pressure,
             self.surface_pressure, self.target_pressure,
@@ -1134,6 +1180,20 @@ def _resolve_preprocess_backend(backend="cuda", *, workers=None,
                 "workers/cpu_bridge cannot accompany a backend object")
         return backend
     normalized = backend.strip().lower()
+    from gpuwm.local_gpu import no_local_gpu
+    if no_local_gpu() and normalized in ("cuda", "auto"):
+        refusal = ("GPUWM_NO_LOCAL_GPU forbids local CUDA preprocessing; "
+                   "select backend='cpu' on this machine")
+        if normalized == "cuda":
+            raise ValueError(refusal)
+        if cpu_bridge is not None:
+            raise ValueError("cpu_bridge cannot accompany backend='auto'")
+        if reason is not None:
+            raise ValueError(
+                "a selection reason accompanies a named backend, not auto")
+        _announce_auto_cpu(refusal)
+        return _selection("auto", ParallelCpuPreprocessBackend(
+            workers=workers), refusal)
     if reason is not None and (not isinstance(reason, str)
                                or not reason.strip()):
         raise ValueError("a backend selection reason must be a sentence")
@@ -1480,6 +1540,14 @@ def decide_preparation_device(requested: str, price, *, probe=None
     """
 
     normalized = str(requested).strip().lower()
+    from gpuwm.local_gpu import no_local_gpu
+    if no_local_gpu() and normalized in ("cuda", "auto"):
+        refusal = ("GPUWM_NO_LOCAL_GPU forbids local CUDA preprocessing; "
+                   "select backend='cpu' on this machine")
+        if normalized == "cuda":
+            raise ValueError(refusal)
+        _announce_auto_cpu(refusal)
+        return "cpu", {"requested": "auto", "backend": "cpu", "reason": refusal}
     if normalized == "cpu" or price is None:
         return normalized, None
     if callable(price):

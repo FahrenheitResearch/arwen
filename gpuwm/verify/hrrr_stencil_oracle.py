@@ -47,6 +47,23 @@ def _window_reach(points_x, points_y, shape, closed_edges):
     return np.min(np.stack(open_gaps), axis=0)
 
 
+def _lower_corner(points, cells):
+    """The lower bilinear corner of each coordinate on an axis of CELLS.
+
+    A coordinate exactly on the last cell (``cells - 1``, two cells or
+    more) is spelled as the cell before with a unit fraction, so its whole
+    weight lands on its own cell and its zero-weight partner stays in the
+    window; every other coordinate floors as it always has.  The Rust
+    builder's ``lower_corner`` is the same rule: a target that IS the
+    source grid puts its last column and row there, and the stencil of
+    that grid was refused as leaving the window.
+    """
+    corner = np.floor(points).astype(np.int64)
+    if cells >= 2:
+        corner = np.where(points == float(cells - 1), corner - 1, corner)
+    return corner
+
+
 def _nearest_valid_cells(cells_x, cells_y, points_x, points_y):
     """The nearest valid cell to each point and its squared distance.
 
@@ -126,8 +143,8 @@ def _build_masked_bilinear_stencil(
             f"{', '.join(WINDOW_EDGES)}")
 
     ny, nx = source_valid.shape
-    x0 = np.floor(x).astype(np.int64)
-    y0 = np.floor(y).astype(np.int64)
+    x0 = _lower_corner(x, nx)
+    y0 = _lower_corner(y, ny)
     x1 = x0 + 1
     y1 = y0 + 1
     if (np.min(x0) < 0 or np.max(x1) >= nx

@@ -31,11 +31,22 @@ above the highest mass level. This lets a native analysis initialize the model
 on its own eta ladder and lid. Each target mass level must still be supported
 by the decoded pressure column. A declared numerical divergence from WRF real's
 strict top test co-locates a target with the highest source mass level when
-their pressures differ by at most four FP32 epsilons times that source pressure.
-This covers coordinate and GRIB rounding, including the 0.00061 Pa mismatch at
-the native 1731.475 Pa mass level above a 1500 Pa lid. It returns the source
-endpoint value and never extrapolates a new atmospheric layer. The preprocessing
-receipt records `native-pressure-top-colocation-four-fp32-epsilon-v1`.
+the target lies above it by at most 2^-16 (1.53e-5) times that source pressure.
+The gap is physical as well as numerical: the native top level is a full
+pressure that carries the water vapour of its top half-layer, while the target
+is the same level's dry pressure, and WRF's moisture integration leaves the top
+level undried. At HRRR's 1731.475 Pa top mass level above a 1500 Pa lid this
+is 231.475 Pa times the top-level vapour mixing ratio, plus GRIB and FP32
+rounding: 0.00061 Pa on 2026-10-03 00Z and 0.00085 Pa on 2025-03-14 06Z, the
+second past the earlier four-FP32-epsilon bound. 2^-16 holds a top-level vapour
+mixing ratio up to 1e-5 kg/kg and is about 0.1 m in height. The target takes
+the source endpoint value and no atmospheric layer is extrapolated. A target
+further above the source top is refused, because its values would have to be
+invented above the analysis. WRF real.exe has no top tolerance to copy here: it
+refuses this start earlier, because its `find_p_top` takes the highest pressure
+on the top source level and requires `p_top_requested` to be at least that.
+The preprocessing receipt records
+`native-pressure-top-colocation-relative-2pow-16-v2`.
 
 The external WRF doors preserve WRF RRTMG when radiation scheme 4 is selected.
 Changing it to RTE+RRTMGP requires `--rrtmg-variant rte-rrtmgp`. Other unsupported
@@ -65,7 +76,11 @@ files do not establish compatibility with other mesh layouts.
 
 ## `use_theta_m` on the WRF doors
 
-`import-namelist`, `run --wrfinput` and `run --met-em` all accept a namelist that selects `use_theta_m = 1` (WRF's default when the key is omitted), and all announce it at the terminal as a declared divergence: ArWen integrates dry potential temperature and has no moist-theta branch. The initial and boundary state is recovered exactly on every one of them (metgrid TT is physical temperature, a moist wrfbdy's THM/QV/MU are converted at each forcing time, and native initialization builds dry theta from physical temperature), but the integration differs from what WRF would do with `use_theta_m = 1`. The import receipt (`input/wrf-import.json` or `input/metgrid-import.json`) lists it under "Physics substitutions" with the reason. Set `use_theta_m = 0` in the producing namelist to run WRF on the same variable.
+`import-namelist`, `run --wrfinput` and `run --met-em` all accept a namelist that selects `use_theta_m = 1` (WRF 4's default when the key is omitted), and all announce it at the terminal as a declared divergence: ArWen integrates dry potential temperature and has no moist-theta branch. The initial and boundary state is recovered exactly on every one of them (metgrid TT is physical temperature, a moist wrfbdy's THM/QV/MU are converted at each forcing time, and native initialization builds dry theta from physical temperature), but the integration differs from what WRF would do with `use_theta_m = 1`. The import receipt (`input/wrf-import.json` or `input/metgrid-import.json`) lists it under "Physics substitutions" with the reason. Set `use_theta_m = 0` in the producing namelist to run WRF on the same variable.
+
+An omitted key takes the default of the WRF version the namelist was written for, and WRF 3.9 (the line operational HRRR v4 runs, NOAA-EMC/HRRR v4.1.21 `Registry.EM_COMMON:2633`) defaults it to 0, dry theta, the variable ArWen integrates. `run --wrfinput` reads the version from the files' own `TITLE` ("OUTPUT FROM REAL_EM V3.9..."), so such a run directory imports with no substitution and no flag. `import-namelist` sees only the namelist and assumes WRF 4 unless told `--wrf-version 3`. Either way the import report and the receipt list the applied default under "Namelist defaults", with the WRF version that was read, what chose it (the flag, the files' `TITLE` or the default) and the Registry row it came from, so a namelist read on the wrong version shows.
+
+The files ArWen exports for stock WRF (the companion `wrfinput_d0N` and `wrfbdy_d01`) hold dry theta throughout and declare it: `USE_THETA_M = 0`, `THM` equal to `T`, `T_B*` dry-coupled. Initial `T` and `THM` use the model's float32 sum of base and perturbation theta, rounded before subtracting 300 K, so they match the boundary coupling when read back through `run --wrfinput`. Run WRF on them with `use_theta_m = 0`; WRF 4 stops at its input check when the namelist omits the key or says 1. Exports written by 2.8.4 or earlier declared 1 over dry boundary rows and should be written again ([WRF-INTEROP.md](WRF-INTEROP.md)).
 
 What the files hold: WRF 4.0 through 4.7.1 `real.exe` writes `wrfinput` `T` as dry theta-300 under both settings and `THM` as the prognostic (moist theta-300 under `use_theta_m = 1`, equal to `T` otherwise), and `wrfbdy` `T_BXS` and its siblings couple the prognostic with dry column mass. ArWen reads `T` as its dry initial theta, converts a moist boundary back to dry theta with the boundary's own vapour and mass at each forcing time, and checks at import that the boundary's first record equals the coupling of the initial file's own representation: under `USE_THETA_M = 1` moist theta rebuilt from `T` and `QVAPOR` with WRF's formula, `(T + 300) * (1 + Rv/Rd * QVAPOR) - 300`, to WRF's FP32 rounding. A stock WRF 4.6.1 pair passes at both settings bit for bit. A `real.exe` build that fuses multiply-adds rounds that rebuild differently; the difference is bounded by a few FP32 steps of the full theta (a few hundred K) times the column mass, and the check allows that bound at each point. The refusal `wrfbdy T west does not match initial wrfinput_d01` states what was compared and how far apart the two files are, and names the case where the boundary holds dry theta under `USE_THETA_M = 1`: WRF 3.7 to 3.9.1.1 `real.exe` wrote that (`use_theta_m` entered the namelist in 3.7; no `THM` variable; its solver converted at run time), WRF 4.x never does. `use_theta_m = 0` in the producing namelist remains a fine setting: the files then hold dry theta everywhere and the import applies no vapour conversion.
 

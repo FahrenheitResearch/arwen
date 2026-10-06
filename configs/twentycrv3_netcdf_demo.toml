@@ -22,11 +22,12 @@
 #   PEAK DEVICE MEMORY   4.18 GiB of the 10.00 GiB budget (5.82 GiB unused)
 #                        285 samples over 7.7 s (37 Hz)
 #   render               rc 0, 3.3 s, 56 product images through rw_wrfbatch
+# These measurements describe the archived staged-data run. Native fetch
+# uses published invariants and an explicit source skt water boundary.
 #
-# ACQUISITION: no cycle-shaped fetch door -- the PSL distribution is a
-#   per-year, per-variable archive;
-#   `tools/download_20crv3_native_subset.py` cuts a window out of it
-#   server-side
+# ACQUISITION: gpuwm fetch --source 20crv3-cf --cycle 1974-04-03T12
+#   --hours 3 --cadence 3 --area 30,-105,50,-80 --out INPUTS
+#   cuts the annual PSL files server-side and publishes native prep inputs.
 #
 # PHYSICS: morrison-mp10-ysu-mm5-noah-kf-rte-rrtmgp-v1 -- this source's own computed default
 # (`gpuwm run-plan --physics-profiles`).  Both radiation streams run,
@@ -35,9 +36,9 @@
 # This is the ENSEMBLE MEAN, not a member: every variable carries
 # statistic = "Ensemble Mean" and the packaged mapping binds that
 # attribute, so a member file cannot enter this profile by accident.
-# PSL publishes NO orography and NO land mask for 20CRv3; both are
-# rebuilt by tools/build_pressure_level_invariant_supplement.py, which
-# writes a receipt naming the method and the divergence.
+# PSL's published invariant height and land fraction are bound in Rust
+# to the requested primary grid and valid times with a provenance receipt.
+# The four Noah soil layers are published. Source skt is the water boundary.
 #
 [experiment]
 name = "twentycrv3_netcdf_demo"

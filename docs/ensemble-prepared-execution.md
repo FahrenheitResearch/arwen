@@ -14,6 +14,30 @@ Native execution owns the existing common-input fixed-clock single-root suite. R
 
 `initialize_callback_factory(member_id, seed, prepared_member)` returns the original model initialization callback used before restart validation and health checks. It can install the member's admitted stochastic owner for internal qualification; public doors refuse active stochastic controls with the calibration reason. SPP switches are selected before driver construction. Active stochastic physics currently uses the original member path, while its packed coupling remains unqualified.
 
+## Surface-state members
+
+`gpuwm ensemble CONFIG`, `gpuwm go CONFIG` and `gpuwm run CONFIG` accept the `surface-state` recipe. Add these tables to a config that declares its `[fetch]` source and cycle:
+
+```toml
+[ensemble]
+members = 8
+recipe = "surface-state"
+base_seed = 73
+
+[ensemble.perturbation]
+kind = "surface-state"
+soil_moisture_scale = [0.8, 1.2]
+sst_offset_k = [-1.0, 1.0]
+```
+
+The recipe prepares the base trajectory once, including every nested domain. Each member initializes its own model through the ordinary runner, then applies its seeded surface realization before the first forecast step. A member uses the same factors on its parent and nests. Preparation caches and source files retain their original bytes. Nested stepping, feedback, physics and adaptive clocks remain the ordinary member's. The executor prints the concrete reason when a native pack cannot run the selected configuration and continues through the ordinary member runner.
+
+`soil_moisture_scale` is dimensionless; `sst_offset_k` is a temperature difference in K. Each accepts a scalar or `[minimum, maximum]`. Scalars set fixed values. Intervals draw one value per member and option using a deterministic GPU integer seed transform and FP32 rounding. An omitted scale is 1 and an omitted offset is 0. A shared-source ensemble with more than one member needs at least one nonconstant interval. Surface options can also accompany `time-lagged` or `multi-model` members, whose source trajectories already differ.
+
+Soil scaling affects land cells with `landmask > 0.5` and `xice == 0`, including every soil level. It clips total moisture to the existing initial-input range 0..1 m3 m-3 and applies the same effective scale to liquid water and RUC frozen water. Noah and Noah-MP keep their existing air-dry SMCDRY floor, with the ordinary 0.005 m3 m-3 fallback where the land soil category has no positive floor; this prevents tiny scale factors from restoring the zero-moisture conductivity failure. The land scheme retains its own category saturation treatment. RUC moisture availability is recomputed from the perturbed top soil and its existing dry/reference parameters. Soil temperatures and SMCREL remain the initialized values. Noah publishes that relative-moisture diagnostic during its land call; RUC does not consume it. SST offsets affect open ocean cells with `landmask < 0.5`, `lakemask < 0.5` and `xice == 0`; land, lakes and sea ice keep their initialized temperatures. RUC's ocean skin, saved skin and SST carriers receive the same offset. An offset that would move an ocean carrier outside 170..400 K refuses before field mutation.
+
+The ensemble receipt records each member seed, named options, exact realized FP32 words, affected domain/field inventories and surface hashes before and after application. Replaying that member alone uses its recorded descriptor and seed through `surface_initialization_callback`; it does not draw a replacement seed or reapply initial perturbations to an advanced domain. These are specified surface sensitivity members. Their amplitudes and probabilities are not calibrated forecast uncertainty.
+
 ## Stochastic streaming
 
 Public forecast and native-input doors recognise SPPT, SKEBS and SPP selectors and refuse active ones (exit 2) with the calibration reason until their spread amplitudes are calibrated against observations. This section describes the internal implementation; it does not make an uncalibrated run available.

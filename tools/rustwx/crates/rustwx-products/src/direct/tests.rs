@@ -781,41 +781,30 @@ fn adaptive_geographic_regions_use_presentation_projections() {
     ));
 }
 
+/// A western domain is drawn in its own grid projection like every other
+/// domain.  The north-up Mercator it used to get by default, chosen by a
+/// hard-coded western lat/lon box, drew the Lambert grid as a slanted
+/// quadrilateral with blank corner wedges; it is now only an explicit
+/// `RUSTWX_STRAIGHT_WEST_PROJECTION` opt-in.
 #[test]
-fn adaptive_native_lambert_straightens_western_coast_domains() {
+fn adaptive_native_lambert_keeps_western_coast_domains_on_the_grid_projection() {
     let native = GridProjection::LambertConformal {
         standard_parallel_1_deg: 38.5,
         standard_parallel_2_deg: 38.5,
         central_meridian_deg: -97.5,
     };
-
-    let california = presentation_projection_for_bounds(
-        Some(&native),
-        (-124.9, -113.8, 31.9, 42.5),
-        ProjectionPresentationVariant::Adaptive,
-    )
-    .unwrap();
-    assert!(matches!(
-        california,
-        rustwx_render::ProjectionSpec::Mercator {
-            central_meridian_deg,
-            ..
-        } if (central_meridian_deg + 119.35).abs() < 1.0e-6
-    ));
-
-    let west_coast = presentation_projection_for_bounds(
-        Some(&native),
-        (-126.5, -108.0, 30.0, 50.5),
-        ProjectionPresentationVariant::Adaptive,
-    )
-    .unwrap();
-    assert!(matches!(
-        west_coast,
-        rustwx_render::ProjectionSpec::Mercator {
-            central_meridian_deg,
-            ..
-        } if (central_meridian_deg + 117.25).abs() < 1.0e-6
-    ));
+    for bounds in [(-124.9, -113.8, 31.9, 42.5), (-126.5, -108.0, 30.0, 50.5)] {
+        let projection = presentation_projection_for_bounds(
+            Some(&native),
+            bounds,
+            ProjectionPresentationVariant::Adaptive,
+        )
+        .unwrap();
+        assert!(
+            matches!(projection, rustwx_render::ProjectionSpec::LambertConformal { .. }),
+            "{bounds:?}: {projection:?}"
+        );
+    }
 }
 
 #[test]

@@ -74,6 +74,12 @@ def test_build_rust_bridge_wheel_failure_names_the_remedy(monkeypatch,
 
 def test_doctor_names_missing_extras_with_exact_remedies(monkeypatch):
     monkeypatch.setattr(doctor, "find_spec", lambda name: None)
+    # This report describes an install whose render extra is declared but
+    # absent, independently of the test host's installed gpuwm metadata.
+    render_requirements = tuple(doctor._parse_requirement(text) for text in (
+        "wrf-rust>=0.2.35,<0.3", "pyshp>=2.3"))
+    monkeypatch.setattr(doctor, "declared_requirements",
+                        lambda: ((), {"render": render_requirements}))
     # Pin the box away from the test machine's own driver: the CuPy
     # remedy is now a function of the box's CUDA major, so an
     # unpinned run would assert different things on different hosts.
@@ -774,12 +780,17 @@ def test_a_bridge_that_predates_the_contract_is_missing_not_ok(
     # The CPU preprocessing library resolves through its own ladder
     # (gpuwm.ingest.cpu_backend) and declares the masked surface chain,
     # which a build predating it loads without and cannot map land with.
+    # The isobaric-height reader resolves through its own ladder
+    # (gpuwm.isobaric_bridge, the obs-regrid one) for the MPAS binaries'
+    # reason: it builds in `tools/rustwx`, not the grib1_bridge crate.
     assert extra == {"region_global_dealias", "netcdf_writer",
                      "gpuwm_preprocess_cpu",
-                     "gpuwm_mapped_engine", "static_fields", "obs_regrid",
-                     "rw_mpas_mesh", "rw_mpas_static", "rw_mpas_init",
+                     "gpuwm_mapped_engine", "static_fields", "obs_regrid", "obs_score",
+                     "rw_isobaric",
+                     "rw_mpas_mesh", "rw_mpas_static", "rw_mpas_init", "rw_mpas_geometry", "rw_mpas_hostprep",
                      "rw_mpas_convert", "rw_mpas_lbc", "arwen-tui", "rw_zarr", "rw_netcdf",
-                     "rw_mlexport", "rw_simradar"}
+                     "rw_mlexport", "rw_simradar",
+                     "rw_compare", "rw_verify"}
 
 
 def test_the_decoder_door_gates_the_contract_for_every_caller(

@@ -9,25 +9,20 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use hdf5_reader::messages::datatype::Datatype as H5Datatype;
 use hdf5_reader::{Hdf5File, SliceInfo as H5SliceInfo, SliceInfoElem as H5SliceInfoElem};
 use ndarray::ArrayD;
-pub use netcdf_reader::{NcFormat, NcMetadataMode, NcOpenOptions, NcSliceInfo, NcSliceInfoElem};
 pub use netcdf_reader::NcReadable;
+pub use netcdf_reader::{NcFormat, NcMetadataMode, NcOpenOptions, NcSliceInfo, NcSliceInfoElem};
 
 use netcdf_reader::{NcAttrValue, NcDimension, NcFile, NcType, NcVariable};
 
 /// HDF5/NetCDF4 signature bytes.
 pub const HDF5_SIGNATURE: [u8; 8] = [0x89, b'H', b'D', b'F', 0x0D, 0x0A, 0x1A, 0x0A];
 
-/// Per-axis metadata ceiling. A single axis this large already describes an
-/// implausible desktop weather grid; rejecting it prevents hostile headers
-/// from flowing into allocation and indexing code.
-pub const MAX_DIMENSION_LEN: u64 = 25_000_000;
-
-/// Maximum number of promoted values returned by one dense read. At f64 this
-/// is 1 GiB, high enough for the large WRF/GDEX 3-D fields supported here but
-/// finite enough that malformed metadata cannot request an unbounded vector.
-pub const MAX_ARRAY_ELEMENTS: u64 = 128 * 1024 * 1024;
+/// Maximum values in an intermediate hyperslab, independent of dataset size.
+/// Dense results retain their complete shape and use fallible allocation.
+const READ_CHUNK_ELEMENTS: usize = 1024 * 1024;
 
 /// Result type used by `netcrust`.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -47,20 +42,17 @@ pub enum Error {
     #[error("dimension size for {name} exceeds usize: {size}")]
     DimensionTooLarge { name: String, size: u64 },
 
-    #[error("dimension {name} has length {size}; supported maximum is {max}")]
-    DimensionLimit { name: String, size: u64, max: u64 },
-
     #[error("unlimited dimension {name} has an unresolved zero length")]
     UnresolvedDimension { name: String },
 
     #[error("array shape for {name} overflows its element count: {shape:?}")]
     ArrayShapeOverflow { name: String, shape: Vec<u64> },
 
-    #[error("array {name} has {elements} elements; supported maximum is {max}")]
-    ArrayTooLarge {
+    #[error("cannot allocate {elements} values for array {name}: {reason}")]
+    Allocation {
         name: String,
-        elements: u64,
-        max: u64,
+        elements: usize,
+        reason: String,
     },
 
     #[error("invalid selection for {name}: {reason}")]
@@ -227,8 +219,8 @@ impl File {
     /// Root-group dataset metadata from the raw HDF5 index.
     ///
     /// Returns an empty list for classic NetCDF inputs. For NetCDF-4/HDF5,
-    /// every reported shape is checked against the same allocation ceilings
-    /// used by data reads before it reaches callers.
+    /// every reported shape uses checked 64-bit element counts. No values
+    /// are allocated or read while enumerating metadata.
     pub fn hdf5_root_datasets(&self) -> Result<Vec<Hdf5DatasetMetadata>> {
         let Some(hdf5) = self.hdf5.as_ref() else {
             return Ok(Vec::new());
@@ -310,45 +302,41 @@ impl File {
         let shape = nc_variable_shape(&variable, &self.dimension_overrides)?;
         checked_array_elements(name, &shape)?;
         if nc_variable_uses_overrides(&variable, &self.dimension_overrides) {
-            return Err(Error::Hdf5(format!("typed read requires resolved stored dimensions for {name}")));
+            return Err(Error::Hdf5(format!(
+                "typed read requires resolved stored dimensions for {name}"
+            )));
         }
-        Ok(self.inner.read_variable::<T>(name)?)
+        read_in_slabs(name, &shape, &full_selection(shape.len()), |selection| {
+            Ok(self.inner.read_variable_slice::<T>(name, selection)?)
+        })
     }
 
     /// Read a bounded stored-word hyperslab without numeric promotion.
-    pub fn read_array_slice<T: NcReadable>(&self, name: &str, selection: &NcSliceInfo) -> Result<ArrayD<T>> {
+    pub fn read_array_slice<T: NcReadable>(
+        &self,
+        name: &str,
+        selection: &NcSliceInfo,
+    ) -> Result<ArrayD<T>> {
         let variable = self.inner.variable(name)?;
         let shape = nc_variable_shape(&variable, &self.dimension_overrides)?;
         checked_selection_elements(name, &shape, selection)?;
         if nc_variable_uses_overrides(&variable, &self.dimension_overrides) {
-            return Err(Error::Hdf5(format!("typed read requires resolved stored dimensions for {name}")));
+            return Err(Error::Hdf5(format!(
+                "typed read requires resolved stored dimensions for {name}"
+            )));
         }
-        Ok(self.inner.read_variable_slice::<T>(name, selection)?)
+        read_in_slabs(name, &shape, selection, |selection| {
+            Ok(self.inner.read_variable_slice::<T>(name, selection)?)
+        })
     }
 
     /// Read a variable as promoted `f64` values with shape metadata.
     pub fn read_array_f64(&self, name: &str) -> Result<DataArray> {
-        if let Ok(variable) = self.inner.variable(name) {
-            let shape = nc_variable_shape(&variable, &self.dimension_overrides)?;
-            checked_array_elements(name, &shape)?;
-            if nc_variable_uses_overrides(&variable, &self.dimension_overrides) {
-                let hdf5 = self.hdf5.as_ref().ok_or_else(|| {
-                    Error::Hdf5(format!(
-                        "cannot validate overridden dimensions for dataset {name}"
-                    ))
-                })?;
-                let dataset = hdf5.dataset(name).map_err(|err| {
-                    Error::Hdf5(format!(
-                        "cannot validate overridden dimensions for dataset {name}: {err}"
-                    ))
-                })?;
-                checked_array_elements(name, dataset.shape())?;
-            }
-        }
-        match self.inner.read_variable_as_f64(name) {
-            Ok(array) => Ok(DataArray::from_ndarray(array)),
-            Err(err) => self.read_hdf5_dataset_all(name).map_err(|_| err.into()),
-        }
+        let Ok(variable) = self.inner.variable(name) else {
+            return self.read_hdf5_dataset_all(name);
+        };
+        let shape = nc_variable_shape(&variable, &self.dimension_overrides)?;
+        self.read_array_f64_slice(name, &full_selection(shape.len()))
     }
 
     /// Read a char (or string) variable as one string per leading element.
@@ -382,14 +370,18 @@ impl File {
                     ))
                 })?;
                 checked_selection_elements(name, dataset.shape(), selection)?;
+                return self.read_hdf5_dataset_slice(name, selection);
             }
+            return match read_in_slabs(name, &shape, selection, |selection| {
+                Ok(self.inner.read_variable_slice_as_f64(name, selection)?)
+            }) {
+                Ok(array) => Ok(DataArray::from_ndarray(array)),
+                Err(err) => self
+                    .read_hdf5_dataset_slice(name, selection)
+                    .map_err(|_| err),
+            };
         }
-        match self.inner.read_variable_slice_as_f64(name, selection) {
-            Ok(array) => Ok(DataArray::from_ndarray(array)),
-            Err(err) => self
-                .read_hdf5_dataset_slice(name, selection)
-                .map_err(|_| err.into()),
-        }
+        self.read_hdf5_dataset_slice(name, selection)
     }
 
     /// Read a variable as promoted flat `f64` values.
@@ -516,13 +508,6 @@ impl Dimension {
             })?,
             None => dim.size,
         };
-        if size > MAX_DIMENSION_LEN {
-            return Err(Error::DimensionLimit {
-                name: dim.name.clone(),
-                size,
-                max: MAX_DIMENSION_LEN,
-            });
-        }
         if dim.is_unlimited && size == 0 {
             return Err(Error::UnresolvedDimension {
                 name: dim.name.clone(),
@@ -648,19 +633,28 @@ impl Variable {
 
     /// Read this variable as promoted `f64` values with shape metadata.
     pub fn array_f64(&self) -> Result<DataArray> {
-        checked_array_elements(&self.name, &dimension_shape(&self.dimensions))?;
-        self.validate_overridden_hdf_shape(None)?;
-        let array = self.file.read_variable_as_f64(&self.name)?;
-        Ok(DataArray::from_ndarray(array))
+        self.array_f64_slice(&full_selection(self.dimensions.len()))
     }
 
     /// Read a hyperslab selection as promoted `f64` values with shape metadata.
     pub fn array_f64_slice(&self, selection: &NcSliceInfo) -> Result<DataArray> {
         checked_selection_elements(&self.name, &dimension_shape(&self.dimensions), selection)?;
         self.validate_overridden_hdf_shape(Some(selection))?;
-        let array = self
-            .file
-            .read_variable_slice_as_f64(&self.name, selection)?;
+        if self.shape_was_overridden {
+            let dataset = self
+                .hdf5
+                .as_ref()
+                .ok_or_else(|| Error::VariableNotFound(self.name.clone()))?
+                .dataset(&self.name)
+                .map_err(|err| Error::Hdf5(err.to_string()))?;
+            return read_hdf5_dataset_as_f64(&dataset, Some(&hdf5_selection(selection)));
+        }
+        let shape = dimension_shape(&self.dimensions);
+        let array = read_in_slabs(&self.name, &shape, selection, |selection| {
+            Ok(self
+                .file
+                .read_variable_slice_as_f64(&self.name, selection)?)
+        })?;
         Ok(DataArray::from_ndarray(array))
     }
 
@@ -680,10 +674,7 @@ impl Variable {
             let selection = first_record_selection(self.ndim());
             checked_selection_elements(&self.name, &dimension_shape(&self.dimensions), &selection)?;
             self.validate_overridden_hdf_shape(Some(&selection))?;
-            let array = self
-                .file
-                .read_variable_slice_as_f64(&self.name, &selection)?;
-            Ok(DataArray::from_ndarray(array))
+            self.array_f64_slice(&selection)
         } else if self.ndim() >= 3 {
             Err(Error::UnprovenRecordAxis {
                 name: self.name.clone(),
@@ -863,13 +854,18 @@ pub struct DataArray {
 
 impl DataArray {
     fn from_ndarray(array: ArrayD<f64>) -> Self {
-        Self {
-            shape: array.shape().to_vec(),
-            values: array.iter().copied().collect(),
-        }
-    }
-
-    fn from_shape_values(shape: Vec<usize>, values: Vec<f64>) -> Self {
+        let shape = array.shape().to_vec();
+        let values = if array.is_standard_layout() {
+            let (mut values, offset) = array.into_raw_vec_and_offset();
+            let offset = offset.unwrap_or(0);
+            if offset > 0 {
+                values.drain(..offset);
+            }
+            values.truncate(shape.iter().product());
+            values
+        } else {
+            array.iter().copied().collect()
+        };
         Self { shape, values }
     }
 
@@ -972,15 +968,50 @@ fn read_hdf5_dataset_as_f64(
     dataset: &hdf5_reader::Dataset,
     selection: Option<&H5SliceInfo>,
 ) -> Result<DataArray> {
-    read_hdf5_numeric::<f64>(dataset, selection)
-        .or_else(|_| read_hdf5_numeric::<f32>(dataset, selection))
-        .or_else(|_| read_hdf5_numeric::<i32>(dataset, selection))
-        .or_else(|_| read_hdf5_numeric::<i16>(dataset, selection))
-        .or_else(|_| read_hdf5_numeric::<u32>(dataset, selection))
-        .or_else(|_| read_hdf5_numeric::<u16>(dataset, selection))
-        .or_else(|_| read_hdf5_numeric::<u8>(dataset, selection))
-        .or_else(|err| read_hdf5_numeric::<i8>(dataset, selection).map_err(|_| err))
+    let selection = selection
+        .map(|selection| NcSliceInfo {
+            selections: selection
+                .selections
+                .iter()
+                .map(|element| match element {
+                    H5SliceInfoElem::Index(index) => NcSliceInfoElem::Index(*index),
+                    H5SliceInfoElem::Slice { start, end, step } => NcSliceInfoElem::Slice {
+                        start: *start,
+                        end: *end,
+                        step: *step,
+                    },
+                })
+                .collect(),
+        })
+        .unwrap_or_else(|| full_selection(dataset.ndim()));
+    let array = read_in_slabs(dataset.name(), dataset.shape(), &selection, |selection| {
+        let selection = hdf5_selection(selection);
+        // Integer decoders validate width but not signedness. Select the
+        // storage type so every numeric width and sign promotes correctly.
+        macro_rules! read_numeric {
+            ($ty:ty) => {
+                read_hdf5_numeric::<$ty>(dataset, Some(&selection), |value| value as f64)
+            };
+        }
+        match dataset.dtype() {
+            H5Datatype::FloatingPoint { size: 8, .. } => read_numeric!(f64),
+            H5Datatype::FloatingPoint { size: 4, .. } => read_numeric!(f32),
+            H5Datatype::FixedPoint { size: 1, signed: true, .. } => read_numeric!(i8),
+            H5Datatype::FixedPoint { size: 1, signed: false, .. } => read_numeric!(u8),
+            H5Datatype::FixedPoint { size: 2, signed: true, .. } => read_numeric!(i16),
+            H5Datatype::FixedPoint { size: 2, signed: false, .. } => read_numeric!(u16),
+            H5Datatype::FixedPoint { size: 4, signed: true, .. } => read_numeric!(i32),
+            H5Datatype::FixedPoint { size: 4, signed: false, .. } => read_numeric!(u32),
+            H5Datatype::FixedPoint { size: 8, signed: true, .. } => read_numeric!(i64),
+            H5Datatype::FixedPoint { size: 8, signed: false, .. } => read_numeric!(u64),
+            datatype => Err(hdf5_reader::error::Error::TypeMismatch {
+                expected: "numeric type".into(),
+                actual: format!("{datatype:?}"),
+            }),
+        }
         .map_err(|err| Error::Hdf5(err.to_string()))
+    })?;
+    Ok(DataArray::from_ndarray(array))
 }
 
 fn read_hdf5_array<T: hdf5_reader::H5Type>(
@@ -996,15 +1027,13 @@ fn read_hdf5_array<T: hdf5_reader::H5Type>(
 fn read_hdf5_numeric<T>(
     dataset: &hdf5_reader::Dataset,
     selection: Option<&H5SliceInfo>,
-) -> std::result::Result<DataArray, hdf5_reader::error::Error>
+    promote: impl Fn(T) -> f64,
+) -> std::result::Result<ArrayD<f64>, hdf5_reader::error::Error>
 where
-    T: hdf5_reader::H5Type + Copy + Into<f64>,
+    T: hdf5_reader::H5Type + Copy,
 {
     let array = read_hdf5_array::<T>(dataset, selection)?;
-    Ok(DataArray::from_shape_values(
-        array.shape().to_vec(),
-        array.iter().map(|value| (*value).into()).collect(),
-    ))
+    Ok(array.mapv(promote))
 }
 
 fn dimension_shape(dimensions: &[Dimension]) -> Vec<u64> {
@@ -1035,15 +1064,6 @@ fn nc_variable_uses_overrides(variable: &NcVariable, overrides: &HashMap<String,
 }
 
 fn checked_array_elements(name: &str, shape: &[u64]) -> Result<usize> {
-    for &size in shape {
-        if size > MAX_DIMENSION_LEN {
-            return Err(Error::DimensionLimit {
-                name: name.to_string(),
-                size,
-                max: MAX_DIMENSION_LEN,
-            });
-        }
-    }
     let elements = shape.iter().try_fold(1u64, |product, &size| {
         product
             .checked_mul(size)
@@ -1052,16 +1072,199 @@ fn checked_array_elements(name: &str, shape: &[u64]) -> Result<usize> {
                 shape: shape.to_vec(),
             })
     })?;
-    if elements > MAX_ARRAY_ELEMENTS {
-        return Err(Error::ArrayTooLarge {
-            name: name.to_string(),
-            elements,
-            max: MAX_ARRAY_ELEMENTS,
-        });
-    }
     usize::try_from(elements).map_err(|_| Error::ArrayShapeOverflow {
         name: name.to_string(),
         shape: shape.to_vec(),
+    })
+}
+
+fn full_selection(ndim: usize) -> NcSliceInfo {
+    NcSliceInfo {
+        selections: (0..ndim)
+            .map(|_| NcSliceInfoElem::Slice {
+                start: 0,
+                end: u64::MAX,
+                step: 1,
+            })
+            .collect(),
+    }
+}
+
+/// Row-major slabs keep all trailing selected axes intact. Earlier selected
+/// axes become indexes, so even a one-dimensional array can be streamed.
+struct SlabSelections {
+    selection: NcSliceInfo,
+    counts: Vec<u64>,
+    ordinals: Vec<u64>,
+    split_axis: Option<usize>,
+    split_count: u64,
+    done: bool,
+}
+
+impl SlabSelections {
+    fn new(name: &str, shape: &[u64], selection: &NcSliceInfo) -> Result<Self> {
+        let elements = checked_selection_elements(name, shape, selection)?;
+        let mut selection = selection.clone();
+        let mut counts = Vec::with_capacity(shape.len());
+        for (element, &size) in selection.selections.iter_mut().zip(shape) {
+            counts.push(match element {
+                NcSliceInfoElem::Index(_) => 1,
+                NcSliceInfoElem::Slice { start, end, step } => {
+                    *end = (*end).min(size);
+                    if *start >= *end {
+                        0
+                    } else {
+                        (*end - *start).div_ceil(*step)
+                    }
+                }
+            });
+        }
+        let mut split_axis = None;
+        let mut split_count = 0;
+        if elements > READ_CHUNK_ELEMENTS {
+            let mut trailing = 1usize;
+            for axis in (0..counts.len()).rev() {
+                if matches!(selection.selections[axis], NcSliceInfoElem::Index(_)) {
+                    continue;
+                }
+                let count =
+                    usize::try_from(counts[axis]).map_err(|_| Error::ArrayShapeOverflow {
+                        name: name.to_string(),
+                        shape: shape.to_vec(),
+                    })?;
+                if count > READ_CHUNK_ELEMENTS / trailing {
+                    split_axis = Some(axis);
+                    split_count = (READ_CHUNK_ELEMENTS / trailing) as u64;
+                    break;
+                }
+                trailing *= count;
+            }
+        }
+        Ok(Self {
+            ordinals: vec![0; counts.len()],
+            selection,
+            counts,
+            split_axis,
+            split_count,
+            done: elements == 0,
+        })
+    }
+
+    fn next(&mut self) -> Option<NcSliceInfo> {
+        if self.done {
+            return None;
+        }
+        let Some(split_axis) = self.split_axis else {
+            self.done = true;
+            return Some(self.selection.clone());
+        };
+        let mut slab = self.selection.clone();
+        for axis in 0..split_axis {
+            if let NcSliceInfoElem::Slice { start, step, .. } = self.selection.selections[axis] {
+                // Validation proves each selected coordinate is inside its
+                // u64 extent, so these products and sums cannot overflow.
+                slab.selections[axis] = NcSliceInfoElem::Index(start + self.ordinals[axis] * step);
+            }
+        }
+        if let NcSliceInfoElem::Slice { start, end, step } = self.selection.selections[split_axis] {
+            let ordinal = self.ordinals[split_axis];
+            let count = self.split_count.min(self.counts[split_axis] - ordinal);
+            let slab_start = start + ordinal * step;
+            let slab_end = if ordinal + count == self.counts[split_axis] {
+                end
+            } else {
+                slab_start + count * step
+            };
+            slab.selections[split_axis] = NcSliceInfoElem::Slice {
+                start: slab_start,
+                end: slab_end,
+                step,
+            };
+            self.ordinals[split_axis] += count;
+        }
+        if self.ordinals[split_axis] == self.counts[split_axis] {
+            self.ordinals[split_axis] = 0;
+            self.done = true;
+            for axis in (0..split_axis).rev() {
+                if matches!(
+                    self.selection.selections[axis],
+                    NcSliceInfoElem::Slice { .. }
+                ) {
+                    self.ordinals[axis] += 1;
+                    if self.ordinals[axis] < self.counts[axis] {
+                        self.done = false;
+                        break;
+                    }
+                    self.ordinals[axis] = 0;
+                }
+            }
+        }
+        Some(slab)
+    }
+}
+
+fn read_in_slabs<T, F>(
+    name: &str,
+    shape: &[u64],
+    selection: &NcSliceInfo,
+    mut read: F,
+) -> Result<ArrayD<T>>
+where
+    F: FnMut(&NcSliceInfo) -> Result<ArrayD<T>>,
+{
+    let elements = checked_selection_elements(name, shape, selection)?;
+    let bytes = elements
+        .checked_mul(std::mem::size_of::<T>())
+        .filter(|bytes| *bytes <= isize::MAX as usize)
+        .ok_or_else(|| Error::Allocation {
+            name: name.to_string(),
+            elements,
+            reason: "result byte size exceeds addressable allocation".to_string(),
+        })?;
+    let mut slabs = SlabSelections::new(name, shape, selection)?;
+    let result_shape = selection
+        .selections
+        .iter()
+        .zip(shape)
+        .filter_map(|(element, &size)| match element {
+            NcSliceInfoElem::Index(_) => None,
+            NcSliceInfoElem::Slice { start, end, step } => {
+                let end = (*end).min(size);
+                Some(if *start >= end {
+                    0
+                } else {
+                    (end - *start).div_ceil(*step) as usize
+                })
+            }
+        })
+        .collect::<Vec<_>>();
+    if elements != 0 && elements <= READ_CHUNK_ELEMENTS {
+        return read(selection);
+    }
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(elements)
+        .map_err(|err| Error::Allocation {
+            name: name.to_string(),
+            elements,
+            reason: format!("{bytes} bytes: {err}"),
+        })?;
+    while let Some(slab) = slabs.next() {
+        let array = read(&slab)?;
+        let expected = checked_selection_elements(name, shape, &slab)?;
+        if array.len() != expected {
+            return Err(Error::InvalidSelection {
+                name: name.to_string(),
+                reason: format!("slab returned {} values, expected {expected}", array.len()),
+            });
+        }
+        values.extend(array);
+    }
+    ArrayD::from_shape_vec(ndarray::IxDyn(&result_shape), values).map_err(|err| {
+        Error::InvalidSelection {
+            name: name.to_string(),
+            reason: err.to_string(),
+        }
     })
 }
 
@@ -1076,16 +1279,6 @@ fn checked_selection_elements(name: &str, shape: &[u64], selection: &NcSliceInfo
             ),
         });
     }
-    for &size in shape {
-        if size > MAX_DIMENSION_LEN {
-            return Err(Error::DimensionLimit {
-                name: name.to_string(),
-                size,
-                max: MAX_DIMENSION_LEN,
-            });
-        }
-    }
-
     let mut selected_shape = Vec::with_capacity(shape.len());
     for (axis, (element, &size)) in selection.selections.iter().zip(shape).enumerate() {
         match element {
@@ -1138,7 +1331,7 @@ fn checked_record_elements(name: &str, shape: &[u64], time_index: u64) -> Result
 fn consistent_inferred_extent(extents: impl IntoIterator<Item = u64>) -> Option<usize> {
     let mut inferred = None::<u64>;
     for extent in extents {
-        if extent == 0 || extent > MAX_DIMENSION_LEN {
+        if extent == 0 {
             return None;
         }
         match inferred {
@@ -1332,27 +1525,24 @@ mod tests {
     }
 
     #[test]
-    fn metadata_products_reject_overflow_and_dense_read_ceiling() {
+    fn metadata_products_use_checked_u64_without_a_grid_ceiling() {
         assert_eq!(checked_array_elements("field", &[2, 3, 4]).unwrap(), 24);
+        assert_eq!(
+            checked_array_elements("field", &[2695, 1585, 50]).unwrap(),
+            213_578_750
+        );
+        assert_eq!(
+            checked_array_elements("field", &[134_217_737]).unwrap(),
+            134_217_737
+        );
         assert!(matches!(
-            checked_array_elements("field", &[MAX_DIMENSION_LEN, 6]),
-            Err(Error::ArrayTooLarge { .. })
-        ));
-        assert!(matches!(
-            checked_array_elements(
-                "field",
-                &[MAX_DIMENSION_LEN, MAX_DIMENSION_LEN, MAX_DIMENSION_LEN]
-            ),
+            checked_array_elements("field", &[u64::MAX, 2]),
             Err(Error::ArrayShapeOverflow { .. })
-        ));
-        assert!(matches!(
-            checked_array_elements("field", &[MAX_DIMENSION_LEN + 1]),
-            Err(Error::DimensionLimit { .. })
         ));
     }
 
     #[test]
-    fn selection_ceiling_counts_only_the_requested_hyperslab() {
+    fn selections_count_only_the_requested_hyperslab() {
         let record = record_selection(3, 1);
         assert_eq!(
             checked_selection_elements("field", &[10, 20, 30], &record).unwrap(),
@@ -1385,7 +1575,61 @@ mod tests {
         assert_eq!(consistent_inferred_extent([4, 4, 4]), Some(4));
         assert_eq!(consistent_inferred_extent([4, 5]), None);
         assert_eq!(consistent_inferred_extent([0, 4]), None);
-        assert_eq!(consistent_inferred_extent([MAX_DIMENSION_LEN + 1]), None);
+        assert_eq!(consistent_inferred_extent([134_217_737]), Some(134_217_737));
+    }
+
+    #[test]
+    fn slab_plan_is_bounded_and_preserves_strided_row_order() {
+        let shape = [3, 9, 1_048_577];
+        let selection = NcSliceInfo {
+            selections: vec![
+                NcSliceInfoElem::Slice {
+                    start: 0,
+                    end: 3,
+                    step: 2,
+                },
+                NcSliceInfoElem::Slice {
+                    start: 1,
+                    end: 9,
+                    step: 3,
+                },
+                NcSliceInfoElem::Slice {
+                    start: 1,
+                    end: 1_048_577,
+                    step: 1,
+                },
+            ],
+        };
+        let mut plan = SlabSelections::new("field", &shape, &selection).unwrap();
+        let mut coordinates = Vec::new();
+        while let Some(slab) = plan.next() {
+            assert!(
+                checked_selection_elements("field", &shape, &slab).unwrap() <= READ_CHUNK_ELEMENTS
+            );
+            if let (NcSliceInfoElem::Index(a), NcSliceInfoElem::Slice { start: b, .. }) =
+                (&slab.selections[0], &slab.selections[1])
+            {
+                coordinates.push((*a, *b));
+            } else {
+                panic!("unexpected slab plan");
+            }
+        }
+        assert_eq!(
+            coordinates,
+            [(0, 1), (0, 4), (0, 7), (2, 1), (2, 4), (2, 7)]
+        );
+    }
+
+    #[test]
+    fn oversized_dense_byte_request_fails_before_reading() {
+        let mut read_called = false;
+        let selection = full_selection(1);
+        let result = read_in_slabs::<f64, _>("field", &[u64::MAX / 8], &selection, |_| {
+            read_called = true;
+            unreachable!()
+        });
+        assert!(matches!(result, Err(Error::Allocation { .. })));
+        assert!(!read_called);
     }
 
     #[test]

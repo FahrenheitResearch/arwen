@@ -132,6 +132,10 @@ def test_every_door_default_is_full_radiation_and_route_admissible():
 def test_the_route_default_is_the_strongest_admissible_full_radiation_suite():
     """Re-derived from the switch tables and the route's gates.
 
+    The historical strongest-maturity claim is superseded by the
+    source-selected GSD4.1 route authority. Admissibility and full
+    radiation do not establish numerical or nowcast certification.
+
     Not a restatement of the constant: this recomputes the admissible
     set the way :func:`validate_route_physics` does and checks the
     default is in it, so a profile that gains or loses admissibility
@@ -139,6 +143,9 @@ def test_the_route_default_is_the_strongest_admissible_full_radiation_suite():
     """
     from gpuwm.hrrr_route_inputs import route_physics_problems
     from gpuwm.physics_compat import SINGLE_DOMAIN_PHYSICS_PROFILES
+    # 4193eb0da, lane/286-fork-mynn: select the HRRR GSD4.1 composition.
+    assert ROUTE_DEFAULT_PHYSICS_PROFILE == (
+        "thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1")
     admissible = [profile for profile in SINGLE_DOMAIN_PHYSICS_PROFILES
                   if not route_physics_problems(single_domain_runtime_switches(profile))
                   and single_domain_runtime_switches(profile)["ra_lw_physics"] > 0
@@ -150,7 +157,12 @@ def test_the_route_default_is_the_strongest_admissible_full_radiation_suite():
     # radiation streams on, no cumulus at its 3 km grid.  Which 4/4
     # implementation runs is a setting this assertion does not read.
     switches = single_domain_runtime_switches(ROUTE_DEFAULT_PHYSICS_PROFILE)
-    assert int(switches["mp_physics"]) == 8
+    # 4193eb0da, lane/286-fork-mynn: the named HRRR route now selects
+    # MP28/GSD4.1/RUC. Source authority is not numerical certification.
+    assert int(switches["mp_physics"]) == 28
+    assert int(switches["bl_pbl_physics"]) == 5
+    assert int(switches["sf_surface_physics"]) == 3
+    assert switches["bl_mynn_version"] == "gsd_41"
     assert int(switches["cu_physics"]) == 0
 
 
@@ -512,8 +524,8 @@ def _domain(argv):
 
 def _loaded(path):
     """The emitted file through the shared loader, [case_data] and all."""
-    return build_experiment(_raw(path.read_text(encoding="utf-8")),
-                            source=str(path))
+    from gpuwm.experiment import load_experiment
+    return load_experiment(path)
 
 
 def test_wizard_door_refuses_an_undeclared_nocturnal_selection(tmp_path):
@@ -595,6 +607,18 @@ def test_wizard_door_negative_controls_still_emit_without_any_ack(tmp_path):
                     "--cycle", "2026-08-05T00", "--hours", "6",
                     "--out", str(hrrr)]) == 0
     assert _loaded(hrrr).acknowledgements == ()
+    # The static owner intentionally declares the HRRR source in this
+    # one-file case. Keep it in the file and use the canonical load seam.
+    from gpuwm.static.source_defaults import source_static_defaults
+    raw = tomllib.loads(hrrr.read_text())
+    assert raw["static"] == source_static_defaults("hrrr")
+    assert experiment_from_text(hrrr.read_text(), source=str(hrrr)).root.run.mp_physics == 28
+    with pytest.raises(ValueError, match="static"):
+        build_experiment(_raw(hrrr.read_text()), source="bare-wizard-case")
+    invalid = hrrr.read_text().replace(
+        "[static]\n", "[static]\nnot_a_static_key = true\n", 1)
+    with pytest.raises(ValueError, match="not_a_static_key"):
+        experiment_from_text(invalid, source=str(hrrr))
 
 
 # ---------------------------------------------------------------------------
@@ -712,3 +736,55 @@ def test_the_nowcast_doors_all_bind_the_same_default():
 
     assert auto_default == NOWCAST_DEFAULT_PHYSICS_PROFILE
     assert NOWCAST_DEFAULT_PHYSICS_PROFILE == ROUTE_DEFAULT_PHYSICS_PROFILE
+    import argparse
+    from tools import da_nowcast, da_nowcast_auto, da_nowcast_launcher
+
+    # Exercise each actual CLI registration, including the launcher sibling.
+    root_parser = da_nowcast.build_parser()
+    run_parser = next(action for action in root_parser._actions
+                      if isinstance(action, argparse._SubParsersAction)).choices["run"]
+    auto_parser = argparse.ArgumentParser()
+    da_nowcast_auto.add_run_arguments(auto_parser)
+    launcher_parser = argparse.ArgumentParser()
+    da_nowcast_launcher.add_common(launcher_parser)
+    for parser in (run_parser, auto_parser, launcher_parser):
+        assert parser.get_default("physics_profile") == NOWCAST_DEFAULT_PHYSICS_PROFILE
+    archived = "thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1"
+    args = root_parser.parse_args([
+        "run", "--site", "qqqq", "--window-end", "latest", "--out", "case",
+        "--physics-profile", archived])
+    assert args.physics_profile == archived
+
+
+def test_nowcast_default_change_does_not_requalify_archived_measurements():
+    """Existing measured records retain their actual physics composition."""
+    import argparse
+    import hashlib
+    import json
+    from pathlib import Path
+    from tools import da_nowcast, da_nowcast_auto, da_nowcast_launcher
+
+    archived = "wsm6-ysu-mm5-noah-no-radiation-v1"
+    fixture = Path(__file__).resolve().parent / "fixtures/nowcast_archived_physics.json"
+    payload = fixture.read_bytes()
+    # 7db661c65, lane/286-staging-repair: preserve the historical receipt
+    # composition in public tests; release snapshots exclude evidence/**.
+    assert hashlib.sha256(payload).hexdigest() == (
+        "dfff21eccbb9309af3c3421e3952e740e4bc302eb400137566341457021255e6")
+    provenance = json.loads(payload)
+    assert provenance["schema"] == "gpuwm-nowcast.archived-physics-provenance.v1"
+    assert len(provenance["receipts"]) == 2
+    assert {receipt["physics_profile"] for receipt in provenance["receipts"]} == {archived}
+    assert da_nowcast_launcher.REFERENCE["physics_profile"] == archived
+    assert "does not qualify current" in da_nowcast_launcher.REFERENCE["caveat"]
+
+    root_parser = da_nowcast.build_parser()
+    run_parser = next(action for action in root_parser._actions
+                      if isinstance(action, argparse._SubParsersAction)).choices["run"]
+    auto_parser = argparse.ArgumentParser()
+    da_nowcast_auto.add_run_arguments(auto_parser)
+    for parser in (run_parser, auto_parser):
+        help_text = " ".join(parser.format_help().split())
+        assert "WSM6/Dudhia" in help_text
+        assert "longwave off" in help_text
+        assert "remeasurement" in help_text

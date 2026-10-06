@@ -49,7 +49,7 @@ import pytest
 from conftest import requires_gpu
 from gpuwm.core.fp32_ulp import fp32_ulp_distance
 
-_ORACLE = Path(__file__).resolve().parents[1] / "gpuwm" / "data" / "urban" / "oracle" / "bep"
+_ORACLE = Path(__file__).resolve().parents[1] / "tests" / "data" / "oracles" / "urban" / "bep"
 #: WRF with the one-line rural-drag fix gpuwm carries: what the port is graded against.
 FIXTURE = _ORACLE / "ysu_bep_fix" / "columns"
 #: Byte-unmodified WRF v4.7.1: the defect's record.

@@ -10,10 +10,12 @@ import numpy as np
 import pytest
 
 from gpuwm.ingest.hrrr_target import HrrrTargetDomain
+from gpuwm.wrf_physics_inventory import EXPORT_USE_THETA_M
 from tools.run_hrrr_stock_wrf_acceptance import (
     AcceptanceFailure,
     _expected_identity_attrs,
     _finite_variable,
+    require_export_theta_declaration,
     template_symlink_plan,
     validate_export,
     validate_wrf_logs,
@@ -54,6 +56,28 @@ def test_direct_export_global_attributes_match_each_file_contract():
     assert initial["SIMULATION_START_DATE"] == valid
     assert "SIMULATION_START_DATE" not in boundary
     assert boundary["WEST-EAST_GRID_DIMENSION"] == target.nx + 1
+
+
+def test_an_export_that_declares_another_theta_is_named_before_wrf_runs():
+    """The acceptance namelist says the exporter's ``use_theta_m``, and
+    stock WRF stops at its input gate on a file that says otherwise
+    (measured, WRF V4.6.1: "use_theta_m values must be consistent").
+
+    An export written before the exporter wrote dry theta declares 1.
+    The run names that file and what to do about it instead of launching
+    wrf.exe into a FATAL.
+    """
+
+    require_export_theta_declaration("wrfinput_d01", EXPORT_USE_THETA_M)
+    require_export_theta_declaration(
+        "wrfbdy_d01", np.int32(EXPORT_USE_THETA_M))
+    with pytest.raises(AcceptanceFailure) as refusal:
+        require_export_theta_declaration("wrfbdy_d01", np.int32(1))
+    text = str(refusal.value)
+    assert "wrfbdy_d01 declares USE_THETA_M = 1" in text
+    assert f"use_theta_m = {EXPORT_USE_THETA_M}" in text
+    assert "use_theta_m values must be consistent" in text
+    assert "Export it again" in text
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows test user cannot create symlinks")

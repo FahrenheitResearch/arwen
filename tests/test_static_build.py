@@ -181,6 +181,22 @@ def test_geog_selection_resolves_complete_global_five_minute_inventory(
     assert mixed.terrain == "topo_gmted2010_5m"
 
 
+@pytest.mark.parametrize("fallback", ["default", "5m"])
+def test_geog_bnu_soil_selector_preserves_every_other_role(tmp_path, fallback):
+    baseline = GeogSelection.from_tokens(tmp_path, fallback)
+    selected = GeogSelection.from_tokens(tmp_path, f"bnu_soil_30s+{fallback}")
+    assert selected.resolution_tokens == ("bnu_soil_30s", fallback)
+    assert selected.soil_top == "bnu_soiltype_top"
+    assert selected.soil_bottom == "bnu_soiltype_bot"
+    for role in ("terrain", "landuse", "greenfrac", "lai", "albedo",
+                 "snow_albedo", "soil_temperature"):
+        assert selected.path(role) == baseline.path(role), role
+    # The token remains subject to WPS per-field priority.
+    preferred = GeogSelection.from_tokens(tmp_path, f"{fallback}+bnu_soil_30s")
+    assert preferred.soil_top == baseline.soil_top
+    assert preferred.soil_bottom == baseline.soil_bottom
+
+
 def test_geog_selection_uses_fortran_per_element_defaults_not_broadcast(
         tmp_path):
     wps = tmp_path / "namelist.wps"

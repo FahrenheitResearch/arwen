@@ -1,12 +1,12 @@
 {
-  "about": "The storm wiki's words. Every fact a wiki page shows comes from the page store, never from this file; this file holds labels and plain sentences about the page itself. {name} fields are filled in by the page.",
-  "name": "Storm wiki",
+  "about": "The Weather Library's words. Every fact a Weather Library page shows comes from the page store, never from this file; this file holds labels and plain sentences about the page itself. {name} fields are filled in by the page.",
+  "name": "Weather Library",
   "nav": {
     "wiki": "Main page",
     "browse": "All events",
     "places": "Places",
     "changes": "Recent changes",
-    "wiki_group": "Storm wiki",
+    "wiki_group": "Weather Library",
     "forecasts_group": "Forecasts"
   },
   "search": {
@@ -42,7 +42,7 @@
     }
   },
   "main": {
-    "title": "Storm wiki",
+    "title": "Weather Library",
     "welcome": "Every storm here links to the record it came from. {events} events, {places} places, {sources} cited records.",
     "seed_line": "Every page is built from public records, and each fact links to the record it came from.",
     "featured": "Featured event",
@@ -58,7 +58,7 @@
     "yours_none": "No forecasts yet. Open an event and press Run the best simulation for this event, or start one from New forecast."
   },
   "article": {
-    "from": "From the storm wiki",
+    "from": "From the Weather Library",
     "generated": "generated",
     "generated_help": "Written by code from the cited facts on this page. It adds no fact of its own.",
     "notable": "Why it is notable",
@@ -171,7 +171,7 @@
   "kind": {
     "what": "What it is",
     "how": "How these pages are found",
-    "events": "Every {kind} in the wiki",
+    "events": "Every {kind} in the Weather Library",
     "map": "Where they are",
     "columns": [
       "Event",
@@ -198,8 +198,8 @@
     "rarest": "Rarest here",
     "map_line": "Each dot is an event here. Click one to open it.",
     "title": "Places",
-    "lede_events": "{count} events in the wiki happened here.",
-    "lede_one": "1 event in the wiki happened here.",
+    "lede_events": "{count} events in the Weather Library happened here.",
+    "lede_one": "1 event in the Weather Library happened here.",
     "lede": "{count} places: ocean basins, countries and states. Each lists the events in it, the rarest first."
   },
   "run": {
@@ -212,7 +212,7 @@
     "pictures_line": "The latest picture of each favourite look, as the Rust renderer drew it.",
     "no_pictures": "This forecast has no pictures yet.",
     "events": "Events it covers",
-    "events_none": "None of the wiki's events falls inside this run's box and hours.",
+    "events_none": "None of the Weather Library's events falls inside this run's box and hours.",
     "verification": "Verification",
     "verification_none": "No verification files in this run folder.",
     "warnings": "Warnings",
@@ -243,7 +243,7 @@
     "sep-nov": "Sep to Nov"
   },
   "create": {
-    "from_event": "From the wiki: {title}",
+    "from_event": "From the Weather Library: {title}",
     "recipe_line": "The event's best run for the {card} GB card is filled in: start {start}, {hours} h, a {dx} outer grid{nests}.",
     "recipe_change": "The start data, {source}, and the start and length are the event's. Change them below; the grids, physics and pictures are on the next steps.",
     "not_offered": "This event's own date, {date}, needs {source}, which New forecast does not offer on this computer. The same box for {hours} h on a {dx} grid is filled in; pick a date below.",

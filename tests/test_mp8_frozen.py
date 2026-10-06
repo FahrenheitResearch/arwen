@@ -468,8 +468,21 @@ FROZEN_MODULE_DIGESTS = {
         # compiled-WRF advect oracle reproduces every recorded word on the
         # RTX 4090 and on sm_120 (tools/advect_wrf471_oracle/README.md).
         # Previously 6facc4f8/66e08b7a.
-        '85062beca117763ef921c933cfdc015fafba979f38565a22bfe225872c7728ef',
-        'e3fa613578e3989e27678e1cce00f4465a941bd541567807a96da652f2b2c9ab'),
+        # Re-pinned for lane/286-vadv5 (WRF v_sca_adv_order / v_mom_adv_order):
+        # the four flux-divergence entries take a trailing int vorder, a
+        # vertical flux5v (WRF flux5 with -vel) joins flux3, zface_half and
+        # advect_w's five vertical-face blocks run WRF's vert_order == 5
+        # ladder under vorder 5 and the unchanged vert_order 3 ladder under
+        # vorder 3, which every launcher defaults to.  Reading: the compiled
+        # WRF 4.7.1 advect oracle reproduces every recorded production word
+        # on sm_120 at vorder 3 (tests/data/wrf471_advect receipts recaptured
+        # with only the kernel digests moved), and at vorder 5 the HRRR-fork
+        # oracle fixture (tests/data/wrf_legacy_advect, NOAA-EMC/HRRR
+        # 40ee6058c WRFV3.9) holds the four explicit routines bitwise under
+        # the exact-C build (tests/test_advect_wrf_legacy_parity.py).
+        # Previously 85062bec/e3fa6135.
+        '13ee1cba784a8f639ee5a7993eb7fb1f6f2992228cbf2ee0ecf8b4cdf86d0b1d',
+        'af8f5c6cb0441dcdc8198ac7453bca539edaaf56aa1d450e9ab0fb7d1d8de66e'),
     'coriolis_map': (
         # Re-pinned for the opt-in strict WRF arithmetic (lane/282-wrf-exact,
         # merged 1efb5a415): d1252eb2a (feat(verify): restore WRF big-step and
@@ -811,8 +824,38 @@ FROZEN_MODULE_DIGESTS = {
         # Option 2 now reaches WRF's local mixing-length law in cold and
         # carried calls. The option-1 kernel body is unchanged; Fortran
         # column and assembled-driver checks live in test_mynn_mixlength2.
-        'b03be073f38909a395dd1dad73e079c9dae0413e722ec3782222a194665b65b4',
-        '8771aadac8ba94ec75772d616db2acb0fd8fd768fba4b032595c3d07185fa6b2'),
+        # Previously b03be073/8771aada.
+        # Re-pinned by lane/286-fork-mynn: the GSD MYNN v4.1 rows
+        # (bl_mynn_version = "gsd_41") sit behind #if defined(MYNN_GSD41)
+        # and compile only through the integer-define loader.  Reading: the
+        # default build's binary is byte-identical to the previous source's
+        # (NVRTC on the RTX 4090, sha256 c0e92423...), so every wrf_461 run
+        # is the same machine code; tests/test_mynn_gsd41.py holds the rows.
+        # Moved again by the gsd_41 cloud block (stratus condensation,
+        # shallow-cumulus cloud, decay memory, in-cloud QC_BL write-back),
+        # all behind MYNN_GSD41; the default binary is still c0e92423.
+        # Previously f4706c64/6923ecda.
+        # Moved again by the gsd_41 surface TKE source and 1/L and its
+        # dissipative heating, behind MYNN_GSD41; default binary c0e92423.
+        # Previously ab421d81/3f08b100.
+        # Moved again by the gsd_41 PBL height input (theta-v of the
+        # liquid-water theta) and KPBL blend; default binary c0e92423.
+        # Previously 52121cc9/1fc6c827.
+        # Moved again by the gsd_41 stability-function limits; default
+        # binary c0e92423.  Previously b61e6fa2/d07dbe63.
+        # Plume saturation and its iteration stop now take the fork form
+        # under MYNN_GSD41; the leaf matches 24 unmodified Fortran states
+        # bit for bit. The new PBL-height divisions use __fdiv_rn. Default
+        # PTX remains c0e92423. Previously dec5ec9e/04bb84ea.
+        # GSD mass-flux population, trigger, ascent, scale awareness and
+        # density-free transport are conditional. Default PTX remains
+        # identical on the RTX 5090 (3dbf9aead85e, 1234799 bytes).
+        # P20 uses the fork's Neumann top row, 1e-4 floor, no TKE cap and
+        # 1e-12 initialization production floor under MYNN_GSD41 only.
+        # All 96 predictor TKE words match unmodified source. Default PTX
+        # is identical to staging cdf5a7dea at compute89 and compute120.
+        '3243ddcbb65e4cae69975840e177822ca3000507f07aef2e50fe10360001a554',
+        'ecf106fc09e1f3982a9fa8c2b277b3959dbc7af102cc1500b4e64dbad6fd6d25'),
     'mynn_surface': (
         # Re-pinned for A146 (a98f2482e): every float division by a compile-time
         # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
@@ -820,8 +863,11 @@ FROZEN_MODULE_DIGESTS = {
         # sm_89 unchanged (the compute_89 PTX with __fdiv_rn spelled '/' is
         # identical to the base's); Blackwell cards now round these quotients
         # IEEE-correctly.  Previously a94de3ff/891ec5d5.
-        'e2593f1fbc56581258594c3dfa2c6ac8471afd351a2f15cdacc1225a64750d92',
-        '698e7f36bac844c7727b2fee5f15b5673276c87bfb4b36edbf367b0369aa87a4'),
+        # The selectable GSL surface variant and explicit table rounding
+        # coexist. The ordinary table retains the native Blackwell operation
+        # order; the selected variant keeps its own stability solver.
+        'e7d9a055cb1226168d54b4416ef7435746219316b92bfdffc09127feda4203ea',
+        'dc759001e1fbb3886d0c8d066596d31a78b9c57cea51b2fbd62ecdad35ccd650'),
     'nest': (
         # Re-pinned for a combined four-side boundary launch. The original
         # single-side entry point and SINT expression tree remain unchanged.
@@ -1198,8 +1244,18 @@ FROZEN_MODULE_DIGESTS = {
         # oracle reproduces every recorded word on the RTX 4090 and on
         # sm_120 (tools/advect_wrf471_oracle/README.md).
         # Previously 8284e197/7de1823f.
-        '20a2dd7977d06b42f66ca3ca7c3170a5d638a5ad6f7603323f468c95b14460a5',
-        'b4832282be55c3658586478788e979e3595a66a9fae56e00378843c25f62b28f'),
+        # Re-pinned for lane/286-vadv5 (WRF v_sca_adv_order): pd_fluxes takes
+        # a trailing int vorder; pd_zface_half runs WRF's vert_order == 5
+        # ladder (pd_flux5v, advect_scalar_pd's flux5 with -vel) under 5 and
+        # the unchanged vert_order 3 ladder under 3, the launcher default.
+        # Reading: the compiled WRF 4.7.1 advect oracle reproduces every
+        # recorded production word on sm_120 at vorder 3, and at vorder 5
+        # the limiter's total tendency holds bitwise against WRF 4.7.1 under
+        # the exact-C build on the HRRR-fork fixture's cases
+        # (tests/test_advect_wrf_legacy_parity.py).
+        # Previously 20a2dd79/b4832282.
+        'de5a7aabcaafa9975bdf305834d771a68172388f73317788ff389db7ac64344c',
+        '9011930b5b510770f81e11c56a7fd6764233e1592127edc05c1d9c20f7e5142b'),
     'refl': (
         # Re-pinned for A146 (a98f2482e): every float division by a compile-time
         # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a
@@ -1401,8 +1457,25 @@ FROZEN_MODULE_DIGESTS = {
         # tests/test_ruc_nzs_tier.py inverts the five edits by name before
         # its historical digest, so the lift proof above still closes.
         # Previously 57e8c503/39d88927.
-        '844546e307b148bab0cd19dfdc786845d16d298ddd4345684c158539ca99e8d8',
-        '0af961d37134ac562ad767a392be0ffd774463aef6a19d1167611f50f800c5af'),
+        #
+        # 2.8.6, the snow scheme by WRF lineage (ruc_snow).  The default
+        # compile is WRF v4.0-4.5's SFCTMP snow preparation and SNOWTEMP,
+        # which the operational RAP/HRRR branch carries (constant snow
+        # conductivity, cover from depth over the critical depth taken after
+        # compaction, fresh-snow albedo from the depth on the ground, no 0.7
+        # albedo floor, no freezing clamps on the second pass, melt entered
+        # while the pack outlasts the step's evaporation with a cap
+        # independent of the step, bottom melt capped unconditionally and
+        # kept out of smelt); GPUWM_SNOW_WRF461 compiles the v4.6.1 lines
+        # this unit carried before, and under that define every WRF v4.6.1
+        # column oracle still matches as before (tests/test_ruc.py,
+        # test_ruc_gpu.py); the default matches the branch build bit for
+        # bit (tests/test_ruc_fork_oracle.py).  WHAT THE PIN PREVENTS: the
+        # v4.6.1 snow scheme returning as the default, or either lineage
+        # changing unseen.  tests/test_ruc_nzs_tier.py inverts the edits by
+        # name before its historical digest.  Previously 844546e3/0af961d3.
+        'f2de42c4b47c26927d1c6097a6f5801a96ae12a96f84f0aede2ec4c45e4cad4a',
+        '48bb40b7e167341509392bafaf5828a84c053c6e5d136b66634f398e7348b846'),
     'saxpy': (
         # 2.8.2: four values per thread with aligned vector loads/stores.
         # Scalar a*x+y and the default FMA policy are unchanged. The word
@@ -1499,8 +1572,21 @@ FROZEN_MODULE_DIGESTS = {
         # Ordinary scalar interpolation and sm_120 W stress reuse preserve
         # output words in the focused scalar and W identity tests. Strict
         # WRF source and cubins remain unchanged. Previously 0aab5788/c9165bb9.
-        'aaf455f56420fe67f78d8bd45e150e06dcfcc6e4dace79a89f4a3581fe164430',
-        'b60a029091011e77e3261c62b6b494cbd2d92ad3d2a09a0eae902d548cc422fd'),
+        # Explicit stress, interpolation and scalar rounding preserves the
+        # native sm_120 words in 248 randomized kernel fixtures and the
+        # full short forecast. The direct W evaluator uses the same rounded
+        # face arithmetic without reading the production face buffers.
+        # Re-pinned for 1f625334f (perf: bounded 32-bit addressing for the
+        # scalar Smagorinsky kernels, merged 8a9c9e63d): a GPUWM_SMAG_INDEX32
+        # tier the host selects only after proving the largest staggered
+        # allocation fits uint32; floating expressions and their explicit
+        # rounding are unchanged.  Reading: byte-identical forecasts on Ada
+        # and Blackwell (merge 8a9c9e63d), tests/test_smag2d_index32_*.py,
+        # and all 178,128 diff_opt=1 coordinate words reproduced on an RTX
+        # 5090 at this source (tests/data/wrf471_diff_opt1/
+        # measured-source-transition.json).  Previously 1c8c29c1/565ad5fa.
+        '932359b9f7685918fdd69e204ead1d2ac8369b792d64ff393e00b6b910dc84ad',
+        '400d89d032c13c4ed64be6cfd96e72483dc176fc83a933098b8cde85ac2a34a9'),
     'spec_bdy': (
         'bcc7090fbbb8ea307bd6dd6c65ab9b8a3f56948c4752ae3d744127b450d20161',
         'bc03ed595bacc546d8e041fbb1d11b5bb3b3b90760ef06ea1dd1f0f18b4de931'),
@@ -1570,8 +1656,27 @@ FROZEN_MODULE_DIGESTS = {
         # __fdiv_rn spelling of the other entry point (vertical_interpolate_logp).
         # Previously 339e7266/b532daea on the lane and 3efb1a82/1c882556 on
         # integrate/2.8.
-        '1787bbbf3978fdcd7947054f1a66ddffe46a232cec3a41b40b562836abad176a',
-        '8309d659ba4adae07848a995ffc6e9e9f76bacff38c59302ccfa96fdb0f7a95d'),
+        # Native endpoint roundoff (69a0baec1): targets within four FP32
+        # epsilons of the top pressure use that endpoint, matching the Rust
+        # operator. tests/test_wrf_vert_interp.py grades both routes. The
+        # file pin moved in b6f34356b; its assembled-source pin did not.
+        # Re-pinned for 508691422 (fix(vert): co-locate a native moist top
+        # within 2^-16 of its dry target, merged 2cc4baa2f): the top
+        # co-location bound widens from four FP32 epsilons to 2^-16
+        # relative in the kernel, the Rust operator, the Rust plan and the
+        # launcher check alike, so an HRRR-native start whose top moist level
+        # sits 4.9e-7 above the dry target no longer refuses.  Runs that
+        # passed before are unchanged; tests/test_native_pressure_top.py and
+        # tests/test_wrf_vert_interp.py grade both routes.  Previously
+        # 1787bbbf/7ea882cb.
+        'dadb7dff57ab3f7440bcec9700d28a7c1621dbddf35922ce27476c34986a6bf9',
+        # Re-pinned for c0ffc53b5 and 2bd3bc505 shared-header additions.
+        # The kernel file is unchanged. The added unused helpers disappear
+        # from compiled code: sm_100 and sm_120 each retain identical ordered
+        # PTX and SASS operations, operands and predicates against the header
+        # before c0ffc53b5. Reading: vert-interp-preservation.json.
+        # Moved again with the file by 508691422 (above).
+        'e2a3b92d48f02046a0804724cf6ad6f947333e7be9f541029a7367da094ab590'),
     'wsm6': (
         # Re-pinned for A146 (a98f2482e): every float division by a compile-time
         # constant is spelled __fdiv_rn, because NVRTC compiles x / C as a

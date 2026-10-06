@@ -258,11 +258,32 @@ struct TargetOut<'a> {
     reach: &'a mut [f64],
 }
 
+/// The lower bilinear corner of a coordinate on an axis of `n` cells.
+///
+/// A coordinate exactly on the last cell (`p == n - 1`, `n >= 2`) is
+/// spelled as the cell before with a unit fraction: its whole weight lands
+/// on its own cell and its zero-weight partner stays inside the window.
+/// Every other coordinate floors exactly as before, so every input this
+/// entry accepted before builds the same stencil.  Breakage it removes: a
+/// target that IS the source grid (the native grid copied index for index,
+/// `gpuwm.ingest.hrrr._snap_to_native_lattice`) puts its last column and
+/// row on `n - 1`, whose floor partner `n` is outside, and the whole soil
+/// stencil of that grid was refused as leaving the window.
+#[inline]
+fn lower_corner(p: f64, n: usize) -> f64 {
+    let floor = p.floor();
+    if n >= 2 && p == (n - 1) as f64 {
+        floor - 1.0
+    } else {
+        floor
+    }
+}
+
 fn build_target(b: &Build, t: usize, out: &mut TargetOut, k: usize, stats: &mut Stats) {
     let x = b.x[t];
     let y = b.y[t];
-    let x0 = x.floor() as i64;
-    let y0 = y.floor() as i64;
+    let x0 = lower_corner(x, b.window.nx) as i64;
+    let y0 = lower_corner(y, b.window.ny) as i64;
     let x1 = x0 + 1;
     let y1 = y0 + 1;
     let fx = x - x0 as f64;
@@ -468,7 +489,10 @@ pub unsafe extern "C" fn gpuwm_masked_bilinear_stencil_f64(
         if xs
             .iter()
             .zip(ys.iter())
-            .any(|(&px, &py)| px.floor() < 0.0 || px.floor() + 1.0 >= top_x || py.floor() < 0.0 || py.floor() + 1.0 >= top_y)
+            .any(|(&px, &py)| {
+                let (x0, y0) = (lower_corner(px, nx), lower_corner(py, ny));
+                x0 < 0.0 || x0 + 1.0 >= top_x || y0 < 0.0 || y0 + 1.0 >= top_y
+            })
         {
             return ERR_OFF_WINDOW;
         }
@@ -873,6 +897,46 @@ mod tests {
         };
         assert_eq!(code, OK);
         assert_eq!(out[0], 7.0);
+    }
+
+    #[test]
+    fn a_target_on_the_last_cell_takes_its_own_cell_whole() {
+        // A 3 x 4 window, every target on a whole cell including the last
+        // column and row: each takes its own cell with weight 1 (the last
+        // one as the cell before with a unit fraction), nothing leaves the
+        // window, and one step past the last cell is still refused.
+        let (ny, nx) = (3usize, 4usize);
+        let valid = vec![1u8; ny * nx];
+        let mut xs = Vec::new();
+        let mut ys = Vec::new();
+        for row in 0..ny {
+            for column in 0..nx {
+                xs.push(column as f64);
+                ys.push(row as f64);
+            }
+        }
+        let n = xs.len();
+        let apply = vec![1u8; n];
+        let (code, iy, ix, w, counts, _, _) = build(&xs, &ys, &apply, &valid, ny, nx, 2, 0, 1);
+        assert_eq!(code, OK);
+        assert_eq!(counts[COUNT_DIRECT], n as u64);
+        for t in 0..n {
+            let mut own = 0.0f32;
+            for corner in 0..4 {
+                let (row, column, weight) = (iy[corner * n + t], ix[corner * n + t], w[corner * n + t]);
+                assert!((0..ny as i32).contains(&row) && (0..nx as i32).contains(&column));
+                if (row as f64, column as f64) == (ys[t], xs[t]) {
+                    own += weight;
+                } else {
+                    assert_eq!(weight, 0.0);
+                }
+            }
+            assert_eq!(own, 1.0);
+        }
+        let (code, ..) = build(&[3.5], &[1.0], &[1], &valid, ny, nx, 2, 0, 1);
+        assert_eq!(code, ERR_OFF_WINDOW);
+        let (code, ..) = build(&[1.0], &[2.000001], &[1], &valid, ny, nx, 2, 0, 1);
+        assert_eq!(code, ERR_OFF_WINDOW);
     }
 
     #[test]

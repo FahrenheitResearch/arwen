@@ -590,7 +590,7 @@ def test_cli_reports_the_runnable_20crv3_netcdf_route(capsys):
     # The two limits that must never be readable only in prose somewhere
     # else: it is the ensemble MEAN, and its invariants are recovered.
     assert "ENSEMBLE MEAN" in payload["notes"]
-    assert "no orography and no land mask" in payload["notes"]
+    assert "published time-invariant surface height and land fraction" in payload["notes"]
 
 
 def _twentycr_args():

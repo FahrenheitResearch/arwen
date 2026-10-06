@@ -109,7 +109,7 @@
       "sf_surface_physics": 2,
       "land_surface": "Noah_4_layer",
       "native_radiation": "longwave_off_plus_Dudhia_shortwave",
-      "stock_acceptance_runtime_deltas": "ra_lw_physics_0_to_1_use_theta_m_0_to_1_stock_only_ghg_input_0",
+      "stock_acceptance_runtime_deltas": "ra_lw_physics_0_to_1_stock_only_ghg_input_0; use_theta_m_0_on_both_the_export_is_dry_theta",
       "hybrid_opt": 2,
       "hypsometric_opt": 2
     },

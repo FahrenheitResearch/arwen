@@ -15,7 +15,7 @@ from gpuwm.fetch import validate_fetch_hints
 from gpuwm.companion_domains import VORTEX_PRESET
 from gpuwm.source_adapters import get_source_adapter
 
-from cyclone_preset_fit import center, holds_the_preset_root
+from cyclone_preset_fit import center, cycle_for, holds_the_preset_root
 
 
 def refused_for_its_window(source):
@@ -23,16 +23,19 @@ def refused_for_its_window(source):
     if holds_the_preset_root(source):
         return False
     with pytest.raises(ValueError, match="covering sources"):
-        tc.configuration_text(cycle="2026090900", point=center(source),
+        tc.configuration_text(cycle=cycle_for(source), point=center(source),
                               forcing_source=source)
     return True
 
 
-@pytest.mark.parametrize("source", routes.all_fetchable_sources())
+# The walk is the sources the door OFFERS (cs.source_ids: fetchable and
+# wizard-planable).  A fetchable row with no initialization route is
+# refused by name and is not on the menu, so it is not walked here.
+@pytest.mark.parametrize("source", cs.source_ids())
 def test_all_fetchable_sources_author_valid_configuration(source):
     if refused_for_its_window(source):
         return
-    text, exp = tc.configuration_text(cycle="2026090900", point=center(source),
+    text, exp = tc.configuration_text(cycle=cycle_for(source), point=center(source),
                                       forcing_source=source)
     table = tomllib.loads(text)
     assert table["fetch"]["source"] == source
@@ -43,7 +46,7 @@ def test_all_fetchable_sources_author_valid_configuration(source):
     assert {k: v for k, v in table["domain"][1]["follow"].items() if k != "track"} == VORTEX_PRESET
 
 
-@pytest.mark.parametrize("source", routes.all_fetchable_sources())
+@pytest.mark.parametrize("source", cs.source_ids())
 def test_the_plan_route_is_the_one_the_authored_configuration_belongs_to(source):
     """A152: a storm-following plan names the route its configuration runs on.
 
@@ -57,7 +60,7 @@ def test_the_plan_route_is_the_one_the_authored_configuration_belongs_to(source)
 
     if refused_for_its_window(source):
         return
-    text, _exp = tc.configuration_text(cycle="2026090900", point=center(source),
+    text, _exp = tc.configuration_text(cycle=cycle_for(source), point=center(source),
                                        forcing_source=source)
     table = tomllib.loads(text)
     assert cs.plan_route(source) == (
@@ -136,7 +139,14 @@ def test_plan_prices_selected_source_and_interval(monkeypatch):
 
 def test_source_menu_uses_routes_and_member_grammar():
     options = {row["source"]: row for row in cs.source_options()}
-    assert set(options) == set(routes.all_fetchable_sources())
+    # The menu is exactly the sources the door can author: offering a
+    # fetchable row that then refuses for want of an initialization route
+    # would be a dead door.
+    assert set(options) == set(cs.source_ids())
+    assert set(options) <= set(routes.all_fetchable_sources())
+    for source in set(routes.all_fetchable_sources()) - set(options):
+        with pytest.raises(ValueError, match="--list-sources"):
+            cs.source_adapter(source)
     for source, option in options.items():
         if source in routes.route_ids():
             assert option["members"] == list(routes.member_tokens(routes.route_for(source)))
@@ -159,7 +169,7 @@ def test_wps_interval_uses_same_registry_value_as_fetch_and_memory(source):
     from gpuwm.hrrr_prepared_bundle import render_wps_namelist
     if refused_for_its_window(source):
         return
-    _, experiment = tc.configuration_text(cycle="2026090900", point=center(source),
+    _, experiment = tc.configuration_text(cycle=cycle_for(source), point=center(source),
                                           forcing_source=source)
     interval = get_source_adapter(source).forcing_interval_seconds
     text = render_wps_namelist(experiment, interval_seconds=interval)

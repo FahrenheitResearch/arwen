@@ -160,26 +160,67 @@ def main() -> None:
     )
     args = parser.parse_args()
     need_lake_depth = args.lake_depth
+    experiment_tables = None
     if args.experiment_config is not None:
-        from gpuwm.experiment import load_experiment
-        run = load_experiment(args.experiment_config).root.run
-        need_lake_depth |= bool(run.sf_lake_physics == 1 and run.use_lakedepth == 1)
+        import tomllib
+        from gpuwm.config_authority import read_config_authority
+        experiment_tables = tomllib.loads(read_config_authority(
+            args.experiment_config).payload.decode("utf-8"))
+        if "experiment" in experiment_tables:
+            from gpuwm.experiment import load_experiment
+            run = load_experiment(args.experiment_config).root.run
+            need_lake_depth |= bool(run.sf_lake_physics == 1 and run.use_lakedepth == 1)
     if args.output.exists() or args.receipt.exists():
         raise FileExistsError("native static output/receipt already exists")
 
     total_started = time.perf_counter()
     target = load_hrrr_target_domain(args.domain_spec)
     grid = benchmark_grid(target)
-    source_window = required_hrrr_source_window(target)
     from gpuwm.static.highres_production import (
         load_static_highres, apply_prepared_highres, overlay_active,
         parse_sealed_static_highres)
+    # The hrrr source metadata selects a static-source row by default.  A
+    # configuration that names no source takes it only on the row's own
+    # cone; a declared source is on the carrier already and still refuses
+    # a mismatch by name (gpuwm.static.source_defaults).
+    from gpuwm.static.source_defaults import (
+        defaulted_source_fallback, source_static_defaults)
+    defaults = source_static_defaults("hrrr")
     if args.static_highres is not None:
         highres = parse_sealed_static_highres(
             args.static_highres, source="--static-highres",
             base_dir=Path.cwd())
     else:
         highres = load_static_highres(args.experiment_config)
+        from dataclasses import replace
+        from gpuwm.static.highres_production import parse_static_table
+        if ((experiment_tables is None or "experiment" in experiment_tables)
+                and (highres is None or highres.static_source is None)
+                and defaulted_source_fallback(defaults["source"], grid) is None):
+            source_carrier = parse_static_table(
+                defaults, source="source metadata", base_dir=Path.cwd())
+            if highres is None:
+                highres = source_carrier
+            else:
+                highres = replace(highres,
+                                  static_source=source_carrier.static_source)
+    source_fallback = (None if getattr(highres, "static_source", None) is not None
+                       else defaulted_source_fallback(defaults["source"], grid))
+    if source_fallback is not None:
+        print(f"static source {source_fallback['id']}: "
+              f"{source_fallback['reason']} (projection "
+              f"{source_fallback['projection_mismatch']})", flush=True)
+    from gpuwm.static.external_source import static_source_for, static_source_receipt
+    source_setting = static_source_for(highres)
+    from gpuwm.static.external_source import sampling_window
+    exact_window = (None if source_setting is None
+                    else sampling_window(source_setting.row, grid))
+    if exact_window is not None:
+        source_coverage = {"scope": "static-source-grid", "id": source_setting.id,
+                           "window": {"i0": exact_window[0], "j0": exact_window[1],
+                                      "ni": target.nx, "nj": target.ny}}
+    else:
+        source_coverage = required_hrrr_source_window(target).to_dict()
     # d01's terrain smoothing ([[domain]] static on the root), built here
     # as the WPS_GEOG roots of the other routes build it, and attested in
     # the receipt the root seam (require_root_smoothing) reads.  A default
@@ -231,6 +272,7 @@ def main() -> None:
             selection = replace(selection, lake_depth=True)
         if smoothing_attestation is not None:
             selection = replace(selection, terrain_smoothing=smoothing)
+        selection = replace(selection, static_source=static_source_for(highres))
         geog_source_coverage: dict[str, object] = {}
         fields = build_static(
             grid, args.geog_root, selection=selection,
@@ -239,8 +281,12 @@ def main() -> None:
         fields, grid, config=highres, domain_id=1, case_date=args.case_date,
         landuse_attrs=(selection.landuse_global_attrs()
                        if overlay_active(highres, grid) else None),
-        baseline_receipt=(prior if args.static_cache is not None
-                          else smoothing_attestation))
+        baseline_receipt=(prior if args.static_cache is not None else {
+            **(smoothing_attestation or {}),
+            **({"static_source": static_source_receipt(highres)}
+               if geog_source_coverage.get("static_source", {}).get("status") == "APPLIED"
+               else {}),
+        }))
     build_seconds = time.perf_counter() - build_started
     fields.update({
         "MAPFAC_M": grid.mapfac_m(),
@@ -252,7 +298,9 @@ def main() -> None:
     validation = validate_static(fields, target)
 
     geog_tile_hashes: dict[str, str] = {}
-    for evidence in geog_source_coverage.values():
+    for name, evidence in geog_source_coverage.items():
+        if name == "static_source":
+            continue
         if not isinstance(evidence, dict):
             raise TypeError("GEOG source-coverage evidence must be a mapping")
         dataset = Path(evidence["dataset"])
@@ -284,9 +332,10 @@ def main() -> None:
     for name in (
             "terrain", "landuse", "soil_top", "soil_bottom", "greenfrac",
             "lai", "albedo", "snow_albedo", "soil_temperature"):
-        index = selection.path(name) / "index"
-        index_hashes[str(index.resolve())] = sha256_file(index)
-    if "LAKE_DEPTH" in fields:
+        if name in geog_source_coverage:
+            index = selection.path(name) / "index"
+            index_hashes[str(index.resolve())] = sha256_file(index)
+    if "lake_depth" in geog_source_coverage:
         index = Path(geog_source_coverage["lake_depth"]["dataset"]) / "index"
         index_hashes[str(index.resolve())] = sha256_file(index)
     legacy_mode = args.domain_spec is None
@@ -299,7 +348,7 @@ def main() -> None:
         "geometry": native_static_geometry(target, grid),
         "target_domain": target.to_payload(),
         "target_domain_sha256": target.identity_sha256(),
-        "hrrr_source_coverage": source_window.to_dict(),
+        "hrrr_source_coverage": source_coverage,
         "geog_root": str(selection.root.resolve()),
         "geog_selection": {
             name: str(selection.path(name).resolve()) for name in (
@@ -324,6 +373,12 @@ def main() -> None:
     }
     if overlay_active(highres, grid):
         receipt["highres"] = overlay_binding["highres"]
+    if geog_source_coverage.get("static_source", {}).get("status") == "APPLIED":
+        receipt["static_source"] = static_source_receipt(highres)
+    if source_fallback is not None:
+        # The record of a defaulted source set aside for its projection
+        # (gpuwm.static.source_defaults.defaulted_source_fallback).
+        receipt["static_source_fallback"] = {"d01": source_fallback}
     if args.static_cache is None and smoothing_attestation is not None:
         receipt.update(smoothing_attestation)
     elif isinstance(prior, dict) and "terrain_smoothing" in prior:

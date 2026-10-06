@@ -74,11 +74,14 @@ REFERENCE = {
     "members": 10, "solve_seconds": 7.0,
     "process_overhead_seconds": 20.0,
     "device": "NVIDIA GeForce RTX 5090",
+    "physics_profile": "wsm6-ysu-mm5-noah-no-radiation-v1",
     "measured": "2026-08-05 live cycled run, tools/da_cycle_prepared.py",
     "caveat": ("one measured configuration scaled by cell-steps; a "
                "short leg costs more than this predicts, because the "
                "per-leg model wiring is folded into the reference "
-               "rather than separated from it"),
+               "rather than separated from it. This archived WSM6/Dudhia "
+               "measurement has longwave off and does not qualify current "
+               "MP28/GSD4.1 wall clock or card fit"),
 }
 
 #: Nominal spacing between radar volumes in a precipitation VCP.  The

@@ -1876,6 +1876,16 @@ def test_mp28_has_one_named_suite_on_the_prepared_routes_and_is_never_a_default(
     keeps it off because no native WRF run of it exists to replay.  Never
     a default is the part that did not change, and it is the part the
     blocker comment rests on.
+
+    4193eb0da ("Select the GSD MYNN form at HRRR configuration doors")
+    added a second named suite on purpose: the operational HRRR fork
+    composition (aerosol Thompson + GSD v4.1 MYNN + RUC + legacy RRTMG).
+    It is the recommended profile of the HRRR doors only, and the native
+    benchmark declares it on the HRRR source because the operational
+    namelist it replays IS that composition.  So "never a default" now
+    reads: never the global default, and no door but the HRRR family
+    recommends any mp=28 suite.  Both suites are pinned by name, so a
+    third one, or a fourth door defaulting to one, fails here.
     """
     from gpuwm.physics_compat import MP28_REGISTRY_OPTION_ID
     from gpuwm.physics_registry import DEFAULT_TEMPLATE_ID, physics_registry
@@ -1893,8 +1903,30 @@ def test_mp28_has_one_named_suite_on_the_prepared_routes_and_is_never_a_default(
     }
     suites = {name for name, mp in by_template.items()
               if mp == MP28_REGISTRY_OPTION_ID}
-    assert len(suites) == 1, suites
+    generic = "thompson-aerosol-mp28-myj-eta-noah-rte-rrtmgp-v1"
+    fork = "thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1"
+    assert suites == {generic, fork}, suites
     assert by_template.get(DEFAULT_TEMPLATE_ID) != MP28_REGISTRY_OPTION_ID
+    # The doors that recommend an mp=28 suite: the HRRR family, and only
+    # the fork composition (4193eb0da).
+    from gpuwm.hrrr_route_inputs import ROUTE_DEFAULT_PHYSICS_PROFILE
+    from gpuwm.source_adapters import source_adapters
+    recommending = {
+        adapter.source_id: adapter.default_physics_profile
+        for adapter in source_adapters()
+        if adapter.default_physics_profile in suites
+    }
+    assert recommending == {"hrrr": fork, "hrrr-prs": fork,
+                            "hrrr-native": fork}, recommending
+    assert ROUTE_DEFAULT_PHYSICS_PROFILE == fork
+    fork_benchmark = {
+        source for source, template_ids in (
+            registry["runner_routes"]["tools.hrrr_single_domain_benchmark"]
+            .get("source_template_ids", {}) or {}).items()
+        if fork in template_ids
+    }
+    assert fork_benchmark == {"hrrr"}, fork_benchmark
+    suites = {generic}
     # The route split is the claim, so it is asserted BOTH ways: declared
     # where a runner builds its own cold start, absent from the one route
     # that replays a native run, which refuses it by that reason.

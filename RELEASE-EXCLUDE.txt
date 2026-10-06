@@ -32,7 +32,7 @@ MP28_HANDOFF.md
 
 # The Noah mosaic column oracle's run receipts: per-.bin SHA-256 lists, GPU
 # replay dumps and mutation transcripts, development evidence behind
-# gpuwm/data/noah_mosaic/oracle/PROVENANCE.md.  The fixtures, the harness
+# tests/data/oracles/noah_mosaic/PROVENANCE.md.  The fixtures, the harness
 # sources and SOURCES.sha256 ship; these do not, and the fixture family named
 # "ftz" would otherwise put nine thousand hash lines into the FTZ claim census.
 tools/noah_mosaic_wrf471_oracle/receipts/*
@@ -271,3 +271,13 @@ tests/test_branch_dispositions.py
 # that quote the build machine's WRF checkout path line by line.  The
 # harness sources and their hashes (oracle-sha256sums.txt beside it) ship.
 tools/urban_wrf471_oracle/evidence/noah_hook/build.log
+
+# The absorbed-shortwave scorer's build and test logs and dependency
+# listings: cargo and pytest output that quote the build machine's home
+# directory on dozens of lines.  The scorer source, its README and the
+# box-scorer patch beside them ship.
+tools/albsol_score/receipts/full-build.log
+tools/albsol_score/receipts/full-build-first.log
+tools/albsol_score/receipts/tests.log
+tools/albsol_score/receipts/full-dependencies.json
+tools/albsol_score/receipts/source-packet.json

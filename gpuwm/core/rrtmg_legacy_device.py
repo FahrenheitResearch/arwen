@@ -24,19 +24,23 @@ _PREFLIGHTED = set()
 
 
 @lru_cache(maxsize=None)
-def _gpu_module(device):
+def _gpu_module(device, cloud_form="wrf_461"):
     """Direct NVRTC PTX load, no RawModule and no explicit -arch option.
 
     CuPy supplies the architecture itself. Duplicating it fails on NVRTC
     13. The explicit unflushed route is also needed for comparisons.
     """
     import cupy as cp
-    from cupy.cuda import compiler
+    from gpuwm import nvrtc_ptx_cache as compiler
     source = (Path(__file__).parent / "kernels" /
               "rrtmg_legacy_prep.cu").read_text(encoding="utf-8")
+    fork_cloud = ref.cloud_form_is_fork(cloud_form)
+    options = ("-std=c++17", "--ftz=false")
+    if fork_cloud:
+        options += ("-DRP_CLOUD_FORM=1",)
     with cp.cuda.Device(device):
         ptx, _ = compiler.compile_using_nvrtc(
-            source, ("-std=c++17", "--ftz=false"), None,
+            source, options, None,
             "rrtmg_legacy_prep.cu")
         mod = cp.cuda.function.Module()
         mod.load(ptx.encode() if isinstance(ptx, str) else ptx)
@@ -166,7 +170,7 @@ def _prep(sw, kw):
                       ("tsk", "emiss", "xland", "xice", "snow", "xlat"))}
     device = cp.cuda.runtime.getDevice()
     gpu_preflight()
-    mod = _gpu_module(device)
+    mod = _gpu_module(device, k["rrtmg_cloud_optics_form"])
     if sw:
         night = cp.empty(ncol, cp.uint8)
         mod.get_function("rp_day")(((ncol+127)//128,), (128,),

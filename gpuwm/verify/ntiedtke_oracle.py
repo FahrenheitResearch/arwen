@@ -1,6 +1,6 @@
 """Loader for the pinned New Tiedtke WRF v4.6.1 oracle.
 
-The CSVs under ``gpuwm/data/ntiedtke/oracle/`` are recorded from
+The CSVs under ``tests/data/oracles/ntiedtke/`` are recorded from
 byte-unmodified WRF v4.6.1 by ``tools/ntiedtke_wrf461_oracle/build.sh``;
 that directory's README pins the three source digests and explains why
 ``-DRWORDSIZE=4`` is essential.
@@ -19,6 +19,8 @@ from pathlib import Path
 
 import numpy as np
 
+from gpuwm.verify.wrf471_fixtures import require_fixture_dir
+
 __all__ = [
     "ORACLE_DIR", "word", "words", "load_csv",
     "prep_inputs", "prep_expected", "prep_surface", "stage_a_surface",
@@ -26,7 +28,8 @@ __all__ = [
     "NT_ITIMESTEP", "NT_GRAV",
 ]
 
-ORACLE_DIR = Path(__file__).resolve().parents[1] / "data" / "ntiedtke" / "oracle"
+# Test data in a source checkout, not package data (gpuwm.verify.wrf471_fixtures).
+ORACLE_DIR = Path(__file__).resolve().parents[2] / "tests" / "data" / "oracles" / "ntiedtke"
 
 #: Fixture geometry, mirroring tools/ntiedtke_wrf461_oracle/nt_cases.F90.
 NT_NZ = 49
@@ -51,7 +54,8 @@ def words(hex_list) -> np.ndarray:
 
 @lru_cache(maxsize=None)
 def load_csv(name: str) -> tuple[dict, ...]:
-    with open(ORACLE_DIR / name, newline="", encoding="utf-8") as fh:
+    directory = require_fixture_dir(ORACLE_DIR, "New Tiedtke", source="WRF v4.6.1")
+    with open(directory / name, newline="", encoding="utf-8") as fh:
         return tuple(dict(r) for r in csv.DictReader(fh))
 
 

@@ -61,7 +61,7 @@ from __future__ import annotations
 import numpy as np
 
 from gpuwm.core import thompson as _classic
-from gpuwm.core.kernels import get_kernel
+from gpuwm.core.thompson_aerosol_launch import aerosol_kernel
 from gpuwm.core.state import DTYPE
 from gpuwm.core.thompson_aerosol_launch import (
     DEFAULT_THREADS,
@@ -238,11 +238,11 @@ def launch_aa_cloud_sedimentation(
     if (_classic.LEVEL_PARALLEL_FALLOUT and nz <= _SHALLOW_KMAX
             and cloud_active_columns is not None
             and diagnostic_arguments is None):
-        get_kernel(SED_MODULE, "thompson_aa_cloud_sediment_levels_64_with_masks")(
+        aerosol_kernel(SED_MODULE, "thompson_aa_cloud_sediment_levels_64_with_masks")(
             ((ncol + 7) // 8,), (8, _SHALLOW_KMAX), arguments)
         return
     blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
-    get_kernel(SED_MODULE, kernel_name)(
+    aerosol_kernel(SED_MODULE, kernel_name)(
         (blocks,), (_COLUMN_TPB,), arguments)
 
 
@@ -281,7 +281,7 @@ def launch_aa_final_phase_cleanup(
     if not np.isfinite(dt) or dt <= 0.0:
         raise ValueError(f"dt must be finite and positive, got {dt}")
     grid, block = launch_grid(size, DEFAULT_THREADS)
-    get_kernel(SED_MODULE, "thompson_aa_final_phase_cleanup")(
+    aerosol_kernel(SED_MODULE, "thompson_aa_final_phase_cleanup")(
         grid, block,
         (qc, qi, ni, temperature, cloud_number_entry, ice_number_entry,
          cloud_number_tendency, pressure, qv, DTYPE(dt), np.int32(size)))
@@ -293,3 +293,113 @@ __all__ = [
     "launch_aa_cloud_sedimentation",
     "launch_aa_final_phase_cleanup",
 ]
+
+
+# ---------------------------------------------------------------------------
+# The operational WRF 3.9 fork's ice and graupel fallout (thompson_version =
+# "wrf_39_noaa").  thompson_aerosol_sed.cu carries them under
+# THOMPSON_AA_WRF39; see the comment above thompson_aa_wrf39_ice_sediment_impl.
+# ---------------------------------------------------------------------------
+
+def _require_wrf39(what: str) -> None:
+    from gpuwm.core.thompson_aerosol_launch import active_thompson_version
+    version = active_thompson_version()
+    if version != "wrf_39_noaa":
+        raise RuntimeError(
+            f"{what} is the WRF 3.9 fork's kernel; the active Thompson "
+            f"generation is {version!r}")
+
+
+def _column_launch(name_stem: str, nz: int, ny: int, nx: int, args) -> None:
+    if nz < 2 or nz > _KMAX:
+        raise ValueError(f"fallout needs 2 <= nz <= {_KMAX}, got {nz}")
+    name = name_stem + ("_64" if nz <= _SHALLOW_KMAX else "_256")
+    blocks = (ny * nx + _COLUMN_TPB - 1) // _COLUMN_TPB
+    aerosol_kernel(SED_MODULE, name)((blocks,), (_COLUMN_TPB,), args)
+
+
+def launch_wrf39_ice_sedimentation(
+        qi, ni, temperature, pressure, qv, dz,
+        rainnc, rainncv, snownc, snowncv, dt: float, *,
+        reference_density) -> None:
+    """The fork's cloud-ice fallout: av_i = 1847.5, the 499.D3 ceiling."""
+    _require_wrf39("launch_wrf39_ice_sedimentation")
+    shape, _ = validate_fields({
+        "qi": qi, "ni": ni, "temperature": temperature,
+        "pressure": pressure, "qv": qv, "dz": dz,
+        "reference_density": reference_density})
+    nz, ny, nx = shape
+    for name, value in (("rainnc", rainnc), ("rainncv", rainncv),
+                        ("snownc", snownc), ("snowncv", snowncv)):
+        _validate_surface_mask(name, value, (ny, nx))
+    _column_launch("thompson_aa_wrf39_ice_sediment", nz, ny, nx, (
+        qi, ni, temperature, pressure, qv, reference_density, dz,
+        rainnc, rainncv, snownc, snowncv,
+        DTYPE(dt), np.int32(nz), np.int32(ny), np.int32(nx)))
+
+
+def launch_wrf39_graupel_sedimentation(
+        qg, graupel_intercept, temperature, pressure, qv, dz,
+        rainnc, rainncv, graupelnc, graupelncv, dt: float, *,
+        reference_density, melt_rain_qr, melt_rain_nr, melt_rain_density,
+        active_columns) -> None:
+    """The fork's graupel fallout from its post-source column intercept,
+    floored at the rain fall speed above 0 C.  Accumulates the surface
+    totals, as the classic graupel pass does on the coupled adapter."""
+    _require_wrf39("launch_wrf39_graupel_sedimentation")
+    shape, _ = validate_fields({
+        "qg": qg, "graupel_intercept": graupel_intercept,
+        "temperature": temperature, "pressure": pressure, "qv": qv,
+        "dz": dz, "reference_density": reference_density,
+        "melt_rain_qr": melt_rain_qr, "melt_rain_nr": melt_rain_nr,
+        "melt_rain_density": melt_rain_density})
+    nz, ny, nx = shape
+    for name, value in (("rainnc", rainnc), ("rainncv", rainncv),
+                        ("graupelnc", graupelnc), ("graupelncv", graupelncv),
+                        ("active_columns", active_columns)):
+        _validate_surface_mask(name, value, (ny, nx))
+    _column_launch("thompson_aa_wrf39_graupel_sediment", nz, ny, nx, (
+        qg, graupel_intercept, temperature, pressure, qv, reference_density,
+        melt_rain_qr, melt_rain_nr, melt_rain_density, dz,
+        rainnc, rainncv, graupelnc, graupelncv, active_columns,
+        DTYPE(dt), np.int32(nz), np.int32(ny), np.int32(nx)))
+
+
+def launch_wrf39_snow_sedimentation(
+        qs, temperature, pressure, qv, dz,
+        rainnc, rainncv, snownc, snowncv, dt: float, *,
+        reference_density, reference_temperature, snow_melt_marker,
+        melt_rain_qr, melt_rain_nr, melt_rain_density, velocity_boost,
+        singular_fall: bool) -> None:
+    """The fork's snow fallout: surface snow above R1*10, and melting snow
+    falling by the rain-share blend (``singular_fall`` False, the default
+    snow fall) or by the fork's own singular expression (True)."""
+    _require_wrf39("launch_wrf39_snow_sedimentation")
+    shape, _ = validate_fields({
+        "qs": qs, "temperature": temperature, "pressure": pressure,
+        "qv": qv, "dz": dz, "reference_density": reference_density,
+        "reference_temperature": reference_temperature,
+        "snow_melt_marker": snow_melt_marker, "melt_rain_qr": melt_rain_qr,
+        "melt_rain_nr": melt_rain_nr, "melt_rain_density": melt_rain_density,
+        "velocity_boost": velocity_boost})
+    nz, ny, nx = shape
+    for name, value in (("rainnc", rainnc), ("rainncv", rainncv),
+                        ("snownc", snownc), ("snowncv", snowncv)):
+        _validate_surface_mask(name, value, (ny, nx))
+    _column_launch("thompson_aa_wrf39_snow_sediment", nz, ny, nx, (
+        qs, snow_melt_marker, melt_rain_qr, melt_rain_nr, temperature,
+        pressure, qv, reference_density, reference_temperature,
+        velocity_boost, melt_rain_density, dz,
+        rainnc, rainncv, snownc, snowncv, np.int32(bool(singular_fall)),
+        DTYPE(dt), np.int32(nz), np.int32(ny), np.int32(nx)))
+
+
+def launch_wrf39_warm_snow_boost(entry_warm_mask, velocity_boost) -> None:
+    """fork :2151: vts_boost = 1.5 on the levels the sources found at or
+    above 0 C, for the fork's singular snow fall only."""
+    _require_wrf39("launch_wrf39_warm_snow_boost")
+    _, size = validate_fields({"entry_warm_mask": entry_warm_mask,
+                               "velocity_boost": velocity_boost})
+    grid, block = launch_grid(size)
+    aerosol_kernel(SED_MODULE, "thompson_aa_wrf39_warm_snow_boost")(
+        grid, block, (entry_warm_mask, velocity_boost, np.int32(size)))

@@ -505,6 +505,9 @@ _SCHEME_GEOGRAPHY: tuple[tuple[str, str], ...] = (
     ("radiation", "radiation_callable"),
     ("noahmp", "noahmp_geometry"),
     ("cam_ozone", "cam_ozone"),
+    # WRF's swint_opt = 1 carrier (gpuwm.core.swint): its per-step zenith
+    # cosine reads its own device latitude/longitude grids.
+    ("swint", "swint"),
 )
 _SCHEME_GEOGRAPHY_ATTRS: tuple[str, ...] = ("latitude_deg", "longitude_deg")
 

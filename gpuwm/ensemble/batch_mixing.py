@@ -307,6 +307,21 @@ def _prepare_member_smag_launch(state, spec, grid, args, strides):
     return launch
 
 
+def _require_wrf461_diff6(cfg):
+    """Decline the fork's sixth-order filter form on the batched graph.
+
+    Its launches bind WRF v4.6.1's single factor, dt/3 scalar step and
+    three-point edge mask (``_diff6_launch``); a member configured with
+    ``diff_6th_form = "noaa_wrf39"`` would run a filter nine times
+    stronger on its moisture than it asked for.  The ordinary door runs
+    that form (gpuwm.core.dycore.prepare_fixed_tendencies).
+    """
+    if cfg.diff_6th_opt > 0 and getattr(cfg, "diff_6th_form", "wrf_461") != "wrf_461":
+        raise BatchStateUnsupported(
+            "the batched mixing graph binds the WRF v4.6.1 sixth-order filter; "
+            f"diff_6th_form = {cfg.diff_6th_form!r} runs on the ordinary door")
+
+
 def workspace_specs(cfg, *, has_msf=True):
     """Declare every additional backing before prepared host input admission.
 
@@ -317,6 +332,7 @@ def workspace_specs(cfg, *, has_msf=True):
     from gpuwm.core.dycore import BIGSTEP_ENABLED
     if cfg.km_opt not in (0, 1, 4) or (cfg.km_opt == 4 and cfg.diff_opt != 2):
         raise BatchStateUnsupported("dry mixing binds km_opt=4/diff_opt=2 or diff6-only; km_opt=2/3 need separate closure bindings")
+    _require_wrf461_diff6(cfg)
     if cfg.km_opt != 4 and cfg.diff_6th_opt <= 0:
         return ()
     shapes = state_array_shapes(cfg)
@@ -462,6 +478,7 @@ def _context(state):
         raise BatchStateUnsupported("dry mixing supports km_opt=4/diff_opt=2 or diff6-only; km_opt=2/3 and diff_opt=1 are not bound")
     if cfg.khdif > 0 or cfg.kvdif > 0:
         raise BatchStateUnsupported("constant second-order diffusion requires its own member binding")
+    _require_wrf461_diff6(cfg)
     if cfg.isfflx not in (0, 1, 2):
         raise ValueError("dry metric surface flux requires isfflx=0, 1 or 2")
     return cfg, BIGSTEP_ENABLED
@@ -492,12 +509,14 @@ def _zero_strips(value, cfg, width):
 
 
 def metric_w_entry_family(*, exact, compute_capability):
-    """The original dycore's architecture-specific, byte-gated W route."""
+    """The original dycore's W route: one stress route on every architecture.
+
+    ``compute_capability`` no longer selects a route (xnode-identity,
+    2026-10-04): a per-architecture choice broke cross-card byte identity.
+    """
     if exact:
         return ("wrf_smag_hd_w",)
-    if str(compute_capability) == "120":
-        return ("wrf_smag_w_stress", "wrf_smag_hd_w_stress")
-    return ("wrf_smag_w_primitives", "wrf_smag_hd_w_cached")
+    return ("wrf_smag_w_stress", "wrf_smag_hd_w_stress")
 
 
 def _smag_w_launches(state, common, dims, km, tend, fx, fy):

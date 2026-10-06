@@ -41,6 +41,7 @@ from pathlib import Path
 import numpy as np
 
 from gpuwm.core.fp32_ulp import fp32_ulp_distance
+from gpuwm.verify.wrf471_fixtures import require_fixture_dir
 
 __all__ = [
     "GF_ORACLE_DIR",
@@ -53,7 +54,8 @@ __all__ = [
     "measure_fields",
 ]
 
-GF_ORACLE_DIR = Path(__file__).resolve().parents[1] / "data" / "gf" / "oracle"
+# Test data in a source checkout, not package data (gpuwm.verify.wrf471_fixtures).
+GF_ORACLE_DIR = Path(__file__).resolve().parents[2] / "tests" / "data" / "oracles" / "gf"
 
 GF_NZ = 40
 GF_NCASE = 18
@@ -158,7 +160,9 @@ def _fold_by_case(
 
 def load_gf_oracle(directory: Path | str | None = None) -> GfOracleFixture:
     """Load all six CSVs.  ``directory`` defaults to the packaged fixture."""
-    root = Path(directory) if directory is not None else GF_ORACLE_DIR
+    root = require_fixture_dir(
+        directory if directory is not None else GF_ORACLE_DIR,
+        "Grell-Freitas", source="WRF v4.6.1")
 
     sh, sr = _read_csv(root / "gf-surface.csv")
     surface = _f32_columns(sh, sr)

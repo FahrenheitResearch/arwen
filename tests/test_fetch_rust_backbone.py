@@ -326,6 +326,8 @@ def test_a_pinned_transport_reports_the_mismatch_instead_of_wandering(
 
 def test_the_manifest_records_the_engine_mode_and_bars(tmp_path,
                                                        monkeypatch):
+    from test_fetch import _install_runtime_surface_inputs
+    _install_runtime_surface_inputs(monkeypatch)
     monkeypatch.setattr(hrrr_transport, "_download_product",
                         _fake_products(None, []))
     manifest = fetch.fetch_hrrr(
@@ -342,7 +344,13 @@ def test_the_manifest_records_the_engine_mode_and_bars(tmp_path,
     # what the file was supposed to contain without assuming a subset.
     records = {item["name"]: item.get("records")
                for item in payload["files"] if item["role"] != "checksums"}
-    assert set(records.values()) == {561, 18}
+    # The soil bar remains 18; its payload also carries the one source-
+    # declared analyzed vegetation record, with its own frozen binding.
+    assert set(records.values()) == {561, 19}
+    assert {bar["kind"]: bar["derived"] for bar in payload["record_bars"]} == {
+        "hrrr-atmosphere": 561, "hrrr-soil": 18}
+    soil = next(item for item in payload["files"] if item["role"] == "soil")
+    assert [record["field"] for record in soil["runtime_surface"]] == ["VEGFRA"]
 
 
 # ---------------------------------------------------------------------------
@@ -672,11 +680,14 @@ def test_an_accepted_change_survives_a_completed_resume(tmp_path,
     """
 
     changed = CERTIFIED_RECORD_BARS["hrrr-atmosphere"] + 11
+    from test_fetch import _install_runtime_surface_inputs
+    _install_runtime_surface_inputs(monkeypatch)
     _install_fake_backbone(monkeypatch, changed)
     out = tmp_path / "hrrr"
     args = dict(cycle=datetime(2026, 7, 28, 5), hours=(0,), area=None,
                 out=out, transport="s3", engine="rust",
-                engine_bin=Path("rw_fetch"), progress=lambda _: None)
+                engine_bin=Path(os.environ.get(rustwx_fetch.FETCH_ENV, "rw_fetch")),
+                progress=lambda _: None)
 
     manifest = fetch.fetch_hrrr(accept_inventory_change=True, **args)
     accepted = json.loads(manifest.read_text(encoding="utf-8"))
@@ -702,12 +713,15 @@ def test_a_resume_that_re_resolves_a_bar_records_the_new_one(tmp_path,
                                                              monkeypatch):
     """Seeding must not freeze a stale bar over a real re-download."""
 
+    from test_fetch import _install_runtime_surface_inputs
+    _install_runtime_surface_inputs(monkeypatch)
     _install_fake_backbone(monkeypatch, CERTIFIED_RECORD_BARS[
         "hrrr-atmosphere"] + 11)
     out = tmp_path / "hrrr"
     args = dict(cycle=datetime(2026, 7, 28, 5), hours=(0,), area=None,
                 out=out, transport="s3", engine="rust",
-                engine_bin=Path("rw_fetch"), progress=lambda _: None)
+                engine_bin=Path(os.environ.get(rustwx_fetch.FETCH_ENV, "rw_fetch")),
+                progress=lambda _: None)
     fetch.fetch_hrrr(accept_inventory_change=True, **args)
 
     # Upstream goes back to the certified census and --force re-fetches.

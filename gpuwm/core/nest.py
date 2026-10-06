@@ -446,6 +446,28 @@ class NestCoupler:
         if resident is not None:
             resident.valid = False
 
+    def reset_restart_observation(self) -> None:
+        """Begin a new forcing observation after validated clock rollback.
+
+        These counters describe work in the current execution leg, rather
+        than checkpointed meteorological state. Keeping abandoned forces
+        while restoring an earlier parent step count breaks the exact
+        one-force-per-parent-step coverage invariant at finalization.
+        Geometry and stored atmospheric arrays are unchanged.
+        """
+        self.force_count = 0
+        self.first_parent_ticks = None
+        self.last_parent_ticks = None
+        self.first_parent_step = None
+        self.last_parent_step = None
+        self.force_sync_bytes = 0
+        self.feedback_sync_bytes = 0
+        self.feedback_host_scratch_bytes = 0
+        self.feedback_count = 0
+        self.last_feedback_ticks = None
+        self._last_tables = None
+        self._prepared_feedback = None
+
     def _scratch(self, slot: str):
         shape = self.slot_shapes[slot]
         return self.child_node.state.scratch(

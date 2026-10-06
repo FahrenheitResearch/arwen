@@ -60,7 +60,8 @@ def test_mixed_variants_keep_modern_workspace_and_legacy_call_peak(monkeypatch):
     assert estimate.k_tables_bytes > 0
 
 
-def test_composition_merges_each_owning_spectrum(monkeypatch):
+@pytest.mark.parametrize("swint", [0, 1])
+def test_composition_merges_each_owning_spectrum(monkeypatch, swint):
     import sys
     from gpuwm.core.physics import RadiationResult
     monkeypatch.setitem(sys.modules, "cupy", np)
@@ -70,7 +71,8 @@ def test_composition_merges_each_owning_spectrum(monkeypatch):
         olr=np.full(shape[1:], 33, np.float32))
     sw = RadiationResult(np.full(shape, -88, np.float32), np.full(shape, 44, np.float32),
         np.full(shape[1:], 55, np.float32), np.full(shape[1:], -88, np.float32),
-        gsw=np.full(shape[1:], 66, np.float32), coszen=np.full(shape[1:], .7, np.float32))
+        gsw=np.full(shape[1:], 66, np.float32), coszen=np.full(shape[1:], .7, np.float32),
+        swddir=np.full(shape[1:], 40, np.float32))
     class Leaf:
         publishes_olr = True
         def __init__(self, result): self.result = result
@@ -78,11 +80,12 @@ def test_composition_merges_each_owning_spectrum(monkeypatch):
     adapter = ComposedRadiation(datetime(2000,1,1), np.zeros(shape[1:]), np.zeros(shape[1:]),
         longwave_adapter=Leaf(lw), shortwave_adapter=Leaf(sw))
     result = adapter(atmosphere={"pressure": np.zeros(shape)}, fields={},
-                     state=SimpleNamespace(), cfg=_cfg(4,1))
+                     state=SimpleNamespace(), cfg=replace(_cfg(4,1), swint_opt=swint))
     for name in ("rthratenlw", "glw", "olr"):
         assert getattr(result, name) is getattr(lw, name)
     for name in ("rthratensw", "swdown", "gsw", "coszen"):
         assert getattr(result, name) is getattr(sw, name)
+    assert result.swddir is (sw.swddir if swint else None)
 
 
 # Reuse the independent real-column fixture deck, with mixed day/night geography.
@@ -91,15 +94,18 @@ from test_rrtmg_legacy_wiring import profile, env
 
 @pytest.mark.gpu
 @pytest.mark.parametrize("variant", ["rte-rrtmgp", "rrtmg_legacy"])
-def test_selected_spectrum_equals_paired_engine_and_never_calls_inactive_solver(env, monkeypatch, variant):
+@pytest.mark.parametrize("swint", [0, 1])
+def test_selected_spectrum_equals_paired_engine_and_never_calls_inactive_solver(env, monkeypatch, variant, swint):
     import cupy as cp
     from gpuwm.core import rrtmgp, rrtmg_lw, rrtmg_sw
     from test_rrtmg_legacy_wiring import START
     cfg = SimpleNamespace(**(vars(env.cfg) | dict(ra_physics=0, ra_lw_physics=4,
         ra_sw_physics=4, ra_rrtmg_variant=variant, o3input=2, use_mp_re=1,
-        swrad_scat=1., dt=10., wrf_rrtmg_compatibility="none")))
+        swrad_scat=1., dt=10., wrf_rrtmg_compatibility="none", swint_opt=swint)))
     lat, lon = env.lat.reshape(env.ny,env.nx), env.lon.reshape(env.ny,env.nx)
     fields = dict(env.fields, glw=cp.full((env.ny,env.nx), 300., cp.float32))
+    if swint:
+        fields["swddir"] = cp.zeros((env.ny, env.nx), cp.float32)
     atmosphere = dict(env.atmosphere, theta=env.atmosphere["temperature"] / env.atmosphere["exner"])
     state = env.state
     if variant == "rte-rrtmgp":
@@ -130,6 +136,11 @@ def test_selected_spectrum_equals_paired_engine_and_never_calls_inactive_solver(
         names = ("rthratenlw", "glw", "olr") if active=="lw" else ("rthratensw", "swdown", "gsw", "coszen")
         for name in names:
             np.testing.assert_array_equal(cp.asnumpy(getattr(actual,name)), cp.asnumpy(getattr(reference,name)), err_msg=name)
+        if active == "sw":
+            if swint:
+                np.testing.assert_array_equal(cp.asnumpy(actual.swddir), cp.asnumpy(reference.swddir))
+            else:
+                assert actual.swddir is None
         absent = actual.rthratensw if active=="lw" else actual.rthratenlw
         assert bool(cp.all(absent == 0))
         if active == "sw":

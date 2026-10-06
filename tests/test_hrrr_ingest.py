@@ -400,3 +400,257 @@ def test_zero_free_hrrr_surface_moisture_stencil_stays_positive():
     mapped = _sixteen_point(lifted, case["fx"], case["fy"])
 
     assert float(mapped) > 0.0
+
+
+# ---------------------------------------------------------------------------
+# The identity route: the target is the native grid, copied index for index.
+# ---------------------------------------------------------------------------
+
+
+def _native_target_grid(**updates) -> LambertGrid:
+    """HRRR's own grid as its namelist.wps spells it (reference at the
+    centre, 3 km on WPS's sphere)."""
+    values = dict(ref_lat=38.5, ref_lon=-97.5, truelat1=38.5, truelat2=38.5,
+                  stand_lon=-97.5, dx=3000.0, dy=3000.0, e_we=1800, e_sn=1060)
+    values.update(updates)
+    return LambertGrid(**values)
+
+
+def _full_window_snapshot():
+    from datetime import datetime
+
+    from gpuwm.ingest.hrrr import HrrrNativeSnapshot
+
+    return HrrrNativeSnapshot(
+        valid_time=datetime(2026, 10, 3, 12), forecast_hour=0,
+        i_start=0, j_start=0, ny=1059, nx=1799, fields={})
+
+
+def test_the_identity_route_copies_every_mass_point_exactly():
+    from gpuwm.ingest import hrrr
+    from gpuwm.ingest.hrrr import _ProjectedCpuPlan, _projected_index_geometry
+
+    grid = _native_target_grid()
+    snapshot = _full_window_snapshot()
+    lat, lon = grid.latlon_mass()
+    # Without the declaration the same target is refused: its outermost
+    # row has no parabolic neighbour past the grid.
+    with pytest.raises(ValueError, match="four-point interpolation halo"):
+        _projected_index_geometry(snapshot, lat, lon)
+    plan = _ProjectedCpuPlan(snapshot, lat, lon, None, identity=True)
+    assert plan.route == "identity"
+    assert plan.operator == hrrr.PROJECTED_OPERATOR_NUMPY
+    # Every point sits on a whole cell: fraction 0, or the cell before
+    # with a unit fraction on the last row and column (what both
+    # operators return exactly).
+    rows, cols = np.indices((1059, 1799))
+    expected_ix = np.where(cols == 1798, 1797, cols)
+    expected_iy = np.where(rows == 1058, 1057, rows)
+    assert np.array_equal(plan.ix, expected_ix)
+    assert np.array_equal(plan.iy, expected_iy)
+    assert np.array_equal(plan.fx, np.where(cols == 1798, 1.0, 0.0))
+    assert np.array_equal(plan.fy, np.where(rows == 1058, 1.0, 0.0))
+    field = (1.0 + cols + 3000.0 * rows).astype(np.float32)
+    assert np.array_equal(plan.apply(field, method="parabolic"), field)
+    assert np.array_equal(plan.apply(field, method="bilinear"), field)
+    assert np.array_equal(plan.apply(field, method="nearest"), field)
+
+
+def test_the_identity_route_puts_faces_between_cells_and_the_outer_face_on_the_edge():
+    from gpuwm.ingest.hrrr import _ProjectedCpuPlan
+
+    grid = _native_target_grid()
+    snapshot = _full_window_snapshot()
+    u_lat, u_lon = grid.latlon_u()
+    plan = _ProjectedCpuPlan(snapshot, u_lat, u_lon, None, identity=True)
+    assert plan.fx.shape == (1059, 1800)
+    # Interior faces: half way between two cells.
+    assert np.all(plan.fx[:, 1:-1] == 0.5)
+    assert np.array_equal(plan.ix[:, 1:-1],
+                          np.broadcast_to(np.arange(1798), (1059, 1798)))
+    # The outer faces, half a cell past the grid, take the edge cell.
+    assert np.all(plan.ix[:, 0] == 0) and np.all(plan.fx[:, 0] == 0.0)
+    assert np.all(plan.ix[:, -1] == 1797) and np.all(plan.fx[:, -1] == 1.0)
+    rows, cols = np.indices((1059, 1799))
+    field = (10.0 + 2.0 * cols).astype(np.float32)
+    mapped = plan.apply(field, method="bilinear")
+    assert np.array_equal(mapped[:, 0], field[:, 0])
+    assert np.array_equal(mapped[:, -1], field[:, -1])
+    assert np.allclose(mapped[:, 1:-1], 0.5 * (field[:, :-1] + field[:, 1:]))
+    v_lat, v_lon = grid.latlon_v()
+    plan = _ProjectedCpuPlan(snapshot, v_lat, v_lon, None, identity=True)
+    assert plan.fy.shape == (1060, 1799)
+    assert np.all(plan.fy[1:-1, :] == 0.5)
+    assert np.all(plan.iy[0, :] == 0) and np.all(plan.fy[0, :] == 0.0)
+    assert np.all(plan.iy[-1, :] == 1057) and np.all(plan.fy[-1, :] == 1.0)
+
+
+def test_the_identity_route_refuses_a_point_off_the_lattice_and_a_cropped_window():
+    from datetime import datetime
+
+    from gpuwm.ingest.hrrr import (IDENTITY_SNAP_LIMIT_CELLS,
+                                   HrrrNativeSnapshot,
+                                   _projected_index_geometry,
+                                   _snap_to_native_lattice)
+
+    # A 3 x 4 "native grid": mass points off their lattice positions by
+    # a tenth of a cell are snapped and the drift is reported; one past
+    # half a cell is refused.
+    rows, cols = np.indices((3, 4), dtype=np.float64)
+    snapped_x, snapped_y, distance = _snap_to_native_lattice(
+        cols + 0.1, rows - 0.05, nx=4, ny=3)
+    assert np.array_equal(snapped_x, cols) and np.array_equal(snapped_y, rows)
+    assert distance == pytest.approx(0.1)
+    off = cols.copy()
+    off[-1, -1] += IDENTITY_SNAP_LIMIT_CELLS + 0.05
+    with pytest.raises(ValueError, match="not that grid"):
+        _snap_to_native_lattice(off, rows, nx=4, ny=3)
+    # The u staggering: faces between cells, the outer faces on the edge.
+    urows, ucols = np.indices((3, 5), dtype=np.float64)
+    snapped_x, snapped_y, _ = _snap_to_native_lattice(
+        ucols - 0.5, urows, nx=4, ny=3)
+    assert snapped_x[0].tolist() == [0.0, 0.5, 1.5, 2.5, 3.0]
+    with pytest.raises(ValueError, match="mass, u or v staggering"):
+        _snap_to_native_lattice(np.zeros((2, 2)), np.zeros((2, 2)),
+                                nx=4, ny=3)
+    grid = _native_target_grid()
+    lat, lon = grid.latlon_mass()
+    cropped = HrrrNativeSnapshot(
+        valid_time=datetime(2026, 10, 3, 12), forecast_hour=0,
+        i_start=1, j_start=0, ny=1059, nx=1798, fields={})
+    with pytest.raises(ValueError, match="whole native grid as its window"):
+        _projected_index_geometry(cropped, lat, lon, identity=True)
+
+
+def _identity_snapshot(nz: int = 3):
+    """The whole native grid as a decoded window, every field distinct in
+    every cell (so a copy can be told from a neighbour's value), with a
+    land mask of west land / east water and a few lakes and islands."""
+    from datetime import datetime
+
+    from gpuwm.ingest.hrrr import HrrrNativeSnapshot
+    from gpuwm.ingest.hrrr_target import HRRR_SOURCE_NX, HRRR_SOURCE_NY
+
+    ny, nx = HRRR_SOURCE_NY, HRRR_SOURCE_NX
+    rows, cols = np.indices((ny, nx), dtype=np.float64)
+    unit = (cols + nx * rows) / float(nx * ny)  # 0 .. 1, distinct per cell
+    level = np.arange(nz, dtype=np.float64)[:, None, None]
+    depth = np.arange(9, dtype=np.float64)[:, None, None]
+    land = cols < 0.6 * nx
+    land[100:140, 200:260] = False      # a lake
+    land[500:503, 1500:1502] = True     # an island
+    land[:, -1] = True                  # the last column and row are land,
+    land[-1, :] = True                  # where the stencil used to refuse
+
+    def f32(value):
+        return np.ascontiguousarray(value, dtype=np.float32)
+
+    fields = {
+        "PRES": f32(90_000.0 - 10_000.0 * level + 500.0 * unit[None]),
+        "HGT": f32(500.0 + 1_000.0 * level + 300.0 * unit[None]),
+        "TT": f32(280.0 - 5.0 * level + 10.0 * unit[None]),
+        "SPFH": f32(0.002 + 0.004 * unit[None] + 0.0001 * level),
+        "U_MASS": f32(3.0 + 2.0 * unit[None] + level),
+        "V_MASS": f32(-1.0 + 4.0 * unit[None] - level),
+        "PSFC": f32(95_000.0 + 1_000.0 * unit),
+        "SOILHGT": f32(200.0 + 800.0 * unit),
+        "SKINTEMP": f32(285.0 + 8.0 * unit),
+        "SNOW": f32(np.where(rows > 0.8 * ny, 5.0 * unit, 0.0)),
+        "SNOWH": f32(np.where(rows > 0.8 * ny, 0.02 * unit, 0.0)),
+        "T2": f32(284.0 + 9.0 * unit),
+        "Q2": f32(0.003 + 0.004 * unit),
+        "U10_MASS": f32(1.0 + unit), "V10_MASS": f32(0.5 - unit),
+        "LANDSEA": f32(land),
+        "XICE": f32(rows > 0.95 * ny),
+        "SOILT": f32(275.0 + 10.0 * unit[None] + 0.5 * depth),
+        "SOILW": f32(0.1 + 0.3 * unit[None] + 0.01 * depth),
+    }
+    for index, name in enumerate(("QC", "QI", "QR", "QS", "QG")):
+        fields[name] = f32(1.0e-5 * (index + 1) * unit[None] + 0.0 * level)
+    return HrrrNativeSnapshot(
+        valid_time=datetime(2026, 10, 3, 12), forecast_hour=0,
+        i_start=0, j_start=0, ny=ny, nx=nx, fields=fields)
+
+
+def _identity_target_landmask(source_land):
+    """The model's land mask on the native grid: the source's, except a
+    target land cell the source has as water (it takes the nearest source
+    land cell) and a target water cell the source has as land (it takes
+    the water fill), both on the grid's last column and row."""
+    landmask = source_land.astype(np.float64)
+    flipped_to_land = ((120, 230), (1000, 1700))   # in the lake, in the sea
+    flipped_to_water = ((5, 1798), (1058, 7), (300, 300))
+    for cell in flipped_to_land:
+        landmask[cell] = 1.0
+    for cell in flipped_to_water:
+        landmask[cell] = 0.0
+    return landmask, flipped_to_land, flipped_to_water
+
+
+def check_identity_copy(mapped, snapshot, landmask, flipped_to_land,
+                        flipped_to_water, host=np.asarray):
+    """Every mass field, hydrometeor and soil column is a bit-for-bit copy
+    of the source cell (target water: the documented fill; a target land
+    cell over source water: the nearest source land cell).  Returns the
+    count of compared arrays.  Shared with the GPU proof script."""
+    source = snapshot.fields
+    compared = 0
+    for name in ("PRES", "HGT", "TT", "SPFH", "PSFC", "SOILHGT", "SKINTEMP",
+                 "SNOW", "SNOWH", "T2", "Q2", "QC", "QI", "QR", "QS", "QG",
+                 "XICE"):
+        got = np.asarray(host(mapped.fields[name]), dtype=np.float32)
+        assert got.tobytes() == source[name].tobytes(), name
+        compared += 1
+    land = landmask >= 0.5
+    source_land = source["LANDSEA"] >= 0.5
+    same = land & source_land
+    skin = source["SKINTEMP"]
+    for name, fill in (("SOILT", skin), ("SOILW", np.float32(1.0))):
+        got = np.asarray(host(mapped.fields[name]), dtype=np.float32)
+        want = source[name]
+        assert got.shape == want.shape, name
+        assert got[:, same].tobytes() == want[:, same].tobytes(), name
+        water = ~land
+        fill_values = np.broadcast_to(fill, water.shape)[water]
+        assert np.array_equal(got[:, water],
+                              np.broadcast_to(fill_values, got[:, water].shape)), name
+        for row, col in flipped_to_land:
+            # The nearest source land cell, ties to the lowest row then
+            # column, exactly as the donor search orders them.
+            land_rows, land_cols = np.nonzero(source_land)
+            distance = (land_rows - row) ** 2 + (land_cols - col) ** 2
+            best = np.flatnonzero(distance == distance.min())[0]
+            donor = (land_rows[best], land_cols[best])
+            assert np.array_equal(got[:, row, col],
+                                  want[:, donor[0], donor[1]]), (name, row, col)
+        compared += 1
+    for name in ("UU", "VV", "U10", "V10"):
+        assert np.isfinite(np.asarray(host(mapped.fields[name]))).all(), name
+    return compared
+
+
+@pytest.mark.requires_capability("masked_stencil_bridge")
+def test_the_identity_route_maps_the_whole_native_grid_bit_for_bit():
+    """The whole route on the whole native grid, as the HRRR preparation
+    calls it: the land stencil is built (it refused the last column and
+    row as leaving the window), and every mass field, hydrometeor and
+    soil column comes out a copy of its own source cell."""
+    from test_hrrr_island_donor import _HostBackend
+
+    from gpuwm.ingest.hrrr import interpolate_hrrr_to_lambert
+    from gpuwm.ingest.hrrr_target import native_grid_identity
+
+    grid = _native_target_grid()
+    assert native_grid_identity(grid)
+    snapshot = _identity_snapshot()
+    landmask, to_land, to_water = _identity_target_landmask(
+        snapshot.fields["LANDSEA"] >= 0.5)
+    report: dict = {}
+    mapped = interpolate_hrrr_to_lambert(
+        snapshot, grid, target_landmask=landmask, soil_mapping_report=report,
+        surface_fallback_radius=24, backend=_HostBackend(),
+        target_name="domain 1")
+    assert check_identity_copy(mapped, snapshot, landmask, to_land,
+                               to_water) == 19
+    stencil = report["land_stencil"]
+    assert stencil["fallback_target_count"] == len(to_land)

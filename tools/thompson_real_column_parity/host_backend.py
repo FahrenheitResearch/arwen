@@ -302,9 +302,13 @@ class HostKernel:
         converted = []
         for p, value in zip(self.params, args):
             if p.pointer:
-                if value is None:
-                    # CuPy passes None as a null pointer; the kernels test
-                    # optional buffers against nullptr.
+                if value is None or (
+                        isinstance(value, (int, np.integer))
+                        and not isinstance(value, bool) and int(value) == 0):
+                    # CuPy passes None, or an integer address of zero (the
+                    # launchers' ``np.uint64(0)`` for an absent optional
+                    # buffer), as a null pointer; the kernels test optional
+                    # buffers against nullptr.
                     converted.append(None)
                     continue
                 if not isinstance(value, np.ndarray):
@@ -364,17 +368,82 @@ def _fake_cupy() -> types.ModuleType:
                 "the host backend compiles kernels itself; cupy.RawModule "
                 "is not available")
 
+    class _HostElementwiseKernel:
+        """The two in-place zero-out kernels used by the driver."""
+
+        def __init__(self, inputs, outputs, operation, name, **_kw):
+            supported = {
+                "gpuwm_mp_floor_zero": (
+                    "", "float32 x", "if (x < 0.0f) x = 0.0f;"),
+                "gpuwm_mp_zero_below": (
+                    "float32 t", "float32 x", "if (x < t) x = 0.0f;"),
+            }
+            if supported.get(name) != (inputs, outputs, operation):
+                raise RuntimeError(
+                    "the host backend has no implementation for this "
+                    f"elementwise kernel: {name}")
+            self.name = name
+
+        def __call__(self, *args):
+            if self.name == "gpuwm_mp_floor_zero":
+                (field,) = args
+                threshold = np.float32(0)
+            else:
+                threshold, field = args
+                threshold = np.float32(threshold)
+            if not isinstance(field, np.ndarray) or field.dtype != np.float32:
+                raise TypeError("zero-out output must be a float32 ndarray")
+            np.copyto(field, np.float32(0), where=field < threshold)
+            return field
+
     def __getattr__(name):
         return getattr(np, name)
 
     # ``cupy.cuda.Stream.null.synchronize()`` is how callers fence a launch;
     # on the host every launch has returned by the time the call does.
-    # There is deliberately no ``Device``: table loaders read its absence as
-    # "no device id", which is the truth here.
-    cuda = types.SimpleNamespace(Stream=types.SimpleNamespace(
-        null=types.SimpleNamespace(synchronize=lambda: None)))
+    #
+    # ``gpuwm.core.device_cache.cuda_cache`` (the reflectivity tables) keys
+    # its owner on ``cuda.Device().id`` and the current stream's ``ptr``, and
+    # fences uploads with an ``Event``.  Those three are provided as the
+    # single host "device" 0 with an always-complete event, so that cache
+    # works here.  The classic table loader then records device id 0 for
+    # its host copy, which only keys its cache.
+    class _HostDevice:
+        id = 0
 
-    mod.__dict__.update(cuda=cuda,
+        def __init__(self, *_args):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def synchronize(self):
+            return None
+
+    class _HostEvent:
+        done = True
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def record(self, *_args):
+            return None
+
+        def synchronize(self):
+            return None
+
+    _stream = types.SimpleNamespace(ptr=0, synchronize=lambda: None,
+                                    wait_event=lambda *_a: None)
+    cuda = types.SimpleNamespace(
+        Stream=types.SimpleNamespace(
+            null=types.SimpleNamespace(synchronize=lambda: None)),
+        Device=_HostDevice, Event=_HostEvent,
+        get_current_stream=lambda: _stream)
+
+    mod.__dict__.update(cuda=cuda, ElementwiseKernel=_HostElementwiseKernel,
         __gpuwm_host_backend__=True, ndarray=np.ndarray, asnumpy=asnumpy,
         asarray=asarray, get_array_module=get_array_module,
         RawModule=_NoRawModule, RawKernel=_NoRawModule,

@@ -63,9 +63,10 @@ FIXES = {
 }
 
 # Every wording of the engine's memory verdict (forecast only, ingest priced, streamed, mixed road)
-# carries "<need> GiB peak envelope" and "the <budget> GiB budget"; only the words around them differ.
+# carries "<need> GiB peak envelope" and "the <budget> GiB budget" (`gpuwm go` says "card budget");
+# only the words around them differ.
 _NEED = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*GiB\s+peak\s+envelope")
-_BUDGET = re.compile(r"the\s+([0-9]+(?:\.[0-9]+)?)\s*GiB\s+budget")
+_BUDGET = re.compile(r"the\s+([0-9]+(?:\.[0-9]+)?)\s*GiB\s+(?:card\s+)?budget")
 # A folder on this computer: quoted, a drive path, a share, or a rooted posix path.
 _PATH = re.compile(r"\"(?:[A-Za-z]:|\\\\|/)[^\"]*\"|'(?:[A-Za-z]:|\\\\|/)[^']*'"
                    r"|(?<!\w)(?:[A-Za-z]:[\\/]|\\\\)\S*|(?<![\w.:/])/(?:[\w.-]+/)+[\w.-]*")

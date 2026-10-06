@@ -391,7 +391,7 @@ def test_the_tiles_tree_door_runs_the_head_without_waiting_for_the_seal(
     prepared = tmp_path / "prepared"
     prepared.mkdir()
     config = tmp_path / "tree.toml"
-    config.write_text("", encoding="utf-8")
+    config.write_text('[experiment]\nname = "tree-door"\n', encoding="utf-8")
     outdir = tmp_path / "run"
     checkpoint = tmp_path / "earlier" / "gpuwmrst_d01"
     code = tree.main([
@@ -700,7 +700,7 @@ def test_a_moved_clock_runs_the_forecast_again_on_the_sealed_tree(
         runs.append((bound, restart, first_products, sys.exc_info()[1]))
         wrfout = output_directory / "wrfout"
         wrfout.mkdir()
-        (wrfout / "wrfout_d01_2026-09-29_12:00:00").write_text(
+        (wrfout / "wrfout_d01_2026-09-29_12_00_00").write_text(
             "attempt" if bound is head_inputs else "sealed")
         if bound is head_inputs:
             raise StreamedClockChanged(
@@ -718,7 +718,7 @@ def test_a_moved_clock_runs_the_forecast_again_on_the_sealed_tree(
     prepared = tmp_path / "prepared"
     prepared.mkdir()
     config = tmp_path / "tree.toml"
-    config.write_text("", encoding="utf-8")
+    config.write_text('[experiment]\nname = "tree-door"\n', encoding="utf-8")
     outdir = tmp_path / "run"
     checkpoint = tmp_path / "earlier" / "gpuwmrst_d01"
     code = tree.main([
@@ -766,9 +766,9 @@ def test_a_moved_clock_runs_the_forecast_again_on_the_sealed_tree(
     assert second_renders is renders[1][0] and renders[1][1] is None
     # The attempt is kept, named, beside the sealed forecast.
     attempt = outdir / tree.STREAMED_ATTEMPT_DIRNAME
-    assert (attempt / "wrfout" / "wrfout_d01_2026-09-29_12:00:00"
+    assert (attempt / "wrfout" / "wrfout_d01_2026-09-29_12_00_00"
             ).read_text() == "attempt"
-    assert (outdir / "wrfout" / "wrfout_d01_2026-09-29_12:00:00"
+    assert (outdir / "wrfout" / "wrfout_d01_2026-09-29_12_00_00"
             ).read_text() == "sealed"
     assert f"kept in {attempt}" in err
     assert not (outdir / "evidence" / "failed-run-receipt.json").exists()
@@ -853,7 +853,7 @@ def test_a_moved_clock_rerun_passes_the_forecast_watchdog(
     if not seal_wait_seconds:
         (root / boundary_stream.PROOF_NAME).write_text("{}")
     config = tmp_path / "tree.toml"
-    config.write_text("", encoding="utf-8")
+    config.write_text('[experiment]\nname = "tree-door"\n', encoding="utf-8")
     outdir = tmp_path / "run"
     argv = ["gpuwm.prepared_domain_tree_forecast",
             "--prepared-root", str(root),
@@ -1021,7 +1021,7 @@ def test_a_source_behind_during_a_seal_wait_exits_75_by_name(
     monkeypatch.setattr(tree, "preflight_prepared_tree", preflight)
     monkeypatch.setattr(tree, "run_prepared_tree", run_prepared_tree)
     config = tmp_path / "tree.toml"
-    config.write_text("", encoding="utf-8")
+    config.write_text('[experiment]\nname = "tree-door"\n', encoding="utf-8")
     outdir = tmp_path / "run"
     code = tree.main([
         "--prepared-root", str(root), "--prepared-head-sha256", head_sha256,

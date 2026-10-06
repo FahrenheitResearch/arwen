@@ -1,5 +1,11 @@
 # WRF v4.7.1 advection oracle
 
+For an intentional order-5 native fork fix, the recapture tool accepts
+`--native-fix` only with the fork fixture. It first requires bitwise native
+total tendencies for all five routines on the specified and periodic cases
+in a separate WRF-exact process. The ordinary recapture path still refuses
+any changed production word, and the order-3 fixture cannot use this option.
+
 The reference is the complete, byte-unmodified `dyn_em/module_advect_em.F`
 from WRF v4.7.1, commit `f52c197ed39d12e087d02c50f412d90d418f6186`.
 `SOURCES.sha256` pins every WRF file compiled by the build. The actual WRF
@@ -163,8 +169,8 @@ their own receipt. Other sm_120 cards replay the architecture's RTX 5090
 measurement and must reproduce every output hash and metric exactly at
 runtime. The receipt retains the actual measured card's name; architecture
 selection does not claim that another card was measured. An unrecorded
-architecture remains an explicit test-coverage gap. CPU checks validate
-every collected capture. The RTX 4090 and H100 produce the same production
+Blackwell-or-newer architecture remains an explicit test-coverage gap. CPU
+checks validate every collected capture. The RTX 4090 and H100 produce the same production
 output words on these eight cases. The four isolated defect controls pass
 on all three measured cards. These measurements do not establish parity
 on an unmeasured GPU or compiler. The RTX 5070 Ti that runs the release GPU
@@ -270,7 +276,7 @@ still measures that native routine, and the receipt retains the difference.
 
 Monotonic transport is a distinct native routine. The production engine
 documents options 0 and 1, and its namelist importer accepts option 1 only
-(`docs/public/CONFIGURATION.md:417`, `gpuwm/namelist_import.py:4235-4242`).
+(`docs/public/CONFIGURATION.md:429`, `gpuwm/namelist_import.py:4235-4242`).
 The fixture calls native `advect_scalar_mono`; its comparison to the actual
 positive-definite result demonstrates that these choices cannot be aliased.
 There is no CUDA monotonic parity claim.
@@ -363,3 +369,94 @@ are in `h100-bw-advection-environment.json`, `h100-bw-advection-ptx.json` and
 `h100-bw-advection-pin-stage.json` in the same folder. These are exact
 reproductions of recorded component measurements, not a claim that every
 production output equals native WRF.
+
+## The 2.8.5 vertical-order re-pin of advection and pd_advection
+
+The WRF vertical advection orders (lane/286-vadv5) give `flux_div_scalar`,
+`flux_div_u`, `flux_div_v`, `flux_div_w` and `pd_fluxes` a trailing `vorder`
+argument and WRF's `vert_order == 5` ladder, so the PTX of every entry this
+oracle runs changes and no PTX identity reading exists: each receipt moves
+only on a capture. This fixture runs at `vorder = 3`, the ladder every earlier
+run took. Captures at c5b677748 with CuPy 14.2.0 and CUDA runtime 13.2:
+
+- RTX 4090 (sm_89): all 2,867,200 production words and every production
+  measurement and level row reproduced, and the mutation, `no_fma` and
+  `wrf_flux_no_fma` control rows reproduced
+  (`receipts/rtx4090-vadv5-recapture.json`). `gpu-receipt.json` and its line
+  in `oracle-sha256sums.txt` moved: `kernels.advection` e3fa6135 to af8f5c6c,
+  `kernels.pd_advection` b4832282 to 9011930b.
+- RTX 5090 (sm_120): the same, with every stored control archive compared word
+  for word: production, mutation, `no_fma` and `wrf_flux_no_fma` reproduced all
+  2,867,200 words each (`receipts/rtx5090-vadv5-recapture.json`).
+  `gpu-receipt-sm120.json` moved to the same pins.
+- One control moved on both cards: `wrf_flux`, the text-patched WRF-form flux
+  arithmetic compiled with FMA contraction allowed, changed in its
+  positive-definite outputs only (30,938 of 2,867,200 words on the RTX 5090).
+  The patch replaces `pd_flux5`, `pd_flux3` and `pd_flux3h` by name and leaves
+  the new `pd_flux5v` untouched, which order 3 never calls; with contraction
+  on, the extra branch in `pd_zface_half` changes which multiply-adds NVRTC
+  fuses in that patched variant. The same patch without contraction
+  (`wrf_flux_no_fma`) reproduced every word, as did production. Both receipts
+  carry the new `wrf_flux` rows and the RTX 5090 folder its eight new
+  `wrf_flux` archives.
+- The H100 receipt was not recaptured: no sm_90 card was available to the
+  lane. Its kernel pins still name the source before b70a94a48 (the
+  vert_order 5 ladder), the commit that staled it.
+
+## Certified architectures
+
+Byte identity is certified on Blackwell and newer only: compute capability
+10.x (sm_100) and 12.x (sm_120) and later. Ada, Ampere and Hopper run but are
+not certified (ruling, 2026-10-04). `gpuwm.verify.advect_oracle` carries the
+rule (`CERTIFIED_MIN_COMPUTE_MAJOR`) for both advection fixtures:
+
+- A Blackwell receipt gates as before: its kernel and fixture pins must equal
+  the tree, and a Blackwell card with no receipt is a coverage gap.
+- Every other receipt (the RTX 4090 and H100 here, the RTX 4090 in the
+  HRRR-fork fixture) is checked for presence and format and its committed
+  words still replay against the reference. If its pins trail the tree, the
+  CPU test warns `UncertifiedReceiptStale` with the pins, the current
+  digests and the commit that staled them, and fails nothing. On such a card
+  the device word comparisons skip with the same report; with no receipt at
+  all they skip as uncertified.
+- The commit comes from `uncertified_stale` in the fixture's
+  `gpu-receipts.json` (`{receipt: {"staled_by": commit, "pins": {pin:
+  digest}}}`). A record must be true: it may not name a Blackwell receipt, its
+  digests must be the receipt's own, and they must still trail the tree.
+  `recapture_receipt.py --install` drops the record of the receipt it
+  installs. The H100 receipt's record names b70a94a48.
+
+## Moving a receipt: `recapture_receipt.py`
+
+A receipt moves only through `recapture_receipt.py`, on the card it names
+(or a card of its architecture):
+
+    python tools/advect_wrf471_oracle/recapture_receipt.py \
+        --fixture tests/data/wrf471_advect --scratch <empty dir> --install
+    python tools/advect_wrf471_oracle/recapture_receipt.py \
+        --fixture tests/data/wrf_legacy_advect --scratch <empty dir> --install
+
+It copies the fixture into the scratch folder, runs
+`validate_advect_oracle.py --gpu --controls --mutation` there with every
+`GPUWM_WRF_EXACT*` switch removed, and compares the capture with the receipt
+the card selects through the fixture's `gpu-receipts.json` (the same index
+the device tests read): every case's measurement and level rows (each carries
+the SHA-256 of its words) and, where the folder stores them, every float32
+word. A production word that moved is a finding: exit 1, nothing installed.
+Otherwise `--install` moves the receipt, its stored archives and its
+`oracle-sha256sums.txt` lines; a card with no receipt gets
+`gpu-receipt-sm<MM>.json` and `gpu-words-sm<MM>` and an index entry; a card
+of a recorded architecture moves that receipt's pins only when every control
+reproduced too (otherwise `--as-card` records its own). The record lands in
+`receipts/<card>-<fixture>-<pin>-recapture.json` (for the HRRR-fork fixture,
+in `tools/advect_wrf_legacy_oracle/receipts/`). Its rules are held on the CPU
+by `tests/test_advect_recapture_receipt.py`. Run in card mode without
+`--install` at the vertical-order lane's review tip (a2994b637), it
+reproduced all 2,867,200 production words and every control row of both
+fixtures on the RTX 4090 and the RTX 5090 (`receipts/rtx4090-vadv5-tool-check.json`
+and `receipts/rtx5090-vadv5-tool-check.json` here and in
+`tools/advect_wrf_legacy_oracle/receipts/`).
+
+Open at the vertical-order lane, informational under the ruling above: the
+H100 run of both commands (the WRF 4.7.1 fixture in card mode; the HRRR-fork
+fixture as a first capture).

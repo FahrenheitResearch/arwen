@@ -258,7 +258,10 @@ def test_scheduled_aws_cycle_streams_start_before_later_inputs_post(
     document, code = source_readiness.readiness(
         "hrrr-prs", cycle, 48, cadence=1, now=clock.now(), probe=probe)
     assert code == 0 and document["as_posted"] is True
-    assert [need["lead"] for need in document["start_needs"]] == [0, 1]
+    # The start is f000, the analysis-time vegetation_surface wrfsfc
+    # object the route fetches with it (6a69b356f), and f001.
+    assert [(need["role"], need["lead"]) for need in document["start_needs"]] == [
+        ("analysis", 0), ("supplement:vegetation_surface", 0), ("first_boundary", 1)]
     _replay_route(monkeypatch, clock, probe, downloads)
     relay = HostedPostingRelay(SimpleNamespace(emit=lambda tag, **fields: events.append((tag, fields))),
                                data_dir=tmp_path)
@@ -283,12 +286,14 @@ def test_scheduled_aws_cycle_streams_start_before_later_inputs_post(
     assert [lead for lead, _ in markers] == list(range(49))
     assert markers[missing_lead][1] >= reveal
     assert clock.now() == started + timedelta(seconds=60)
-    assert len(downloads) == 49
-    assert downloads[0][1] == started and downloads[1][1] == started
+    # 49 wrfprs leads plus the one step-0 wrfsfc supplement.
+    assert len(downloads) == 50
+    assert all(moment == started for _, moment in downloads[:3])
+    assert sum("wrfsfcf00." in url for url, _ in downloads) == 1
     assert all("noaa-hrrr-bdp-pds.s3.amazonaws.com" in url for url, _ in downloads)
     assert all("noaa-hrrr-bdp-pds.s3.amazonaws.com" in url for url in queried)
     manifest = json.loads((tmp_path / "fetch-manifest.json").read_text())
-    assert manifest["complete"] is True and len(manifest["files"]) == 49
+    assert manifest["complete"] is True and len(manifest["files"]) == 50
     assert (tmp_path / "SHA256SUMS").is_file()
     schedule = json.loads((tmp_path / "posting/schedule.json").read_text())
     assert schedule["as_posted"] is True
@@ -299,19 +304,47 @@ def test_scheduled_aws_cycle_streams_start_before_later_inputs_post(
     assert "not posted yet" in capsys.readouterr().out
 
 
+_START_OBJECTS = ("wrfprsf00.", "wrfsfcf00.", "wrfprsf01.")
+
+
 def test_streaming_timeout_keeps_the_verified_start_prefix(tmp_path, monkeypatch, aws_policy):
     clock = PublicationClock(datetime(2026, 10, 1, 18, 5))
     downloads = []
-    probe = lambda url: any(f"wrfprsf{lead:02d}." in url for lead in (0, 1))
+    probe = lambda url: any(name in url for name in _START_OBJECTS)
     _replay_route(monkeypatch, clock, probe, downloads)
     args = _pinned_fetch(tmp_path, "hrrr-prs", 48, "--fetch-workers", "1", "--wait-timeout-minutes", "1")
     assert fetch.fetch_main(args) == 75
     failure = json.loads((tmp_path / "posting/failed.json").read_text())
     assert failure["budget"] == "wait_timeout_minutes" and failure["lead"] == 2
     assert failure["leads_kept"] == [0, 1]
-    assert len(downloads) == 2 and sum(clock.waits) == 60
+    assert len(downloads) == 3 and sum(clock.waits) == 60
     manifest = json.loads((tmp_path / "fetch-manifest.json").read_text())
-    assert manifest["complete"] is False and len(manifest["files"]) == 2
+    assert manifest["complete"] is False and len(manifest["files"]) == 3
+
+
+def test_an_unposted_start_supplement_holds_the_start(tmp_path, monkeypatch, aws_policy):
+    """The step-0 supplement is a start need of its own, asked by its own HEAD.
+
+    Lead 0's posted answer covers only its primary object.  Skipping the
+    supplement because lead 0 was already seen transferred the wrfsfc f000
+    without one HEAD, so a supplement the mirror had not caught up with
+    would fail as a download instead of being waited for.
+    """
+    clock = PublicationClock(datetime(2026, 10, 1, 18, 5))
+    downloads, asked = [], []
+
+    def probe(url):
+        asked.append(url)
+        return any(f"wrfprsf{lead:02d}." in url for lead in (0, 1))
+
+    _replay_route(monkeypatch, clock, probe, downloads)
+    args = _pinned_fetch(tmp_path, "hrrr-prs", 48, "--fetch-workers", "1", "--wait-timeout-minutes", "1")
+    assert fetch.fetch_main(args) == 75
+    failure = json.loads((tmp_path / "posting/failed.json").read_text())
+    assert failure["budget"] == "wait_timeout_minutes" and failure["lead"] == 0
+    assert failure["leads_kept"] == []
+    assert any("wrfsfcf00." in url for url in asked)
+    assert downloads == []
 
 
 def test_streaming_start_wait_stops_when_its_run_is_cancelled(tmp_path, monkeypatch, aws_policy):
@@ -356,8 +389,8 @@ def test_latest_selects_early_aws_start_before_prediction_and_ignores_later_lead
 
     def probe(url):
         seen.append(url)
-        return "/hrrr.20261001/" in url and "t18z.wrfprsf" in url and any(
-            f"wrfprsf{lead:02d}." in url for lead in (0, 1))
+        return "/hrrr.20261001/" in url and "t18z." in url and any(
+            name in url for name in _START_OBJECTS)
 
     assert fetch.resolve_latest_cycle("hrrr-prs", 48, now=cycle + timedelta(minutes=5), probe=probe) == cycle
     assert seen and not any("wrfprsf24." in url or "wrfprsf48." in url for url in seen)

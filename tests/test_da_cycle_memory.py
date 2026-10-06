@@ -60,12 +60,20 @@ def _fake_cupy():
 
 
 def _drive(monkeypatch, tmp_path, *, free_bytes=1 << 50, members=2,
-           legs=2, extra_argv=()):
+           legs=2, extra_argv=(), fake_device=True, make_state=None,
+           execute=None, simulated=None, experiment=None):
     """Run ``cycle`` over ``legs`` free legs with host fakes.
 
     Returns ``(events, report_path)``.  ``events`` records, in order, the
     admission's device read and every restore, and each restore records
     how many earlier owners were still alive when it was called.
+
+    The radar heating cells (``tests/test_radar_tten_cycle_driver*.py``)
+    drive observed legs through the same door: ``fake_device=False``
+    keeps the real CuPy, ``make_state()`` builds each restored state,
+    ``execute(model)`` stands in for the integration (and must advance
+    the root clock), and ``simulated(state, cfg)`` is the leg-end
+    reflectivity.
     """
     from gpuwm.core import clock as clock_module
     from gpuwm.core import health as health_module
@@ -83,19 +91,21 @@ def _drive(monkeypatch, tmp_path, *, free_bytes=1 << 50, members=2,
     import gpuwm.runtime as runtime_module
     from tools import da_cycle_prepared as driver
 
-    exp = _nowcast_experiment()
+    exp = _nowcast_experiment() if experiment is None else experiment
     cfg = exp.root.run
     events: list = []
     owners: list = []
 
     def remember(obj):
-        owners.append((obj.kind, weakref.ref(obj)))
+        owners.append((getattr(obj, "kind", type(obj).__name__),
+                       weakref.ref(obj)))
         return obj
 
     def alive() -> list:
         return [kind for kind, ref in owners if ref() is not None]
 
-    monkeypatch.setitem(sys.modules, "cupy", _fake_cupy())
+    if fake_device:
+        monkeypatch.setitem(sys.modules, "cupy", _fake_cupy())
     monkeypatch.setattr(psdf, "preflight_prepared_forecast",
                         lambda **_: SimpleNamespace(
                             experiment=exp, forcing_hours=(0, 1),
@@ -117,7 +127,7 @@ def _drive(monkeypatch, tmp_path, *, free_bytes=1 << 50, members=2,
 
     def restore(*_args, **_kwargs):
         events.append(("restore", alive()))
-        state = remember(_Owner(
+        state = remember(make_state() if make_state is not None else _Owner(
             "state", c1h=np.ones(cfg.nz), c2h=np.zeros(cfg.nz),
             dnw=np.ones(cfg.nz), mub2d=np.ones(shape[1:])))
         return SimpleNamespace(initial_result=SimpleNamespace(state=state),
@@ -146,14 +156,16 @@ def _drive(monkeypatch, tmp_path, *, free_bytes=1 << 50, members=2,
             self._pool_trim_policy = {"release_unused_blocks": False}
             owners.append(("model", weakref.ref(self)))
 
-    def execute(model, **_):
+    def advance(model, **_):
         model.root.clock.ticks += 60
 
     monkeypatch.setattr(model_module, "DomainNode", _Node)
     monkeypatch.setattr(model_module, "ExperimentState", _Model)
     monkeypatch.setattr(model_module, "ModelRuntimeStatus",
                         lambda: SimpleNamespace())
-    monkeypatch.setattr(model_module, "execute_experiment", execute)
+    monkeypatch.setattr(model_module, "execute_experiment",
+                        (lambda model, **_: execute(model))
+                        if execute is not None else advance)
     monkeypatch.setattr(health_module, "StateHealthValidator",
                         lambda state: SimpleNamespace(
                             validate=lambda phase: SimpleNamespace(ok=True)))
@@ -165,11 +177,16 @@ def _drive(monkeypatch, tmp_path, *, free_bytes=1 << 50, members=2,
     monkeypatch.setattr(member_module, "refresh_diagnostics",
                         lambda state, **_: None)
     monkeypatch.setattr(obsop_module, "simulated_reflectivity",
-                        lambda state, cfg: np.zeros(shape, np.float32))
+                        simulated if simulated is not None else
+                        (lambda state, cfg: np.zeros(shape, np.float32)))
     monkeypatch.setattr(treatment_module, "verify_treatment",
                         lambda enabled, analyses: {})
 
-    def write_restart(model, directory, *, valid_time):
+    # The driver's writer takes auto_epssm (tools/da_cycle_prepared.py,
+    # write_leg_restart) and the leg passes it every time; a stub without
+    # the keyword fails the leg with a TypeError before anything is
+    # measured.
+    def write_restart(model, directory, *, valid_time, auto_epssm=None):
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / "gpuwmrst_d01.npz"

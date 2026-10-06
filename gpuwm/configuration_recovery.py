@@ -108,7 +108,7 @@ def _retain(directory: Path, *, text: str, requested_path: Path, stage: Path,
         from gpuwm.static.highres_production import parse_static_table
         config = parse_static_table(raw["static"], source=str(requested_path),
                                     base_dir=requested_path.parent)
-        if config is not None:
+        if config is not None and "highres" in raw["static"]:
             raw["static"]["highres"]["cache_root"] = str(config.cache_root.resolve())
     # fetch.out is owned by the fetch command's working directory.
     if raw.get("fetch", {}).get("out"):

@@ -1,0 +1,18 @@
+{
+  "schema": "gpuwm-nowcast.archived-physics-provenance.v1",
+  "qualification": "Historical WSM6/Dudhia measurements with longwave off. These receipts do not qualify current MP28/GSD4.1 skill, wall clock or card fit.",
+  "receipts": [
+    {
+      "source": "evidence/16gb-frontier/runs/f198n10/cycle-report.json",
+      "source_commit": "efde28e3a681873d23ad3ba29f25c341576f683c",
+      "sha256": "35b503ef8b6e8b4d4be2b86dc9934d9b3d14a8ee3708d4ab7b0d754776c1072c",
+      "physics_profile": "wsm6-ysu-mm5-noah-no-radiation-v1"
+    },
+    {
+      "source": "evidence/da-demo/ensemble-size-sweep/n10/cycle-report.json",
+      "source_commit": "da1b59ca81a5ef83f384b258458b7a8e90bae7ed",
+      "sha256": "4a36601f88e58e8656e76329c06ab358b60466888caaa63c1bae18733514703c",
+      "physics_profile": "wsm6-ysu-mm5-noah-no-radiation-v1"
+    }
+  ]
+}

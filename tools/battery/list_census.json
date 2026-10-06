@@ -687,10 +687,773 @@
    },
    "reason": "The native profile word test now refuses host exp/log/pow/trig calls, preventing platform-libm expected words from silently reaching the CPU public CI leg. Both recorded CPU leg expressions collect 15 native tests and exclude four GPU tests.",
    "test_sha256": "3849617994214f32aa82ab9ec4f00e30958086f248704b9adb9838779f8cbfdc"
+  },
+  {
+   "recorded_on": "2026-10-03",
+   "source_revision": "c1a672722f5a536fbb24266e1c8e1a662bb77df0",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts_by_leg": {
+    "stage1": {
+     "tests/test_cargo_gate_manifest.py": 199,
+     "tests/test_stage1_manifest.py": 1212,
+     "tests/test_battery_list_census.py": 2527,
+     "tests/test_grib2_live.py": 8
+    },
+    "always": {
+     "tests/test_cargo_gate_manifest.py": 199,
+     "tests/test_stage1_manifest.py": 1212,
+     "tests/test_battery_list_census.py": 2527
+    }
+   },
+   "reason": "Actual focused collection after adding the native GRIB2 CPU door suite and its independent Cargo target. Includes affected manifest and census parameterizations; unrelated counts and the full-census provenance remain unchanged."
+  },
+  {
+   "recorded_on": "2026-10-03",
+   "source_revision": "4930ffd9a92ea72cf945c29c3b156ec74c613c70",
+   "counts_by_leg": {
+    "stage1": {
+     "tests/test_verify_release_artifacts.py": 42
+    },
+    "always": {
+     "tests/test_verify_release_artifacts.py": 42
+    }
+   },
+   "reason": "Actual focused collection after adding duplicate native artifact qualification control. Existing full-census provenance and unrelated file counts remain unchanged."
+  },
+  {
+   "recorded_on": "2026-10-03",
+   "source_revision": "a38e239340ced7d226cf7a2a9f04a99d39534478",
+   "platform": "linux",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_free_threading.py": 11,
+    "tests/test_rank_placements.py": 17,
+    "tests/test_battery_list_census.py": 2531
+   },
+   "reason": "Actual node CPU collection repairs missing census rows for suites already present in the merged stage1 list. Existing full-census provenance remains unchanged."
+  },
+  {
+   "recorded_on": "2026-10-03",
+   "source_revision": "65f4928444a58a1da541fd53604359378e277dc8",
+   "platform": "linux",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_grib2_live.py": 12
+   },
+   "test_sha256": "40010d6c32bad20eae0f31dc98f4169384a891ef8fe19bbca2af0bea86fbbac9",
+   "reason": "Actual node CPU collection after adding recipe/plain and config/run-option ensemble export collision regressions. Full-census provenance and unrelated counts remain unchanged."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "stage1",
+   "source_revision": "012d9882702f89f139da6c00bab8360159a79edf",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_cargo_gate_manifest.py": 211
+   },
+   "reason": "Three explicit Cargo floors add 12 manifest contracts. Other counts and historical partial measurements are preserved."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "always",
+   "source_revision": "012d9882702f89f139da6c00bab8360159a79edf",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_cargo_gate_manifest.py": 211
+   },
+   "reason": "Three explicit Cargo floors add 12 manifest contracts. Other counts and historical partial measurements are preserved."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "source_revision": "8c6796e34b0163f051aad82eb1e8d5ad7f8bd8a5",
+   "leg": "stage1",
+   "platform": "linux",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_advect_vertical_order.py": 76,
+    "tests/test_advect_wrf_legacy_parity.py": 15,
+    "tests/test_rk_advection_diagnostic_sources.py": 5,
+    "tests/test_advect_recapture_receipt.py": 10
+   },
+   "reason": "Actual node CPU collection restores four census rows for suites already listed on current staging. Receipt: evidence/gates-resume/missing-census-collection.json. Existing production sources and unrelated measurements are unchanged."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "source_revision": "8c6796e34b0163f051aad82eb1e8d5ad7f8bd8a5",
+   "platform": "win32",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_battery_list_census.py": 2575
+   },
+   "reason": "Actual CPU metadata collection after current-stage missing census rows are restored. The added records alter the census suite parameterization."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "stage1",
+   "source_revision": "bcf82f0ac3c79ce7c4edc7f83267255794bf49a0",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_cargo_gate_manifest.py": 217
+   },
+   "reason": "Two explicit wind floors add six manifest contracts. Other counts and historical partial measurements are preserved."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "always",
+   "source_revision": "bcf82f0ac3c79ce7c4edc7f83267255794bf49a0",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_cargo_gate_manifest.py": 217
+   },
+   "reason": "Two explicit wind floors add six manifest contracts. Other counts and historical partial measurements are preserved."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "stage1",
+   "source_revision": "cd1971e93f1949a44405decdbb0f1a977348bcdb",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_cargo_gate_manifest.py": 221
+   },
+   "reason": "Current staging Rust-sweep floor and two explicit wind floors are reflected by actual collection. Other counts and historical partial measurements are preserved."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "always",
+   "source_revision": "cd1971e93f1949a44405decdbb0f1a977348bcdb",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_cargo_gate_manifest.py": 221
+   },
+   "reason": "Current staging Rust-sweep floor and two explicit wind floors are reflected by actual collection. Other counts and historical partial measurements are preserved."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "stage1",
+   "source_revision": "a84a845befe94e2c99107091b27a33649fd0f58e",
+   "platform": "linux",
+   "python": "3.13",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_ruc.py": 64,
+    "tests/test_ruc_2m_diagnostic.py": 13,
+    "tests/test_ruc_contract.py": 16,
+    "tests/test_ruc_default_selection.py": 17,
+    "tests/test_ruc_fork_configuration_doors.py": 13,
+    "tests/test_ruc_fork_oracle.py": 9,
+    "tests/test_ruc_irrigation.py": 18,
+    "tests/test_ruc_nzs_tier.py": 39,
+    "tests/test_ruc_public_identity.py": 5,
+    "tests/test_ruc_qvg_cold_start.py": 13,
+    "tests/test_ruc_selector_comment.py": 27,
+    "tests/test_ruc_snow.py": 15,
+    "tests/test_ruc_soilprop.py": 14,
+    "tests/test_thompson_mynn_ruc_profiles.py": 57,
+    "tests/test_mynn_dmp_sibling.py": 4,
+    "tests/test_mynn_gsd41_selection.py": 7,
+    "tests/test_mynn_massflux_gsd41.py": 2,
+    "tests/test_mynn_rank_chunk_policy.py": 16,
+    "tests/test_mynn_water_gsd41.py": 2,
+    "tests/test_bridge_source_rev_stamp.py": 18,
+    "tests/test_checkpoint_config_echo.py": 62,
+    "tests/test_config_freeze.py": 13,
+    "tests/test_doctor.py": 167,
+    "tests/test_hrrr_single_domain_benchmark.py": 171,
+    "tests/test_kernel_source_freeze_per_module.py": 156,
+    "tests/test_registry_physics_identity.py": 144,
+    "tests/test_battery_list_census.py": 2575,
+    "tests/test_cargo_gate_manifest.py": 221,
+    "tests/test_verify_release_artifacts.py": 42,
+    "tests/test_runplan.py": 168,
+    "tests/test_source_adapters.py": 116
+   },
+   "reason": "Actual positive node collection records current freeze/echo and release checks plus missing RUC/MYNN CPU suites. GPU-only zero scopes are kept out of CPU lists; historical measurements are preserved."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "always",
+   "source_revision": "a84a845befe94e2c99107091b27a33649fd0f58e",
+   "platform": "linux",
+   "python": "3.13",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_ruc_2m_diagnostic.py": 13,
+    "tests/test_ruc_default_selection.py": 17,
+    "tests/test_ruc_fork_configuration_doors.py": 13,
+    "tests/test_ruc_fork_oracle.py": 9,
+    "tests/test_ruc_irrigation.py": 18,
+    "tests/test_ruc_public_identity.py": 5,
+    "tests/test_ruc_qvg_cold_start.py": 13,
+    "tests/test_ruc_selector_comment.py": 27,
+    "tests/test_ruc_snow.py": 15,
+    "tests/test_thompson_mynn_ruc_profiles.py": 57,
+    "tests/test_mynn_dmp_sibling.py": 4,
+    "tests/test_mynn_gsd41_selection.py": 7,
+    "tests/test_mynn_massflux_gsd41.py": 2,
+    "tests/test_mynn_rank_chunk_policy.py": 16,
+    "tests/test_mynn_water_gsd41.py": 2,
+    "tests/test_kernel_source_freeze_per_module.py": 156,
+    "tests/test_battery_list_census.py": 2575,
+    "tests/test_cargo_gate_manifest.py": 221,
+    "tests/test_verify_release_artifacts.py": 42
+   },
+   "reason": "Actual positive node collection records current freeze/echo and release checks plus missing RUC/MYNN CPU suites. GPU-only zero scopes are kept out of CPU lists; historical measurements are preserved."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "source_revision": "a84a845befe94e2c99107091b27a33649fd0f58e",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_battery_list_census.py": 2687
+   },
+   "reason": "Actual local collection after28 new active CPU rows; only battery metadata differs from source revision. Collection log and list hashes are retained.",
+   "leg": "stage1"
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "source_revision": "a84a845befe94e2c99107091b27a33649fd0f58e",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_battery_list_census.py": 2687
+   },
+   "reason": "Actual local collection after28 new active CPU rows; only battery metadata differs from source revision. Collection log and list hashes are retained.",
+   "leg": "always"
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "source_revision": "3f7ff45c0d695dd728046714706d885c7e27ceb6",
+   "leg": "stage1",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_checkpoint_config_echo.py": 65,
+    "tests/test_bridge_source_rev_stamp.py": 19,
+    "tests/test_adaptive_clock_driver.py": 52
+   },
+   "reason": "Measured current ALBSOL echo and native stamp controls from final-766-python-receipt.json (Linux); adaptive clock collection is 52 on Windows with the same CPU marker expression. Current node replay verifies all three counts. Historical measurements are retained."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "stage1",
+   "source_revision": "5222f3cc34b859d241899babb1c20afe7b3eecb0",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_cargo_gate_manifest.py": 227
+   },
+   "reason": "Actual CPU collection after explicit exporter module floors change. Prior measurements remain unchanged."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "always",
+   "source_revision": "5222f3cc34b859d241899babb1c20afe7b3eecb0",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_cargo_gate_manifest.py": 227
+   },
+   "reason": "Actual CPU collection after explicit exporter module floors change. Prior measurements remain unchanged."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "stage1",
+   "source_revision": "b186cf2fb93bc54fe23817eb3f4533870bf93b31",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_checkpoint_config_echo.py": 71
+   },
+   "reason": "Actual CPU collection after explicit exporter module floors change. Prior measurements remain unchanged."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "source_revision": "bfedfd04a34917c92349e9faada6fb8fb29395ee",
+   "leg": "stage1",
+   "platform": "linux",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_grib2_live.py": 15,
+    "tests/test_physics_registry.py": 152,
+    "tests/test_build_registry.py": 132,
+    "tests/test_ensemble_recipe_door.py": 132
+   },
+   "reason": "Actual current CPU run records positive counts for existing listed suites. Receipt: final-bfedfd0-python-receipt.json. No new suite membership or historical count changed."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "source_revision": "b74f35344bc220e355402d963e338dfc14f47b28",
+   "leg": "stage1",
+   "platform": "linux",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_advect_vertical_order.py": 50
+   },
+   "reason": "Actual current CPU run records positive counts for existing listed suites. Receipt: final-b74f353-existing-census-drift.json. Prior advection total76 included26 explicitly GPU-marked cases; CPU50 and separate GPU26 collection-only proof are recorded for b74. The file remains in the GPU shard, and no device case was executed. No historical count or suite membership changed."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "stage1",
+   "source_revision": "d436a6254f313284db1b62a7185aa45369e7fbf6",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_cargo_gate_manifest.py": 230
+   },
+   "reason": "Actual CPU collection after explicit exporter module floors change. Prior measurements remain unchanged."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "always",
+   "source_revision": "d436a6254f313284db1b62a7185aa45369e7fbf6",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_cargo_gate_manifest.py": 230
+   },
+   "reason": "Actual CPU collection after explicit exporter module floors change. Prior measurements remain unchanged."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "stage1",
+   "source_revision": "add22f7019b120d280be88a427c256720e296d50",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_config_freeze.py": 13
+   },
+   "reason": "Actual CPU collection after explicit exporter module floors change. Prior measurements remain unchanged."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "stage1",
+   "source_revision": "add22f7019b120d280be88a427c256720e296d50",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_checkpoint_config_echo.py": 73
+   },
+   "reason": "Actual CPU collection after explicit exporter module floors change. Prior measurements remain unchanged."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "stage1",
+   "source_revision": "6a62d000168bdd1367686c1f862a61536883f515",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_battery_list_census.py": 2687
+   },
+   "reason": "Actual CPU collection after explicit exporter module floors change. Prior measurements remain unchanged."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "always",
+   "source_revision": "6a62d000168bdd1367686c1f862a61536883f515",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_battery_list_census.py": 2687
+   },
+   "reason": "Actual CPU collection after explicit exporter module floors change. Prior measurements remain unchanged."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "stage1",
+   "source_revision": "b6c32cfe8d0f04ed92d70124c34bff8354b11f40",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_config_freeze.py": 13
+   },
+   "reason": "Actual CPU collection after explicit exporter module floors change. Prior measurements remain unchanged."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "stage1",
+   "source_revision": "b6c32cfe8d0f04ed92d70124c34bff8354b11f40",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_checkpoint_config_echo.py": 79
+   },
+   "reason": "Actual CPU collection after explicit exporter module floors change. Prior measurements remain unchanged."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "stage1",
+   "source_revision": "b6c32cfe8d0f04ed92d70124c34bff8354b11f40",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_battery_list_census.py": 2687
+   },
+   "reason": "Actual CPU collection after explicit exporter module floors change. Prior measurements remain unchanged."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "always",
+   "source_revision": "b6c32cfe8d0f04ed92d70124c34bff8354b11f40",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_battery_list_census.py": 2687
+   },
+   "reason": "Actual CPU collection after explicit exporter module floors change. Prior measurements remain unchanged."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "stage1",
+   "source_revision": "b6c32cfe8d0f04ed92d70124c34bff8354b11f40",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_table_fetch.py": 30
+   },
+   "reason": "Actual CPU collection after explicit exporter module floors change. Prior measurements remain unchanged."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "stage1",
+   "source_revision": "9d534e03eae162dc9b0edc4a474dd04f6b041568",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_cargo_gate_manifest.py": 233
+   },
+   "reason": "Actual CPU collection after explicit exporter module floors change. Prior measurements remain unchanged."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "always",
+   "source_revision": "9d534e03eae162dc9b0edc4a474dd04f6b041568",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_cargo_gate_manifest.py": 233
+   },
+   "reason": "Actual CPU collection after explicit exporter module floors change. Prior measurements remain unchanged."
+  },
+  {
+   "recorded_on": "2026-10-04",
+   "leg": "stage1",
+   "source_revision": "4c205586392bb0054589d3d062d97512a9dcd59d",
+   "platform": "win32",
+   "python": "3.13.7",
+   "markexpr": "not gpu and not slow and not network",
+   "environment": {
+    "GPUWM_NO_LOCAL_GPU": "1",
+    "CUDA_VISIBLE_DEVICES": ""
+   },
+   "counts": {
+    "tests/test_table_fetch.py": 31
+   },
+   "reason": "Actual CPU collection after explicit exporter module floors change. Prior measurements remain unchanged."
   }
  ],
- "recorded_at_commit": "12b43bdb9feab62ef7b5bf263996f91d79346e44",
- "recorded_on": "2026-10-03",
+ "_staging_repair_followup": {
+  "lane": "lane/286-staging-repair",
+  "source_revision": "90638eeb605f3d53e88da7231f0484a9588e9718",
+  "reason": "Official complete CPU recollection after SW merge restored staging census. Append 13 canonical fork-asset cases and the 1-case source receipt guard to stage1; the dynamic source guard also joins ALWAYS. New control ownership: c9f4efeee and 75daa3892, lane/286-staging-repair; measured powf sites b0556bd76, lane/286-fork-thompson.",
+  "decreases": [
+   {
+    "leg": "stage1",
+    "file": "tests/test_advect_wrf_legacy_parity.py",
+    "before": 15,
+    "after": 7
+   },
+   {
+    "leg": "stage1",
+    "file": "tests/test_rk_advection_diagnostic_sources.py",
+    "before": 5,
+    "after": 2
+   }
+  ],
+  "decrease_reason": "bcf82f0ac, lane/grib2-upp-286, restored unfiltered 15/5 as CPU floors. Existing GPU markers from 3ae1a0dc/3611ee305/8e081d282, lane/286-vadv5, leave CPU 7/2 and complementary GPU 8/3. Both current test blobs exactly match historical 8c6796e34. All 20 node IDs remain and both files stay in CPU and GPU lists; GPU collection is not execution.",
+  "evidence": "followup-census-collector-owner.md and followup-census-record-2/3/check-command.json with complete child logs",
+  "list_sha256": {
+   "tools/battery/stage1_files.txt": "7d0fd2d407e9450c57696fc410f17f0f8c1e316ddb666610840c71bcd31a98fd",
+   "tools/battery/always_files.txt": "27dfa7fc1ad0da1a82ae234abfcb8c579a2586cbc197f36c50d47dd63d174a35"
+  }
+ },
+ "_staging_repair_current_staging": {
+  "source_revision": "7ec0e82ef128f5172585eae592c58b1c42960037",
+  "staging_revision": "5c54e47921dffc82336db166eb415fb17b4c1850",
+  "decision": "Fresh official complete recollection records these source-backed increases. Counts are measured, no member is retired and the earlier CPU/GPU marker-accounting correction remains documented.",
+  "changes": [
+   {
+    "leg": "stage1",
+    "file": "tests/test_line_ending_stability.py",
+    "before": 13,
+    "after": 14,
+    "commits": [
+     "bd12ddbfe13613bbbee6eb3faead9a0b63deaa95"
+    ],
+    "lane": "lane/283-namelist-tolerance-2",
+    "reason": "Adds one exact-file and exact-SHA256 original-lineage receipt guard, including Git blob verification in a checkout. The CR-byte classification remains digest-bound, not a prefix exemption."
+   },
+   {
+    "leg": "stage1",
+    "file": "tests/test_namelist_compat.py",
+    "before": 68,
+    "after": 69,
+    "commits": [
+     "260f1832ec40d8b57075108011b30840d85e6f00"
+    ],
+    "lane": "lane/286-mix-full-fields",
+    "reason": "Adds the omitted-theta WRF3 dry default control, contrasting WRF4 default1 advisory and refusing unknown version5 in the same case."
+   },
+   {
+    "leg": "stage1",
+    "file": "tests/test_diff_opt1.py",
+    "before": 28,
+    "after": 30,
+    "commits": [
+     "260f1832ec40d8b57075108011b30840d85e6f00",
+     "72c13ea80dcaa146ad25fc3cc4ffc71f58a94fbd"
+    ],
+    "lane": "lane/286-mix-full-fields",
+    "reason": "Owner retires the existing False refusal for zero real-data base profiles. Four km/PBL0 rows become admission controls and two supported PBL1 pairs are added. Intermediate invalid km2/3-PBL1 Cartesian pairs are not part of final source; all other case cardinalities remain."
+   },
+   {
+    "leg": "stage1",
+    "file": "tests/test_ensemble_batch_product_spool.py",
+    "before": 10,
+    "after": 11,
+    "commits": [
+     "1d5d57d092ebfc718b87e6ddafe5f33878308a72"
+    ],
+    "lane": "lane/ens-stream-post",
+    "reason": "Adds deferred replay full-roster authority control: pending frame survives collector completion, no false consumed frames are reported, and parent completed-products authority retains the actual collector receipt."
+   },
+   {
+    "leg": "stage1",
+    "file": "tests/test_rustwx_resident_ensemble.py",
+    "before": 3,
+    "after": 12,
+    "commits": [
+     "1d5d57d092ebfc718b87e6ddafe5f33878308a72"
+    ],
+    "lane": "lane/ens-stream-post",
+    "reason": "Adds nine CPU/mock-native cases for ensemble binary resolution, explicit-missing refusal, matching probe/render authority, signed-zero/NaN words and hash/revision refusal, pre-forecast contract probe, and current-versus-old ABI. The original three resident renderer/old-ABI/interruption cases remain."
+   },
+   {
+    "leg": "stage1",
+    "file": "tests/test_namelist_parsed_carrier.py",
+    "before": 6,
+    "after": 8,
+    "commits": [
+     "4e34804790d9d8e32c3ebe5e8e83982eaebf434d",
+     "7ec0e82ef128f5172585eae592c58b1c42960037"
+    ],
+    "lane": "lane/283-namelist-tolerance-2 and lane/286-staging-repair",
+    "reason": "Retain explicit snapshot unknown-selector and empty-snapshot label-independence controls from the tolerance lane alongside the user-required original no-snapshot existing-file refusal and earlier positive/snapshot controls."
+   },
+   {
+    "leg": "always",
+    "file": "tests/test_line_ending_stability.py",
+    "before": 13,
+    "after": 14,
+    "commits": [
+     "bd12ddbfe13613bbbee6eb3faead9a0b63deaa95"
+    ],
+    "lane": "lane/283-namelist-tolerance-2",
+    "reason": "Adds one exact-file and exact-SHA256 original-lineage receipt guard, including Git blob verification in a checkout. The CR-byte classification remains digest-bound, not a prefix exemption."
+   }
+  ],
+  "evidence": "followup-staging-census-record-1-command.json and both complete child logs; followup-staging-census-increases.md/json; final independent carrier review"
+ },
+ "_doctor_probe_followup": {
+  "lane": "lane/cut286-fu-doctor-probe",
+  "source_revision": "5a8ba50ce78491722ae0ca2c76c78225b1157899",
+  "how": "python -m tools.battery.record_list_census, run twice to its fixed point (the census suite's own row counts the rows), on a git archive of the source revision (first at 8eec4f487 with the list edits, then again after the dcbc2e0dd and ee612a4e8 merges, at the source revision), node-2, Python 3.13.15, GPUWM_NO_LOCAL_GPU=1; --check then reports the fixed point. recorded_at_commit names the source revision because the collection tree had no git history of its own.",
+  "decreases": [
+   {
+    "leg": "always",
+    "file": "tests/test_excluded_subsystem_absent.py",
+    "before": 8,
+    "after": 7,
+    "went_to": "tests/test_excluded_subsystem_label_pin.py (1), listed on the always leg in this commit; 45d840b1a moved test_the_display_label_allowance_admits_only_the_exact_label there so it runs without a checkout"
+   },
+   {
+    "leg": "stage1 and always",
+    "file": "tests/test_cargo_gate_manifest.py",
+    "before": 233,
+    "after": 206,
+    "went_to": "nowhere in 2.8.6: e3cfd94ba (GRIB2 export hold-out) removed the nine rw-wrfbatch GRIB2/UPP rows from tools/battery/cargo_gates.txt, three parametrized cases each, and did not re-record this row, which left both legs below the census; the export returns with its clean-room replacement in 2.8.7"
+   }
+  ],
+  "increases": "test_doctor_door_probes 9 (new, stage1), test_excluded_subsystem_label_pin 1 (new, always), test_fastfix_selector 69->70 (one more always entry), test_battery_list_census 2771->2775 (four more census rows), and the merged lanes' own additions: 4135ec9ee advect receipts (wrf471 15->17, legacy 7->8, recapture 10->11), 16daa607d fetch_aws_policy 34->35, 18f990bc0 devices_memory_pools 37->41, f88054cfb initial_source 54->63, 2700ebe71 ensemble_batch_product_spool 11->13, and 57672f393 (c6 native decline) test_gpu_shard_manifest 569->571 (stage1), re-recorded after merging integrate/2.8.6 dcbc2e0dd; then ee612a4e8 listed test_nest_step_growth_advisory (5) and test_smag2d_index32_dispatch (14) on stage1 without census rows, which this re-record adds, with test_stage1_manifest 1302->1306, test_gpu_shard_manifest 571->573 and test_battery_list_census 2775->2783 following the lists",
+  "forward_merge": "lane/cut286-doctor-battery-merge forward-merged integrate/2.8.6 ed2b14e7d into the lane tip 6e452705c and re-recorded in the merge commit itself: python -m tools.battery.record_list_census run twice to its fixed point, then --check, on a git archive of the merged tree (git tree a2170a61b), node-2, Python 3.13.15, GPUWM_NO_LOCAL_GPU=1. recorded_at_commit names the integrate tip that was merged, because the merge commit does not exist until this file is in it. One row moved and it rose: tests/test_diffusion_drivers_wrf471_parity.py 4->5 on stage1 (201f94bd3, the Blackwell receipt case from the merged 5090 leg lane). No row fell. Totals: stage1 21990, always 5529."
+ },
+ "recorded_at_commit": "1bf8ffebfdb0de714878a7bf0e9933b73c5543d3",
+ "recorded_on": "2026-10-06",
  "legs": {
   "stage1": {
    "list": "tools/battery/stage1_files.txt",
@@ -698,12 +1461,12 @@
    "environment": {
     "GPUWM_NO_LOCAL_GPU": "1"
    },
-   "collected_total": 20626,
+   "collected_total": 21991,
    "files": {
-    "tests/test_runplan.py": 167,
+    "tests/test_runplan.py": 168,
     "tests/test_nest_spawn_soil.py": 20,
-    "tests/test_nocturnal_radiation_guard.py": 28,
-    "tests/test_domain_wizard.py": 304,
+    "tests/test_nocturnal_radiation_guard.py": 29,
+    "tests/test_domain_wizard.py": 317,
     "tests/test_go_chain.py": 84,
     "tests/test_hrrr_prepared_background.py": 53,
     "tests/test_da_nowcast_presets.py": 18,
@@ -718,7 +1481,7 @@
     "tests/test_certification_capsule.py": 28,
     "tests/test_package_data_coverage.py": 21,
     "tests/test_companion_distribution.py": 26,
-    "tests/test_physics_registry.py": 149,
+    "tests/test_physics_registry.py": 152,
     "tests/test_physics_registry_composition.py": 12,
     "tests/test_registry_physics_identity.py": 144,
     "tests/test_first_products.py": 83,
@@ -729,23 +1492,23 @@
     "tests/test_ftz_route_inventory.py": 7,
     "tests/test_provenance_wire.py": 6,
     "tests/test_wrf_legacy_radiation.py": 12,
-    "tests/test_render_rust.py": 86,
+    "tests/test_render_rust.py": 101,
     "tests/test_render_basemap_delivery.py": 31,
     "tests/test_radiation_off_land_surface_guard.py": 13,
     "tests/test_downward_longwave_source.py": 15,
     "tests/test_shipped_acknowledgement_justifications.py": 19,
     "tests/test_provenance_gate.py": 30,
     "tests/test_prepared_single_domain_forecast.py": 211,
-    "tests/test_hrrr_single_domain_benchmark.py": 165,
+    "tests/test_hrrr_single_domain_benchmark.py": 204,
     "tests/test_battery_route.py": 34,
     "tests/test_ftz_render.py": 29,
-    "tests/test_native_wrf_distribution.py": 55,
+    "tests/test_native_wrf_distribution.py": 56,
     "tests/test_evidence_axes.py": 18,
     "tests/test_composition_pricing.py": 6,
     "tests/test_water_temperature.py": 20,
     "tests/test_horiz.py": 27,
     "tests/test_water_overlay.py": 30,
-    "tests/test_line_ending_stability.py": 12,
+    "tests/test_line_ending_stability.py": 14,
     "tests/test_release_notes_are_public_facing.py": 23,
     "tests/test_mp_accepted_builds.py": 21,
     "tests/test_streaming.py": 130,
@@ -753,16 +1516,16 @@
     "tests/test_tiles_gate_manifest.py": 41,
     "tests/test_tiles_gate_preconditions.py": 11,
     "tests/test_tiles_harness_glw.py": 9,
-    "tests/test_physics_allocation_inventory.py": 8,
+    "tests/test_physics_allocation_inventory.py": 9,
     "tests/test_tiles_distribution.py": 9,
     "tests/test_multigpu_specified_bc.py": 25,
     "tests/test_streamed_carrier_freshness.py": 16,
-    "tests/test_cargo_gate_manifest.py": 196,
-    "tests/test_verify_release_artifacts.py": 41,
+    "tests/test_cargo_gate_manifest.py": 206,
+    "tests/test_verify_release_artifacts.py": 42,
     "tests/test_release_snapshot_front_door.py": 6,
     "tests/test_release_snapshot_machine_paths.py": 26,
     "tests/test_release_snapshot_modes.py": 3,
-    "tests/test_stage1_manifest.py": 1204,
+    "tests/test_stage1_manifest.py": 1306,
     "tests/test_publish_workflow_state_machine.py": 38,
     "tests/test_prepared_publication.py": 79,
     "tests/test_verify_source_bridge_pins.py": 9,
@@ -778,7 +1541,7 @@
     "tests/test_v12_integration.py": 71,
     "tests/test_enprod_hardening.py": 44,
     "tests/test_module_skip_placement.py": 4,
-    "tests/test_fastfix_selector.py": 54,
+    "tests/test_fastfix_selector.py": 70,
     "tests/test_fastfix_runner.py": 18,
     "tests/test_hrrr_projected_operator.py": 29,
     "tests/test_fetch_engine_degrade_guard.py": 16,
@@ -793,9 +1556,10 @@
     "tests/test_tiles_door_legs.py": 10,
     "tests/test_doctor_cuda_headers.py": 63,
     "tests/test_obs_model_source.py": 24,
-    "tests/test_flagship_tools.py": 26,
+    "tests/test_flagship_tools.py": 27,
     "tests/test_obs_cross_reader.py": 32,
-    "tests/test_gpu_shard_manifest.py": 535,
+    "tests/test_isobaric_bridge.py": 7,
+    "tests/test_gpu_shard_manifest.py": 573,
     "tests/test_docs_extras_agree_with_code.py": 31,
     "tests/test_highres_geog_stack_refusal.py": 9,
     "tests/test_static_needs_no_met_inputs.py": 6,
@@ -806,6 +1570,7 @@
     "tests/test_verification_recipe_flags.py": 15,
     "tests/test_doctor_extras.py": 23,
     "tests/test_doctor_route_accuracy.py": 22,
+    "tests/test_doctor_door_probes.py": 9,
     "tests/test_cli_capability_refusals.py": 38,
     "tests/test_obs_front_doors_are_shipped.py": 36,
     "tests/test_render_pyshp_front_door.py": 8,
@@ -820,10 +1585,10 @@
     "tests/test_chain_stage_env.py": 3,
     "tests/test_cli.py": 18,
     "tests/test_bridge_fetch.py": 52,
-    "tests/test_table_fetch.py": 28,
-    "tests/test_fetch_geog.py": 56,
+    "tests/test_table_fetch.py": 31,
+    "tests/test_fetch_geog.py": 59,
     "tests/test_source_adapters.py": 116,
-    "tests/test_namelist_compat.py": 68,
+    "tests/test_namelist_compat.py": 69,
     "tests/test_bridge_bundle_adopt.py": 15,
     "tests/test_adapt.py": 17,
     "tests/test_mapped_authoring.py": 28,
@@ -871,20 +1636,20 @@
     "tests/test_ruc_shoreline_soil_category.py": 9,
     "tests/test_ruc_soil_ingest.py": 11,
     "tests/test_physics_dispatch.py": 33,
-    "tests/test_build_registry.py": 111,
+    "tests/test_build_registry.py": 136,
     "tests/test_aerosol_source_report.py": 26,
     "tests/test_mynn_pbl.py": 59,
     "tests/test_mp28_runnable.py": 68,
     "tests/test_real_init.py": 65,
     "tests/test_host_setup_cuts.py": 20,
     "tests/test_preparation_price.py": 82,
-    "tests/test_config_freeze.py": 4,
+    "tests/test_config_freeze.py": 12,
     "tests/test_p3_cuda.py": 14,
     "tests/test_p3_restart_manifest.py": 5,
-    "tests/test_kernel_source_freeze_per_module.py": 152,
+    "tests/test_kernel_source_freeze_per_module.py": 160,
     "tests/test_cuda_libm_table_copies.py": 37,
     "tests/test_excluded_subsystem_scan_is_armed.py": 22,
-    "tests/test_battery_list_census.py": 2509,
+    "tests/test_battery_list_census.py": 2783,
     "tests/test_fastfix_batched_durations.py": 6,
     "tests/test_tracked_file_writers_keep_lf.py": 34,
     "tests/test_p3_legacy_rrtmg_radii.py": 6,
@@ -929,7 +1694,7 @@
     "tests/test_morrison_cold_trap.py": 2,
     "tests/test_bridge_stale_resolution.py": 20,
     "tests/test_cells_doors.py": 9,
-    "tests/test_kernel_loader_inert.py": 261,
+    "tests/test_kernel_loader_inert.py": 275,
     "tests/test_no_forecast_gate.py": 6,
     "tests/test_ntiedtke_aliasing_audit.py": 12,
     "tests/test_ntiedtke_call_order_vs_source.py": 35,
@@ -950,7 +1715,7 @@
     "tests/test_adaptive_timestep_checkpoint.py": 10,
     "tests/test_adaptive_timestep_executor.py": 7,
     "tests/test_adaptive_timestep_controller.py": 19,
-    "tests/test_adaptive_clock_driver.py": 43,
+    "tests/test_adaptive_clock_driver.py": 55,
     "tests/test_step_log_adaptive_dt.py": 7,
     "tests/test_adaptive_restart_sound_steps.py": 18,
     "tests/test_nest_divide_collapse.py": 24,
@@ -965,7 +1730,7 @@
     "tests/test_inflow_perturbation.py": 28,
     "tests/test_shipped_configs_inflow_applicability.py": 4,
     "tests/test_cam_ozone.py": 27,
-    "tests/test_radiation_composition.py": 75,
+    "tests/test_radiation_composition.py": 76,
     "tests/test_acoustic_carrier_lifetime.py": 1,
     "tests/test_attached_store_health.py": 3,
     "tests/test_streamed_lifecycle_restart.py": 4,
@@ -976,7 +1741,7 @@
     "tests/test_auto_search_feasible.py": 4,
     "tests/test_device_wide_planning_budget.py": 12,
     "tests/test_native_supplements.py": 12,
-    "tests/test_kernel_frame_recordings.py": 15,
+    "tests/test_kernel_frame_recordings.py": 16,
     "tests/test_lbc_time_frame.py": 1,
     "tests/test_sim_restart.py": 6,
     "tests/test_domain_wizard_default_clock.py": 21,
@@ -1063,7 +1828,7 @@
     "tests/test_noah_mosaic_oracle_controls.py": 3,
     "tests/test_noah_mosaic_urban_canopy_rule.py": 8,
     "tests/test_noahmp_no_consumer_knobs.py": 14,
-    "tests/test_banned_words.py": 19,
+    "tests/test_banned_words.py": 20,
     "tests/test_rrtmg_lw_speed_identity.py": 4,
     "tests/test_mynn_radiation_coupling.py": 17,
     "tests/test_rrtmgp_optics.py": 2,
@@ -1123,24 +1888,28 @@
     "tests/test_native_posted_tree_recovery.py": 2,
     "tests/test_fetch_pool_host_order.py": 5,
     "tests/test_noah_wrf461_parity.py": 8,
-    "tests/test_physics_default_agreement.py": 39,
+    "tests/test_physics_default_agreement.py": 41,
     "tests/test_fetch_pool.py": 21,
     "tests/test_dataclass_defaults_hashable.py": 2,
     "tests/test_bigstep_coupling_wrf471_parity.py": 1,
     "tests/test_bigstep_momentum_wrf471_parity.py": 11,
     "tests/test_bigstep_prep_wrf471_parity.py": 18,
     "tests/test_bigstep_rk_wrf471_parity.py": 1,
-    "tests/test_advect_wrf471_parity.py": 15,
+    "tests/test_advect_wrf471_parity.py": 17,
     "tests/test_smallstep_bookkeeping_wrf471_parity.py": 3,
     "tests/test_smallstep_horizontal_wrf471_parity.py": 1,
     "tests/test_smallstep_vertical_wrf471_parity.py": 5,
     "tests/test_smallstep_oracle_contract.py": 6,
+    "tests/test_advect_vertical_order.py": 50,
+    "tests/test_advect_wrf_legacy_parity.py": 8,
+    "tests/test_rk_advection_diagnostic_sources.py": 2,
+    "tests/test_advect_recapture_receipt.py": 11,
     "tests/test_diff6_wrf471_parity.py": 2,
     "tests/test_deformation_wrf471_parity.py": 2,
     "tests/test_horizontal_diffusion_wrf471_parity.py": 1,
     "tests/test_vertical_diffusion_wrf471_parity.py": 1,
     "tests/test_constant_diffusion_wrf471_parity.py": 2,
-    "tests/test_diffusion_drivers_wrf471_parity.py": 4,
+    "tests/test_diffusion_drivers_wrf471_parity.py": 5,
     "tests/test_wrfinput_surface_native.py": 6,
     "tests/test_ml_export.py": 18,
     "tests/test_terrain_drag_config.py": 42,
@@ -1150,10 +1919,10 @@
     "tests/test_terrain_drag_tiles.py": 17,
     "tests/test_mynn_rank_chunk_policy.py": 16,
     "tests/test_terrain_drag_devices.py": 27,
-    "tests/test_fetch_aws_policy.py": 34,
-    "tests/test_checkpoint_config_echo.py": 20,
+    "tests/test_fetch_aws_policy.py": 35,
+    "tests/test_checkpoint_config_echo.py": 80,
     "tests/test_literal_division_scan_root.py": 3,
-    "tests/test_diff_opt1.py": 28,
+    "tests/test_diff_opt1.py": 30,
     "tests/test_wrfinput_reader_contract.py": 9,
     "tests/test_coordinate_reference_prime.py": 3,
     "tests/test_noah_initialization_guard.py": 1,
@@ -1190,13 +1959,15 @@
     "tests/test_surface_rank_carriers.py": 3,
     "tests/test_lake_static.py": 8,
     "tests/test_lake_contract.py": 6,
-    "tests/test_devices_memory_pools.py": 37,
+    "tests/test_devices_memory_pools.py": 41,
     "tests/test_ruc_memory.py": 15,
-    "tests/test_native_pressure_top.py": 9,
+    "tests/test_free_threading.py": 11,
+    "tests/test_rank_placements.py": 17,
+    "tests/test_native_pressure_top.py": 22,
     "tests/test_native_source_profiles.py": 11,
     "tests/test_aerosol_analysis_input.py": 9,
-    "tests/test_initial_source.py": 54,
-    "tests/test_ensemble_recipe_door.py": 116,
+    "tests/test_initial_source.py": 63,
+    "tests/test_ensemble_recipe_door.py": 132,
     "tests/test_ensemble_batch_acoustic_fusion_audit.py": 22,
     "tests/test_ensemble_batch_kernel.py": 156,
     "tests/test_ensemble_batch_advection_family_gpu.py": 4,
@@ -1208,20 +1979,20 @@
     "tests/test_ensemble_batch_physics.py": 9,
     "tests/test_ensemble_batch_physics_init.py": 12,
     "tests/test_ensemble_batch_products.py": 11,
-    "tests/test_ensemble_batch_product_spool.py": 10,
+    "tests/test_ensemble_batch_product_spool.py": 13,
     "tests/test_ensemble_batch_profile.py": 21,
     "tests/test_ensemble_admission_packing.py": 35,
     "tests/test_ensemble_prepared_batch.py": 36,
     "tests/test_ensemble_identity_compare.py": 14,
-    "tests/test_rustwx_resident_ensemble.py": 3,
+    "tests/test_rustwx_resident_ensemble.py": 12,
     "tests/test_ensemble_production_door.py": 11,
     "tests/test_ensemble_production_request.py": 15,
     "tests/test_ensemble_production_sizing.py": 13,
     "tests/test_ensemble_production_execution.py": 6,
-    "tests/test_ensemble_prepared_execution.py": 31,
+    "tests/test_ensemble_prepared_execution.py": 33,
     "tests/test_ensemble_prepared_source_binding.py": 1,
     "tests/test_ensemble_ordinary_execution.py": 42,
-    "tests/test_ensemble_physics_execution.py": 35,
+    "tests/test_ensemble_physics_execution.py": 37,
     "tests/test_ensemble_posted_execution.py": 12,
     "tests/test_ensemble_posted_native.py": 11,
     "tests/test_ensemble_native_forecast.py": 16,
@@ -1284,10 +2055,53 @@
     "tests/test_prep_handoff_directory.py": 2,
     "tests/test_source_cli_physical_stores.py": 13,
     "tests/test_ensemble_run_control.py": 21,
-    "tests/test_ensemble_table_law.py": 23,
+    "tests/test_ensemble_table_law.py": 24,
     "tests/test_ensemble_member_inputs.py": 78,
     "tests/test_namelist_stochastic.py": 37,
-    "tests/test_ruc_soilprop.py": 14
+    "tests/test_ruc_soilprop.py": 14,
+    "tests/test_physics_params.py": 30,
+    "tests/test_physics_params_kernel_isolation.py": 13,
+    "tests/test_physics_params_restart.py": 2,
+    "tests/test_physics_params_gpu.py": 1,
+    "tests/test_physics_params_checkpoint_echo.py": 7,
+    "tests/test_physics_params_preparation_identity.py": 7,
+    "tests/test_physics_params_python_api.py": 18,
+    "tests/test_radiation_driver_options.py": 17,
+    "tests/test_swint_interpolation.py": 7,
+    "tests/test_rrtmg_aerosol_optics.py": 6,
+    "tests/test_shortwave_source_doors.py": 8,
+    "tests/test_rrtmg_source_cloud_form.py": 4,
+    "tests/test_mynn_gsd41_selection.py": 8,
+    "tests/test_mynn_massflux_gsd41.py": 2,
+    "tests/test_mynn_water_gsd41.py": 2,
+    "tests/test_rrtmg_smoke_source_doors.py": 15,
+    "tests/test_rrtmg_smoke_manifest.py": 23,
+    "tests/test_rrtmg_smoke_input.py": 17,
+    "tests/test_solar_albedo.py": 8,
+    "tests/test_solar_albedo_integration.py": 1,
+    "tests/test_albsol_config.py": 33,
+    "tests/test_albsol_historical_bytes.py": 12,
+    "tests/test_albsol_source_doors.py": 21,
+    "tests/test_checkpoint_radiation_defaults.py": 3,
+    "tests/test_radiation_driver_identity.py": 7,
+    "tests/test_namelist_parsed_carrier.py": 8,
+    "tests/test_physics_source_defaults.py": 17,
+    "tests/test_preprocess_no_local_gpu.py": 6,
+    "tests/test_ruc_2m_diagnostic.py": 13,
+    "tests/test_ruc_default_selection.py": 17,
+    "tests/test_ruc_fork_configuration_doors.py": 14,
+    "tests/test_ruc_fork_oracle.py": 9,
+    "tests/test_ruc_irrigation.py": 18,
+    "tests/test_ruc_public_identity.py": 5,
+    "tests/test_ruc_qvg_cold_start.py": 13,
+    "tests/test_ruc_selector_comment.py": 27,
+    "tests/test_ruc_snow.py": 15,
+    "tests/test_thompson_mynn_ruc_profiles.py": 57,
+    "tests/test_mynn_dmp_sibling.py": 4,
+    "tests/test_thompson_fork_plain_powf_receipt.py": 1,
+    "tests/test_thompson_fork_assets.py": 13,
+    "tests/test_nest_step_growth_advisory.py": 5,
+    "tests/test_smag2d_index32_dispatch.py": 14
    }
   },
   "always": {
@@ -1296,14 +2110,14 @@
    "environment": {
     "GPUWM_NO_LOCAL_GPU": "1"
    },
-   "collected_total": 4912,
+   "collected_total": 5531,
    "files": {
-    "tests/test_stage1_manifest.py": 1204,
-    "tests/test_cargo_gate_manifest.py": 196,
+    "tests/test_stage1_manifest.py": 1306,
+    "tests/test_cargo_gate_manifest.py": 206,
     "tests/test_tiles_gate_manifest.py": 41,
-    "tests/test_battery_list_census.py": 2509,
+    "tests/test_battery_list_census.py": 2783,
     "tests/test_licence_notices_ship.py": 49,
-    "tests/test_line_ending_stability.py": 12,
+    "tests/test_line_ending_stability.py": 14,
     "tests/test_release_notes_are_public_facing.py": 23,
     "tests/test_case_token_leakage.py": 45,
     "tests/test_public_claim_backing.py": 31,
@@ -1317,25 +2131,41 @@
     "tests/test_provenance_gate.py": 30,
     "tests/test_provenance_wire.py": 6,
     "tests/test_certify_hygiene.py": 20,
-    "tests/test_verify_release_artifacts.py": 41,
+    "tests/test_verify_release_artifacts.py": 42,
     "tests/test_module_skip_placement.py": 4,
-    "tests/test_native_wrf_distribution.py": 55,
+    "tests/test_native_wrf_distribution.py": 56,
     "tests/test_wheel_pin_gate.py": 7,
     "tests/test_mynn_dmp_sibling.py": 4,
-    "tests/test_excluded_subsystem_absent.py": 7,
-    "tests/test_kernel_source_freeze_per_module.py": 152,
+    "tests/test_excluded_subsystem_absent.py": 9,
+    "tests/test_excluded_subsystem_label_pin.py": 1,
+    "tests/test_kernel_source_freeze_per_module.py": 160,
     "tests/test_cuda_libm_table_copies.py": 37,
     "tests/test_excluded_subsystem_scan_is_armed.py": 22,
     "tests/test_fastfix_batched_durations.py": 6,
     "tests/test_tracked_file_writers_keep_lf.py": 34,
     "tests/test_mutation_gate_manifest.py": 12,
-    "tests/test_kernel_frame_recordings.py": 15,
+    "tests/test_kernel_frame_recordings.py": 16,
     "tests/test_vendored_cargo_registry.py": 14,
     "tests/test_release_snapshot_machine_paths.py": 26,
     "tests/test_doc_anchors.py": 5,
     "tests/test_research_catalog.py": 167,
     "tests/test_literal_division_source_gate.py": 5,
-    "tests/test_rrtmg_lw_buffer_grid.py": 15
+    "tests/test_rrtmg_lw_buffer_grid.py": 15,
+    "tests/test_ruc_2m_diagnostic.py": 13,
+    "tests/test_ruc_default_selection.py": 17,
+    "tests/test_ruc_fork_configuration_doors.py": 14,
+    "tests/test_ruc_fork_oracle.py": 9,
+    "tests/test_ruc_irrigation.py": 18,
+    "tests/test_ruc_public_identity.py": 5,
+    "tests/test_ruc_qvg_cold_start.py": 13,
+    "tests/test_ruc_selector_comment.py": 27,
+    "tests/test_ruc_snow.py": 15,
+    "tests/test_thompson_mynn_ruc_profiles.py": 57,
+    "tests/test_mynn_gsd41_selection.py": 8,
+    "tests/test_mynn_massflux_gsd41.py": 2,
+    "tests/test_mynn_rank_chunk_policy.py": 16,
+    "tests/test_mynn_water_gsd41.py": 2,
+    "tests/test_thompson_fork_plain_powf_receipt.py": 1
    }
   }
  }

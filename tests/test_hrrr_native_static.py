@@ -169,3 +169,87 @@ def test_strict_static_verifier_binds_required_geog_tiles(tmp_path):
     tile.write_bytes(b"edited-source-tile")
     with pytest.raises(ValueError, match="GEOG source tile changed"):
         verify_hrrr_native_static(cache, receipt, target)
+
+
+# ---- recorded coverage: one check for every reader ---------------------------
+#
+# Since 6a69b356f the HRRR route's static builder applies a pinned static
+# source and records that source's exact grid window (scope
+# "static-source-grid") instead of the HRRR crop.  verify_hrrr_native_static
+# learned that; the single-domain prepare's own reader
+# (tools/hrrr_single_domain_benchmark._load_static) did not, so every
+# `gpuwm go` HRRR prepare inside the pinned source's grid stopped with
+# "native static HRRR source-coverage receipt mismatch".  Both now read
+# require_static_coverage.
+
+def _static_source_receipt(target, *, window=None):
+    window = window or {"i0": 804, "j0": 335, "ni": target.nx, "nj": target.ny}
+    return {
+        "hrrr_source_coverage": {"scope": "static-source-grid",
+                                 "id": "hrrr-conus-v4", "window": dict(window)},
+        "geog_source_coverage": {"static_source": {
+            "status": "APPLIED", "id": "hrrr-conus-v4", "window": dict(window)}},
+    }
+
+
+def test_an_applied_static_source_carries_its_own_window():
+    from gpuwm.hrrr_native_static import require_static_coverage
+    target = _target()
+    require_static_coverage(_static_source_receipt(target), target, prefix="t")
+
+
+def test_an_applied_static_source_with_another_window_is_refused():
+    from gpuwm.hrrr_native_static import require_static_coverage
+    target = _target()
+    receipt = _static_source_receipt(target)
+    receipt["hrrr_source_coverage"]["window"]["i0"] += 1
+    with pytest.raises(ValueError, match="t static-source coverage mismatch"):
+        require_static_coverage(receipt, target, prefix="t")
+
+
+def test_without_a_static_source_the_hrrr_crop_is_required():
+    from gpuwm.hrrr_native_static import require_static_coverage
+    target = _target()
+    require_static_coverage(
+        {"hrrr_source_coverage": required_hrrr_source_window(target).to_dict()},
+        target, prefix="t")
+    with pytest.raises(ValueError, match="t source-coverage mismatch"):
+        require_static_coverage(
+            {"hrrr_source_coverage": _static_source_receipt(
+                target)["hrrr_source_coverage"]}, target, prefix="t")
+
+
+def test_the_single_domain_prepare_reads_the_shared_coverage_check(
+        tmp_path, monkeypatch):
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    monkeypatch.syspath_prepend(str(root / "tools"))
+    import hrrr_single_domain_benchmark as bench
+    target, cache, receipt = _fixture(tmp_path)
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    applied = _static_source_receipt(target)
+    payload["hrrr_source_coverage"] = applied["hrrr_source_coverage"]
+    payload["geog_source_coverage"]["static_source"] = (
+        applied["geog_source_coverage"]["static_source"])
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    calls = []
+    import gpuwm.hrrr_native_static as hns
+    real = hns.require_static_coverage
+
+    def spy(receipt_doc, tgt, *, prefix):
+        calls.append(prefix)
+        return real(receipt_doc, tgt, prefix=prefix)
+
+    monkeypatch.setattr(hns, "require_static_coverage", spy)
+    monkeypatch.setattr(hns, "verify_geog_source_evidence", lambda doc: None)
+    try:
+        # The fixture carries no geometry block, so the load stops after
+        # the coverage check; it must not stop AT it.
+        bench._load_static(cache, receipt, target)
+    except (ValueError, KeyError) as exc:
+        assert "coverage" not in str(exc), exc
+    assert calls == ["native static HRRR receipt"]
+    payload["hrrr_source_coverage"]["window"]["j0"] += 1
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="static-source coverage mismatch"):
+        bench._load_static(cache, receipt, target)

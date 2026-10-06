@@ -1,0 +1,32 @@
+{
+  "namelists": {},
+  "recipes": {
+    "dims": [
+      [
+        50,
+        50
+      ]
+    ],
+    "hours": 1,
+    "name": "source-request",
+    "profile": "thompson-mp8-ysu-mm5-noah-rte-rrtmgp-v1",
+    "projection": {
+      "map_proj": "lambert",
+      "ref_lat": 38.5,
+      "ref_lon": -97.5,
+      "stand_lon": -97.5,
+      "truelat1": 38.5,
+      "truelat2": 38.5
+    },
+    "ratios": [],
+    "root_dx_m": 3000,
+    "sources": [
+      "gfs",
+      "era5",
+      "rap",
+      "rrfs"
+    ],
+    "start_time": "2026-10-02T21:00:00"
+  },
+  "schema": "handover-generic-byte-matrix-v1"
+}

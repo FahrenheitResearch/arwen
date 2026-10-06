@@ -1,0 +1,482 @@
+{
+ "committed_gpu": "NVIDIA GeForce RTX 4090",
+ "compute_capability": [
+  8,
+  9
+ ],
+ "cuda_runtime": 13020,
+ "cupy": "14.2.0",
+ "environment": {
+  "cuda_driver": 13030,
+  "cuda_runtime": 13020,
+  "cupy": "14.2.0",
+  "nvrtc": [
+   13,
+   4
+  ]
+ },
+ "every_variant_reproduced": false,
+ "finding": "production words changed with a bitwise native fork fix; requalified on this card",
+ "fixture": "tests/data/wrf_legacy_advect",
+ "gpu": "NVIDIA GeForce RTX 4090",
+ "installed": true,
+ "kernels_captured": {
+  "advection": "af8f5c6cb0441dcdc8198ac7453bca539edaaf56aa1d450e9ab0fb7d1d8de66e",
+  "openbc": "5bf7babe4a953b1a12f8ddca403f04d86fa0aed0f7684992b5eabb5d82cbca57",
+  "pd_advection": "9011930b5b510770f81e11c56a7fd6764233e1592127edc05c1d9c20f7e5142b",
+  "pd_vertical_sl": "929291a52c94c01fc7a3c648d867e26f0339b84865a24445911d8f7b2f862222"
+ },
+ "kernels_committed": {
+  "advection": "af8f5c6cb0441dcdc8198ac7453bca539edaaf56aa1d450e9ab0fb7d1d8de66e",
+  "openbc": "5bf7babe4a953b1a12f8ddca403f04d86fa0aed0f7684992b5eabb5d82cbca57",
+  "pd_advection": "9011930b5b510770f81e11c56a7fd6764233e1592127edc05c1d9c20f7e5142b",
+  "pd_vertical_sl": "3fd9037afeae792d673a948e622b83251484c77f801eda3eeed5f2b33b37fff8"
+ },
+ "mode": "card",
+ "mutation_rejected": true,
+ "native_fix_verified": true,
+ "production_reproduced": false,
+ "production_words_compared": 2867200,
+ "production_words_different": 7438,
+ "receipt": "gpu-receipt.json",
+ "tool": "tools/advect_wrf471_oracle/recapture_receipt.py",
+ "variants": {
+  "mutation": {
+   "cases": {
+    "limiter_moisture_front": {
+     "identical": true,
+     "levels_identical": true,
+     "measurements_identical": true,
+     "words_stored": false
+    },
+    "map_factor_extremes": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.h_tendency",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_stored": false
+    },
+    "real_interior": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_stored": false
+    },
+    "real_open_boundary": {
+     "identical": true,
+     "levels_identical": true,
+     "measurements_identical": true,
+     "words_stored": false
+    },
+    "real_steep_terrain": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_stored": false
+    },
+    "real_west_boundary": {
+     "identical": true,
+     "levels_identical": true,
+     "measurements_identical": true,
+     "words_stored": false
+    },
+    "southern_reflection": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_stored": false
+    },
+    "zero_nearzero_tracers": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.h_tendency",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_stored": false
+    }
+   },
+   "identical": false,
+   "words_compared": 0,
+   "words_different": 0
+  },
+  "no_fma": {
+   "cases": {
+    "limiter_moisture_front": {
+     "identical": true,
+     "levels_identical": true,
+     "measurements_identical": true,
+     "words_stored": false
+    },
+    "map_factor_extremes": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.h_tendency",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_stored": false
+    },
+    "real_interior": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_stored": false
+    },
+    "real_open_boundary": {
+     "identical": true,
+     "levels_identical": true,
+     "measurements_identical": true,
+     "words_stored": false
+    },
+    "real_steep_terrain": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_stored": false
+    },
+    "real_west_boundary": {
+     "identical": true,
+     "levels_identical": true,
+     "measurements_identical": true,
+     "words_stored": false
+    },
+    "southern_reflection": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_stored": false
+    },
+    "zero_nearzero_tracers": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.h_tendency",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_stored": false
+    }
+   },
+   "identical": false,
+   "words_compared": 0,
+   "words_different": 0
+  },
+  "production": {
+   "cases": {
+    "limiter_moisture_front": {
+     "identical": true,
+     "levels_identical": true,
+     "measurements_identical": true,
+     "words_compared": 358400,
+     "words_different": 0,
+     "words_stored": true
+    },
+    "map_factor_extremes": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.h_tendency",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_compared": 358400,
+     "words_different": 287,
+     "words_stored": true
+    },
+    "real_interior": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_compared": 358400,
+     "words_different": 9,
+     "words_stored": true
+    },
+    "real_open_boundary": {
+     "identical": true,
+     "levels_identical": true,
+     "measurements_identical": true,
+     "words_compared": 358400,
+     "words_different": 0,
+     "words_stored": true
+    },
+    "real_steep_terrain": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_compared": 358400,
+     "words_different": 3,
+     "words_stored": true
+    },
+    "real_west_boundary": {
+     "identical": true,
+     "levels_identical": true,
+     "measurements_identical": true,
+     "words_compared": 358400,
+     "words_different": 0,
+     "words_stored": true
+    },
+    "southern_reflection": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_compared": 358400,
+     "words_different": 2,
+     "words_stored": true
+    },
+    "zero_nearzero_tracers": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.h_tendency",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_compared": 358400,
+     "words_different": 7137,
+     "words_stored": true
+    }
+   },
+   "identical": false,
+   "words_compared": 2867200,
+   "words_different": 7438
+  },
+  "wrf_flux": {
+   "cases": {
+    "limiter_moisture_front": {
+     "identical": true,
+     "levels_identical": true,
+     "measurements_identical": true,
+     "words_stored": false
+    },
+    "map_factor_extremes": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.h_tendency",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_stored": false
+    },
+    "real_interior": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_stored": false
+    },
+    "real_open_boundary": {
+     "identical": true,
+     "levels_identical": true,
+     "measurements_identical": true,
+     "words_stored": false
+    },
+    "real_steep_terrain": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_stored": false
+    },
+    "real_west_boundary": {
+     "identical": true,
+     "levels_identical": true,
+     "measurements_identical": true,
+     "words_stored": false
+    },
+    "southern_reflection": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_stored": false
+    },
+    "zero_nearzero_tracers": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.h_tendency",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_stored": false
+    }
+   },
+   "identical": false,
+   "words_compared": 0,
+   "words_different": 0
+  },
+  "wrf_flux_no_fma": {
+   "cases": {
+    "limiter_moisture_front": {
+     "identical": true,
+     "levels_identical": true,
+     "measurements_identical": true,
+     "words_stored": false
+    },
+    "map_factor_extremes": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.h_tendency",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_stored": false
+    },
+    "real_interior": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_stored": false
+    },
+    "real_open_boundary": {
+     "identical": true,
+     "levels_identical": true,
+     "measurements_identical": true,
+     "words_stored": false
+    },
+    "real_steep_terrain": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_stored": false
+    },
+    "real_west_boundary": {
+     "identical": true,
+     "levels_identical": true,
+     "measurements_identical": true,
+     "words_stored": false
+    },
+    "southern_reflection": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_stored": false
+    },
+    "zero_nearzero_tracers": {
+     "differing_measurements": [
+      "advect_scalar_pd",
+      "advect_scalar_pd.h_tendency",
+      "advect_scalar_pd.z_tendency",
+      "mono_against_pd"
+     ],
+     "identical": false,
+     "levels_identical": false,
+     "measurements_identical": false,
+     "words_stored": false
+    }
+   },
+   "identical": false,
+   "words_compared": 0,
+   "words_different": 0
+  }
+ },
+ "written": [
+  "gpu-receipt.json",
+  "gpu-words/limiter_moisture_front-production.npz",
+  "gpu-words/map_factor_extremes-production.npz",
+  "gpu-words/real_interior-production.npz",
+  "gpu-words/real_open_boundary-production.npz",
+  "gpu-words/real_steep_terrain-production.npz",
+  "gpu-words/real_west_boundary-production.npz",
+  "gpu-words/southern_reflection-production.npz",
+  "gpu-words/zero_nearzero_tracers-production.npz"
+ ]
+}

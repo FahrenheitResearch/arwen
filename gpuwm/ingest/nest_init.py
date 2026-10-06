@@ -1294,8 +1294,15 @@ def finalize_prepared_child(
             static_fields, horizontal.fields, child_attrs)
     from gpuwm.config import soil_layer_count
 
+    from gpuwm.core.landuse import (
+        ruc_fractional_seaice as _ruc_fractional_seaice)
     soil = preprocess_land_surface_soil(
         horizontal.fields, sf_surface_physics=int(cfg.sf_surface_physics),
+        # real.exe's adjust_for_seaice_pre/post keep the fraction under
+        # fractional_seaice = 1 (threshold 0.02) and snap to 0/1 at 0.5
+        # otherwise (module_soil_pre.F:216-219, :337-343, :392-393 of the HRRR
+        # v4.1.21 fork).
+        fractional_seaice=_ruc_fractional_seaice(cfg),
         num_soil_layers=soil_layer_count(cfg),
         soil_type=child_soil_type,
         deep_soil_temperature=static_fields["TMN"],

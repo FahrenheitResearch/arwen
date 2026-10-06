@@ -24,10 +24,10 @@ price the manifest, refuse before the first pinned byte, then fill.  The two
 differences are both about where the rows come from.
 
 *The rows come off disk, not out of a sounding.*  The cache's integrity
-guarantee is a SHA-256 over each array WHOLE, so it is spent first and
-separately: one streaming pass re-hashes every array through
-``PreparedCacheReader.read_array`` and drops it, proving the bundle for the
-cost of one array's memory.  Rows are then served from read-only memory maps,
+guarantee is a SHA-256 over each array WHOLE. Read-only memory maps are
+checked against the manifest and hashed directly by the Rust CPU bridge,
+then those same maps serve the slab rows. Older bridges retain the checked
+full-array read before serving mapped rows. Rows use read-only memory maps,
 so what stays resident is page cache the kernel may evict rather than a
 process that has swallowed its own input.  Neither pass puts anything on the
 device at domain shape.  See :class:`_CachePayload` -- holding the payload
@@ -55,6 +55,7 @@ enough for both produces bit-identical frames, which is the parity gate.
 from __future__ import annotations
 
 import gc
+import copy
 import time
 from dataclasses import dataclass, fields, is_dataclass, replace
 from types import MappingProxyType, SimpleNamespace
@@ -370,61 +371,206 @@ def _slab_state(cfg_slab, coord, base_slab, static_slab, cache_rows,
 
 
 class _CachePayload:
-    """Row-windowed access to a prepared cache, verified once, mapped after.
+    """Row-windowed access to the same mappings whose whole digest was checked.
 
-    Two requirements pull against each other here.  The cache's integrity
-    guarantee is a SHA-256 taken over each array WHOLE, so a windowed read
-    can never check itself; but holding every array whole is the thing this
-    module exists to stop doing -- at 1024 x 1024 x 49 the prognostics alone
-    are about 11 GiB, and the pinned store is another 9, and the stretch
-    rungs multiply both.
+    Rust hashes immutable C-contiguous mappings in bounded batches. A bridge
+    without that additive ABI, or a non-contiguous legacy array, retains the
+    original checked full-array read. Coordinate and base arrays use this
+    same verification rather than being materialized and hashed again.
 
-    So the payload is read twice and held never.  ``verify`` walks every
-    array through :meth:`PreparedCacheReader.read_array`, which re-hashes it
-    and drops it, so the whole bundle is proven against its own manifest for
-    the cost of one streaming pass and one array's worth of memory.  After
-    that, rows are served from a read-only ``np.load(mmap_mode="r")``: the
-    kernel pages in the rows a slab touches and evicts them under pressure,
-    so the resident cost is the page cache's problem rather than the
-    process's.  The shape and dtype of every map are still checked against
-    the manifest at open time, because a mapping that silently disagreed
-    with the header is exactly what the digest pass would no longer be
-    covering.
+    Mappings retain file-backed pages without retaining file descriptors,
+    including when a caller keeps an array view after this payload closes.
+    Published cache files must remain immutable while mapped. File identity,
+    size and timestamps are checked around verification and before reuse,
+    so missing, replaced or changed payloads are refused. Those checks cannot
+    protect a mapping against concurrent in-place truncation; cache writers
+    publish private completed files by rename and never modify them in place.
     """
 
     def __init__(self, reader, *, verify: bool = True, log=print):
         self._reader = reader
+        self._specs = copy.deepcopy(reader.arrays)
+        self._header = copy.deepcopy(getattr(reader, "header", None))
+        self._content_sha256 = getattr(reader, "content_sha256", None)
         self._maps: dict = {}
+        self._files: dict = {}
+        self._verified: set = set()
         if verify:
-            t0 = time.perf_counter()
-            for key in sorted(reader.arrays):
-                reader.read_array(key)
-            log(f"    cache payload verified against its manifest: "
-                f"{len(reader.arrays)} arrays, "
-                f"{reader.payload_bytes / hoststore_gib():.2f} GiB, "
-                f"in {time.perf_counter() - t0:.1f}s")
+            self.verify_all(log=log)
+
+    def _file_identity(self, key):
+        from gpuwm.ingest.prepared_cache import (
+            PreparedCacheCorruptError, _raise_if_resource_limit)
+        try:
+            stat = (self._reader.path / self._specs[key]["file"]).stat()
+        except OSError as exc:
+            _raise_if_resource_limit(
+                exc, context=f"prepared cache array {key!r}")
+            raise PreparedCacheCorruptError(
+                f"prepared cache array {key!r} is unreadable") from exc
+        return (stat.st_dev, stat.st_ino, stat.st_size,
+                stat.st_mtime_ns, stat.st_ctime_ns)
+
+    def _check_unchanged(self, key):
+        from gpuwm.ingest.prepared_cache import PreparedCacheCorruptError
+        if self._file_identity(key) != self._files[key]:
+            raise PreparedCacheCorruptError(
+                f"prepared cache array {key!r} changed during mapped use")
+
+    def _verify(self, keys):
+        from gpuwm.ingest.prepared_cache import (
+            PreparedCacheCorruptError, _raise_if_resource_limit)
+        from gpuwm.ingest.prepared_writer import (
+            batch_budget, hash_arrays, native_hasher)
+        for key in keys:
+            if key in self._verified:
+                self._check_unchanged(key)
+        keys = [key for key in keys if key not in self._verified]
+        if not keys:
+            return
+        try:
+            entry = native_hasher()
+        except OSError as exc:
+            _raise_if_resource_limit(exc, context="prepared cache native verifier")
+            raise
+        workers, budget = batch_budget()
+        pending = []
+        pending_bytes = 0
+
+        def flush():
+            if not pending:
+                return
+            try:
+                hashes = hash_arrays(entry, [self[key] for key in pending], workers=workers)
+            except OSError as exc:
+                _raise_if_resource_limit(exc, context="prepared cache native verifier")
+                raise
+            for key, digest in zip(pending, hashes):
+                self._check_unchanged(key)
+                if digest != self._specs[key]["sha256"]:
+                    raise PreparedCacheCorruptError(
+                        f"prepared cache array {key!r} fails its manifest")
+                self._verified.add(key)
+            pending.clear()
+
+        for key in keys:
+            mapped = self[key]
+            if entry is None or not mapped.flags.c_contiguous:
+                self._reader.read_array(key)
+                self._check_unchanged(key)
+                self._verified.add(key)
+                continue
+            if pending and (len(pending) >= workers
+                            or pending_bytes + mapped.nbytes > budget):
+                flush()
+                pending_bytes = 0
+            pending.append(key)
+            pending_bytes += mapped.nbytes
+        flush()
+
+    def verify_all(self, *, log=print):
+        t0 = time.perf_counter()
+        self._verify(sorted(self._specs))
+        log(f"    cache payload verified against its manifest: "
+            f"{len(self._reader.arrays)} arrays, "
+            f"{self._reader.payload_bytes / hoststore_gib():.2f} GiB, "
+            f"in {time.perf_counter() - t0:.1f}s")
+
+    def verified_array(self, key):
+        self._verify([key])
+        return self[key]
 
     def __getitem__(self, key: str):
         mapped = self._maps.get(key)
         if mapped is None:
+            from gpuwm.ingest.prepared_cache import (
+                PreparedCacheCorruptError, _raise_if_resource_limit)
+            from gpuwm.ingest.prepared_mmap import map_npy_readonly
             try:
-                spec = self._reader.arrays[key]
+                spec = self._specs[key]
             except KeyError as exc:
                 raise PreparedStoreError(
                     f"prepared cache is missing array {key!r}") from exc
-            mapped = np.load(self._reader.path / spec["file"],
-                             mmap_mode="r", allow_pickle=False)
+            before = self._file_identity(key)
+            try:
+                mapped = map_npy_readonly(self._reader.path / spec["file"])
+            except (OSError, EOFError, ValueError) as exc:
+                _raise_if_resource_limit(
+                    exc, context=f"prepared cache array {key!r}")
+                raise PreparedCacheCorruptError(
+                    f"prepared cache array {key!r} is unreadable") from exc
             if list(mapped.shape) != list(spec["shape"]) \
-                    or str(mapped.dtype) != str(spec["dtype"]):
-                raise PreparedStoreError(
+                    or str(mapped.dtype) != str(spec["dtype"]) \
+                    or int(mapped.nbytes) != int(spec["nbytes"]):
+                raise PreparedCacheCorruptError(
                     f"prepared cache array {key!r} maps as {mapped.shape} "
                     f"{mapped.dtype} against a manifest declaring "
                     f"{spec['shape']} {spec['dtype']}")
             self._maps[key] = mapped
+            self._files[key] = before
+        self._check_unchanged(key)
         return mapped
 
     def close(self) -> None:
         self._maps.clear()
+        self._files.clear()
+        self._verified.clear()
+
+    def read_only_reader(self):
+        """An explicit immutable view, leaving the public reader mutable."""
+        return _ReadOnlyCacheReader(self)
+
+    def require_binding(self, path, expected_identity, *, reader=None):
+        """Validate the current sealed header before reusing verified maps.
+
+        This never adopts a new mapping based on timestamps. Only this
+        payload's already-hashed immutable maps can be reused. A fresh
+        header validation and file identity checks refuse changed authority
+        or replaced payload files before a slab is built.
+        """
+        from pathlib import Path
+        from gpuwm.ingest.prepared_cache import (
+            PreparedCacheReader, PreparedCacheCorruptError)
+        if (reader is not None and reader is not self._reader
+                or Path(path).resolve() != self._reader.path.resolve()
+                or not isinstance(self._reader, PreparedCacheReader)
+                or self._content_sha256 is None):
+            raise PreparedStoreError(
+                "retained prepared payload is bound to a different reader or path")
+        current = PreparedCacheReader(path, expected_identity=expected_identity)
+        if (current.content_sha256 != self._content_sha256
+                or current.header != self._header
+                or self._reader.header != self._header
+                or current.arrays != self._specs
+                or self._reader.arrays != self._specs
+                or self._reader.content_sha256 != self._content_sha256):
+            raise PreparedCacheCorruptError(
+                "prepared cache header changed before retained mapped use")
+        self.verify_all(log=lambda _: None)
+        return self._reader
+
+
+class _ReadOnlyCacheReader:
+    """A sealed reader's metadata and its retained SHA-verified mappings."""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def __getattr__(self, name):
+        return getattr(self._payload._reader, name)
+
+    def read_array(self, key):
+        return self._payload.verified_array(key)
+
+    def verify_all(self):
+        from gpuwm.ingest.prepared_cache import PREPARED_CACHE_SCHEMA
+        self._payload.verify_all(log=lambda _: None)
+        return {
+            "schema": PREPARED_CACHE_SCHEMA, "status": "PASS",
+            "path": str(self.path.resolve()),
+            "content_sha256": self.content_sha256,
+            "array_count": len(self.arrays), "payload_bytes": self.payload_bytes,
+        }
 
 
 def hoststore_gib() -> int:
@@ -450,23 +596,37 @@ def _boundaries_from_cache(reader, metadata):
 
 
 def default_slab_rows(nx: int, ny: int) -> int:
-    """Bound default loader slabs by columns as the requested domain widens.
+    """The existing column-bound fallback when no card budget is known.
 
-    A fixed 64-row slab grows without bound with nx, defeating store-direct
-    initialization before its first tile exists. Reuse the engine's standard
-    column batch as the loader's column ceiling, retaining at least one full
-    row and at most the old 64 rows. This partitions the same cache bytes;
-    it changes neither the grid nor any physics/vertical operand.
-
-    The memory model calls this same function before choosing a tile. Its
-    normal peak guard therefore includes both the selected slab and the
-    actual final slab that remains as the factory's template.
+    Known budgets price the established 64-row ceiling and shrink it before
+    construction. An unread card retains the original column bound, so a
+    wider requested grid cannot silently enlarge an unpriced allocation.
     """
     from gpuwm.config import DEFAULT_COLUMN_CHUNK
     nx, ny = int(nx), int(ny)
     if nx < 1 or ny < 1:
         raise PreparedStoreError("prepared-store dimensions must be positive")
     return min(64, ny, max(1, DEFAULT_COLUMN_CHUNK // nx))
+
+
+def maximum_slab_rows(nx: int, ny: int) -> int:
+    """The established loader ceiling, before a known memory budget shrinks it."""
+    if int(nx) < 1 or int(ny) < 1:
+        raise PreparedStoreError("prepared-store dimensions must be positive")
+    return min(64, int(ny))
+
+
+def _plan_loader_slabs(ny: int, rows_per_slab: int, template_rows: int):
+    """Partition every row once, retaining a fixed-height last template."""
+    if not template_rows:
+        return _plan_slabs(ny, rows_per_slab)
+    tail = min(int(ny), max(1, int(template_rows)))
+    if tail > int(rows_per_slab):
+        raise PreparedStoreError(
+            "the retained template exceeds the admitted slab height, "
+            "which would allocate an unpriced device state")
+    prefix = int(ny) - tail
+    return (() if prefix == 0 else _plan_slabs(prefix, rows_per_slab)) + ((prefix, tail),)
 
 
 def _store_boundaries(reader, metadata, boundary_source=None):
@@ -514,6 +674,9 @@ def store_from_prepared_cache(path, *, expected_identity, cfg, static,
                               center_lat=None, constant_glw_wm2=None,
                               inventory_fn=None, physics_initializer=None,
                               reader=None, boundary_source=None,
+                              cache_payload=None,
+                              retain_template_rows: int | None = None,
+                              column_chunk: int | None = None,
                               log=print) -> PreparedStore:
     """Load a prepared cache into pinned host arrays, slab by slab.
 
@@ -530,6 +693,10 @@ def store_from_prepared_cache(path, *, expected_identity, cfg, static,
     ``reader`` may be the checked start-state reader of a chained head.
     Its ``boundary_source`` is retained lazily on the host, so each tile
     takes a checked interval only when the model reaches that seam.
+
+    ``cache_payload`` may retain a sealed direct preflight's already-hashed
+    immutable mappings. Its reader, current header and file identities must
+    still match. Other callers keep the ordinary verification path.
 
     No domain-shaped device array is ever allocated.  The peak device
     residency is one slab's state plus its physics; the peak HOST transient
@@ -571,8 +738,18 @@ def store_from_prepared_cache(path, *, expected_identity, cfg, static,
 
     nz, ny, nx = int(cfg.nz), int(cfg.ny), int(cfg.nx)
     if rows_per_slab is None:
-        rows_per_slab = default_slab_rows(nx, ny)
-    if reader is None:
+        from gpuwm.core.resident_admission import device_free_bytes
+        rows_per_slab = (default_slab_rows(nx, ny) if device_free_bytes() is None
+                         else maximum_slab_rows(nx, ny))
+        if retain_template_rows is None:
+            retain_template_rows = 1
+    if cache_payload is not None:
+        if boundary_source is not None:
+            raise PreparedStoreError(
+                "a streamed head cannot reuse a sealed retained payload")
+        reader = cache_payload.require_binding(
+            path, expected_identity, reader=reader)
+    elif reader is None:
         reader = PreparedCacheReader(path, expected_identity=expected_identity)
     metadata = reader.header["metadata"]
     if boundary_source is not None or reader.header.get("status") == "HEAD":
@@ -580,13 +757,15 @@ def store_from_prepared_cache(path, *, expected_identity, cfg, static,
 
     from gpuwm.core.grid import BaseState, VerticalCoord
 
+    cached = (cache_payload if cache_payload is not None
+              else _CachePayload(reader, verify=False, log=log))
     coord_values = dict(metadata["coord_scalars"])
     for name in metadata["coord_arrays"]:
-        coord_values[name] = reader.read_array(f"coord/{name}")
+        coord_values[name] = cached.verified_array(f"coord/{name}")
     coord = VerticalCoord(**coord_values)
     base_values = dict(metadata["base_scalars"])
     for name in metadata["base_arrays"]:
-        base_values[name] = reader.read_array(f"base/{name}")
+        base_values[name] = cached.verified_array(f"base/{name}")
     base = BaseState(**base_values)
 
     state_names = list(metadata["state_names"])
@@ -610,15 +789,21 @@ def store_from_prepared_cache(path, *, expected_identity, cfg, static,
     # name when not even one row fits.
     from gpuwm.core.resident_admission import admitted_slab_rows
 
+    if retain_template_rows is not None:
+        from gpuwm.core.resident_admission import device_free_bytes
+        if device_free_bytes() is None:
+            rows_per_slab = min(rows_per_slab, default_slab_rows(nx, ny))
+
     rows_per_slab = admitted_slab_rows(
         cfg, min(max(1, int(rows_per_slab)), ny), p_top=float(base.p_top),
-        log=log)
+        log=log, column_chunk=column_chunk)
 
-    slabs = _plan_slabs(ny, rows_per_slab)
+    slabs = _plan_loader_slabs(ny, rows_per_slab, retain_template_rows or 0)
     log(f"    {len(slabs)} row slabs of <= {rows_per_slab} rows, "
         f"{len(state_names)} prognostics + {len(surface_names)} surface "
         f"+ {len(met_names)} met from the cache")
-    cached = _CachePayload(reader, verify=verify_payload, log=log)
+    if verify_payload:
+        cached.verify_all(log=log)
 
     hydrometeors = MappingProxyType(
         dict(metadata.get("hydrometeor_initialization", {})))
@@ -787,6 +972,7 @@ def store_from_prepared_cache(path, *, expected_identity, cfg, static,
         "payload_bytes": reader.payload_bytes,
         "slabs": len(slabs),
         "rows_per_slab": int(rows_per_slab),
+        "template_rows": int(slabs[-1][1]),
         "carriers": len(store),
         "geography": len(geo_store),
         "store_bytes": int(sum(a.nbytes for a in store.values())),

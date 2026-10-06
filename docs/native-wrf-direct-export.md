@@ -112,8 +112,12 @@ The gpuwm lightweight configuration intentionally uses no longwave radiation,
 but stock WRF rejects `ra_lw_physics=0`.  The interoperability oracle therefore
 uses stock RRTM longwave solely to permit a stock-WRF time advance and pins
 `ghg_input=0` so WRF does not implicitly select the time-varying CAM gas-table
-path.  Nested exports also bind `use_theta_m=0 -> 1` because the native model
-stores dry theta while the stock-WRF NetCDF representation is moist theta.
+path.  `use_theta_m` is 0 on both namelists: the native model stores dry
+theta and the export writes dry theta (`USE_THETA_M = 0`, `THM` equal to `T`,
+`T_B*` dry-coupled), which stock WRF integrates directly.  It was bound as
+`use_theta_m=0 -> 1` while the export declared `USE_THETA_M = 1`; that pair
+carried the same dry-coupled boundary rows, which a moist-theta WRF read as
+a boundary colder than the analysis.
 These deltas are explicit in the hierarchy receipt; the emitted initial and
 boundary files remain unchanged during the stock run.
 

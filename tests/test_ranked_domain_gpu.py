@@ -18,6 +18,22 @@ def test_coordinate_diffusion_same_card_ranked_identity(km_opt, mix_full_fields)
     integrate(cfg, mode="threads", nsteps=3)
 
 
+def test_swint_legacy_radiation_same_card_ranked_identity():
+    """swint_opt = 1 with legacy RRTMG: two ranks equal the resident run.
+
+    The swint carrier holds its own latitude/longitude grids; a split must
+    gather them per rank (tilestream.driver _SCHEME_GEOGRAPHY) and the
+    legacy adapter must interpolate ozone from each rank's live latitude.
+    A tree whose split refuses the build, or reads a neutral or stale
+    latitude, fails here.
+    """
+    from dataclasses import replace
+    from tilestream.ranks_gate import config, integrate
+    cfg = replace(config(nx=96, ny=80, nz=12, rung="mynn"), swint_opt=1)
+    result = integrate(cfg, mode="threads", nsteps=8, change_live=False)
+    assert result["resident_fires"]["radiation"] >= 2
+
+
 def test_adaptive_same_card_cfl_and_digest():
     from tilestream.ranks_gate import adaptive_loop
     adaptive_loop(nsteps=4)

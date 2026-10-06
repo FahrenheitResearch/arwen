@@ -1,0 +1,7 @@
+{
+  "baseline_revision": "e62a72e480d7dafff7381db4c9d35eca22285a87",
+  "control_module_sha256": "3ddb2c9e070ad17b173c76043d67af139a297828a8319565e6ba5661ebee4d3c",
+  "namelist": "e08136ba125153c6279b4af410e7f3873bf1862d0c058680fa4297e55c832f8b",
+  "candidate_sha256": "e08136ba125153c6279b4af410e7f3873bf1862d0c058680fa4297e55c832f8b",
+  "bytes_equal": true
+}

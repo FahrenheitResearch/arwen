@@ -60,6 +60,14 @@
 //!   sweep, and routing it through `rw_netcdf` would cost one process
 //!   launch and one f64 temp file per variable on the preparation path.
 //!
+//!   The other exception is [`NcPatcher`], which parses the header of an
+//!   EXISTING classic file to find where a variable's bytes live and then
+//!   rewrites those bytes in a copy. It exists for files another program
+//!   edits in place and expects back unchanged in every byte it did not
+//!   ask to change: a schema-driven rewrite reproduces the values but not
+//!   the header bytes or the data-section alignment the producing library
+//!   chose.
+//!
 //! # Verified against
 //!
 //! * `netcdf-reader` 0.3 (an independent pure-Rust classic parser), in
@@ -73,6 +81,7 @@ mod capi;
 mod error;
 mod header;
 mod layout;
+mod patch;
 mod scan;
 mod schema;
 mod types;
@@ -80,6 +89,7 @@ mod writer;
 
 pub use capi::NCWRITE_ABI_VERSION;
 pub use error::{NcWriteError, Result};
+pub use patch::{NcPatcher, PatchVar};
 pub use scan::scan_nonfinite;
 pub use schema::{name_is_valid, Attr, Dim, Schema, VarDef};
 pub use types::{AttrValue, NcFormat, NcType, VarData};

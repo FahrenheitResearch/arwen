@@ -310,6 +310,31 @@ def _root_grid(projection: dict, nx: int, ny: int, root_dx_m: float):
         e_we=nx + 1, e_sn=ny + 1)
 
 
+def _root_is_window_grid(window, root) -> bool:
+    """Whether the ROOT grid is a declared Lambert WINDOW's own grid.
+
+    The same test the preparation's pairing makes
+    (:func:`gpuwm.ingest.source_coverage.lattice_identity`): the root's
+    mass dimensions are the window's and every mass point sits on its own
+    window cell.  Only a :class:`LambertGridWindow` declares a lattice.
+    """
+
+    if not isinstance(window, LambertGridWindow):
+        return False
+    e_we, e_sn = getattr(root, "e_we", None), getattr(root, "e_sn", None)
+    if e_we is None or e_sn is None or (int(e_we) - 1, int(e_sn) - 1) \
+            != (int(window.nx), int(window.ny)):
+        return False
+    from gpuwm.ingest.source_coverage import lattice_identity
+    from gpuwm.static.projection import EARTH_RADIUS_M
+
+    latitude, longitude = root.latlon_mass()
+    x, y = window._ij(latitude, longitude)
+    return lattice_identity(
+        y - 1.0, x - 1.0, nx=int(window.nx), ny=int(window.ny),
+        sphere_scale=float(window.earth_radius_m) / EARTH_RADIUS_M) is not None
+
+
 def _root_coverage_gap(projection: dict, nx: int, ny: int, *, source: str,
                        root_dx_m: float) -> str | None:
     """The first root cell corner SOURCE's declared window does not carry.
@@ -324,14 +349,21 @@ def _root_coverage_gap(projection: dict, nx: int, ny: int, *, source: str,
     in the same words.
     """
 
-    from gpuwm.source_adapters import source_coverage_window
+    from gpuwm.source_adapters import get_source_adapter, source_coverage_window
     from gpuwm.static.projection import _wrap180
 
     window = source_coverage_window(source)
     if window is None:
         return None
-    latitude, longitude = _root_grid(
-        projection, nx, ny, root_dx_m).latlon_c()
+    root = _root_grid(projection, nx, ny, root_dx_m)
+    if get_source_adapter(source).same_grid_pairing == "identity" \
+            and _root_is_window_grid(window, root):
+        # The root IS the source's grid: its cell corners are the grid's
+        # own cell boundaries, half a cell past its outermost points, and
+        # nothing is interpolated there -- the preparation copies every
+        # mass point from its own cell (horiz.source_coordinate_transform).
+        return None
+    latitude, longitude = root.latlon_c()
     outside = points_outside(window, latitude, longitude)
     if not bool(outside.any()):
         return None

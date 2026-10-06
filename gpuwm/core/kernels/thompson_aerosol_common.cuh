@@ -1793,3 +1793,142 @@ __device__ __forceinline__ float thompson_aa_eff_rad_snow(float rs, float t_k)
         0.5f, thompson_aa_div(smoc, smob));
     return fmaxf(5.01e-6f, fminf(diagnosed, 999.0e-6f));
 }
+
+
+// ===========================================================================
+// THE OPERATIONAL WRF 3.9 FORK'S VARIANTS (RunConfig.thompson_version =
+// "wrf_39_noaa").
+// ===========================================================================
+//
+// Source: NOAA-EMC/HRRR tag v4.1.21, sorc/hrrr_wrfarw.fd/WRFV3.9/phys/
+// module_mp_thompson.F (SHA-256 4d600111...).  Bare `fork :NNNN` is a line of
+// that file.  The .cu units select these under THOMPSON_AA_WRF39, an integer
+// define kernels/__init__.py inserts AFTER this header, so the header itself
+// carries no #if: every fork form here is a separate function or constant the
+// fork arms call, and under wrf_461 none of them is referenced.
+
+// Ice number ceiling, fork :1816, :2879, :2890, :3733 (499.D3 where v4.6.1
+// has 999.D3) and the size the fork gives ice that arrives with no number,
+// fork :1815 (25 microns where v4.6.1 has 5).
+#define THOMPSON_AA_WRF39_NI_MAX        499.0e3f
+#define THOMPSON_AA_WRF39_NI_SEED_D     25.0e-6
+// D0s = 200.E-6 (fork :205) and D0g = 250.E-6 (fork :206).
+#define THOMPSON_AA_WRF39_D0S           200.0e-6f
+#define THOMPSON_AA_WRF39_D0G           250.0e-6f
+// rho_g = 500 (fork :72), so am_g = PI*rho_g/6 (fork :124), rounded once as
+// the Fortran PARAMETER is.
+#define THOMPSON_AA_WRF39_RHO_G         500.0f
+// gonv_min / gonv_max, fork :115-116.
+#define THOMPSON_AA_WRF39_GONV_MIN      1.0e4
+#define THOMPSON_AA_WRF39_GONV_MAX      3.0e6
+// r_s(1) = r_g(1) = 1.e-5 (fork :271-284), 28 entries each (fork :219-221),
+// and the graupel intercept axis N0g_exp(1) = 1.e4, 28 entries (fork :288).
+#define THOMPSON_AA_WRF39_R_SG_FIRST    1.0e-5f
+#define THOMPSON_AA_WRF39_NTB_SG        28
+#define THOMPSON_AA_WRF39_SG_EXP0       (-5)
+#define THOMPSON_AA_WRF39_NG1_EXP0      4
+
+__device__ __forceinline__ float thompson_aa_wrf39_am_g()
+{
+    return __fdiv_rn(THOMPSON_AA_PI * THOMPSON_AA_WRF39_RHO_G, 6.0f);
+}
+
+// thompson_aa_bound_ice_number with the fork's 499.D3 ceiling (fork
+// :2873-2891, the source-stage ice mass/number balance).  Same body
+// otherwise: the 5 and 300 micron size clamps are the fork's too.
+__device__ __forceinline__ void thompson_aa_wrf39_bound_ice_number(
+    float ice_mass, float density, float* ice_number_per_kg)
+{
+    if (ice_mass <= THOMPSON_AA_R1) {
+        *ice_number_per_kg = 0.0f;
+        return;
+    }
+    const float am_i = THOMPSON_AA_AM_I;
+    float ice_number = fmaxf(THOMPSON_AA_R2, *ice_number_per_kg * density);
+    double lambda = (double)powf(
+        am_i * 6.0f * ice_number / ice_mass, 0.33333334326744080f);
+    const float diameter = (float)(4.0 / lambda);
+    if (diameter < 5.0e-6f) {
+        lambda = 4.0 / 5.0e-6;
+        ice_number = fminf(THOMPSON_AA_WRF39_NI_MAX,
+            __fdiv_rn(0.16666667163372040f * ice_mass, am_i)
+            * (float)(lambda * lambda * lambda));
+    } else if (diameter > 300.0e-6f) {
+        lambda = 4.0 / 300.0e-6;
+        ice_number = __fdiv_rn(0.16666667163372040f * ice_mass, am_i)
+            * (float)(lambda * lambda * lambda);
+    }
+    *ice_number_per_kg = fminf(ice_number, THOMPSON_AA_WRF39_NI_MAX)
+        / density;
+}
+
+// iceDeMott without v4.6.1's 0.5 per cc floor on the ice-friendly aerosol
+// (fork :5129, `nifa_cc = nifa*RHO_NOT0*1.E-6/rho`; v4.6.1 :5505 wraps it in
+// MAX(0.5, ...)).  Otherwise thompson_ice_demott verbatim.
+__device__ __forceinline__ float thompson_aa_wrf39_ice_demott(
+    float tempc, float rho, float nifa_m3)
+{
+    const float nifa_cc = thompson_aa_div(
+        thompson_aa_mul(
+            thompson_aa_mul(nifa_m3, THOMPSON_AA_RHO_NOT0), 1.0e-6f),
+        rho);
+    const float exponent = thompson_aa_add(
+        thompson_aa_mul(-0.0264f, tempc), 0.0033f);
+    float xni = thompson_aa_mul(
+        thompson_aa_mul(5.94e-5f, thompson_aa_powf_cr(-tempc, 3.33f)),
+        thompson_aa_powf_cr(nifa_cc, exponent));
+    xni = thompson_aa_mul(
+        thompson_aa_div(thompson_aa_mul(xni, rho), THOMPSON_AA_RHO_NOT0),
+        1000.0f);
+    return fmaxf(0.0f, xni);
+}
+
+// The fork's graupel slope from its column intercept (fork :2051-2054,
+// :3130-3133, :5506-5509):
+//   lam_exp = (N0_exp*am_g*cgg(1)/rg)**oge1
+//   lamg    = lam_exp * (cgg(3)*ogg2*ogg1)**obmg
+//   N0_g    = N0_exp/(cgg(2)*lam_exp) * lamg**cge(2)
+// N0_exp is DOUBLE PRECISION (fork :1597) but always a REAL value (10.**zans1
+// is REAL, gonv_min/max are REAL), so it is carried in float32 exactly.
+// cgg(1) = cgg(3) = WGAMMA(4) = 6, ogg1 = 1/6, ogg2 = cgg(2) = cge(2) = 1 and
+// oge1 = 0.25; the REAL(4) product cgg(3)*ogg2*ogg1 rounds to exactly 1, so
+// lamg is lam_exp.
+__device__ __forceinline__ void thompson_aa_wrf39_graupel_slope(
+    float n0_exp, float rg, double* lamg, double* ilamg, double* n0_g)
+{
+    const float am_g = thompson_aa_wrf39_am_g();
+    const double lam_exp = pow(
+        (double)n0_exp * (double)am_g * 6.0 / (double)rg, 0.25);
+    *lamg = lam_exp;
+    *ilamg = 1.0 / lam_exp;
+    *n0_g = (double)n0_exp / lam_exp * lam_exp;
+}
+
+// The fork's collision-table graupel intercept, rebuilt from ilamg (fork
+// :2264-2267): lam_exp = lamg*(cgg(3)*ogg2*ogg1)**bm_g = lamg, and
+// N0_exp = ogg1*rg/am_g * lam_exp**cge(1) with ogg1*rg/am_g REAL(4).
+__device__ __forceinline__ double thompson_aa_wrf39_table_intercept(
+    float rg, double ilamg)
+{
+    const double lamg = 1.0 / ilamg;
+    const float prefix = __fdiv_rn(
+        thompson_aa_mul(0.16666667163372040f, rg), thompson_aa_wrf39_am_g());
+    return (double)prefix * pow(lamg, 4.0);
+}
+
+// calc_effectRad's fork floors: ice 5.01 microns (fork :5275, v4.6.1 2.51),
+// snow 10 microns (fork :5315, v4.6.1 5.01).  Bodies otherwise those above.
+__device__ __forceinline__ float thompson_aa_wrf39_eff_rad_ice(
+    float ri, float ni)
+{
+    const float v461 = thompson_aa_eff_rad_ice(ri, ni);
+    // thompson_aa_eff_rad_ice returns MAX(2.51e-6, MIN(d, 125e-6)); the fork
+    // form is MAX(5.01e-6, MIN(d, 125e-6)), which is MAX(5.01e-6, that).
+    return fmaxf(5.01e-6f, v461);
+}
+
+__device__ __forceinline__ float thompson_aa_wrf39_eff_rad_snow(
+    float rs, float t_k)
+{
+    return fmaxf(10.0e-6f, thompson_aa_eff_rad_snow(rs, t_k));
+}

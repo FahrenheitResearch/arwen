@@ -32,7 +32,7 @@
 //!             "stack": ["Inter", "Source Sans 3", "sans-serif"],
 //!             "mono_stack": ["Berkeley Mono", "Menlo", "Consolas", "monospace"]},
 //!   "text": {"title_size": 1.0, "label_size": 1.0,
-//!            "source_label": "my model 1.2.3"},
+//!            "source_label": "my model 1.2.3", "model_label": "MINE"},
 //!   "colormaps": {"sequential": ["#005f60", "#7dcaca"],
 //!                 "diverging": ["#eb6e39", "#223137", "#5aa7a7"],
 //!                 "products": {"composite_reflectivity": ["#000000", "#ffffff"]}},
@@ -83,7 +83,19 @@
 //! derived provenance label (`source: <model>`) on every product that
 //! carries one; a product that draws no provenance (a panel inside a
 //! composite) stays bare.  Unset, the derived label is drawn, which is
-//! what both built-in themes do.
+//! what the `default` and `dark` built-ins do.
+//!
+//! `text.model_label` is the model name drawn in the metadata row (`Init
+//! 05/26 15Z | d01 3 km | WRF`) and in a model-prefixed title, in place of
+//! the name the product derived from its store identity (`WRF`, `HRRR`).
+//! Unset keeps the derived name.  Both labels take the `{version}` token.
+//!
+//! The two WOOF built-ins are tables, not code: `themes/woof-light.json`
+//! and `themes/woof-dark.json` beside this crate, compiled in.  They carry
+//! WOOF's own labels, so a frame drawn in either names WOOF as its model
+//! and its source; a caller who wants another name extends one of them in
+//! its own file (`{"extends": "woof-light", "text": {...}}`) or edits the
+//! table.
 
 use crate::color::Rgba;
 use crate::request::{Color, ColorScale, DiscreteColorScale};
@@ -93,15 +105,81 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+/// The tokens a theme's text may carry, filled in when a frame is drawn.
+/// Anything else in braces refuses the theme when it loads: a theme file
+/// with an unsupported or misspelled token would otherwise print literal
+/// braces on every frame.
+pub const TEMPLATE_TOKENS: &[&str] = &["{version}"];
+
+static TEMPLATE_VERSION: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
+/// The version `{version}` stands for (the executing engine's, from the
+/// caller's source label).  `None` fills it with nothing.
+pub fn set_template_version(version: Option<String>) {
+    if let Ok(mut slot) = TEMPLATE_VERSION.write() {
+        *slot = version.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+    }
+}
+
+fn check_template_tokens(text: &str) -> Result<(), String> {
+    let mut rest = text;
+    while let Some(open) = rest.find('{') {
+        let after = &rest[open..];
+        let Some(close) = after.find('}') else {
+            return Err("an opening brace is never closed".into());
+        };
+        let token = &after[..=close];
+        if !TEMPLATE_TOKENS.contains(&token) {
+            return Err(format!(
+                "{token} is not a template token; the only one is {}",
+                TEMPLATE_TOKENS.join(", ")
+            ));
+        }
+        rest = &after[close + 1..];
+    }
+    Ok(())
+}
+
+fn fill_template_tokens(text: &str) -> String {
+    let version = TEMPLATE_VERSION.read().ok().and_then(|slot| slot.clone()).unwrap_or_default();
+    text.replace("{version}", &version).split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn merge_json(base: &mut serde_json::Value, overlay: serde_json::Value) {
+    match (base, overlay) {
+        (serde_json::Value::Object(base), serde_json::Value::Object(overlay)) => {
+            for (key, value) in overlay {
+                match base.get_mut(&key) {
+                    Some(existing) if existing.is_object() && value.is_object() => {
+                        merge_json(existing, value)
+                    }
+                    _ => {
+                        base.insert(key, value);
+                    }
+                }
+            }
+        }
+        (base, overlay) => *base = overlay,
+    }
+}
+
 /// Environment variable naming the active theme (a built-in name or a JSON
 /// path) for processes that are not started through `rw_wrfbatch --theme`.
 pub const THEME_ENV: &str = "RUSTWX_THEME";
+
+/// The WOOF built-ins, as tables (see the module docs).
+const WOOF_LIGHT_JSON: &str = include_str!("../themes/woof-light.json");
+const WOOF_DARK_JSON: &str = include_str!("../themes/woof-dark.json");
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RenderThemeFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// A built-in theme name or a theme file (relative to this one) whose
+    /// every value this file starts from; this file's own values win.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extends: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface: Option<SurfaceSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -244,6 +322,11 @@ pub struct TextSpec {
     /// label (`source: <model>`); unset keeps the derived label.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_label: Option<String>,
+    /// Model name drawn in the metadata row and in a model-prefixed title
+    /// in place of the one the product derived (`WRF`, `HRRR`); unset
+    /// keeps the derived name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_label: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -310,6 +393,58 @@ pub struct FooterSpec {
 impl RenderThemeFile {
     pub fn from_json(text: &str) -> Result<Self, String> {
         serde_json::from_str(text).map_err(|err| format!("theme JSON: {err}"))
+    }
+
+    /// This file laid over the theme its `extends` names: every value the
+    /// parent sets that this file does not.  `base` resolves a relative
+    /// parent path; a chain deeper than eight is refused as a loop.
+    pub fn with_parent(self, base: Option<&Path>, depth: usize) -> Result<Self, String> {
+        let Some(parent_spec) = self.extends.clone() else {
+            return Ok(self);
+        };
+        if depth >= 8 {
+            return Err(format!("extends {parent_spec:?}: the chain is deeper than eight themes"));
+        }
+        let (parent, parent_base) = match RenderTheme::builtin_file(&parent_spec) {
+            Some(file) => (file, None),
+            None => {
+                let path = match base {
+                    Some(base) => base.join(&parent_spec),
+                    None => PathBuf::from(&parent_spec),
+                };
+                let file = Self::load(&path)?;
+                (file, path.parent().map(Path::to_path_buf))
+            }
+        };
+        let mut parent = parent.with_parent(parent_base.as_deref().or(base), depth + 1)?;
+        // Inherited assets belong to their declaring file, even when the
+        // child theme lives in another directory.
+        if let Some(parent_base) = parent_base.as_deref() {
+            let parent_base = std::fs::canonicalize(parent_base)
+                .map_err(|err| format!("theme parent directory {}: {err}", parent_base.display()))?;
+            let resolve = |value: &mut Option<String>| {
+                if let Some(text) = value {
+                    let path = PathBuf::from(&*text);
+                    if !path.is_absolute() {
+                        *text = parent_base.join(path).to_string_lossy().into_owned();
+                    }
+                }
+            };
+            if let Some(fonts) = parent.fonts.as_mut() {
+                resolve(&mut fonts.regular);
+                resolve(&mut fonts.bold);
+            }
+            if let Some(footer) = parent.footer.as_mut() {
+                resolve(&mut footer.logo);
+            }
+        }
+        let mut merged = serde_json::to_value(&parent).map_err(|err| err.to_string())?;
+        let mut child = serde_json::to_value(&self).map_err(|err| err.to_string())?;
+        if let Some(object) = child.as_object_mut() {
+            object.remove("extends");
+        }
+        merge_json(&mut merged, child);
+        serde_json::from_value(merged).map_err(|err| format!("extends {parent_spec:?}: {err}"))
     }
 
     pub fn load(path: &Path) -> Result<Self, String> {
@@ -519,6 +654,9 @@ pub struct RenderTheme {
     /// The right-hand subtitle drawn in place of the derived provenance
     /// label; `None` draws the derived label.
     pub source_label: Option<String>,
+    /// The model name drawn in place of the derived one; `None` draws the
+    /// derived name.
+    pub model_label: Option<String>,
     /// The file this theme was read from, when it was a file.
     pub source: Option<PathBuf>,
     /// The polygon-mesh family's linework and empty-cell fill.  Always
@@ -542,8 +680,56 @@ impl RenderTheme {
     /// ramp becomes a grey-to-white ramp so a black surface does not swallow
     /// its low end.
     pub fn dark_theme() -> Self {
-        let file = RenderThemeFile {
+        Self::from_file_spec(&Self::dark_theme_file(), None).expect("the built-in dark theme parses")
+    }
+
+    /// The WOOF light look: the renderer's own inks (its weather ladders,
+    /// land and water fills, linework) named as the WOOF theme a caller
+    /// can extend.
+    pub fn woof_light_theme() -> Self {
+        Self::from_file_spec(&Self::woof_light_theme_file(), None)
+            .expect("the built-in woof-light theme parses")
+    }
+
+    /// The WOOF dark look: the built-in dark surface and inks, for the
+    /// viewer.
+    pub fn woof_dark_theme() -> Self {
+        Self::from_file_spec(&Self::woof_dark_theme_file(), None)
+            .expect("the built-in woof-dark theme parses")
+    }
+
+    fn woof_light_theme_file() -> RenderThemeFile {
+        Self::table_theme_file(WOOF_LIGHT_JSON, "woof-light")
+    }
+
+    fn woof_dark_theme_file() -> RenderThemeFile {
+        Self::table_theme_file(WOOF_DARK_JSON, "woof-dark")
+    }
+
+    /// A built-in written as a compiled-in JSON table, with its `extends`
+    /// (a built-in name) already laid under it.
+    fn table_theme_file(text: &str, name: &str) -> RenderThemeFile {
+        RenderThemeFile::from_json(text)
+            .and_then(|file| file.with_parent(None, 0))
+            .unwrap_or_else(|err| panic!("the built-in {name} theme table parses: {err}"))
+    }
+
+    /// A built-in theme as the file it is written as, the starting point a
+    /// file's `extends` names.
+    pub fn builtin_file(name: &str) -> Option<RenderThemeFile> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "" | "default" | "light" | "none" | "classic" => Some(RenderThemeFile::default()),
+            "dark" => Some(Self::dark_theme_file()),
+            "woof-light" => Some(Self::woof_light_theme_file()),
+            "woof-dark" => Some(Self::woof_dark_theme_file()),
+            _ => None,
+        }
+    }
+
+    fn dark_theme_file() -> RenderThemeFile {
+        RenderThemeFile {
             name: Some("dark".to_string()),
+            extends: None,
             surface: Some(SurfaceSpec {
                 canvas: Some("#000000".into()),
                 map: Some("#000000".into()),
@@ -607,8 +793,7 @@ impl RenderTheme {
                 empty: Some("#12191c".into()),
             }),
             footer: None,
-        };
-        Self::from_file_spec(&file, None).expect("the built-in dark theme parses")
+        }
     }
 
     /// `default` (aliases `light`, `none`) or `dark`.
@@ -616,12 +801,14 @@ impl RenderTheme {
         match name.trim().to_ascii_lowercase().as_str() {
             "" | "default" | "light" | "none" | "classic" => Some(Self::default_theme()),
             "dark" => Some(Self::dark_theme()),
+            "woof-light" => Some(Self::woof_light_theme()),
+            "woof-dark" => Some(Self::woof_dark_theme()),
             _ => None,
         }
     }
 
     pub fn builtin_names() -> &'static [&'static str] {
-        &["default", "light", "dark"]
+        &["default", "light", "dark", "woof-light", "woof-dark"]
     }
 
     /// A built-in name or a path to a JSON theme file.
@@ -643,6 +830,9 @@ impl RenderTheme {
     pub fn from_path(path: &Path) -> Result<Self, String> {
         let file = RenderThemeFile::load(path)?;
         let base = path.parent().map(Path::to_path_buf);
+        let file = file
+            .with_parent(base.as_deref(), 0)
+            .map_err(|err| format!("{}: {err}", path.display()))?;
         let mut theme = Self::from_file_spec(&file, base.as_deref())
             .map_err(|err| format!("{}: {err}", path.display()))?;
         if theme.name == "default" && file.name.is_none() {
@@ -657,6 +847,11 @@ impl RenderTheme {
     }
 
     pub fn from_file_spec(file: &RenderThemeFile, base: Option<&Path>) -> Result<Self, String> {
+        if file.extends.is_some() {
+            let expanded = file.clone().with_parent(base, 0)
+                .map_err(|err| format!("extends: {err}"))?;
+            return Self::from_file_spec(&expanded, base);
+        }
         let color = |key: &str, value: &Option<String>| -> Result<Option<Rgba>, String> {
             value
                 .as_deref()
@@ -675,7 +870,24 @@ impl RenderTheme {
         let footer_spec = file.footer.clone();
         let source_label = match text.source_label.as_deref().map(str::trim) {
             Some("") => return Err("text.source_label must not be blank".into()),
-            Some(label) => Some(label.to_string()),
+            Some(label) => {
+                check_template_tokens(label)
+                    .map_err(|err| format!("text.source_label {label:?}: {err}"))?;
+                Some(label.to_string())
+            }
+            None => None,
+        };
+        let model_label = match text.model_label.as_deref().map(str::trim) {
+            Some("") => return Err("text.model_label must not be blank".into()),
+            Some(label) => {
+                if label.chars().count() > 32
+                    || text.model_label.as_deref().unwrap().chars().any(|ch| ch.is_control() || ch == '|') {
+                    return Err("text.model_label must contain 1-32 characters without controls or '|'".into());
+                }
+                check_template_tokens(label)
+                    .map_err(|err| format!("text.model_label {label:?}: {err}"))?;
+                Some(label.to_string())
+            }
             None => None,
         };
 
@@ -849,6 +1061,7 @@ impl RenderTheme {
             diverging,
             products,
             source_label,
+            model_label,
             source: None,
             mesh,
             footer,
@@ -865,6 +1078,7 @@ impl RenderTheme {
             && self.diverging.is_empty()
             && self.products.is_empty()
             && self.source_label.is_none()
+            && self.model_label.is_none()
             && self.footer.is_none()
     }
 
@@ -875,8 +1089,18 @@ impl RenderTheme {
     /// composite hands `None`) stays bare under every theme.
     pub fn source_subtitle(&self, derived: Option<String>) -> Option<String> {
         match (&self.source_label, derived) {
-            (Some(label), Some(_)) => Some(label.clone()),
+            (Some(label), Some(_)) => Some(fill_template_tokens(label)),
             (_, derived) => derived,
+        }
+    }
+
+    /// The model name a product draws whose store identity names it
+    /// `derived` (`WRF`): the theme's `text.model_label` when it names one,
+    /// else `derived` untouched.
+    pub fn model_name(&self, derived: &str) -> String {
+        match &self.model_label {
+            Some(label) => fill_template_tokens(label),
+            None => derived.to_string(),
         }
     }
 
@@ -1020,6 +1244,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_worker_theme_file_inherits_the_woof_palette_and_both_labels() {
+        let file = RenderThemeFile::from_json(
+            r##"{"extends":"woof-light","text":{"source_label":"Recast WOOF"}}"##,
+        ).expect("worker JSON parses");
+        let theme = RenderTheme::from_file_spec(&file, None).expect("worker theme resolves");
+        assert_eq!(theme, RenderTheme::builtin("woof-light").expect("WOOF palette"));
+        assert_eq!(theme.model_name("WRF"), "WOOF");
+        assert_eq!(theme.source_subtitle(Some("source: model".into())), Some("Recast WOOF".into()));
+        assert_eq!(theme.source_subtitle(None), None);
+        assert_eq!(theme.canvas, None);
+        assert_eq!(theme.mesh, RenderTheme::default_theme().mesh);
+        for name in ["default", "light", "dark"] {
+            let bare = RenderTheme::builtin(name).expect("generic palette");
+            assert_eq!(bare.model_name("WRF"), "WRF");
+            assert_eq!(bare.source_subtitle(Some("source: model".into())), Some("source: model".into()));
+        }
+        assert!(RenderTheme::builtin("default").unwrap().is_default());
+        assert!(RenderTheme::builtin("light").unwrap().is_default());
+    }
+
+    #[test]
+    fn direct_theme_spec_inheritance_keeps_unnamed_nested_dark_values() {
+        let file = RenderThemeFile::from_json(
+            r##"{"extends":"dark","ink":{"primary":"#112233"},
+                "colormaps":{"sequential":["#123456","#abcdef"]},
+                "text":{"label_size":1.25},"fonts":{"regular":"fonts/regular.ttf"}}"##,
+        ).expect("parses");
+        let theme = RenderTheme::from_file_spec(&file, Some(Path::new("/themes"))).expect("resolves");
+        let mut expected = RenderTheme::dark_theme();
+        expected.title_ink = Some(Rgba::new(0x11, 0x22, 0x33));
+        expected.sequential = vec![Rgba::new(0x12, 0x34, 0x56), Rgba::new(0xab, 0xcd, 0xef)];
+        expected.presentation.label_size_permille = 1250;
+        expected.font_regular = Some(PathBuf::from("/themes/fonts/regular.ttf"));
+        assert_eq!(theme, expected);
+    }
+
+    #[test]
+    fn the_theme_model_label_respects_the_metadata_row_bounds() {
+        for label in ["", "  ", "split | row", "control\nrow", "abcdefghijklmnopqrstuvwxyz0123456"] {
+            let file = RenderThemeFile::from_json(&serde_json::json!({
+                "extends": "light", "text": {"model_label": label}
+            }).to_string()).expect("parses");
+            assert!(RenderTheme::from_file_spec(&file, None).expect_err("invalid model label").contains("text.model_label"));
+        }
+        assert!(RenderThemeFile::from_json(r##"{"extends":"light","text":{"sorce_label":"probe"}}"##)
+            .expect_err("unknown override").contains("sorce_label"));
+    }
+
+    static VERSION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
     fn a_theme_file_round_trips_and_parses_colours() {
         let text = r##"{
             "name": "probe",
@@ -1102,16 +1377,173 @@ mod tests {
     }
 
     #[test]
-    fn the_built_in_themes_draw_the_derived_provenance_label() {
-        for name in RenderTheme::builtin_names() {
+    fn a_version_token_is_filled_and_an_unknown_token_refuses_the_theme() {
+        let _version_guard = VERSION_TEST_LOCK.lock().expect("version test lock");
+        let file = RenderThemeFile::from_json(r##"{"text": {"source_label": "Model {version}"}}"##)
+            .expect("parses");
+        let theme = RenderTheme::from_file_spec(&file, None).expect("resolves");
+        set_template_version(None);
+        assert_eq!(
+            theme.source_subtitle(Some("source: ArWen".into())).as_deref(),
+            Some("Model"),
+            "no version known: the token fills with nothing, never braces"
+        );
+        set_template_version(Some("2.8.0".into()));
+        assert_eq!(
+            theme.source_subtitle(Some("source: ArWen".into())).as_deref(),
+            Some("Model 2.8.0")
+        );
+        set_template_version(None);
+        for label in ["Model {verison}", "Model {version", "{name} x"] {
+            let text = format!(r##"{{"text": {{"source_label": "{label}"}}}}"##);
+            let file = RenderThemeFile::from_json(&text).expect("parses");
+            let err = RenderTheme::from_file_spec(&file, None).expect_err(label);
+            assert!(err.contains("text.source_label"), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_theme_that_extends_a_built_in_keeps_the_parents_values_under_its_own() {
+        let child = RenderThemeFile::from_json(
+            r##"{"extends": "dark", "name": "mine", "surface": {"ocean": "#010203"}}"##,
+        )
+        .expect("parses")
+        .with_parent(None, 0)
+        .expect("extends dark");
+        let dark = RenderTheme::builtin_file("dark").unwrap();
+        assert_eq!(child.name.as_deref(), Some("mine"));
+        let surface = child.surface.clone().unwrap();
+        assert_eq!(surface.ocean.as_deref(), Some("#010203"));
+        assert_eq!(surface.canvas, dark.surface.unwrap().canvas, "the parent's canvas carries over");
+        assert_eq!(child.ink, dark.ink);
+        assert!(RenderThemeFile::from_json(r##"{"extends": "nowhere-theme.json"}"##)
+            .unwrap()
+            .with_parent(None, 0)
+            .is_err());
+    }
+
+    #[test]
+    fn the_woof_themes_are_built_in() {
+        let light = RenderTheme::builtin("woof-light").expect("built in");
+        assert_eq!(light.name, "woof-light");
+        let plain = RenderTheme::from_file_spec(&RenderThemeFile::default(), None).unwrap();
+        assert_eq!(light.presentation, plain.presentation, "the labels change no ink");
+        let dark = RenderTheme::builtin("woof-dark").expect("built in");
+        assert_eq!(dark.name, "woof-dark");
+        assert_eq!(dark.presentation, RenderTheme::builtin("dark").unwrap().presentation);
+    }
+
+    #[test]
+    fn the_generic_built_ins_draw_the_derived_labels() {
+        for name in ["default", "light", "dark"] {
             let theme = RenderTheme::builtin(name).expect("built in");
             assert_eq!(theme.source_label, None, "{name}");
+            assert_eq!(theme.model_label, None, "{name}");
             assert_eq!(
                 theme.source_subtitle(Some("source: ArWen".to_string())).as_deref(),
                 Some("source: ArWen"),
                 "{name}"
             );
+            assert_eq!(theme.model_name("WRF"), "WRF", "{name}");
         }
+    }
+
+    #[test]
+    fn the_woof_built_ins_name_woof_and_never_the_engine_or_wrf() {
+        for name in ["woof-light", "woof-dark"] {
+            let theme = RenderTheme::builtin(name).expect("built in");
+            let source = theme
+                .source_subtitle(Some("source: ArWen 2.8.0".to_string()))
+                .expect("a labelled product keeps a label");
+            let model = theme.model_name("WRF");
+            for text in [&source, &model] {
+                assert!(text.contains("WOOF"), "{name}: {text}");
+                assert!(!text.contains("ArWen") && !text.contains("WRF"), "{name}: {text}");
+            }
+            assert_eq!(theme.source_subtitle(None), None, "{name}: a bare panel stays bare");
+        }
+    }
+
+    #[test]
+    fn a_model_label_replaces_the_derived_model_name_and_a_blank_one_is_refused() {
+        let _version_guard = VERSION_TEST_LOCK.lock().expect("version test lock");
+        let file = RenderThemeFile::from_json(r##"{"text": {"model_label": " MINE {version} "}}"##)
+            .expect("parses");
+        let theme = RenderTheme::from_file_spec(&file, None).expect("resolves");
+        assert!(!theme.is_default(), "a model label is a change to every plot");
+        set_template_version(None);
+        assert_eq!(theme.model_name("WRF"), "MINE");
+        let blank = RenderThemeFile::from_json(r##"{"text": {"model_label": " "}}"##)
+            .expect("parses");
+        let err = RenderTheme::from_file_spec(&blank, None).expect_err("blank label");
+        assert!(err.contains("text.model_label"), "{err}");
+        let typo = RenderThemeFile::from_json(r##"{"text": {"model_label": "M {verison}"}}"##)
+            .expect("parses");
+        let err = RenderTheme::from_file_spec(&typo, None).expect_err("unknown token");
+        assert!(err.contains("text.model_label"), "{err}");
+        let child = RenderThemeFile::from_json(
+            r##"{"extends": "woof-light", "text": {"model_label": "OTHER"}}"##,
+        )
+        .expect("parses")
+        .with_parent(None, 0)
+        .expect("extends woof-light");
+        let child = RenderTheme::from_file_spec(&child, None).expect("resolves");
+        assert_eq!(child.model_name("WRF"), "OTHER");
+        assert_eq!(
+            child.source_label,
+            RenderTheme::builtin("woof-light").unwrap().source_label,
+            "the parent's source label carries over"
+        );
+    }
+
+
+    #[test]
+    fn a_site_theme_file_inherits_woof_labels_through_relative_parents() {
+        let root = std::env::temp_dir().join(format!("rustwx-theme-inheritance-{}", std::process::id()));
+        let nested = root.join("nested");
+        std::fs::create_dir_all(&nested).expect("own theme scratch");
+        let parent = root.join("parent.json");
+        let middle = nested.join("middle.json");
+        let child = nested.join("site.json");
+        std::fs::write(&parent, r##"{"extends":"woof-light","surface":{"ocean":"#010203"},"fonts":{"regular":"assets/regular.ttf","bold":"assets/bold.ttf"},"footer":{"logo":"assets/logo.png"}}"##)
+            .expect("parent theme");
+        std::fs::write(&middle, r##"{"extends":"../parent.json","text":{"title_size":1.1}}"##)
+            .expect("middle theme");
+        std::fs::write(&child, r##"{"extends":"middle.json","name":"site"}"##)
+            .expect("site theme");
+        let theme = RenderTheme::from_path(&child).expect("site inheritance is accepted");
+        assert_eq!(theme.name, "site");
+        assert_eq!(theme.presentation.ocean, Some(Rgba::new(1, 2, 3)));
+        assert_eq!(theme.presentation.title_size_permille, 1100);
+        assert_eq!(theme.presentation.label_size_permille, 1000);
+        let asset_root = std::fs::canonicalize(&root).expect("own scratch directory");
+        assert_eq!(theme.font_regular, Some(asset_root.join("assets/regular.ttf")));
+        assert_eq!(theme.font_bold, Some(asset_root.join("assets/bold.ttf")));
+        assert_eq!(theme.footer.as_ref().unwrap().logo, Some(asset_root.join("assets/logo.png")));
+        assert_eq!(theme.model_name("WRF"), "WOOF");
+        assert_eq!(theme.source_subtitle(Some("source: ArWen 2.8.6".into())).as_deref(), Some("Recast WOOF"));
+        assert_eq!(theme.source_subtitle(None), None);
+        for path in [child, middle, parent] {
+            std::fs::remove_file(path).expect("remove own theme file");
+        }
+        std::fs::remove_dir(nested).expect("remove own nested scratch");
+        std::fs::remove_dir(root).expect("remove own theme scratch");
+    }
+
+    #[test]
+    fn a_theme_file_parent_cycle_is_refused_with_a_bounded_chain() {
+        let root = std::env::temp_dir().join(format!("rustwx-theme-cycle-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("own theme scratch");
+        let first = root.join("first.json");
+        let second = root.join("second.json");
+        std::fs::write(&first, r##"{"extends":"second.json"}"##).expect("first theme");
+        std::fs::write(&second, r##"{"extends":"first.json"}"##).expect("second theme");
+        let error = RenderTheme::from_path(&first).expect_err("a parent cycle cannot render");
+        assert!(error.contains("deeper than eight themes"), "{error}");
+        for path in [first, second] {
+            std::fs::remove_file(path).expect("remove own theme file");
+        }
+        std::fs::remove_dir(root).expect("remove own theme scratch");
     }
 
     #[test]

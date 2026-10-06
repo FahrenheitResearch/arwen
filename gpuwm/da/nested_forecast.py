@@ -946,7 +946,8 @@ def _initialize_child_physics(initialized, child_run, inventory,
     import cupy as cp
 
     from gpuwm.core.diagnostics import update_diagnostics
-    from gpuwm.core.landuse import initialize_landuse
+    from gpuwm.core.landuse import (initialize_landuse,
+                                    usemonalb_landuse_inputs)
     from gpuwm.core.physics import initialize_physics
     from gpuwm.ingest.ruc_mosaic import ruc_mosaic_physics_inputs
     from gpuwm.ingest.lake_physics import lake_physics_inputs
@@ -978,9 +979,11 @@ def _initialize_child_physics(initialized, child_run, inventory,
         iswater=int(landuse_identity["ISWATER"]),
         islake=int(landuse_identity["ISLAKE"]),
         isice=int(landuse_identity["ISICE"]), fractional_seaice=True,
-        soil_temperature=fields["TSLB"], sst=fields.get("SST"))
+        soil_temperature=fields["TSLB"], sst=fields.get("SST"),
+        **usemonalb_landuse_inputs(child_run, static, valid_time))
     vegfra = 100.0 * monthly_interp_to_date(static["GREENFRAC"], valid_time)
-    lai = monthly_interp_to_date(static["LAI12M"], valid_time)
+    from gpuwm.core.landuse import surface_leaf_area
+    lai = surface_leaf_area(child_run, static["LAI12M"], valid_time)
     driver = initialize_physics(
         state, child_run, landuse=landuse, tsk=fields["TSK"],
         soil_temperature=fields["TSLB"],
@@ -1003,10 +1006,9 @@ def _initialize_child_physics(initialized, child_run, inventory,
             child_run, static, landuse_attrs=landuse_identity,
             xice=fields["SEAICE"], fractional_seaice=True))
     from gpuwm.core.noah import noah_initial_snow_albedo
+    from gpuwm.core.landuse import surface_snow_albedo
     driver.fields["snoalb"][...] = cp.asarray(
-        noah_initial_snow_albedo(
-            static["SNOALB"], static["LU_INDEX"], driver.noah_params,
-            rdmaxalb=child_run.rdmaxalb),
+        surface_snow_albedo(child_run, static, driver.noah_params),
         dtype=cp.float32)
     driver.fields["lai"][...] = cp.asarray(lai, dtype=cp.float32)
     driver.fields["shdmin"][...] = cp.asarray(

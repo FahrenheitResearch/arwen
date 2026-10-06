@@ -78,6 +78,14 @@ _DEFAULT_GEOG_DIRS = {
     "snow_albedo": "maxsnowalb_modis",
     "soil_temperature": "soiltemp_1deg",
 }
+# The raw inventory of the full static builder. A published source that
+# serves it all needs no resampling from the WPS datasets. TMN is derived
+# from these same fields after the source is read.
+_BASE_STATIC_FIELDS = frozenset((
+    "HGT_M", "LANDUSEF", "LANDMASK", "LU_INDEX",
+    "SOILCTOP", "SCT_DOM", "SOILCBOT", "SCB_DOM",
+    "GREENFRAC", "LAI12M", "ALBEDO12M", "SNOALB", "SOILTEMP",
+))
 # Complete global low-resolution inventory distributed by NCAR.  The 5m
 # products are preferable to silently treating an intentionally regional
 # 30s bundle as global for coarse, wide-area domains.
@@ -104,6 +112,12 @@ _THIRTY_SECOND_GEOG_DIRS = {
 _GEOG_TOKEN_DIRECTORIES = {
     "default": _DEFAULT_GEOG_DIRS,
     "30s": _THIRTY_SECOND_GEOG_DIRS,
+    # WPS 4.6 GEOGRID.TBL.ARW's alternative 16-category soil inventory.
+    # The scalar categorical tiles use the common Rust category sampler.
+    "bnu_soil_30s": {
+        "soil_top": "bnu_soiltype_top",
+        "soil_bottom": "bnu_soiltype_bot",
+    },
     "5m": _FIVE_MINUTE_GEOG_DIRS,
     "modis_lai": {"lai": "lai_modis_30s"},
 }
@@ -117,9 +131,12 @@ class GeogSelection:
     ``resolution_tokens`` preserves the ordered ``geog_data_res`` value
     declared by the WPS namelist path in :class:`CaseDataConfig`.  Dataset
     paths are always relative directories beneath that config's GEOG root.
-    The recognized set is ``default``, ``30s``, ``5m``, and ``modis_lai``.
+    The recognized set is ``default``, ``30s``, ``bnu_soil_30s``, ``5m``,
+    and ``modis_lai``.
     ``30s`` selects the 30 arc-second soil datasets and falls through to
-    WPS's default dataset for fields with no ``30s`` table entry. ``5m``
+    WPS's default dataset for fields with no ``30s`` table entry.
+    ``bnu_soil_30s`` selects WPS's alternative top and bottom 30
+    arc-second soil-category tiles, leaving every other field unchanged. ``5m``
     selects NCAR's complete global low-resolution mandatory inventory;
     ``modis_lai`` is the available higher-resolution LAI override; and
     ``default`` selects the established Phase-3 inventory.  A land-cover
@@ -151,6 +168,11 @@ class GeogSelection:
     orographic: tuple[str, ...] = ()
     #: The optional WPS depth dataset selected by the lake physics settings.
     lake_depth: bool = False
+    #: A published static file the configuration takes its geography from
+    #: (:mod:`gpuwm.static.external_source`), or ``None`` -- every
+    #: configuration that names no ``[static] source`` -- which builds
+    #: exactly the field set it always built.
+    static_source: object = None
 
     def with_orographic(self, names) -> "GeogSelection":
         """This selection, also building the named orographic fields."""
@@ -269,11 +291,15 @@ class GeogSelection:
         # The domain's terrain smoothing rides on the case's static policy
         # (gpuwm.static.terrain_smoothing); absent, WPS's default.
         smoothing = smoothing_for(highres, domain_id)
+        # A configuration's static source rides on the same carrier; the
+        # build decides per grid whether the source describes it.
+        from .external_source import static_source_for
         return replace(
             cls.from_tokens(data.geog_root, str(value),
                             highres_landcover=_highres_landcover_on_slot(
                                 highres, namelist, index, str(value))),
-            terrain_smoothing=smoothing)
+            terrain_smoothing=smoothing,
+            static_source=static_source_for(highres))
 
     def path(self, field: str) -> Path:
         try:
@@ -1524,21 +1550,42 @@ def build_static(
     started = time.perf_counter()
     with perf_timing.stage("static.build_static",
                            cells=int(grid.e_we) * int(grid.e_sn)):
-        fields = _build_static_routed(
+        # A static source that describes this grid serves the drag and
+        # lake fields it carries; the WPS_GEOG build makes only the rest.
+        source = None if selection is None else selection.static_source
+        served: frozenset[str] = frozenset()
+        if source is not None:
+            from .external_source import sampling_window, served_names
+            if sampling_window(source.row, grid) is not None:
+                served = served_names(source)
+            else:
+                source = None
+        complete_source = source is not None and _BASE_STATIC_FIELDS <= served
+        fields = ({} if complete_source else _build_static_routed(
             grid, geog_root, halo, selection=selection,
-            source_coverage_report=source_coverage_report)
-        if selection is not None and selection.orographic:
+            source_coverage_report=source_coverage_report))
+        orographic = (() if selection is None else
+                      tuple(name for name in selection.orographic
+                            if name not in served))
+        if orographic:
             from .orographic import build_orographic_fields
             fields.update(build_orographic_fields(
-                grid, geog_root, selection.orographic,
+                grid, geog_root, orographic,
                 landuse_path=selection.path("landuse"),
                 tokens=selection.resolution_tokens, halo=halo,
                 coverage_report=source_coverage_report))
-        if selection is not None and selection.lake_depth:
+        lake = selection is not None and selection.lake_depth
+        if lake and "LAKE_DEPTH" not in served:
             from .lake import build_lake_fields
             fields.update(build_lake_fields(
                 grid, geog_root, landuse_path=selection.path("landuse"),
                 halo=halo, coverage_report=source_coverage_report))
+        if source is not None:
+            from .external_source import overlay_static_source
+            fields = overlay_static_source(
+                fields, grid, geog_root, source, requested=source.engine_names(),
+                landuse_attrs=selection.landuse_global_attrs(),
+                report=source_coverage_report)
     if timing_report is not None:
         timing_report["seconds"] = time.perf_counter() - started
         timing_report["cells"] = int(grid.e_we) * int(grid.e_sn)
@@ -1650,9 +1697,6 @@ def build_terrain(grid, geog_root, halo: int = HALO, *,
     its platform arithmetic is not interchangeable with portable statics.
     """
 
-    from . import rust_bridge
-    bridge = rust_bridge.route("build_terrain")
-
     root = Path(geog_root)
     selection = (GeogSelection.fallback(root) if selection is None
                  else selection)
@@ -1660,6 +1704,15 @@ def build_terrain(grid, geog_root, halo: int = HALO, *,
         raise ValueError(
             f"GeogSelection root {selection.root} does not match "
             f"geog_root {root}")
+    source = selection.static_source
+    if source is not None:
+        from .external_source import sampling_window, overlay_static_source, served_names
+        if "HGT_M" in served_names(source) and sampling_window(source.row, grid) is not None:
+            return overlay_static_source(
+                {}, grid, root, source, requested=("HGT_M",))["HGT_M"]
+
+    from . import rust_bridge
+    bridge = rust_bridge.route("build_terrain")
     if bridge is not None and hasattr(grid, "_rust_sampling_handle"):
         try:
             handle = grid._rust_sampling_handle(bridge)

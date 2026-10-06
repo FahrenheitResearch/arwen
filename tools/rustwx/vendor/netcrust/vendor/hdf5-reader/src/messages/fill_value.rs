@@ -1,7 +1,7 @@
 //! HDF5 Fill Value messages.
 //!
 //! Two message types carry fill value information:
-//! - Old fill value (type 0x0004): raw bytes, length = message size.
+//! - Old fill value (type 0x0004): 32-bit size followed by raw value bytes.
 //! - New fill value (type 0x0005): versioned, with allocation/write time and defined flag.
 
 use crate::error::{Error, Result};
@@ -31,18 +31,28 @@ pub struct FillValueMessage {
 
 /// Parse the old fill value message (type 0x0004).
 ///
-/// The entire message body is the raw fill value bytes.
+/// The body begins with a little-endian 32-bit value size. Object-header
+/// padding follows the value and is not part of the fill word.
 pub fn parse_old(
     cursor: &mut Cursor<'_>,
     _offset_size: u8,
     _length_size: u8,
     msg_size: usize,
 ) -> Result<FillValueMessage> {
-    let value = if msg_size > 0 {
-        Some(cursor.read_bytes(msg_size)?.to_vec())
-    } else {
-        None
-    };
+    if msg_size == 0 {
+        return Ok(FillValueMessage { defined: false, fill_time: FillTime::IfSet, value: None });
+    }
+    if msg_size < 4 {
+        return Err(Error::InvalidData("old fill value message is missing its 32-bit size".to_string()));
+    }
+    let value_size = cursor.read_u32_le()? as usize;
+    if value_size > msg_size - 4 {
+        return Err(Error::InvalidData(format!(
+            "old fill value needs {value_size} value bytes but message has {}", msg_size - 4,
+        )));
+    }
+    let value = if value_size > 0 { Some(cursor.read_bytes(value_size)?.to_vec()) } else { None };
+    cursor.skip(msg_size - 4 - value_size)?;
 
     Ok(FillValueMessage {
         defined: value.is_some(),
@@ -154,11 +164,22 @@ mod tests {
 
     #[test]
     fn test_parse_old_fill() {
-        let data = [0x01, 0x02, 0x03, 0x04];
+        let data = [4, 0, 0, 0, 0x01, 0x02, 0x03, 0x04];
         let mut cursor = Cursor::new(&data);
-        let msg = parse_old(&mut cursor, 8, 8, 4).unwrap();
+        let msg = parse_old(&mut cursor, 8, 8, data.len()).unwrap();
         assert!(msg.defined);
         assert_eq!(msg.value.unwrap(), vec![0x01, 0x02, 0x03, 0x04]);
+    }
+
+    #[test]
+    fn test_parse_old_fill_discards_size_prefix_and_header_padding() {
+        let data = [1, 0, 0, 0, 12, 0, 0, 0];
+        let mut cursor = Cursor::new(&data);
+        let msg = parse_old(&mut cursor, 8, 8, data.len()).unwrap();
+        assert_eq!(msg.value.unwrap(), [12]);
+        assert_eq!(cursor.position(), data.len() as u64);
+        let mut cursor = Cursor::new(&[5, 0, 0, 0]);
+        assert!(parse_old(&mut cursor, 8, 8, 4).is_err());
     }
 
     #[test]

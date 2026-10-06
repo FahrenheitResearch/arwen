@@ -17,6 +17,7 @@ import json
 import threading
 import time
 from pathlib import Path
+from urllib.request import urlopen
 
 import pytest
 
@@ -545,6 +546,40 @@ def test_a_native_batch_publishes_each_verified_hour_before_transfer_returns(
     monkeypatch.setattr(fetch_as_posted, "pause", clock.sleep)
     monkeypatch.setattr(native_transport, "_download_product",
                         _dated_hrrr_product([]))
+    # 6a69b356f061, lane/hrrr-statics, adds analyzed VEGFRA to the soil
+    # stream. Keep this existing synthetic batch offline at the native
+    # transport and numeric extractor seams, retaining the actual append,
+    # digest, per-hour publication and repeated-marker checks below.
+    from gpuwm import runtime_surface_fetch, rustwx_fetch
+
+    vegetation_selector = (("discipline", 2), ("category", 0), ("parameter", 4),
+                           ("level_type", 1), ("level_value", 0), ("pdt", 0))
+
+    def runtime_fetch(binary, **kwargs):
+        assert binary == tmp_path / "runtime-fetch-fixture"
+        assert kwargs["model"] == "hrrr" and kwargs["source"] == "aws"
+        assert kwargs["date"] == f"{CYCLE:%Y%m%d}" and kwargs["cycle"] == CYCLE.hour
+        assert kwargs["product"] == "sfc"
+        assert kwargs["pattern_file"].read_text().splitlines() == ["VEG:surface"]
+        lead, = kwargs["hours"]
+        name = f"hrrr.t{CYCLE:%H}z.wrfsfcf{lead:02d}.grib2"
+        data = HrrrIndexHeadRefused.VEGETATION_RECORD
+        (kwargs["out"] / name).write_bytes(data)
+        return {"files": [{"name": name, "grib_url": f"https://fixture.invalid/{name}",
+                           "mode": "idx-subset",
+                           "sha256": hashlib.sha256(data).hexdigest()}]}
+
+    def extract_replay_record(source, output, numeric_selector):
+        assert tuple(numeric_selector) == vegetation_selector
+        assert source.read_bytes() == HrrrIndexHeadRefused.VEGETATION_RECORD
+        output.write_bytes(source.read_bytes())
+
+    monkeypatch.setattr(rustwx_fetch, "find_fetch_bin",
+                        lambda: tmp_path / "runtime-fetch-fixture")
+    monkeypatch.setattr(rustwx_fetch, "probe_fetch_bin", lambda _: (True, "fixture"))
+    monkeypatch.setattr(rustwx_fetch, "run_fetch", runtime_fetch)
+    monkeypatch.setattr(runtime_surface_fetch, "extract_runtime_record",
+                        extract_replay_record)
     last_posted = [whole]
     loop = fetch_as_posted.PostingLoop(
         window, out,
@@ -573,6 +608,11 @@ def test_a_native_batch_publishes_each_verified_hour_before_transfer_returns(
             ready(lead, manifest)
             assert [row["lead"] for row in markers(out)] == written
             document = json.loads(manifest.read_text())
+            soils = [item for item in document["files"] if item.get("role") == "soil"]
+            assert soils
+            assert all(item["records"] == native_transport.SOIL_RECORD_COUNT + 1
+                       and item["runtime_surface"][0]["field"] == "VEGFRA"
+                       for item in soils)
             for item in fetch_as_posted.legacy_objects(document, lead):
                 path = out / item["name"]
                 assert item["bytes"] == path.stat().st_size
@@ -708,7 +748,7 @@ def test_a_pinned_native_prefix_waits_for_an_intermediate_s3_soil_object(
 class HrrrIndexHeadRefused:
     """A native HRRR host whose objects answer HEAD and whose indexes do not.
 
-    Each lead's wrfnat and wrfprs, with their ``.idx``, are served from
+    Each lead's wrfnat, wrfprs and wrfsfc, with their ``.idx``, are served from
     ``reveal(lead)`` on the replay clock.  A GRIB object answers HEAD and
     byte-range GETs; an index answers GET only, and 405 to HEAD, as a
     mirror or cache that refuses HEAD does.  The payloads are minimal GRIB2
@@ -717,6 +757,8 @@ class HrrrIndexHeadRefused:
     """
 
     RECORD = b"GRIB" + b"\x0a\x01" + b"\x00\x02" + (20).to_bytes(8, "big") + b"7777"
+    VEGETATION_RECORD = (b"GRIB" + b"\x0a\x01" + b"\x02\x02"
+                         + (20).to_bytes(8, "big") + b"7777")
 
     def __init__(self, cycle: datetime, clock: Clock, reveal) -> None:
         from tools import download_hrrr_native_subset as transport
@@ -738,6 +780,8 @@ class HrrrIndexHeadRefused:
             "wrfprs": product([(variable, level)
                                for variable in ("TSOIL", "SOILW")
                                for level in transport.SOIL_LEVELS]),
+            "wrfsfc": (self.VEGETATION_RECORD,
+                       f"1:0:{stamp}:VEG:surface:anl\n".encode("ascii")),
         }
         self.requests: list[tuple[str, str, str | None]] = []
         host = self
@@ -818,6 +862,8 @@ def test_a_native_hrrr_host_that_refuses_index_head_still_fetches_as_posted(
     """
 
     from tools import download_hrrr_native_subset as transport
+    from gpuwm import runtime_surface_fetch, rustwx_fetch
+    from gpuwm.source_adapters import get_source_adapter
 
     clock = Clock(rows.expected_at("hrrr", CYCLE, 0) - timedelta(minutes=5))
 
@@ -825,6 +871,51 @@ def test_a_native_hrrr_host_that_refuses_index_head_still_fetches_as_posted(
         return rows.expected_at("hrrr", CYCLE, lead) + timedelta(seconds=20)
 
     host = HrrrIndexHeadRefused(CYCLE, clock, reveal)
+    # 6a69b356f061, lane/hrrr-statics, appends one analyzed VEGFRA record
+    # from wrfsfc to each native soil stream. These minimal envelopes test
+    # posting/transfer, not native numeric decoding: route only that fetch
+    # and extractor seam to this same replay instead of a live NOAA object.
+    runtime_calls = []
+    extraction_calls = []
+    runtime_row, = get_source_adapter("hrrr").runtime_surface_fields
+    vegetation_selector = (("discipline", 2), ("category", 0), ("parameter", 4),
+                           ("level_type", 1), ("level_value", 0), ("pdt", 0))
+    assert runtime_row == ("VEGFRA", "sfc", "VEG:surface", "percent",
+                           vegetation_selector)
+
+    def runtime_fetch(binary, **kwargs):
+        assert binary == tmp_path / "runtime-fetch-fixture"
+        assert kwargs["model"] == "hrrr"
+        assert kwargs["date"] == f"{CYCLE:%Y%m%d}"
+        assert kwargs["cycle"] == CYCLE.hour
+        assert kwargs["product"] == runtime_row[1] == "sfc"
+        assert kwargs["mode"] == "auto" and kwargs["keep_idx"]
+        assert kwargs["pattern_file"].read_text().splitlines() == [runtime_row[2]]
+        lead, = kwargs["hours"]
+        prefix = {"aws": "s3", "nomads": "nomads"}[kwargs["source"]]
+        name = f"hrrr.t{CYCLE:%H}z.wrfsfcf{lead:02d}.grib2"
+        url = f"{host.base}/{prefix}/hrrr.{CYCLE:%Y%m%d}/conus/{name}"
+        with urlopen(url) as response:
+            data = response.read()
+        assert data == host.VEGETATION_RECORD
+        (kwargs["out"] / name).write_bytes(data)
+        runtime_calls.append((lead, url))
+        return {"files": [{"name": name, "grib_url": url,
+                           "mode": "full-file",
+                           "sha256": hashlib.sha256(data).hexdigest()}]}
+
+    def extract_replay_record(source, output, numeric_selector):
+        assert tuple(numeric_selector) == vegetation_selector
+        assert source.read_bytes() == host.VEGETATION_RECORD
+        extraction_calls.append(tuple(numeric_selector))
+        output.write_bytes(source.read_bytes())
+
+    monkeypatch.setattr(rustwx_fetch, "find_fetch_bin",
+                        lambda: tmp_path / "runtime-fetch-fixture")
+    monkeypatch.setattr(rustwx_fetch, "probe_fetch_bin", lambda _: (True, "fixture"))
+    monkeypatch.setattr(rustwx_fetch, "run_fetch", runtime_fetch)
+    monkeypatch.setattr(runtime_surface_fetch, "extract_runtime_record",
+                        extract_replay_record)
     monkeypatch.setattr(fetch, "HRRR_S3_BASE", host.base + "/s3")
     monkeypatch.setattr(fetch, "HRRR_NOMADS_BASE", host.base + "/nomads")
     monkeypatch.setattr(fetch_endpoints, "SETTLE_BACKOFF_S", ())
@@ -849,9 +940,25 @@ def test_a_native_hrrr_host_that_refuses_index_head_still_fetches_as_posted(
                 >= reveal(marker["lead"]))
     manifest = json.loads((out / "fetch-manifest.json").read_text())
     assert manifest["forecast_hours"] == [0, 1]
+    # 6a69b356f061, lane/hrrr-statics: 18 soil messages plus the separate
+    # analyzed VEGFRA message. This is a message count, not a request count.
     assert [entry["records"] for entry in manifest["files"]
             if "records" in entry] == [transport.ATMOSPHERE_RECORD_COUNT,
-                                       transport.SOIL_RECORD_COUNT] * 2
+                                       transport.SOIL_RECORD_COUNT + 1] * 2
+    assert [lead for lead, _ in runtime_calls] == [0, 1]
+    assert extraction_calls == [vegetation_selector] * 2
+    assert [path for method, path, _ in host.requests
+            if method == "GET" and ".wrfsfcf" in path] == [
+        url.removeprefix(host.base) for _, url in runtime_calls]
+    soils = [entry for entry in manifest["files"] if entry.get("role") == "soil"]
+    assert len(soils) == 2
+    for entry, (_, url) in zip(soils, runtime_calls):
+        binding, = entry["runtime_surface"]
+        assert binding["field"] == "VEGFRA" and binding["units"] == "percent"
+        assert binding["url"] == url
+        assert binding["numeric_selector"] == dict(vegetation_selector)
+        assert binding["sha256"] == hashlib.sha256(host.VEGETATION_RECORD).hexdigest()
+        assert (out / entry["name"]).read_bytes().endswith(host.VEGETATION_RECORD)
     refused = {path for method, path, _ in host.requests
                if method == "HEAD" and path.endswith(".idx")}
     confirmed = {path for method, path, wanted in host.requests

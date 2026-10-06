@@ -156,6 +156,12 @@ pub struct CrossSectionRenderRequest {
     /// 2400-pixel sheet is not drawn with the type and the margins of a
     /// 960-pixel one (gpuwm addition, VENDOR.md).
     pub type_scale: Option<f32>,
+    /// The caller draws the header (title, times, provenance) itself, in
+    /// the same header its map products carry: this renderer then draws no
+    /// title row, and names the ends of the cut `A` and `B` above the top
+    /// corners of the plot instead of in a route row under the axis
+    /// (gpuwm addition, VENDOR.md).
+    pub external_header: bool,
 }
 
 impl CrossSectionRenderRequest {
@@ -288,6 +294,7 @@ impl Default for CrossSectionRenderRequest {
             contour_overlays: Vec::new(),
             source_label: None,
             type_scale: None,
+            external_header: false,
         }
     }
 }
@@ -1805,6 +1812,10 @@ fn draw_header(
     request: &CrossSectionRenderRequest,
     scene: &ResolvedRenderScene,
 ) {
+    if request.external_header {
+        draw_reference_legend(canvas, plot, request, scene);
+        return;
+    }
     let title = section
         .metadata()
         .title
@@ -1901,6 +1912,24 @@ fn draw_footer(
         .attribute("start_label")
         .unwrap_or("Start");
     let end_label = section.metadata().attribute("end_label").unwrap_or("End");
+    if request.external_header {
+        // The ends of the cut at the ends of the top axis, where a reader
+        // looks for which way the section runs.
+        let label_y = plot.y as i32 - canvas.px(22);
+        let start_text = format!("A  {start_label}");
+        let end_text = format!("B  {end_label}");
+        canvas.draw_text(plot.x as i32, label_y, &start_text, request.text_color, 1, None);
+        let end_width = measure_text_width(&end_text, 1, canvas.type_scale) as i32;
+        canvas.draw_text(
+            plot.right() as i32 - end_width,
+            label_y,
+            &end_text,
+            request.text_color,
+            1,
+            None,
+        );
+        return;
+    }
     let route_label = section.metadata().attribute("route_label").unwrap_or("");
     let route_y = plot.bottom() as i32 + canvas.px(62);
     let start_text = format!("A  {start_label}");

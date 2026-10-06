@@ -29,7 +29,7 @@ def _hydraulic_module(device):
     though the kernel uses explicit round-to-nearest operations.
     """
     import cupy as cp
-    from cupy.cuda import compiler
+    from gpuwm import nvrtc_ptx_cache as compiler
     from gpuwm.certify.kernel_manifest import record_module
     from gpuwm.kernel_compile_notice import observe_module_compile
 

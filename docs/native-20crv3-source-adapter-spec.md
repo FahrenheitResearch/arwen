@@ -95,17 +95,9 @@ passes one is refused rather than quietly overriding a shipped contract.
 smoother than any of them.  For a member state the route is unchanged:
 `--source 20crv3` over the every-member GRIB2 archive.
 
-**PSL publishes no orography and no land mask** for 20CRv3 (MEASURED
-2026-08-16: no `hgt.sfc`, `land` or `lsmask` file exists anywhere under
-`Datasets/20thC_ReanV3/`).  Both are recovered from 20CRv3's own published
-fields by `tools/build_pressure_level_invariant_supplement.py` -- the
-orography by evaluating the published pressure-level geopotential height
-at the published surface pressure, linearly in `ln p`; the land mask as
-the valid footprint of the published soil wilting point -- and carried as
-one supplement whose provenance document states the method and the
-divergence.  Sanity, MEASURED at 1974-04-03 18Z: 2275 m at 39N/105W
-(Colorado Front Range), 379 m at 35N/98W (central Oklahoma), 50 m at
-30N/92W (Louisiana coast).
+**Native acquisition uses published invariants.** `timeInvariantSI/hgt.sfc.nc` and `land.nc` publish the source surface height and land fraction. `gpuwm fetch --source 20crv3-cf` binds their exact coordinate subset to every primary valid time through `rw_netcdf bind-invariants`. Native fetch retires pressure-level terrain reconstruction and the wilting-point land-mask workaround. Older staged recovered supplements carry their original reconstruction divergence in their per-run receipts.
+
+Published tsoil and soilw supply all four Noah layers. Source skt supplies an explicit SST proxy over water because PSL has no separate sub-daily SST variable. This field binding is declared in the packaged profile and fetch receipt. See `native-cf-fetch.md` for annual SI/MO routing and year boundaries.
 
 ### Evidence, MEASURED 2026-08-17
 

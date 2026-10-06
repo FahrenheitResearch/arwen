@@ -356,6 +356,11 @@ def physics_history_fields(physics) -> dict[str, object]:
     if physics.radiation_active:
         output.update(SWDOWN=physics.fields["swdown"],
                       GLW=physics.fields["glw"])
+        for name in ("albsol", "albbcksol"):
+            if name in physics.fields:
+                output[SCHEME_OUTPUT_FIELDS[name].netcdf_name] = physics.fields[name]
+        if "albsol" in physics.fields and "gsw" in physics.fields:
+            output["GSW"] = physics.fields["gsw"]
         # WRF's SWNORM, written only where slope_rad runs.
         if physics.topo_shortwave is not None:
             output["SWNORM"] = physics.fields["swnorm"]

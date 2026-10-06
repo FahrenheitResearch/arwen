@@ -11,6 +11,7 @@ import time
 
 from gpuwm.bridges import (BRIDGE_ABI_MARKERS, DecoderContractError, accept_resolved,
                            artifact_remedy, bridge_abi_matches, default_bridge_dir,
+                           legacy_bridge_candidates,
                            executable_name, packaged_bridge_dir)
 
 CRATE_RELATIVE = "tools/zarr_bridge"
@@ -48,7 +49,8 @@ def resolve_zarr_bin() -> Path:
                       root / CRATE_RELATIVE / "target/debug" / filename,
                       root / "libexec/bridges" / filename,
                       packaged_bridge_dir() / filename,
-                      default_bridge_dir() / filename)
+                      default_bridge_dir() / filename,
+                      *legacy_bridge_candidates(filename))
     stale = []
     for path in candidates:
         if not path.is_file():

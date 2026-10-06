@@ -333,6 +333,29 @@ def thompson_table_root() -> str:
     return str(packaged)
 
 
+#: Environment override for the operational WRF 3.9 fork's Thompson tables
+#: (RunConfig.thompson_version = "wrf_39_noaa").
+THOMPSON_FORK_TABLE_ROOT_ENV = "GPUWM_THOMPSON_FORK_TABLE_ROOT"
+
+
+def thompson_fork_table_root() -> str:
+    """Where the WRF 3.9 fork's Thompson tables live.
+
+    The override first, then ``~/.gpuwm/tables/thompson-wrf39-noaa``.  The
+    set is generated from the fork's own ``thompson_init`` by
+    ``tools/thompson_fork_oracle/build.sh`` (gfortran on any Linux CPU, about
+    two minutes) and is pinned by size and SHA-256 in
+    :data:`gpuwm.core.thompson_contract.FORK_TABLE_ASSETS`, so a root with
+    other bytes fails closed exactly as the v4.6.1 root does.  The fork's
+    CCN activation table is byte-identical to the v4.6.1 one and is read
+    from :func:`thompson_table_root`.
+    """
+    override = os.environ.get(THOMPSON_FORK_TABLE_ROOT_ENV)
+    if override:
+        return override
+    return str(user_thompson_table_root().parent / "thompson-wrf39-noaa")
+
+
 def thompson_guard_exports() -> tuple[str, str]:
     """The two exports the guarded mp8 runners demand, ready to paste.
 
@@ -815,7 +838,9 @@ def _derive_single_domain_profiles():
         switches.update({
             name: value
             for name, value in (template.get("parameters") or {}).items()
-            if name not in _SWITCHES_OUTSIDE_THE_SINGLE_DOMAIN_PRODUCT
+            # Explicit template choices survive option-identity exclusions.
+            # A single-domain product still has no nest-edge policy.
+            if name != "nest_microphysics_transition"
         })
         floor = list(_SINGLE_DOMAIN_SWITCH_FLOOR)
         if (switches.get("ra_lw_physics"), switches.get("ra_sw_physics")) == (
@@ -3533,7 +3558,13 @@ def pending_wrf_physics_components(
     #     not the default template's microphysics and no route makes it a
     #     default, so it is still never the scheme a user gets by
     #     accident: it is reached by naming that suite or as a per-domain
-    #     component override.  (Verified against the shipped registry by
+    #     component override.  A second named suite, the operational HRRR
+    #     fork composition thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1
+    #     (4193eb0da), is the recommended profile of the HRRR doors (hrrr,
+    #     hrrr-prs, hrrr-native) and nowhere else, and the native benchmark
+    #     declares it on the HRRR source because the operational namelist
+    #     it replays is that composition.  Neither is the global default.
+    #     (Verified against the shipped registry by
     #     tests/test_mp28_runnable.py.)
     # Adding a blocker here instead would be the wrong shape twice over: it
     # would refuse the whole scheme for a limitation that is really about
@@ -3804,6 +3835,7 @@ __all__ = [
     "profile_declared_acknowledgements",
     "settings_declared_acknowledgements",
     "thompson_guard_exports",
+    "thompson_fork_table_root",
     "thompson_table_root",
     "require_ready_wrf_physics",
     "require_rrtmg_legacy_executable",

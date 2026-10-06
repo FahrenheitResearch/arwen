@@ -409,6 +409,8 @@ def test_up_heli_max_has_no_trajectory_or_restart_reader():
         "gpuwm/core/preflight.py",    # pricing registry + lifetime audit
         "gpuwm/runtime.py",           # calls reset_up_heli_max only
         "gpuwm/offline_child_run.py",  # downscale child reset-on-write
+        # Each ensemble member's completed history frame resets its window.
+        "gpuwm/ensemble/native_forecast.py",
         # `gpuwm go`'s runner: reset-on-write, same as the others.  This
         # entry is an ADDITION and the reason is worth the line: for as
         # long as it was absent, this assertion was the thing certifying
@@ -443,6 +445,10 @@ def test_up_heli_max_has_no_trajectory_or_restart_reader():
         # and the AST pins below still hold because streaming touches no
         # scratch API at all.
         "gpuwm/core/streaming.py",
+        # The native ensemble publisher resets the diagnostic after its
+        # synchronous history consumer, through reset_up_heli_max only.
+        # The scratch-access and no-trajectory AST guards below still apply.
+        "gpuwm/ensemble/native_forecast.py",
     }
 
     # Outside the owner and the sanctioned sites, no scratch-API access to

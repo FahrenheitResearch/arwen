@@ -893,11 +893,19 @@ struct FrameRef {
     valid_unix: i64,
 }
 
-fn enumerate_frames(inputs: &[PathBuf]) -> Result<(Vec<FrameRef>, i64), String> {
+/// The frames of the inputs, the run's origin, and the model token of the
+/// sections' time line: `WOOF` for the engine's own history files, a
+/// model label the files agree on, otherwise the store identity `WRF`
+/// (the maps' rule, `rustwx_products::shared_context::model_token`).
+fn enumerate_frames(inputs: &[PathBuf]) -> Result<(Vec<FrameRef>, i64, String), String> {
     let mut frames = Vec::new();
     let mut origin: Option<i64> = None;
+    let mut model_labels = Vec::with_capacity(inputs.len());
     for path in inputs {
         let file = WrfFile::open(path).map_err(|err| format!("{}: {err}", path.display()))?;
+        // A label the metadata row cannot take keeps the store identity,
+        // as it does on the maps; it never stops the sections.
+        model_labels.push(crate::local_import::model_label(&file).unwrap_or(None));
         let times = file
             .times()
             .map_err(|err| format!("{}: Times: {err}", path.display()))?;
@@ -928,7 +936,11 @@ fn enumerate_frames(inputs: &[PathBuf]) -> Result<(Vec<FrameRef>, i64), String> 
     }
     frames.sort_by_key(|frame| frame.valid_unix);
     let origin = origin.unwrap_or(frames[0].valid_unix);
-    Ok((frames, origin))
+    let model = rustwx_products::shared_context::model_token_with(
+        rustwx_core::ModelId::WrfGdex,
+        rustwx_products::shared_context::agreed_model_label(&model_labels).as_deref(),
+    );
+    Ok((frames, origin, model))
 }
 
 /// Bilinear column weights in grid space for a lat/lon point.
@@ -1479,10 +1491,74 @@ fn build_request(theme: &RenderTheme, width: u32, height: u32) -> xs::CrossSecti
     // The producer's mark on the title row, from `text.source_label`.  A
     // theme that names none leaves it unset and the header is drawn the
     // way it always was.
-    if let Some(mark) = theme.source_label.clone() {
+    if let Some(mark) = theme.source_subtitle(theme.source_label.clone()) {
         request.source_label = Some(mark);
     }
     request
+}
+
+/// Under auto layout a section carries the map products' header: the
+/// renderer draws no title row of its own and leaves the header band
+/// empty, and the caller draws the header into it after the render.
+/// `None` under fixed layout, where the section keeps its own header.
+fn planned_section_header(request: &mut xs::CrossSectionRenderRequest) -> Option<rustwx_render::CanvasPlan> {
+    let rustwx_render::LayoutMode::Auto { class, scale } = rustwx_render::layout_mode() else {
+        return None;
+    };
+    let plan = rustwx_render::LayoutTable::builtin().plan_header(request.width, request.height, class, scale);
+    let defaults = xs::Insets::default();
+    // Room under the header for the axis title and the A and B labels.
+    request.margins = xs::Insets {
+        left: defaults.left,
+        right: defaults.right,
+        top: plan.header.h + 34,
+        bottom: 58,
+    };
+    request.external_header = true;
+    Some(plan)
+}
+
+/// The smallest span of a section fill, in its display units, that is
+/// drawn as a field rather than as no signal.
+const SECTION_MIN_SIGNAL_SPAN: f32 = 1e-6;
+
+/// The section's time line in the map header's grammar:
+/// `Init 05/26 15Z | F002 | Valid 05/26 17Z | WOOF`.  The domain rides in
+/// the title as the maps' `(d01 3 km)`, so the header composes it into the
+/// same place and spelling as every map of the domain.  `model` is the
+/// inputs' model token (`WOOF`, a named model, or `WRF` for stock WRF),
+/// which a theme's `text.model_label` still replaces.
+fn section_time_line(
+    theme: &RenderTheme,
+    model: &str,
+    init_label: &str,
+    lead_seconds: u64,
+    valid_label: &str,
+) -> String {
+    let hours = lead_seconds / 3_600;
+    let minutes = (lead_seconds % 3_600) / 60;
+    let lead = if minutes == 0 {
+        format!("F{hours:03}")
+    } else {
+        format!("F{hours:03}:{minutes:02}")
+    };
+    let valid = valid_label.replace(":00Z", "Z");
+    format!("Init {init_label} | {lead} | Valid {valid} | {}", theme.model_name(model))
+}
+
+/// A domain key as the map headers spell it: `d01-3km` is `d01 3 km`,
+/// `d02-750m` is `d02 750 m`.  Anything else is kept as it is.
+fn map_style_domain(domain: &str) -> String {
+    let Some((grid, spacing)) = domain.split_once('-') else {
+        return domain.to_string();
+    };
+    let digits = spacing
+        .find(|ch: char| !(ch.is_ascii_digit() || ch == '.'))
+        .unwrap_or(spacing.len());
+    if digits == 0 || digits == spacing.len() {
+        return format!("{grid} {spacing}");
+    }
+    format!("{grid} {} {}", &spacing[..digits], &spacing[digits..])
 }
 
 /// The provenance a section's metadata carries: the theme's
@@ -1490,8 +1566,7 @@ fn build_request(theme: &RenderTheme, width: u32, height: u32) -> xs::CrossSecti
 /// rule the map products take at the renderer's seam.
 fn section_source_label(theme: &RenderTheme, derived: &str) -> String {
     theme
-        .source_label
-        .clone()
+        .source_subtitle(Some(derived.to_string()))
         .unwrap_or_else(|| derived.to_string())
 }
 
@@ -1689,7 +1764,7 @@ pub fn render_sections(
     config: &SectionRenderConfig<'_>,
     mut emit: impl FnMut(SectionOutcome),
 ) -> Result<(usize, usize), String> {
-    let (frames, origin_unix) = enumerate_frames(config.inputs)?;
+    let (frames, origin_unix, model) = enumerate_frames(config.inputs)?;
     let frames: Vec<&FrameRef> = match config.frame {
         None => frames.iter().collect(),
         Some(index) => vec![frames.get(index).ok_or_else(|| {
@@ -1915,7 +1990,19 @@ pub fn render_sections(
                     // "nothing here yet".
                     let mut fill = fill;
                     fill.values.truncate(kept);
-                    let fill_has_signal = fill.values.iter().any(|v| v.is_finite());
+                    // A fill whose values span next to nothing (a cut
+                    // through clear air for a condensate, trace values
+                    // near 1e-8 g/kg) is no signal too: the range collapsed
+                    // onto one value and the ramp's middle flooded the whole
+                    // plot as if the cut were full of cloud.  Display units
+                    // put every real section fill's span far above 1e-6.
+                    let fill_has_signal = {
+                        let (lo, hi) = fill.values.iter().filter(|v| v.is_finite()).fold(
+                            (f32::INFINITY, f32::NEG_INFINITY),
+                            |(lo, hi), v| (lo.min(*v), hi.max(*v)),
+                        );
+                        lo.is_finite() && hi - lo > SECTION_MIN_SIGNAL_SPAN
+                    };
                     if !fill_has_signal {
                         for value in fill.values.iter_mut() {
                             *value = 0.0;
@@ -1930,6 +2017,14 @@ pub fn render_sections(
                         .titled(title.clone())
                         .field(fill.label.clone(), fill.units.clone())
                         .sourced_from(section_source_label(config.theme, &config.source_label))
+                        .with_attribute(
+                            "start_label",
+                            format!("{:.2}, {:.2}", line.start.lat_deg, line.start.lon_deg),
+                        )
+                        .with_attribute(
+                            "end_label",
+                            format!("{:.2}, {:.2}", line.end.lat_deg, line.end.lon_deg),
+                        )
                         .with_attribute("domain", domain.clone())
                         .with_attribute("init_label", init_label.clone())
                         .with_attribute("forecast_hour", lead_label.clone())
@@ -1980,6 +2075,7 @@ pub fn render_sections(
                     };
                     let mut request = build_request(config.theme, config.width, config.height)
                         .with_palette(ramp);
+                    let header_plan = planned_section_header(&mut request);
                     // The built-in overlay contours the FILL; the isotherms
                     // come from tk as an explicit overlay below.
                     request.isotherms_c = Vec::new();
@@ -2067,8 +2163,23 @@ pub fn render_sections(
                     request = request.with_contour_overlays(bundles);
                     let image = xs::render_scalar_section(&section, &request)
                         .map_err(|err| format!("render: {err}"))?;
-                    let png = image::RgbaImage::from_raw(image.width(), image.height(), image.rgba().to_vec())
+                    let mut png = image::RgbaImage::from_raw(image.width(), image.height(), image.rgba().to_vec())
                         .ok_or_else(|| "rendered buffer does not match its dimensions".to_string())?;
+                    if let Some(plan) = header_plan.as_ref() {
+                        let header = rustwx_render::chrome_plan::PlanHeaderText::compose(
+                            Some(&if fill_has_signal {
+                                format!("{headline} ({})", map_style_domain(&domain))
+                            } else {
+                                format!("{headline} (no signal) ({})", map_style_domain(&domain))
+                            }),
+                            Some(fill.units.as_str()),
+                            Some(&section_time_line(config.theme, &model, &init_label, lead, &valid_label)),
+                            None,
+                            config.theme.source_subtitle(Some(format!("source: {}", config.source_label))).as_deref(),
+                        );
+                        let (title_ink, meta_ink) = rustwx_render::chrome_plan::header_inks();
+                        rustwx_render::chrome_plan::draw_plan_header(&mut png, plan, &header, title_ink, meta_ink);
+                    }
                     // The same strip the map families compose, on the same
                     // two conditions: a theme with a `footer` section and
                     // caption fields the caller installed.  Neither built-in
@@ -2115,6 +2226,15 @@ pub fn render_sections(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_section_names_its_domain_as_the_maps_do() {
+        assert_eq!(map_style_domain("d01-3km"), "d01 3 km");
+        assert_eq!(map_style_domain("d01-2.25km"), "d01 2.25 km");
+        assert_eq!(map_style_domain("d02-750m"), "d02 750 m");
+        assert_eq!(map_style_domain("d03"), "d03");
+        assert!(!section_time_line(&RenderTheme::default_theme(), "WOOF", "05/26 15Z", 7_200, "05/26 17:00Z").contains("d01"));
+    }
 
     #[test]
     fn the_path_is_sampled_at_no_coarser_than_half_the_grid_spacing() {
@@ -2504,9 +2624,9 @@ mod tests {
         let plain = build_request(&RenderTheme::dark_theme(), 1200, 900);
         assert!(plain.source_label.is_none());
         let mut theme = RenderTheme::dark_theme();
-        theme.source_label = Some("hex-mod 0.2.3".to_string());
+        theme.source_label = Some("OTHER 0.2.3".to_string());
         let marked = build_request(&theme, 1200, 900);
-        assert_eq!(marked.source_label.as_deref(), Some("hex-mod 0.2.3"));
+        assert_eq!(marked.source_label.as_deref(), Some("OTHER 0.2.3"));
     }
 
     #[test]
@@ -2516,6 +2636,31 @@ mod tests {
         let mut theme = RenderTheme::dark_theme();
         theme.source_label = Some("my model 1.2.3".to_string());
         assert_eq!(section_source_label(&theme, "ArWen"), "my model 1.2.3");
+    }
+
+    #[test]
+    fn woof_section_headers_use_public_labels_and_generic_headers_keep_their_bytes() {
+        let generic = RenderTheme::default_theme();
+        let expected = "Init 05/26 15Z | F002 | Valid 05/26 17Z | WRF";
+        assert_eq!(section_time_line(&generic, "WRF", "05/26 15Z", 7_200, "05/26 17:00Z"), expected);
+        // The engine's own history files carry WOOF into the line with no theme.
+        assert_eq!(
+            section_time_line(&generic, "WOOF", "05/26 15Z", 7_200, "05/26 17:00Z"),
+            "Init 05/26 15Z | F002 | Valid 05/26 17Z | WOOF"
+        );
+        assert!(build_request(&generic, 640, 480).source_label.is_none());
+        for name in ["woof-light", "woof-dark"] {
+            let theme = RenderTheme::builtin(name).unwrap();
+            let line = section_time_line(&theme, "WRF", "05/26 15Z", 7_200, "05/26 17:00Z");
+            assert_eq!(line, "Init 05/26 15Z | F002 | Valid 05/26 17Z | WOOF");
+            assert_eq!(build_request(&theme, 640, 480).source_label.as_deref(), Some("Recast WOOF"));
+            assert_eq!(section_source_label(&theme, "ArWen"), "Recast WOOF");
+        }
+        let mut templated = generic;
+        templated.source_label = Some("Recast WOOF {version}".into());
+        let mark = build_request(&templated, 640, 480).source_label.unwrap();
+        assert!(mark.starts_with("Recast WOOF") && !mark.contains('{'), "{mark}");
+        assert_eq!(section_source_label(&templated, "ArWen"), mark);
     }
 
     #[test]

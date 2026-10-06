@@ -23,8 +23,8 @@ import pytest
 from conftest import requires_gpu
 from gpuwm.core.fp32_ulp import fp32_ulp_distance
 
-FIXTURE = (Path(__file__).resolve().parents[1] / "gpuwm" / "data" / "urban"
-           / "oracle" / "bep" / "myjurb"
+FIXTURE = (Path(__file__).resolve().parents[1] / "tests" / "data"
+           / "oracles" / "urban" / "bep" / "myjurb"
            / "columns")
 
 BEP = ("a_u_bep", "a_v_bep", "a_t_bep", "a_q_bep", "a_e_bep", "b_u_bep",

@@ -51,6 +51,7 @@ from gpuwm.physics_compat import (
     validate_single_domain_physics_profile,
 )
 from gpuwm.native_wrf_contract import native_geometry_contract
+from gpuwm.wrf_physics_inventory import EXPORT_USE_THETA_M
 from gpuwm.static.lambert import LambertGrid
 from gpuwm.vertical_contract import expected_coordinate_shapes
 from gpuwm.config import RunConfig
@@ -593,6 +594,108 @@ def test_a_profile_free_export_refuses_a_cache_that_records_no_physics():
         recorded_physics_selectors(without, label="d02 direct-export")
 
 
+def _wrf_side_strips(field, width):
+    """The four ``*_B??`` layouts of one mass-level field, WRF order.
+
+    West and east are ``(width, z, y)``, south and north ``(width, z,
+    x)``, east and north outermost first (share/module_bc.F).
+    """
+
+    return {
+        "XS": field[:, :, :width].transpose(2, 0, 1),
+        "XE": field[:, :, -width:][:, :, ::-1].transpose(2, 0, 1),
+        "YS": field[:, :width, :].transpose(1, 0, 2),
+        "YE": field[:, -width:, :][:, ::-1, :].transpose(1, 0, 2),
+    }
+
+
+def test_the_export_holds_one_theta_representation_and_says_which(tmp_path):
+    """Dry theta in the header, the prognostic record and the boundary.
+
+    WRF couples its PROGNOSTIC into ``T_B*`` (main/real_em.F:872) and
+    reads the prognostic from ``THM``; ``USE_THETA_M`` says which theta
+    that is, and wrf.exe's input gate compares it with the namelist.  The
+    exporter used to write ``USE_THETA_M = 1`` and a moist ``THM`` over
+    boundary rows that were the engine's own dry-coupled tables, so a
+    ``use_theta_m = 1`` wrf.exe read dry rows as moist theta: measured
+    with stock WRF V4.6.1 on this very case, the specified boundary row
+    dropped 2.887 K at the first step (theta * a*qv / (1 + a*qv), a =
+    Rv/Rd, predicted 2.8874 K), and held to 3e-5 K once the pair was dry.
+    This runs the real route on the CPU (initialization, prepared cache,
+    export) and reads the bytes back.
+    """
+
+    output, _cfg, _ = _export_a_real_prepared_cache(tmp_path, 6)
+    rvovrd = 461.6 / 287.0
+    with netCDF4.Dataset(output / "wrfinput_d01") as initial:
+        with netCDF4.Dataset(output / "wrfbdy_d01") as boundary:
+            assert int(initial.getncattr("USE_THETA_M")) == EXPORT_USE_THETA_M
+            assert int(boundary.getncattr("USE_THETA_M")) == EXPORT_USE_THETA_M
+            assert EXPORT_USE_THETA_M == 0
+            dry_t = np.asarray(initial.variables["T"][0], dtype=np.float32)
+            thm = np.asarray(initial.variables["THM"][0], dtype=np.float32)
+            # What real.exe writes under use_theta_m = 0: THM is T, bit
+            # for bit.
+            np.testing.assert_array_equal(
+                thm.view(np.uint32), dry_t.view(np.uint32))
+            qv = np.asarray(initial.variables["QVAPOR"][0], dtype=np.float64)
+            # Moist enough that the two representations cannot be
+            # confused.
+            assert qv.max() > 1.0e-3
+            mu = (np.asarray(initial.variables["MU"][0], dtype=np.float64)
+                  + np.asarray(initial.variables["MUB"][0], dtype=np.float64))
+            c1h = np.asarray(initial.variables["C1H"][0], dtype=np.float64)
+            c2h = np.asarray(initial.variables["C2H"][0], dtype=np.float64)
+            mass = c1h[:, None, None] * mu[None] + c2h[:, None, None]
+            theta = dry_t.astype(np.float64) + 300.0
+            dry = mass * (theta - 300.0)
+            moist = mass * (theta * (1.0 + rvovrd * qv) - 300.0)
+            width = boundary.dimensions["bdy_width"].size
+            # The tables are the engine's own coupling of its float32
+            # state, not real.exe's product of the file's T: they sit
+            # within a few float32 steps of the full theta, carried
+            # through the mass.
+            bound = (4.0 * float(np.spacing(np.float32(theta.max())))
+                     * float(mass.max()))
+            dry_strips = _wrf_side_strips(dry, width)
+            moist_strips = _wrf_side_strips(moist, width)
+            for suffix in ("XS", "XE", "YS", "YE"):
+                table = np.asarray(
+                    boundary.variables[f"T_B{suffix}"][0], dtype=np.float64)
+                assert table.shape == dry_strips[suffix].shape, suffix
+                assert (np.abs(table - dry_strips[suffix]).max()
+                        <= bound), suffix
+                # ... and nowhere near the moist coupling the old header
+                # claimed: thousands of times the bound.
+                assert (np.abs(table - moist_strips[suffix]).max()
+                        > 1.0e3 * bound), suffix
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert manifest["use_theta_m"] == EXPORT_USE_THETA_M
+
+
+def test_dry_export_roundtrips_through_the_real_wrf_input_reader(tmp_path):
+    """The initial dry theta must match the boundary's FP32 coupling.
+
+    Summing thb + thp in float64 before writing T retained bits that the
+    model's float32 total_theta discarded before building its boundary
+    tables.  Under a dry declaration the reader correctly rejects that
+    difference, especially where perturbation theta is close to zero.
+    """
+    from gpuwm.ingest.wrfinput import read_wrfinput, read_wrfbdy
+
+    output, cfg, _ = _export_a_real_prepared_cache(tmp_path, 6)
+    dims = dict(west_east=cfg.nx, west_east_stag=cfg.nx + 1,
+                south_north=cfg.ny, south_north_stag=cfg.ny + 1,
+                bottom_top=cfg.nz, bottom_top_stag=cfg.nz + 1,
+                soil_layers_stag=4)
+    restored = read_wrfinput(output / "wrfinput_d01", cfg=cfg,
+                             expected_dimensions=dims, require_complete=False)
+    boundary = read_wrfbdy(output / "wrfbdy_d01", restored=restored,
+                           run_seconds=3600, forcing_interval_seconds=3600,
+                           cfg=cfg)
+    assert len(boundary.intervals) == 1
+
+
 def test_global_updates_keep_stock_wrf_v4_gate_and_geometry():
     geometry = {
         "center_lat": 35.5,
@@ -607,6 +710,12 @@ def test_global_updates_keep_stock_wrf_v4_gate_and_geometry():
         dx=1000.0, dy=1000.0, dt=5.0, geometry=geometry)
     assert "GPUWM" in updates["TITLE"]
     assert "V4.6.1" in updates["TITLE"]
+    # The frozen contract holds real.exe's captured USE_THETA_M = 1; the
+    # export overrides it with the representation it actually writes.
+    assert updates["USE_THETA_M"] == EXPORT_USE_THETA_M == 0
+    assert _load_contract()["wrfinput"]["global_attributes"][
+        "USE_THETA_M"] == 1
+    assert "USE_THETA_M" in _domain_global_attributes(updates)
     assert updates["WEST-EAST_GRID_DIMENSION"] == 501
     assert updates["SOUTH-NORTH_GRID_DIMENSION"] == 401
     assert updates["GHG_INPUT"] == 0

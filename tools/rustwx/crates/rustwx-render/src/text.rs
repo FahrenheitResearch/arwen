@@ -9,6 +9,9 @@ use std::sync::OnceLock;
 
 const SOURCE_SANS_3_REGULAR: &[u8] = include_bytes!("../assets/fonts/SourceSans3-Regular.ttf");
 const SOURCE_SANS_3_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/SourceSans3-Semibold.ttf");
+/// The planned chrome's face (Inter 4.0, SIL OFL, `assets/fonts/LICENSE-Inter.txt`).
+const INTER_REGULAR: &[u8] = include_bytes!("../assets/fonts/Inter-Regular.ttf");
+const INTER_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/Inter-SemiBold.ttf");
 
 struct FontSet {
     regular: Option<Font<'static>>,
@@ -22,6 +25,31 @@ enum FontKind {
 }
 
 static FONTS: OnceLock<FontSet> = OnceLock::new();
+static CHROME_FONTS: OnceLock<FontSet> = OnceLock::new();
+
+/// The face the planned chrome (header, bar ticks, sheet labels) draws in:
+/// a theme's or the environment's font when one is installed, so a themed
+/// frame keeps one face throughout, and Inter otherwise.  The fixed-canvas
+/// chrome keeps Source Sans 3, so its look does not move.
+fn chrome_font(kind: FontKind) -> Option<&'static Font<'static>> {
+    let themed = FONT_OVERRIDE
+        .get()
+        .is_some_and(|installed| installed.regular.is_some() || installed.bold.is_some())
+        || env::var_os("RUSTWX_RENDER_FONT_REGULAR").is_some()
+        || env::var_os("RUSTWX_RENDER_FONT_BOLD").is_some();
+    if themed {
+        return get_font(kind);
+    }
+    let fonts = CHROME_FONTS.get_or_init(|| FontSet {
+        regular: Font::try_from_bytes(INTER_REGULAR),
+        bold: Font::try_from_bytes(INTER_SEMIBOLD),
+    });
+    match kind {
+        FontKind::Regular => fonts.regular.as_ref(),
+        FontKind::Bold => fonts.bold.as_ref().or(fonts.regular.as_ref()),
+    }
+    .or_else(|| get_font(kind))
+}
 
 /// Font files a theme installed before the first glyph was drawn.  Read
 /// ahead of the environment override and the embedded faces; a path that
@@ -655,6 +683,121 @@ fn font_candidates(bold: bool) -> Vec<PathBuf> {
     out.push(PathBuf::from(r"C:\Windows\Fonts").join(segoe_name));
     out.push(PathBuf::from(r"C:\Windows\Fonts").join(arial_name));
 
+    out
+}
+
+/// Chrome text at an exact pixel size, the size the layout table names.
+///
+/// Digits are set in cells of one width (the widest digit), so a lead
+/// time or a valid time that changes from frame to frame does not move
+/// the text after it: `F009` to `F010` stays put in a loop.  Every other
+/// glyph keeps its own advance and kerning.
+pub(crate) fn draw_text_px(
+    img: &mut RgbaImage,
+    text: &str,
+    x: i32,
+    y: i32,
+    color: Rgba,
+    size_px: f32,
+    bold: bool,
+) {
+    let kind = if bold { FontKind::Bold } else { FontKind::Regular };
+    let Some(font) = chrome_font(kind) else {
+        draw_bitmap_text(img, text, x, y, color, ((size_px / 12.0).round() as u32).max(1));
+        return;
+    };
+    let scale = Scale::uniform(size_px.max(1.0));
+    let ascent = font.v_metrics(scale).ascent;
+    for (glyph, _) in tabular_layout(font, text, scale, x as f32, y as f32 + ascent) {
+        if let Some(bb) = glyph.pixel_bounding_box() {
+            glyph.draw(|gx, gy, coverage| {
+                let alpha = ((color.a as f32) * coverage).round().clamp(0.0, 255.0) as u8;
+                blend_pixel(
+                    img,
+                    bb.min.x + gx as i32,
+                    bb.min.y + gy as i32,
+                    Rgba { a: alpha, ..color },
+                );
+            });
+        }
+    }
+}
+
+/// Width `draw_text_px` gives `text`: the advance of the last glyph,
+/// so right alignment lands on the same pixel frame after frame.
+pub(crate) fn text_width_px(text: &str, size_px: f32, bold: bool) -> u32 {
+    let kind = if bold { FontKind::Bold } else { FontKind::Regular };
+    let Some(font) = chrome_font(kind) else {
+        return text.chars().count() as u32 * 8 * ((size_px / 12.0).round() as u32).max(1);
+    };
+    let scale = Scale::uniform(size_px.max(1.0));
+    tabular_layout(font, text, scale, 0.0, 0.0)
+        .last()
+        .map(|(glyph, advance)| (glyph.position().x + advance).ceil().max(0.0) as u32)
+        .unwrap_or(0)
+}
+
+pub(crate) fn ascent_px(size_px: f32, bold: bool) -> f32 {
+    let kind = if bold { FontKind::Bold } else { FontKind::Regular };
+    match chrome_font(kind) {
+        Some(font) => font.v_metrics(Scale::uniform(size_px.max(1.0))).ascent,
+        None => size_px * 0.8,
+    }
+}
+
+pub(crate) fn line_height_px(size_px: f32, bold: bool) -> u32 {
+    let kind = if bold { FontKind::Bold } else { FontKind::Regular };
+    match chrome_font(kind) {
+        Some(font) => {
+            let metrics = font.v_metrics(Scale::uniform(size_px.max(1.0)));
+            (metrics.ascent - metrics.descent).ceil().max(size_px.ceil()) as u32
+        }
+        None => (size_px.ceil() as u32).max(8),
+    }
+}
+
+/// Whether the embedded chrome faces draw every glyph of `text` (no
+/// glyph falls back to the empty `.notdef` box).
+pub fn chrome_font_covers(text: &str) -> bool {
+    [FontKind::Regular, FontKind::Bold].iter().all(|kind| match chrome_font(*kind) {
+        Some(font) => text
+            .chars()
+            .filter(|ch| !ch.is_whitespace())
+            .all(|ch| font.glyph(ch).id().0 != 0),
+        None => text.is_ascii(),
+    })
+}
+
+fn tabular_layout<'a>(
+    font: &'a Font<'static>,
+    text: &str,
+    scale: Scale,
+    x: f32,
+    baseline: f32,
+) -> Vec<(rusttype::PositionedGlyph<'a>, f32)> {
+    let digit_advance = ('0'..='9')
+        .map(|digit| font.glyph(digit).scaled(scale).h_metrics().advance_width)
+        .fold(0.0f32, f32::max);
+    let mut out = Vec::with_capacity(text.len());
+    let mut caret = x;
+    let mut previous: Option<rusttype::GlyphId> = None;
+    for ch in text.chars() {
+        let glyph = font.glyph(ch).scaled(scale);
+        let id = glyph.id();
+        let natural = glyph.h_metrics().advance_width;
+        let digit = ch.is_ascii_digit();
+        if let (Some(prev), false) = (previous, digit) {
+            caret += font.pair_kerning(scale, prev, id);
+        }
+        let (offset, advance) = if digit {
+            ((digit_advance - natural) / 2.0, digit_advance)
+        } else {
+            (0.0, natural)
+        };
+        out.push((glyph.positioned(point(caret + offset, baseline)), advance - offset));
+        caret += advance;
+        previous = Some(id);
+    }
     out
 }
 

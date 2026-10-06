@@ -4680,6 +4680,12 @@ def _twin_rrtmg_legacy(scheme, cls, lat, lon):
     at construction, so a twin built at the domain's latitudes would carry
     the wrong ozone column for every tile but one.
     """
+    smoke_options = {}
+    smoke_provider = getattr(scheme, "_smoke_provider", None)
+    if smoke_provider is not None:
+        # Rank construction uses neutral geography before the gather replaces
+        # it. The deferred provider validates the live adapter grid at use.
+        smoke_options["smoke_provider"] = smoke_provider.deferred_rebind(lat, lon)
     return cls(scheme.start_time, lat, lon,
                p_top=scheme.p_top,
                column_chunk=scheme.column_chunk,
@@ -4687,7 +4693,12 @@ def _twin_rrtmg_legacy(scheme, cls, lat, lon):
                ozone_parent=scheme._ozone_provider,
                ozone_routing=scheme.ozone_routing,
                longwave=scheme.longwave, shortwave=scheme.shortwave,
-               trace_gas_overrides=getattr(scheme, "trace_gas_overrides", None))
+               # WRF aer_opt of the shortwave this adapter runs: policy, part
+               # of the restart identity, and what _check_pins holds against
+               # the run config on every call.
+               aer_opt=scheme.aer_opt,
+               trace_gas_overrides=getattr(scheme, "trace_gas_overrides", None),
+               **smoke_options)
 
 
 def _tile_geography_like(value, original):
@@ -4757,7 +4768,7 @@ _TWIN_RECIPES = {
         reproduces=frozenset({"start_time", "latitude_deg", "longitude_deg",
                               "p_top", "column_chunk", "ozone_parent",
                               "ozone_routing", "o3input", "longwave",
-                              "shortwave", "trace_gas_overrides"}),
+                              "shortwave", "aer_opt", "trace_gas_overrides", "smoke_provider"}),
         # WRF's radiation call counter; the domain's adapter has stepped
         # when a buffer is built mid-run, a fresh twin has not, and that
         # difference is not dropped policy.
@@ -5638,7 +5649,8 @@ def radiation_footprint(cfg, options=None, *, resident_estimate=None, machine=No
     from gpuwm.core.prepared_tile_memory import for_options
     profile = (getattr(resident_estimate, "local_memory_profile", None)
                or getattr(machine, "device_profile", None))
-    prepared = for_options(cfg, options, profile=profile, estimate=resident_estimate)
+    prepared = for_options(cfg, options, profile=profile, estimate=resident_estimate,
+                           machine=machine)
     if prepared is not None:
         fp = replace(fp, prepared_memory=prepared,
                      source="itemized independent prepared buffers; unfused RTE peak retained per stream")

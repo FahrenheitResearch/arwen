@@ -469,8 +469,7 @@
           "format": "netcdf",
           "name": [
             "land"
-          ],
-          "standard_name": "land_binary_mask"
+          ]
         }
       ],
       "units": {
@@ -670,12 +669,39 @@
       "missing": {
         "kind": "preserve_mask"
       }
+    },
+    "sea_surface_temperature": {
+      "units": {
+        "source": "K",
+        "target": "K",
+        "scale": 1.0,
+        "offset": 0.0
+      },
+      "source_axes": [
+        "y",
+        "x"
+      ],
+      "target_axes": [
+        "y",
+        "x"
+      ],
+      "location": "surface",
+      "staggering": "none",
+      "missing": {
+        "kind": "reject"
+      },
+      "derivation": "source-water-skin-boundary"
     }
   },
   "derivations": [
     {
       "name": "pressure-from-coordinate",
       "operation": "pressure_from_vertical_coordinate"
+    },
+    {
+      "name": "source-water-skin-boundary",
+      "operation": "copy",
+      "source": "skin_temperature"
     }
   ],
   "target": {
@@ -839,6 +865,15 @@
         ],
         "location": "soil",
         "target_units": "m3 m-3"
+      },
+      {
+        "name": "sea_surface_temperature",
+        "axes": [
+          "y",
+          "x"
+        ],
+        "location": "surface",
+        "target_units": "K"
       }
     ],
     "pressure_requirement": "air_pressure",

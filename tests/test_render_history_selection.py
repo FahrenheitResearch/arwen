@@ -136,10 +136,11 @@ def _render_argv(argv):
 
 
 def test_the_front_door_refuses_by_name_and_leaves_no_run_directory(
-        tmp_path, capsys):
+        tmp_path, capsys, monkeypatch):
     """The whole point, through the real CLI dispatch."""
     path = _trimmed_wrfout(tmp_path / "trim.nc")
     out = tmp_path / "renders"
+    monkeypatch.setattr(render, "matplotlib_engine_gap", lambda: None)
     code = render.render_main(_render_argv([
         "--engine", "matplotlib", "--products", "refl",
         "--out", str(out), str(path)]))
@@ -153,10 +154,16 @@ def test_the_front_door_refuses_by_name_and_leaves_no_run_directory(
 
 
 def test_the_front_door_draws_the_surviving_product_and_says_what_died(
-        tmp_path, capsys):
+        tmp_path, capsys, monkeypatch):
     """A live product is still drawn; the dead one is named, not silent."""
     path = _trimmed_wrfout(tmp_path / "trim.nc")
     out = tmp_path / "renders"
+    monkeypatch.setattr(render, "matplotlib_engine_gap", lambda: None)
+    calls = []
+    def draw(paths, **kwargs):
+        calls.append((paths, kwargs["products"]))
+        return [], [], [("refl", "REFL_10CM was removed by history_drop")]
+    monkeypatch.setattr(render, "render_wrfouts", draw)
     render.render_main(_render_argv([
         "--engine", "matplotlib", "--products", "refl,t2",
         "--out", str(out), str(path)]))
@@ -164,3 +171,4 @@ def test_the_front_door_draws_the_surviving_product_and_says_what_died(
     assert "REFL_10CM" in message
     assert "history_drop" in message
     assert "Traceback" not in message
+    assert calls == [([path], ("refl", "t2"))]

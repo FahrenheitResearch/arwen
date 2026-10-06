@@ -141,6 +141,41 @@ FALL_SPEED_POLICIES = ("none", "reflectivity")
 #: resolution is recorded.  See :func:`resolve_solve_device`.
 SOLVE_DEVICES = ("auto", "host", "cuda")
 
+#: The radar precipitation analysis after the solve
+#: (:mod:`gpuwm.da.hydrometeor_analysis`).  "off" leaves the analysis exactly
+#: as the filter, positivity and the saturation bound make it; "clear" is
+#: what HRRRDAS applies to every member (gsdcloudanalysis.F90:910-927,
+#: l_precip_clear_only at parm/hrrrdas/hrrrdas_gsiparm.anl:170).  The module's
+#: "trim-build" rule (gsdcloudanalysis.F90:928-1049) is a deterministic
+#: analysis's rule and is refused here: every analysis this function makes
+#: is an ensemble member's (see :data:`PRECIP_ANALYSIS_MEMBER_REFUSAL`).
+PRECIP_ANALYSIS_MODES = ("off", "clear")
+
+#: Why ``precip_analysis="trim-build"`` is refused on the ensemble.  NOAA
+#: runs the trim and build rule on the deterministic analysis only and gives
+#: every HRRRDAS member the clear step (gsdcloudanalysis.F90:910-927 under
+#: l_precip_clear_only, parm/hrrrdas/hrrrdas_gsiparm.anl:170).  This seam
+#: analyses ensemble members and nothing else (the cycle has no analysed
+#: deterministic member, tools/da_cycle_prepared.py module header).  Run on
+#: every member, the rule scales each member's column so its largest rain
+#: plus snow equals one retrieval and writes that same retrieval at the
+#: strongest echo level of every member that had less: the members' rain
+#: under echo converges on one value, and the filter's next cycle has no
+#: hydrometeor spread there to weigh the radar against.
+PRECIP_ANALYSIS_MEMBER_REFUSAL = (
+    "precip_analysis='trim-build' is refused for an ensemble analysis. The "
+    "trim and build rule (NOAA's gsdcloudanalysis.F90:928-1049) is a "
+    "deterministic analysis's rule: NOAA gives every ensemble member the "
+    "clear step only (l_precip_clear_only, hrrrdas_gsiparm.anl:170), and "
+    "this analysis has no deterministic member. On every member it scales "
+    "each column to one retrieval maximum and inserts one retrieval at the "
+    "strongest echo, so the members' rain under echo converges on one value "
+    "and the next cycle's filter has no spread there (measured on a planted "
+    "ensemble: tests/test_da_hydrometeor_analysis.py, "
+    "test_trim_build_on_every_member_collapses_rain_spread). Use 'clear'; "
+    "the rule stays in gpuwm.da.hydrometeor_analysis for a deterministic "
+    "member")
+
 
 class RadarAssimilationError(ValueError):
     """The observations, the checkpoints and the config cannot be
@@ -405,6 +440,16 @@ class RadarAssimilationConfig:
     #: its columns alone.
     velocity_dispersion_batch_ratio: float | None = (
         DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO)
+    #: The radar half of the GSD cloud analysis, run on the device after the
+    #: solve and positivity and before the saturation bound, as the HRRR
+    #: orders it (its cloud analysis runs after the last outer loop).  One of
+    #: :data:`PRECIP_ANALYSIS_MODES`.  OFF by default today: it is opt-in
+    #: until a rain-scored real case shows what it does to rain after the
+    #: analysis.  The water it removes is a declared sink, as in the HRRR.
+    #: "clear" fits any scheme and is the step NOAA gives every ensemble
+    #: member; "trim-build" is refused here
+    #: (:data:`PRECIP_ANALYSIS_MEMBER_REFUSAL`).
+    precip_analysis: str = "off"
 
     def __post_init__(self) -> None:
         if not self.analysis_fields:
@@ -636,6 +681,21 @@ class RadarAssimilationConfig:
             raise RadarAssimilationError(
                 f"solve_device must be one of {SOLVE_DEVICES}, got "
                 f"{self.solve_device!r}")
+        if self.precip_analysis == "trim-build":
+            raise RadarAssimilationError(PRECIP_ANALYSIS_MEMBER_REFUSAL)
+        if self.precip_analysis not in PRECIP_ANALYSIS_MODES:
+            raise RadarAssimilationError(
+                f"precip_analysis must be one of {PRECIP_ANALYSIS_MODES}, "
+                f"got {self.precip_analysis!r}")
+        if self.precip_analysis != "off":
+            if not (self.velocity or self.reflectivity or self.clear_air):
+                raise RadarAssimilationError(
+                    f"precip_analysis={self.precip_analysis!r} reads the "
+                    "radar file's echo and clear-air masks, and with none "
+                    "of velocity, reflectivity or clear_air enabled this "
+                    "analysis reads no radar file: the stage would have no "
+                    "observation to clear or build from. Enable a radar "
+                    "source, or set precip_analysis='off'")
         object.__setattr__(self, "analysis_fields",
                            tuple(self.analysis_fields))
         if self.radars is not None:
@@ -1455,6 +1515,150 @@ def _execute_analysis(solver, prior, batches, geometry, config, *, namespace,
     raise AssertionError('Analysis execution ended without a result')
 
 
+def _precip_analysis(cfg: RadarAssimilationConfig, document, increments,
+                     states, indices, grid):
+    """``(increments, receipt)`` after the radar precipitation analysis.
+
+    Per member, on the device: the analysed fields the applier would write
+    (each background plus the filter's increment cast to the state's
+    float32, the arithmetic of
+    :func:`gpuwm.ensemble.increments.apply_increments`) go through
+    :func:`gpuwm.da.hydrometeor_analysis.hydrometeor_analysis`.  Where the
+    stage moved a cell, the increment becomes analysed minus background;
+    everywhere else it is the filter's increment, byte for byte, and for a
+    field the filter did not analyse it is zero there.  Cells the radar did
+    not sample are never moved (scope ``covered``).
+
+    The field set comes from :mod:`gpuwm.da.moments`: ``clear`` takes every
+    precipitating mass the checkpoint carries with its paired moments, and
+    the set is validated under the full-moment policy, so no pair is split.
+    ``clear`` is the only mode an ensemble member takes
+    (:data:`PRECIP_ANALYSIS_MEMBER_REFUSAL`).
+    """
+    from gpuwm.da import hydrometeor_analysis as ha  # noqa: PLC0415
+    from gpuwm.da.moments import validate_analysis_fields  # noqa: PLC0415
+
+    cp = ha.require_device()
+    if document is None:
+        raise RadarAssimilationError(
+            "the precipitation analysis needs the radar file, and none was "
+            "read for this analysis")
+    reflectivity, reflectivity_receipt = ha.radar_grid_reflectivity(
+        document, z_source=cfg.z_source)
+    shape = tuple(int(n) for n in reflectivity.shape)
+    available = tuple(sorted(states[indices[0]]))
+    mode = cfg.precip_analysis
+    fields = ha.precipitating_fields(available, mp_physics=cfg.mp_physics)
+    moment_receipt = validate_analysis_fields(
+        fields, available=available, mp_physics=cfg.mp_physics,
+        policy="full-moment")
+    stage_cfg = ha.HydrometeorAnalysisConfig(mode=mode, scope="covered")
+
+    volume = None
+    z_w = np.asarray(getattr(grid, "z_w", np.zeros(0)), dtype=np.float64)
+    if "alt" in available and z_w.ndim in (1, 3) \
+            and z_w.shape[0] == shape[0] + 1:
+        thickness = cp.diff(cp.asarray(z_w), axis=0)
+        if thickness.ndim == 1:
+            thickness = thickness[:, None, None]
+        volume = cp.broadcast_to(thickness, shape) * (
+            float(grid.dx_m) * float(grid.dy_m))
+
+    out = dict(increments)
+    for name in fields:
+        if name not in out:
+            out[name] = np.zeros((len(indices),) + shape, dtype=np.float64)
+        else:
+            out[name] = np.array(out[name], dtype=np.float64, copy=True)
+    members = {}
+    totals: dict[str, dict] = {}
+    noaa_source = None
+    for slot, index in enumerate(indices):
+        state = states[index]
+        backgrounds, analysed = {}, {}
+        for name in fields:
+            background = cp.asarray(np.ascontiguousarray(
+                state[name], dtype=np.float32))
+            if tuple(background.shape) != shape:
+                raise RadarAssimilationError(
+                    f"member {index} field {name!r} is "
+                    f"{tuple(background.shape)}, the radar grid is {shape}")
+            backgrounds[name] = background
+            if name in increments:
+                analysed[name] = background + cp.asarray(
+                    np.asarray(increments[name][slot])).astype(cp.float32)
+            else:
+                analysed[name] = background
+        result = ha.hydrometeor_analysis(analysed, reflectivity, stage_cfg)
+        noaa_source = result.receipt["noaa_source"]
+        air = None
+        if volume is not None:
+            air = volume / cp.asarray(np.ascontiguousarray(
+                state["alt"], dtype=np.float64))
+        per_field = {}
+        for name in fields:
+            after = result.analysed[name]
+            moved = after.view(cp.int32) != analysed[name].view(cp.int32)
+            filter_inc = (cp.asarray(np.asarray(increments[name][slot],
+                                                dtype=np.float64))
+                          if name in increments else
+                          cp.zeros(shape, dtype=cp.float64))
+            final = cp.where(moved, after.astype(cp.float64)
+                             - backgrounds[name].astype(cp.float64),
+                             filter_inc)
+            out[name][slot] = cp.asnumpy(final)
+            row = dict(result.receipt["per_field"][name])
+            if air is not None:
+                change = (after.astype(cp.float64)
+                          - analysed[name].astype(cp.float64))
+                row["removed_kg"] = float(cp.sum(
+                    cp.where(change < 0.0, -change, 0.0) * air))
+                row["added_kg"] = float(cp.sum(
+                    cp.where(change > 0.0, change, 0.0) * air))
+            per_field[name] = row
+            total = totals.setdefault(name, {
+                "units": row["units"], "removed_sum": 0.0, "added_sum": 0.0})
+            total["removed_sum"] += row["removed_sum"]
+            total["added_sum"] += row["added_sum"]
+            if "removed_kg" in row:
+                total["removed_kg"] = (total.get("removed_kg", 0.0)
+                                       + row["removed_kg"])
+                total["added_kg"] = (total.get("added_kg", 0.0)
+                                     + row["added_kg"])
+        members[int(index)] = {
+            "cells": result.receipt["cells"],
+            "per_field": per_field,
+        }
+    receipt = {
+        "schema": ha.SCHEMA,
+        "mode": mode,
+        "status": ("opt-in; default-on waits on a rain-scored real case"),
+        "stage": ("after the solve and positivity, before the saturation "
+                  "bound and the applier's moment repair"),
+        "noaa_source": noaa_source,
+        "settings_source": {name: row["source"]
+                            for name, row in ha.NOAA_SETTINGS.items()},
+        "scope": stage_cfg.scope,
+        "fields": list(fields),
+        "filter_analysed_fields": [name for name in fields
+                                   if name in increments],
+        "moment_policy": moment_receipt,
+        "reflectivity": reflectivity_receipt,
+        "members_take": ("the clear step only, as NOAA gives every HRRRDAS "
+                         "member (l_precip_clear_only); the trim and build "
+                         "rule is a deterministic analysis's and is refused "
+                         "for members"),
+        "mass_units": ("removed_kg and added_kg are dry-air mass times "
+                       "mixing ratio over dx*dy*dz, without map factors"
+                       if volume is not None else None),
+        "removed_water": ("removed, not moved to another field: a declared "
+                          "sink, as in the HRRR's cloud analysis"),
+        "members": members,
+        "totals": totals,
+    }
+    return out, receipt
+
+
 def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
                           observations, grid,
                           cfg: RadarAssimilationConfig, *,
@@ -1575,6 +1779,7 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
 
     needs_radar = cfg.velocity or cfg.reflectivity or cfg.clear_air
     document = None
+    observed_document = None
     thinning_receipt = None
     z_thinning_receipt = None
     z0_thinning_receipt = None
@@ -1587,6 +1792,9 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
         document = read_document(
             observations, expected_grid=grid,
             expected_grid_identity=grid.identity_sha256())
+        # The precipitation analysis reads the masks as observed, never the
+        # copies thinned for the filter's batches below.
+        observed_document = document
         if cfg.velocity:
             document, thinning_receipt = _thinned_velocity_document(document,
                                                                     cfg)
@@ -1847,6 +2055,20 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
             verify_non_negative(prior, increments,
                                 fields=tuple(cfg.analysis_fields))
 
+    # -- the radar precipitation analysis ------------------------------------
+    # After the solve and positivity, before the saturation bound and the
+    # applier's moment repair: the order the HRRR runs its cloud analysis in
+    # (after the last outer loop).  Off, it is not called and nothing here
+    # changes a byte (gpuwm.da.hydrometeor_analysis).
+    precip_receipt = None
+    output_fields = tuple(cfg.analysis_fields)
+    if cfg.precip_analysis != "off":
+        increments, precip_receipt = _precip_analysis(
+            cfg, observed_document, increments, states, indices, grid)
+        output_fields = output_fields + tuple(
+            name for name in precip_receipt["fields"]
+            if name not in output_fields)
+
     # -- vapour at or below saturation, the ensemble mean kept ---------------
     # On the same whole-ensemble mass-point arrays, after positivity: the
     # applier's per-member saturation cap alone cuts the upper tail of the
@@ -1864,7 +2086,7 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
     increments_by_member: dict[int, dict[str, np.ndarray]] = {}
     for slot, index in enumerate(indices):
         member: dict[str, np.ndarray] = {}
-        for name in cfg.analysis_fields:
+        for name in output_fields:
             mass_inc = np.asarray(increments[name][slot])
             if name in _RESTAGGER:
                 member[name] = _RESTAGGER[name](mass_inc)
@@ -2049,6 +2271,10 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
                 in getattr(diagnostics, "posterior_spread", {}).items()},
         },
     }
+    if precip_receipt is not None:
+        # Only when the stage ran: with it off the provenance is the bytes
+        # it always was.
+        provenance["precip_analysis"] = precip_receipt
     return increments_by_member, provenance
 
 

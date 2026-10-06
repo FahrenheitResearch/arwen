@@ -27,7 +27,8 @@ from pathlib import Path
 import subprocess
 
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
-                           default_bridge_dir, lazy_build_hints,
+                           default_bridge_dir,
+                           legacy_bridge_candidates, lazy_build_hints,
                            rustwx_build_hint,
                            accept_resolved, executable_name,
                            packaged_bridge_dir)
@@ -129,6 +130,7 @@ def nexrad_candidates() -> tuple[Path, ...]:
         root / "libexec" / "bridges" / filename,
         packaged_bridge_dir() / filename,
         default_bridge_dir() / filename,
+        *legacy_bridge_candidates(filename),
     ))
     return tuple(candidates)
 

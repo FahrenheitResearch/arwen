@@ -249,3 +249,58 @@ def test_mp8_is_not_the_morrison_route():
         state, SimpleNamespace(mp_physics=10, morr_rimed_ice=1)).copy()
     cp.cuda.Stream.null.synchronize()
     assert bool((z8 != z10).any())
+
+
+@pytest.mark.parametrize("mp_physics", [8, 28])
+def test_hz_leaves_the_observed_state_bitwise_unchanged(mp_physics):
+    """H_Z(x) observes the background; it must not write it.
+
+    The derived shadow's finalize carries WRF's terminal graupel zero
+    (module_mp_thompson.F:4058-4063), which writes every ``qg <= R1`` as
+    zero in place.  Run on the live state, that rewrote the background:
+    a DA member whose pending increment left sub-R1 graupel residue had
+    the residue zeroed by the leg-0 start composite of a
+    ``--resume-ensemble`` run and not by the same leg of the
+    uninterrupted run, and the resumed step diverged from the continuous
+    one in every member (qr 3.5e-3 kg/kg one hour later).
+
+    Pins both halves: every state array is bitwise unchanged after the
+    call, and the reflectivity equals that of a twin whose residue was
+    zeroed beforehand, so making the operator pure changed no H(x).
+    """
+    import cupy as cp
+
+    def residue_state():
+        state, _ = _thompson_state()
+        qg = cp.asnumpy(state.qg)
+        # Graupel residue the analysis leaves behind: positive at and
+        # below R1, and a clipped-to-zero negative's neighbour.
+        qg[0, :, :] = 5.0e-13
+        qg[1, 0, :] = 1.0e-12
+        qg[1, 1, :] = -2.0e-13
+        state.qg = cp.asarray(qg)
+        return state
+
+    cfg = SimpleNamespace(mp_physics=mp_physics)
+    state = residue_state()
+    fields = ("p", "thp", "thb", "qv", "qr", "qs", "qg", "nr", "ns", "ng")
+    before = {name: cp.asnumpy(getattr(state, name)).copy()
+              for name in fields}
+    assert float(before["qg"].min()) < 0.0
+    assert int(((before["qg"] > 0) & (before["qg"] <= 1.0e-12)).sum()) > 0
+
+    got = obsop.simulated_reflectivity(state, cfg)
+    cp.cuda.Stream.null.synchronize()
+    got = cp.asnumpy(got).copy()
+    for name in fields:
+        after = cp.asnumpy(getattr(state, name))
+        assert after.tobytes() == before[name].tobytes(), (
+            f"simulated_reflectivity wrote state.{name}")
+
+    twin = residue_state()
+    qg = cp.asnumpy(twin.qg)
+    qg[qg <= 1.0e-12] = 0.0
+    twin.qg = cp.asarray(qg)
+    reference = cp.asnumpy(obsop.simulated_reflectivity(twin, cfg)).copy()
+    assert got.tobytes() == reference.tobytes()
+    assert float(got.max()) > -35.0

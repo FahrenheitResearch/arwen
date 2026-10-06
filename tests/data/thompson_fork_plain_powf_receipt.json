@@ -1,0 +1,70 @@
+{
+  "owner_commit": "b0556bd76b1f1276e7d52ece6d96242bf3f90f48",
+  "owner_lane": "lane/286-fork-thompson",
+  "authority_source_sha256": "4d60011188443eb432294f7693beb64bdbc8f812541a15c7800013060c877283",
+  "authority_source_lines": [
+    670,
+    769,
+    814,
+    "2874-2876",
+    "4949-4971",
+    "4995-5002"
+  ],
+  "helper_sha256": "11e9b8d70631194d4097c026eaadccf1c14c579e4189931948c67a52ab842a35",
+  "coefficient_statement_sha256": "7230a2d4e1dfb21889ffdfb7b9476c35c82aecb5ee7ae8cfd3bc9e62dee0d922",
+  "probe_fortran_sha256": "b1508319bdca2530acfe0277c635c6b543ed7657963247a17e362987406c0ef5",
+  "probe_tool_sha256": "e7acddd7813d7b438537a90689fea911944475f844c0b1f606657fae76a049ac",
+  "compile_command": [
+    "gfortran",
+    "-O2",
+    "-fno-tree-vectorize",
+    "-ffree-form",
+    "-ffree-line-length-none",
+    "probe/probe.F90",
+    "-o",
+    "probe/probe"
+  ],
+  "gfortran": "GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+  "libc": [
+    "glibc",
+    "2.43"
+  ],
+  "cupy": "14.2.0",
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "runtime": 12090,
+  "ice": {
+    "rows": 17893,
+    "synthetic_rows": 13875,
+    "saved_real_columns": {
+      "sha256": "e81022d623cbbb15fc141f1e1b3eb7b9c3e4567936108947a5432be8293c0817",
+      "columns": 42,
+      "levels": 49,
+      "added_rows": 4018,
+      "operands": "saved Fortran cp1_rho with entry col_qi/col_ni and final wrf_qi/wrf_ni"
+    },
+    "inputs_sha256": "52bb314085a6d668fe151988e8c1f1512ead5d008d9f4372237d15cd440848fe",
+    "base_differences_vs_fortran": 0,
+    "plain_power_differences_vs_fortran": 1072,
+    "cr_power_differences_vs_fortran": 5,
+    "plain_branch_differences_vs_fortran": 0,
+    "cr_branch_differences_vs_fortran": 0,
+    "complete_helper_output_changes_under_cr": 0,
+    "output_plain_sha256": "0e6d882c5b4caa9da6a770f3a3b13ea3064d59676949249d67e5f16e5e3a1c8c",
+    "output_cr_sha256": "0e6d882c5b4caa9da6a770f3a3b13ea3064d59676949249d67e5f16e5e3a1c8c"
+  },
+  "sublimation_coefficient": {
+    "fortran_sc3_bits": 1062973671,
+    "fortran_t2_bits": 1092206496,
+    "fortran_cgg11_bits": 1072921172,
+    "cuda_bits": [
+      1092206496,
+      1092206496,
+      1062973671,
+      1062973671
+    ],
+    "complete_coefficient_changes_under_cr": 0,
+    "plain_coefficient_differences_vs_fortran": 0,
+    "cr_coefficient_differences_vs_fortran": 0
+  },
+  "scope": "scalar Fortran expression probes and actual CUDA helper/constant statement; no full network or forecast qualification"
+}

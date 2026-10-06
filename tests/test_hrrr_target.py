@@ -933,3 +933,123 @@ def test_static_validation_uses_declared_target_staggering():
     fields["MAPFAC_U"] = np.ones((target.ny, target.nx))
     with pytest.raises(ValueError, match="MAPFAC_U stagger"):
         validate_static(fields, target)
+
+
+# ---------------------------------------------------------------------------
+# The identity route: the target is the native grid itself.
+# ---------------------------------------------------------------------------
+
+
+def _native_target(**updates) -> HrrrTargetDomain:
+    """HRRR's own grid as its namelist.wps spells it: 1800 x 1060
+    staggered (1799 x 1059 mass points) at 3 km on Lambert 38.5 / 38.5 /
+    -97.5 with the reference at the centre."""
+    values = {
+        "name": "native_grid",
+        "map_proj": "lambert",
+        "nx": 1799,
+        "ny": 1059,
+        "nz": 50,
+        "dx_m": 3000.0,
+        "dy_m": 3000.0,
+        "ref_lat": 38.5,
+        "ref_lon": -97.5,
+        "truelat1": 38.5,
+        "truelat2": 38.5,
+        "stand_lon": -97.5,
+        "time_step_seconds": 20,
+        "spec_bdy_width": 10,
+        "spec_zone": 1,
+        "relax_zone": 9,
+    }
+    values.update(updates)
+    return HrrrTargetDomain(**values)
+
+
+def test_the_native_grid_is_recognised_point_for_point():
+    from gpuwm.ingest.hrrr import HRRR_WPS_EQUIVALENT_DX_M, hrrr_source_grid
+    from gpuwm.ingest.hrrr_target import native_grid_identity
+
+    grid = _native_target().grid()
+    assert native_grid_identity(grid)
+    # Its south-west mass point is the native grid's own, to well under a
+    # cell: WPS's sphere against the GRIB header's.
+    lat, lon = grid.ij_to_latlon(1.0, 1.0)
+    native_lat, native_lon = hrrr_source_grid().ij_to_latlon(1.0, 1.0)
+    assert abs(float(lat) - float(native_lat)) < 1.0e-4
+    assert abs(float(lon) - float(native_lon)) < 1.0e-4
+    # The source grid's own description (the GRIB sphere's spacing,
+    # anchored at the south-west corner) is the same grid; that spacing
+    # anchored at the centre is not: its corner moves 520 m.
+    assert native_grid_identity(hrrr_source_grid())
+    assert not native_grid_identity(
+        _native_target(dx_m=HRRR_WPS_EQUIVALENT_DX_M,
+                       dy_m=HRRR_WPS_EQUIVALENT_DX_M).grid())
+    # Not the native grid: the one-row trim, another cone, a shifted
+    # centre, another spacing.
+    assert not native_grid_identity(_native_target(nx=1797, ny=1057).grid())
+    assert not native_grid_identity(
+        _native_target(truelat1=38.0, truelat2=38.0).grid())
+    assert not native_grid_identity(_native_target(ref_lon=-97.6).grid())
+    assert not native_grid_identity(_native_target(dx_m=3010.0,
+                                                   dy_m=3010.0).grid())
+    assert not native_grid_identity(_target().grid())
+
+
+def test_the_native_grid_takes_the_identity_window_and_the_trim_does_not():
+    """Before the identity route this target was refused: its outermost
+    mass row needs a parabolic neighbour one cell past the grid, which
+    does not exist, and the advice was the one-row trim.  Now it takes
+    the whole grid, no halo, and says so; the trimmed grid still takes
+    the interpolated route it always took."""
+    window = required_hrrr_source_window(_native_target())
+    assert window.route == "identity"
+    assert window.bridge_tuple() == (0, 1798, 0, 1058)
+    assert (window.ny, window.nx) == (1059, 1799)
+    assert window.parabolic_lower_halo_cells == 0
+    assert window.parabolic_upper_halo_cells == 0
+    document = window.to_dict()
+    assert document["route"] == "identity"
+    assert window.matches_record(document)
+    assert not window.matches_record(
+        {key: value for key, value in document.items() if key != "route"})
+
+    # The one-row trim is NOT the native grid, and on this route it is
+    # still refused: the two descriptions of the native grid drift apart
+    # by 0.35 cells at the north-east corner (MEASURED), so the trimmed
+    # grid's far u faces project past 1797.5 and their parabolic halo
+    # leaves the grid.  A two-row trim takes the interpolated route it
+    # always took, with a halo on every side.
+    from gpuwm.ingest.hrrr_target import native_grid_identity
+    from gpuwm.ingest.source_coverage import SourceCoverageRefusal
+
+    assert not native_grid_identity(_native_target(nx=1797, ny=1057).grid())
+    with pytest.raises(SourceCoverageRefusal, match="leaves HRRR coverage"):
+        required_hrrr_source_window(_native_target(nx=1797, ny=1057))
+    trimmed = required_hrrr_source_window(_native_target(nx=1795, ny=1055))
+    assert trimmed.route == "interpolated"
+    assert "route" not in trimmed.to_dict()
+    assert trimmed.bridge_tuple() == (0, 1798, 0, 1058)
+    assert trimmed.parabolic_lower_halo_cells >= 1
+
+
+def test_the_target_document_round_trips_the_identity_window(tmp_path):
+    import dataclasses
+
+    from gpuwm.ingest.hrrr_target import load_hrrr_target_domain
+
+    target = _native_target()
+    path = tmp_path / "native.json"
+    path.write_text(json.dumps({"schema": TARGET_DOMAIN_SCHEMA,
+                                **dataclasses.asdict(target)}))
+    loaded = load_hrrr_target_domain(path)
+    assert loaded == target
+    assert required_hrrr_source_window(loaded).route == "identity"
+
+@pytest.mark.parametrize("changes", [
+    {"ref_lon": -97.5001},
+    {"dx_m": 3000.1, "dy_m": 3000.1},
+])
+def test_nearby_full_grids_are_not_native_identity(changes):
+    from gpuwm.ingest.hrrr_target import native_grid_identity
+    assert not native_grid_identity(_native_target(**changes).grid())

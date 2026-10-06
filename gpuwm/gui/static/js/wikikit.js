@@ -38,7 +38,7 @@ export function hrefFor(row) {
   if (row.kind === "phenomenon") return kindHref(row.id);
   if (row.kind === "place") return placeHref(row.id);
   if (row.kind === "run") return runHref(row.id);
-  return "#/wiki";
+  return "#/library";
 }
 
 // "2005-08-28T18:00Z" -> "28 Aug 2005"

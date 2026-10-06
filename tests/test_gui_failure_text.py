@@ -343,7 +343,7 @@ globalThis.window = { addEventListener() {}, removeEventListener() {}, devicePix
 globalThis.location = { hash: "" };
 const input = JSON.parse(await (await import("node:fs/promises")).readFile("input.json", "utf8"));
 globalThis.fetch = async (url) => ({ ok: true, status: 200,
-  json: async () => (String(url).startsWith("/api/wiki/run/") ? input.article : {}) });
+  json: async () => (String(url).startsWith("/api/library/run/") ? input.article : {}) });
 const { SCREENS } = await import("./router.js");
 await import("./wikipages.js");
 const body = new FakeElement("div");

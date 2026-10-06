@@ -80,8 +80,9 @@ pub use projection::{
     build_natural_projected_map_with_projection_and_basemap_padding, build_projected_map,
     build_projected_map_with_projection, build_requested_projected_map_with_projection,
     direct_map_frame_aspect_ratio, model_data_domain_frame_for_projection,
-    panel_resolved_projection, project_points_with_projection,
-    requested_panel_resolved_projection,
+    frame_short_side_km, natural_grid_aspect, panel_resolved_projection, plan_canvas_for_grid,
+    planned_place_labels,
+    project_points_with_projection, requested_panel_resolved_projection,
 };
 pub(crate) use query::{load_direct_sampled_fields_from_latest, required_direct_fetch_products};
 #[cfg(test)]
@@ -1056,6 +1057,20 @@ fn render_direct_recipe(
     })
 }
 
+/// The sheet a composite product is laid out on under auto layout: the
+/// domain's planned canvas says the grid's shape, the table says how many
+/// rows and columns suit it.  `None` under fixed layout.
+fn planned_composite_sheet(
+    request: &DirectBatchRequest,
+    members: usize,
+) -> Option<rustwx_render::SheetPlan> {
+    let rustwx_render::LayoutMode::Auto { class, scale } = rustwx_render::layout_mode() else {
+        return None;
+    };
+    let plan = rustwx_render::canvas_plan_for(request.output_width, request.output_height)?;
+    Some(rustwx_render::LayoutTable::builtin().plan_sheet(members, plan.grid_aspect, class, scale))
+}
+
 fn render_direct_composite_panel(
     recipe: &PlotRecipe,
     spec: CompositePanelSpec,
@@ -1098,6 +1113,22 @@ fn render_direct_composite_panel(
         .ok_or_else(|| format!("missing component selector {:?}", first_selector))?;
 
     let project_start = Instant::now();
+    // Under auto layout the members are laid out as a sheet of the
+    // domain's own shape: one header, one shared colour bar, and each
+    // member map at one cell's size.  The fixed-pixel spec stays the
+    // fixed-layout path.
+    let sheet = planned_composite_sheet(request, spec.component_slugs.len());
+    let spec = match sheet.as_ref() {
+        Some(sheet) => {
+            rustwx_render::register_canvas_plan(sheet.member);
+            CompositePanelSpec {
+                panel_width: sheet.member.canvas_w,
+                panel_height: sheet.member.canvas_h,
+                ..spec
+            }
+        }
+        None => spec,
+    };
     let cache_key = projected_map_cache_key(
         spec.panel_width,
         spec.panel_height,
@@ -1198,38 +1229,60 @@ fn render_direct_composite_panel(
     }
     let request_build_ms = request_build_start.elapsed().as_millis();
 
-    let layout =
-        PanelGridLayout::new(spec.rows, spec.columns, spec.panel_width, spec.panel_height)?
-            .with_padding(PanelPadding {
-                top: spec.top_padding,
-                ..Default::default()
-            });
-    let render_start = Instant::now();
-    let mut canvas = render_panel_grid(&layout, &panel_requests)?;
-    let render_ms = render_start.elapsed().as_millis();
     let title = direct_panel_title_for_request(request, recipe.title);
-    draw_centered_text_line(&mut canvas, &title, 10, Color::BLACK, 2);
-    draw_centered_text_line(
-        &mut canvas,
-        &format!(
-            "{} | {}",
-            request.subtitle_left_override.clone().unwrap_or_else(|| {
-                model_time_subtitle(
-                    request.model,
-                    &request.date_yyyymmdd,
-                    latest.cycle.hour_utc,
-                    request.forecast_hour,
+    let subtitle_left = request.subtitle_left_override.clone().unwrap_or_else(|| {
+        model_time_subtitle(
+            request.model,
+            &request.date_yyyymmdd,
+            latest.cycle.hour_utc,
+            request.forecast_hour,
+        )
+    });
+    let subtitle_right = request
+        .subtitle_right_override
+        .clone()
+        .unwrap_or_else(|| source_subtitle(latest.source));
+    let render_start = Instant::now();
+    let canvas = if let Some(sheet) = sheet.as_ref() {
+        let labels: Vec<String> = panel_requests
+            .iter()
+            .map(|member| {
+                rustwx_render::chrome_plan::without_domain_label(
+                    member.title.as_deref().unwrap_or_default(),
                 )
-            }),
-            request
-                .subtitle_right_override
-                .clone()
-                .unwrap_or_else(|| source_subtitle(latest.source))
-        ),
-        35,
-        Color::BLACK,
-        1,
-    );
+            })
+            .collect();
+        rustwx_render::render_planned_sheet(
+            sheet,
+            &panel_requests,
+            &labels,
+            rustwx_render::SheetHeader {
+                title: Some(&title),
+                units: None,
+                subtitle_left: Some(&subtitle_left),
+                subtitle_center: None,
+                subtitle_right: Some(&subtitle_right),
+            },
+        )?
+    } else {
+        let layout =
+            PanelGridLayout::new(spec.rows, spec.columns, spec.panel_width, spec.panel_height)?
+                .with_padding(PanelPadding {
+                    top: spec.top_padding,
+                    ..Default::default()
+                });
+        let mut canvas = render_panel_grid(&layout, &panel_requests)?;
+        draw_centered_text_line(&mut canvas, &title, 10, Color::BLACK, 2);
+        draw_centered_text_line(
+            &mut canvas,
+            &format!("{subtitle_left} | {subtitle_right}"),
+            35,
+            Color::BLACK,
+            1,
+        );
+        canvas
+    };
+    let render_ms = render_start.elapsed().as_millis();
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent)?;
     }

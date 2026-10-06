@@ -12,6 +12,23 @@
 //! fills below ground with the rules ERA5's pressure levels are filled
 //! with ([`ecmwf_temperature`], [`ecmwf_geopotential`]), which live here
 //! because they are the same column arithmetic.
+//!
+//! Height is the one field neither walk reads off mass levels: a WRF-family
+//! model knows its height at the interfaces of its layers, and a layer-mean
+//! height paired with the mass-level pressure reads 4 to 6 m high at
+//! 500 hPa.  Every consumer reads isobaric height between interfaces
+//! ([`isobaric_heights_from_interfaces`], module [`interface`]); the Python
+//! consumers reach the same code through the C ABI in [`capi`], which is why
+//! this crate also builds as a cdylib.
+
+pub mod capi;
+pub mod interface;
+pub use interface::{
+    InterfaceStencil, Interfaces, STANDARD_GRAVITY, column_isobaric_height, interface_bracket,
+    interface_log_pressures_into, interfaces_from_layer_thickness, isobaric_height_from_interfaces,
+    isobaric_heights_f64_into, isobaric_heights_from_interfaces, isobaric_heights_into, ln,
+    mass_level_heights_into,
+};
 
 /// Locate the native levels bracketing `target` in a column (pressure
 /// decreasing with index, level 0 nearest the surface) and return the lower

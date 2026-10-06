@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from gpuwm.bridges import (accept_resolved, default_bridge_dir,
+                           legacy_bridge_candidates,
                            executable_name, packaged_bridge_dir)
 
 #: Environment variable naming a built ``titan`` binary.
@@ -80,6 +81,7 @@ def titan_candidates() -> tuple[Path, ...]:
         root / "libexec" / "bridges" / filename,
         packaged_bridge_dir() / filename,
         default_bridge_dir() / filename,
+        *legacy_bridge_candidates(filename),
     ))
     on_path = shutil.which(TITAN_NAME)
     if on_path:

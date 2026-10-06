@@ -297,6 +297,8 @@ _STAMP_SOURCES = {
     "gpuwm_preprocess_cpu": "src/lib.rs",
     "rw_fetch": "crates/rw-fetch/src/main.rs",
     "rw_wrfbatch": "crates/rw-wrfbatch/src/main.rs",
+    "rw_compare": "crates/rw-wrfbatch/src/bin/compare.rs",
+    "rw_verify": "crates/rw-wrfbatch/src/bin/verify.rs",
     "rw_mpas_mesh": "crates/rw-mpas/src/bin/rw_mpas_mesh.rs",
     "rw_mpas_static": "crates/rw-mpas/src/bin/rw_mpas_static.rs",
     "rw_mpas_init": "crates/rw-mpas/src/bin/rw_mpas_init.rs",
@@ -334,6 +336,10 @@ _STAMP_SOURCES = {
     "static_fields": "crates/static-fields/src/capi/mod.rs",
     "gpuwm_mapped_engine": "crates/mapped-engine/src/main.rs",
     "obs_regrid": "crates/obs-regrid/src/capi.rs",
+    "obs_score": "crates/obs-score/src/lib.rs",
+    "rw_mpas_geometry": "crates/rw-mpas/src/bin/rw_mpas_geometry.rs",
+    "rw_mpas_hostprep": "crates/rw-mpas/src/bin/rw_mpas_hostprep.rs",
+    "rw_isobaric": "crates/rw-isobaric/src/capi.rs",
 }
 
 #: The build script that injects the revision for each artifact.
@@ -356,7 +362,9 @@ _STAMP_BUILDS = {
                                     "crates/rw-netcdf/build.rs",
                                     "crates/netcdf-writer/build.rs",
                                     "crates/static-fields/build.rs",
-                                    "crates/obs-regrid/build.rs"),
+                                    "crates/obs-regrid/build.rs",
+                                    "crates/obs-score/build.rs",
+                                    "crates/rw-isobaric/build.rs"),
     # The engine workspace carries one gpuwm-authored crate beside the
     # donor snapshot (tools/rw_wps/VENDOR.md); the snapshot's own crate
     # ships nothing, so it is stamped by nothing.

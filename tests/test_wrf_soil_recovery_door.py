@@ -58,6 +58,21 @@ def test_physical_soil_does_not_need_or_read_original_sources(tmp_path):
     assert recover_supplied_soil(tmp_path / 'missing', fields, {}) == ({}, None)
 
 
+def test_a_fraction_just_above_one_beside_land_ice_is_still_a_fraction(tmp_path):
+    """real.exe writes 1.0 into land-ice soil and interpolation overshoots it."""
+    from gpuwm.ingest.wrf_soil_recovery import SOIL_FRACTION_CEILING
+    fields = _fields()
+    fields['SMOIS'][:] = .23
+    fields['SMOIS'][0, 0, 0] = np.float32(1.000479)
+    fields['SMOIS'][1, 0, 0] = np.float32(1.0)
+    assert recover_supplied_soil(tmp_path / 'missing', fields, {}) == ({}, None)
+    # Above the ceiling the mislabeled-water recovery still runs, and with
+    # no original sources it refuses by name.
+    fields['SMOIS'][0, 0, 0] = np.float32(SOIL_FRACTION_CEILING) * np.float32(1.001)
+    with pytest.raises(ValueError, match='exceeds a volume fraction of 1'):
+        recover_supplied_soil(tmp_path / 'missing', fields, {})
+
+
 def test_default_source_discovery_records_exact_authority_and_preserves_files(tmp_path, monkeypatch):
     from gpuwm import netcdf_bridge
     _source(tmp_path)

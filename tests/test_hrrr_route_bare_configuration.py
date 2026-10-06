@@ -198,7 +198,7 @@ def test_the_dry_run_and_the_real_run_refuse_what_the_namelists_cannot_carry(
 def test_the_way_out_is_read_off_the_source_table():
     from gpuwm.hrrr_route_inputs import configuration_reading_sources
 
-    assert configuration_reading_sources("hrrr") == ("hrrr-prs",)
+    assert configuration_reading_sources("hrrr") == ("hrrr-prs", "hrrr-native")
     assert "hrrr" not in configuration_reading_sources("hrrr")
     assert configuration_reading_sources("not-a-source") == ()
 

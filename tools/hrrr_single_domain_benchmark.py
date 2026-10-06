@@ -365,6 +365,32 @@ def runner_capabilities() -> dict[str, object]:
                 "explicit_expert_consent_required": False,
                 "radiation_solver": "RTE+RRTMGP",
             },
+            THOMPSON_MYNN_RUC_MONTHLY_LEGACY_RRTMG_PROFILE_ID: {
+                "selector": 8,
+                **staged_thompson,
+                "readiness": "IMPLEMENTED_UNVERIFIED",
+                "explicit_expert_consent_required": False,
+                "radiation_solver": "legacy RRTMG",
+            },
+            THOMPSON_MYNN_RUC_MONTHLY_SOLAR_LEGACY_RRTMG_PROFILE_ID: {
+                "selector": 8,
+                **staged_thompson,
+                "readiness": "IMPLEMENTED_UNVERIFIED",
+                "explicit_expert_consent_required": False,
+                "radiation_solver": "legacy RRTMG",
+                "surface_albedo": "solar-geometry-selected",
+            },
+            THOMPSON_MYNN_GSD41_PROFILE_ID: {
+                "selector": 28,
+                "readiness": "IMPLEMENTED_UNVERIFIED",
+                "explicit_expert_consent_required": False,
+                "radiation_solver": "legacy RRTMG",
+                "table_staging": "route-staged-at-profile-binding",
+                "runtime_guards": [
+                    "classic and aerosol tables size- and SHA256-checked before GPU setup",
+                    "staged WIF climatology for the declared aerosol source",
+                ],
+            },
             RUC_PROFILE_ID: {
                 "selector": 6,
                 "readiness": "IMPLEMENTED_UNVERIFIED",
@@ -960,6 +986,15 @@ ROUTE_ID = "tools.hrrr_single_domain_benchmark"
 #: HRRR physics profile``.  The route declares what it can replay; this
 #: reads that declaration.
 NATIVE_BENCHMARK_PHYSICS_PROFILES = route_physics_profiles(ROUTE_ID)
+THOMPSON_MYNN_RUC_MONTHLY_LEGACY_RRTMG_PROFILE_ID = (
+    "thompson-mp8-mynn-mynn-ruc-monthly-rrtmg-legacy-v1"
+)
+THOMPSON_MYNN_RUC_MONTHLY_SOLAR_LEGACY_RRTMG_PROFILE_ID = (
+    "thompson-mp8-mynn-mynn-ruc-monthly-solar-rrtmg-legacy-v1"
+)
+THOMPSON_MYNN_GSD41_PROFILE_ID = (
+    "thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1"
+)
 
 _NATIVE_HRRR_NAMELIST_CONTRACTS = MappingProxyType({
     WSM6_PROFILE_ID: MappingProxyType({
@@ -1115,6 +1150,80 @@ _NATIVE_HRRR_NAMELIST_CONTRACTS = MappingProxyType({
             "sf_sfclay_physics": 5.0,
             "sf_surface_physics": 3.0,
             "bl_pbl_physics": 5.0,
+            "cu_physics": 0.0,
+            "num_soil_layers": 9.0,
+        }),
+        "dynamics": MappingProxyType({
+            "km_opt": 4.0,
+            "diff_6th_opt": 2.0,
+            "diff_6th_factor": 0.08,
+            "diff_6th_slopeopt": 1.0,
+        }),
+    }),
+    # Monthly surface fields change WRF namelist values, so this profile
+    # has its own contract rather than borrowing the unselected surface
+    # switches of the radiation sibling. The row binds the supplied
+    # configuration; it does not certify a native forecast comparison.
+    THOMPSON_MYNN_RUC_MONTHLY_LEGACY_RRTMG_PROFILE_ID: MappingProxyType({
+        "physics": MappingProxyType({
+            "mp_physics": 8.0,
+            "ra_lw_physics": 4.0,
+            "ra_sw_physics": 4.0,
+            "radt": 12.0,
+            "sf_sfclay_physics": 5.0,
+            "sf_surface_physics": 3.0,
+            "bl_pbl_physics": 5.0,
+            "cu_physics": 0.0,
+            "num_soil_layers": 9.0,
+            "usemonalb": True,
+            "rdlai2d": True,
+            "fractional_seaice": 1.0,
+        }),
+        "dynamics": MappingProxyType({
+            "km_opt": 4.0,
+            "diff_6th_opt": 2.0,
+            "diff_6th_factor": 0.08,
+            "diff_6th_slopeopt": 1.0,
+        }),
+    }),
+    # Solar albedo is a separate requested native fork switch. This row
+    # binds the input composition and makes no native trajectory claim.
+    THOMPSON_MYNN_RUC_MONTHLY_SOLAR_LEGACY_RRTMG_PROFILE_ID: MappingProxyType({
+        "physics": MappingProxyType({
+            "mp_physics": 8.0,
+            "ra_lw_physics": 4.0,
+            "ra_sw_physics": 4.0,
+            "radt": 12.0,
+            "sf_sfclay_physics": 5.0,
+            "sf_surface_physics": 3.0,
+            "bl_pbl_physics": 5.0,
+            "cu_physics": 0.0,
+            "num_soil_layers": 9.0,
+            "usemonalb": True,
+            "rdlai2d": True,
+            "fractional_seaice": 1.0,
+            "alb_sol": 1.0,
+        }),
+        "dynamics": MappingProxyType({
+            "km_opt": 4.0,
+            "diff_6th_opt": 2.0,
+            "diff_6th_factor": 0.08,
+            "diff_6th_slopeopt": 1.0,
+        }),
+    }),
+    # This pins the declared source-version composition. It does not
+    # certify an operational native trajectory or the remaining fork rows.
+    THOMPSON_MYNN_GSD41_PROFILE_ID: MappingProxyType({
+        "physics": MappingProxyType({
+            "mp_physics": 28.0,
+            "ra_lw_physics": 4.0,
+            "ra_sw_physics": 4.0,
+            "radt": 15.0,
+            "sf_sfclay_physics": 5.0,
+            "sf_surface_physics": 3.0,
+            "bl_pbl_physics": 5.0,
+            "bl_mynn_mixlength": 2.0,
+            "scalar_pblmix": 1.0,
             "cu_physics": 0.0,
             "num_soil_layers": 9.0,
         }),
@@ -1405,6 +1514,8 @@ _INITIALIZATION_CONTRACT_ALIASES = MappingProxyType({
     # both read the Thompson validation row's tables.
     THOMPSON_MYNN_RUC_DUDHIA_PROFILE_ID: THOMPSON_PROFILE_ID,
     THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID: THOMPSON_PROFILE_ID,
+    THOMPSON_MYNN_RUC_MONTHLY_LEGACY_RRTMG_PROFILE_ID: THOMPSON_PROFILE_ID,
+    THOMPSON_MYNN_RUC_MONTHLY_SOLAR_LEGACY_RRTMG_PROFILE_ID: THOMPSON_PROFILE_ID,
 })
 
 
@@ -1557,6 +1668,40 @@ def _thompson_runtime_authority() -> dict[str, object]:
     }
 
 
+def _with_thompson_process_generation_authority(authority: dict, switches: dict) -> dict:
+    if int(switches["mp_physics"]) != 28:
+        return authority
+    version = switches.get("thompson_version", "wrf_461")
+    if version == "wrf_461":
+        return authority
+    if version != "wrf_39_noaa":
+        raise ValueError(f"MP28 has no process table authority for thompson_version={version!r}")
+    from gpuwm.core.thompson_contract import (
+        FORK_REFERENCE_SOURCE, TABLE_SETS_BY_VERSION, validate_table_assets,
+    )
+    from gpuwm.physics_compat import thompson_fork_table_root
+
+    _, expected_assets, table_set = TABLE_SETS_BY_VERSION[version]
+    # Configuration preview declares the pinned process set without downloading
+    # or compiling it. Actual fork execution acquires and byte-validates through
+    # gpuwm.thompson_fork_assets.ensure_thompson_fork_tables before first use.
+    root = Path(thompson_fork_table_root()).resolve()
+    assets = expected_assets
+    return {
+        "schema": authority["schema"], "mp_physics": 28,
+        "thompson_version": version,
+        "table_root": str(root), "table_set": table_set,
+        "asset_validation": "deferred_to_runtime_before_first_use",
+        "wrf_reference_version": "3.9-noaa-fork", "wrf_reference_source": FORK_REFERENCE_SOURCE,
+        "assets": [{"filename": item.filename, "bytes": item.bytes, "sha256": item.sha256}
+                   for item in assets],
+        "classic_aerosol_authority": {
+            **authority,
+            "runtime_role": "The fork reads CCN activation from this validated classic root and process tables from the fork root.",
+        },
+    }
+
+
 def _microphysics_table_authority(profile: str) -> dict[str, object] | None:
     """Stage and byte-validate the lookup tables THIS profile's mp reads.
 
@@ -1595,7 +1740,7 @@ def _microphysics_table_authority(profile: str) -> dict[str, object] | None:
     switches = (_native_hrrr_runtime_switches(profile)
                 if isinstance(profile, str) else asdict(profile))
     mp_physics = int(switches["mp_physics"])
-    if mp_physics == THOMPSON_MP_PHYSICS:
+    if mp_physics in (THOMPSON_MP_PHYSICS, 28):
         from gpuwm.core.thompson_contract import (
             CLASSIC_TABLE_ASSETS,
             TABLE_SET_ID,
@@ -1610,14 +1755,22 @@ def _microphysics_table_authority(profile: str) -> dict[str, object] | None:
         # classic set and fails closed on an absent, resized or substituted
         # asset, so it IS the contract -- re-comparing its return value to
         # the same constant would only ever catch a test double.
-        root = Path(require_thompson_tables(
-            assets=CLASSIC_TABLE_ASSETS)).resolve()
-        assets = validate_table_assets(root)
-        return {
+        required_assets = CLASSIC_TABLE_ASSETS
+        table_set = TABLE_SET_ID
+        if mp_physics == 28:
+            from gpuwm.core.thompson_aerosol_contract import (
+                AEROSOL_TABLE_ASSETS, AEROSOL_TABLE_SET_ID,
+            )
+            required_assets = (*CLASSIC_TABLE_ASSETS, *AEROSOL_TABLE_ASSETS)
+            table_set = AEROSOL_TABLE_SET_ID
+        root = Path(require_thompson_tables(assets=required_assets)).resolve()
+        assets = (validate_table_assets(root, required_assets)
+                  if mp_physics == 28 else validate_table_assets(root))
+        authority = {
             "schema": "gpuwm-prepared-microphysics-table-authority-v1",
-            "mp_physics": THOMPSON_MP_PHYSICS,
+            "mp_physics": mp_physics,
             "table_root": str(root),
-            "table_set": TABLE_SET_ID,
+            "table_set": table_set,
             "wrf_reference_version": WRF_REFERENCE_VERSION,
             "wrf_reference_commit": WRF_REFERENCE_COMMIT,
             "assets": [
@@ -1626,6 +1779,7 @@ def _microphysics_table_authority(profile: str) -> dict[str, object] | None:
                 for item in assets
             ],
         }
+        return _with_thompson_process_generation_authority(authority, switches)
     if mp_physics == 50:
         # P3's single lookup table ships INSIDE the gpuwm wheel and its
         # loader (gpuwm.core.p3_tables) is the byte authority; p3_init
@@ -1765,6 +1919,23 @@ def _validate_native_hrrr_physics_profile(
                         + ", ".join(nonuniform_columns))
                 raise ValueError(message)
             selected[section_name][key] = actual
+    if profile == THOMPSON_MYNN_GSD41_PROFILE_ID:
+        # The source spelling and aerosol source are part of this version,
+        # not optional namelist fields to silently replace with its preset.
+        for key, expected in {"bl_mynn_tkebudget": 0,
+                              "use_aero_icbc": True}.items():
+            raw = root_view["physics"].get(key)
+            if type(raw) is not type(expected) or raw != expected:
+                raise ValueError(
+                    f"native HRRR profile {profile!r} requires "
+                    f"&physics/{key}={expected!r}, got {raw!r}")
+            selected["physics"][key] = raw
+        wif_input = root_view.get("domains", {}).get("wif_input_opt")
+        if type(wif_input) is not int or wif_input != 1:
+            raise ValueError(
+                f"native HRRR profile {profile!r} requires "
+                f"&domains/wif_input_opt=1, got {wif_input!r}")
+        selected["domains"] = {"wif_input_opt": wif_input}
     if profile in (NSSL2_PROFILE_ID, NSSL2_LEGACY_RRTMG_PROFILE_ID):
         physics_section = root_view["physics"]
         nssl_values: dict[str, int | float] = {}
@@ -1897,7 +2068,10 @@ def _validate_native_hrrr_physics_profile(
             # The Thompson members of the MYNN + RUC pair, at the ceiling
             # MYNN and RUC set.
             THOMPSON_MYNN_RUC_DUDHIA_PROFILE_ID,
-            THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID):
+            THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
+            THOMPSON_MYNN_RUC_MONTHLY_LEGACY_RRTMG_PROFILE_ID,
+            THOMPSON_MYNN_RUC_MONTHLY_SOLAR_LEGACY_RRTMG_PROFILE_ID,
+            THOMPSON_MYNN_GSD41_PROFILE_ID):
         receipt["readiness"] = "IMPLEMENTED_UNVERIFIED"
     if profile in (MORRISON_PROFILE_ID, NSSL2_PROFILE_ID,
                    THOMPSON_RTE_RRTMGP_PROFILE_ID):
@@ -1907,7 +2081,8 @@ def _validate_native_hrrr_physics_profile(
             "resolved_gpuwm_scheme_ids": [4, 4],
             "resolved_gpuwm_solver": "RTE+RRTMGP",
         }
-    elif profile == NSSL2_LEGACY_RRTMG_PROFILE_ID:
+    elif profile in (NSSL2_LEGACY_RRTMG_PROFILE_ID,
+                     THOMPSON_MYNN_GSD41_PROFILE_ID):
         receipt["radiation_identity"] = {
             "contract": WRF_RRTMG_LEGACY,
             "requested_wrf_scheme_ids": [4, 4],
@@ -1932,6 +2107,11 @@ def _validate_native_hrrr_physics_profile(
 #: switch this map does not name is now a named refusal here rather than
 #: a silent default three layers down.
 _PROFILE_SWITCH_HOMES = MappingProxyType({
+    "aer_init_opt": "shared",
+    "alb_sol": "shared",
+    "bl_mynn_gsd41_unsquared_qtke": "shared",
+    "bl_mynn_mixlength": "shared",
+    "bl_mynn_version": "shared",
     "bl_pbl_physics": "shared",
     "cu_physics": "shared",
     "cudt_minutes": "shared",
@@ -1939,6 +2119,7 @@ _PROFILE_SWITCH_HOMES = MappingProxyType({
     "diff_6th_opt": "shared",
     "diff_6th_slopeopt": "shared",
     "epssm": "shared",
+    "fractional_seaice": "shared",
     "km_opt": "shared",
     "mosaic_lu": "shared",
     "mosaic_soil": "shared",
@@ -1946,12 +2127,14 @@ _PROFILE_SWITCH_HOMES = MappingProxyType({
     "moist_cq": "shared",
     "morr_rimed_ice": "shared",
     "mp_physics": "shared",
+    "mynn_sfclay_variant": "shared",
     "num_soil_layers": "shared",
     "ra_lw_physics": "shared",
     "ra_physics": "shared",
     "ra_rrtmg_variant": "shared",
     "ra_sw_physics": "shared",
     "radt": "domain",
+    "rdlai2d": "shared",
     "sf_sfclay_physics": "shared",
     "sf_surface_physics": "shared",
     # Every template declares the urban component (none = 0) since the
@@ -1959,7 +2142,11 @@ _PROFILE_SWITCH_HOMES = MappingProxyType({
     "sf_urban_physics": "shared",
     "scalar_pblmix": "shared",
     "terrain_opt": "shared",
+    "thompson_fork_snow_fall": "shared",
+    "thompson_version": "shared",
     "top_lid": "shared",
+    "usemonalb": "shared",
+    "wif_input_opt": "shared",
     "wrf_rrtmg_compatibility": "shared",
     "wsm6_hail_opt": "shared",
 })
@@ -1995,7 +2182,8 @@ def _experiment_tables(
         start_time: datetime = datetime(2026, 7, 18),
         target: HrrrTargetDomain | None = None,
         physics_profile: str = ROUTE_DEFAULT_PHYSICS_PROFILE,
-        history_interval_seconds: float = 300.0):
+        history_interval_seconds: float = 300.0,
+        usemonalb: bool | None = None, rdlai2d: bool | None = None):
     """The raw tables this route hands ``build_experiment``, plus the target.
 
     Split out of :func:`_experiment` so the preparation can PUBLISH the
@@ -2087,6 +2275,35 @@ def _experiment_tables(
         }],
     }
     _forward_profile_switches(raw, switches)
+    # A frozen replay can state its historical surface controls explicitly.
+    # None retains the selected source/profile's prescribed defaults.
+    for name, value in (("usemonalb", usemonalb), ("rdlai2d", rdlai2d)):
+        if value is not None:
+            if type(value) is not bool:
+                raise ValueError(f"{name} override must be boolean")
+            raw["shared"][name] = value
+    from gpuwm.physics_source_defaults import (
+        recipe_physics_defaults, recipe_root_defaults, with_recipe_root_defaults)
+    defaults = recipe_physics_defaults("hrrr")
+    for name, value in defaults.items():
+        if name in ("usemonalb", "rdlai2d"):
+            # 3e5245839, lane/ruc-evap-gap: prescribed monthly fields have
+            # consumers in Noah (2) and RUC (3). Preserve each profile's
+            # declared controls, including explicit false.
+            if int(switches["sf_surface_physics"]) in (2, 3):
+                raw["shared"].setdefault(name, value)
+        else:
+            raw["shared"][name] = value
+    with_recipe_root_defaults(
+        raw["shared"], raw["domain"], recipe_root_defaults("hrrr"))
+    if (target.dx_m == 3000.0 and target.dy_m == 3000.0
+            and target.time_step_exact == Fraction(20)):
+        # A 20 s native-grid recipe retains the full-source operational
+        # acoustic bound: HRRR's 20/20/20 clock derives six substeps over
+        # its entire 3 km source grid. This is a retained source bound,
+        # not a fresh derivation from the smaller crop's map factors.
+        raw["shared"]["time_step_sound"] = 6
+        raw["shared"]["use_adaptive_time_step"] = False
     _declare_asymmetric_radiation(
         raw, switches, target=target, start_time=start_time,
         run_seconds=run_seconds)
@@ -2203,13 +2420,15 @@ def _experiment(
         start_time: datetime = datetime(2026, 7, 18),
         target: HrrrTargetDomain | None = None,
         physics_profile: str = ROUTE_DEFAULT_PHYSICS_PROFILE,
-        history_interval_seconds: float = 300.0):
+        history_interval_seconds: float = 300.0,
+        usemonalb: bool | None = None, rdlai2d: bool | None = None):
     from gpuwm.experiment import build_experiment
 
     raw, resolved = _experiment_tables(
         vertical, run_seconds=run_seconds, start_time=start_time,
         target=target, physics_profile=physics_profile,
-        history_interval_seconds=history_interval_seconds)
+        history_interval_seconds=history_interval_seconds,
+        usemonalb=usemonalb, rdlai2d=rdlai2d)
     return build_experiment(
         raw, f"programmatic:native-HRRR:{resolved.identity_sha256()}")
 
@@ -2636,7 +2855,8 @@ def _initial_hrrr_microphysics_receipt(
 def _load_static(
         cache: Path, receipt_path: Path,
         target: HrrrTargetDomain | None = None):
-    from gpuwm.hrrr_native_static import verify_geog_source_evidence
+    from gpuwm.hrrr_native_static import (require_static_coverage,
+                                          verify_geog_source_evidence)
 
     target = target or HrrrTargetDomain.legacy_500x500()
     started = time.perf_counter()
@@ -2651,9 +2871,11 @@ def _load_static(
     if receipt.get("schema") == "gpuwm-native-hrrr-static-v2":
         if receipt.get("target_domain_sha256") != target.identity_sha256():
             raise ValueError("native static target-domain identity mismatch")
-        if not required_hrrr_source_window(target).matches_record(
-                receipt.get("hrrr_source_coverage")):
-            raise ValueError("native static HRRR source-coverage receipt mismatch")
+        # A pinned static source (the HRRR route's default since
+        # 6a69b356f) records its own grid window, not the HRRR crop; the
+        # shared check reads which one this receipt must carry.
+        require_static_coverage(receipt, target,
+                                prefix="native static HRRR receipt")
     expected = receipt.get("cache", {}).get("sha256")
     actual = sha256_file(cache)
     if actual != expected:
@@ -5319,6 +5541,11 @@ def run(args):
                 seal_process = None
 
             from gpuwm.ingest.prepared_cache import write_prepared_cache
+            from gpuwm.static.external_source import static_source_for
+            if static_source_for(static_highres) is not None:
+                from gpuwm.runtime_surface_fetch import require_runtime_surface_fields
+                from gpuwm.source_adapters import get_source_adapter
+                require_runtime_surface_fields(root_met, get_source_adapter("hrrr"))
             from gpuwm.ingest.hrrr_physics import resolve_prepared_noah_surface
             from gpuwm.ingest.preprocess_backend import (
                 preprocess_reports_identity)
@@ -5498,6 +5725,11 @@ def run(args):
             args, pipeline_report, source_hash_receipt, source_window)
 
     started = time.perf_counter()
+    from gpuwm.static.external_source import static_source_for
+    if static_source_for(static_highres) is not None:
+        from gpuwm.runtime_surface_fetch import require_runtime_surface_fields
+        from gpuwm.source_adapters import get_source_adapter
+        require_runtime_surface_fields(root_met, get_source_adapter("hrrr"))
     driver = initialize_hrrr_physics(
         root_result, dc.run, root_met, static, attrs, grid,
         initial_snapshot.valid_time,

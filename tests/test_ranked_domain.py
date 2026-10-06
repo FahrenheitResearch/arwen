@@ -306,7 +306,8 @@ def test_thompson_tables_load_once_and_wait_on_the_uploading_stream(monkeypatch)
             loads.append(1)
         time.sleep(0.02)
         return SimpleNamespace(roundtrip_verified=True)
-    monkeypatch.setattr(classic, "load_validated_classic_tables", lambda root: None)
+    monkeypatch.setattr(classic, "load_validated_classic_tables",
+                        lambda root, version="wrf_461": None)
     monkeypatch.setattr(classic, "_upload_table_set", slow_upload)
     monkeypatch.setattr(classic, "_DEVICE_CACHE", {})
     results = _race(fake, lambda: classic.load_classic_device_tables(

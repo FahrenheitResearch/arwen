@@ -1,0 +1,34 @@
+# GSI and EnKF at another commit than the HRRR tag's, on the same Intel
+# toolchain stage as Dockerfile, with no source edits. The commit, the build
+# modes and every library version come from one pin file (pins/<pin>.pin), so
+# a further GSI commit is a new pin file, not a new recipe.
+#
+# Build (from this folder, after the toolchain stage of Dockerfile exists and
+# ./fetch_pin_sources.sh pins/<pin>.pin has run):
+#   podman build -f Dockerfile.pin --build-arg PIN=gsi-db90edf --build-arg JOBS=16 \
+#     -t gsi-clone-pin:gsi-db90edf .
+#
+# PIN-BUILDS.md records what each pin is, how it differs from the operational
+# build, and what was measured.
+ARG BASE=localhost/gsi-clone-toolchain:v4.1.21
+FROM ${BASE}
+ARG PIN
+ARG JOBS=8
+COPY env-pin.sh /opt/gsi-pin-env.sh
+COPY pins/${PIN}.pin /opt/gsi-pin.pin
+COPY SOURCES-${PIN}.sha256 /opt/src-pin/SOURCES.sha256
+COPY src-pins/${PIN}/ /opt/src-pin/
+RUN cd /opt/src-pin && sha256sum -c SOURCES.sha256
+
+COPY build_pin_libs.sh /opt/build_pin_libs.sh
+RUN bash -c ". /opt/gsi-pin-env.sh && bash /opt/build_pin_libs.sh /opt/gsi-pin.pin ${JOBS}"
+
+# The GSI tree at the pin's commit, checked after the fetch.
+RUN bash -c ". /opt/gsi-pin.pin && git init -q /opt/gsi-pin/gsi \
+ && git -C /opt/gsi-pin/gsi fetch -q --depth 1 \"\$GSI_REPO\" \"\$GSI_COMMIT\" \
+ && git -C /opt/gsi-pin/gsi checkout -q FETCH_HEAD \
+ && test \"\$(git -C /opt/gsi-pin/gsi rev-parse HEAD)\" = \"\$GSI_COMMIT\""
+COPY build_pin_gsi.sh /opt/build_pin_gsi.sh
+RUN bash -c ". /opt/gsi-pin-env.sh && bash /opt/build_pin_gsi.sh /opt/gsi-pin.pin ${JOBS}" \
+ && bash -c ". /opt/gsi-pin-env.sh && { ifort --version; mpiifort -v; cmake --version; }" \
+      > /opt/gsi-pin/BUILD-MANIFEST-compilers.txt 2>&1

@@ -9,6 +9,9 @@ command" shows before a button is pressed.
 Run ids are NAME or FOLDER/NAME under ``--root``; in a URL the id is one
 path segment with its slash written ``%2F``.
 
+The Weather Library paths also answer with ``wiki`` in place of ``library``.
+Both spellings use the same handlers, token rules and saved documents.
+
     GET  /api/session                      version, token, root, runner, host, port
     GET  /api/copy                         the page's words (gui/copy/*.json)
     GET  /api/runs                         one row per run folder under the root, newest first; past the
@@ -26,16 +29,16 @@ path segment with its slash written ``%2F``.
                                            answers at once, each row "checking" until its probe is in
                                            (ask again while "pending" is above zero)
     GET  /api/system                       this computer's cards (NVML only)
-    GET  /api/wiki                         the wiki's main page: kinds, places, featured, recent changes
-    GET  /api/wiki/event/ID                an event page with every source it cites and the runs of it
-    GET  /api/wiki/kind/ID                 a phenomenon page and every event of that kind
-    GET  /api/wiki/place/ID                a place page, its events rarest first
-    GET  /api/wiki/places                  every place, grouped by kind
-    GET  /api/wiki/run/RUN                 a run as an article: facts citing its own files, events it covers
-    GET  /api/wiki/search                  ?q=&type=&region=&decade=&season=&place=&seed=&sort= over the store
-    GET  /api/wiki/changes                 new events and runs, newest first
-    GET  /api/wiki/recipe/ID               ?card=GB an event's run recipe for that card size, for New forecast
-    POST /api/wiki/simulate                start an event's best run for one card size
+    GET  /api/library                      the Weather Library's main page: kinds, places, featured, recent changes
+    GET  /api/library/event/ID             an event page with every source it cites and the runs of it
+    GET  /api/library/kind/ID              a phenomenon page and every event of that kind
+    GET  /api/library/place/ID             a place page, its events rarest first
+    GET  /api/library/places               every place, grouped by kind
+    GET  /api/library/run/RUN              a run as an article: facts citing its own files, events it covers
+    GET  /api/library/search               ?q=&type=&region=&decade=&season=&place=&seed=&sort= over the store
+    GET  /api/library/changes              new events and runs, newest first
+    GET  /api/library/recipe/ID            ?card=GB an event's run recipe for that card size, for New forecast
+    POST /api/library/simulate             start an event's best run for one card size
     GET  /api/physics                      every physics family, scheme, suite and preset
     POST /api/physics/check                does this combination run; if not, why and what does
     POST /api/create/fit                   the wizard's fit for a draft (run-plan --resolve)
@@ -2900,7 +2903,7 @@ class WikiMixin:
                 return Reply(body=recipe_of(self.wiki.store, ident, self.offered_sources(), card_gb))
             if head == "run":
                 return Reply(body=self.wiki.run_page(ident, runs.existing_run(self.root, ident)))
-        raise ApiError(404, "No such wiki page.", "Go to the wiki's main page.")
+        raise ApiError(404, "No such Weather Library page.", "Go to the Weather Library's main page.")
 
 
 class Api(RunsMixin, PicturesMixin, CreateMixin, SimulateMixin, SystemMixin, PhysicsMixin, MachinesMixin,
@@ -2971,9 +2974,16 @@ class Api(RunsMixin, PicturesMixin, CreateMixin, SimulateMixin, SystemMixin, Phy
             reply.body["shown"] = plain_command(reply.body["argv"], self.root)
         return reply
 
+    #: API sections whose path differs from the name their handler goes by: the Weather Library's
+    #: pages are served under library by the handler named wiki, and wiki, their path before the page
+    #: took that name, answers the same.
+    SECTIONS = {"library": "wiki"}
+
     def _dispatch(self, method: str, raw_path: str, query: dict[str, list[str]], body: bytes,
                   content_type: str = "") -> Reply:
         segments = [unquote(part) for part in raw_path.split("/") if part]
+        if len(segments) > 1 and segments[0] == "api":
+            segments[1] = self.SECTIONS.get(segments[1], segments[1])
         try:
             if segments[:1] != ["api"]:
                 raise ApiError(404, "No such page.")

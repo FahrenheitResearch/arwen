@@ -135,7 +135,10 @@ def _cpu_driver(monkeypatch, *, sf_sfclay_physics, sf_surface_physics,
         dt=60.0, bldt=0.0, ra_physics=0,
         sf_sfclay_physics=sf_sfclay_physics,
         sf_surface_physics=sf_surface_physics,
-        bl_pbl_physics=bl_pbl_physics, cu_physics=0)
+        bl_pbl_physics=bl_pbl_physics, cu_physics=0,
+        # RunConfig's default; compute() reads it for the RUC Q2 cap
+        # since 614632b77.
+        ruc_2m_diagnostic="flux")
     driver = object.__new__(physics.PhysicsDriver)
     driver.state = state
     driver.fields = {
@@ -147,6 +150,9 @@ def _cpu_driver(monkeypatch, *, sf_sfclay_physics, sf_surface_physics,
         }.items()
     }
     driver.surface_enabled = True
+    # WRF swint_opt = 1's carrier (89aba028e): the real constructor leaves
+    # this slot None when swint_opt is 0, and compute() reads it every step.
+    driver.swint = None
     driver.stepbl = 1
     driver.radt_minutes = 12.0
     driver.radt_seconds = 720.0
@@ -509,8 +515,17 @@ def test_schema_tables_and_soil_geometry():
 
 
 def test_noah_only_options_require_the_noah_selector():
-    with pytest.raises(ValueError, match="require sf_surface_physics=2"):
+    # usemonalb/rdlai2d are read by Noah AND RUC; with no LSM the refusal
+    # names both schemes that do read them.
+    with pytest.raises(ValueError, match=r"Noah LSM \(sf_surface_physics=2\) "
+                                         r"and the RUC LSM \(sf_surface_physics=3\)"):
         validate_run_config(_cfg(sf_surface_physics=0, usemonalb=True))
+    with pytest.raises(ValueError, match=r"Noah LSM \(sf_surface_physics=2\) "
+                                         r"and the RUC LSM \(sf_surface_physics=3\)"):
+        validate_run_config(_cfg(sf_surface_physics=0, rdlai2d=True))
+    # opt_thcnd stays Noah only.
+    with pytest.raises(ValueError, match="opt_thcnd is a Noah LSM option"):
+        validate_run_config(_cfg(sf_surface_physics=0, opt_thcnd=2))
     with pytest.raises(ValueError, match="require sf_sfclay_physics=1 or 91"):
         validate_run_config(_cfg(sf_sfclay_physics=0, isftcflx=1))
 

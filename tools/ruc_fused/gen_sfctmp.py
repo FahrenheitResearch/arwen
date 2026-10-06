@@ -132,6 +132,11 @@ class A:
                 y = 'ncategory'
             elif other == 13:
                 y = 'urban'
+        elif (not isinstance(other, A) and isinstance(other, np.floating)
+              and other == np.float32(12)):
+            # The trace runs at delt = 12 (see main); no other 12.0 occurs
+            # in the dispatch's arithmetic, so 12.0 there is the step.
+            y = 'delt'
         if reverse:
             x, y = y, x
         expression = f'{op}({x}, {y})' if op.startswith('__f') else f'({x} {op} {y})'
@@ -377,7 +382,7 @@ def main():
                _float_profile=field, _integer_field=lambda v, *a: v,
                _root_count_field=root, _resolved_soil_levels=lambda *a: 9,
                _device_constant_flux_depth=flux, get_kernel=kernel,
-               _ruc_kernel=lambda name, nzs: kernel(name),
+               _ruc_kernel=lambda name, nzs, *a, **k: kernel(name),
                _device_tbq=lambda *a: tbq,
                _snow_preparation_tables=lambda *a: (rough, emiss, 13, 30),
                _default_device_tables=lambda *a: (tables, 30, None, None),
@@ -401,7 +406,10 @@ def main():
     henv.update(RucValidationBatch=Batch, _resolved_soil_levels=lambda *a: 9,
                 _horizontal_float_field=field, _horizontal_integer_field=lambda v,*a,**k:v,
                 _root_count_field=root, _ruc_constant_flux_depth=flux,
-                _selected=selected)
+                _selected=selected,
+                # The snow lineage is the translation unit's define.
+                _ruc_snow_lineage_mask=lambda snow, ncolumn, np: A(
+                    (N,), 'bool', expr='GPUWM_RUC_SNOW_V461'))
     def horizontal(value, shape, name, **kw):
         checkpoint('column:' + name)
         return field(value, shape, name, **kw)

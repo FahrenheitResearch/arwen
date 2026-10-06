@@ -642,17 +642,9 @@ access-restricted -- a data-licensing fact about the feed, not a
 capability limit.  Snow and sea-ice fields remain policy-controlled, and
 the route is not yet accepted by unchanged stock WRF.
 
-Two limits belong in the same breath as the command.  The distribution is
-the ENSEMBLE MEAN analysis, not one of the 80 members -- for a member
-state use `--source 20crv3` over the every-member GRIB2 archive.  And PSL
-publishes no orography and no land mask for 20CRv3, so both are recovered
-from 20CRv3's own fields by
-`tools/build_pressure_level_invariant_supplement.py`, which writes a
-provenance receipt naming the method and the divergence.
+The distribution is the ENSEMBLE MEAN analysis, not one of the 80 members. For a member state use `--source 20crv3` over the every-member GRIB2 archive. `gpuwm fetch --source 20crv3-cf` downloads the public annual archive, splits year boundaries and binds published invariant surface height and land fraction in Rust. Soil uses the four published Noah layers. The published skin temperature supplies an explicit SST proxy over water; there is no separate sub-daily SST variable in this collection.
 
-`tools/download_20crv3_native_subset.py` fetches a window and builds that
-supplement; `tools/demo_20crv3_netcdf.sh` runs fetch, prep, sim and render
-end to end.  Full detail in `docs/native-20crv3-source-adapter-spec.md`.
+`tools/download_20crv3_native_subset.py` is a compatibility spelling for that fetch door; `tools/demo_20crv3_netcdf.sh` runs fetch, prep, sim and render end to end. See `docs/native-cf-fetch.md` for coverage, field policies and native go handoff.
 
 ## The GEFS member route
 

@@ -13,7 +13,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use rustwx_core::{GridProjection, GridShape, LatLonGrid, MAX_VOLUME_ELEMENTS, SelectedField2D};
+use rustwx_core::{GridProjection, GridShape, LatLonGrid, SelectedField2D, checked_volume_elements};
 
 use crate::atomic::atomic_write_bytes;
 use crate::error::{RwResult, RwStoreError};
@@ -37,17 +37,8 @@ fn validated_grid_cells(nx: usize, ny: usize) -> Result<usize, String> {
 }
 
 fn validated_volume_elements(name: &str, levels: usize, cells: usize) -> RwResult<usize> {
-    let elements = levels.checked_mul(cells).ok_or_else(|| {
-        RwStoreError::Format(format!(
-            "volume '{name}': {levels} levels x {cells} cells overflows the addressable element count"
-        ))
-    })?;
-    if elements > MAX_VOLUME_ELEMENTS {
-        return Err(RwStoreError::Format(format!(
-            "volume '{name}': {elements} values ({levels} levels x {cells} cells) exceeds the supported ceiling of {MAX_VOLUME_ELEMENTS}"
-        )));
-    }
-    Ok(elements)
+    checked_volume_elements(levels, cells)
+        .map_err(|error| RwStoreError::Format(format!("volume '{name}': {error}")))
 }
 
 /// One 3D pressure volume to ingest: a selector template plus one full-grid
@@ -912,6 +903,6 @@ mod dimension_tests {
             37_000
         );
         assert!(validated_volume_elements("temperature", usize::MAX, 2).is_err());
-        assert!(validated_volume_elements("temperature", 6, MAX_GRID_CELLS).is_err());
+        assert_eq!(validated_volume_elements("temperature", 6, MAX_GRID_CELLS).unwrap(), 150_000_000);
     }
 }

@@ -897,13 +897,16 @@ def add_run_arguments(parser: argparse.ArgumentParser) -> None:
     # literal here only because the daemon must parse without importing
     # the front door.
     parser.add_argument("--members", type=int, default=10,
-                        help="ensemble size (default 10). The "
+                        help="ensemble size (default 10). Historical "
+                             "WSM6/Dudhia measurements, longwave off: the "
                              "trajectory advance is exactly linear in "
                              "it -- 3.06 s per member-leg at N=10, 20 "
                              "and 36 -- but the LETKF solve is not, so "
                              "total wall clock grows faster than N. "
                              "See tools.da_nowcast.DEFAULT_MEMBERS for "
-                             "the skill measurements behind 10")
+                             "the skill measurements behind 10. Current "
+                             "MP28/GSD4.1 cost and skill require "
+                             "remeasurement")
     parser.add_argument("--free-legs", type=int, default=6,
                         help="free-forecast legs refreshed once the "
                              "analysis is current (default 6)")

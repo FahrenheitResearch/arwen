@@ -290,10 +290,35 @@ class AcousticAdaptation:
     #: ``epssm`` (:func:`offcentering_floor`), or ``None`` where the domain
     #: runs the ``epssm`` it was configured with.
     configured_epssm: float | None = None
+    #: ``RunConfig.terrain_clock = "pinned"``: the configured count runs
+    #: and the count this rule would have run is :attr:`advice` only.
+    pinned: bool = False
+    #: Under ``pinned``, the count the measured rule would have run.
+    advice: int | None = None
 
     @property
     def adapted(self) -> bool:
         return self.time_step_sound != self.configured
+
+    @property
+    def advice_differs(self) -> bool:
+        """Pinned, and the measured rule would have raised the count."""
+        return (self.pinned and self.advice is not None
+                and int(self.advice) != int(self.configured))
+
+    def pinned_sentence(self) -> str:
+        """The line a pinned domain prints when the rule would have
+        raised its count: what runs, and the advice not applied."""
+
+        reading = self.reading
+        return (
+            f"acoustic substeps: {reading.label}'s clock is pinned, so it "
+            f"runs {self._runs()} as configured; its steepest terrain "
+            f"slope is {reading.slope:.2f} ({reading.degrees:.0f} degrees) "
+            f"and four acoustic substeps per step were measured stable "
+            f"only below {self.four_below:.2f} at epssm {self.epssm:g}, so "
+            f"the measured rule would have run {int(self.advice)} (advice "
+            "only, recorded in the receipt and not applied)")
 
     @property
     def offcentering_raised(self) -> bool:
@@ -320,6 +345,8 @@ class AcousticAdaptation:
 
     @property
     def status(self) -> str:
+        if self.pinned:
+            return "PINNED"
         if self.beyond_measured:
             return "BEYOND_MEASURED"
         return "ADAPTED" if self.adapted else "AS_CONFIGURED"
@@ -390,6 +417,16 @@ class AcousticAdaptation:
             # other record reads as it did.  "epssm" above is what runs.
             row["configured_epssm"] = float(self.configured_epssm)
             row["epssm_basis"] = "measured off-centering floor"
+        if self.pinned:
+            # Only under the pinned clock, so every measured record reads
+            # as it did: the count the rule would have run, not applied.
+            row["clock"] = "pinned"
+            row["advice"] = {
+                "applied": False,
+                "time_step_sound": int(self.advice if self.advice is not None
+                                       else self.configured),
+                "differs": bool(self.advice_differs),
+            }
         return row
 
 
@@ -406,11 +443,16 @@ def derive_acoustics(grid_id: int, run, reading: SlopeReading
     count = configured
     if reading.slope >= four_below:
         count = max(configured, STEEP_TERRAIN_SOUND_STEPS)
+    pinned = str(getattr(run, "terrain_clock", "measured")) == "pinned"
     return AcousticAdaptation(
         grid_id=int(grid_id), reading=reading, epssm=epssm,
-        configured=configured, time_step_sound=count,
+        configured=configured,
+        # Pinned: the configured count integrates and the measured
+        # count is advice (RunConfig.terrain_clock).
+        time_step_sound=configured if pinned else count,
         four_below=four_below, six_below=six_below,
-        adaptive=bool(getattr(run, "use_adaptive_time_step", False)))
+        adaptive=bool(getattr(run, "use_adaptive_time_step", False)),
+        pinned=pinned, advice=(count if pinned else None))
 
 
 def adapted_run(run, count: int):
@@ -513,6 +555,14 @@ def _announce(adaptation: AcousticAdaptation, *, announce, caution) -> None:
 
     if adaptation.offcentering_raised and announce is not None:
         announce(adaptation.offcentering_sentence())
+    if adaptation.pinned:
+        # The configured count runs.  Where the rule would have raised
+        # it the domain says so, as a caution, because the map's verdict
+        # is a measured stop; otherwise nothing changed and nothing is
+        # said, as for any domain on gentle ground.
+        if adaptation.advice_differs and caution is not None:
+            caution(adaptation.pinned_sentence())
+        return
     # One line per domain: the caution already names the count it runs.
     if adaptation.beyond_measured:
         if caution is not None:

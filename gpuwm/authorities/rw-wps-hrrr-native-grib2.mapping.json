@@ -4,6 +4,7 @@
  "format": "grib2",
  "grid": {
   "family": "lambert_conformal",
+  "same_grid_pairing": "identity",
   "wind_basis": "grid_relative_with_rotation",
   "parameters": {
    "latin1": 38.5,
@@ -948,6 +949,26 @@
    "missing": {
     "kind": "preserve_mask"
    }
+  },
+  "vegetation_fraction": {
+   "units": {
+    "source": "percent",
+    "target": "percent"
+   },
+   "source_axes": [
+    "y",
+    "x"
+   ],
+   "target_axes": [
+    "y",
+    "x"
+   ],
+   "location": "surface",
+   "staggering": "none",
+   "missing": {
+    "kind": "reject"
+   },
+   "provider": "composition_bound"
   }
  },
  "derivations": [],
@@ -1162,6 +1183,15 @@
     ],
     "location": "mass",
     "target_units": "kg-1"
+   },
+   {
+    "name": "vegetation_fraction",
+    "axes": [
+     "y",
+     "x"
+    ],
+    "location": "surface",
+    "target_units": "percent"
    }
   ],
   "pressure_requirement": "air_pressure",

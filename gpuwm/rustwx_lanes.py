@@ -44,17 +44,24 @@ from pathlib import Path
 
 from gpuwm import bridges
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
-                           default_bridge_dir, lazy_build_hints,
+                           default_bridge_dir,
+                           legacy_bridge_candidates, lazy_build_hints,
                            rustwx_build_hint,
                            executable_name, packaged_bridge_dir)
 
 #: Environment variables naming prebuilt binaries.
 ENSEMBLE_ENV = "GPUWM_RW_ENSBATCH"
 OBSGRID_ENV = "GPUWM_RW_OBSGRID"
+COMPARE_ENV = "GPUWM_RW_COMPARE"
 
 #: Executable base names.
 ENSEMBLE_NAME = "rw_ensbatch"
 OBSGRID_NAME = "rw_obsgrid"
+#: The comparison engine: a run's products beside a reference model's own
+#: fields for the same cycle and lead (``gpuwm render --compare``).  A
+#: third sibling for the same reason the other two exist: two inputs of
+#: two formats on one grid is neither one run's frames nor N members.
+COMPARE_NAME = "rw_compare"
 
 #: ``CARGO_BUILD_HINT``: the one-liner that builds them.  Same workspace
 #: as the batch renderer, so one cargo invocation produces all three.
@@ -82,6 +89,17 @@ OBSGRID_ABI_MARKER = (
     "radar-overlap\tvr-lowest\tradar-contribution\t"
     "gpuwm-rw-obsgrid-events-v1\tRENDERED\tSKIPPED\tFAILED\t"
     "gpuwm-rw-obsgrid-vocabulary-v1\tOBSERVED\tSITES")
+
+#: What this wrapper parses from ``rw_compare``: the listing rows and the
+#: event words.  The references and products themselves are NOT listed
+#: here -- they are the engine's tables, asked with ``--list-products``.
+COMPARE_ABI_MARKER = (
+    "gpuwm-rw-compare-references-v1\tREFERENCE\tname\tlabel\t"
+    "gpuwm-rw-compare-products-v1\tPRODUCT\tname\tslug\ttitle\t"
+    "difference\t"
+    "gpuwm-rw-compare-events-v1\tRENDERED\tSKIPPED\tFAILED\tSTATS\t"
+    "MATCH\tSOURCE\tFINISHED\t"
+    "gpuwm-rw-compare-presentation-v1\t--theme")
 
 #: Ensemble products, in the order ``all`` expands to.
 ENSEMBLE_PRODUCTS = ("mean", "spread", "prob", "pmm", "paintball")
@@ -124,6 +142,7 @@ def _candidates(env_var: str, name: str) -> tuple[Path, ...]:
         root / "libexec" / "bridges" / filename,
         packaged_bridge_dir() / filename,
         default_bridge_dir() / filename,
+        *legacy_bridge_candidates(filename),
     ))
     return tuple(candidates)
 
@@ -157,6 +176,90 @@ def find_ensemble_bin() -> Path | None:
 
 def find_obsgrid_bin() -> Path | None:
     return _find(OBSGRID_ENV, OBSGRID_NAME)
+
+
+def find_compare_bin() -> Path | None:
+    return _find(COMPARE_ENV, COMPARE_NAME)
+
+
+def compare_remedy() -> str:
+    return artifact_remedy(
+        env_var=COMPARE_ENV, filename=executable_name(COMPARE_NAME),
+        subject="the rust comparison engine",
+        crate_relative=RUSTWX_CRATE_RELATIVE, one_liner=rustwx_build_hint())
+
+
+def probe_compare_bin(path: Path) -> tuple[bool, str]:
+    return _probe(path, COMPARE_ABI_MARKER, COMPARE_NAME)
+
+
+def require_compare_bin() -> Path:
+    """The comparison engine, resolved and proven, or a refusal.
+
+    There is no second engine on this lane and none is offered: a
+    comparison sheet is weather fields end to end, so a missing or
+    foreign ``rw_compare`` is refused with the line that builds it
+    rather than drawn some other way.
+    """
+
+    try:
+        path = find_compare_bin()
+    except FileNotFoundError as error:
+        raise RuntimeError(f"{error}  {compare_remedy()}") from error
+    if path is None:
+        raise RuntimeError(
+            f"comparison sheets come from the rust engine {COMPARE_NAME}, "
+            f"and it is not built.  Build it: {rustwx_build_hint()}  "
+            f"{compare_remedy()}")
+    usable, evidence = probe_compare_bin(path)
+    if not usable:
+        raise RuntimeError(f"{path}: {evidence}")
+    return path
+
+
+def probe_compare_reference_bin(path: Path) -> tuple[bool, str]:
+    """Does ``path`` speak the reference-input contract?
+
+    The SECOND door through ``rw_compare``: the reference panels beside a
+    run's observation verification call ``--fetch-reference`` and parse
+    a ``gpuwm.reference-input.v1`` receipt, which the ``--abi`` line
+    :func:`probe_compare_bin` reads does not name.  The two contracts
+    landed on parallel branches, so a build can carry either one alone:
+    the ``--abi`` probe passes a build that has no ``--fetch-reference``,
+    and this one passes a build whose ``--abi`` predates the theme line.
+    Judged statically out of the bytes against
+    :data:`gpuwm.bridges.BRIDGE_ABI_MARKERS`, the check
+    ``gpuwm fetch-bridges`` applies before it stages one.
+    """
+
+    return bridges.bridge_abi_matches(COMPARE_NAME, path)
+
+
+def require_compare_reference_bin() -> Path:
+    """The comparison engine for the reference panels, or a refusal.
+
+    Resolved through :func:`find_compare_bin`, the ladder ``render
+    --compare`` uses, and judged by :func:`probe_compare_reference_bin`,
+    the probe ``gpuwm doctor`` reports for this door.  Breakage the
+    refusal prevents: a build without ``--fetch-reference`` used to be
+    launched anyway, rejected the flag, and surfaced as a bare
+    ``reference input:`` usage error that did not say the build was
+    stale or how to replace it.  A missing override still raises
+    :class:`FileNotFoundError`, as the ladder does for every door.
+    """
+
+    path = find_compare_bin()
+    if path is None:
+        raise RuntimeError(artifact_remedy(
+            env_var=COMPARE_ENV, filename=executable_name(COMPARE_NAME),
+            subject="the reference renderer",
+            crate_relative=RUSTWX_CRATE_RELATIVE,
+            one_liner=rustwx_build_hint(), artifact=COMPARE_NAME))
+    usable, evidence = probe_compare_reference_bin(path)
+    if not usable:
+        raise RuntimeError(
+            f"{path}: {evidence}.  Rebuild it: {rustwx_build_hint()}")
+    return path
 
 
 def ensemble_remedy() -> str:
@@ -534,7 +637,11 @@ def run_obsgrid_renderer(
 
 
 __all__ = [
-    "CARGO_BUILD_HINT", "ENSEMBLE_ABI_MARKER", "ENSEMBLE_ENV",
+    "CARGO_BUILD_HINT", "COMPARE_ABI_MARKER", "COMPARE_ENV", "COMPARE_NAME",
+    "compare_remedy", "find_compare_bin", "probe_compare_bin",
+    "probe_compare_reference_bin", "require_compare_bin",
+    "require_compare_reference_bin",
+    "ENSEMBLE_ABI_MARKER", "ENSEMBLE_ENV",
     "ENSEMBLE_FIELDS", "ENSEMBLE_NAME", "ENSEMBLE_PRODUCTS",
     "OBSGRID_ABI_MARKER", "OBSGRID_ENV", "OBSGRID_NAME", "OBSGRID_PRODUCTS",
     "crate_dir", "ensemble_remedy", "ensemble_workaround_notice",

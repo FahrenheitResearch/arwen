@@ -19,8 +19,9 @@ table root is verified against the exact size and SHA-256 pins in
 :data:`gpuwm.core.thompson_contract.CLASSIC_TABLE_ASSETS` -- the same
 pins every ``mp_physics=8`` run enforces at load -- *before* the file is
 atomically moved into place.  A mismatched download is deleted and
-refused, never installed; an existing file with wrong bytes is refused,
-never overwritten (delete it yourself and re-run).  The command is
+refused, never installed. A damaged asset in the self-chosen staging
+root is replaced atomically from a verified packaged copy; an explicit
+mirror with wrong bytes is refused. The command is
 idempotent: with all assets present and byte-valid it verifies and
 exits 0 without touching the network.
 
@@ -62,6 +63,7 @@ is left exactly where it is.
 
 from __future__ import annotations
 
+import bz2
 import hashlib
 import http.client
 import os
@@ -113,49 +115,31 @@ def asset_url_base() -> str:
 
 
 def wif_asset_url_base() -> str:
-    """Where ``--wif`` downloads from: the VERSIONED release-assets base.
+    """The fixed source archive or an explicitly selected raw-file mirror.
 
-    This used to return :func:`asset_url_base`, i.e. the fixed ``v1.0.0``
-    release the coefficient tables are published under -- where this file
-    has never existed.  ``gpuwm fetch-tables --wif`` therefore refused
-    with ``HTTP Error 404`` on every install that had no local copy, which
-    is every install: there was no reachable route to the dataset at all.
-
-    The coefficient tables can sit at a fixed tag because their bytes are
-    frozen -- the same four files answer every release.  This dataset is
-    carried as an asset of the release that pins it, alongside the bridge
-    bundles, so its base has to MOVE with the release.  That is exactly
-    what :func:`gpuwm.bridge_assets.asset_url_base` computes
-    (``<REPOSITORY_URL>/releases/download/<pins.release>``), including the
-    ``GPUWM_BRIDGE_ASSET_URL_BASE`` override, so it is reused rather than
-    restated: one versioned base, not two that can drift apart.
-
-    ``GPUWM_TABLE_ASSET_URL_BASE`` still wins when it is set, because an
-    operator who has named a mirror for this command's downloads has named
-    it for all of them.
+    This dataset is pinned independently of bridge binaries. Source installs
+    and new releases must not need a published bridge release to acquire it.
     """
 
     override = os.environ.get(ASSET_URL_BASE_ENV)
     if override and override.strip():
         return override.strip().rstrip("/")
 
-    from gpuwm import bridge_assets
+    override = os.environ.get("GPUWM_BRIDGE_ASSET_URL_BASE")
+    if override and override.strip():
+        return override.strip().rstrip("/")
+    from gpuwm.ingest.wif_dataset import WIF_DATASET_DOWNLOAD_BASE
 
-    try:
-        return bridge_assets.asset_url_base(bridge_assets.load_pins())
-    except Exception as error:
-        from gpuwm.ingest.wif_dataset import WIF_DATASET_FILE
+    return WIF_DATASET_DOWNLOAD_BASE
 
-        raise TableAssetError(
-            f"{WIF_DATASET_FILE}: no download URL could be resolved.  It "
-            "is published as an asset of the release that pins it, at "
-            f"<{bridges.REPOSITORY_URL}/releases/download/"
-            f"<release>/{WIF_DATASET_FILE}>, and the packaged release pin "
-            f"could not be read: {error}\n"
-            "  how to supply it: stage from a local copy with `gpuwm "
-            "fetch-tables --wif --from DIR`, or set "
-            f"{ASSET_URL_BASE_ENV} (or GPUWM_BRIDGE_ASSET_URL_BASE) to a "
-            "base URL that carries the file")
+
+def wif_asset_source() -> tuple[str, str | None]:
+    from gpuwm.ingest.wif_dataset import WIF_DATASET_FILE
+
+    mirrored = any(os.environ.get(key, "").strip()
+                   for key in (ASSET_URL_BASE_ENV, "GPUWM_BRIDGE_ASSET_URL_BASE"))
+    return (wif_asset_url_base() + "/" + WIF_DATASET_FILE
+            + ("" if mirrored else ".bz2"), None if mirrored else "bz2")
 
 
 class TableAssetError(RuntimeError):
@@ -374,7 +358,7 @@ def _stage(temp: Path, final: Path, asset: TableAsset) -> None:
     os.replace(temp, final)
 
 
-def fetch_asset_from_url(root: Path, asset: TableAsset, url: str) -> Path:
+def fetch_asset_from_url(root: Path, asset: TableAsset, url: str, *, compression=None) -> Path:
     """Download ``url`` into ``root`` with pre-install verification.
 
     Held under the table-root lock: staging, verifying and installing is
@@ -383,22 +367,30 @@ def fetch_asset_from_url(root: Path, asset: TableAsset, url: str) -> Path:
 
     The transfer COUNTS ITS BYTES on stderr while it runs.  This is the
     303 MiB that made ``gpuwm setup`` sit silent for 15.5 s of its 16.2
-    (UX finding N9), and the pinned size in ``asset`` is the total, so
-    the percentage is the contract's own number rather than a header the
-    host supplied.  stderr because ``gpuwm setup`` captures each step's
+    (UX finding N9). The transfer counter uses its wire length, including
+    compressed transfers; installation always verifies the raw asset pin.
+    stderr because ``gpuwm setup`` captures each step's
     stdout; see :mod:`gpuwm.progress`.
     """
 
+    if compression not in (None, "bz2"):
+        raise TableAssetError(f"unsupported asset compression {compression!r}")
     final = root / asset.filename
     with fetch_guard.hold("fetch-tables", root):
+        # Another fetch may have installed it while this caller waited.
+        # Verify under the same lock so a shared cache downloads once.
+        if final.is_file():
+            _verify_in_place(final, asset)
+            return final
         temp = _staging_path(root, asset)
+        transfer_temp = temp if compression is None else temp.with_name(temp.name + ".bz2")
         attempts = max(1, int(TRANSFER_ATTEMPTS))
         for attempt in range(1, attempts + 1):
             try:
-                _transfer(url, temp, asset)
+                _transfer(url, transfer_temp, asset)
                 break
             except _TransientTransfer as stall:
-                temp.unlink(missing_ok=True)
+                transfer_temp.unlink(missing_ok=True)
                 if attempt == attempts:
                     raise TableAssetError(
                         f"{asset.filename}: download from {url} stalled "
@@ -410,10 +402,19 @@ def fetch_asset_from_url(root: Path, asset: TableAsset, url: str) -> Path:
                       file=sys.stderr)
                 time.sleep(RETRY_PAUSE_SECONDS * attempt)
             except (urllib.error.URLError, OSError) as error:
-                temp.unlink(missing_ok=True)
+                transfer_temp.unlink(missing_ok=True)
                 raise TableAssetError(
                     f"{asset.filename}: download failed from {url}: {error}")
-        _stage(temp, final, asset)
+        try:
+            if compression == "bz2":
+                with bz2.open(transfer_temp, "rb") as source, temp.open("wb") as sink:
+                    shutil.copyfileobj(source, sink, _TRANSFER_BLOCK_BYTES)
+            _stage(temp, final, asset)
+        except (OSError, EOFError) as error:
+            raise TableAssetError(f"{asset.filename}: cannot decompress {url}: {error}") from error
+        finally:
+            temp.unlink(missing_ok=True)
+            transfer_temp.unlink(missing_ok=True)
     return final
 
 
@@ -433,12 +434,17 @@ class _TransientTransfer(Exception):
 
 
 def _transfer(url: str, temp: Path, asset: TableAsset) -> None:
-    counter = ByteCounter(
-        f"gpuwm fetch-tables: {asset.filename}", asset.bytes)
+    counter = None
     try:
         with urllib.request.urlopen(
                 url, timeout=SOCKET_TIMEOUT_SECONDS) as response, (
                     temp.open("wb")) as sink:
+            try:
+                wire_bytes = int(getattr(response, "headers", {}).get("Content-Length", asset.bytes))
+            except (TypeError, ValueError):
+                wire_bytes = asset.bytes
+            counter = ByteCounter(f"gpuwm fetch-tables: {asset.filename}",
+                                  wire_bytes if wire_bytes > 0 else asset.bytes)
             while True:
                 block = response.read(_TRANSFER_BLOCK_BYTES)
                 if not block:
@@ -461,12 +467,13 @@ def _transfer(url: str, temp: Path, asset: TableAsset) -> None:
         # a connection dropped mid-body, or a body shorter than announced
         raise _TransientTransfer(str(error) or type(error).__name__) from None
     finally:
-        counter.close()
+        if counter is not None:
+            counter.close()
 
 
 def fetch_asset_from_dir(root: Path, asset: TableAsset,
-                         source_dir: Path) -> Path:
-    """Copy ``asset`` from a local directory with the same verification."""
+                         source_dir: Path, *, replace_damaged: bool = False) -> Path:
+    """Copy a pinned asset, optionally repairing owned damaged staging."""
 
     source = source_dir / asset.filename
     if not source.is_file():
@@ -474,6 +481,14 @@ def fetch_asset_from_dir(root: Path, asset: TableAsset,
             f"{asset.filename}: not found in --from directory {source_dir}")
     final = root / asset.filename
     with fetch_guard.hold("fetch-tables", root):
+        if final.is_file():
+            try:
+                _verify_in_place(final, asset)
+            except TableAssetError:
+                if not replace_damaged:
+                    raise
+            else:
+                return final
         temp = _staging_path(root, asset)
         try:
             shutil.copyfile(source, temp)
@@ -549,7 +564,10 @@ def stage_classic_tables(args) -> int:
                   f"damaged ({damage}); replacing it with the verified "
                   "copy from the package")
             try:
-                fetch_asset_from_dir(root, asset, packaged)
+                # This branch already proved self-chosen user staging and a
+                # valid packaged replacement. Keep the damaged file until a
+                # pinned temp is ready for atomic replacement.
+                fetch_asset_from_dir(root, asset, packaged, replace_damaged=True)
             except TableAssetError as error:
                 refusals.append(str(error))
                 continue
@@ -679,6 +697,13 @@ def fetch_tables_main(args) -> int:
 
     wif_requested = bool(getattr(args, "wif", False))
     wif_only = bool(getattr(args, "wif_only", False))
+    fork_requested = bool(getattr(args, "thompson_fork", False))
+    fork_only = bool(getattr(args, "thompson_fork_only", False))
+    fork_code: int | None = None
+    if fork_requested or fork_only:
+        from gpuwm.thompson_fork_assets import stage_thompson_fork_tables
+        fork_code = stage_thompson_fork_tables(
+            getattr(args, "from_dir", None), getattr(args, "thompson_fork_root", None))
 
     wif_code: int | None = None
     if wif_requested:
@@ -688,7 +713,7 @@ def fetch_tables_main(args) -> int:
     # --wif-only is the one flag that legitimately skips the mandatory
     # leg, because it is the operator saying so in as many words.
     classic_code: int | None = None
-    if not wif_only:
+    if not wif_only and not fork_only:
         classic_code = stage_classic_tables(args)
 
     legs = []
@@ -696,6 +721,8 @@ def fetch_tables_main(args) -> int:
         legs.append(("classic coefficient tables", classic_code))
     if wif_code is not None:
         legs.append(("--wif aerosol climatology dataset", wif_code))
+    if fork_code is not None:
+        legs.append(("--thompson-fork coefficient tables", fork_code))
     if len(legs) > 1 or (wif_requested and not wif_only):
         for label, code in legs:
             state = "staged" if code == 0 else "REFUSED"
@@ -745,10 +772,10 @@ def stage_wif_dataset(source_dir=None, root=None) -> int:
             fetch_asset_from_dir(wif_root, WIF_DATASET_ASSET,
                                  Path(source_dir))
         else:
-            url = f"{wif_asset_url_base()}/{WIF_DATASET_FILE}"
+            url, compression = wif_asset_source()
             print(f"gpuwm fetch-tables --wif: downloading "
                   f"{WIF_DATASET_FILE} ({mib:.1f} MiB) from {url}")
-            fetch_asset_from_url(wif_root, WIF_DATASET_ASSET, url)
+            fetch_asset_from_url(wif_root, WIF_DATASET_ASSET, url, compression=compression)
     except TableAssetError as error:
         print(f"gpuwm fetch-tables --wif: REFUSED: {error}")
         return 2
@@ -793,8 +820,8 @@ def register_cli(subparsers) -> None:
              "global monthly aerosol climatology the mp_physics=28 WIF "
              "ingest reads (aer_init_opt=1 with wif_input_opt=1), into "
              "~/.gpuwm/wif under the same SHA-256 contract.  Opt-in: it "
-             "is an input dataset, not a coefficient table, and no "
-             "default install opens it")
+             "is an input dataset, not a coefficient table. Forecast "
+             "fetches acquire it automatically when selected physics needs it")
     parser.add_argument(
         "--wif-only", dest="wif_only", action="store_true",
         help="with --wif, stage only that dataset and leave the "
@@ -803,6 +830,16 @@ def register_cli(subparsers) -> None:
         "--wif-root", dest="wif_root", metavar="DIR", default=None,
         help="stage the WIF dataset into DIR instead of ~/.gpuwm/wif "
              "(same meaning as GPUWM_WIF_DATA_ROOT)")
+    parser.add_argument(
+        "--thompson-fork", action="store_true",
+        help="stage the pinned WRF 3.9 fork Thompson coefficient set from "
+             "--from DIR, packaged fork data, or an explicitly selected mirror")
+    parser.add_argument(
+        "--thompson-fork-only", action="store_true",
+        help="stage only the fork coefficient set and leave classic tables alone")
+    parser.add_argument(
+        "--thompson-fork-root", metavar="DIR", default=None,
+        help="stage fork tables into DIR instead of the selected fork cache")
     parser.set_defaults(func=fetch_tables_main)
     return parser
 
@@ -827,4 +864,5 @@ __all__ = [
     "staging_root",
     "unstaged_table_assets",
     "wif_asset_url_base",
+    "wif_asset_source",
 ]

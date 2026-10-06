@@ -19,7 +19,7 @@ import pytest
 from gpuwm.config import (GWD_OPT_VALUES, TOPO_WIND_VALUES, RunConfig,
                           terrain_drag_refusal, validate_run_config)
 from gpuwm.experiment import build_experiment
-from tests.test_namelist_gaps import _import, _with
+from test_namelist_gaps import _import, _with
 
 
 def _cfg(**over) -> RunConfig:
@@ -240,7 +240,7 @@ def test_a_child_domain_with_terrain_drag_is_refused_by_name(tmp_path):
 
 
 def test_an_omitted_key_imports_byte_identically(tmp_path):
-    from tests.test_namelist_import import INPUT_TEXT
+    from test_namelist_import import INPUT_TEXT
 
     text, _ = _import(tmp_path, INPUT_TEXT)
     zero, _ = _import(tmp_path, _with(dynamics=" gwd_opt = 0, 0,\n"))
@@ -254,7 +254,7 @@ def test_an_omitted_key_imports_byte_identically(tmp_path):
 
 def test_the_defaults_leave_the_restart_identity_alone(tmp_path):
     from gpuwm.core.model import restart_identity_payload
-    from tests.test_namelist_import import INPUT_TEXT
+    from test_namelist_import import INPUT_TEXT
 
     text, _ = _import(tmp_path, INPUT_TEXT)
     payload = restart_identity_payload(

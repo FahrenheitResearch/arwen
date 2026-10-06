@@ -44,9 +44,10 @@ use sha2::{Digest, Sha256};
 use wrf_core::WrfFile;
 
 use crate::wrf_volumes::{
-    IsoVolume, SurfaceFallback, build_iso_volumes, preflight_iso_volume_shape,
+    ColumnHeights, IsoVolume, SurfaceFallback, build_iso_volumes, preflight_iso_volume_shape,
     try_interpolate_iso_volumes,
 };
+use rw_isobaric::InterfaceStencil;
 
 const LOCAL_IMPORT_MAX_SCAN_DEPTH: usize = 8;
 const LOCAL_IMPORT_MAX_DISCOVERED_FILES: usize = 10_000;
@@ -2466,25 +2467,29 @@ pub(crate) fn netcdf_initial_condition_disclosure(nc: &NcFile) -> Option<String>
 
 /// The producing model's name a file carries for the metadata row
 /// (`GPUWM_MODEL_LABEL`, see `rustwx_products::shared_context`), read the
-/// same way under both readers.  `Ok(None)` when the file names no model,
-/// which is every stock WRF file; `Err` names a label the row cannot take.
+/// same way under both readers.  A file the WOOF engine wrote
+/// (`GPUWM_VERSION`) and that names no model is `WOOF`.  `Ok(None)` when
+/// the file names no model and the engine did not write it, which is
+/// every stock WRF file; `Err` names a label the row cannot take.
 pub(crate) fn model_label(file: &WrfFile) -> Result<Option<String>, String> {
-    match file.global_attr_str(rustwx_products::shared_context::MODEL_LABEL_ATTRIBUTE) {
-        Ok(raw) => rustwx_products::shared_context::checked_model_label(&raw),
-        Err(_) => Ok(None),
-    }
+    use rustwx_products::shared_context::{
+        ENGINE_VERSION_ATTRIBUTE, MODEL_LABEL_ATTRIBUTE, file_model_label,
+    };
+    let named = file.global_attr_str(MODEL_LABEL_ATTRIBUTE).ok();
+    let engine_written = file.global_attr_str(ENGINE_VERSION_ATTRIBUTE).is_ok();
+    file_model_label(named.as_deref(), engine_written)
 }
 
 /// [`model_label`] for a file only the netcrust reader could open.
 pub(crate) fn netcdf_model_label(nc: &NcFile) -> Result<Option<String>, String> {
-    let Some(attribute) = nc.attribute(rustwx_products::shared_context::MODEL_LABEL_ATTRIBUTE)
-    else {
-        return Ok(None);
+    use rustwx_products::shared_context::{
+        ENGINE_VERSION_ATTRIBUTE, MODEL_LABEL_ATTRIBUTE, file_model_label,
     };
-    match attribute.as_string() {
-        Some(raw) => rustwx_products::shared_context::checked_model_label(raw),
-        None => Ok(None),
-    }
+    let named = nc
+        .attribute(MODEL_LABEL_ATTRIBUTE)
+        .and_then(|attribute| attribute.as_string().map(str::to_string));
+    let engine_written = nc.attribute(ENGINE_VERSION_ATTRIBUTE).is_some();
+    file_model_label(named.as_deref(), engine_written)
 }
 
 /// `2026-08-01T00:00:00Z` -> `08/01 00Z`, the spelling the `Init` and
@@ -2950,7 +2955,14 @@ fn import_paths(
                 false,
                 &mut |message| progress(format!("{record_tag}: {message}")),
             )?;
-            if let Some((canonical, severe, volumes, raw_2d)) = postprocessed {
+            if let Some((canonical, severe, volumes, raw_2d, hour_notes)) = postprocessed {
+                for note in hour_notes {
+                    notes.push(format!(
+                        "{} time {}: {note}",
+                        display_name(path),
+                        record.label
+                    ));
+                }
                 let refs = canonical
                     .iter()
                     .map(|(name, field)| (name.as_str(), field))
@@ -4225,7 +4237,8 @@ fn now_unix() -> u64 {
 /// (plain NetCDF wrf-core can't open)
 /// yields no volumes so the 2D import still succeeds. The third element
 /// carries the human-readable reason when the volumes degraded on a file
-/// wrf-core DID open.
+/// wrf-core DID open, or when their heights took the named mass-level
+/// fallback ([`crate::wrf_volumes::mass_level_heights_note`]).
 fn read_iso_volumes(
     file: Option<&WrfFile>,
     time_index: usize,
@@ -4246,7 +4259,9 @@ fn read_iso_volumes(
         // The light path publishes no chart-level selector planes -- the
         // full science import (wrf_process) owns those; here only the
         // sounding volumes and the surface fallback are consumed.
-        Ok((volumes, _chart_volumes, surface)) => (volumes, Some(surface), None),
+        Ok((volumes, _chart_volumes, surface, height_note)) => {
+            (volumes, Some(surface), height_note)
+        }
         Err(err) => (
             Vec::new(),
             None,
@@ -4376,17 +4391,52 @@ fn destagger_z_to_mass_levels(
     Ok(())
 }
 
+/// The eta-level stencil of a post-processed file whose Z is on the layer
+/// interfaces: from ZNW, and ZNU when the file carries it (otherwise the
+/// middle of each layer in ZNW, as WRF defines it).  `Err` names why the
+/// file has none.
+fn postprocessed_interface_stencil(
+    nc: &NcFile,
+    time_index: usize,
+    nz: usize,
+) -> Result<InterfaceStencil, String> {
+    if nc.variable("ZNW").is_none() {
+        return Err("the file carries Z on its layer interfaces but no eta levels (ZNW)".into());
+    }
+    let read = |name: &str| -> Result<Vec<f64>, String> {
+        read_array_f64_record_or_all(nc, name, time_index)
+            .map(|array| array.into_values())
+            .map_err(|err| format!("read {name}: {err}"))
+    };
+    let eta_interface = read("ZNW")?;
+    let stencil = if nc.variable("ZNU").is_some() {
+        InterfaceStencil::new(&read("ZNU")?, &eta_interface)
+    } else {
+        InterfaceStencil::from_interfaces(&eta_interface)
+    }
+    .map_err(|err| format!("the file's eta levels: {err}"))?;
+    if stencil.levels() != nz {
+        return Err(format!(
+            "the file's eta levels describe {} layers and its fields {nz}",
+            stencil.levels()
+        ));
+    }
+    Ok(stencil)
+}
+
 /// Everything one post-processed hour yields: the synthesized surface 2D
 /// fields, the optional `approx_*` severe/thermo suite (written through the
 /// derived-field slot), the isobaric sounding volumes, and — for the
 /// 2-D-only `wrf2d` route — every mass-grid data plane as a raw `wrf_*`
 /// field (same derived-slot convention as the raw-wrfout light import; the
-/// 3-D route always returns this empty).
+/// 3-D route always returns this empty) -- and the notes the import must
+/// carry, such as which heights the isobaric height volume was read from.
 pub(crate) type PostprocessedWrfHour = (
     Vec<(String, SelectedField2D)>,
     Vec<crate::postproc_severe::SevereField>,
     Vec<IsoVolume>,
     Vec<RawField2D>,
+    Vec<String>,
 );
 
 /// Post-processed climate-WRF routing rule: TRUE when the `TK` variable is a
@@ -4639,7 +4689,7 @@ fn postprocessed_wrf2d_hour(
         canonical.len()
     ));
 
-    Ok((canonical, Vec::new(), Vec::new(), raw_2d))
+    Ok((canonical, Vec::new(), Vec::new(), raw_2d, Vec::new()))
 }
 
 /// [`try_postprocessed_wrf`] against an already-open netcrust handle, so the
@@ -4739,15 +4789,40 @@ pub(crate) fn try_postprocessed_wrf_shared(
     // CONUS-II era quirk: the CTRL/history wrf3d files carry Z on the
     // STAGGERED vertical grid (w-levels, nz+1 = bottom_top_stag, like W),
     // while the future-era files carry it destaggered on mass levels (nz).
-    // Destagger vertically when needed so both eras import identically.
-    if nz.checked_add(1) == Some(z_nz) {
-        destagger_z_to_mass_levels(&mut z_m, nz, cells)?;
-    }
+    // Staggered Z is the layer interfaces' own height: the isobaric heights
+    // are read between those interfaces when the file states its eta levels
+    // (ZNW), and Z is destaggered after that for the severe suite.  Without
+    // either, the height volume takes the named mass-level fallback.
+    let mut notes = Vec::new();
+    let z_staggered = nz.checked_add(1) == Some(z_nz);
+    let interface_stencil = if z_staggered {
+        match postprocessed_interface_stencil(nc, time_index, nz) {
+            Ok(stencil) => Some(stencil),
+            Err(reason) => {
+                destagger_z_to_mass_levels(&mut z_m, nz, cells)?;
+                notes.push(crate::wrf_volumes::mass_level_heights_note(&reason));
+                None
+            }
+        }
+    } else {
+        notes.push(crate::wrf_volumes::mass_level_heights_note(
+            "the file carries Z on its mass levels only",
+        ));
+        None
+    };
     let expected = nz.checked_mul(cells).unwrap_or(0);
+    let z_expected = if interface_stencil.is_some() {
+        nz.checked_add(1)
+            .and_then(|levels| levels.checked_mul(cells))
+            .unwrap_or(0)
+    } else {
+        expected
+    };
     if expected == 0
-        || [tk.len(), p_pa.len(), z_m.len(), qv.len()]
+        || [tk.len(), p_pa.len(), qv.len()]
             .iter()
             .any(|len| *len != expected)
+        || z_m.len() != z_expected
     {
         return Err(ImportError::PlaneMismatch);
     }
@@ -4799,11 +4874,19 @@ pub(crate) fn try_postprocessed_wrf_shared(
         .map(|(&q, &pa)| dewpoint_k_from_q_p(q, pa))
         .collect();
 
+    let heights = match &interface_stencil {
+        Some(stencil) => ColumnHeights::Interfaces {
+            interface: &z_m,
+            per_metre: 1.0,
+            stencil,
+        },
+        None => ColumnHeights::MassLevels(&z_m),
+    };
     let (mut volumes, surface) = try_interpolate_iso_volumes(
         &p_hpa,
         &tk,
         &dewpoint_k,
-        &z_m,
+        heights,
         &u_mass,
         &v_mass,
         nz,
@@ -4811,6 +4894,13 @@ pub(crate) fn try_postprocessed_wrf_shared(
         progress,
     )
     .map_err(ImportError::PostprocessedVolume)?;
+    // Every other use of Z here is at the mass levels.
+    if interface_stencil.is_some() {
+        destagger_z_to_mass_levels(&mut z_m, nz, cells)?;
+    }
+    for note in &notes {
+        progress(note.clone());
+    }
     if !winds_are_earth_relative {
         volumes.retain(|volume| !matches!(volume.name.as_str(), "u_iso" | "v_iso"));
     }
@@ -4874,7 +4964,7 @@ pub(crate) fn try_postprocessed_wrf_shared(
 
     if !compute_severe {
         progress("skipping approximate post-processed severe suite (light import)".to_string());
-        return Ok(Some((canonical, Vec::new(), volumes, Vec::new())));
+        return Ok(Some((canonical, Vec::new(), volumes, Vec::new(), notes)));
     }
 
     // Severe/thermo suite via the wrf-core met kernels (postproc_severe.rs
@@ -4932,7 +5022,7 @@ pub(crate) fn try_postprocessed_wrf_shared(
         }
     };
 
-    Ok(Some((canonical, severe, volumes, Vec::new())))
+    Ok(Some((canonical, severe, volumes, Vec::new(), notes)))
 }
 
 /// Destagger a `[nz, ny, nx+1]` (west_east_stag) field to `[nz, ny, nx]` mass
@@ -7832,6 +7922,11 @@ mod model_label_reader_tests {
     const FRAME: &str = "2026-09-29_06:00:00";
 
     fn write_frame(label: Option<&str>, tag: &str) -> (PathBuf, PathBuf) {
+        write_frame_from(label, false, tag)
+    }
+
+    /// `engine` stamps the attribute every WOOF history file carries.
+    fn write_frame_from(label: Option<&str>, engine: bool, tag: &str) -> (PathBuf, PathBuf) {
         let folder = std::env::temp_dir().join(format!(
             "rw-model-label-{tag}-{}-{}",
             std::process::id(),
@@ -7852,6 +7947,14 @@ mod model_label_reader_tests {
         ] {
             schema
                 .put_global_attr(name, AttrValue::Text(value.into()))
+                .unwrap();
+        }
+        if engine {
+            schema
+                .put_global_attr(
+                    rustwx_products::shared_context::ENGINE_VERSION_ATTRIBUTE,
+                    AttrValue::Text("2.8.6".into()),
+                )
                 .unwrap();
         }
         if let Some(label) = label {
@@ -7934,6 +8037,25 @@ mod model_label_reader_tests {
             for (reader, answer) in answers {
                 let read = answer.unwrap_or_else(|err| panic!("{reader} ({tag}): {err}"));
                 assert_eq!(read.as_deref(), expected, "{reader} ({tag})");
+            }
+        }
+    }
+
+    /// A history file the WOOF engine wrote names no model of its own; both
+    /// readers call it WOOF, and a label it does name still wins.
+    #[test]
+    fn both_readers_call_an_engine_written_file_woof() {
+        for (label, expected, tag) in [
+            (None, "WOOF", "engine"),
+            (Some("WOOF Hex"), "WOOF Hex", "engine-named"),
+            (Some("   "), "WOOF", "engine-blank"),
+        ] {
+            let (folder, path) = write_frame_from(label, true, tag);
+            let answers = both_readers(&path);
+            let _ = std::fs::remove_dir_all(&folder);
+            for (reader, answer) in answers {
+                let read = answer.unwrap_or_else(|err| panic!("{reader} ({tag}): {err}"));
+                assert_eq!(read.as_deref(), Some(expected), "{reader} ({tag})");
             }
         }
     }

@@ -1018,9 +1018,11 @@ def _smooth_nine_point(plane, passes: int, center_weight: float, xp):
 def level_heights_m_from_state(state, levels) -> list:
     """``[(level_hpa, plane), ...]`` for several surfaces at once.
 
-    THE SHARED HALF IS COMPUTED ONCE.  ``phi``, the mass-point height and
-    ``log(p)`` are full 3-D arrays that do not depend on the level, and
-    asking for them per surface did that arithmetic once per surface.
+    THE SHARED HALF IS COMPUTED ONCE.  The state's reading
+    (:func:`_isobaric_shared`: its interface stencil, or for a
+    height-coordinate state the mass-point height and ``log(p)``) does not
+    depend on the level, and asking for it per surface did that work once
+    per surface.
 
     IT IS NOT A SPEEDUP, and the number is here so nobody re-derives it.
     Isolated, the shared half is 0.303 ms against a 2.28 ms surface on
@@ -1043,8 +1045,8 @@ def level_heights_m_from_state(state, levels) -> list:
     levels = [float(v) for v in levels]
     if not levels:
         return []
-    height, log_p, xp = _isobaric_shared(state)
-    return [(level, _level_plane(state, level, height, log_p, xp))
+    shared = _isobaric_shared(state)
+    return [(level, _level_plane(state, level, *shared))
             for level in levels]
 
 
@@ -1072,12 +1074,152 @@ class _SharedIsobaric:
         return self._value
 
 
-def _isobaric_shared(state):
-    """``(height, log_p, xp)`` -- the level-INDEPENDENT 3-D quantities.
+class _InterfaceColumns:
+    """A state's columns read between layer interfaces, for one surface at
+    a time: the CUDA transcription below on a device state, the Rust
+    ``rw-isobaric`` reader (:mod:`gpuwm.isobaric_bridge`) on a host one.
+    Both are the crate's ``column_isobaric_height`` word for word."""
 
-    Split out so the single-surface and multi-surface paths compute them
-    the same way and cannot drift; the refusals live here because they
-    are about the STATE, not about any one level.
+    __slots__ = ("state", "xp", "znu", "znw")
+
+    def __init__(self, state, xp, znu, znw):
+        self.state, self.xp, self.znu, self.znw = state, xp, znu, znw
+
+    def raw_plane(self, level_hpa: float):
+        """``(plane, outside)``: height (m) of the surface, NaN and
+        ``outside`` where the column has no such surface."""
+        state, xp = self.state, self.xp
+        level_pa = float(level_hpa) * 100.0
+        if xp is np:
+            from gpuwm import isobaric_bridge
+            try:
+                plane = isobaric_bridge.isobaric_heights(
+                    state.php, state.p, (level_pa,), eta_interface=self.znw,
+                    eta_mass=self.znu, interface_plus=state.phb,
+                    per_metre=GRAVITY_M_S2)[0]
+            except (FileNotFoundError, OSError,
+                    isobaric_bridge.IsobaricBridgeError) as error:
+                raise TrackerRefusal(
+                    f"the {level_hpa:g} hPa surface cannot be read between "
+                    f"the parent's layer interfaces on the host: {error}") from error
+        else:
+            plane = _device_isobaric_height(state, self.znu, self.znw, level_pa)
+        return plane, ~xp.isfinite(plane)
+
+
+#: The device transcription of ``rw_isobaric::column_isobaric_height`` and
+#: ``InterfaceStencil``: one thread per column, a raw kernel because that
+#: needs no toolkit headers beyond NVRTC, every floating operation an
+#: explicit round-to-nearest intrinsic in the crate's own order (so nothing
+#: is contracted into a fused multiply-add), every quotient ``__ddiv_rn`` of
+#: two runtime values, and the logarithm ``plm_log`` from
+#: ``kernels/portable_libm64.cuh``, the transcription of the ``libm`` 0.2.16
+#: ``log`` the crate calls.  The float32 state widens exactly.  Graded word
+#: for word against the crate by tests/test_storm_tracking_isobaric_gpu.py.
+_ISOBARIC_HEIGHT_SOURCE = r"""
+extern "C" __global__ void storm_tracking_isobaric_height(
+        const float* p, const float* php, const float* phb, int phb_profile,
+        const double* eta_mass, const double* eta_w, int nz, long long cells,
+        double level_pa, double g, double* z) {
+    const long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= cells) return;
+    const long long n = cells;
+    // Every interface pressure must be a positive number, or the column
+    // has no usable interfaces (InterfaceStencil::interface_ln_pressures).
+    bool usable = true;
+    for (int k = 0; k <= nz && usable; ++k) {
+        int below = k - 1;
+        if (below < 0) below = 0;
+        if (below > nz - 2) below = nz - 2;
+        const double span = __dsub_rn(eta_mass[below + 1], eta_mass[below]);
+        const double w = __ddiv_rn(__dsub_rn(eta_w[k], eta_mass[below]), span);
+        const double pl = (double)p[below * n + i];
+        const double pu = (double)p[(below + 1) * n + i];
+        const double pw = __dadd_rn(pl, __dmul_rn(__dsub_rn(pu, pl), w));
+        if (!isfinite(pw) || pw <= 0.0) usable = false;
+    }
+    double out = __longlong_as_double(0x7ff8000000000000LL);
+    if (usable) {
+        const double target = plm_log(level_pa);
+        double lower = 0.0;
+        for (int k = 0; k <= nz; ++k) {
+            int below = k - 1;
+            if (below < 0) below = 0;
+            if (below > nz - 2) below = nz - 2;
+            const double span = __dsub_rn(eta_mass[below + 1], eta_mass[below]);
+            const double w = __ddiv_rn(__dsub_rn(eta_w[k], eta_mass[below]), span);
+            const double pl = (double)p[below * n + i];
+            const double pu = (double)p[(below + 1) * n + i];
+            const double upper = plm_log(
+                __dadd_rn(pl, __dmul_rn(__dsub_rn(pu, pl), w)));
+            if (k > 0 && lower >= target && upper < target) {
+                const double fraction = __ddiv_rn(__dsub_rn(target, lower),
+                                                  __dsub_rn(upper, lower));
+                const long long a = (long long)(k - 1) * n + i;
+                const long long b = (long long)k * n + i;
+                const double ba = phb_profile ? (double)phb[k - 1] : (double)phb[a];
+                const double bb = phb_profile ? (double)phb[k] : (double)phb[b];
+                const double zl = __ddiv_rn(__dadd_rn((double)php[a], ba), g);
+                const double zu = __ddiv_rn(__dadd_rn((double)php[b], bb), g);
+                if (isfinite(zl) && isfinite(zu)) {
+                    out = __dadd_rn(zl, __dmul_rn(__dsub_rn(zu, zl), fraction));
+                }
+                break;
+            }
+            lower = upper;
+        }
+    }
+    z[i] = out;
+}
+"""
+
+_ISOBARIC_HEIGHT_KERNEL = None
+
+
+def _device_isobaric_height(state, znu, znw, level_pa: float):
+    """The surface's height (m, float64) on the device, NaN where a column
+    has no such surface."""
+    global _ISOBARIC_HEIGHT_KERNEL
+    import cupy as cp
+    if _ISOBARIC_HEIGHT_KERNEL is None:
+        from pathlib import Path
+        header = (Path(__file__).resolve().parent / "kernels"
+                  / "portable_libm64.cuh").read_text(encoding="utf-8")
+        _ISOBARIC_HEIGHT_KERNEL = cp.RawKernel(
+            header + _ISOBARIC_HEIGHT_SOURCE, "storm_tracking_isobaric_height",
+            options=("-std=c++17",))
+    pressure = cp.ascontiguousarray(state.p, dtype=cp.float32)
+    nz = int(pressure.shape[0])
+    horizontal = tuple(int(n) for n in pressure.shape[1:])
+    cells = int(np.prod(horizontal, dtype=np.int64))
+    phb = cp.ascontiguousarray(state.phb, dtype=cp.float32)
+    plane = cp.empty(horizontal, dtype=cp.float64)
+    threads = 128
+    _ISOBARIC_HEIGHT_KERNEL(
+        ((cells + threads - 1) // threads,), (threads,),
+        (pressure, cp.ascontiguousarray(state.php, dtype=cp.float32), phb,
+         np.int32(phb.ndim == 1), cp.asarray(znu, dtype=cp.float64),
+         cp.asarray(znw, dtype=cp.float64), np.int32(nz), np.int64(cells),
+         np.float64(level_pa), np.float64(GRAVITY_M_S2), plane))
+    return plane
+
+
+def _isobaric_shared(state):
+    """The level-INDEPENDENT reading of a state's columns.
+
+    Split out so the single-surface and multi-surface paths read them the
+    same way and cannot drift; the refusals live here because they are
+    about the STATE, not about any one level.
+
+    READ BETWEEN LAYER INTERFACES.  With the state's eta levels (``znu``,
+    ``znw``) every surface is the Rust ``rw-isobaric`` reading every chart
+    uses (:class:`_InterfaceColumns`): the interface geopotential, read in
+    ln p between interfaces whose pressures are linear in eta between the
+    mass-level pressures.  The layer-mean height paired with the mass-level
+    pressure read every surface about 5 m high at 500 hPa, so the reported
+    centre heights were high by that much.  A state without eta levels (a
+    height-coordinate column, whose mass level IS its layer's middle in
+    height) keeps the layer means, ``(height, log_p, xp)``.
     """
     for name in ("p", "php", "phb"):
         if getattr(state, name, None) is None:
@@ -1092,38 +1234,65 @@ def _isobaric_shared(state):
     xp = _xp(pressure)
     php = state.php
     phb = state.phb
+    if php.shape[0] != pressure.shape[0] + 1 or phb.shape[0] != php.shape[0]:
+        raise TrackerRefusal(
+            f"geopotential has {php.shape[0]} levels against "
+            f"{pressure.shape[0]} mass levels; the isobaric tracker needs "
+            "the staggered pair it can average to mass points")
+    znu, znw = getattr(state, "znu", None), getattr(state, "znw", None)
+    if znu is not None and znw is not None:
+        znu = np.asarray(_host(znu), dtype=np.float64).ravel()
+        znw = np.asarray(_host(znw), dtype=np.float64).ravel()
+        nz = int(pressure.shape[0])
+        # The stencil's own refusals (InterfaceStencil::new), checked once
+        # here because the device path has no error channel.
+        problem = None
+        if znu.size != nz or znw.size != nz + 1 or nz < 2:
+            problem = (f"{znu.size} mass level(s) and {znw.size} interface(s) "
+                       f"for {nz} model levels")
+        elif not (np.isfinite(znu).all() and np.isfinite(znw).all()):
+            problem = "the vertical coordinate holds a value that is not a number"
+        elif (np.diff(znu) == 0.0).any():
+            problem = "two mass levels share one vertical coordinate"
+        if problem is not None:
+            raise TrackerRefusal(
+                f"the parent state's eta levels cannot place its layer "
+                f"interfaces ({problem}), so no isobaric surface can be read "
+                "between them")
+        return (_InterfaceColumns(state, xp, znu, znw),)
     if getattr(phb, "ndim", 2) == 1:
         phb = phb[:, None, None]
     phi = phb + php
-    if phi.shape[0] != pressure.shape[0] + 1:
-        raise TrackerRefusal(
-            f"geopotential has {phi.shape[0]} levels against "
-            f"{pressure.shape[0]} mass levels; the isobaric tracker needs "
-            "the staggered pair it can average to mass points")
     height = 0.5 * (phi[:-1] + phi[1:]) / GRAVITY_M_S2
     return height, xp.log(pressure), xp
 
 
-def _level_plane(state, level_hpa: float, height, log_p, xp) -> np.ndarray:
-    """One surface, given the shared 3-D quantities."""
-    pressure = state.p
+def _level_plane(state, level_hpa: float, *shared) -> np.ndarray:
+    """One surface, given :func:`_isobaric_shared`'s reading: between
+    interfaces, or the layer means of a height-coordinate state."""
     target_pa = float(level_hpa) * 100.0
-    log_target = math.log(target_pa)
-    nz = int(pressure.shape[0])
-    # The layer that BRACKETS the target: pressure decreases with k, so
-    # the count of levels at or below the target's log-pressure, minus
-    # one, is the index of the level beneath it.  Clipping to nz-2 keeps
-    # the k+1 gather in range; the columns that clipping would have
-    # extrapolated are the ones the finiteness mask drops below.
-    below = xp.count_nonzero(log_p >= log_target, axis=0) - 1
-    k = xp.clip(below, 0, nz - 2)[None, ...]
-    log_p0 = xp.take_along_axis(log_p, k, 0)[0]
-    log_p1 = xp.take_along_axis(log_p, k + 1, 0)[0]
-    z0 = xp.take_along_axis(height, k, 0)[0]
-    z1 = xp.take_along_axis(height, k + 1, 0)[0]
-    weight = (log_p0 - log_target) / (log_p0 - log_p1)
-    plane = z0 + (z1 - z0) * weight
-    outside = (pressure[0] < target_pa) | (pressure[-1] > target_pa)
+    if len(shared) == 1:
+        columns = shared[0]
+        xp = columns.xp
+        plane, outside = columns.raw_plane(level_hpa)
+    else:
+        height, log_p, xp = shared
+        log_target = math.log(target_pa)
+        nz = int(log_p.shape[0])
+        # The layer that BRACKETS the target: pressure decreases with k, so
+        # the count of levels at or below the target's log-pressure, minus
+        # one, is the index of the level beneath it.  Clipping to nz-2 keeps
+        # the k+1 gather in range; the columns that clipping would have
+        # extrapolated are the ones the finiteness mask drops below.
+        below = xp.count_nonzero(log_p >= log_target, axis=0) - 1
+        k = xp.clip(below, 0, nz - 2)[None, ...]
+        log_p0 = xp.take_along_axis(log_p, k, 0)[0]
+        log_p1 = xp.take_along_axis(log_p, k + 1, 0)[0]
+        z0 = xp.take_along_axis(height, k, 0)[0]
+        z1 = xp.take_along_axis(height, k + 1, 0)[0]
+        weight = (log_p0 - log_target) / (log_p0 - log_p1)
+        plane = z0 + (z1 - z0) * weight
+        outside = (log_p[0] < log_target) | (log_p[-1] > log_target)
     if bool(outside.all()):
         raise TrackerRefusal(
             f"the {level_hpa:g} hPa surface lies outside the parent "

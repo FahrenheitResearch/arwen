@@ -121,6 +121,9 @@ tests/test_diffusion_drivers_wrf471_parity.py
 # Compiled WRF v4.7.1 advection, acoustic and bigstep output words and exact
 # discrepancy tables are device result pins, alongside the diffusion pins.
 tests/test_advect_wrf471_parity.py
+# The same routines compiled from the HRRR fork (WRFV3.9) at vert_order 5:
+# the card replays its receipt word for word (lane 286-vadv5).
+tests/test_advect_wrf_legacy_parity.py
 tests/test_smallstep_bookkeeping_wrf471_parity.py
 tests/test_smallstep_horizontal_wrf471_parity.py
 tests/test_smallstep_vertical_wrf471_parity.py

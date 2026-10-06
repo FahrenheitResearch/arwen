@@ -24,6 +24,27 @@ from gpuwm.core.state import DTYPE, DomainState
 _THREADS = 256
 
 
+def prepare_upper_wind_limiter(state, cfg, dtau):
+    """Bind the fork's advance_w limiter on the saved physical stage winds.
+
+    state.u/v are u_save/v_save during the acoustic loop, consumed by
+    small_step_finish. state.php is ph_save. The fork's column recurrence
+    runs after advance_mu_t and before small_step_finish on each substep.
+    """
+    if (getattr(cfg, "upper_wind_limiter_form", "wrf_461") != "noaa_wrf39"
+            or cfg.damp_opt != 3):
+        return None
+    if cfg.nz < 3:
+        raise ValueError("the upper-wind limiter reads three top mass levels; nz must be at least 3")
+    kernel = get_kernel("upper_wind_limiter", "upper_wind_limiter")
+    args = (state.u, state.v, state.php, state.phb, DTYPE(dtau),
+            DTYPE(cfg.zdamp), _base3d(state),
+            np.int32(_mass_w_boundary_zone(cfg)), np.int32(cfg.nz),
+            np.int32(cfg.ny), np.int32(cfg.nx))
+    grid = ((cfg.ny * cfg.nx + _THREADS - 1) // _THREADS,)
+    return lambda: kernel(grid, (_THREADS,), args)
+
+
 def _base3d(state: DomainState) -> np.int32:
     """1 when the base profiles are per-column 3-D fields (terrain)."""
     return np.int32(state.thb.ndim == 3)
@@ -398,6 +419,7 @@ def prepare_acoustic_substep_launch(state: DomainState, cfg: RunConfig,
     immutable Python launch containers and scalar wrappers are reused.
     """
     nz, ny, nx = cfg.nz, cfg.ny, cfg.nx
+    upper_wind_limiter = prepare_upper_wind_limiter(state, cfg, dtau)
     wphi_level_tier(nz)   # refuse a too-deep column before allocating
 
     mu_old = state.scratch((ny, nx), "acoustic_mu_pp_old")
@@ -547,6 +569,8 @@ def prepare_acoustic_substep_launch(state: DomainState, cfg: RunConfig,
         if exact_frame_kernel is not None:
             exact_frame_kernel(column_grid, block, exact_frame_args)
         w_kernel(column_grid, block, w_args)
+        if upper_wind_limiter is not None:
+            upper_wind_limiter()
         if frame_kernel is not None:
             frame_kernel(column_grid, block, frame_args)
 
@@ -611,6 +635,10 @@ def acoustic_substep(state: DomainState, cfg: RunConfig,
               np.int32(cfg.top_lid),
               np.int32(nz), np.int32(ny), np.int32(nx)]
     kernel((blocks,), (_THREADS,), tuple(args))
+
+    upper_wind_limiter = prepare_upper_wind_limiter(state, cfg, dtau)
+    if upper_wind_limiter is not None:
+        upper_wind_limiter()
 
     if cfg.specified and not _frame_takes_table_w(cfg):
         # The raw frame kernel preserves every eager FP32 round point in

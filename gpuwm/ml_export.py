@@ -39,6 +39,7 @@ from pathlib import Path
 
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, accept_resolved,
                            artifact_remedy, default_bridge_dir,
+                           legacy_bridge_candidates,
                            executable_name, packaged_bridge_dir,
                            rustwx_build_hint)
 
@@ -111,6 +112,7 @@ class Binary:
             _repo_root() / "libexec" / "bridges" / filename,
             packaged_bridge_dir() / filename,
             default_bridge_dir() / filename,
+            *legacy_bridge_candidates(filename),
         ))
         return tuple(found)
 

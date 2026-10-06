@@ -559,16 +559,20 @@ def test_batched_night_handling():
 
 
 def test_batched_zero_aerosol_precondition():
-    """Zero aerosol is a VALIDATED PRECONDITION of the batched entry
-    (audit item 1): aer_opt values whose aerosol optics the device
-    composition would silently discard are rejected, including the 2/3
-    values the per-column signature historically accepted."""
+    """Audit item 1 at the batched entry: aer_opt values whose aerosol
+    the device composition does not form are rejected, never silently
+    run at zero aerosol.  aer_opt = 1 and 2 refuse outright; aer_opt = 3
+    (lane 286-aer-swint) runs only with the caller's per-band optics and
+    refuses without them -- its optics path is held to the NumPy
+    composition by tests/test_rrtmg_aerosol_optics.py."""
     groups = _deck_groups()
     cs = min(groups.values(), key=len)
     ins = _group_inputs(cs)
-    for bad in (1, 2, 3):
+    for bad in (1, 2):
         with pytest.raises(NotImplementedError, match="aer_opt"):
             _run_batched(cs, ins, aer_opt=bad)
+    with pytest.raises(ValueError, match="aer_opt=3 needs"):
+        _run_batched(cs, ins, aer_opt=3)
 
 
 def test_batched_wide_determinism():

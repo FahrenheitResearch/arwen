@@ -9,12 +9,6 @@ const AIFS_MAX_FORECAST_HOUR: u16 = 43_848;
 /// corrupt local file from turning a shape header into a multi-gigabyte job.
 pub const MAX_GRID_CELLS: usize = 25_000_000;
 
-/// Largest dense 3-D value buffer accepted by the shared data model. This is
-/// independent of [`MAX_GRID_CELLS`]: a reasonable horizontal grid paired
-/// with a hostile level count must still fail before the level×cell product
-/// wraps or authorizes an impractical allocation.
-pub const MAX_VOLUME_ELEMENTS: usize = 128 * 1024 * 1024;
-
 #[derive(Debug, Error)]
 pub enum RustwxError {
     #[error("invalid grid shape: nx={nx}, ny={ny}")]
@@ -26,14 +20,8 @@ pub enum RustwxError {
         cells: usize,
         max_cells: usize,
     },
-    #[error(
-        "volume shape {levels} levels x {cells} cells exceeds the supported maximum of {max_elements} values"
-    )]
-    VolumeTooLarge {
-        levels: usize,
-        cells: usize,
-        max_elements: usize,
-    },
+    #[error("volume shape {levels} levels x {cells} cells exceeds the platform's f32 address space")]
+    VolumeAddressSpace { levels: usize, cells: usize },
     #[error("invalid field data length: expected {expected}, got {actual}")]
     InvalidFieldDataLength { expected: usize, actual: usize },
     #[error("unknown model '{0}'")]
@@ -123,25 +111,15 @@ impl<'de> Deserialize<'de> for GridShape {
     }
 }
 
-/// Validate a dense level-by-cell volume against the shared desktop ceiling.
-///
-/// Call this before reading or allocating a dense 3-D product. Both arithmetic
-/// overflow and products larger than [`MAX_VOLUME_ELEMENTS`] fail closed with
-/// [`RustwxError::VolumeTooLarge`].
+/// Check a dense level-by-cell f32 shape without imposing a data-size ceiling.
+/// Actual allocations remain fallible at their owning boundary. Rust buffers
+/// must fit both the platform element count and its isize-sized byte offsets.
 pub fn checked_volume_elements(levels: usize, cells: usize) -> Result<usize, RustwxError> {
-    let elements = levels
-        .checked_mul(cells)
-        .ok_or(RustwxError::VolumeTooLarge {
-            levels,
-            cells,
-            max_elements: MAX_VOLUME_ELEMENTS,
-        })?;
-    if elements > MAX_VOLUME_ELEMENTS {
-        return Err(RustwxError::VolumeTooLarge {
-            levels,
-            cells,
-            max_elements: MAX_VOLUME_ELEMENTS,
-        });
+    let invalid = || RustwxError::VolumeAddressSpace { levels, cells };
+    let elements = levels.checked_mul(cells).ok_or_else(invalid)?;
+    let bytes = elements.checked_mul(std::mem::size_of::<f32>()).ok_or_else(invalid)?;
+    if bytes > isize::MAX as usize {
+        return Err(invalid());
     }
     Ok(elements)
 }
@@ -424,6 +402,8 @@ pub enum CanonicalField {
     UpdraftHelicity,
     SmokeMassDensity,
     ColumnIntegratedSmoke,
+    /// Incoming solar flux on a horizontal surface at the valid time.
+    DownwardShortwaveRadiationFlux,
     /// The five hydrometeor mixing ratios a bulk microphysics scheme
     /// carries, kg per kg of dry air.
     CloudWaterMixingRatio,
@@ -473,6 +453,7 @@ impl CanonicalField {
             Self::UpdraftHelicity => "updraft_helicity",
             Self::SmokeMassDensity => "smoke_mass_density",
             Self::ColumnIntegratedSmoke => "column_integrated_smoke",
+            Self::DownwardShortwaveRadiationFlux => "downward_shortwave_radiation_flux",
             Self::CloudWaterMixingRatio => "cloud_water_mixing_ratio",
             Self::RainWaterMixingRatio => "rain_water_mixing_ratio",
             Self::CloudIceMixingRatio => "cloud_ice_mixing_ratio",
@@ -518,6 +499,7 @@ impl CanonicalField {
             Self::UpdraftHelicity => "Updraft Helicity",
             Self::SmokeMassDensity => "Smoke Mass Density",
             Self::ColumnIntegratedSmoke => "Column-Integrated Smoke",
+            Self::DownwardShortwaveRadiationFlux => "Downward Shortwave Radiation Flux",
             Self::CloudWaterMixingRatio => "Cloud Water Mixing Ratio",
             Self::RainWaterMixingRatio => "Rain Water Mixing Ratio",
             Self::CloudIceMixingRatio => "Cloud Ice Mixing Ratio",
@@ -556,6 +538,7 @@ impl CanonicalField {
             Self::UpdraftHelicity => "m^2/s^2",
             Self::SmokeMassDensity => "kg/m^3",
             Self::ColumnIntegratedSmoke => "kg/m^2",
+            Self::DownwardShortwaveRadiationFlux => "W/m^2",
             Self::CloudWaterMixingRatio
             | Self::RainWaterMixingRatio
             | Self::CloudIceMixingRatio

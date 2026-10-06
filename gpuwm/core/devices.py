@@ -469,10 +469,10 @@ print(json.dumps({"visible_count": count, "cards": rows}))
 def probe_devices():
     """Read visible count and each card's free memory in a short-lived process."""
     import json
-    import os
     import subprocess
     import sys
-    if os.environ.get("GPUWM_NO_LOCAL_GPU", "") not in ("", "0"):
+    from gpuwm.local_gpu import no_local_gpu
+    if no_local_gpu():
         return None
     completed = subprocess.run([sys.executable, "-c", _DEVICE_PROBE],
                                capture_output=True, text=True, timeout=60)

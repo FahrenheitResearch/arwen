@@ -89,8 +89,21 @@ def _page_sources():
 def _draft(source, grid, profile=None):
     """New forecast's draft of a BOX_KM box inside the source's coverage."""
 
+    from datetime import datetime, timedelta
+    from gpuwm import cf_archive_fetch
+
     lat, lon = _point(source)
-    return {"name": "agreement", "source": source, "cycle": CYCLE, "hours": 3, "card": "24gb",
+    cycle = CYCLE
+    if source in cf_archive_fetch.sources():
+        # A closed analysis archive needs a representative epoch inside
+        # its declared coverage, including this fixture's final boundary.
+        bounds = cf_archive_fetch.row(source)
+        first = datetime.fromisoformat(bounds["coverage_start"])
+        last = datetime.fromisoformat(bounds["coverage_end"])
+        anchor = max(first, min(datetime.fromisoformat(CYCLE), last - timedelta(hours=3)))
+        cf_archive_fetch.validate_window(source, anchor, 3)
+        cycle = anchor.strftime("%Y-%m-%dT%H")
+    return {"name": "agreement", "source": source, "cycle": cycle, "hours": 3, "card": "24gb",
             "lat": lat, "lon": lon, "width_km": BOX_KM, "height_km": BOX_KM,
             "start_hour": 0, "products": None, "profile": profile,
             "dx_km": grid.get("dx_km"), "ladder": grid.get("ladder"), "chain": grid.get("chain")}
@@ -201,8 +214,11 @@ def test_every_door_names_one_default_and_the_run_takes_every_suite_a_door_choos
             held = _held_to_the_run(plan, config, source)
             # One grid written from a named suite is that suite, so the run still holds it to it.
             assert held == (chosen if domains == 1 and sent else held) and held in (None, chosen),                 (where, chosen, held)
-    if THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID in row["profiles"]:
-        # The table binds below 1 km and nowhere else, so both halves are exercised for this source.
+    if row["default_profile"] == THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID:
+        # A source whose own default is this suite takes it on every grid.
+        assert all(sub_km for sub_km, _finer in below), (source, below)
+    elif THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID in row["profiles"]:
+        # The spacing override binds below 1 km when the source default differs.
         assert all(sub_km == finer for sub_km, finer in below), (source, below)
 
 
@@ -253,9 +269,38 @@ def test_the_local_da_door_binds_the_default_row_at_its_rungs_grid(source):
         # The soil every cycle restarts through is the bound land surface's own.
         assert int(root.num_soil_layers) == validated_soil_layer_count(root.sf_surface_physics), where
         below.append((table == THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID, rung["dx_m"] < 1000.0))
-    if default_profile_for(source, 750.0, 1) == THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID:
-        # The row binds on the 750 m rung and not on the 3 km one.
+    if default_profile_for(source, 3000.0, 1) == THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID:
+        # A source whose own default is this suite takes it on both rungs.
+        assert all(sub_km for sub_km, _finer in below), (source, below)
+    elif default_profile_for(source, 750.0, 1) == THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID:
+        # The spacing override binds on 750 m when the coarse default differs.
         assert all(sub_km == finer for sub_km, finer in below), (source, below)
+
+
+def test_analysis_archive_catalog_preserves_inventory_scoped_initialization():
+    """A downloadable archive remains preparable from inspected times.
+
+    The catalog must not offer initialization without supplied inputs when
+    the selection owner has no declared analysis publication window.
+    """
+    from datetime import datetime, timedelta, timezone
+    from gpuwm.background_contract import capability, plan
+
+    facts = capability("20crv3-cf")
+    assert facts["preparable"] is True
+    assert facts["initialization_modes"] == ["prepared"]
+    assert facts["time_axis"] == "analysis_times"
+    assert facts["cycle_grid"] is None
+    init = datetime(2010, 1, 1, 12, tzinfo=timezone.utc)
+    arguments = dict(init=init, now=init + timedelta(days=2), run_seconds=2700.)
+    with pytest.raises(ValueError, match="supplied native time inventory"):
+        plan("20crv3-cf", **arguments)
+    times = (init, init + timedelta(hours=3))
+    selected = plan("20crv3-cf", **arguments, inventory_times=times)
+    assert selected.source == facts["source"]
+    assert selected.valid_times == tuple(time.isoformat() for time in times)
+    assert selected.acquisition == "supplied"
+    assert selected.fetch_hints() is None
 
 
 @pytest.mark.parametrize("ladder", ["12-3-1-0.5", "auto"])

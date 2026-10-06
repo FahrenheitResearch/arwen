@@ -355,9 +355,11 @@ def _snapshot(state, dt=None, species=SPECIES):
     return snap
 
 
-def run_port(inp, dt, *, rates=False, mp=28):
+def run_port(inp, dt, *, rates=False, mp=28, thompson_version="wrf_461",
+             thompson_fork_snow_fall="blend"):
     """One production adapter call on the host.  Returns
-    ``{"final", "stages", "rates"}``."""
+    ``{"final", "stages", "rates"}``.  ``thompson_version`` names the
+    Thompson generation the adapter runs (``RunConfig.thompson_version``)."""
     import importlib
 
     if mp == 28:
@@ -412,7 +414,9 @@ def run_port(inp, dt, *, rates=False, mp=28):
         setattr(module, attr, wrapped)
     try:
         cfg = SimpleNamespace(mp_physics=mp, no_mp_heating=0,
-                              mp_tend_lim=10.0)
+                              mp_tend_lim=10.0,
+                              thompson_version=thompson_version,
+                              thompson_fork_snow_fall=thompson_fork_snow_fall)
         diag = apply(state, cfg, float(dt), refl_10cm_due=True)
     finally:
         for module, attr, original in originals:

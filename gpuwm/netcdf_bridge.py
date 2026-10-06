@@ -38,7 +38,8 @@ from typing import Mapping
 import numpy as np
 
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
-                           default_bridge_dir, accept_resolved,
+                           default_bridge_dir,
+                           legacy_bridge_candidates, accept_resolved,
                            executable_name, packaged_bridge_dir)
 
 #: Environment variable naming a prebuilt ``rw_netcdf``.
@@ -119,6 +120,7 @@ def netcdf_candidates() -> tuple[Path, ...]:
         root / "libexec" / "bridges" / filename,
         packaged_bridge_dir() / filename,
         default_bridge_dir() / filename,
+        *legacy_bridge_candidates(filename),
     ))
     return tuple(candidates)
 
@@ -407,6 +409,34 @@ class Variable:
             unit_transform=None if transform == (1.0, 0.0) else transform)
         return values
 
+    def read_window(self, *, i0: int, ni: int, j0: int, nj: int) -> np.ndarray:
+        """``ni`` columns from ``i0`` and ``nj`` rows from ``j0`` of the
+        last two dimensions, cut in Rust after CF decoding; never cached.
+
+        The decoder refuses a window that leaves the variable, so a grid
+        that does not fit is a named refusal rather than a smaller array.
+        """
+        window = tuple(int(value) for value in (i0, ni, j0, nj))
+        if any(value < 0 for value in window) or window[1] == 0 or window[3] == 0:
+            raise ValueError(f"{self.name}: invalid window {window}")
+        values, _ = self._dataset._decode(
+            self.name, raw=self._raw, scale=self._scale, window=window)
+        return values
+
+    def read_sample_window(self, *, i0: float, ni: int, j0: float, nj: int,
+                           method: str) -> np.ndarray:
+        """Same-spacing nearest/bilinear sampling in Rust after CF decoding."""
+        sample = {"i0": float(i0), "ni": int(ni), "j0": float(j0),
+                  "nj": int(nj), "method": method}
+        if (method not in {"nearest", "bilinear"}
+                or not np.isfinite([sample["i0"], sample["j0"]]).all()
+                or min(sample["i0"], sample["j0"]) < 0
+                or min(sample["ni"], sample["nj"]) <= 0):
+            raise ValueError(f"{self.name}: invalid sampled window {sample}")
+        values, _ = self._dataset._decode(
+            self.name, raw=self._raw, scale=self._scale, sample_window=sample)
+        return values
+
     def __getitem__(self, item):
         self._load()
         assert self._values is not None
@@ -565,7 +595,9 @@ class Dataset:
     def _decode(self, name: str, *, raw: bool = False, scale: bool = True,
                 unit_transform: tuple[float, float] | None = None,
                 water_layer_thickness: str | None = None,
-                conversion_receipt: dict | None = None) -> tuple[np.ndarray, tuple[datetime, ...]]:
+                conversion_receipt: dict | None = None,
+                window: tuple[int, int, int, int] | None = None,
+                sample_window: dict | None = None) -> tuple[np.ndarray, tuple[datetime, ...]]:
         """Decode one variable through the bridge.
 
         ``raw`` turns masking off; ``scale`` says whether
@@ -584,6 +616,13 @@ class Dataset:
                                 f"--unit-offset={unit_transform[1]:.17g}"))
             if water_layer_thickness is not None:
                 command.append(f"--water-layer-thickness={water_layer_thickness}")
+            if window is not None:
+                command.append("--window={}:{},{}:{}".format(*window))
+            if sample_window is not None:
+                if window is not None:
+                    raise ValueError("exact and sampled windows cannot be combined")
+                command += ["--sample-window={i0:.17g}:{ni},{j0:.17g}:{nj}".format(**sample_window),
+                            f"--sample-method={sample_window['method']}"]
             command += [os.fspath(self.path), os.fspath(out), name]
             _run(command,
                  what=f"NetCDF decode failed for {name} in {self.path}",
@@ -611,6 +650,12 @@ class Dataset:
             if unit_transform is not None and record.get("unit_transform") != list(unit_transform):
                 raise NetcdfDecodeError(
                     f"{NETCDF_NAME} did not acknowledge the requested unit transform; rebuild the reader")
+            if window is not None and record.get("window") != list(window):
+                raise NetcdfDecodeError(
+                    f"{NETCDF_NAME} did not acknowledge the requested window; rebuild the reader")
+            if sample_window is not None and record.get("sample_window") != sample_window:
+                raise NetcdfDecodeError(
+                    f"{NETCDF_NAME} did not acknowledge the requested sampled window; rebuild the reader")
             dtype = record.get("dtype", "<f8")
             expected_dtype = "|S1" if self.variables[name].is_character else "<f8"
             if dtype != expected_dtype:

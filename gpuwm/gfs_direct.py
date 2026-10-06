@@ -931,27 +931,164 @@ def _load_bridge_snapshots(
         if path.stat().st_size != declared_bytes or _sha256(path) != declared_sha256:
             raise ValueError(f"GFS decoded array identity mismatch for {relative}")
 
-    snapshots = []
-    for hour, _ in records:
-        time_root = root / f"f{hour:03d}"
-        fields: dict[str, np.ndarray] = {}
+    # Read when asked, not here.  Every decoded array was verified above;
+    # the leads are loaded one at a time by whoever indexes them, so the
+    # preparation holds a window of leads instead of the whole series.
+    return _BridgeSnapshots(
+        root=root, cycle=cycle, hours=tuple(hour for hour, _ in records),
+        levels_hpa=levels_hpa, latitude=latitude, longitude=longitude,
+        ny=ny, nx=nx)
+
+
+def _bridge_snapshot(root: Path, cycle: datetime, hour: int, levels_hpa,
+                     latitude, longitude, ny: int, nx: int,
+                     *, with_fields: bool = True) -> Era5Snapshot:
+    """One decoded lead read off the bridge's verified arrays.
+
+    ``with_fields=False`` is the lead's grid alone (axes, valid time), for
+    a caller that asks where a lead is without needing its values.
+    """
+
+    fields: dict[str, np.ndarray] = {}
+    if with_fields:
+        time_root = Path(root) / f"f{hour:03d}"
         for name in _THREE_D:
-            field = _read_f32(
-                time_root / f"{name}.f32le",
-                (levels_hpa.size, ny, nx),
-            )
-            fields[name] = field
+            fields[name] = _read_f32(
+                time_root / f"{name}.f32le", (levels_hpa.size, ny, nx))
         for name in _TWO_D:
-            field = _read_f32(time_root / f"{name}.f32le", (ny, nx))
-            fields[name] = field
-        snapshots.append(Era5Snapshot(
-            valid_time=cycle + timedelta(hours=hour),
-            levels_hpa=levels_hpa,
-            latitude=latitude,
-            longitude=longitude,
-            fields=fields,
-        ))
-    return tuple(snapshots)
+            fields[name] = _read_f32(time_root / f"{name}.f32le", (ny, nx))
+    return Era5Snapshot(
+        valid_time=cycle + timedelta(hours=hour),
+        levels_hpa=levels_hpa,
+        latitude=latitude,
+        longitude=longitude,
+        fields=fields,
+    )
+
+
+#: Decoded leads one lazy series keeps after they were read: the build of a
+#: forcing time and the boundary interval it closes ask for the same two.
+_SNAPSHOT_CACHE_LEADS = 2
+
+
+class _BridgeSnapshots(_ABCSequence):
+    """A bridge decode's leads, read from its verified arrays on access.
+
+    Held whole, a 240 h whole-globe GFS series is 81 float64 leads of about
+    1.1 GB each, which is what killed the 64 GiB prepare of 2026-10-05T00
+    (:mod:`gpuwm.ingest.host_decode_window`).  This sequence keeps the last
+    :data:`_SNAPSHOT_CACHE_LEADS` leads it read and reads any other again
+    from the same verified files, so every lead it returns holds exactly
+    the values the eager load held.  ``transform`` (the longitude
+    re-cut) is applied on every read.  A slice is another lazy series.
+    """
+
+    def __init__(self, *, root, cycle, hours, levels_hpa, latitude,
+                 longitude, ny, nx, transform=None):
+        self.root = Path(root)
+        self.cycle = cycle
+        self.hours = tuple(int(hour) for hour in hours)
+        self.levels_hpa = levels_hpa
+        self.latitude = latitude
+        self.longitude = longitude
+        self.ny = int(ny)
+        self.nx = int(nx)
+        self.transform = transform
+        self._cache: dict[int, Era5Snapshot] = {}
+
+    def _derived(self, hours, transform):
+        return _BridgeSnapshots(
+            root=self.root, cycle=self.cycle, hours=hours,
+            levels_hpa=self.levels_hpa, latitude=self.latitude,
+            longitude=self.longitude, ny=self.ny, nx=self.nx,
+            transform=transform)
+
+    def mapped(self, transform) -> "_BridgeSnapshots":
+        """The same leads with ``transform`` applied after any earlier one."""
+
+        earlier = self.transform
+        if earlier is None:
+            combined = transform
+        else:
+            def combined(snapshot):
+                return transform(earlier(snapshot))
+        return self._derived(self.hours, combined)
+
+    @property
+    def valid_times(self) -> tuple:
+        return tuple(self.cycle + timedelta(hours=hour) for hour in self.hours)
+
+    def metadata(self, index: int) -> Era5Snapshot:
+        """The lead's grid, after ``transform``, with no field read."""
+
+        snapshot = _bridge_snapshot(
+            self.root, self.cycle, self.hours[int(index)], self.levels_hpa,
+            self.latitude, self.longitude, self.ny, self.nx,
+            with_fields=False)
+        return snapshot if self.transform is None else self.transform(snapshot)
+
+    def snapshot_metadata(self, index: int):
+        """:func:`gpuwm.ingest.source_metadata.snapshot_metadata`, unread."""
+
+        from gpuwm.ingest.source_metadata import SourceSnapshotMetadata
+
+        index = int(index)
+        if index < 0:
+            index += len(self.hours)
+        if not 0 <= index < len(self.hours):
+            raise IndexError(index)
+        snapshot = self.metadata(index)
+        return SourceSnapshotMetadata(
+            type(snapshot), getattr(snapshot, "latitude", ()),
+            getattr(snapshot, "longitude", ()),
+            getattr(snapshot, "projection", None))
+
+    def __len__(self) -> int:
+        return len(self.hours)
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return self._derived(self.hours[index], self.transform)
+        index = int(index)
+        if index < 0:
+            index += len(self.hours)
+        if not 0 <= index < len(self.hours):
+            raise IndexError(index)
+        cached = self._cache.get(index)
+        if cached is not None:
+            self._cache[index] = self._cache.pop(index)
+            return cached
+        snapshot = _bridge_snapshot(
+            self.root, self.cycle, self.hours[index], self.levels_hpa,
+            self.latitude, self.longitude, self.ny, self.nx)
+        if self.transform is not None:
+            snapshot = self.transform(snapshot)
+        self._cache[index] = snapshot
+        while len(self._cache) > _SNAPSHOT_CACHE_LEADS:
+            self._cache.pop(next(iter(self._cache)))
+        return snapshot
+
+    def __iter__(self):
+        for index in range(len(self.hours)):
+            yield self[index]
+
+
+def _map_snapshots(snapshots, transform):
+    """``transform`` over a snapshot sequence, lazily when it is lazy."""
+
+    mapped = getattr(snapshots, "mapped", None)
+    if mapped is not None:
+        return mapped(transform)
+    return tuple(transform(snapshot) for snapshot in snapshots)
+
+
+def _sequence_valid_times(snapshots) -> tuple:
+    """Every snapshot's valid time, without reading a lazy series' fields."""
+
+    times = getattr(snapshots, "valid_times", None)
+    if times is not None:
+        return tuple(times)
+    return tuple(snapshot.valid_time for snapshot in snapshots)
 
 
 #: An as-posted preparation's manifest roles: every lead's payload is
@@ -1065,6 +1202,217 @@ def _as_posted_plan(*, posting: Path, series: Path, cycle_time: datetime,
     return posted, records, manifest
 
 
+class _DecodedLeads(Mapping):
+    """Decoded leads by forecast hour, each read from its batch on access.
+
+    ``bind`` records where a lead lives (a lazy :class:`_BridgeSnapshots`
+    and its position, or any sequence of snapshots); indexing reads it.
+    Holding the leads themselves is what put all 81 whole-globe leads of
+    a 240 h GFS window in one process (:mod:`gpuwm.ingest.host_decode_window`).
+    """
+
+    def __init__(self):
+        self._where: dict[int, tuple] = {}
+
+    def bind(self, hour: int, series, position: int) -> None:
+        self._where[int(hour)] = (series, int(position))
+
+    def __getitem__(self, hour):
+        series, position = self._where[int(hour)]
+        return series[position]
+
+    def metadata(self, hour):
+        """The lead's grid, without reading its fields when it is lazy."""
+
+        series, position = self._where[int(hour)]
+        read = getattr(series, "metadata", None)
+        return series[position] if read is None else read(position)
+
+    def __iter__(self):
+        return iter(self._where)
+
+    def __len__(self) -> int:
+        return len(self._where)
+
+    def __contains__(self, hour) -> bool:
+        try:
+            return int(hour) in self._where
+        except (TypeError, ValueError):
+            return False
+
+
+def _file_bytes(path) -> int:
+    try:
+        return int(Path(path).stat().st_size)
+    except OSError:
+        return 0
+
+
+def _decoded_lead_bytes(decoded: Path) -> int | None:
+    """Float32 bytes of the largest lead a bridge output wrote, or ``None``."""
+
+    try:
+        lines = (Path(decoded) / "decoded-sha256.tsv").read_text(
+            encoding="utf-8").splitlines()[1:]
+    except OSError:
+        return None
+    per_hour: dict[str, int] = {}
+    for raw in lines:
+        columns = raw.split("\t")
+        if len(columns) == 5:
+            per_hour[columns[0]] = per_hour.get(columns[0], 0) + int(columns[2])
+    return max(per_hour.values(), default=None)
+
+
+def _first_decoded_lead_estimate(lead_bytes: int,
+                                 levels: int | None = None) -> int:
+    """A lead's decoded float32 bytes before any lead has been decoded.
+
+    The whole-globe decode of the fields this route reads (``levels``
+    pressure levels, the certified ladder when unknown), capped at four
+    times the object: a full-file lead decodes to about its own size
+    (0.56 GB of arrays from a 0.54 GB object at 23 levels), and a NOMADS
+    crop's simple packing to a few times its size.
+    """
+
+    from gpuwm.ingest.host_decode_window import gfs_decoded_lead_bytes
+
+    if levels is None:
+        levels = int(_CERTIFIED_PRESSURE_LEVELS_HPA.size)
+    whole_globe = gfs_decoded_lead_bytes(
+        len(_THREE_D) * int(levels) + len(_TWO_D))
+    return int(min(whole_globe, 4 * max(1, int(lead_bytes))))
+
+
+def _bridge_thread_request(environment) -> int:
+    """Threads the bridge would take: an explicit count, else every core."""
+
+    from gpuwm.ingest.host_decode_window import threads_available
+
+    value = (os.environ if environment is None else environment).get(
+        "GPUWM_GFS_BRIDGE_THREADS")
+    try:
+        requested = int(str(value).strip()) if value is not None else 0
+    except ValueError:
+        requested = 0
+    available = threads_available()
+    return min(requested, available) if requested > 0 else available
+
+
+def _say_window(window, *, total: int) -> None:
+    print(f"prepare: GFS {window.sentence(total)}", file=sys.stderr,
+          flush=True)
+
+
+def _series_lines(series: Path) -> list[list[str]]:
+    """The series file's lead rows, columns as written, paths made absolute."""
+
+    rows = []
+    for raw in Path(series).read_text(encoding="utf-8").splitlines():
+        if not raw.strip() or raw.lstrip().startswith("#"):
+            continue
+        columns = raw.split("\t")
+        source = Path(columns[1])
+        if not source.is_absolute():
+            source = Path(series).parent / source
+        columns[1] = str(source.resolve())
+        rows.append(columns)
+    return rows
+
+
+def _decode_series_bounded(command, *, series: Path, records, decoded: Path,
+                           scratch: Path, bridge: Path, cycle_time,
+                           levels_pa_csv: str | None, environment):
+    """Run the bridge over a whole series within this host's RAM.
+
+    One bridge run parses every lead's object into memory before decoding
+    any of them, so a 240 h whole-globe series is 81 parsed objects in one
+    process (about 44 GB): the 64 GiB prepare kill of 2026-10-05T00
+    (:mod:`gpuwm.ingest.host_decode_window`).  When the series fits the
+    window this is that one run, on the window's thread count.  When it
+    does not, the leads are decoded in windows with ``--lead-batch``,
+    ``--merge-batches`` writes the series' receipts into ``decoded`` (byte
+    for byte the one decode's, the as-posted seal's own merge) and every
+    lead's arrays are moved in beside them, so ``decoded`` is the tree the
+    one run writes.  Returns a ``CompletedProcess`` as the one run does.
+    """
+
+    from gpuwm.ingest.host_decode_window import (
+        available_host_bytes, decode_window)
+
+    lead_bytes = max(_file_bytes(path) for _, path in records)
+    levels = None if levels_pa_csv is None else len(levels_pa_csv.split(","))
+    window = decode_window(
+        leads=len(records), threads=_bridge_thread_request(environment),
+        lead_bytes=lead_bytes,
+        decoded_lead_bytes=_first_decoded_lead_estimate(lead_bytes, levels),
+        available=available_host_bytes())
+    _say_window(window, total=len(records))
+
+    def run(argv, threads):
+        env = environment
+        if window.available_bytes is not None:
+            env = {**(os.environ if env is None else env),
+                   "GPUWM_GFS_BRIDGE_THREADS": str(int(threads))}
+        return subprocess.run(argv, check=False, text=True,
+                              capture_output=True, env=env)
+
+    if window.leads >= len(records):
+        return run(command, window.threads)
+    rows = _series_lines(series)
+    if [int(columns[0]) for columns in rows] != [hour for hour, _ in records]:
+        raise ValueError(f"{series} rows differ from the series read")
+    batches: list[Path] = []
+    start = 0
+    ladder = levels_pa_csv
+    decoded_lead = None
+    while start < len(rows):
+        if batches:
+            window = decode_window(
+                leads=len(rows) - start,
+                threads=_bridge_thread_request(environment),
+                lead_bytes=max(_file_bytes(path)
+                               for _, path in records[start:]),
+                decoded_lead_bytes=(decoded_lead or
+                                    _first_decoded_lead_estimate(lead_bytes, levels)),
+                available=available_host_bytes())
+            _say_window(window, total=len(records))
+        chunk = rows[start:start + window.leads]
+        index = len(batches)
+        table = Path(scratch) / f"series-batch-{index:03d}.tsv"
+        table.write_text("".join("\t".join(columns) + "\n"
+                                 for columns in chunk), encoding="utf-8")
+        output = Path(scratch) / f"series-batch-{index:03d}"
+        argv = [str(bridge), "--series", str(table), str(output),
+                cycle_time.strftime("%Y-%m-%d %H:%M:%S")]
+        if ladder is not None:
+            argv += ["--pressure-levels-pa", ladder]
+        argv.append("--lead-batch")
+        completed = run(argv, window.threads)
+        if completed.returncode != 0:
+            return completed
+        if ladder is None:
+            # Every later batch decodes on the first batch's ladder, as the
+            # one run derives its ladder from its first hour.
+            ladder = _parse_gate(output / "gate.tsv")["pressure_levels_pa"]
+        if decoded_lead is None:
+            decoded_lead = _decoded_lead_bytes(output)
+        batches.append(output)
+        start += len(chunk)
+    merged = subprocess.run(
+        [str(bridge), "--merge-batches", str(decoded),
+         cycle_time.strftime("%Y-%m-%d %H:%M:%S"),
+         *(str(path) for path in batches)],
+        check=False, text=True, capture_output=True, env=environment)
+    if merged.returncode != 0:
+        return merged
+    for batch in batches:
+        for hour_dir in sorted(batch.glob("f[0-9][0-9][0-9]")):
+            hour_dir.rename(Path(decoded) / hour_dir.name)
+        shutil.rmtree(batch, ignore_errors=True)
+    return merged
+
+
 class _PostedGfsSeries:
     """A GFS series decoded lead batch by lead batch as its leads post.
 
@@ -1087,7 +1435,14 @@ class _PostedGfsSeries:
         self.levels_pa_csv = levels_pa_csv
         self.environment = environment
         self.orient = orient
-        self.snapshots: dict[int, Era5Snapshot] = {}
+        #: Every decoded lead, read from its batch's arrays when asked
+        #: (:class:`_DecodedLeads`), never all held at once.
+        self.snapshots = _DecodedLeads()
+        #: The host-RAM window each batch was decoded in, in batch order.
+        self.windows: list = []
+        #: Float32 bytes one decoded lead wrote, measured off the first
+        #: batch; ``None`` until a batch has been decoded.
+        self._decoded_lead_bytes: int | None = None
         self.markers: dict[int, dict] = {}
         self.batches: list[Path] = []
         self.batch_leads: list[tuple[int, ...]] = []
@@ -1103,7 +1458,8 @@ class _PostedGfsSeries:
                    if str(item.get("role", "")).startswith("gfs-")]
         return {str(item["name"]): str(item["sha256"]) for item in objects}
 
-    def _decode_batch(self, start: int, end: int) -> None:
+    def _decode_batch(self, start: int, end: int,
+                      threads: int | None = None) -> None:
         batch = self.records[start:end + 1]
         expected = {}
         for hour, path in batch:
@@ -1127,8 +1483,13 @@ class _PostedGfsSeries:
         if self.levels_pa_csv is not None:
             command += ["--pressure-levels-pa", self.levels_pa_csv]
         command.append("--lead-batch")
+        environment = self.environment
+        if threads is not None:
+            environment = {**(os.environ if environment is None
+                              else environment),
+                           "GPUWM_GFS_BRIDGE_THREADS": str(int(threads))}
         completed = subprocess.run(command, check=False, text=True,
-                                   capture_output=True, env=self.environment)
+                                   capture_output=True, env=environment)
         if completed.returncode != 0:
             raise GfsRouteError(decode_failure_message(
                 "GFS Rust bridge", completed.stderr))
@@ -1145,10 +1506,12 @@ class _PostedGfsSeries:
             # hour; the merge holds every batch's ladder equal.
             self.levels_pa_csv = _parse_gate(decoded / "gate.tsv")[
                 "pressure_levels_pa"]
-        for (hour, _), snapshot in zip(batch, loaded):
-            oriented = self.orient(snapshot)
-            self._require_first_grid(hour, oriented)
-            self.snapshots[hour] = oriented
+        oriented = _map_snapshots(loaded, self.orient)
+        for position, (hour, _) in enumerate(batch):
+            self.snapshots.bind(hour, oriented, position)
+            self._require_first_grid(hour, self.snapshots.metadata(hour))
+        if self._decoded_lead_bytes is None:
+            self._decoded_lead_bytes = _decoded_lead_bytes(decoded)
         self.batches.append(decoded)
         self.batch_leads.append(tuple(hour for hour, _ in batch))
         self.decode_seconds += time.perf_counter() - started
@@ -1195,8 +1558,32 @@ class _PostedGfsSeries:
                     break
                 self.markers[later] = record
                 end += 1
-            self._decode_batch(self._next, end)
+            # Bounded by host RAM, whatever posted at once: a whole cycle
+            # ready in one second used to be one bridge run over every lead.
+            window = self._window(self._next, end)
+            end = self._next + window.leads - 1
+            self.windows.append(window)
+            _say_window(window, total=len(self.records))
+            self._decode_batch(self._next, end, threads=window.threads)
             self._next = end + 1
+
+    def _window(self, start: int, end: int):
+        """The lead batch from ``start`` that fits this host's RAM now."""
+
+        from gpuwm.ingest.host_decode_window import (
+            available_host_bytes, decode_window)
+
+        candidates = self.records[start:end + 1]
+        lead_bytes = max(_file_bytes(path) for _, path in candidates)
+        decoded = self._decoded_lead_bytes
+        if decoded is None:
+            decoded = _first_decoded_lead_estimate(
+                lead_bytes, None if self.levels_pa_csv is None
+                else len(self.levels_pa_csv.split(",")))
+        return decode_window(
+            leads=len(candidates), threads=_bridge_thread_request(self.environment),
+            lead_bytes=lead_bytes, decoded_lead_bytes=decoded,
+            available=available_host_bytes())
 
     def snapshot(self, position: int) -> Era5Snapshot:
         self.through(position)
@@ -1264,7 +1651,8 @@ class _PostedGfsView(_ABCSequence):
         if not 0 <= index < len(self):
             raise IndexError(index)
         hour = self.series.records[self.first + index][0]
-        snapshot = self.series.snapshots.get(hour)
+        snapshot = (self.series.snapshots.metadata(hour)
+                    if hour in self.series.snapshots else None)
         if snapshot is None:
             if self.series._first_grid is None:
                 self.series.through(self.first)
@@ -1279,7 +1667,12 @@ class _PostedGfsView(_ABCSequence):
 
     def __getitem__(self, index):
         if isinstance(index, slice):
-            return [self[i] for i in range(*index.indices(len(self)))]
+            start, stop, step = index.indices(len(self))
+            if step == 1 and stop == len(self):
+                # A tail is another view: listing it would read and hold
+                # every one of its leads at once.
+                return _PostedGfsView(self.series, self.first + start)
+            return [self[i] for i in range(start, stop, step)]
         index = int(index)
         if index < 0:
             index += len(self)
@@ -2033,11 +2426,19 @@ def prepare_gfs_wrf(
         # The bridge reads and decodes the forecast hours concurrently on
         # every core it may run on; an explicit --preprocess-workers is the
         # count every host step takes, this one included.
-        completed = (None if posted_series is not None else subprocess.run(
-            bridge_command,
-            check=False, text=True, capture_output=True,
-            env=bridge_environment,
-        ))
+        # Bounded by this host's RAM: a series wider than the window is
+        # decoded in lead batches whose receipts merge to the one decode's
+        # (_decode_series_bounded); a series that fits is the one run.
+        completed = (None if posted_series is not None else
+                     _decode_series_bounded(
+                         bridge_command, series=Path(series), records=records,
+                         decoded=decoded, scratch=Path(temporary),
+                         bridge=Path(bridge), cycle_time=cycle_time,
+                         levels_pa_csv=(None if expected_levels_hpa is None
+                                        else ",".join(
+                                            format(level * 100.0, "g")
+                                            for level in expected_levels_hpa)),
+                         environment=bridge_environment))
         if posted_series is not None:
             # As posted, the decode reads the leads posted so far: through
             # the start time here (one batch), then each lead as the build
@@ -2072,9 +2473,10 @@ def prepare_gfs_wrf(
         # with an arbitrary cut at longitude 0.  Re-cut it opposite the
         # target before anything indexes it; a regional crop is untouched.
         if posted_series is None:
-            decoded_snapshots = tuple(
-                orient_global_source_longitudes(snapshot, *target_longitudes)
-                for snapshot in decoded_snapshots)
+            decoded_snapshots = _map_snapshots(
+                decoded_snapshots,
+                lambda snapshot: orient_global_source_longitudes(
+                    snapshot, *target_longitudes))
         # From here on the run sees only the window that starts at the
         # experiment's lead.  Each snapshot still carries the SOURCE
         # valid time the bridge decoded (cycle + its own lead), which is
@@ -2335,7 +2737,7 @@ def prepare_gfs_wrf(
 
         # The plan's times as posted (each snapshot's valid time is the
         # cycle plus its lead, gfs_direct._load_bridge_snapshots).
-        times = (tuple(snapshot.valid_time for snapshot in snapshots)
+        times = (_sequence_valid_times(snapshots)
                  if posted_series is None else
                  tuple(cycle_time + timedelta(hours=hour)
                        for hour in source_hours))
@@ -2415,8 +2817,15 @@ def prepare_gfs_wrf(
         # run on its first surface call (`mavail must be finite`) after a
         # full preparation -- the death the retired GFS+RUC route refusal
         # used to pre-empt (ENG-009).
+        from gpuwm.core.landuse import (
+            ruc_fractional_seaice as _ruc_fractional_seaice)
         soil = preprocess_land_surface_soil(
             initial_met.fields,
+            # real.exe's adjust_for_seaice_pre/post keep the fraction under
+            # fractional_seaice = 1 (threshold 0.02) and snap to 0/1 at 0.5
+            # otherwise (module_soil_pre.F:216-219, :337-343, :392-393 of the HRRR
+            # v4.1.21 fork).
+            fractional_seaice=_ruc_fractional_seaice(cfg),
             sf_surface_physics=int(cfg.sf_surface_physics),
             num_soil_layers=int(cfg.num_soil_layers),
             soil_type=door_reconciled_soil_category(

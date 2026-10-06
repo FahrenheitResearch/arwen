@@ -612,6 +612,17 @@ struct MemberPlane {
 }
 
 fn main() -> ExitCode {
+    if let Some(result) = rw_wrfbatch::ensemble_products::try_cli(
+        &std::env::args().skip(1).collect::<Vec<_>>(),
+    ) {
+        return match result {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(message) => {
+                eprintln!("FAILED\t{message}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     match parse_args() {
         Ok(Invocation::Abi) => {
             println!("{ABI_MARKER}");

@@ -127,14 +127,27 @@ def _fieldset_new(bridge, fields: Mapping[str, np.ndarray]) -> int:
                         "ny": int(array.shape[-2]),
                         "nx": int(array.shape[-1])})
         chunks.append(array.reshape(-1))
-    data = np.concatenate(chunks) if chunks else np.empty(0)
     spec = _json.dumps({"fields": entries}).encode("utf-8")
     spec_buffer = (ctypes.c_uint8 * len(spec)).from_buffer_copy(spec)
     handle = ctypes.c_uint64(0)
-    code = library.gpuwm_static_highres_fieldset_new(
-        spec_buffer, len(spec),
-        data.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), data.size,
-        ctypes.byref(handle))
+    pointer_new = getattr(library, "gpuwm_static_highres_fieldset_new_ptrs", None)
+    if pointer_new is not None:
+        f64p = ctypes.POINTER(ctypes.c_double)
+        pointer_new.argtypes = [ctypes.POINTER(ctypes.c_uint8),
+                               ctypes.c_size_t, ctypes.POINTER(f64p),
+                               ctypes.c_size_t, ctypes.POINTER(ctypes.c_uint64)]
+        pointer_new.restype = ctypes.c_int32
+        pointers = (f64p * len(chunks))(
+            *(array.ctypes.data_as(f64p) for array in chunks))
+        code = pointer_new(spec_buffer, len(spec), pointers, len(chunks),
+                           ctypes.byref(handle))
+    else:
+        # Compatibility with a retained baseline library used for identity checks.
+        data = np.concatenate(chunks) if chunks else np.empty(0)
+        code = library.gpuwm_static_highres_fieldset_new(
+            spec_buffer, len(spec),
+            data.ctypes.data_as(ctypes.POINTER(ctypes.c_double)), data.size,
+            ctypes.byref(handle))
     if code != 0:
         raise RuntimeError(
             f"fieldset_new: {bridge.last_error(library)}")
@@ -150,18 +163,25 @@ def _merge_via_rust(bridge, baseline, overrides_or_hgt, *, mode: str):
 
     library = bridge.load()
     baseline_handle = _fieldset_new(bridge, baseline)
-    overrides_handle = _fieldset_new(bridge, overrides_or_hgt)
+    overrides_handle = 0
     merged_handle = ctypes.c_uint64(0)
     request = _json.dumps({"mode": mode}).encode("utf-8")
     request_buffer = (ctypes.c_uint8 * len(request)).from_buffer_copy(
         request)
     try:
+        overrides_handle = _fieldset_new(bridge, overrides_or_hgt)
         code = library.gpuwm_static_highres_merge(
             ctypes.c_uint64(baseline_handle),
             ctypes.c_uint64(overrides_handle),
             request_buffer, len(request), ctypes.byref(merged_handle))
         if code != 0:
             raise ValueError(bridge.last_error(library))
+        # The result owns its values. Release registered inputs before copying
+        # the result back, so no four field sets overlap during extraction.
+        bridge.fieldset_free(baseline_handle)
+        baseline_handle = 0
+        bridge.fieldset_free(overrides_handle)
+        overrides_handle = 0
         merged = bridge.fieldset_to_dict(int(merged_handle.value))
         library.gpuwm_static_highres_audit_json.argtypes = [
             ctypes.c_uint64, ctypes.POINTER(ctypes.c_uint8),
@@ -181,8 +201,10 @@ def _merge_via_rust(bridge, baseline, overrides_or_hgt, *, mode: str):
         library.gpuwm_static_highres_audit_drop(merged_handle)
         return merged, audit
     finally:
-        bridge.fieldset_free(baseline_handle)
-        bridge.fieldset_free(overrides_handle)
+        if baseline_handle:
+            bridge.fieldset_free(baseline_handle)
+        if overrides_handle:
+            bridge.fieldset_free(overrides_handle)
         if merged_handle.value:
             bridge.fieldset_free(int(merged_handle.value))
 

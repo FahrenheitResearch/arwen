@@ -28,7 +28,7 @@ RENDER_WIDTH, RENDER_HEIGHT = 1200, 900
 MAX_RENDER_SELECTIONS = 8
 #: Render options this door carries. Every one of them keys the publication
 #: identity, so two readers asking for two of them never overwrite each other.
-RENDER_OPTIONS = ("profile", "products", "width", "height")
+RENDER_OPTIONS = ("profile", "products", "width", "height", "theme", "layout")
 #: The job's record that the renderer drawing its galleries had no map
 #: assets (:func:`_note_map_gap`), read into every status written after it.
 MAP_GAP = "render-warning.json"
@@ -37,6 +37,57 @@ MAP_GAP_SCHEMA = "arwen.native-plot-render-warning.v1"
 
 def _root(workspace, job):
     return _owned_directory(viewer._directory(viewer._root(workspace), job) / "native-plots")
+
+
+_BUILTIN_THEMES = frozenset(("", "default", "light", "none", "classic", "dark", "woof-light", "woof-dark"))
+
+
+def _theme_fingerprint(spec):
+    """Bind a file theme's gallery to its JSON parents and declared assets.
+
+    Rust validates and merges the theme. This reads only configuration
+    metadata and file hashes, so an edit at the same path gets a new gallery.
+    """
+    if spec.strip().lower() in _BUILTIN_THEMES:
+        return None
+    files = []
+
+    def visit(path, depth):
+        path = Path(path).absolute()
+        value, payload = ra._raw(path, viewer.MAX_METADATA_BYTES)
+        if not isinstance(value, dict):
+            raise ValueError("Native plot theme JSON must be an object")
+        files.append({"path": str(path), "sha256": ra._sha(payload)})
+        assets = {}
+        parent = value.get("extends")
+        if parent is not None:
+            if not isinstance(parent, str):
+                raise ValueError("Native plot theme extends must name a built-in or JSON file")
+            if depth >= 8:
+                raise ValueError("Native plot theme inheritance is deeper than eight themes")
+            if parent.strip().lower() not in _BUILTIN_THEMES:
+                assets.update(visit(path.parent / parent, depth + 1))
+        for section, names in (("fonts", ("regular", "bold")), ("footer", ("logo",))):
+            values = value.get(section)
+            if isinstance(values, dict):
+                for name in names:
+                    text = values.get(name)
+                    if isinstance(text, str):
+                        assets[f"{section}.{name}"] = (path.parent / text).resolve()
+        return assets
+
+    assets = visit(Path(spec), 0)
+    bound_assets = []
+    for name, path in sorted(assets.items()):
+        digest = ra._file_sha(path) if path.is_file() else None
+        bound_assets.append({"field": name, "path": str(path), "sha256": digest})
+    return ra._sha(ra._encoded({"files": files, "assets": bound_assets}))
+
+
+def _check_theme_selection(selection):
+    if ("theme_fingerprint" in selection
+            and _theme_fingerprint(selection["theme"]) != selection["theme_fingerprint"]):
+        raise ValueError("Native plot theme changed after gallery selection; request the gallery again to use the edited theme")
 
 
 def render_selection(record, request=None):
@@ -57,16 +108,41 @@ def render_selection(record, request=None):
         selection = viewer.job_selection(record)
     else:
         selection = viewer._selection(profile, viewer.map_selectors(record.get("products")))
+    presentation = {}
+    layout = request.get("layout")
+    if layout not in (None, "auto", "fixed"):
+        raise ValueError("Native plot layout must be auto or fixed")
+    if layout == "auto":
+        if request.get("width") is not None or request.get("height") is not None:
+            raise ValueError("Native plot auto layout sizes the domain canvas; omit width and height, or use fixed layout")
+        presentation["layout"] = "auto"
+    theme = request.get("theme")
+    if theme is not None:
+        if not isinstance(theme, str) or not theme.strip():
+            raise ValueError("Native plot theme must be a nonblank built-in name or a JSON file on the node")
+        presentation["theme"] = theme.strip()
+        fingerprint = _theme_fingerprint(presentation["theme"])
+        if fingerprint is not None:
+            presentation["theme_fingerprint"] = fingerprint
     size = {}
     for name, fallback in (("width", RENDER_WIDTH), ("height", RENDER_HEIGHT)):
-        value = fallback if request.get(name) is None else request[name]
+        value = None if layout == "auto" else fallback if request.get(name) is None else request[name]
+        if value is None:
+            size[name] = None
+            continue
         if type(value) is not int or not MIN_RENDER_PIXELS <= value <= MAX_RENDER_PIXELS:
             raise ValueError(f"Native plot {name} is {value!r} and the node's renderer draws panels "
                              f"from {MIN_RENDER_PIXELS} to {MAX_RENDER_PIXELS} pixels, so it would "
                              f"refuse the whole frame. Ask for a {name} inside that range.")
         size[name] = value
-    return {**selection, **size,
-            "render_id": ra._sha(ra._encoded({"selection_id": selection["selection_id"], **size}))}
+    identity = {"selection_id": selection["selection_id"], **size, **presentation}
+    return {**selection, **size, **presentation,
+            "render_id": ra._sha(ra._encoded(identity))}
+
+
+def _presentation(selection):
+    return {name: selection[name] for name in ("theme", "layout") if name in selection}
+
 
 
 def _selection_root(root, selection):
@@ -161,6 +237,7 @@ def _map_gap(plots_root):
 
 
 def _render(root, record, bound, event, authority, entry, spacing, selection):
+    _check_theme_selection(selection)
     from gpuwm.render import require_renderer
     from gpuwm.rustwx import renderer_env
     source = ra._inside(entry["source_path"], bound[0])
@@ -174,7 +251,8 @@ def _render(root, record, bound, event, authority, entry, spacing, selection):
         "process_result": str(Path(entry["object_root"]) / "result.json"),
         "expected_frame_id": entry["frame"]["id"], "expected_source_sha256": entry["source_sha256"],
         "out_dir": str(output), "products": products, "spacing_m": spacing,
-        "width": selection["width"], "height": selection["height"]}
+        "width": selection["width"], "height": selection["height"],
+        **({"theme": selection["theme"]} if "theme" in selection else {})}
     legacy._write(request_path, request)
     with (root / f"render-{event['sequence']:012d}.log").open("ab", buffering=0) as log:
         # renderer_env hands an installed renderer the map files the
@@ -207,6 +285,7 @@ def _render(root, record, bound, event, authority, entry, spacing, selection):
         raise ValueError("Native frame gallery exceeds its transfer bound")
     if list(ra._stamp(source)) != entry["source_stamp"]:
         raise ValueError("WRF output changed during native rendering")
+    _check_theme_selection(selection)
     _publish_receipt(output, panels, products)
     return {"schema": SCHEMA, "state": "ready", "job_id": record["id"], "run_id": bound[2]["run_id"],
         "domain": event["domain"], "sequence": event["sequence"], "valid_time": event["valid_time"],
@@ -214,8 +293,8 @@ def _render(root, record, bound, event, authority, entry, spacing, selection):
         "source_sha256": entry["source_sha256"], "source_stamp": entry["source_stamp"],
         "source_path": str(source), "panels": panels, "bytes": total,
         "render_id": selection["render_id"], "selection_id": selection["selection_id"],
-        "selection_products": selection["products"], "width": selection["width"],
-        "height": selection["height"],
+        "selection_products": selection["products"], "width": result.get("width", selection["width"]),
+        "height": result.get("height", selection["height"]), **_presentation(selection),
         "unavailable": [row for row in entry["products"] if not row["available"]],
         "processing": "existing_compact_store", "published_unix_ms": int(time.time() * 1000)}
 
@@ -274,7 +353,7 @@ def work_once(workspace, job, *, render=True, _completion=None, selection=None):
         summary = {"schema": STATUS_SCHEMA, "job_id": job, "simulation_state": state["state"], **counts,
                    "done": state["state"] in TERMINAL, "state": "no_map_products", "note": selection["note"],
                    "render_id": selection["render_id"], "selection_products": [],
-                   "width": selection["width"], "height": selection["height"],
+                   "width": selection["width"], "height": selection["height"], **_presentation(selection),
                    "updated_unix_ms": int(time.time() * 1000)}
         if bound:
             summary["run_id"] = bound[2]["run_id"]
@@ -319,7 +398,7 @@ def work_once(workspace, job, *, render=True, _completion=None, selection=None):
         "done": done, "state": "complete_with_errors" if done and counts["failed"] else "complete" if done
             else "rendering" if candidate else "waiting_for_compact_stores",
         "render_id": selection["render_id"], "selection_products": selection["products"],
-        "width": selection["width"], "height": selection["height"],
+        "width": selection["width"], "height": selection["height"], **_presentation(selection),
         "updated_unix_ms": int(time.time() * 1000), **_map_gap(plots_root)}
     if bound:
         summary["run_id"] = bound[2]["run_id"]
@@ -449,7 +528,7 @@ def catalog(request, workspace):
         # publishes, so a reader answers with the basis note instead of
         # "still being prepared" for as long as it keeps asking.
         "map_products": viewer.has_map_products(selection),
-        "width": selection["width"], "height": selection["height"],
+        "width": selection["width"], "height": selection["height"], **_presentation(selection),
         "progress": status(workspace, job, selection)}
     try:
         record, _state, bound, commits = legacy._job_completing(workspace, job)
@@ -479,7 +558,8 @@ def catalog(request, workspace):
     if published["run_id"] != manifest["run_id"] or list(ra._stamp(ra._inside(published["source_path"], bound[0]))) != published["source_stamp"]:
         raise ValueError("Native plot source changed after publication")
     value.update(waiting=False, frame_id=published["frame_id"], panels=published["panels"],
-        unavailable=published["unavailable"], bytes=published["bytes"])
+        unavailable=published["unavailable"], bytes=published["bytes"],
+                 width=published["width"], height=published["height"])
     return ra._bounded(value)
 
 
@@ -532,7 +612,7 @@ def request_options(args):
     products = getattr(args, "products", None)
     if products is not None:
         options["products"] = viewer.selectors(products)
-    for name in ("profile", "width", "height"):
+    for name in ("profile", "width", "height", "theme", "layout"):
         value = getattr(args, name, None)
         if value is not None:
             options[name] = value

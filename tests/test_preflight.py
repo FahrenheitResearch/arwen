@@ -902,6 +902,13 @@ def test_every_scratch_call_site_is_classified(d01_cfg):
                 RunConfig(**_TINY, km_opt=2, bl_pbl_physics=0,
                           tke_budget=1),
                 RunConfig(**_TINY, km_opt=4, diff_opt=1),
+                # The NOAA WRFV3.9 fork's edge-to-edge sixth-order filter
+                # (the HRRR recipe default) on a specified domain with the
+                # slope taper owns the four diff6_edge_* slots; without
+                # this arm their call sites in dycore._diff6_edge_work are
+                # invisible to this completeness gate.
+                RunConfig(**_TINY, diff_6th_opt=2, specified=True,
+                          diff_6th_form="noaa_wrf39", diff_6th_slopeopt=1),
                 # The UW moist-turbulence PBL owns its zero plane
                 # (uwpbl_zero); without this arm its call site in
                 # _run_uwpbl is invisible to this completeness gate.

@@ -379,9 +379,10 @@ def test_the_emitted_set_passes_the_hierarchy_routes_own_gate(tmp_path):
         tmp_path / "route.stock.namelist.input") == []
 
 
-def test_the_emitted_pair_differs_by_exactly_the_four_stock_deltas(tmp_path):
-    """ra_lw_physics 0->1, use_theta_m 0->1, and the two stock-only
-    &physics keys ghg_input=0 and do_radar_ref=1.
+def test_the_emitted_pair_differs_by_exactly_the_three_stock_deltas(tmp_path):
+    """ra_lw_physics 0->1 and the two stock-only &physics keys
+    ghg_input=0 and do_radar_ref=1.  use_theta_m is 0 on both halves:
+    the stock arm runs the direct export, which holds dry theta.
 
     The hierarchy route verifies the pair key for key, so an extra delta
     is a refusal after the expensive preparation rather than here. Both
@@ -402,15 +403,17 @@ def test_the_emitted_pair_differs_by_exactly_the_four_stock_deltas(tmp_path):
                   if ln not in native and not ln.strip().startswith("!")]
 
     assert [ln.split("=")[0].strip() for ln in only_native] == [
-        "ra_lw_physics", "use_theta_m"]
+        "ra_lw_physics"]
     assert [ln.split("=")[0].strip() for ln in only_stock] == [
-        "ra_lw_physics", "ghg_input", "do_radar_ref", "use_theta_m"]
+        "ra_lw_physics", "ghg_input", "do_radar_ref"]
 
     # Section placement, not just presence.
     from gpuwm.namelist_import import parse_namelist
 
     parsed_stock = parse_namelist(tmp_path / "route.stock.namelist.input")
     parsed_native = parse_namelist(tmp_path / "route.namelist.input")
+    assert parsed_stock["dynamics"]["use_theta_m"] == [0]
+    assert parsed_native["dynamics"]["use_theta_m"] == [0]
     assert parsed_stock["physics"]["ghg_input"] == [0]
     assert parsed_stock["physics"]["do_radar_ref"] == [1]
     assert "ghg_input" not in parsed_native["physics"]

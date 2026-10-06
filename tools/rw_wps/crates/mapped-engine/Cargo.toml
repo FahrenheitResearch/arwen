@@ -31,7 +31,7 @@ bzip2 = "0.5"
 chrono = { version = "0.4", default-features = false, features = ["alloc"] }
 grib-core = { path = "../../../grib1_bridge/vendor/grib-core", default-features = false, features = ["jpeg2000"] }
 ndarray = "0.17"
-netcrust = { path = "../../vendor/netcrust" }
+netcrust = { path = "../../../rustwx/vendor/netcrust" }
 # Message decode is pure per-message work and a large complex-packed
 # object carries hundreds of them; see `src/threads.rs` for the one rule
 # every parallel step here obeys (pre-assigned slots, drained in

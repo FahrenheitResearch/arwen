@@ -1101,6 +1101,20 @@ def _prepare_sw_inputs(albedo, solar, mu, nlay, *, out=None, xp=None):
 _CHUNK_SCRATCH: dict = {}
 
 
+def release_rrtmgp_stream_scratch(*, device_id, stream):
+    """Retire the completed queue's chunk temporaries, retaining tables."""
+    import cupy as cp
+    device_id = int(device_id)
+    if int(cp.cuda.runtime.getDevice()) != device_id:
+        raise ValueError("RRTMGP scratch release requires the owning CUDA device")
+    stream.synchronize()
+    keys = [key for key in tuple(_CHUNK_SCRATCH)
+            if key[0] == ("cupy", device_id) and key[1] == int(stream.ptr)]
+    for key in keys:
+        del _CHUNK_SCRATCH[key]
+    return {"chunk_scratch": len(keys)}
+
+
 def _chunk_scratch(name: str, shape, *, xp, dtype=DTYPE):
     """``(buffer, first_use)`` for one named per-chunk temporary.
 

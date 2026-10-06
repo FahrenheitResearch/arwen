@@ -33,7 +33,7 @@ _DRIVER_FLAG_SLOTS = 20  # the 40 uint32 driver words as uint64 slab slots
 
 def _runtime_sfctmp(values, *, run, delt, conflx, ivgtyp, iland, nroot, ilnb,
                     isice, c1sn, c2sn, isncovr_opt, mminlu, parameters, flags,
-                    soilprop="wrf_45"):
+                    soilprop="wrf_45", snow="wrf_461"):
     """The fused sfctmp, behind the runtime's leaf-set wiring seam.
 
     Tests replace the runtime leaf sets to prove that a host leaf cannot be
@@ -50,7 +50,8 @@ def _runtime_sfctmp(values, *, run, delt, conflx, ivgtyp, iland, nroot, ilnb,
             and stages is ruc_gpu.RUC_SFCTMP_DEVICE_STAGES_RESIDENT
             and arrays is ruc_gpu.RUC_DEVICE_ARRAYS):
         return ruc_gpu.ruc_sfctmp_full_width_fused(values, run=run, flags=flags,
-                                                   soilprop=soilprop, **kwargs)
+                                                   soilprop=soilprop, snow=snow,
+                                                   **kwargs)
     flags.fill(0)
     index = cp.nonzero(run)[0]
     take = {name: array[..., index] for name, array in values.items()}
@@ -58,7 +59,8 @@ def _runtime_sfctmp(values, *, run, delt, conflx, ivgtyp, iland, nroot, ilnb,
         kwargs[name] = kwargs[name][index]
     result = ruc.ruc_surface_temperature_step(take, myj=False, leaves=leaves,
                                              stages=stages, arrays=arrays,
-                                             soilprop=soilprop, **kwargs)
+                                             soilprop=soilprop, snow=snow,
+                                             **kwargs)
     output = {}
     for name in ruc.RucSurfaceTemperatureStep.__dataclass_fields__:
         part = cp.asarray(getattr(result, name))
@@ -157,6 +159,22 @@ class _Workspace:
 _WORKSPACES = {}
 
 
+def release_ruc_driver_stream_scratch(*, device_id, stream):
+    """Release the completed stream's driver banks and auxiliary copies."""
+    device_id = int(device_id)
+    if int(cp.cuda.runtime.getDevice()) != device_id:
+        raise ValueError("RUC driver scratch release requires the owning CUDA device")
+    stream.synchronize()
+    keys = [key for key in tuple(_WORKSPACES)
+            if key[0] == device_id and key[-1] == int(stream.ptr)]
+    for key in keys:
+        # A failed step can leave a pinned-memory copy on this side queue
+        # before the main queue has recorded its ordinary waiting event.
+        _WORKSPACES[key].side.synchronize()
+        del _WORKSPACES[key]
+    return {"driver_workspaces": len(keys)}
+
+
 @lru_cache(maxsize=None)
 def _host_soil_geometry(nzs):
     return ruc.ruc_soil_geometry(nzs)
@@ -195,7 +213,8 @@ def _refusal(slab, params, sflags_key):
 
 
 def _observe_driver(values, fields, params, timestep, itimestep,
-                    mosaic_lu, mosaic_soil, lakemodel, soilprop="wrf_45"):
+                    mosaic_lu, mosaic_soil, lakemodel, irrigation="wrf_461",
+                    soilprop="wrf_45", qvg_cold_start="wrf", snow="wrf_461"):
     """Keep the tests' pre-seam result observer while still running fusion.
 
     The ordinary runtime callable is unchanged and returns immediately here.
@@ -208,7 +227,8 @@ def _observe_driver(values, fields, params, timestep, itimestep,
         return
     copied = dict(values)
     copied["albbck"], ice = runtime._ruc_seaice_albedo_override(
-        copied["albbck"], copied["xice"], params.seaice_albedo_default, arrays=cp)
+        copied["albbck"], copied["xice"], params.seaice_albedo_default, arrays=cp,
+        xice_threshold=params.xice_threshold)
     copied["alb"] = runtime._ruc_fractional_deblend(
         copied["alb"], 0.08, copied["xice"], ice, arrays=cp)
     copied["emiss"] = runtime._ruc_fractional_deblend(
@@ -217,22 +237,34 @@ def _observe_driver(values, fields, params, timestep, itimestep,
     leaves, stages, arrays = runtime.ruc_device_sfctmp_sets()
     callback(copied, dt=float(timestep), ktau=int(itimestep), zs=params.zs,
              ivgtyp=fields["ivgtyp"], isltyp=fields["isltyp"],
-             myj=False, em_core=1, lakemodel=lakemodel, frpcpn=True, rdlai2d=False,
+             myj=False, em_core=1, lakemodel=lakemodel, frpcpn=True,
+             rdlai2d=bool(params.rdlai2d),
              mosaic_lu=mosaic_lu, mosaic_soil=mosaic_soil,
              landusef=fields.get("landusef"), soilctop=fields.get("soilctop"),
              iswater=params.iswater, isice=params.isice,
-             xice_threshold=0.5, ilnb=1, ilnb_chain=False, c1sn=0.026, c2sn=21.0,
+             xice_threshold=float(params.xice_threshold), ilnb=1, ilnb_chain=False,
+             c1sn=0.026, c2sn=21.0,
              isncovr_opt=ruc.RUC_SNOW_COVER_OPTION, mminlu=params.dataset_identifier,
              parameters=params.bundle, leaves=leaves, stages=stages, arrays=arrays,
-             soilprop=soilprop)
+             irrigation=irrigation, soilprop=soilprop,
+             qvg_cold_start=qvg_cold_start, snow=snow)
 
 
 def step(fields, atmosphere, *, params, precipitation, dt, itimestep,
-         mosaic_lu=0, mosaic_soil=0, lakemodel=0, soilprop="wrf_45"):
-    from gpuwm.core.ruc_tier import ruc_soilprop_form
+         mosaic_lu=0, mosaic_soil=0, lakemodel=0, irrigation="wrf_461",
+         soilprop="wrf_45", qvg_cold_start="wrf", diagnostic_2m="flux",
+         snow="wrf_461"):
+    from gpuwm.core.ruc_tier import (ruc_2m_diagnostic_form,
+                                     ruc_qvg_cold_start_form, ruc_snow_form,
+                                     ruc_soilprop_form)
     soilprop = ruc_soilprop_form(soilprop)
+    snow = ruc_snow_form(snow)
+    qvg_air = ruc_qvg_cold_start_form(qvg_cold_start)
+    log_profile = ruc_2m_diagnostic_form(diagnostic_2m)
     from gpuwm.core.ruc_runtime import (RUC_PROFILE_BINDING, RUC_STATE_BINDING,
                                         sfcdiags_exner_powers)
+    from gpuwm.core.ruc_mosaic import irrigation_form
+    irrigation_selector = irrigation_form(irrigation)
 
     shape = tuple(fields["tsk"].shape)
     timestep = np.float32(dt)
@@ -270,7 +302,8 @@ def step(fields, atmosphere, *, params, precipitation, dt, itimestep,
         if name not in values:
             values[name] = fields[name]
     _observe_driver(values, fields, params, timestep, itimestep,
-                    mosaic_lu, mosaic_soil, lakemodel, soilprop)
+                    mosaic_lu, mosaic_soil, lakemodel, irrigation, soilprop,
+                    qvg_cold_start, snow)
     keep = []
     for index, name in enumerate(_INPUT_NAMES):
         array = cp.ascontiguousarray(values[name], dtype=cp.float32)
@@ -301,19 +334,23 @@ def step(fields, atmosphere, *, params, precipitation, dt, itimestep,
     if params.isice is not None and (type(params.isice) is not int or not 1 <= params.isice <= nv):
         raise ValueError(f"RUC isice {params.isice!r} is outside 1..{nv}")
     from gpuwm.core.ruc_mosaic import mosaic_fractions
+    # The wrf_45 floor reads the fractions whenever the run carries them
+    # (WRF v4.5.2 :970 has no mosaic gate); wrf_461 only under mosaic_lu.
+    carries_fractions = fields.get("landusef") is not None
     landusef = (mosaic_fractions(fields.get("landusef"), shape, "landusef", nv, arrays=cp, validate_values=False)
-                if mosaic_lu else cp.empty((0,), dtype=cp.float32))
+                if (mosaic_lu or (irrigation_selector == 0 and carries_fractions))
+                else cp.empty((0,), dtype=cp.float32))
     soilctop = (mosaic_fractions(fields.get("soilctop"), shape, "soilctop", ns, arrays=cp, validate_values=False)
                 if mosaic_soil else cp.empty((0,), dtype=cp.float32))
     crop, natural = (int(vegetation.scalars[name]) for name in ("CROP", "NATURAL"))
-    if mosaic_lu and landusef.shape[0] < max(crop, natural):
+    if landusef.shape[0] and landusef.shape[0] < max(crop, natural):
         raise ValueError("RUC landusef omits the table's crop/natural categories; "
                          "LSMRUC irrigation cannot index the source fractions")
     mosaic_args = (landusef, soilctop, np.int32(landusef.shape[0]),
                    np.int32(soilctop.shape[0]), np.int32(mosaic_lu), np.int32(mosaic_soil))
-    prologue = ruc_fused_kernel("ruc_driver_prologue", nzs, soilprop)
-    epilogue = ruc_fused_kernel("ruc_driver_epilogue", nzs, soilprop)
-    commit = ruc_fused_kernel("ruc_driver_commit", nzs, soilprop)
+    prologue = ruc_fused_kernel("ruc_driver_prologue", nzs, soilprop, snow)
+    epilogue = ruc_fused_kernel("ruc_driver_epilogue", nzs, soilprop, snow)
+    commit = ruc_fused_kernel("ruc_driver_commit", nzs, soilprop, snow)
     grid, block = ((w.n + 127) // 128,), (128,)
     table_args = tuple(getattr(tables, name) for name in (
         "ifortbl", "z0tbl", "lemitbl", "pctbl", "laitbl", "bb", "drysmc", "hc",
@@ -325,7 +362,10 @@ def step(fields, atmosphere, *, params, precipitation, dt, itimestep,
                            np.int32(nv), np.int32(ns),
                            np.float32(params.seaice_albedo_default),
                            np.float32(vegetation.scalars["CFACTR_DATA"]),
-                           *mosaic_args, np.int32(lakemodel)))
+                           *mosaic_args, np.int32(lakemodel),
+                           np.int32(qvg_air),
+                           np.int32(1 if params.rdlai2d else 0),
+                           np.float32(params.xice_threshold)))
     sfvalues = {name: w.arrays[source] for name, source in _SF_VALUES.items()}
     hook_kwargs = dict(run=w.run, delt=float(timestep), conflx=w.arrays["conflx"],
                        ivgtyp=w.integer[0], iland=w.integer[2], nroot=w.integer[3],
@@ -336,6 +376,8 @@ def step(fields, atmosphere, *, params, precipitation, dt, itimestep,
         # Passed only off its default, so a replaced sfctmp hook written
         # before the selector still runs the default lineage.
         hook_kwargs["soilprop"] = soilprop
+    if snow != "wrf_461":
+        hook_kwargs["snow"] = snow
     try:
         result = _RUC_SFCTMP_FULL_WIDTH(sfvalues, **hook_kwargs)
     except Exception:
@@ -357,7 +399,10 @@ def step(fields, atmosphere, *, params, precipitation, dt, itimestep,
     stream.wait_event(w.power_ready)
     epilogue(grid, block, (w.sptr, w.optr, w.integer, w.run, w.flags, tbq,
                            tables.lemitbl, geometry, timestep, np.int32(w.n),
-                           landusef, np.int32(mosaic_lu), np.int32(crop), np.int32(natural)))
+                           landusef, np.int32(landusef.shape[0]), np.int32(mosaic_lu),
+                           np.int32(crop), np.int32(natural),
+                           np.int32(irrigation_selector), np.int32(log_profile),
+                           np.float32(params.xice_threshold)))
     targets = {argument: fields[name] for name, argument in RUC_STATE_BINDING.items()}
     targets.update({argument: fields[name] for name, argument in RUC_PROFILE_BINDING.items()})
     targets.update({name: fields[name] for name in _EXTRAS})

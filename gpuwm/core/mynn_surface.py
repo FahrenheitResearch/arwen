@@ -298,6 +298,101 @@ def _zolrib(ri, za, z0, zt, logz0, logzt, zol1):
     return F(result)
 
 
+#: The two generations of this surface layer, by source (``RunConfig.
+#: mynn_sfclay_variant``).  ``wrf_461`` is WRF v4.6.1 ``module_sf_mynn.F``;
+#: ``gsl_wrf39`` is the same module in the GSL WRF 3.9 fork
+#: (NOAA-EMC/HRRR v4.1.21 ``sorc/hrrr_wrfarw.fd/WRFV3.9``), which differs in
+#: six places on the column path: the z/L search (``zolri``), the z/L cap
+#: (50 against 20), the Richardson clamp after step 1 (50 against 4), the
+#: heat log numerators (zt against z0), psih's lower limit at the first
+#: level (z0/L against zt/L) and z/L in the exactly neutral branch.
+MYNN_SFCLAY_VARIANTS = ("wrf_461", "gsl_wrf39")
+MYNN_SFCLAY_DEFAULT = "wrf_461"
+
+
+def mynn_sfclay_variant_form(value) -> str:
+    """Validate a variant name; refuse anything else by name."""
+    if not isinstance(value, str) or value not in MYNN_SFCLAY_VARIANTS:
+        raise ValueError(
+            f"mynn_sfclay_variant={value!r} must be one of "
+            f"{MYNN_SFCLAY_VARIANTS}: 'wrf_461' is WRF v4.6.1's MYNN surface "
+            "layer, 'gsl_wrf39' the GSL WRF 3.9 fork's")
+    return value
+
+
+def _zolri2(zol2, ri2, za, z0, zt):
+    """Fork ``zolri2`` (:1954-1993).  Returns ``(residual, zol2)``.
+
+    ``ZOL2`` is INTENT(INOUT): a wrong-sign iterate is reset to zero and
+    the caller keeps the reset value.  No floors on the log terms, and the
+    heat term's lower argument is z0/L, not zt/L.
+    """
+    zol2 = F(zol2)
+    if F(zol2 * ri2) < F(0.0):
+        zol2 = F(0.0)
+    if not np.isfinite(zol2):
+        return F(np.nan), zol2
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        zol20 = F(F(zol2 * z0) / za)
+        zol3 = F(zol2 + zol20)
+    if not (np.isfinite(zol20) and np.isfinite(zol3)):
+        return F(np.nan), zol2
+    if ri2 < F(0.0):
+        psix2 = F(_logf(F(F(za + z0) / z0))
+                  - F(_psim_unstable(zol3) - _psim_unstable(zol20)))
+        psit2 = F(_logf(F(F(za + zt) / zt))
+                  - F(_psih_unstable(zol3) - _psih_unstable(zol20)))
+    else:
+        psix2 = F(_logf(F(F(za + z0) / z0))
+                  - F(_psim_stable(zol3) - _psim_stable(zol20)))
+        psit2 = F(_logf(F(F(za + zt) / zt))
+                  - F(_psih_stable(zol3) - _psih_stable(zol20)))
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        residual = F(F(F(zol2 * psit2) / F(psix2 * psix2)) - ri2)
+    return residual, zol2
+
+
+def _zolri(ri, za, z0, zt, zol1):
+    """Fork ``zolri`` (:1899-1952): 5-pass secant search, 5 Ri / 8 Ri give-up.
+
+    Undefined in the fork and defined here (the kernel does the same): a
+    zero secant denominator or a non-finite residual returns the give-up
+    value at once.
+    """
+    ri, za, z0, zt, zol1 = F(ri), F(za), F(z0), F(zt), F(zol1)
+    giveup = F(ri * F(5.0)) if ri < F(0.0) else F(ri * F(8.0))
+    if ri < F(0.0):
+        x1, x2 = F(zol1 - F(0.02)), F(0.0)
+    else:
+        x1, x2 = F(0.0), F(zol1 + F(0.02))
+    result = giveup
+    fx1, x1 = _zolri2(x1, ri, za, z0, zt)
+    fx2, x2 = _zolri2(x2, ri, za, z0, zt)
+    if not (np.isfinite(fx1) and np.isfinite(fx2)):
+        return giveup
+    n = 0
+    while abs(F(x1 - x2)) > F(0.01) and n < 5:
+        denom = F(fx2 - fx1)
+        if denom == F(0.0):
+            return giveup
+        if abs(fx2) < abs(fx1):
+            x1 = F(x1 - F(F(fx1 / denom) * F(x2 - x1)))
+            fx1, x1 = _zolri2(x1, ri, za, z0, zt)
+            result = x1
+            if not np.isfinite(fx1):
+                return giveup
+        else:
+            x2 = F(x2 - F(F(fx2 / denom) * F(x2 - x1)))
+            fx2, x2 = _zolri2(x2, ri, za, z0, zt)
+            result = x2
+            if not np.isfinite(fx2):
+                return giveup
+        n += 1
+    if n == 5 and abs(F(x1 - x2)) >= F(0.01):
+        result = giveup
+    return F(result)
+
+
 def _zilitinkevich_land(z0, restar):
     zt = F(z0 * np.exp(-KARMAN * F(0.085) * np.sqrt(restar)))
     zt = min(zt, F(0.75) * z0)
@@ -516,17 +611,19 @@ def mynn_surface_layer_default(
     ustm: object | None = None,
     spp_pbl: int = 0,
     pattern_spp_pbl=None,
+    variant: str = MYNN_SFCLAY_DEFAULT,
 ) -> dict[str, np.ndarray]:
     """Evaluate the WRF MYNN surface layer for independent columns.
 
     ``isftcflx`` selects the over-water roughness identity and is ignored on
     land, exactly as ``module_sf_mynn.F:625`` is.  Only the four identities
     WRF defines are accepted; see the module docstring for why 4 is not one of
-    them.
+    them.  ``variant`` selects the generation (:data:`MYNN_SFCLAY_VARIANTS`).
     """
 
     from gpuwm.core.spp_kernel_sources import spp_flag
     stochastic = spp_flag(spp_pbl, "spp_pbl")
+    fork = mynn_sfclay_variant_form(variant) == "gsl_wrf39"
     if not isinstance(itimestep, int) or itimestep < 1:
         raise ValueError("itimestep must be a positive integer")
     if isfflx not in (0, 1):
@@ -632,7 +729,7 @@ def mynn_surface_layer_default(
         vsgd = F(F(0.32) * max(dx32 / F(5000.0) - F(1.0), F(0.0)) ** F(0.33))
         wsp = F(max(np.sqrt(wsp * wsp + wstar * wstar + vsgd * vsgd), WMIN))
         br = F(govrth * za * dthvdz / (wsp * wsp))
-        limit = F(2.0 if itimestep == 1 else 4.0)
+        limit = F(2.0 if itimestep == 1 else (50.0 if fork else 4.0))
         br = F(min(max(br, -limit), limit))
 
         visc = F(F(1.326e-5) * (
@@ -673,10 +770,13 @@ def mynn_surface_layer_default(
 
         zratio = F(z0 / zt)
         gz1oz0 = F(np.log((za + z0) / z0))
-        gz1ozt = F(np.log((za + z0) / zt))
-        gz2ozt = F(np.log((F(2.0) + z0) / zt))
+        # gsl_wrf39 (fork :771-775) puts zt, not z0, in the heat numerators.
+        zn = zt if fork else z0
+        gz1ozt = F(np.log((za + zn) / zt))
+        gz2ozt = F(np.log((F(2.0) + zn) / zt))
         gz10oz0 = F(np.log((F(10.0) + z0) / z0))
-        gz10ozt = F(np.log((F(10.0) + z0) / zt))
+        gz10ozt = F(np.log((F(10.0) + zn) / zt))
+        zol_cap = F(50.0) if fork else F(20.0)
 
         if br > F(0.0):
             regime = F(1.0 if br > F(0.2) else 2.0)
@@ -685,10 +785,13 @@ def mynn_surface_layer_default(
             else:
                 zol = F(za * KARMAN * G * mol_i
                         / (th1 * max(ust * ust, F(0.0001))))
-                zol = F(min(max(zol, F(0.0)), F(20.0)))
-            zol = F(min(max(_zolrib(br, za, z0, zt, gz1oz0, gz1ozt, zol),
-                            F(0.0)), F(20.0)))
+                zol = F(min(max(zol, F(0.0)), zol_cap))
+            solved = (_zolri(br, za, z0, zt, zol) if fork else
+                      _zolrib(br, za, z0, zt, gz1oz0, gz1ozt, zol))
+            zol = F(min(max(solved, F(0.0)), zol_cap))
             zolzt, zolz0 = F(zol * zt / za), F(zol * z0 / za)
+            if fork:
+                zolzt = zolz0   # fork :836, :849
             zolza = F(zol * (za + z0) / za)
             zol10 = F(zol * (F(10.0) + z0) / za)
             zol2 = F(zol * (F(2.0) + z0) / za)
@@ -699,6 +802,13 @@ def mynn_surface_layer_default(
             psih2 = F(_psih_stable(zol2) - _psih_stable(zolz0))
         elif br == F(0.0):
             regime, zol = F(3.0), F(0.0)
+            if fork:
+                # fork :875-880, from the incoming u* and MOL.
+                if ust < F(0.01):
+                    zol = F(br * gz1oz0)
+                else:
+                    zol = F(KARMAN * govrth * za * mol_i
+                            / max(F(ust * ust), F(0.001)))
             psim = psih = psim10 = psih10 = psih2 = F(0.0)
         else:
             regime = F(4.0)
@@ -707,10 +817,13 @@ def mynn_surface_layer_default(
             else:
                 zol = F(za * KARMAN * G * mol_i
                         / (th1 * max(ust * ust, F(0.001))))
-                zol = F(min(max(zol, F(-20.0)), F(0.0)))
-            zol = F(min(max(_zolrib(br, za, z0, zt, gz1oz0, gz1ozt, zol),
-                            F(-20.0)), F(0.0)))
+                zol = F(min(max(zol, -zol_cap), F(0.0)))
+            solved = (_zolri(br, za, z0, zt, zol) if fork else
+                      _zolrib(br, za, z0, zt, gz1oz0, gz1ozt, zol))
+            zol = F(min(max(solved, -zol_cap), F(0.0)))
             zolzt, zolz0 = F(zol * zt / za), F(zol * z0 / za)
+            if fork:
+                zolzt = zolz0   # fork :917, :928
             zolza = F(zol * (za + z0) / za)
             zol10 = F(zol * (F(10.0) + z0) / za)
             zol2 = F(zol * (F(2.0) + z0) / za)
@@ -735,13 +848,15 @@ def mynn_surface_layer_default(
             ust = max(ust, F(0.005))
             ustm_i = ust
 
-        gz1ozt = F(np.log((za + z0) / zt))
-        gz2ozt = F(np.log((F(2.0) + z0) / zt))
+        gz1ozt = F(np.log((za + zn) / zt))
+        gz2ozt = F(np.log((F(2.0) + zn) / zt))
         psit = max(F(gz1ozt - psih), F(1.0))
         psit2 = max(F(gz2ozt - psih2), F(1.0))
-        psiq = max(F(np.log((za + z0) / zq) - psih), F(1.0))
-        psiq2 = max(F(np.log((F(2.0) + z0) / zq) - psih2), F(1.0))
-        psiq10 = max(F(np.log((F(10.0) + z0) / zq) - psih10), F(1.0))
+        # gsl_wrf39 (fork :984-986) has zq in these numerators too.
+        qn = zq if fork else z0
+        psiq = max(F(np.log((za + qn) / zq) - psih), F(1.0))
+        psiq2 = max(F(np.log((F(2.0) + qn) / zq) - psih2), F(1.0))
+        psiq10 = max(F(np.log((F(10.0) + qn) / zq) - psih10), F(1.0))
         mol_i = F(KARMAN * (thv1 - thvgb) / psit / PRT)
         qstar = F(KARMAN * (qvsh - qsfc) * F(1000.0) / psiq / PRT)
 
@@ -857,6 +972,9 @@ def mynn_sfclay_first_step_state(
 
 __all__ = [
     "ISFTCFLX_DEFINED",
+    "MYNN_SFCLAY_DEFAULT",
+    "MYNN_SFCLAY_VARIANTS",
+    "mynn_sfclay_variant_form",
     "mynn_sfclay_first_step_state",
     "mynn_surface_layer_default",
 ]

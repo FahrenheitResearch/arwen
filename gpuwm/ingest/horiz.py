@@ -44,6 +44,9 @@ _WPS_GRAVITY_MS2 = 9.81
 
 
 def _cupy():
+    from gpuwm.local_gpu import no_local_gpu
+    if no_local_gpu():
+        raise RuntimeError("GPUWM_NO_LOCAL_GPU forbids local CUDA preprocessing")
     try:
         import cupy as cp
     except ImportError as exc:  # pragma: no cover - exercised on CPU installs
@@ -312,6 +315,13 @@ def source_coordinate_transform(snapshot):
 
     Returns ``(transform, projected)`` where ``transform(lat, lon)``
     yields ``(y_like, x_like)`` in the snapshot's axis space.
+
+    A source declaring ``same_grid_pairing = "identity"`` pairs a target
+    staggering that IS the declared grid (its mass points, u or v faces;
+    :func:`gpuwm.ingest.source_coverage.lattice_identity`) with the exact
+    source lattice indices. The outermost faces use the edge cell, so no
+    coordinate beyond the source is requested. Undeclared sources and
+    every other target retain their projected indices exactly as before.
     """
 
     projection = declared_source_projection(snapshot)
@@ -320,13 +330,17 @@ def source_coordinate_transform(snapshot):
             return lat, lon
 
         return identity, False
+    from gpuwm.ingest.source_coverage import lattice_identity
     from gpuwm.mapped_source import declared_lambert_source_grid
+    from gpuwm.static.projection import EARTH_RADIUS_M
 
     parameters = projection["parameters"]
     source = declared_lambert_source_grid(parameters)
     unit = float(parameters["axis_unit_m"])
     dx = float(parameters["dx_m"])
     dy = float(parameters["dy_m"])
+    nx = int(parameters["nx"])
+    ny = int(parameters["ny"])
 
     def transform(lat, lon):
         x, y = source.latlon_to_ij(
@@ -334,10 +348,51 @@ def source_coordinate_transform(snapshot):
             np.asarray(lon, dtype=np.float64))
         # LambertGrid coordinates are one-based; axis zero sits on the
         # first grid point, so the axis value of point i is (i-1)*dx.
-        return ((np.asarray(y, dtype=np.float64) - 1.0) * dy / unit,
-                (np.asarray(x, dtype=np.float64) - 1.0) * dx / unit)
+        y_index = np.asarray(y, dtype=np.float64) - 1.0
+        x_index = np.asarray(x, dtype=np.float64) - 1.0
+        if parameters.get("same_grid_pairing") == "identity":
+            lattice = lattice_identity(
+                y_index, x_index, nx=nx, ny=ny,
+                sphere_scale=float(parameters["earth_radius_m"]) / EARTH_RADIUS_M)
+            if lattice is not None:
+                y_index, x_index = lattice
+        return (y_index * dy / unit, x_index * dx / unit)
 
     return transform, True
+
+
+def declared_grid_pairing(declaration, grid) -> str | None:
+    """``"identity"`` when GRID's mass points ARE a declared Lambert grid.
+
+    ``declaration`` is a mapping's validated ``grid`` block (family and
+    parameters, :func:`gpuwm.mapped_source.load_mapping`), ``grid`` the
+    target.  The same test :func:`source_coordinate_transform` makes
+    (:func:`gpuwm.ingest.source_coverage.lattice_identity`), read from the
+    declaration alone, so a preparation can say in its proof which pairing
+    built the grid.  ``None`` for every other target and for a source
+    that declares no projected grid.
+    """
+
+    if not declaration or str(declaration.get("family")) \
+            not in SUPPORTED_SOURCE_PROJECTIONS:
+        return None
+    if declaration.get("same_grid_pairing") != "identity":
+        return None
+    from gpuwm.ingest.source_coverage import lattice_identity
+    from gpuwm.mapped_source import declared_lambert_source_grid
+    from gpuwm.static.projection import EARTH_RADIUS_M
+
+    parameters = declaration["parameters"]
+    latitude, longitude = grid.latlon_mass()
+    x, y = declared_lambert_source_grid(parameters).latlon_to_ij(
+        np.asarray(latitude, dtype=np.float64),
+        np.asarray(longitude, dtype=np.float64))
+    lattice = lattice_identity(
+        np.asarray(y, dtype=np.float64) - 1.0,
+        np.asarray(x, dtype=np.float64) - 1.0,
+        nx=int(parameters["nx"]), ny=int(parameters["ny"]),
+        sphere_scale=float(parameters["earth_radius_m"]) / EARTH_RADIUS_M)
+    return None if lattice is None else "identity"
 
 
 def source_axis_space(snapshot):
@@ -2356,6 +2411,7 @@ __all__ = [
     "masked_nearest_gpu",
     "rotate_earth_to_grid_gpu",
     "declared_source_projection",
+    "declared_grid_pairing",
     "source_axis_space",
     "source_coordinate_transform",
     "rotate_grid_to_earth_gpu",

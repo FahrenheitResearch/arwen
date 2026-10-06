@@ -329,6 +329,9 @@ def test_refl_stash_has_no_trajectory_or_restart_reader():
         "gpuwm/core/refl.py", "gpuwm/runtime.py",
         "gpuwm/offline_child_run.py",
         "gpuwm/prepared_single_domain_forecast.py",
+        # Ensemble output consumes the same handoff, once per due frame.
+        "gpuwm/ensemble/native_forecast.py",
+        "gpuwm/ensemble/batch_forecast.py",
         "gpuwm/verify/cases/nest_ideal_common.py",
         # The STREAMED path, and it consumes for a different reason from
         # every other entry here: it is not publishing a frame, it is

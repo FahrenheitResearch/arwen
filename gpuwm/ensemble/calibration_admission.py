@@ -36,6 +36,10 @@ def random_descriptor_requested(perturbation):
     their own owners gave them in 2.8.4.  Refusing them would remove a
     shipped, reachable feature.  The new descriptor is a table.
     """
+    from gpuwm.ensemble.surface_controls import is_surface_recipe, validate_surface_recipe
+    if is_surface_recipe(perturbation):
+        validate_surface_recipe(perturbation)
+        return False
     return perturbation is not None and not isinstance(perturbation, str)
 
 

@@ -874,6 +874,120 @@ _TRANSPORT_PATHS = {
 }
 
 
+#: One launch moves every band of a seam (pack or unpack) instead of one
+#: ``cudaMemcpy2DAsync`` per carrier.  THE BREAKAGE IT PREVENTS, measured
+#: 2026-10-03 on the HRRR grid (1797 x 1057 x 50, 2x2 ranks, 223 carriers per
+#: seam): the exchange issued 3,568 pitched copies per step from the stepping
+#: thread, 18 ms of host time between steps with every card idle, and the
+#: count grows with every added seam.  The bytes moved are identical: each
+#: thread copies whole 4-byte words (single bytes when a band is not word
+#: aligned) from the band's rows to the same destination offsets.
+_BAND_COPY_SOURCE = r"""
+extern "C" __global__ void seam_band_copy(const long long* __restrict__ table) {
+    const long long* t = table + 7 * (long long)blockIdx.y;
+    const char* src = (const char*)t[0];
+    const long long src_pitch = t[1];
+    char* dst = (char*)t[2];
+    const long long dst_pitch = t[3];
+    const long long width = t[4];
+    const long long rows = t[5];
+    const long long word = t[6];
+    const long long per_row = word == 4 ? (width >> 2) : width;
+    const long long total = per_row * rows;
+    const long long stride = (long long)gridDim.x * blockDim.x;
+    for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+         i < total; i += stride) {
+        const long long r = i / per_row;
+        const long long w = i - r * per_row;
+        if (word == 4) {
+            *(unsigned int*)(dst + r * dst_pitch + 4 * w) =
+                *(const unsigned int*)(src + r * src_pitch + 4 * w);
+        } else {
+            dst[r * dst_pitch + w] = src[r * src_pitch + w];
+        }
+    }
+}
+"""
+_band_copy_kernel = None
+
+
+def _band_copy():
+    global _band_copy_kernel
+    if _band_copy_kernel is None:
+        import cupy as cp
+        _band_copy_kernel = cp.RawKernel(_BAND_COPY_SOURCE, "seam_band_copy")
+    return _band_copy_kernel
+
+
+class _BandTable:
+    """A seam's band table on one card, rebuilt from live pointers each use.
+
+    Carriers can be re-bound between steps (see ``refresh_arrays``), so the
+    absolute pointers are taken fresh every exchange; only the offsets,
+    pitches, widths and row counts are fixed.  Two pinned host slots
+    alternate, and a slot is rewritten only after the event recorded behind
+    its last upload has completed.
+    """
+
+    def __init__(self, device, names, live_off, live_pitch, buf_off,
+                 buf_pitch, width, rows, live_is_source):
+        import cupy as cp
+
+        self.names = list(names)
+        n = len(self.names)
+        self.live_off = np.asarray(live_off, np.int64)
+        self.live_pitch = np.asarray(live_pitch, np.int64)
+        self.buf_off = np.asarray(buf_off, np.int64)
+        self.buf_pitch = np.asarray(buf_pitch, np.int64)
+        self.width = np.asarray(width, np.int64)
+        self.rows = np.asarray(rows, np.int64)
+        self.live_is_source = bool(live_is_source)
+        with cp.cuda.Device(int(device)):
+            self.device = cp.empty((2, max(n, 1), 7), dtype=cp.int64)
+            # Two reusable events: creating one per launch and dropping it
+            # cost 1.4 ms of cudaEventDestroy per seam per step (measured).
+            self.events = [cp.cuda.Event(block=False, disable_timing=True)
+                           for _ in range(2)]
+        self.host = _gather.pinned_empty((2, max(n, 1), 7), np.int64)
+        self.uploaded = [False, False]
+        self.slot = 0
+        words = np.where(self.width % 4 == 0, self.width // 4, self.width) * self.rows
+        most = int(words.max()) if n else 1
+        self.grid_x = int(max(1, min(1024, -(-most // 2048))))
+
+    def launch(self, live_arrays, buf_ptr, stream):
+        import cupy as cp
+        from cupy.cuda import runtime as rt
+
+        n = len(self.names)
+        if not n:
+            return
+        slot, self.slot = self.slot, self.slot ^ 1
+        if self.uploaded[slot]:
+            self.events[slot].synchronize()
+        base = np.fromiter((int(live_arrays[name].data.ptr) for name in self.names),
+                           dtype=np.int64, count=n)
+        live = base + self.live_off
+        buf = np.int64(buf_ptr) + self.buf_off
+        table = self.host[slot, :n]
+        if self.live_is_source:
+            table[:, 0], table[:, 1] = live, self.live_pitch
+            table[:, 2], table[:, 3] = buf, self.buf_pitch
+        else:
+            table[:, 0], table[:, 1] = buf, self.buf_pitch
+            table[:, 2], table[:, 3] = live, self.live_pitch
+        table[:, 4], table[:, 5] = self.width, self.rows
+        aligned = ((table[:, 0] | table[:, 1] | table[:, 2] | table[:, 3]
+                    | table[:, 4]) & 3) == 0
+        table[:, 6] = np.where(aligned, 4, 1)
+        device = self.device[slot, :n]
+        rt.memcpyAsync(int(device.data.ptr), int(table.ctypes.data), int(table.nbytes),
+                       rt.memcpyHostToDevice, stream.ptr)
+        self.events[slot].record(stream)
+        self.uploaded[slot] = True
+        _band_copy()((self.grid_x, n), (256,), (device,), stream=stream)
+
+
 class _SeamChannel:
     """Staging buffers plus the pack/transfer/unpack for one seam band."""
 
@@ -897,6 +1011,16 @@ class _SeamChannel:
         if transport == "host":
             self.host = _gather.pinned_empty(self.nbytes, np.uint8)
             self.host_ptr = int(self.host.ctypes.data)
+        names = [b.name for b in bands]
+        widths = [b.width for b in bands]
+        self._pack_table = _BandTable(
+            self.src_dev, names, [b.src_off for b in bands],
+            [b.src_pitch for b in bands], [b.buf_off for b in bands], widths,
+            widths, [b.rows for b in bands], live_is_source=True)
+        self._unpack_table = _BandTable(
+            self.dst_dev, names, [b.dst_off for b in bands],
+            [b.dst_pitch for b in bands], [b.buf_off for b in bands], widths,
+            widths, [b.rows for b in bands], live_is_source=False)
 
     # -- the three phases ---------------------------------------------------
 
@@ -914,6 +1038,14 @@ class _SeamChannel:
                 self.send_ptr + b.buf_off, b.width,
                 int(src_arrays[b.name].data.ptr) + b.src_off, b.src_pitch,
                 b.width, b.rows, rt.memcpyDeviceToDevice, stream_ptr)
+
+    def pack_batched(self, src_arrays, stream) -> None:
+        """:meth:`pack` in one launch on ``stream`` (a CuPy stream)."""
+        self._pack_table.launch(src_arrays, self.send_ptr, stream)
+
+    def unpack_batched(self, dst_arrays, stream) -> None:
+        """:meth:`unpack` in one launch on ``stream`` (a CuPy stream)."""
+        self._unpack_table.launch(dst_arrays, self.recv_ptr, stream)
 
     def transfer(self, stream_ptr: int) -> None:
         from cupy.cuda import runtime as rt
@@ -1075,6 +1207,138 @@ def compare_hosts(a: dict, b: dict, nx: int) -> dict:
 # the decomposition
 # ==========================================================================
 
+class _ExchangeSchedule:
+    """One halo exchange, issued as each sub-domain's step finishes issuing.
+
+    THE BREAKAGE THIS PREVENTS, measured 2026-10-03 on the HRRR grid on a
+    4 x RTX PRO 6000 box (2x2 ranks): the stepping thread issued the whole
+    exchange only after the slowest slab returned, 21-23 ms per step with
+    every card idle, while the first slab had finished 25 ms earlier.
+
+    Every CUDA edge of :meth:`MultiGPUDomain.step_events` is kept: a seam's
+    pack waits for its source's step (round 0) or for the source's previous
+    round of unpacks; its unpack waits for the transfer and for the
+    destination's step or previous round; a device's round-boundary event is
+    recorded only after every unpack into it for that round has been issued;
+    and the next step of every slab waits for its own packs and for every
+    unpack of the exchange.  Only the HOST ORDER in which independent
+    operations are enqueued changes, and two unpacks of one round write
+    disjoint halo bands, so the bytes every slab reads next step are the
+    same.  A ``rank_ready(g)`` call promises that sub-domain ``g``'s step has
+    been fully issued (its thread returned).
+    """
+
+    def __init__(self, dom):
+        self.dom = dom
+        self.ev = dom._ensure_events()
+        self.n = len(dom.devices)
+        self.phases = dom.channel_phases
+        self.last = len(self.phases) - 1
+        self.ready = set()
+        self.sent = set()
+        self.received = set()
+        # (round, device) pairs whose round-boundary event is recorded
+        self.closed = set()
+        self.inbound = [
+            {g: [k for k, ch in group if ch.seam.dst_gpu == g] for g in range(self.n)}
+            for group in self.phases]
+        self.finished = False
+
+    def _gate(self, p, g):
+        """The event a round-``p`` operation on device ``g`` waits behind."""
+        if p == 0:
+            return self.ev["stepped"][g] if g in self.ready else None
+        return self.ev["round_done"][p - 1][g] if (p - 1, g) in self.closed else None
+
+    def rank_ready(self, g: int) -> None:
+        import cupy as cp
+
+        dom = self.dom
+        if dom.volatile_inventory:
+            # Host-side rebinding happens during the LAUNCH, so the fresh
+            # pointers are final once the slab's step has been issued.
+            dom.refresh_rank(g)
+        with cp.cuda.Device(dom.devices[g]):
+            self.ev["stepped"][g].record(dom.compute_streams[g])
+        self.ready.add(g)
+        self._advance()
+
+    def _advance(self) -> None:
+        import cupy as cp
+
+        dom, ev = self.dom, self.ev
+        progress = True
+        while progress:
+            progress = False
+            for p, group in enumerate(self.phases):
+                for k, ch in group:
+                    s, d = ch.seam.src_gpu, ch.seam.dst_gpu
+                    if k not in self.sent:
+                        gate = self._gate(p, s)
+                        if gate is None:
+                            continue
+                        with cp.cuda.Device(ch.src_dev):
+                            dom.copy_streams[s].wait_event(gate)
+                            if dom.batched_seam_copies:
+                                ch.pack_batched(dom.arrays[s], dom.copy_streams[s])
+                            else:
+                                ch.pack(dom.arrays[s], dom.copy_streams[s].ptr)
+                            ch.transfer(dom.copy_streams[s].ptr)
+                            ev["arrived"][k].record(dom.copy_streams[s])
+                        self.sent.add(k)
+                        progress = True
+                    if k in self.sent and k not in self.received:
+                        gate = self._gate(p, d)
+                        if gate is None:
+                            continue
+                        with cp.cuda.Device(ch.dst_dev):
+                            dom.unpack_streams[d].wait_event(ev["arrived"][k])
+                            dom.unpack_streams[d].wait_event(gate)
+                            ch.transfer_finish(dom.unpack_streams[d].ptr)
+                            if dom.batched_seam_copies:
+                                ch.unpack_batched(dom.arrays[d], dom.unpack_streams[d])
+                            else:
+                                ch.unpack(dom.arrays[d], dom.unpack_streams[d].ptr)
+                        self.received.add(k)
+                        progress = True
+                if p < self.last:
+                    for g in range(self.n):
+                        if (p, g) in self.closed or self._gate(p, g) is None:
+                            continue
+                        if all(k in self.received for k in self.inbound[p][g]):
+                            with cp.cuda.Device(dom.devices[g]):
+                                ev["round_done"][p][g].record(dom.unpack_streams[g])
+                            self.closed.add((p, g))
+                            progress = True
+
+    def finish(self) -> None:
+        """Every sub-domain is ready: issue the rest and chain the next step."""
+        import cupy as cp
+
+        dom, ev = self.dom, self.ev
+        missing = sorted(set(range(self.n)) - self.ready)
+        if missing:
+            raise MultiGPUError(f"exchange finished before sub-domains {missing} stepped")
+        self._advance()
+        every = sum(len(group) for group in self.phases)
+        if len(self.received) != every:
+            raise MultiGPUError("exchange left seams unissued; the next step "
+                                "would read a stale halo")
+        for g, dev in enumerate(dom.devices):
+            with cp.cuda.Device(dev):
+                ev["unpacked"][g].record(dom.unpack_streams[g])
+                ev["packed"][g].record(dom.copy_streams[g])
+        # The next step of each slab waits for its own outbound packs (they
+        # read the interior it rewrites) and for every unpack of this
+        # exchange (the next transfer reuses each channel's receive buffer).
+        for g, dev in enumerate(dom.devices):
+            with cp.cuda.Device(dev):
+                dom.compute_streams[g].wait_event(ev["packed"][g])
+                for h in range(self.n):
+                    dom.compute_streams[g].wait_event(ev["unpacked"][h])
+        self.finished = True
+
+
 class MultiGPUDomain:
     """``ngpu`` sub-domains, one per device, stepped in lock-step with halos.
 
@@ -1096,6 +1360,11 @@ class MultiGPUDomain:
                          run at the same time.
         ``"threads"``    one thread per device.
     """
+
+    #: ``exchange_events`` packs and unpacks each seam in one launch
+    #: (:class:`_BandTable`).  False restores one ``cudaMemcpy2DAsync`` per
+    #: carrier, kept as the reference the batched copies are checked against.
+    batched_seam_copies = True
 
     def __init__(self, cfg, *, ngpu: int = 2, grid=None, devices=None,
                  halo=None, state_factory=None, inventory_fn=None,
@@ -1307,8 +1576,13 @@ class MultiGPUDomain:
         Shapes and dtypes must not change -- asserted here, because a changed
         shape would quietly move the wrong bytes instead of failing.
         """
-        for g, state in enumerate(self.states):
-            fresh = self.inventory_fn(state)
+        for g in range(len(self.states)):
+            self.refresh_rank(g)
+
+    def refresh_rank(self, g: int) -> None:
+        """:meth:`refresh_arrays` for one sub-domain (its step has issued)."""
+        if True:
+            fresh = self.inventory_fn(self.states[g])
             old = self.arrays[g]
             if list(fresh.keys()) != self.names:
                 raise MultiGPUError(
@@ -1732,48 +2006,20 @@ class MultiGPUDomain:
 
     def exchange_events(self) -> None:
         """Exchange fresh carriers, chaining the next compute after unpack."""
-        import cupy as cp
+        schedule = self.exchange_schedule()
+        for g in range(len(self.devices)):
+            schedule.rank_ready(g)
+        schedule.finish()
 
-        ev = self._ensure_events()
-        if self.volatile_inventory:
-            # Host-side rebinding happens during the LAUNCH, so the fresh
-            # pointers are already correct even though the step has not run.
-            self.refresh_arrays()
-        for g, dev in enumerate(self.devices):
-            with cp.cuda.Device(dev):
-                ev["stepped"][g].record(self.compute_streams[g])
-        ready = ev["stepped"]           # per device: "your data is packable"
-        last = len(self.channel_phases) - 1
-        for p, group in enumerate(self.channel_phases):
-            for k, ch in group:
-                s, d = ch.seam.src_gpu, ch.seam.dst_gpu
-                with cp.cuda.Device(ch.src_dev):
-                    self.copy_streams[s].wait_event(ready[s])
-                    ch.pack(self.arrays[s], self.copy_streams[s].ptr)
-                    ch.transfer(self.copy_streams[s].ptr)
-                    ev["arrived"][k].record(self.copy_streams[s])
-                with cp.cuda.Device(ch.dst_dev):
-                    self.unpack_streams[d].wait_event(ev["arrived"][k])
-                    self.unpack_streams[d].wait_event(ready[d])
-                    ch.transfer_finish(self.unpack_streams[d].ptr)
-                    ch.unpack(self.arrays[d], self.unpack_streams[d].ptr)
-            if p < last:
-                for g, dev in enumerate(self.devices):
-                    with cp.cuda.Device(dev):
-                        ev["round_done"][p][g].record(self.unpack_streams[g])
-                ready = ev["round_done"][p]
-        for g, dev in enumerate(self.devices):
-            with cp.cuda.Device(dev):
-                ev["unpacked"][g].record(self.unpack_streams[g])
-                ev["packed"][g].record(self.copy_streams[g])
-        # The next step of each slab waits for its own outbound packs (they
-        # read the interior it rewrites) and for every unpack of this
-        # exchange (the next transfer reuses each channel's receive buffer).
-        for g, dev in enumerate(self.devices):
-            with cp.cuda.Device(dev):
-                self.compute_streams[g].wait_event(ev["packed"][g])
-                for h in range(len(self.devices)):
-                    self.compute_streams[g].wait_event(ev["unpacked"][h])
+    def exchange_schedule(self) -> "_ExchangeSchedule":
+        """An exchange that can be issued one sub-domain at a time.
+
+        :meth:`exchange_events` hands it every sub-domain at once.  A ranked
+        sweep hands each slab over as its thread returns, so the seams of the
+        slabs that finished first are packed, moved and unpacked while the
+        slowest slab is still stepping (see :class:`_ExchangeSchedule`).
+        """
+        return _ExchangeSchedule(self)
 
     # -- public driver ------------------------------------------------------
 

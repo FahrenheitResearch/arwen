@@ -295,13 +295,17 @@ def _bridge_manifest_extension(*, predecessor: Path, suffix: Path,
         name.startswith(f"atmosphere-f{lead:02d}/") for name in appended)
     soil_count = sum(
         name.startswith(f"soil-f{lead:02d}/") for name in appended)
-    from gpuwm.ingest.native_supplements import gate_supplement_fields
-    suffix_fields = gate_supplement_fields(dict(
-        row.split("\t", 1) for row in (suffix / "gate.txt").read_text().splitlines() if row))
+    from gpuwm.ingest.native_supplements import (gate_supplement_fields,
+                                                gate_soil_surface_fields)
+    suffix_gate = dict(row.split("\t", 1) for row in
+                       (suffix / "gate.txt").read_text().splitlines() if row)
+    suffix_fields = gate_supplement_fields(suffix_gate)
+    suffix_soil_fields = gate_soil_surface_fields(suffix_gate)
+    optional_soil_count = len(suffix_soil_fields)
     if suffix_fields and ("supplement-inventory.tsv" not in old_entries
                           or "supplement-inventory.tsv" not in suffix_entries):
         raise ValueError("supplement selection receipt is not bound by predecessor/suffix manifests")
-    if atmosphere_count != 22 + len(suffix_fields) or soil_count != 2:
+    if atmosphere_count != 22 + len(suffix_fields) or soil_count != 2 + optional_soil_count:
         raise ValueError(
             "suffix bridge lacks its declared atmosphere/supplement and soil fields")
     if set(retained) & set(appended):
@@ -330,6 +334,8 @@ def _bridge_manifest_extension(*, predecessor: Path, suffix: Path,
             raise ValueError(f"suffix bridge changes immutable gate field {key}")
     if gate_supplement_fields(prior_gate) != suffix_fields:
         raise ValueError("supplement inventory changes the sealed prefix; prepare the complete window to change fields")
+    if gate_soil_surface_fields(prior_gate) != suffix_soil_fields:
+        raise ValueError("optional soil surface inventory changes the sealed prefix; prepare the complete window to change fields")
     prior_gate["forecast_hours"] = ",".join(map(str, new_hours))
     prior_gate["series_count"] = str(len(new_hours))
     gate_path = output / "gate.txt"

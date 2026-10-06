@@ -283,6 +283,16 @@ impl Mapping {
             .get("family")
             .and_then(Node::as_str)
             .ok_or_else(|| mapping_invalid("mapping.grid.family must be a string"))?;
+        let same_grid_pairing = match grid.get("same_grid_pairing") {
+            None | Some(Node::Null) => None,
+            Some(Node::String(value)) if value == "identity" && family == GRID_FAMILY_LAMBERT => {
+                Some(value.clone())
+            }
+            _ => return Err(mapping_invalid(
+                "mapping.grid.same_grid_pairing must be 'identity' on a \
+                 declared Lambert grid; other sources retain projected pairing",
+            )),
+        };
         if family == GRID_FAMILY_REGULAR {
             return Ok(GridDeclaration::regular());
         }
@@ -359,6 +369,7 @@ impl Mapping {
             family: GRID_FAMILY_LAMBERT,
             wind_basis: wind_basis.to_owned(),
             parameters: Some(lambert),
+            same_grid_pairing,
         })
     }
 }
@@ -369,6 +380,7 @@ pub struct GridDeclaration {
     pub family: &'static str,
     pub wind_basis: String,
     pub parameters: Option<LambertParameters>,
+    pub same_grid_pairing: Option<String>,
 }
 
 impl GridDeclaration {
@@ -377,6 +389,7 @@ impl GridDeclaration {
             family: GRID_FAMILY_REGULAR,
             wind_basis: "earth_relative".to_owned(),
             parameters: None,
+            same_grid_pairing: None,
         }
     }
 
@@ -577,6 +590,20 @@ mod tests {
         let declaration = mapping.grid_declaration().unwrap();
         assert_eq!(declaration.family, GRID_FAMILY_REGULAR);
         assert!(!declaration.rotates_winds());
+        assert!(declaration.same_grid_pairing.is_none());
+    }
+
+    #[test]
+    fn exact_grid_pairing_refuses_unknown_and_nonprojected_declarations() {
+        for text in [
+            r#"{"grid":{"family":"regular_latitude_longitude","same_grid_pairing":"identity"}}"#,
+            r#"{"grid":{"family":"lambert_conformal","same_grid_pairing":"unknown"}}"#,
+            r#"{"grid":{"family":"lambert_conformal","same_grid_pairing":true}}"#,
+        ] {
+            let refusal = mapping_from(text).grid_declaration().unwrap_err();
+            assert_eq!(refusal.class, crate::refusal::class::MAPPING_INVALID);
+            assert!(refusal.message.contains("same_grid_pairing"));
+        }
     }
 
     #[test]

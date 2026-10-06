@@ -21,7 +21,7 @@ import pytest
 from conftest import requires_gpu
 
 ROOT = Path(__file__).resolve().parents[1]
-ORACLE = ROOT / "gpuwm" / "data" / "urban" / "oracle" / "bep"
+ORACLE = ROOT / "tests" / "data" / "oracles" / "urban" / "bep"
 TOOLS = ROOT / "tools" / "urban_wrf471_oracle"
 
 #: sha256 of the two INCLUDE files as cut from the pinned WRF v4.7.1 files

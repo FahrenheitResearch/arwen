@@ -348,5 +348,19 @@
     "moisture": 1.0
    }
   }
+ },
+ "field_sources": {
+  "vegetation_surface": {
+   "source_id": "noaa-hrrr-conus-surface-vegetation-grib2",
+   "mapping_role": "vegetation_surface_mapping",
+   "mapping_sha256": "adefc1d166ab4932616d91e206542e527b9c38e9a7e4e72ba8e04a9404049f8a",
+   "data_role": "vegetation_surface_data",
+   "provenance_role": "vegetation_surface_provenance",
+   "fields": [
+    "vegetation_fraction"
+   ],
+   "grid_alignment": "exact_coordinate_subset",
+   "time_alignment": "source_cycle_analysis_broadcast"
+  }
  }
 }

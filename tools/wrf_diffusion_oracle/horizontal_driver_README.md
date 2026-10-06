@@ -19,8 +19,10 @@ python -m pytest tests/test_diffusion_drivers_wrf471_parity.py -q
 ```
 
 The production receipts retain every float32 word's full-array hash and exact
-distance from native WRF. The RTX 4090 and RTX 5090 produce some distinct
-horizontal words; each complete case must equal a recorded platform variant.
+distance from native WRF. Each complete case must equal a recorded platform
+variant. Since smag2d `400d89d0` (2.8.6) the RTX 4090 and RTX 5090 receipts
+hold identical words for all 28 cases; before it the RTX 4090 produced
+distinct words in 24 of them.
 The source, compiled bodies, constants, compiler flags, producing tools and
 fixture files are sealed together.
 

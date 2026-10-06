@@ -171,7 +171,7 @@ cat libmvec-report.txt
 # --- run ----------------------------------------------------------------------
 ./run_cal_helicity uh-inputs.csv uh-outputs.csv
 
-# The receipt ships inside the wheel (gpuwm/data/uh/oracle/), so the
+# The receipt is committed in the source checkout (tests/data/oracles/uh/), so the
 # names must be machine-neutral: the checkout-resident source is
 # recorded under the <oracle-workspace> placeholder, never under this
 # machine's absolute path.

@@ -159,6 +159,7 @@ pub(super) fn build_render_request(
         barb_layer_cache,
         barb_stride_cache,
     );
+    apply_planned_wind_layers(&mut request, output_width, output_height, filled.grid.shape);
     timing.barb_prepare_ms = barb_prepare_start.elapsed().as_millis();
     if !overlay_only {
         let contour_fill_start = Instant::now();
@@ -172,6 +173,55 @@ pub(super) fn build_render_request(
         timing.contour_prepare_ms += contour_fill_start.elapsed().as_millis();
     }
     Ok((request, timing))
+}
+
+/// Wind layers on a planned canvas.
+///
+/// Barbs are spaced by map pixels, the table's `barb_spacing_px`, from the
+/// map's own pixels per grid cell: a stride counted in grid cells from the
+/// domain's lat/lon span drew 28 barbs across a 300 km square and across a
+/// continent alike, whatever size the map came out.
+///
+/// Streamlines left on automatic are dropped when the product draws
+/// barbs: every WRF grid turned them on, and under barbs they read as
+/// hatching.  `--streamlines` still draws them.
+fn apply_planned_wind_layers(
+    request: &mut MapRenderRequest,
+    output_width: u32,
+    output_height: u32,
+    shape: rustwx_core::GridShape,
+) {
+    let Some(plan) = rustwx_render::canvas_plan_for(output_width, output_height) else {
+        return;
+    };
+    let cells_x = shape.nx.saturating_sub(1).max(1) as f64;
+    let cells_y = shape.ny.saturating_sub(1).max(1) as f64;
+    let px_per_cell_x = plan.map.w as f64 / cells_x;
+    let px_per_cell_y = plan.map.h as f64 / cells_y;
+    // The glyph grows with the size class the way its spacing does: a
+    // large frame spaced 20 px barbs 88 px apart, a scatter of ticks.
+    let glyph_scale = if plan.scale.is_finite() && plan.scale > 1.0 { plan.scale } else { 1.0 };
+    for layer in &mut request.wind_barbs {
+        layer.stride_x = planned_barb_stride(plan.barb_spacing_px, px_per_cell_x);
+        layer.stride_y = planned_barb_stride(plan.barb_spacing_px, px_per_cell_y);
+        layer.spacing_px = 0.0;
+        layer.length_px *= glyph_scale;
+        layer.width = ((layer.width.max(1) as f64) * glyph_scale).round() as u32;
+        layer.halo_width = ((layer.halo_width as f64) * glyph_scale).round() as u32;
+    }
+    if !request.wind_barbs.is_empty()
+        && matches!(static_streamline_setting(), StreamlineSetting::Auto)
+    {
+        request.wind_streamlines.clear();
+    }
+}
+
+/// Grid cells between barbs for a pixel spacing: never less than one.
+pub(super) fn planned_barb_stride(spacing_px: f64, px_per_cell: f64) -> usize {
+    if !(px_per_cell > 0.0) || !spacing_px.is_finite() {
+        return 1;
+    }
+    ((spacing_px / px_per_cell).round() as usize).max(1)
 }
 
 pub(super) fn apply_source_raster_policy(source: SourceId, request: &mut MapRenderRequest) {

@@ -17,7 +17,7 @@ class MemberDiagnosticArchive:
     """Write original member words without requiring full prognostic history."""
     CONTRACT = "gpuwm-ensemble-member-diagnostics.v1"
 
-    def __init__(self, root, *, member_order, member_metadata, start_time):
+    def __init__(self, root, *, member_order, member_metadata, start_time, resume=False):
         self.root = Path(root)
         self.order = tuple(index(member) for member in member_order)
         if not self.order or len(set(self.order)) != len(self.order):
@@ -34,8 +34,20 @@ class MemberDiagnosticArchive:
         self.finished = False
         self._lock = threading.RLock()
         self.directory = self.root / "member-diagnostics"
-        self.directory.mkdir(parents=True, exist_ok=False)
+        self.directory.mkdir(parents=True, exist_ok=resume)
         self.path = self.directory / "manifest.json"
+        if resume:
+            document = json.loads(self.path.read_text(encoding="utf-8"))
+            if (document.get("schema") != self.CONTRACT or document.get("member_order") != list(self.order)
+                    or document.get("member_metadata") != [self.metadata[member] for member in self.order]
+                    or document.get("precipitation_accumulation_start") != self.start_time.isoformat()):
+                raise ValueError("retained member diagnostics have different identities, seeds or accumulation start")
+            for row in document["files"]:
+                tick = round((datetime.fromisoformat(row["valid_time"]) - self.start_time).total_seconds() * 1_000_000)
+                key = (row["grid_id"], row["episode"], tick, row["member_id"], row["geometry_sha256"])
+                self.entries[key] = row
+            self.unavailable = document["unavailable"]
+            return
         self._manifest()
 
     def _manifest(self):

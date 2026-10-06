@@ -278,11 +278,11 @@ void wrf_real_vertical_interpolate(const real* __restrict__ field,
     real previous_target = __int_as_float(0x7f800000);
     for (int kt = 0; kt < ntarget; ++kt) {
         real pt = target_p[(size_t)kt * ncolumn + c];
-        // Co-locate serialized native-coordinate endpoint roundoff, as
-        // the Rust CPU operator does.  2^-21 is four FP32 epsilons.
+        // Co-locate a target within 2^-16 of the native (moist) top mass
+        // level, as the Rust operator does (TOP_COLOCATION_RTOL, lib.rs).
         // Targets beyond this bound are still refused by the launcher.
         if (pt < top_pressure && __fsub_rn(top_pressure, pt)
-                <= __fmul_rn(4.76837158203125e-7f, fabsf(top_pressure)))
+                <= __fmul_rn(1.52587890625e-5f, fabsf(top_pressure)))
             pt = top_pressure;
         real xt = interp_in_logp ? wrf_vi_pressure_log(pt) : pt;
         int found = -1;

@@ -89,7 +89,7 @@ def _run_capture():
     def dmp_wrap(values, **kw):
         capture["dmp_in"] = {k: cp.asnumpy(cp.asarray(v)).copy()
                              for k, v in values.items()}
-        capture["dmp_kw"] = {k: v for k, v in kw.items() if k != "scratch"}
+        capture["dmp_kw"] = _cpu_replay_kw(kw)
         result = orig_dmp(values, **kw)
         capture["gpu_dmp"] = {
             f.name: cp.asnumpy(getattr(result, f.name))
@@ -99,7 +99,7 @@ def _run_capture():
     def tend_wrap(values, **kw):
         capture["tend_in"] = {k: cp.asnumpy(cp.asarray(v))
                               for k, v in values.items()}
-        capture["tend_kw"] = {k: v for k, v in kw.items() if k != "scratch"}
+        capture["tend_kw"] = _cpu_replay_kw(kw)
         result = orig_tend(values, **kw)
         capture["tend_out"] = {
             f.name: cp.asnumpy(getattr(result, f.name))
@@ -125,6 +125,21 @@ def _run_capture():
         gpu_mod.mynn_tendencies_default_cuda = orig_tend
         runtime_mod.mynn_bl_driver_cuda = orig_drv
     return capture
+
+
+#: Device-only generation selectors (ace27d973, f72b3f17f).  The CPU
+#: reference in gpuwm.core.mynn_pbl is the WRF 4.6.1 generation only, so a
+#: replay is valid only when the captured run used that generation.
+_DEVICE_GENERATION_SELECTORS = ("bl_mynn_version", "bl_mynn_cloud_tendency_form")
+
+
+def _cpu_replay_kw(kw):
+    """The device unit's keywords as the CPU reference takes them."""
+    replay = {k: v for k, v in kw.items() if k != "scratch"}
+    for selector in _DEVICE_GENERATION_SELECTORS:
+        value = replay.pop(selector, "wrf_461")
+        assert value == "wrf_461", (selector, value)
+    return replay
 
 
 @pytest.fixture(scope="module")

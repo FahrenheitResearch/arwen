@@ -420,9 +420,21 @@ def _moist_prep(kte, icloud, warm_rain, f_qc, f_qr, f_qi, f_qs, f_qg,
     return qv1d, qc1d, qr1d, qi1d, qs1d, qg1d, cldfra1d
 
 
+def cloud_form_is_fork(form):
+    """Select the public v4.1.21 wrapper cloud rules explicitly.
+
+    SW unsized-liquid radii: module_ra_rrtmg_sw.F:10464-10474.
+    Snow path: module_ra_rrtmg_lw.F:12345-12360 and
+    module_ra_rrtmg_sw.F:10742-10758. LW liquid radii remain 7.5/10.5.
+    """
+    if form not in ("wrf_461", "noaa_wrf39"):
+        raise ValueError(f"unknown rrtmg_cloud_optics_form={form!r}")
+    return form == "noaa_wrf39"
+
+
 def _effective_radii(kte, icloud, has_reqc, has_reqi, has_reqs,
                      t3d, cldfra3d, xland, re_cloud, re_ice, re_snow,
-                     qi3d_raw, qs1d, qi1d):
+                     qi3d_raw, qs1d, qi1d, sw_cloud_fallback=False):
     """The has_req* radii blocks + inflg/iceflg resolution + P3 case.
 
     Returns (inflg, iceflg, recloud1d, reice1d, resnow1d, qs1d, qi1d).
@@ -450,10 +462,12 @@ def _effective_radii(kte, icloud, has_reqc, has_reqi, has_reqs,
             np.float32)).astype(np.float32)
         cloudy = cldfra3d > _ZERO
         if float(F(xland - F("1.5"))) > 0.0:      # ocean
-            rec = np.where((rec <= F("2.5")) & cloudy, F("10.5"),
+            rec = np.where((rec <= F("2.5")) & cloudy,
+                           F("9.6" if sw_cloud_fallback else "10.5"),
                            rec).astype(np.float32)
         elif float(F(xland - F("1.5"))) < 0.0:    # land
-            rec = np.where((rec <= F("2.5")) & cloudy, F("7.5"),
+            rec = np.where((rec <= F("2.5")) & cloudy,
+                           F("5.4" if sw_cloud_fallback else "7.5"),
                            rec).astype(np.float32)
         recloud1d = rec
     else:
@@ -541,7 +555,7 @@ def _reicalc(t):
 
 def _cloud_properties(kte, iceflg, inflg, qc1d, qi1d, qs1d, cldfra1d,
                       pdel, tlay_model, g, xland, xice, snow,
-                      recloud1d, reice1d, resnow1d):
+                      recloud1d, reice1d, resnow1d, cloud_form="wrf_461"):
     """The inflg>0 cloud path/radius block shared by both wrappers.
 
     ``tlay_model`` is tlay(kts:kte) as seen at the relcalc call site
@@ -577,7 +591,7 @@ def _cloud_properties(kte, iceflg, inflg, qc1d, qi1d, qs1d, cldfra1d,
     if iceflg == 5:
         # (WRF also accumulates 1% of the snow path onto a stale gicewp
         # scalar here; the value is never read -- dead code, not modelled.)
-        smf = np.full(kte, F("0.99"), np.float32)
+        smf = np.full(kte, F("1.0" if cloud_form_is_fork(cloud_form) else "0.99"), np.float32)
         big = resnow1d > F("130.0")
         q = (F("130.0") / resnow1d).astype(np.float32)
         smf = np.where(big, np.minimum(smf, (q * q).astype(np.float32)),
@@ -681,7 +695,8 @@ def lwrad_prep(*, p3d, p8w, t3d, t8w, dz8w,
                icloud, warm_rain, cldovrlp, idcor, o3input,
                has_reqc, has_reqi, has_reqs,
                f_qc=True, f_qr=True, f_qi=True, f_qs=True, f_qg=True,
-               yr, julian, nlayers, mp_physics=0, g=9.81, trace_gas_overrides=None):
+               yr, julian, nlayers, mp_physics=0, g=9.81, trace_gas_overrides=None,
+                     rrtmg_cloud_optics_form="wrf_461"):
     """RRTMG_LWRAD, from its WRF dummies to the exact rrtmg_lw arguments.
 
     Single column, bottom-up; layer arrays (kte,), interface arrays
@@ -694,6 +709,7 @@ def lwrad_prep(*, p3d, p8w, t3d, t8w, dz8w,
     tauaer; McICA arrays are (ngptlw, nlayers), tauaer (nlayers, nbndlw).
     Extras (not rrtmg_lw args): o31d, hgt, cldfrac, juldat, pdel.
     """
+    fork_cloud = cloud_form_is_fork(rrtmg_cloud_optics_form)
     _require_radii("lwrad_prep", has_reqc, has_reqi, has_reqs,
                    re_cloud, re_ice, re_snow)
     _mp_guard(mp_physics)
@@ -856,7 +872,8 @@ def lwrad_prep(*, p3d, p8w, t3d, t8w, dz8w,
     (clwpth[:kte], ciwpth[:kte], cswpth[:kte], rel[:kte], rei[:kte],
      res[:kte], _resnow) = _cloud_properties(
         kte, iceflglw, inflglw, qc1d, qi1d, qs1d, cldfra1d, pdel,
-        tlay[:kte], g, xland, xice, snow, recloud1d, reice1d, resnow1d)
+        tlay[:kte], g, xland, xice, snow, recloud1d, reice1d, resnow1d,
+            cloud_form=rrtmg_cloud_optics_form)
     taucld = np.zeros((NBNDLW, nlayers), np.float32)
     # Buffer layers: no clouds (cldfrac 0, radii 10, paths/taucld 0).
 
@@ -955,7 +972,8 @@ def swrad_prep(*, p3d, p8w, t3d, t8w, dz8w,
                has_reqc, has_reqi, has_reqs,
                f_qc=True, f_qr=True, f_qi=True, f_qs=True, f_qg=True,
                yr, julian, mp_physics=0, g=9.81,
-               sf_surface_physics=2, trace_gas_overrides=None):
+               sf_surface_physics=2, trace_gas_overrides=None,
+                     rrtmg_cloud_optics_form="wrf_461"):
     """RRTMG_SWRAD, from its WRF dummies to the exact rrtmg_sw arguments.
 
     Day columns only: raises ValueError when xcoszen <= 0 (WRF's dorrsw
@@ -971,6 +989,7 @@ def swrad_prep(*, p3d, p8w, t3d, t8w, dz8w,
     plus coszr (the WRF 2-D diagnostic, = xcoszen) and mcica_inputs
     (the exact mcica_subcol_sw call record for gating).
     """
+    fork_cloud = cloud_form_is_fork(rrtmg_cloud_optics_form)
     _require_radii("swrad_prep", has_reqc, has_reqi, has_reqs,
                    re_cloud, re_ice, re_snow)
     _mp_guard(mp_physics, allowed_extra=(85,))
@@ -1026,7 +1045,7 @@ def swrad_prep(*, p3d, p8w, t3d, t8w, dz8w,
                          xland, zeros if re_cloud is None else re_cloud,
                          zeros if re_ice is None else re_ice,
                          zeros if re_snow is None else re_snow,
-                         zeros if qi3d is None else qi3d, qs1d, qi1d)
+                         zeros if qi3d is None else qi3d, qs1d, qi1d, sw_cloud_fallback=fork_cloud)
 
     coszen = coszrs
     scon = F(F(solcon) * F(_ONE - F(obscur)))
@@ -1100,7 +1119,8 @@ def swrad_prep(*, p3d, p8w, t3d, t8w, dz8w,
     (clwpth[:kte], ciwpth[:kte], cswpth[:kte], rel[:kte], rei[:kte],
      res[:kte], _resnow) = _cloud_properties(
         kte, iceflgsw, inflgsw, qc1d, qi1d, qs1d, cldfra1d, pdel,
-        tlay[:kte], g, xland, xice, snow, recloud1d, reice1d, resnow1d)
+        tlay[:kte], g, xland, xice, snow, recloud1d, reice1d, resnow1d,
+            cloud_form=rrtmg_cloud_optics_form)
     taucld = np.zeros((NBNDSW, nlay), np.float32)
     ssacld = np.ones((NBNDSW, nlay), np.float32)
     asmcld = np.zeros((NBNDSW, nlay), np.float32)
@@ -1291,7 +1311,7 @@ def _moist_prep_b(xp, icloud, warm_rain, f_qc, f_qr, f_qi, f_qs, f_qg,
 
 def _effective_radii_b(xp, icloud, has_reqc, has_reqi, has_reqs,
                        t3d, cldfra3d, xland, re_cloud, re_ice, re_snow,
-                       qi3d_raw, qs1d, qi1d):
+                       qi3d_raw, qs1d, qi1d, sw_cloud_fallback=False):
     """Batch twin of :func:`_effective_radii`; xland is (ncol,), and the
     scalar ocean/land if-ladder becomes two mutually exclusive masked
     selections with the identical F32 comparison against 1.5."""
@@ -1311,9 +1331,9 @@ def _effective_radii_b(xp, icloud, has_reqc, has_reqi, has_reqs,
             f32)).astype(f32)
         cloudy = cldfra3d > _ZERO
         rec = xp.where((xdiff > _ZERO) & (rec <= F("2.5")) & cloudy,
-                       F("10.5"), rec).astype(f32)
+                       F("9.6" if sw_cloud_fallback else "10.5"), rec).astype(f32)
         rec = xp.where((xdiff < _ZERO) & (rec <= F("2.5")) & cloudy,
-                       F("7.5"), rec).astype(f32)
+                       F("5.4" if sw_cloud_fallback else "7.5"), rec).astype(f32)
         recloud1d = rec
     else:
         recloud1d = xp.full(shape, F("5.0"), f32)
@@ -1394,7 +1414,7 @@ def _reicalc_b(xp, t):
 
 def _cloud_properties_b(xp, iceflg, inflg, qc1d, qi1d, qs1d, cldfra1d,
                         pdel, tlay_model, g, xland, xice, snow,
-                        recloud1d, reice1d, resnow1d):
+                        recloud1d, reice1d, resnow1d, cloud_form="wrf_461"):
     """Batch twin of :func:`_cloud_properties` on (ncol, kte) arrays with
     (ncol,) surface scalars."""
     f32 = np.float32
@@ -1425,7 +1445,7 @@ def _cloud_properties_b(xp, iceflg, inflg, qc1d, qi1d, qs1d, cldfra1d,
     csnowp = xp.zeros(shape, f32)
     resnow1d = resnow1d.copy()
     if iceflg == 5:
-        smf = xp.full(shape, F("0.99"), f32)
+        smf = xp.full(shape, F("1.0" if cloud_form_is_fork(cloud_form) else "0.99"), f32)
         big = resnow1d > F("130.0")
         q = (F("130.0") / resnow1d).astype(f32)
         smf = xp.where(big, xp.minimum(smf, (q * q).astype(f32)),
@@ -1661,7 +1681,8 @@ def lwrad_prep_batch(*, p3d, p8w, t3d, t8w, dz8w,
                      has_reqc, has_reqi, has_reqs,
                      f_qc=True, f_qr=True, f_qi=True, f_qs=True, f_qg=True,
                      yr, julian, nlayers, mp_physics=0, g=9.81,
-                     subcolumn_generator=None, trace_gas_overrides=None):
+                     subcolumn_generator=None, trace_gas_overrides=None,
+                     rrtmg_cloud_optics_form="wrf_461"):
     """Column-vectorized twin of :func:`lwrad_prep` (bitwise per column).
 
     Profiles are (ncol, kte) / (ncol, kte+1), surface fields (ncol,)
@@ -1679,6 +1700,7 @@ def lwrad_prep_batch(*, p3d, p8w, t3d, t8w, dz8w,
     the bit-gated device twin so the McICA slabs come back as device
     arrays and the NumPy generator never runs on the forecast path.
     """
+    fork_cloud = cloud_form_is_fork(rrtmg_cloud_optics_form)
     _require_radii("lwrad_prep_batch", has_reqc, has_reqi, has_reqs,
                    re_cloud, re_ice, re_snow)
     _mp_guard(mp_physics)
@@ -1869,7 +1891,8 @@ def lwrad_prep_batch(*, p3d, p8w, t3d, t8w, dz8w,
         _cloud_properties_b(
             np, iceflglw, inflglw, qc1d, qi1d, qs1d, cldfra1d, hb(pdel),
             hb(tlay[:, :kte]), g, xland_h, xice_h, snow_h,
-            recloud1d, reice1d, resnow1d)
+            recloud1d, reice1d, resnow1d,
+            cloud_form=rrtmg_cloud_optics_form)
     cldfrac = xp.asarray(cldfrac_h)    # the only cloud array returned
     taucld_h = np.zeros((NBNDLW, ncol, nlayers), f32)
 
@@ -1966,7 +1989,8 @@ def swrad_prep_batch(*, p3d, p8w, t3d, t8w, dz8w,
                      has_reqc, has_reqi, has_reqs,
                      f_qc=True, f_qr=True, f_qi=True, f_qs=True, f_qg=True,
                      yr, julian, mp_physics=0, g=9.81,
-                     sf_surface_physics=2, subcolumn_generator=None, trace_gas_overrides=None):
+                     sf_surface_physics=2, subcolumn_generator=None, trace_gas_overrides=None,
+                     rrtmg_cloud_optics_form="wrf_461"):
     """Column-vectorized twin of :func:`swrad_prep` (bitwise per column).
 
     Day contract: takes PRE-GATHERED day columns and raises ValueError
@@ -1981,6 +2005,7 @@ def swrad_prep_batch(*, p3d, p8w, t3d, t8w, dz8w,
     :func:`lwrad_prep_batch` (default: the NumPy
     :func:`gpuwm.core.rrtmg_mcica.generate_sw_subcolumns`).
     """
+    fork_cloud = cloud_form_is_fork(rrtmg_cloud_optics_form)
     _require_radii("swrad_prep_batch", has_reqc, has_reqi, has_reqs,
                    re_cloud, re_ice, re_snow)
     _mp_guard(mp_physics, allowed_extra=(85,))
@@ -2066,7 +2091,7 @@ def swrad_prep_batch(*, p3d, p8w, t3d, t8w, dz8w,
     inflgsw, iceflgsw, recloud1d, reice1d, resnow1d, qs1d, qi1d = \
         _effective_radii_b(np, icloud, has_reqc, has_reqi, has_reqs,
                            hb(t3d), cldfra_h, xland_h, hb(re_cloud),
-                           hb(re_ice), hb(re_snow), hb(qi3d), qs1d, qi1d)
+                           hb(re_ice), hb(re_snow), hb(qi3d), qs1d, qi1d, sw_cloud_fallback=fork_cloud)
 
     coszen = coszrs
     scon = (solcon * (_ONE - obscur).astype(f32)).astype(f32)
@@ -2142,7 +2167,8 @@ def swrad_prep_batch(*, p3d, p8w, t3d, t8w, dz8w,
         _cloud_properties_b(
             np, iceflgsw, inflgsw, qc1d, qi1d, qs1d, cldfra1d, hb(pdel),
             hb(tlay[:, :kte]), g, xland_h, xice_h, snow_h,
-            recloud1d, reice1d, resnow1d)
+            recloud1d, reice1d, resnow1d,
+            cloud_form=rrtmg_cloud_optics_form)
     taucld_h = np.zeros((NBNDSW, ncol, nlay), f32)
     ssacld_h = np.ones((NBNDSW, ncol, nlay), f32)
     asmcld_h = np.zeros((NBNDSW, ncol, nlay), f32)

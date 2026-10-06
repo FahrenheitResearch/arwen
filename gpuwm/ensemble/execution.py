@@ -136,6 +136,56 @@ def _join_stopped(pending):
         _, pending = wait(pending, timeout=WAIT_POLL_SECONDS, return_when=FIRST_COMPLETED)
 
 
+def execute_concurrent_members(batch, execute_member, *, member_scope, control=None):
+    """Run admitted ordinary models in independent member stream scopes.
+
+    Every model retains its own original clock and nesting operations. The
+    caller supplies the priced wave and owns all output. Results and errors
+    keep roster order even when workers finish in another order.
+    """
+    from dataclasses import replace
+    control = control or current_run_control() or MemberRunControl()
+    jobs = []
+    pool = ThreadPoolExecutor(max_workers=batch.members, thread_name_prefix="ensemble-member")
+    def run(member):
+        control.check()
+        single = replace(batch, member_indices=(member,), execution_mode="ordinary_member",
+                         required_bytes=batch.required_bytes // batch.members)
+        try:
+            with member_scope(member_id=member, device_id=batch.device_id) as owned:
+                result = execute_member(single)
+            return {"member_id": member, "result": result, "cuda_scope": owned.receipt()}
+        except BaseException as error:
+            name_failing_members(error, (member,), device_id=batch.device_id,
+                                 wave=batch.wave, execution_mode="ordinary_member")
+            raise
+    try:
+        for member in batch.member_indices:
+            context = copy_context()
+            jobs.append((member, pool.submit(context.run, run, member)))
+        pending = {future for _, future in jobs}
+        while pending:
+            finished, pending = wait(pending, timeout=WAIT_POLL_SECONDS, return_when=FIRST_COMPLETED)
+            for future in finished:
+                stop = future.exception()
+                if isinstance(stop, (KeyboardInterrupt, SystemExit)):
+                    control.request_stop(f"{type(stop).__name__} during the ensemble forecast")
+                    _join_stopped(pending)
+                    raise stop
+        errors = [future.exception() for _, future in jobs if future.exception() is not None]
+        if errors:
+            errors[0].ensemble_wave_errors = tuple(errors)
+            raise errors[0]
+        return {"status": "PASS", "backend": "ordinary_concurrent_members",
+                "members": [future.result() for _, future in jobs]}
+    except (KeyboardInterrupt, SystemExit) as stop:
+        control.request_stop(f"{type(stop).__name__} during the ensemble forecast")
+        _join_stopped({future for _, future in jobs if not future.cancel() and not future.done()})
+        raise
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+
+
 def execute_member_packing(plan, execute_batch, *, control=None):
     """Independent cards run in parallel; waves on one card run serially.
 
@@ -210,4 +260,4 @@ def execute_member_packing(plan, execute_batch, *, control=None):
 
 __all__ = ["WAIT_POLL_SECONDS", "MemberStopRequested", "MemberRunControl",
            "current_run_control", "member_run_scope", "member_label",
-           "name_failing_members", "failed_member_rows", "execute_member_packing"]
+           "name_failing_members", "failed_member_rows", "execute_member_packing", "execute_concurrent_members"]

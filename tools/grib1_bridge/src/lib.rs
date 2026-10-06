@@ -45,9 +45,13 @@ pub mod portable_math;
 pub mod parallel;
 pub mod glibc239_math;
 pub mod prepared_io;
+pub mod vertical_plan;
+pub mod health_scan;
+pub mod ozone;
 pub mod cold_start;
 pub mod host_arrays;
 pub mod preparation_fingerprints;
+pub mod noah_init;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -85,6 +89,28 @@ pub(crate) const ERR_PRESSURE_ORDER: i32 = 4;
 pub(crate) const ERR_SURFACE_BRACKET: i32 = 5;
 pub(crate) const ERR_TARGET_ABOVE_TOP: i32 = 6;
 pub(crate) const ERR_INTERPOLATION_WINDOW: i32 = 7;
+
+/// Relative distance (2^-16) within which a target above the highest
+/// source level is co-located with it instead of refused.
+///
+/// The gap it absorbs is physical, not only rounding.  The source top is
+/// the native model's top mass level as a FULL (moist) pressure, and WRF's
+/// integ_moist leaves that level undried (pd(top) = p(top)), while the
+/// target is the same eta level as a DRY pressure.  Their difference is
+/// the water-vapour weight in the top half-layer, about
+/// (p_level - p_lid) * qv, so relative to the level it is at most qv_top.
+/// Native HRRR at a 1500 Pa lid measures 1731.4753..1731.4758 Pa against
+/// the 1731.475 Pa dry target: 231.475 Pa * qv for qv = 0.9..3.3e-6 kg/kg,
+/// plus GRIB packing steps of 1.3e-4 Pa and FP32 rounding.  The previous
+/// four-epsilon (2^-21) bound covered rounding only and refused a moist
+/// stratosphere (2025-03-14 06Z: 4.9e-7 relative).  2^-16 = 1.53e-5 still
+/// covers qv_top = 1e-5 kg/kg, above any stratospheric water vapour, with
+/// FP32 and GRIB rounding on top.  In height it is about 0.1 m (scale
+/// height * 2^-16), far below any vertical grid spacing, so the clamped
+/// target reads the top source value with no new layer extrapolated.
+/// A power of two keeps `tolerance * top` exact in FP32, so the Rust,
+/// CUDA and launcher comparisons give the same verdict on every column.
+pub(crate) const TOP_COLOCATION_RTOL: f32 = 1.52587890625e-5;
 pub(crate) const ERR_PANIC: i32 = 127;
 
 #[inline]
@@ -689,14 +715,14 @@ fn vertical_column(
         if !pressure.is_finite() || pressure <= 0.0 {
             return Err(ERR_NONFINITE);
         }
-        // Native mass pressures can be a few FP32 roundings above the
-        // same endpoint rebuilt from decimal eta levels.  Co-locate only
-        // this serialization roundoff, using the bounded-field pipeline's
-        // four-epsilon envelope.  A higher physical target still fails;
-        // no atmospheric value is extrapolated past the source column.
+        // A native top mass level carries its top half-layer's vapour
+        // weight that the dry target does not (TOP_COLOCATION_RTOL).
+        // Co-locate only that gap; a target meaningfully above the source
+        // still fails, because its value would have to be extrapolated
+        // past the top of the analysis.
         let top = ox[ox.len() - 1];
         if pressure < top {
-            if top - pressure > (4.0 * f32::EPSILON) * top.abs() {
+            if top - pressure > TOP_COLOCATION_RTOL * top.abs() {
                 // Check pressure before logarithms: two distinct endpoint
                 // pressures can have the same rounded logarithm.
                 return Err(ERR_TARGET_ABOVE_TOP);
@@ -1089,50 +1115,96 @@ mod tests {
         assert!(output.iter().all(|value| value.is_finite()));
     }
 
+    fn top_column(source: &[f32], target: f32, logp: bool) -> (Result<(), i32>, f32) {
+        let field: Vec<f32> = (0..source.len()).map(|level| 289.0 - 10.0 * level as f32).collect();
+        let mut output = [0.0f32];
+        let result = vertical_column(
+            &field, &[291.0], source, &[100000.0], &[target],
+            output.as_mut_ptr() as usize, source.len(), 1, 1, 0,
+            logp, false, 0, 500.0, 4,
+            &mut VerticalScratch::new(source.len() + 1));
+        (result, output[0])
+    }
+
+    /// The target reads exactly what a target AT the source top reads:
+    /// the top source value, with no layer extrapolated beyond it.
+    fn assert_colocated(source: &[f32], target: f32, logp: bool) {
+        let top = source[source.len() - 1];
+        let (result, value) = top_column(source, target, logp);
+        assert_eq!(result, Ok(()), "top {top} target {target} logp {logp}");
+        let (at_top, endpoint) = top_column(source, top, logp);
+        assert_eq!(at_top, Ok(()));
+        assert_eq!(value.to_bits(), endpoint.to_bits(), "top {top} target {target}");
+        let top_value = 289.0 - 10.0 * (source.len() - 1) as f32;
+        assert!((value - top_value).abs() <= 2.0e-6 * top_value.abs(), "{value} vs {top_value}");
+    }
+
     #[test]
-    fn native_pressure_endpoint_roundoff_does_not_create_an_extrapolated_layer() {
-        let source = [98000.0f32, 70000.0, 30000.0, 5000.0, 2209.2018, 1731.4755];
-        let field = [289.0f32, 270.0, 238.0, 216.0, 218.0, 219.0];
-        let surface_p = [100000.0f32];
-        let surface_value = [291.0f32];
-        for logp in [false, true] {
-            for (pressure, expected) in [(1731.475f32, Ok(())), (1731.465, Err(ERR_TARGET_ABOVE_TOP))] {
-                let mut output = [0.0f32];
-                let result = vertical_column(
-                    &field, &surface_value, &source, &surface_p, &[pressure],
-                    output.as_mut_ptr() as usize, source.len(), 1, 1, 0,
-                    logp, false, 0, 500.0, 4,
-                    &mut VerticalScratch::new(source.len() + 1));
-                assert_eq!(result, expected);
-                if result.is_ok() {
-                    assert_eq!(output[0].to_bits(), field[field.len() - 1].to_bits());
-                }
+    fn a_moist_native_top_is_colocated_with_its_dry_target() {
+        // HRRR's top mass level at a 1500 Pa lid: dry 1500 + 0.00235 *
+        // 98500 = 1731.475 Pa.  The native file holds the FULL pressure,
+        // which carries the top half-layer's vapour, 231.475 Pa * qv/(1-qv);
+        // integ_moist leaves the top level undried, the target is dry.
+        let dry_target = 1731.475f32;
+        let mut tops: Vec<f32> = [0.0f64, 1.0e-6, 3.34e-6, 1.0e-5]
+            .iter()
+            .map(|qv| (1731.475f64 + 231.475 * qv / (1.0 - qv)) as f32)
+            .collect();
+        // Decoded maxima of the native top level: 2026-10-03 00Z passed
+        // under the old four-epsilon bound, 2025-03-14 06Z was refused.
+        tops.extend([1731.4755859375f32, 1731.475830078125]);
+        for top in tops {
+            let source = [98000.0f32, 70000.0, 30000.0, 5000.0, 2209.2018, top];
+            for logp in [false, true] {
+                assert_colocated(&source, dry_target, logp);
             }
+        }
+        // A target below the source top (1731.5 Pa under a 1731.475 Pa top)
+        // was never at risk and still interpolates inside the column.
+        let source = [98000.0f32, 70000.0, 30000.0, 5000.0, 2209.2018, 1731.475];
+        for logp in [false, true] {
+            assert_eq!(top_column(&source, 1731.5, logp).0, Ok(()));
         }
     }
 
     #[test]
-    fn a_logarithm_tie_cannot_hide_pressure_above_the_endpoint_envelope() {
-        let mut ties = 0;
-        for top in (5000..30000).step_by(137) {
-            let top = top as f32;
-            let allowance = (4.0 * f32::EPSILON) * top;
-            let mut target = top;
-            while top - target <= allowance {
-                target = f32::from_bits(target.to_bits() - 1);
+    fn a_target_meaningfully_above_the_source_top_is_still_refused() {
+        let source = [98000.0f32, 70000.0, 30000.0, 5000.0, 2209.2018, 1731.4755];
+        for logp in [false, true] {
+            // 50 Pa above, and the first FP32 word past the 2^-16 bound.
+            let top = source[source.len() - 1];
+            let mut outside = top;
+            while top - outside <= TOP_COLOCATION_RTOL * top {
+                outside = f32::from_bits(outside.to_bits() - 1);
             }
-            if target.ln() == top.ln() {
-                ties += 1;
-                let source = [90000.0, 60000.0, 40000.0, top];
-                let mut output = [0.0f32];
-                assert_eq!(vertical_column(
-                    &[290.0, 270.0, 240.0, 220.0], &[291.0], &source,
-                    &[100000.0], &[target], output.as_mut_ptr() as usize,
-                    4, 1, 1, 0, true, false, 0, 0.0, 4,
-                    &mut VerticalScratch::new(source.len() + 1)),
-                    Err(ERR_TARGET_ABOVE_TOP));
+            let inside = f32::from_bits(outside.to_bits() + 1);
+            for target in [top - 50.0, 1500.0, 1731.40, outside] {
+                assert_eq!(top_column(&source, target, logp).0,
+                           Err(ERR_TARGET_ABOVE_TOP), "target {target}");
             }
+            assert_colocated(&source, inside, logp);
         }
-        assert!(ties > 0, "the control must exercise actual logarithm ties");
+    }
+
+    #[test]
+    fn the_colocation_bound_is_decided_in_raw_pressure_at_every_top() {
+        // The check runs on pressures before any logarithm, so two
+        // distinct pressures with one rounded logarithm cannot slip a
+        // target past the bound.  Sweep source tops from 10 Pa to 10 kPa.
+        let mut top = 10.0f32;
+        while top < 10000.0 {
+            let mut outside = top;
+            while top - outside <= TOP_COLOCATION_RTOL * top {
+                outside = f32::from_bits(outside.to_bits() - 1);
+            }
+            let inside = f32::from_bits(outside.to_bits() + 1);
+            let source = [top * 9.0, top * 6.0, top * 4.0, top];
+            for logp in [false, true] {
+                assert_eq!(top_column(&source, outside, logp).0,
+                           Err(ERR_TARGET_ABOVE_TOP), "top {top}");
+                assert_colocated(&source, inside, logp);
+            }
+            top *= 1.37;
+        }
     }
 }

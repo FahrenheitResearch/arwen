@@ -100,6 +100,143 @@ fn mrms_composite_reflectivity_maps_to_composite_selector() {
 }
 
 #[test]
+fn one_hour_accumulation_parameter_rows_select_the_zero_altitude_quantity() {
+    // The operational parameter table declares these accumulation rows in mm:
+    // https://www.nssl.noaa.gov/projects/mrms/operational/tables.php
+    let selector = FieldSelector::altitude_msl(CanonicalField::TotalPrecipitation, 0);
+    let values = [0.0_f32, 5.0, 25.4];
+    for number in [30, 37] {
+        let message = ieee_f32_message(
+            ParameterCode {
+                discipline: 209,
+                category: 6,
+                number,
+            },
+            102,
+            0.0,
+            &values,
+            -100.0,
+            -98.0,
+        );
+        let grib = Grib2File {
+            messages: vec![message],
+        };
+        let field = extract_field_from_grib2(&grib, selector)
+            .expect("registered accumulation parameter and level");
+        assert_eq!(field.units, "mm");
+        assert_eq!(field.values, values);
+        let partial = extract_fields_from_grib2_partial(&grib, &[selector]).unwrap();
+        assert!(partial.missing.is_empty());
+        assert_eq!(partial.extracted[0].units, "mm");
+        assert_eq!(partial.extracted[0].values, values);
+        let bytes = ieee_f32_grib_bytes(
+            ParameterCode { discipline: 209, category: 6, number },
+            102, 0, &values, None,
+        );
+        let native = extract_field_values_partial_from_model_bytes_at_forecast_hour(
+            ModelId::Gfs, &bytes, None, &[selector], Some(0),
+        ).unwrap();
+        assert!(native.missing.is_empty());
+        assert_eq!(native.extracted.len(), 1);
+        assert_eq!(native.grids.len(), 1);
+        let bare = &native.extracted[0];
+        assert_eq!(bare.selector, selector);
+        assert_eq!(bare.grid_index, 0);
+        assert_eq!(bare.units, "mm");
+        assert_eq!(
+            bare.values.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+            values.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+        );
+        assert!(extract_field_from_grib2(
+            &grib, FieldSelector::surface(CanonicalField::TotalPrecipitation),
+        ).is_err(), "altitude grids cannot silently replace a forecast surface message");
+    }
+}
+
+#[test]
+fn accumulation_native_units_preserve_mass_per_area_without_rescaling() {
+    // Standard total precipitation is water equivalent in kg/m^2. With the
+    // conventional 1000 kg/m^3 water density, its numbers equal depth in mm.
+    // https://www.nco.ncep.noaa.gov/pmb/docs/grib2/grib2_doc/grib2_table4-2-0-1.shtml
+    let values = [0.0_f32, 1.0, 5.0, 25.4];
+    let selector = FieldSelector::surface(CanonicalField::TotalPrecipitation);
+    let message = ieee_f32_message(
+        ParameterCode {
+            discipline: 0,
+            category: 1,
+            number: 8,
+        },
+        1,
+        0.0,
+        &values,
+        -100.0,
+        -97.0,
+    );
+    let grib = Grib2File {
+        messages: vec![message],
+    };
+    let field = extract_field_from_grib2(&grib, selector).unwrap();
+    let partial = extract_fields_from_grib2_partial(&grib, &[selector]).unwrap();
+    let bytes = ieee_f32_grib_bytes(
+        ParameterCode { discipline: 0, category: 1, number: 8 },
+        1, 0, &values, None,
+    );
+    let native = extract_field_values_partial_from_model_bytes_at_forecast_hour(
+        ModelId::Gfs, &bytes, None, &[selector], Some(0),
+    ).unwrap();
+    assert!(native.missing.is_empty());
+    assert_eq!(native.extracted.len(), 1);
+    assert_eq!(native.grids.len(), 1);
+    let bare = &native.extracted[0];
+    assert_eq!(bare.selector, selector);
+    assert_eq!(bare.grid_index, 0);
+    for (units, decoded) in [
+        (field.units.as_str(), &field.values),
+        (
+            partial.extracted[0].units.as_str(),
+            &partial.extracted[0].values,
+        ),
+        (bare.units.as_str(), &bare.values),
+    ] {
+        assert_eq!(units, "kg/m^2");
+        assert_eq!(
+            decoded.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+            values.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+        );
+    }
+}
+
+#[test]
+fn probability_product_units_override_native_rows_and_empty_rows_fall_back() {
+    let selector = FieldSelector::height_agl(CanonicalField::Temperature, 2)
+        .with_probability(ProbabilitySelection::below_milli(273_000));
+    let prepared = PreparedSelector::new(selector).unwrap();
+    assert_eq!(prepared.message.units, "K");
+    assert_eq!(prepared.native_units(), "%");
+    let values = [0.0_f32, 25.4, 100.0];
+    let bytes = ieee_f32_grib_bytes(
+        ParameterCode { discipline: 0, category: 0, number: 0 },
+        103, 2, &values, Some(273_000),
+    );
+    let native = extract_field_values_partial_from_model_bytes_at_forecast_hour(
+        ModelId::Gfs, &bytes, None, &[selector], Some(0),
+    ).unwrap();
+    assert!(native.missing.is_empty());
+    assert_eq!(native.extracted.len(), 1);
+    let probability = &native.extracted[0];
+    assert_eq!(probability.selector, selector);
+    assert_eq!(probability.units, "%");
+    assert_eq!(
+        probability.values.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+        values.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+    );
+    let mut fallback =
+        PreparedSelector::new(FieldSelector::surface(CanonicalField::TotalPrecipitation)).unwrap();
+    fallback.message.units = "";
+    assert_eq!(fallback.native_units(), "kg/m^2");
+}
+
+#[test]
 fn eumetnet_opera_dbzh_coverage_url_encodes_datetime_range() {
     let url = eumetnet_opera_dbzh_coverage_url("2026-06-27T05:00Z/2026-06-27T05:30Z")
         .expect("range encodes");
@@ -377,6 +514,76 @@ fn ieee_f32_message(
         bitmap: None,
         raw_data,
     }
+}
+
+// A regular one-row grid with conformant IEEE packing exercises the public
+// bytes parser and values extraction without a network or retained data file.
+fn ieee_f32_grib_bytes(
+    parameter: ParameterCode,
+    level_type: u8,
+    level_value: u32,
+    values: &[f32],
+    probability_below_milli: Option<u32>,
+) -> Vec<u8> {
+    fn section(number: u8, length: usize) -> Vec<u8> {
+        let mut bytes = vec![0; length];
+        bytes[..4].copy_from_slice(&(length as u32).to_be_bytes());
+        bytes[4] = number;
+        bytes
+    }
+
+    assert!(!values.is_empty());
+    let count = values.len() as u32;
+    let mut s1 = section(1, 21);
+    s1[12..14].copy_from_slice(&2026u16.to_be_bytes());
+    s1[14] = 4;
+    s1[15] = 14;
+    let mut s3 = section(3, 72);
+    s3[6..10].copy_from_slice(&count.to_be_bytes());
+    s3[14] = 6;
+    s3[30..34].copy_from_slice(&count.to_be_bytes());
+    s3[34..38].copy_from_slice(&1u32.to_be_bytes());
+    s3[46..50].copy_from_slice(&35_000_000u32.to_be_bytes());
+    s3[50..54].copy_from_slice(&260_000_000u32.to_be_bytes());
+    s3[54] = 0x30;
+    s3[55..59].copy_from_slice(&35_000_000u32.to_be_bytes());
+    s3[59..63].copy_from_slice(&(260_000_000 + (count - 1) * 1_000_000).to_be_bytes());
+    s3[63..67].copy_from_slice(&1_000_000u32.to_be_bytes());
+    let mut s4 = section(4, if probability_below_milli.is_some() { 47 } else { 34 });
+    s4[9] = parameter.category;
+    s4[10] = parameter.number;
+    s4[17] = 1;
+    s4[22] = level_type;
+    s4[24..28].copy_from_slice(&level_value.to_be_bytes());
+    s4[28..34].fill(255);
+    if let Some(limit) = probability_below_milli {
+        s4[7..9].copy_from_slice(&5u16.to_be_bytes());
+        s4[35] = 1;
+        s4[37] = 3;
+        s4[38..42].copy_from_slice(&limit.to_be_bytes());
+        s4[42..47].fill(255);
+    }
+    let mut s5 = section(5, 12);
+    s5[5..9].copy_from_slice(&count.to_be_bytes());
+    s5[9..11].copy_from_slice(&4u16.to_be_bytes());
+    s5[11] = 1;
+    let mut s6 = section(6, 6);
+    s6[5] = 255;
+    let mut s7 = section(7, 5 + values.len() * 4);
+    for (slot, value) in s7[5..].chunks_exact_mut(4).zip(values) {
+        slot.copy_from_slice(&value.to_be_bytes());
+    }
+    let mut bytes = vec![0; 16];
+    bytes[..4].copy_from_slice(b"GRIB");
+    bytes[6] = parameter.discipline;
+    bytes[7] = 2;
+    for part in [s1, s3, s4, s5, s6, s7] {
+        bytes.extend(part);
+    }
+    bytes.extend_from_slice(b"7777");
+    let length = bytes.len() as u64;
+    bytes[8..16].copy_from_slice(&length.to_be_bytes());
+    bytes
 }
 
 #[test]
@@ -1855,4 +2062,49 @@ fn normalize_and_rotate_longitude_rows_keeps_rows_monotone() {
     assert_eq!(values[4..], [14.0, 11.0, 12.0, 13.0]);
     assert_eq!(lat[..4], [40.0, 40.0, 40.0, 40.0]);
     assert_eq!(lat[4..], [39.0, 39.0, 39.0, 39.0]);
+}
+
+#[test]
+fn downward_shortwave_selects_surface_instantaneous_lead_for_both_parameter_aliases() {
+    let selector = FieldSelector::surface(CanonicalField::DownwardShortwaveRadiationFlux);
+    for parameter in PARAMETER_DOWNWARD_SHORTWAVE {
+        let mut instant = ieee_f32_message(*parameter, 1, 0.0, &[510.0, 620.0], -99.0, -98.0);
+        instant.product.time_range_unit = 1;
+        instant.product.forecast_time = 2;
+        let mut average = instant.clone();
+        average.product.template = 8;
+        average.product.forecast_time = 1;
+        average.product.statistical_process_type = Some(0);
+        average.product.statistical_time_range_unit = Some(1);
+        average.product.time_range_length = Some(1);
+        average.raw_data = [900.0f32, 900.0].iter().flat_map(|v| v.to_be_bytes()).collect();
+        let mut wrong_level = instant.clone();
+        wrong_level.product.level_type = 8;
+        let mut wrong_lead = instant.clone();
+        wrong_lead.product.forecast_time = 3;
+        let grib = Grib2File { messages: vec![average, wrong_level, wrong_lead, instant] };
+        let extracted = extract_fields_from_grib2_partial_at_forecast_hour(&grib, &[selector], 2).unwrap();
+        assert!(extracted.missing.is_empty());
+        assert_eq!(extracted.extracted[0].values, vec![510.0, 620.0]);
+        assert_eq!(extracted.extracted[0].units, "W/m^2");
+        let absent = extract_fields_from_grib2_partial_at_forecast_hour(&grib, &[selector], 1).unwrap();
+        assert!(absent.extracted.is_empty());
+        assert_eq!(absent.missing, vec![selector]);
+    }
+}
+
+#[test]
+fn downward_shortwave_average_alone_is_missing() {
+    let mut average = ieee_f32_message(PARAMETER_DOWNWARD_SHORTWAVE[0], 1, 0.0, &[800.0], -99.0, -99.0);
+    average.product.template = 8;
+    average.product.time_range_unit = 1;
+    average.product.forecast_time = 1;
+    average.product.statistical_process_type = Some(0);
+    average.product.statistical_time_range_unit = Some(1);
+    average.product.time_range_length = Some(1);
+    let selector = FieldSelector::surface(CanonicalField::DownwardShortwaveRadiationFlux);
+    let grib = Grib2File { messages: vec![average] };
+    let result = extract_fields_from_grib2_partial_at_forecast_hour(&grib, &[selector], 2).unwrap();
+    assert!(result.extracted.is_empty());
+    assert_eq!(result.missing, vec![selector]);
 }

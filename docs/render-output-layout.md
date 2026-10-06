@@ -222,6 +222,36 @@ engine:
 
 Byte-identical output, both ways.
 
+## Canvas size and run comparisons
+
+The Rust renderer's default `--size auto` sizes each canvas from its
+domain's projected shape. All products on that domain share one canvas
+size. `--size 1200x900` or another explicit pixel size draws a fixed
+canvas. The reference-model `--compare` renderer keeps its 1200x900
+default when no pixel size is given.
+
+`gpuwm render --diff RUN_A RUN_B --products t2 --out pictures` draws
+run A minus run B. Each input is a history folder or one history frame.
+Frames pair by domain and valid time, and the native renderer checks the
+times, units and grid coordinates before subtraction. Frames present in
+only one run are reported. The difference keeps the native grid and uses
+a symmetric color bar; it does not regrid one run onto the other.
+`--diff-labels A_NAME B_NAME` sets the run labels, and `--diff-sheet`
+also draws an A, B and A minus B sheet for each product.
+The valid times come from the history records. `--timeidx N` selects
+run A's record and matches run B at that time, even when it is a
+different record number in run B. Files use the per-file record number;
+run folders and `--series` use each compatible domain timeline. Earlier
+records stay available as context for accumulation windows. A product
+whose window is not yet available is reported as skipped, and later
+valid times can still render it.
+
+`gpuwm render --pair PNG_A PNG_B --out comparison` composes existing
+rendered PNG directories. The native pair-sheet renderer preserves
+each panel's pixels and dimensions, adds run labels, and stacks wide
+panels vertically. `--pair`, `--compare` and `--diff` each take their own
+comparison inputs; choose one per invocation.
+
 ## What already understands the layout
 
 * `gpuwm render --pair A_DIR B_DIR` reads both directories recursively
@@ -571,3 +601,39 @@ carries that record: `section_fills` holds one row per cut drawn --
 cuts is compared through that record rather than by colour.  The list is
 capped at eight distinct rows and `additional_section_fills` counts what
 the cap dropped.
+
+WOOF presentation is available in the public renderer as `--theme woof-light`
+or `--theme woof-dark`. A JSON theme can inherit either table, for example
+`{"extends":"woof-light","text":{"source_label":"Recast WOOF"}}`.
+Child values override inherited values. Relative parent files and their font
+or logo assets resolve from the file that declares them. The default theme
+keeps the original model and source labels.
+
+Reference sheets accept an ordered list, such as
+`gpuwm render RUN --compare hrrr,mrms --products refc,qpf1h --out SHEETS`.
+That list draws run, HRRR and MRMS panels on the run lattice, projection and
+colour scale. `--compare hrrr,rrfs,mrms` adds NOAA RRFS's published 3 km CONUS
+GRIB2 fields. Each reference grid is measured independently; a different
+lattice uses nearest-point sampling, with no extrapolation beyond its domain.
+`--compare-reference-dir` can supply published files locally, and
+`--compare-offline` forbids fetching. The native catalogue lists each
+reference's supported products.
+
+`--products swdown` compares the history frame's `SWDOWN` with the
+reference's instantaneous surface `DSWRF` at the same forecast hour. The
+HRRR reference reads `wrfsfc`. Interval averages and top-of-atmosphere
+fluxes are excluded. Both field panels use the existing neutral ramp over
+0 to 1200 W/m2, with a third panel showing run minus reference. `all`
+includes this product. The output folder is
+`<domain>/compare_hrrr_surface_downward_shortwave/<valid-day>/`.
+
+MRMS composite reflectivity uses MergedReflectivityQCComposite within 120
+seconds of the requested time and labels its actual observation seconds.
+Hourly precipitation uses MultiSensor QPE 1H Pass2, then Pass1, for the exact
+hour ending at the frame. Missing source flags remain missing; dry zero is an
+observation. The run needs the earlier hourly frame for its own accumulation.
+These products and their parameter, time and missing-value semantics are
+table data. A comparison theme changes the run's labels while preserving each
+reference's NOAA provenance. JSON sidecars record sources, times, intervals,
+grid matches and panel order. A flat gallery may be the output directory
+itself; the renderer skips a copy onto the same canonical path.

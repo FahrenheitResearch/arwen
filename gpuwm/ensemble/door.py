@@ -88,21 +88,33 @@ def request_for_inputs(*, override=None, members=None, keep_member_files=None):
 
 
 @contextmanager
-def production_run_scope(request, *, output_directory, session_factory=None):
+def production_run_scope(request, *, output_directory, session_factory=None, input_provider=None,
+                         restart_roster=None):
     if request is None:
+        if restart_roster is not None:
+            raise ValueError("--restart-roster requires an ensemble request")
         yield None
         return
     request = EnsembleRequest.from_mapping(request)
     existing = current_session()
     if existing is not None:
+        if restart_roster is not None and existing.restart_roster != Path(restart_roster):
+            raise ValueError("nested ensemble door has another restart roster")
         if existing.request != request:
             raise ValueError("nested forecast door carries a different ensemble request")
+        if input_provider is not None:
+            if (existing.member_roster is not None or existing.source_execution is not None
+                    or (existing.input_provider is not None and existing.input_provider is not input_provider)):
+                raise ValueError("nested recipe forecast already has another member input owner; replacing it would run a different prepared trajectory")
+            existing.input_provider = input_provider
         yield existing
         return
     if session_factory is None:
         from gpuwm.ensemble.production import PreparedEnsembleSession
         session_factory = PreparedEnsembleSession
-    session = session_factory(request, output_directory=output_directory)
+    session = session_factory(request, output_directory=output_directory,
+        **({} if input_provider is None else {"input_provider": input_provider}),
+        **({} if restart_roster is None else {"restart_roster": restart_roster}))
     with ensemble_scope(session):
         yield session
 
@@ -114,7 +126,10 @@ def add_recipe_arguments(parser):
                         help="take each ensemble member from a real source trajectory: "
                              "time-lagged runs earlier cycles of the config's own source "
                              "over the same window, multi-model runs the trajectories "
-                             "--trajectories lists")
+                             "--trajectories lists, surface-state runs seeded soil "
+                             "moisture scales and SST offsets from [ensemble.perturbation], "
+                             "member-roster runs named land and fixed surface arms "
+                             "from [ensemble.member_variants]")
     parser.add_argument("--trajectories", type=Path, default=None, metavar="FILE",
                         help="the multi-model member list: a JSON or TOML file of "
                              "{source, cycle[, member]} entries, one per member "
@@ -122,6 +137,8 @@ def add_recipe_arguments(parser):
 
 
 def add_arguments(parser):
+    parser.add_argument("--restart-roster", type=Path, default=None, metavar="JSON",
+                        help="continue the exact original members from a durable ensemble restart roster")
     parser.add_argument("--members", type=int, default=None, metavar="N",
                         help="make an N-member ensemble with aggregate products")
     parser.add_argument("--keep-member-files", action="store_true", default=None,

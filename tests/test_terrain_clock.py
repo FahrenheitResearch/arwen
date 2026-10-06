@@ -2033,3 +2033,204 @@ def test_the_probe_merges_adaptive_entries_onto_the_four_substep_row():
     assert new["adaptive_s_per_km"][0] == 15.0
     assert document["adaptive"]["max_step_increase_pct"] == 5
     assert document["adaptive"]["seconds"] == 10800.0
+
+
+# ---------------------------------------------------------------------------
+# The pinned clock (RunConfig.terrain_clock = "pinned"): the configured
+# step and count run, the measured derivation is advice in the receipt.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _PinnedRun(_Run):
+    terrain_clock: str = "pinned"
+
+
+def test_a_pinned_domain_runs_its_configured_clock_under_a_jet():
+    """HRRR's own ground: a 3932 m crest of slope 0.356 at 3 km, a fixed
+    20 s step on 6 substeps, under a 50 m/s crest-level wind.  Measured,
+    the map halves the step; pinned, the configured pair runs and the
+    halving is advice."""
+    measured = tc.derive_clock(1, _Run(time_step_sound=6), Fraction(20),
+                               0.356, _wind(50.0, crest=3932.0))
+    assert measured.adapted and measured.division >= 2
+    pinned = tc.derive_clock(1, _PinnedRun(time_step_sound=6), Fraction(20),
+                             0.356, _wind(50.0, crest=3932.0))
+    assert pinned.pinned
+    assert not pinned.adapted
+    assert pinned.status == "PINNED"
+    assert pinned.division == 1 and pinned.dt == Fraction(20)
+    assert pinned.time_step_sound == 6
+    assert pinned.ceiling is None
+    assert pinned.advice == (measured.division, measured.time_step_sound,
+                             measured.ceiling)
+    assert pinned.advice_differs
+    # The reading itself is the measured one: nothing is hidden.
+    assert pinned.reading is not None
+    assert pinned.held_per_km == measured.held_per_km
+    assert pinned.limit_per_km == measured.limit_per_km
+    line = pinned.pinned_sentence()
+    assert line.startswith("time step: d01's clock is pinned")
+    assert "20 s steps on 6 acoustic substeps as configured" in line
+    assert "would have run" in line and "not applied" in line
+
+
+def test_a_pinned_domain_the_map_holds_says_so_without_advice():
+    pinned = tc.derive_clock(1, _PinnedRun(), Fraction(15), 0.05,
+                             _wind(90.0, crest=900.0))
+    assert pinned.pinned and not pinned.advice_differs
+    assert pinned.advice == (1, 4, None)
+    assert "holds that clock" in pinned.pinned_sentence()
+
+
+def test_a_pinned_adaptive_domain_takes_no_ceiling():
+    run = _PinnedRun(use_adaptive_time_step=True)
+    measured = tc.derive_clock(1, replace(run, terrain_clock="measured"),
+                               Fraction(12), 0.35, _wind(70.0, crest=4500.0))
+    assert measured.ceiling is not None
+    pinned = tc.derive_clock(1, run, Fraction(12), 0.35,
+                             _wind(70.0, crest=4500.0))
+    assert pinned.ceiling is None and pinned.division == 1
+    assert pinned.advice[2] == measured.ceiling
+    assert "an adaptive step capped at" in pinned.pinned_sentence()
+
+
+def test_the_pinned_receipt_carries_the_clock_and_the_advice():
+    from gpuwm.ingest.boundary_stream import derived_clock
+
+    pinned = tc.derive_clock(1, _PinnedRun(time_step_sound=6), Fraction(20),
+                             0.356, _wind(50.0, crest=3932.0))
+    measured = tc.derive_clock(1, _Run(time_step_sound=6), Fraction(20),
+                               0.356, _wind(50.0, crest=3932.0))
+    row = pinned.receipt()
+    assert row["status"] == "PINNED"
+    assert row["clock"] == "pinned"
+    assert row["dt_s"] == tc._rational(Fraction(20))
+    assert row["step_division"] == 1
+    assert row["time_step_sound"] == 6
+    advice = row["advice"]
+    assert advice["applied"] is False and advice["differs"] is True
+    assert advice["step_division"] == measured.division
+    assert advice["time_step_sound"] == measured.time_step_sound
+    assert advice["dt_s"] == tc._rational(measured.dt)
+    assert advice["max_time_step_s"] is None
+    # The map's own rows are still written, so the verdict is readable.
+    assert row["map_rows"]["shortest_entry_under_a_stop_s"] is not None
+    # What the seal compares is the configured clock, on both sides.
+    receipt = tc.clock_receipt((pinned,))
+    assert derived_clock(receipt) == {
+        1: (tc.json.dumps(tc._rational(Fraction(20)), sort_keys=True),
+            1, 6, "null", None)}
+    # A measured receipt is byte-for-byte what it was: no new keys.
+    assert "clock" not in measured.receipt()
+    assert "advice" not in measured.receipt()
+
+
+def test_a_pinned_experiment_is_handed_back_unchanged_with_a_caution():
+    """The experiment door: a pinned root under a jet keeps every field,
+    and the run prints the advice as a caution."""
+    exp = _wizard_experiment([(60, 60)], (), 3000.0)
+    root = exp.domains[0]
+    exp = replace(exp, domains=(replace(
+        root, run=replace(root.run, terrain_clock="pinned")),))
+    said = []
+    adapted, adaptations = tc.adapt_experiment_clock(
+        exp, {1: 0.35}, {1: _wind(70.0, crest=4500.0)},
+        announce=lambda line: said.append(("announce", line)),
+        caution=lambda line: said.append(("caution", line)))
+    assert adapted is exp
+    assert len(adaptations) == 1 and adaptations[0].pinned
+    assert [kind for kind, _ in said] == ["caution"]
+    assert "clock is pinned" in said[0][1]
+    assert adaptations[0].advice[0] >= 2
+
+
+def test_a_pinned_experiment_the_map_holds_prints_one_announcement():
+    exp = _wizard_experiment([(60, 60)], (), 3000.0)
+    root = exp.domains[0]
+    exp = replace(exp, domains=(replace(
+        root, run=replace(root.run, terrain_clock="pinned")),))
+    said = []
+    adapted, adaptations = tc.adapt_experiment_clock(
+        exp, {1: 0.05}, {1: _wind(20.0, crest=900.0)},
+        announce=lambda line: said.append(("announce", line)),
+        caution=lambda line: said.append(("caution", line)))
+    assert adapted is exp
+    assert said == [("announce", adaptations[0].pinned_sentence())]
+
+
+def test_the_terrain_clock_mode_is_validated_by_name():
+    from gpuwm.config import TERRAIN_CLOCK_MODES, validate_run_config
+
+    assert TERRAIN_CLOCK_MODES == ("measured", "pinned")
+    exp = _wizard_experiment([(60, 60)], (), 3000.0)
+    run = exp.domains[0].run
+    assert run.terrain_clock == "measured"
+    assert validate_run_config(replace(run, terrain_clock="pinned")) \
+        .terrain_clock == "pinned"
+    with pytest.raises(ValueError, match="terrain_clock='off' is not one of"):
+        validate_run_config(replace(run, terrain_clock="off"))
+
+
+def test_the_terrain_mode_rides_only_in_route_selector_metadata():
+    from gpuwm.hrrr_route_inputs import render_namelist_input
+    from gpuwm.physics_source_defaults import read_physics_selector_comment
+    exp = _wizard_experiment([(60, 60)], (), 3000.0)
+    measured = render_namelist_input(exp)
+    # The route reads its pair under the hrrr recipe, which fills
+    # "pinned" where the comment is silent, so the measured mode is
+    # carried too: an unmarked emission was read back as pinned.
+    assert read_physics_selector_comment(measured)["terrain_clock"] == "measured"
+    pinned_exp = replace(exp, domains=(replace(
+        exp.root, run=replace(exp.root.run, terrain_clock="pinned")),))
+    pinned = render_namelist_input(pinned_exp)
+    assert read_physics_selector_comment(pinned)["terrain_clock"] == "pinned"
+    # The selector is a WRF comment; all existing WRF field bytes stay put.
+    assert pinned.splitlines(keepends=True)[1:] == measured.splitlines(keepends=True)[1:]
+
+
+def test_the_pinned_mode_never_reaches_a_measured_fingerprint():
+    """"measured" is dropped from the restart identity and the checkpoint
+    echo, so every fingerprint written before the field keeps its value;
+    "pinned" binds."""
+    from gpuwm.core.model import restart_identity_payload
+    from gpuwm.io.restart import configuration_echo
+
+    exp = _wizard_experiment([(60, 60)], (), 3000.0)
+    root = exp.domains[0]
+    measured = restart_identity_payload(exp)
+    assert "terrain_clock" not in measured["domains"][0]["run"]
+    pinned_exp = replace(exp, domains=(replace(
+        root, run=replace(root.run, terrain_clock="pinned")),))
+    pinned = restart_identity_payload(pinned_exp)
+    assert pinned["domains"][0]["run"]["terrain_clock"] == "pinned"
+    assert "terrain_clock" not in configuration_echo(root.run)
+    assert configuration_echo(
+        replace(root.run, terrain_clock="pinned"))["terrain_clock"] == "pinned"
+
+
+def test_a_pinned_run_reads_a_tree_prepared_under_the_measured_clock():
+    """Preparation never reads terrain_clock, so it is skipped outright in
+    the prepared-cache comparison: a tree prepared under "measured" (or
+    before the field) serves a pinned run at the same dt, in both
+    directions.  The step itself still binds."""
+    from gpuwm.ingest.prepared_cache import (
+        DEFAULT_TOLERANT_IDENTITY_FIELDS, PREPARATION_INERT_RUN_FIELDS,
+        compare_prepared_domain_config, effective_prepared_domain_config)
+
+    assert "run.terrain_clock" in PREPARATION_INERT_RUN_FIELDS
+    assert "run.terrain_clock" not in DEFAULT_TOLERANT_IDENTITY_FIELDS
+    older = {"run": {"nx": 100, "dt": 20.0, "time_step_sound": 6}}
+    measured = {"run": {**older["run"], "terrain_clock": "measured"}}
+    pinned = {"run": {**older["run"], "terrain_clock": "pinned"}}
+    for cached, live in ((older, pinned), (measured, pinned),
+                         (pinned, measured)):
+        _tolerated, differing = compare_prepared_domain_config(
+            effective_prepared_domain_config(cached),
+            effective_prepared_domain_config(live))
+        assert differing == [], (cached, live, differing)
+    moved = {"run": {**pinned["run"], "dt": 10.0}}
+    _tolerated, differing = compare_prepared_domain_config(
+        effective_prepared_domain_config(measured),
+        effective_prepared_domain_config(moved))
+    assert differing == ["run.dt"]

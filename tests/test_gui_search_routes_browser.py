@@ -55,7 +55,7 @@ def browser():
 def tab(browser, served):
     tab = Page(browser, served)
     tab.asked = []
-    tab.page.on("request", lambda req: tab.asked.append(req.url) if "/api/wiki/search" in req.url else None)
+    tab.page.on("request", lambda req: tab.asked.append(req.url) if "/api/library/search" in req.url else None)
     yield tab
     tab.close()
     assert not tab.errors, tab.errors
@@ -98,3 +98,18 @@ def test_a_hand_typed_percent_sign_still_draws_the_search(tab):
     tab.page.goto(f"http://127.0.0.1:{tab.server.port}/#/search/100%")
     drawn(tab, "search")
     assert last_search(tab).get("q") == "100%"
+
+
+@pytest.mark.parametrize("old, new", [
+    ("#/wiki", "#/library"),
+    ("#wiki", "#/library"),
+    ("#/wiki?q=a%3Fb%26c&sort=score", "#/library?q=a%3Fb%26c&sort=score"),
+    ("#/wiki/extra%2Fpart?q=a%2Fb", "#/library/extra%2Fpart?q=a%2Fb"),
+    ("#/wiki/", "#/library/"),
+])
+def test_old_library_bookmarks_forward_with_their_suffix_and_query_unchanged(tab, old, new):
+    tab.page.goto(f"http://127.0.0.1:{tab.server.port}/{old}")
+    tab.page.wait_for_function("(hash) => location.hash === hash", arg=new, timeout=20000)
+    drawn(tab, "library")
+    assert tab.page.locator(".logo").inner_text() == "Weather Library"
+    assert tab.page.title() == "Weather Library"

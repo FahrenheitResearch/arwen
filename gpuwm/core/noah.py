@@ -316,11 +316,10 @@ def noah_initial_snow_albedo(
 
 def noah_frh2o(tkelv: float, smc: float, sh2o: float, smcmax: float,
                 bexp: float, psis: float) -> float:
-    """WRF Noah ``FRH2O`` supercooled-liquid-water solve in float64.
+    """Scalar FRH2O qualification authority with its original input types.
 
-    This is the setup-time CPU twin of ``noah_frh2o`` in ``noah.cu`` and
-    follows ``module_sf_noahlsm.F:1447-1585``: the CK=8 log-form Newton
-    iteration is bounded to ten iterations, with the CK=0 explicit fallback.
+    Runtime soil arrays use sh2o_init and its Rust field entry. This scalar
+    authority retains the host reference for qualification and standalone prep.
     """
     ck, blim, error = 8.0, 5.5, 0.005
     hlice, gs, t0 = 3.335e5, 9.81, 273.15
@@ -372,41 +371,10 @@ def sh2o_init(smois, tslb, isltyp, params: NoahParams) -> np.ndarray:
         soil_type = np.broadcast_to(soil_type, column_shape)
     except ValueError as exc:
         raise ValueError("isltyp must match the soil-profile columns") from exc
-    if (not np.isfinite(soil_type).all()
-            or np.any(soil_type != np.floor(soil_type))):
-        raise ValueError("isltyp must contain finite integer categories")
-
-    out = smois.copy()
-    blim, hlice, grav, t0 = 5.5, 3.335e5, 9.81, 273.15
-    # LSMINIT compares a stored FP32 soil temperature against this FP32
-    # literal. Evaluating the literal as FP64 would send its own FP32
-    # boundary word through the cold solve instead of the warm copy
-    # (module_sf_noahdrv.F:1931,1955).
-    cold_threshold = float(np.float32(273.149))
-    for column in np.ndindex(column_shape):
-        category = int(soil_type[column])
-        if category < 1 or category > params.slcats:
-            raise ValueError(f"isltyp category {category} is outside table")
-        row = params.soil[category - 1]
-        bx = row[SOIL_COLS.index("bexp")]
-        smcmax = row[SOIL_COLS.index("smcmax")]
-        psisat = row[SOIL_COLS.index("psisat")]
-        if not (bx > 0.0 and smcmax > 0.0 and psisat > 0.0):
-            continue
-        bx = min(bx, blim)
-        for k in range(smois.shape[0]):
-            index = (k, *column)
-            if tslb[index] >= cold_threshold:
-                continue
-            fk = (((hlice / (grav * (-psisat)))
-                   * ((tslb[index] - t0) / tslb[index]))
-                  ** (-1.0 / bx)) * smcmax
-            if fk < 0.02:
-                fk = 0.02
-            guess = min(fk, smois[index])
-            out[index] = noah_frh2o(
-                tslb[index], smois[index], guess, smcmax, bx, psisat)
-    return out
+    from gpuwm.noah_init_bridge import initialize
+    indices = [SOIL_COLS.index(name) for name in ("bexp", "smcmax", "psisat")]
+    table = params.soil[:params.slcats, indices]
+    return initialize(smois, tslb, soil_type, table)
 
 
 # ---------------------------------------------------------------------------

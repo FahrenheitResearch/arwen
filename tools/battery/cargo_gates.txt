@@ -135,6 +135,9 @@ cpu  tools/rustwx  netcdf-writer  32
 # answers do not change when the tree stops being a tree.
 cpu  tools/rustwx  obs-regrid  29
 
+# Native observation scoring preserves reduction order, masks and empty cells.
+cpu  tools/rustwx  obs-score  3
+
 # Meteorological arithmetic: derived fields, ECAPE, the severe-weather
 # family, windowed reductions.  Numbers, not looks -- this is the crate
 # whose answers a diagnostic is read off, so a silent change here is a
@@ -372,6 +375,9 @@ cpu  tools/rustwx  rw-libm  5
 # integration tests passed; the 448 search values and nine means match the
 # pinned unmodified WPS Fortran bits.
 cpu  tools/rustwx  static-fields  66  --lib --test geotiff_envelope --test geotiff_malformed --test highres_parity --test seam_probe
+# Streamed GeoTIFF windows and mosaics must preserve dense sampling and
+# file bytes, with bounded source caches and valid BigTIFF headers.
+cpu  tools/rustwx  static-fields  9  --test highres_streaming
 cpu  tools/rustwx  static-fields  1  --test lane1_goldens -- grid_refusals_name_the_breakage --exact
 cpu  tools/rustwx  static-fields  1  --test lane1_goldens -- wps32_twin_states_bit_equal --exact
 cpu  tools/rustwx  static-fields  1  --test lane1_goldens -- translated_twin_delegates_bit_equal --exact
@@ -437,6 +443,10 @@ cpu  tools/grib1_bridge  grib1_bridge  200
 # tests of their own -- a build without them decodes a hybrid source
 # into empty coefficient tuples, exactly the L137 proof lane's gap G1.
 cpu  tools/grib1_bridge  grib-core  162
+
+# Native complex-packed all-missing fields must decode as bitmap NaNs in full
+# and row-window readers, without accepting malformed bitmap or payload data.
+cpu  tools/grib1_bridge  grib-core  5  --test all_missing_complex
 
 # --------------------------------------------------------- tools/rw_wps
 # The mapped decode engine workspace: the vendored rw-wps donor snapshot

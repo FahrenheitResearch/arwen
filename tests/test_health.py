@@ -248,8 +248,15 @@ def test_real_domainstate_physics_inventory_names_and_dtypes_are_pinned(
     # absent from this default-off inventory and excluded like IVGTYP; the
     # urban inventories are classified by tests/
     # test_urban_default_off_identity.py.
+    # fa2e5efd8, lane/europe-noah-mosaic-urban: Noah mosaic added the
+    # immutable int32 tile-category map. Mosaic is off in this constructor,
+    # so the map is absent here but still belongs in the global exclusions.
+    from gpuwm.core.noah_mosaic import MOSAIC_CATEGORY_FIELDS
+
+    assert MOSAIC_CATEGORY_FIELDS["mosaic_cat_index"] == "int32"
     assert GPU_INTEGER_EXCLUSIONS == {
-        "surface.isltyp", "surface.ivgtyp", "surface.utype_urb2d"} | {
+        "surface.isltyp", "surface.ivgtyp", "surface.utype_urb2d",
+        "surface.mosaic_cat_index"} | {
         f"nest.scratch.nest_sint_{name}_{stag}"
         for name in ("ci", "ip", "cj", "jp") for stag in ("m", "x", "y")}
     assert all(np.dtype(field.values.dtype) in {

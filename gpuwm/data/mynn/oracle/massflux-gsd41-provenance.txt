@@ -1,0 +1,23 @@
+Mass-flux and clear transport oracle, NOAA-EMC/HRRR tag v4.1.21.
+Source: sorc/hrrr_wrfarw.fd/WRFV3.9/phys/module_bl_mynn.F.
+Source SHA256: 42178a22693ad14b1a3adcf3e44be3047f051abf80f3a64c0ce9ed9ac2ec6d8a.
+The as-is module is unmodified. GNU Fortran 15.2.0, -O0, glibc 2.43.
+Build: tools/mynn_pbl_gsd41_oracle/build.sh SOURCE BUILD_DIR.
+
+DMP_mf: 17 columns, 30 layers. Land and water, dry and cloudy, stable,
+resolved motion, limiter, stochastic entrainment inputs, high wind,
+deep PBL, cloud-base cap, fine grid, inactive vapour trigger, downdraft
+and updraft taper, and all plumes stopping at the first interface.
+The latter retains positive NUP2 while KTOP and every mass-flux output
+are zero. Cloud hand-off outputs come from the same unmodified call.
+
+Transport: eight clear 12-layer columns, with and without mass flux,
+positive and negative surface forcing and a density scaling control.
+Scale-aware factors are also recorded. The humidity solve is compared
+before the still-unported mixing-ratio conversion P21.
+
+SHA256:
+fc4a082d1ef7cf747016e2b1c3e988da85d19c0006606a7183fadd0dfc6f195f  run_dmp_mf_gsd41.F90
+5add973dd14b44fd7b9f6192c1e583ed50cb9bf1653d091cdb0fb3692eb8ca31  dmp-mf-gsd41.csv
+efe3259a3bd8ca931bdbcdcaa2c69e37d6f898c10f1f3a13446aee64e3fec02a  run_transport_gsd41.F90
+b2852d1ad70aae770af27ad55a38895a3a58a780693feb27b9f98e7f91e248fe  transport-gsd41.csv

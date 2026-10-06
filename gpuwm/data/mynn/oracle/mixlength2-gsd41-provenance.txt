@@ -1,0 +1,52 @@
+GSD MYNN v4.1 option-2 mixing length oracle (bl_mynn_version = "gsd_41").
+
+Source: NOAA-EMC/HRRR tag v4.1.21,
+sorc/hrrr_wrfarw.fd/WRFV3.9/phys/module_bl_mynn.F (6168 lines), unmodified
+for mixlength2-gsd41.csv; for mixlength2-gsd41-sq.csv the one line :995
+"qtke(k) = 0.5*qkw(k)" reads "qtke(k) = 0.5*(qkw(k)**2)" (the default
+bl_mynn_gsd41_unsquared_qtke = false form).  Harness and build:
+tools/mynn_pbl_gsd41_oracle (build.sh, stub_wrf39.F90,
+run_mixlength_gsd41.F90).  Compiler: GNU Fortran (Ubuntu 15.2.0-16ubuntu1)
+15.2.0, -O0, glibc 2.43.
+
+sha256:
+42178a22693ad14b1a3adcf3e44be3047f051abf80f3a64c0ce9ed9ac2ec6d8a  module_bl_mynn.F (v4.1.21)
+f928e36476e700fe8d467cdd0dbd6b191a17eda4b1dd80c49e7a5ecc263039a6  stub_wrf39.F90
+9d231377706e1301fed92d3e15ff06d433fb30a0c48b773a4a77ade107882828  run_mixlength_gsd41.F90
+6393c4c9131feee59faecc9f3e6714904be158d0e469e598c995c605efd73a44  mixlength2-gsd41.csv
+a9288425b3cf989ae4d4e4b94b2d552c2107b98da8768d82588ee047c9845c49  mixlength2-gsd41-sq.csv
+94307992d77784a55556c5ad091017111ceea156e20fb7825e5530727c859dc6  condensation-gsd41.csv
+5e988f052c1972e4e5cf8955113c90158a0b4c32d28af78e153df45553bcc76f  turbulence2-gsd41-sq.csv
+d03a69ef898f30b0526567beb5ae18261a83604fcd0b619e3b9d1b7f8fc4a733  run_turbulence_gsd41.F90
+7b3616b653988de93415b82a73a1b397635b16b940a11cd6168bf9b98b9f921c  run_condensation_gsd41.F90
+0745716b8bc65d1afe9caf7dd5e0b4e17c47bd0035955cc76992343e7cdf97bc  run_plume_condensation_gsd41.F90
+6c59c79cf8dba416cac992e5e288ff0b3b3d2ecaddf118583ff36244a2229fe0  plume-condensation-gsd41.csv
+
+condensation-gsd41.csv: mym_condensation with bl_mynn_cloudpdf = 2 over
+eight 30-level columns (dry_mixed, stratus_inversion, humid_mixed,
+cold_cloud, night_fog, deep_moist, zero_hfx, high_pblh).  The CUDA kernel
+mynn_condensation_gsd41_columns matches qc_bl, cldfra_bl, vt, vq and sgm
+bit for bit on all 240 levels (RTX 4090).
+
+Twelve columns of 14 levels: stable, convective, high_shear, edmf_active,
+weak_buoyancy, neutral_les, deep_pbl, high_tke, moist_flux,
+night_inversion, shallow_pbl, cloud_vt.  33 of the 168 el values differ
+between the two files (the unstable branch reads qtke).
+
+glibc 2.43 float tanhf and powf are correctly rounded (CORE-MATH); the
+kernel transcribes glibc 2.39 (fdlibm tanhf), the library the WRF v4.6.1
+CSVs were recorded on.  The CUDA kernel matches qkw exactly and el to at
+most 2 ULP in 4 of 168 values; the unmodified v4.6.1 option-2 harness
+rebuilt on the same node differs from its recorded CSV in 2 of 96 el
+values by 1 ULP (tests/test_mynn_gsd41.py).
+
+turbulence2-gsd41-sq.csv: mym_turbulence, levflag 2 (level 2.5), mixing
+length 2 with the squared :995 form, five 14-level columns (stable,
+convective, cloudy, edmf_active, moist_flux).  The CUDA turbulence under
+gsd_41 is within 3 ULP of every output on the RTX 4090.
+
+plume-condensation-gsd41.csv: condensation_edmf from the unmodified source,
+24 states over 239..280 K and three humidity factors, with a nonzero carried
+QC first guess and one plume below 100 m. QC and THV match bit for bit on
+the RTX 4090. This checks both the 273.16..253 K phase blend (P14) and the
+2e-5 iteration stop (P24). Rebuilding every older CSV reproduced its hash.

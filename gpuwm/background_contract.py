@@ -96,10 +96,18 @@ def capability(source: str) -> dict:
     # A second runner-to-family table would strand newly integrated sources.
     drivability = drivability_for(adapter.source_id)
     operation = drivability.get("chain")
+    # An analysis archive without a declared publication window can be
+    # selected only from an inspected native time inventory, as plan()
+    # requires below. A downloadable preparation chain alone does not
+    # make initialization without supplied inputs available.
+    automatic = (operation in preparation_chains()
+                 and (axis != "analysis_times" or grid is not None))
+    if axis == "analysis_times" and grid is None:
+        obligations.append("Supply an inspected native time inventory; no analysis publication window is declared.")
     return dict(source=adapter.source_id, label=adapter.display_title, preparable=preparable,
                 initialization_modes=(['prepared'] +
                     (['local'] if drivability.get('requires_source_root') else
-                     ['automatic'] if operation in preparation_chains() else [])) if preparable else [],
+                     ['automatic'] if automatic else [])) if preparable else [],
                 local_preparation_operation=operation,
                 requires_source_root=bool(drivability.get("requires_source_root")),
                 preparation_routes=list(drivability.get("routes", ())),

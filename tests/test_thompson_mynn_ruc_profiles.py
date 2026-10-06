@@ -490,10 +490,10 @@ def test_the_physics_check_names_the_suite_the_run_binds_for_every_source(root_k
 
     from gpuwm import physics_catalog as pc
     from gpuwm.domain_wizard import finest_spacing_m, resolved_physics_profile
-    from gpuwm.physics_menu import registered_sources
+    from gpuwm.physics_menu import registered_sources, spacing_default
 
     finest_m = finest_spacing_m(root_km * 1000.0, ratios)
-    below = []
+    spacing_selected = []
     for source in registered_sources():
         run = resolved_physics_profile(source, None, finest_dx_m=finest_m, domains=len(ratios) + 1)
         verdict = pc.check({**_check_request(root_km, ratios), "source": source})
@@ -502,9 +502,14 @@ def test_the_physics_check_names_the_suite_the_run_binds_for_every_source(root_k
         assert verdict["domains"] == len(ratios) + 1
         if verdict["valid"]:
             assert verdict["named_suite"] == run, source
-        below.append(run == THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID)
-    # The table binds below 1 km and nowhere else, so both halves are exercised.
-    assert any(below) == (finest_m < 1000.0)
+        grid_row = spacing_default(source, finest_m, len(ratios) + 1)
+        if grid_row is not None:
+            assert run == grid_row["profile_id"] \
+                == THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID, source
+        spacing_selected.append(grid_row is not None)
+    # The spacing row binds below 1 km and nowhere else. A source's
+    # separate recommendation may select that same suite at coarser grids.
+    assert any(spacing_selected) == (finest_m < 1000.0)
 
 
 @pytest.mark.parametrize("source,root_dx,chain", [

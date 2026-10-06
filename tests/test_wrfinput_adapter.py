@@ -172,7 +172,10 @@ def test_translator_file_landuse_context_accepts_usgs_and_refuses_false_count(tm
     fixed = {row.key:row for row in report.fixed}
     assert fixed['num_land_cat'].fixed_value == 24
     assert 'USGS' in fixed['num_land_cat'].reason
+    # The adapter's land-use initialization consumes the namelist value;
+    # Noah's surface step runs WRF's 0.5 branch (only RUC carries 0.02).
     assert fixed['fractional_seaice'].fixed_value == 1
+    assert 'land-use' in fixed['fractional_seaice'].reason
     with pytest.raises(ValueError, match='num_land_cat'):
         import_namelists(*paths, landuse_identity={'MMINLU':'MODIFIED_IGBP_MODIS_NOAH', 'NUM_LAND_CAT':21})
     with pytest.raises(ValueError, match='num_land_cat'):

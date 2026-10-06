@@ -120,10 +120,22 @@ def _mynn_surface(source: str) -> str:
                  "MYNN nominal roughness writeback")
 
 
-def specialized_source(name: str, *, capacity: int = 40, kernel_dir=None) -> str:
-    """Compiler input for an enabled SPP unit; deterministic sources stay frozen."""
+def specialized_source(name: str, *, capacity: int = 40, kernel_dir=None,
+                       defines: tuple[tuple[str, int], ...] = ()) -> str:
+    """Compiler input for an enabled SPP unit; deterministic sources stay frozen.
+
+    ``defines`` (MYNN surface only) prefixes the same validated integer
+    switches the deterministic loader takes, so a non-default surface-layer
+    variant is not silently compiled as the default under SPP.  Empty, the
+    source is the one this function has always returned.
+    """
     from gpuwm.core.kernels import module_source
     options = {} if kernel_dir is None else {"kernel_dir": kernel_dir}
+    if defines and name != "mynn_surface":
+        raise ValueError(f"no SPP define route for {name!r}")
+    for key, value in defines:
+        if (key, value) != ("MYNN_SFCLAY_GSL_WRF39", 1):
+            raise ValueError(f"unknown MYNN surface SPP define {key}={value}")
     if name == "gf":
         if type(capacity) is not int or capacity < 1:
             raise ValueError("GF kernel capacity must be a positive integer")
@@ -132,19 +144,23 @@ def specialized_source(name: str, *, capacity: int = 40, kernel_dir=None) -> str
     if name == "mynn_pbl":
         return _mynn_pbl(module_source(name, **options))
     if name == "mynn_surface":
-        return _mynn_surface(module_source(name, **options))
+        prefix = "".join(f"#define {key} {value}\n" for key, value in defines)
+        return prefix + _mynn_surface(module_source(name, **options))
     raise ValueError(f"no SPP specialization for {name!r}")
 
 
 @cuda_cache(maxsize=None)
-def load_spp_module(name: str, capacity: int = 40):
+def load_spp_module(name: str, capacity: int = 40,
+                    defines: tuple[tuple[str, int], ...] = ()):
     import cupy as cp
     from gpuwm.certify.kernel_manifest import record_module
     from gpuwm.core.kernels import _compile_observed
-    source = specialized_source(name, capacity=capacity)
+    source = specialized_source(name, capacity=capacity, defines=defines)
     options = ("-std=c++17",)
     module = cp.RawModule(code=source, options=options, name_expressions=None)
     key = f"gpuwm.core.spp:{name}[capacity={capacity}]"
+    if defines:
+        key += "[" + ",".join(f"{k}={v}" for k, v in defines) + "]"
     _compile_observed(module, key)
     record_module(key, source=source, options=options, module=module)
     return module

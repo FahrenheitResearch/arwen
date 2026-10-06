@@ -4,6 +4,9 @@ use grib_core::grib2::{level_name, parameter_name, unpack_message, Grib2File};
 use std::env;
 use std::error::Error;
 use std::fs;
+use std::io::Write;
+
+const EXTRACT_ABI: &str = "gpuwm-grib2-extract-index-v1";
 
 const INVENTORY_HEADER: &str = concat!(
     "index\tdiscipline\tcategory\tparameter\tcenter\tsubcenter\t",
@@ -91,20 +94,59 @@ fn validate_envelopes(bytes: &[u8]) -> Result<usize, Box<dyn Error>> {
     Ok(count)
 }
 
+fn extract_field_envelope(bytes: &[u8], index: usize) -> Result<&[u8], Box<dyn Error>> {
+    validate_envelopes(bytes)?;
+    let mut offset = 0_usize;
+    let mut field_start = 0_usize;
+    while offset < bytes.len() {
+        let length = usize::try_from(read_u64_be(&bytes[offset + 8..offset + 16]))?;
+        let end = offset.checked_add(length).ok_or("GRIB envelope offset overflows")?;
+        let parsed = Grib2File::from_bytes(&bytes[offset..end])?;
+        let field_end = field_start.checked_add(parsed.messages.len()).ok_or("GRIB field count overflows")?;
+        if index >= field_start && index < field_end {
+            if parsed.messages.len() != 1 {
+                return Err(format!("selected field {index} shares a {}-field GRIB envelope; copying it would append unrelated quantities",
+                                   parsed.messages.len()).into());
+            }
+            return Ok(&bytes[offset..end]);
+        }
+        field_start = field_end;
+        offset = end;
+    }
+    Err(format!("selected field {index} leaves the input's {field_start}-field inventory").into())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     // Keep the release-provenance stamp in the binary: the cut
     // proves a staged bridge by these bytes (see lib.rs).
     let _ = std::hint::black_box(gpuwm_preprocess_cpu::SOURCE_REV_STAMP);
+    let _ = std::hint::black_box(EXTRACT_ABI);
     let mut args = env::args().skip(1);
     let input = args
         .next()
         .ok_or("usage: grib2_inventory INPUT.grib2 [--decode]")?;
-    let decode = match args.next().as_deref() {
+    let options: Vec<_> = args.collect();
+    if options.iter().any(|arg| arg.starts_with("--extract-index=")) {
+        if options.len() != 2 { return Err("record extraction needs --extract-index=N and --output=FILE".into()); }
+        let index = options.iter().find_map(|arg| arg.strip_prefix("--extract-index="))
+            .ok_or("record extraction needs --extract-index=N")?.parse::<usize>()?;
+        let output = options.iter().find_map(|arg| arg.strip_prefix("--output="))
+            .ok_or("record extraction needs --output=FILE")?;
+        let bytes = fs::read(&input)?;
+        let selected = extract_field_envelope(&bytes, index)?;
+        let mut target = fs::OpenOptions::new().create_new(true).write(true).open(output)?;
+        target.write_all(selected)?;
+        target.sync_all()?;
+        println!("{EXTRACT_ABI}\tindex={index}\tbytes={}", selected.len());
+        return Ok(());
+    }
+    let mut options = options.into_iter();
+    let decode = match options.next().as_deref() {
         None => false,
         Some("--decode") => true,
         Some(other) => return Err(format!("unknown argument {other:?}").into()),
     };
-    if args.next().is_some() {
+    if options.next().is_some() {
         return Err("too many arguments".into());
     }
 
@@ -237,7 +279,69 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::INVENTORY_HEADER;
+    use super::{extract_field_envelope, INVENTORY_HEADER};
+
+    fn section(number: u8, length: usize) -> Vec<u8> {
+        let mut bytes = vec![0; length];
+        bytes[..4].copy_from_slice(&(length as u32).to_be_bytes());
+        bytes[4] = number;
+        bytes
+    }
+
+    // A tiny valid unstructured grid exercises the production parser without
+    // assigning any scientific identity to this synthetic fixture.
+    fn envelope(parameters: &[u8]) -> Vec<u8> {
+        let mut s1 = section(1, 21);
+        s1[12..14].copy_from_slice(&2026u16.to_be_bytes());
+        s1[14] = 10;
+        s1[15] = 2;
+        let mut s3 = section(3, 35);
+        s3[6..10].copy_from_slice(&1u32.to_be_bytes());
+        s3[12..14].copy_from_slice(&101u16.to_be_bytes());
+        let mut bytes = vec![0; 16];
+        bytes[..4].copy_from_slice(b"GRIB");
+        bytes[7] = 2;
+        bytes.extend(s1);
+        bytes.extend(s3);
+        for parameter in parameters {
+            let mut s4 = section(4, 34);
+            s4[10] = *parameter;
+            s4[17] = 1;
+            s4[22] = 1;
+            s4[28] = 255;
+            s4[29..34].fill(255);
+            let mut s5 = section(5, 21);
+            s5[5..9].copy_from_slice(&1u32.to_be_bytes());
+            let mut s6 = section(6, 6);
+            s6[5] = 255;
+            for part in [s4, s5, s6, section(7, 5)] {
+                bytes.extend(part);
+            }
+        }
+        bytes.extend(b"7777");
+        let length = bytes.len() as u64;
+        bytes[8..16].copy_from_slice(&length.to_be_bytes());
+        bytes
+    }
+
+    #[test]
+    fn extraction_keeps_exact_envelope_bytes_and_refuses_unrelated_fields() {
+        let first = envelope(&[0]);
+        let chosen = envelope(&[4]);
+        let mut input = first;
+        input.extend(&chosen);
+        input.extend(envelope(&[1]));
+        assert_eq!(extract_field_envelope(&input, 1).unwrap(), chosen);
+        assert!(extract_field_envelope(&input, 3).unwrap_err().to_string()
+            .contains("leaves the input's 3-field inventory"));
+        let multi = envelope(&[0, 4]);
+        assert!(extract_field_envelope(&multi, 1).unwrap_err().to_string()
+            .contains("copying it would append unrelated quantities"));
+        let mut mutated = input;
+        *mutated.last_mut().unwrap() = b'8';
+        assert!(extract_field_envelope(&mutated, 1).unwrap_err().to_string()
+            .contains("missing 7777 terminator"));
+    }
 
     #[test]
     fn authority_identity_is_part_of_the_inventory_abi() {

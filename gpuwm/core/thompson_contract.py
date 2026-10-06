@@ -140,6 +140,69 @@ WRF_REFERENCE_COMMIT = "d66e442fccc04111067e29274c9f9eaccc3cef28"
 TABLE_SET_ID = "wrf-v4.6.1-classic-thompson-mp8-gfortran13-v1"
 
 
+# ---------------------------------------------------------------------------
+# The operational WRF 3.9 fork's table set (RunConfig.thompson_version =
+# "wrf_39_noaa").
+# ---------------------------------------------------------------------------
+#
+# NOAA-EMC/HRRR tag v4.1.21, sorc/hrrr_wrfarw.fd/WRFV3.9/phys/
+# module_mp_thompson.F (SHA-256 4d600111...).  Its snow and graupel axes have
+# 28 entries starting at 1e-5 kg m-3 and its graupel intercept axis runs
+# 1e4..1e7 (:219-221, :271-293), its graupel tables carry no density axis
+# and one more record, tmg_gacr (:614-622, write order :3940-3945), and D0s
+# is 200 microns (:205), which changes the ice-to-snow and snow-collects-
+# cloud tables built from it.  The fork writes its caches under the WRF 3.9
+# names.  tools/thompson_fork_oracle/build.sh generates every record from
+# the fork's own thompson_init.
+FORK_GENERATED_TABLE_FILES: dict[str, tuple[TableRecord, ...]] = {
+    "qr_acr_qg.dat": tuple(
+        TableRecord(name, (28, 28, 37, 37))
+        for name in ("tcg_racg", "tmr_racg", "tcr_gacr", "tmg_gacr",
+                     "tnr_racg", "tnr_gacr")
+    ),
+    "qr_acr_qs.dat": tuple(
+        TableRecord(name, (28, 9, 37, 37))
+        for name in ("tcs_racs1", "tmr_racs1", "tcs_racs2",
+                     "tmr_racs2", "tcr_sacr1", "tms_sacr1",
+                     "tcr_sacr2", "tms_sacr2", "tnr_racs1",
+                     "tnr_racs2", "tnr_sacr1", "tnr_sacr2")
+    ),
+    # Same shapes and write order as v4.6.1 (:4393-4398).
+    "freezeH2O.dat": GENERATED_TABLE_FILES["freezeH2O.dat"],
+}
+
+#: The fork set as tools/thompson_fork_oracle/build.sh generated it on
+#: node-2 (GNU Fortran 15.2.0, -O2 -fno-tree-vectorize, no libmvec);
+#: receipt tools/thompson_fork_oracle/PROVENANCE-node2.txt.
+FORK_TABLE_ASSETS = (
+    TableAsset(
+        "qr_acr_qg.dat", 51_518_256,
+        "8b9b5039ec560748c6261cc9ecbc4366332473a9a1d0666ee5a7f04686abf402"),
+    TableAsset(
+        "qr_acr_qs.dat", 33_118_944,
+        "39b4fd363d440a867cc8c37a22ebf2651c8ffcf54f8c05ab7a6f5e753e630ac0"),
+    TableAsset(
+        "freezeH2O.dat", 254_944_848,
+        "28c12192251969cd79a02e08e3174f26113de51490689f728cfc44af9cf76b2c"),
+    TableAsset(
+        AUXILIARY_TABLE_FILE, 6_164_536,
+        "13d304911e5322fb5bcc2a0639effc20ad5381c59f076ced2386b56f2fb441ae"),
+)
+
+FORK_REFERENCE_SOURCE = (
+    "NOAA-EMC/HRRR v4.1.21 sorc/hrrr_wrfarw.fd/WRFV3.9/phys/"
+    "module_mp_thompson.F "
+    "sha256:4d60011188443eb432294f7693beb64bdbc8f812541a15c7800013060c877283")
+FORK_TABLE_SET_ID = "wrf-3.9-noaa-fork-thompson-gfortran15-v1"
+
+#: RunConfig.thompson_version -> (generated files, assets, table-set id).
+TABLE_SETS_BY_VERSION = {
+    "wrf_461": (GENERATED_TABLE_FILES, CLASSIC_TABLE_ASSETS, TABLE_SET_ID),
+    "wrf_39_noaa": (FORK_GENERATED_TABLE_FILES, FORK_TABLE_ASSETS,
+                    FORK_TABLE_SET_ID),
+}
+
+
 @dataclass(frozen=True)
 class ClassicTableSet:
     """Validated immutable host tables plus restart-safe asset identity."""
@@ -154,6 +217,18 @@ class ClassicTableSet:
 
     @property
     def identity(self) -> dict[str, object]:
+        if self.assets == FORK_TABLE_ASSETS:
+            return {
+                "schema": 1,
+                "table_set": FORK_TABLE_SET_ID,
+                "wrf_version": "3.9-noaa-fork",
+                "wrf_source": FORK_REFERENCE_SOURCE,
+                "assets": [
+                    {"filename": item.filename, "bytes": item.bytes,
+                     "sha256": item.sha256}
+                    for item in self.assets
+                ],
+            }
         return {
             "schema": 1,
             "table_set": TABLE_SET_ID,
@@ -342,22 +417,32 @@ def read_classic_table_directory(path: str | Path) -> dict[str, np.ndarray]:
     return tables
 
 
-def load_validated_classic_tables(path: str | Path) -> ClassicTableSet:
+def load_validated_classic_tables(
+        path: str | Path, version: str = "wrf_461") -> ClassicTableSet:
     """Verify canonical bytes, parse every record, and freeze host arrays.
 
     Each asset is read once, checked against its pinned size and SHA-256 and
     parsed from those same bytes, the four assets on parallel threads (the
     hashing and the finite checks release the GIL).  The records are
     exactly the ones :func:`read_classic_table_directory` returns.
+
+    ``version`` is RunConfig.thompson_version: ``"wrf_461"`` reads the WRF
+    v4.6.1 set, ``"wrf_39_noaa"`` the operational WRF 3.9 fork's
+    (:data:`FORK_GENERATED_TABLE_FILES`, :data:`FORK_TABLE_ASSETS`).
     """
     root = Path(path).resolve()
-    assets = CLASSIC_TABLE_ASSETS
+    try:
+        generated_files, assets, _set_id = TABLE_SETS_BY_VERSION[version]
+    except KeyError:
+        raise ValueError(
+            f"no Thompson table set for thompson_version={version!r}; "
+            f"known: {sorted(TABLE_SETS_BY_VERSION)}") from None
 
     def parse(asset: TableAsset) -> dict[str, np.ndarray]:
         data = read_validated_table_asset(root, asset)
         records = (AUXILIARY_TABLE_RECORDS
                    if asset.filename == AUXILIARY_TABLE_FILE
-                   else GENERATED_TABLE_FILES[asset.filename])
+                   else generated_files[asset.filename])
         current = read_sequential_records(
             root / asset.filename, records, data=data)
         for name, array in current.items():
@@ -379,7 +464,7 @@ def load_validated_classic_tables(path: str | Path) -> ClassicTableSet:
     result = ClassicTableSet(root=root, arrays=frozen, assets=assets)
     expected_payload = sum(
         record.payload_bytes
-        for records in GENERATED_TABLE_FILES.values() for record in records
+        for records in generated_files.values() for record in records
     ) + sum(record.payload_bytes for record in AUXILIARY_TABLE_RECORDS)
     if result.payload_bytes != expected_payload:
         raise RuntimeError(
@@ -396,12 +481,17 @@ __all__ = [
     "CLASSIC_GRAUPEL_DENSITY_KG_M3",
     "ClassicTableSet",
     "EFFECTIVE_RADIUS_FIELDS",
+    "FORK_GENERATED_TABLE_FILES",
+    "FORK_REFERENCE_SOURCE",
+    "FORK_TABLE_ASSETS",
+    "FORK_TABLE_SET_ID",
     "GENERATED_TABLE_FILES",
     "MASS_SPECIES",
     "MP_PHYSICS",
     "NUMBER_SPECIES",
     "TRANSPORTED_SPECIES",
     "TABLE_SET_ID",
+    "TABLE_SETS_BY_VERSION",
     "TableAsset",
     "TableRecord",
     "WRF_REFERENCE_COMMIT",

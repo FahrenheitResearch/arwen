@@ -128,7 +128,7 @@ def test_frozen_single_domain_writer_applies_the_same_selection(monkeypatch, tmp
              "T": np.zeros((cfg.nz, cfg.ny, cfg.nx), dtype=np.float32),
              "QCLOUD": np.zeros((cfg.nz, cfg.ny, cfg.nx), dtype=np.float32),
              "XLAT": np.zeros((cfg.ny, cfg.nx), dtype=np.float32)}
-    state = SimpleNamespace(_streamed_domain=SimpleNamespace(
+    state = SimpleNamespace(qv=None, _streamed_domain=SimpleNamespace(
         history_fields=lambda: dict(frame)))
     prepared = SimpleNamespace(cfg=cfg, initial_result=SimpleNamespace(
         state=state, coord=None), grid=None, static_fields={})
@@ -146,6 +146,9 @@ def test_frozen_single_domain_writer_applies_the_same_selection(monkeypatch, tmp
 
         def write_frame(self, when, fields):
             written[-1].update(time=when, fields=fields)
+
+        def complete_output_identity(self):
+            return None
 
     monkeypatch.setattr(wrfout, "WrfoutWriter", RecordingWriter)
     monkeypatch.setattr(runtime, "_metadata_frame", lambda *_args: {})

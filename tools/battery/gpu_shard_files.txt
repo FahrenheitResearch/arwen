@@ -554,6 +554,15 @@ tests/test_multislab_hazards_gpu.py
 # Ineligible frame inventories must use producer-fenced DMA for every field.
 # Prevents an unpriced subset of small fields acquiring persistent snapshots.
 tests/test_ranked_domain_gpu.py
+# Admission, tile-plan and pack readings must not count this process's
+# cycle garbage or cached pool blocks as used.  Prevents the native decline
+# gate being refused (2.87 GiB read free) or split into two packs after other
+# ensembles ran in the same process (2.8.6 GPU triage C6, issue 1).
+tests/test_card_reading_reclaims_garbage_gpu.py
+# One-launch seam pack and unpack must move the same bytes as the per-carrier
+# pitched copies and re-read rebound carrier pointers each launch. Prevents a
+# batched halo exchange changing one seam byte and splitting the forecast.
+tests/test_seam_band_copy_gpu.py
 # Delayed boundary publication must preserve every ranked carrier bit.
 # Prevents one rank crossing an absent interval or starting only after seal.
 tests/test_ranked_boundary_stream_gpu.py
@@ -626,6 +635,9 @@ tests/test_adaptive_stream_gpu.py
 tests/test_rrtm_memory.py
 tests/test_relocation_held_physics_gpu.py
 tests/test_attribute_tracking_gpu.py
+# The vortex tracker's device isobaric height, graded word for word against
+# the Rust rw-isobaric crate it transcribes (the 2.8.6 height fix).
+tests/test_storm_tracking_isobaric_gpu.py
 tests/test_model_stability_gpu.py
 tests/test_nssl2_gpu.py
 
@@ -934,6 +946,19 @@ tests/test_horizontal_diffusion_wrf471_parity.py
 tests/test_vertical_diffusion_wrf471_parity.py
 tests/test_constant_diffusion_wrf471_parity.py
 tests/test_diffusion_drivers_wrf471_parity.py
+# WRF vert_order 5 (lane 286-vadv5): every flux-divergence kernel and the
+# positive-definite flux kernel against the float64 mirror at order 5
+# (short columns, the 51 operational eta levels, periodic, specified and
+# open boundaries), order 3 bitwise equal to the launch every earlier run
+# made, the split path advecting the explicit share at the configured
+# orders, and the compiled HRRR-fork module_advect_em words replayed
+# against this card's receipt.  Without these a changed ladder bound or a
+# stale fork receipt reaches a cut unmeasured.
+tests/test_advect_vertical_order.py
+tests/test_advect_wrf_legacy_parity.py
+# The RK advection attribution's variants compiled by NVRTC to PTX, default
+# and under the WRF-exact advection selector (no device opened; cupy needed).
+tests/test_rk_advection_diagnostic_sources.py
 # 2.8.2 device rows that shipped without a battery entry (found by the
 # 2.8.2 release-input review): the compiled-WRF diff_opt = 1 oracle's word
 # comparisons; the native cold-start W and SH2O kernels against WRF-order
@@ -985,6 +1010,54 @@ tests/test_ruc_lake_runtime.py
 # nonlake cells unchanged; fixed-SST or lost snow/ice state fails here.
 tests/test_lake_gpu.py
 
+# Registered parameter sets must change only their named constants and
+# preserve default kernel and table words. These are per-cut physics gates.
+tests/test_physics_params.py
+tests/test_physics_params_gpu.py
+tests/test_physics_params_kernel_isolation.py
+
+
+# swint_opt = 1 and aer_opt = 3 kernels (lane 286-aer-swint): swint.cu and
+# rrtmg_aer3.cu against the stored HRRR-fork oracles at max ULP 0, and the
+# batched SW engine with aerosol against the per-column NumPy composition;
+# a kernel that contracts an FMA, swaps a libm call or drops the layer
+# above the model top fails here.
+tests/test_swint_interpolation.py
+tests/test_rrtmg_aerosol_optics.py
+
+# 731b69654, lane/sw-excess (delivered at 188ffdf41): both legacy
+# cloud-wrapper forms, both ozone modes and cold-start radii. Keep this
+# source-selector gate on shard 1, separate from frozen cumulus leaf ports.
+# Prevents a source selector from changing scalar/batch GPU prep differently.
+tests/test_rrtmg_source_cloud_form_gpu.py
+
+# lane/cut286-swint-latcache: the legacy RRTMG adapter end to end on the
+# card (bitwise composition, MYNN coupling, ozone routing, live latitude).
+# It ran on no list, so d423fc2d5 broke its live-latitude test unseen from
+# 2.8.5 to the 2.8.6 staging tip.  Prevents a reused tile buffer or moved
+# grid from reading a latitude-derived ozone field built for other columns.
+tests/test_rrtmg_legacy_wiring.py
+
+# 134886023, lane/286-fork-mynn, and ef8325e32, lane/sw-excess:
+# retain all four accepted GSD4.1 numerical GPU scopes on shard 1.
+# Prevents radius loss and incompatible source phase merges; no CPU
+# numerical coverage is claimed by this enrollment.
+tests/test_mynn_gsd41.py
+tests/test_mynn_massflux_gsd41.py
+tests/test_mynn_predict_gsd41.py
+tests/test_mynn_water_gsd41.py
+
+# ef8325e32, lane/sw-excess (delivered at 188ffdf41): prescribed smoke
+# device oracles and the actual legacy surface SW adapter are shard 1 gates.
+# Prevents incomplete smoke windows and lost supplied smoke profiles.
+tests/test_rrtmg_smoke_manifest_gpu.py
+tests/test_rrtmg_smoke_optics_gpu.py
+tests/test_rrtmg_smoke_adapter_gpu.py
+
+# c0517cf0a, lane/grib2-upp-286: the complete Thompson adapter module is
+# GPU-only. Retain its measured 61 device cases on shard 1; CPU closing
+# collection selects zero cases and this repair does not execute them.
+tests/test_thompson_aerosol_adapter.py
 
 # SHARD-2-BEGIN
 tests/test_gf_deep_cuda.py

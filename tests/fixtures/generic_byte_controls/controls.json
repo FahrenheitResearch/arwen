@@ -1,0 +1,555 @@
+{
+  "fixture_source": {
+    "git_blob": "baf528dde3aaf398926c465db6084d27c786844c",
+    "path": "tests/test_namelist_import.py",
+    "revision": "e62a72e480d7dafff7381db4c9d35eca22285a87",
+    "sha256": "705f0276426e10008d922c205384f17dfc76552ee7381ac4f1e6b405e3afc69a"
+  },
+  "lanes": {
+    "albsol": "055595b3a8e019be508f05991b67af607dcee338",
+    "dycore": "32261e42e85fadb9fa4b934f65aba0a22586d5f1",
+    "fixed": "1077c6e8abe502aab59de103d7e6d70dbb8588a1",
+    "sfclay": "425e3e068012eafae8d9e6f4ccfb1249151ae91e",
+    "thompson": "7ab2e3dcf59acb668015e3172feefc0418ee91b3",
+    "vadv": "1077c6e8abe502aab59de103d7e6d70dbb8588a1"
+  },
+  "matrix_sha256": "67342a3368337145bfc943d6d6dd8bcb584f9a2334ef6b7a05c8901df93b7c77",
+  "parents": {
+    "055595b3a8e019be508f05991b67af607dcee338": {
+      "gpuwm/config.py": {
+        "bytes": 286740,
+        "git_blob": "7fbc0b915cfc6473ca98afe2e045c0505328b681",
+        "sha256": "6952920bef50857e65dc5ea6fae07df6ba554ada93298cad4143ccb5cd8eff7b"
+      },
+      "gpuwm/config_authority.py": {
+        "bytes": 4781,
+        "git_blob": "6b882f81ecc2664ca337f21b234c0e6e58951c26",
+        "sha256": "833ee736f456184e9ecd8c6fbd4b6b04e5117b1d1e0222b4c4529c3cc0323a53"
+      },
+      "gpuwm/config_keys.py": {
+        "bytes": 7482,
+        "git_blob": "5e9ac72fd2a05920700b6089e2b55d86aee2aabe",
+        "sha256": "ae64cfb3f526b955c45f9c0eb6ef1dfc538a6b5695a154ae2f723f55ffc5cde2"
+      },
+      "gpuwm/domain_wizard.py": {
+        "bytes": 404851,
+        "git_blob": "ead2a180676534e0a860896a6b666517f65166e4",
+        "sha256": "4e1993c1284397764db7329231dd81399fc99ec49a514edc5668e75360e7946f"
+      },
+      "gpuwm/experiment.py": {
+        "bytes": 275198,
+        "git_blob": "d11f1a2bc5623831b61e339490755fbff337a0d1",
+        "sha256": "a009cc6c770b56b8820161bf39f2fd75e554bb25cdb0ebbb6cbf4806fb1a2b49"
+      },
+      "gpuwm/fetch.py": {
+        "bytes": 402697,
+        "git_blob": "1ca2bfc8600726738c98e25be83e55ade76697e8",
+        "sha256": "e133911313e1e47402b0ee736a9e2056971d9821ce217d6278663943d97b5911"
+      },
+      "gpuwm/fortran_namelist.py": {
+        "bytes": 21656,
+        "git_blob": "14ce251ae1145c86731ae632132b72aaa4e12fbf",
+        "sha256": "efb950f52c1df31428619f4155641309cc15c83ce22064d4e5b846654d408dfe"
+      },
+      "gpuwm/grid_requirements.py": {
+        "bytes": 1021,
+        "git_blob": "1d32b42ebd63270428ea438232f70dcdc797e675",
+        "sha256": "5ed55b08a9ca06e47baf199499c47ea8544acfc8c3ca5955df1608186edbef14"
+      },
+      "gpuwm/hrrr_route_inputs.py": {
+        "bytes": 64889,
+        "git_blob": "5613203948eeb2883e94ae159136d0886657c013",
+        "sha256": "a5b1a90a8ff3f7726eb8e2612588e6f7776fcaf8aab61ef9f39509f47ef7e70b"
+      },
+      "gpuwm/namelist_compat.py": {
+        "bytes": 85267,
+        "git_blob": "4a9c6d00b63ea59c1b3375eabc73211d161ac181",
+        "sha256": "1e693ddceaf793f073f24e8d84ce6299f6878b3635c3a0a58719c0187b9b2209"
+      },
+      "gpuwm/namelist_import.py": {
+        "bytes": 270813,
+        "git_blob": "fcb369e1e0d6f21c71b0e4e3435de41726b14b77",
+        "sha256": "20d4648cccc9bc0251dec66cea3e58c672f133009c699f757eaa6db37fb55c1a"
+      },
+      "gpuwm/physics_compat.py": {
+        "bytes": 188928,
+        "git_blob": "f5cf0991f34365fd9dd3b85eb28a8f37419d4416",
+        "sha256": "5d1108d382e12ffc7a1e8d59c415159d335ac207e472d16090caf6a45c6892d4"
+      },
+      "gpuwm/physics_menu.py": {
+        "bytes": 45816,
+        "git_blob": "c9905fdb88fa8ac799fee0fb6ea5394f00c87522",
+        "sha256": "ce3e715373cd3240af0b8b6ff12c35b9d810a36624bf98e692524d3000f11645"
+      },
+      "gpuwm/physics_registry.py": {
+        "bytes": 191480,
+        "git_blob": "50f36565f47369e76aa2755a171e8782c6cbd834",
+        "sha256": "e699d0043e7d867329fc14c84eccdc431daa8b71116e26a96c600db987095e4e"
+      },
+      "gpuwm/physics_registry_v2.json": {
+        "bytes": 409011,
+        "git_blob": "cc2b1a321989e2321dc92edef6cb3bd48bcf5747",
+        "sha256": "5d212e33faea6509ae6b4710f5c1adeae7fa4e8e3c955035781791a164b85db4"
+      },
+      "gpuwm/source_adapters.py": {
+        "bytes": 113026,
+        "git_blob": "c4c2815e051c2710e6117dc7d671c3c430eaa198",
+        "sha256": "ee2e87be3d103bae5af19815ac2539614147f4bf8775e6dc2701550d876db319"
+      },
+      "gpuwm/source_authorities.py": {
+        "bytes": 55032,
+        "git_blob": "2310db09b2af66b7dda6152efee76f1607b10a59",
+        "sha256": "c5d9d93a730efdb3061c800d55ef0cccade5da203202ef3790d4abece8dc7c47"
+      },
+      "gpuwm/source_availability.py": {
+        "bytes": 56079,
+        "git_blob": "6df0269cf92f61ca4046c1455b28b2027e6a5b8b",
+        "sha256": "4e16025d49b44ad194f7a0ac681ab8c3754974e2dfa9df28bdeac8fd4b4a285d"
+      },
+      "gpuwm/source_coverage.py": {
+        "bytes": 18046,
+        "git_blob": "7554167ab9dbad853480e1ece1c0dfd1a18ea320",
+        "sha256": "2af0cd69fb958dca04a682245b655d3759232c9262852a5c6c7a33da56c487a6"
+      },
+      "gpuwm/source_credentials.py": {
+        "bytes": 10310,
+        "git_blob": "0e85ccb276226580ae906e17550fb80f56f351df",
+        "sha256": "92ad6ef2408ff70d73fdf088cabd1ecbdf1227fe662ff99c65cfa1c7e00b921b"
+      },
+      "gpuwm/source_cycles.py": {
+        "bytes": 19303,
+        "git_blob": "32c8bffce33b8333459a47490c0924007231f4a5",
+        "sha256": "48c91805679278085d4ce9d87acbea6aa4accc82fccaf68f456093af56dc5629"
+      }
+    },
+    "1077c6e8abe502aab59de103d7e6d70dbb8588a1": {
+      "gpuwm/config.py": {
+        "bytes": 276912,
+        "git_blob": "0c3c9ea1d2f56328fc62ae62a1dc5563a5d8f120",
+        "sha256": "e2e7bfb55694c2ce7652a9dfa95a4ed7573029db421ba1c691c7e52117f0c9a9"
+      },
+      "gpuwm/config_authority.py": {
+        "bytes": 4781,
+        "git_blob": "6b882f81ecc2664ca337f21b234c0e6e58951c26",
+        "sha256": "833ee736f456184e9ecd8c6fbd4b6b04e5117b1d1e0222b4c4529c3cc0323a53"
+      },
+      "gpuwm/config_keys.py": {
+        "bytes": 7482,
+        "git_blob": "5e9ac72fd2a05920700b6089e2b55d86aee2aabe",
+        "sha256": "ae64cfb3f526b955c45f9c0eb6ef1dfc538a6b5695a154ae2f723f55ffc5cde2"
+      },
+      "gpuwm/domain_wizard.py": {
+        "bytes": 404851,
+        "git_blob": "ead2a180676534e0a860896a6b666517f65166e4",
+        "sha256": "4e1993c1284397764db7329231dd81399fc99ec49a514edc5668e75360e7946f"
+      },
+      "gpuwm/experiment.py": {
+        "bytes": 272276,
+        "git_blob": "223cd2370d88530089c8a4582eabac27ded30b84",
+        "sha256": "943b0c9f623294a12e830505ae032d57e42554708b5c1a6f0c193eab5895e2ef"
+      },
+      "gpuwm/fetch.py": {
+        "bytes": 402697,
+        "git_blob": "1ca2bfc8600726738c98e25be83e55ade76697e8",
+        "sha256": "e133911313e1e47402b0ee736a9e2056971d9821ce217d6278663943d97b5911"
+      },
+      "gpuwm/fortran_namelist.py": {
+        "bytes": 21656,
+        "git_blob": "14ce251ae1145c86731ae632132b72aaa4e12fbf",
+        "sha256": "efb950f52c1df31428619f4155641309cc15c83ce22064d4e5b846654d408dfe"
+      },
+      "gpuwm/grid_requirements.py": {
+        "bytes": 1021,
+        "git_blob": "1d32b42ebd63270428ea438232f70dcdc797e675",
+        "sha256": "5ed55b08a9ca06e47baf199499c47ea8544acfc8c3ca5955df1608186edbef14"
+      },
+      "gpuwm/hrrr_route_inputs.py": {
+        "bytes": 64168,
+        "git_blob": "7fb0e381ab10b17f1c35fa3f88c7c2c8070d54ea",
+        "sha256": "e9f85f1cc01e5d8afc4d6663a94691fc5d5a49f005adf8d430fff64d2fd62527"
+      },
+      "gpuwm/namelist_compat.py": {
+        "bytes": 85267,
+        "git_blob": "4a9c6d00b63ea59c1b3375eabc73211d161ac181",
+        "sha256": "1e693ddceaf793f073f24e8d84ce6299f6878b3635c3a0a58719c0187b9b2209"
+      },
+      "gpuwm/namelist_import.py": {
+        "bytes": 267069,
+        "git_blob": "08f8449795caf68cfe375984da1593fa6a3076e9",
+        "sha256": "8a67cab5c9630f2865cec8e0e66372048f27673d703f78083f8d9130223c673c"
+      },
+      "gpuwm/physics_compat.py": {
+        "bytes": 188928,
+        "git_blob": "f5cf0991f34365fd9dd3b85eb28a8f37419d4416",
+        "sha256": "5d1108d382e12ffc7a1e8d59c415159d335ac207e472d16090caf6a45c6892d4"
+      },
+      "gpuwm/physics_menu.py": {
+        "bytes": 45816,
+        "git_blob": "c9905fdb88fa8ac799fee0fb6ea5394f00c87522",
+        "sha256": "ce3e715373cd3240af0b8b6ff12c35b9d810a36624bf98e692524d3000f11645"
+      },
+      "gpuwm/physics_registry.py": {
+        "bytes": 191480,
+        "git_blob": "50f36565f47369e76aa2755a171e8782c6cbd834",
+        "sha256": "e699d0043e7d867329fc14c84eccdc431daa8b71116e26a96c600db987095e4e"
+      },
+      "gpuwm/physics_registry_v2.json": {
+        "bytes": 401204,
+        "git_blob": "96ac371ec015b0ec06f585996ec96cb704e4bce0",
+        "sha256": "f7f919dcf579a591370447a70bab6c130f5276aa8972015dcd3b455a8d327231"
+      },
+      "gpuwm/source_adapters.py": {
+        "bytes": 112403,
+        "git_blob": "f36f48bea7f2f56911425b97465c22d3cce74b0c",
+        "sha256": "7f1c5c66409ecbb0de5e9aadc5ed04d38ccd77a35536084e6f7c905ebeaf6861"
+      },
+      "gpuwm/source_authorities.py": {
+        "bytes": 52029,
+        "git_blob": "24bff367e4015d29d0d484c4fbc40a19a2169237",
+        "sha256": "647327651ef8d356a88ca36ce232c7d0d48717a039bbdc989d906cc19f328490"
+      },
+      "gpuwm/source_availability.py": {
+        "bytes": 56079,
+        "git_blob": "6df0269cf92f61ca4046c1455b28b2027e6a5b8b",
+        "sha256": "4e16025d49b44ad194f7a0ac681ab8c3754974e2dfa9df28bdeac8fd4b4a285d"
+      },
+      "gpuwm/source_coverage.py": {
+        "bytes": 18046,
+        "git_blob": "7554167ab9dbad853480e1ece1c0dfd1a18ea320",
+        "sha256": "2af0cd69fb958dca04a682245b655d3759232c9262852a5c6c7a33da56c487a6"
+      },
+      "gpuwm/source_credentials.py": {
+        "bytes": 10310,
+        "git_blob": "0e85ccb276226580ae906e17550fb80f56f351df",
+        "sha256": "92ad6ef2408ff70d73fdf088cabd1ecbdf1227fe662ff99c65cfa1c7e00b921b"
+      },
+      "gpuwm/source_cycles.py": {
+        "bytes": 19303,
+        "git_blob": "32c8bffce33b8333459a47490c0924007231f4a5",
+        "sha256": "48c91805679278085d4ce9d87acbea6aa4accc82fccaf68f456093af56dc5629"
+      }
+    },
+    "32261e42e85fadb9fa4b934f65aba0a22586d5f1": {
+      "gpuwm/config.py": {
+        "bytes": 278692,
+        "git_blob": "85d3ca79353bea5e75e76aeb55edbae0090a4d3c",
+        "sha256": "a12cd6855554c235cad167929a9e26f956b1f1fb17a6b34983b799cb9a9ef6c3"
+      },
+      "gpuwm/config_authority.py": {
+        "bytes": 4781,
+        "git_blob": "6b882f81ecc2664ca337f21b234c0e6e58951c26",
+        "sha256": "833ee736f456184e9ecd8c6fbd4b6b04e5117b1d1e0222b4c4529c3cc0323a53"
+      },
+      "gpuwm/config_keys.py": {
+        "bytes": 7482,
+        "git_blob": "5e9ac72fd2a05920700b6089e2b55d86aee2aabe",
+        "sha256": "ae64cfb3f526b955c45f9c0eb6ef1dfc538a6b5695a154ae2f723f55ffc5cde2"
+      },
+      "gpuwm/domain_wizard.py": {
+        "bytes": 404851,
+        "git_blob": "ead2a180676534e0a860896a6b666517f65166e4",
+        "sha256": "4e1993c1284397764db7329231dd81399fc99ec49a514edc5668e75360e7946f"
+      },
+      "gpuwm/experiment.py": {
+        "bytes": 273061,
+        "git_blob": "a1a2b1d1a705b8f93ff0b09d9286048329044f55",
+        "sha256": "2fd2cad77eaa3d99f1e3f4622766ebc9008ca19529090cab425db278765d4e18"
+      },
+      "gpuwm/fetch.py": {
+        "bytes": 402697,
+        "git_blob": "1ca2bfc8600726738c98e25be83e55ade76697e8",
+        "sha256": "e133911313e1e47402b0ee736a9e2056971d9821ce217d6278663943d97b5911"
+      },
+      "gpuwm/fortran_namelist.py": {
+        "bytes": 21656,
+        "git_blob": "14ce251ae1145c86731ae632132b72aaa4e12fbf",
+        "sha256": "efb950f52c1df31428619f4155641309cc15c83ce22064d4e5b846654d408dfe"
+      },
+      "gpuwm/grid_requirements.py": {
+        "bytes": 1021,
+        "git_blob": "1d32b42ebd63270428ea438232f70dcdc797e675",
+        "sha256": "5ed55b08a9ca06e47baf199499c47ea8544acfc8c3ca5955df1608186edbef14"
+      },
+      "gpuwm/hrrr_route_inputs.py": {
+        "bytes": 64168,
+        "git_blob": "7fb0e381ab10b17f1c35fa3f88c7c2c8070d54ea",
+        "sha256": "e9f85f1cc01e5d8afc4d6663a94691fc5d5a49f005adf8d430fff64d2fd62527"
+      },
+      "gpuwm/namelist_compat.py": {
+        "bytes": 85267,
+        "git_blob": "4a9c6d00b63ea59c1b3375eabc73211d161ac181",
+        "sha256": "1e693ddceaf793f073f24e8d84ce6299f6878b3635c3a0a58719c0187b9b2209"
+      },
+      "gpuwm/namelist_import.py": {
+        "bytes": 267069,
+        "git_blob": "08f8449795caf68cfe375984da1593fa6a3076e9",
+        "sha256": "8a67cab5c9630f2865cec8e0e66372048f27673d703f78083f8d9130223c673c"
+      },
+      "gpuwm/physics_compat.py": {
+        "bytes": 188928,
+        "git_blob": "f5cf0991f34365fd9dd3b85eb28a8f37419d4416",
+        "sha256": "5d1108d382e12ffc7a1e8d59c415159d335ac207e472d16090caf6a45c6892d4"
+      },
+      "gpuwm/physics_menu.py": {
+        "bytes": 45816,
+        "git_blob": "c9905fdb88fa8ac799fee0fb6ea5394f00c87522",
+        "sha256": "ce3e715373cd3240af0b8b6ff12c35b9d810a36624bf98e692524d3000f11645"
+      },
+      "gpuwm/physics_registry.py": {
+        "bytes": 191480,
+        "git_blob": "50f36565f47369e76aa2755a171e8782c6cbd834",
+        "sha256": "e699d0043e7d867329fc14c84eccdc431daa8b71116e26a96c600db987095e4e"
+      },
+      "gpuwm/physics_registry_v2.json": {
+        "bytes": 402442,
+        "git_blob": "121d5e01cd69b96a50cb9adae789abeac532d00b",
+        "sha256": "0555052225e59e72ff337193bc6a0da59d874f96729c4de23b1e297b097eed95"
+      },
+      "gpuwm/source_adapters.py": {
+        "bytes": 113026,
+        "git_blob": "c4c2815e051c2710e6117dc7d671c3c430eaa198",
+        "sha256": "ee2e87be3d103bae5af19815ac2539614147f4bf8775e6dc2701550d876db319"
+      },
+      "gpuwm/source_authorities.py": {
+        "bytes": 55032,
+        "git_blob": "2310db09b2af66b7dda6152efee76f1607b10a59",
+        "sha256": "c5d9d93a730efdb3061c800d55ef0cccade5da203202ef3790d4abece8dc7c47"
+      },
+      "gpuwm/source_availability.py": {
+        "bytes": 56079,
+        "git_blob": "6df0269cf92f61ca4046c1455b28b2027e6a5b8b",
+        "sha256": "4e16025d49b44ad194f7a0ac681ab8c3754974e2dfa9df28bdeac8fd4b4a285d"
+      },
+      "gpuwm/source_coverage.py": {
+        "bytes": 18046,
+        "git_blob": "7554167ab9dbad853480e1ece1c0dfd1a18ea320",
+        "sha256": "2af0cd69fb958dca04a682245b655d3759232c9262852a5c6c7a33da56c487a6"
+      },
+      "gpuwm/source_credentials.py": {
+        "bytes": 10310,
+        "git_blob": "0e85ccb276226580ae906e17550fb80f56f351df",
+        "sha256": "92ad6ef2408ff70d73fdf088cabd1ecbdf1227fe662ff99c65cfa1c7e00b921b"
+      },
+      "gpuwm/source_cycles.py": {
+        "bytes": 19303,
+        "git_blob": "32c8bffce33b8333459a47490c0924007231f4a5",
+        "sha256": "48c91805679278085d4ce9d87acbea6aa4accc82fccaf68f456093af56dc5629"
+      }
+    },
+    "425e3e068012eafae8d9e6f4ccfb1249151ae91e": {
+      "gpuwm/config.py": {
+        "bytes": 278692,
+        "git_blob": "85d3ca79353bea5e75e76aeb55edbae0090a4d3c",
+        "sha256": "a12cd6855554c235cad167929a9e26f956b1f1fb17a6b34983b799cb9a9ef6c3"
+      },
+      "gpuwm/config_authority.py": {
+        "bytes": 4781,
+        "git_blob": "6b882f81ecc2664ca337f21b234c0e6e58951c26",
+        "sha256": "833ee736f456184e9ecd8c6fbd4b6b04e5117b1d1e0222b4c4529c3cc0323a53"
+      },
+      "gpuwm/config_keys.py": {
+        "bytes": 7482,
+        "git_blob": "5e9ac72fd2a05920700b6089e2b55d86aee2aabe",
+        "sha256": "ae64cfb3f526b955c45f9c0eb6ef1dfc538a6b5695a154ae2f723f55ffc5cde2"
+      },
+      "gpuwm/domain_wizard.py": {
+        "bytes": 404851,
+        "git_blob": "ead2a180676534e0a860896a6b666517f65166e4",
+        "sha256": "4e1993c1284397764db7329231dd81399fc99ec49a514edc5668e75360e7946f"
+      },
+      "gpuwm/experiment.py": {
+        "bytes": 273061,
+        "git_blob": "a1a2b1d1a705b8f93ff0b09d9286048329044f55",
+        "sha256": "2fd2cad77eaa3d99f1e3f4622766ebc9008ca19529090cab425db278765d4e18"
+      },
+      "gpuwm/fetch.py": {
+        "bytes": 402697,
+        "git_blob": "1ca2bfc8600726738c98e25be83e55ade76697e8",
+        "sha256": "e133911313e1e47402b0ee736a9e2056971d9821ce217d6278663943d97b5911"
+      },
+      "gpuwm/fortran_namelist.py": {
+        "bytes": 21656,
+        "git_blob": "14ce251ae1145c86731ae632132b72aaa4e12fbf",
+        "sha256": "efb950f52c1df31428619f4155641309cc15c83ce22064d4e5b846654d408dfe"
+      },
+      "gpuwm/grid_requirements.py": {
+        "bytes": 1021,
+        "git_blob": "1d32b42ebd63270428ea438232f70dcdc797e675",
+        "sha256": "5ed55b08a9ca06e47baf199499c47ea8544acfc8c3ca5955df1608186edbef14"
+      },
+      "gpuwm/hrrr_route_inputs.py": {
+        "bytes": 64168,
+        "git_blob": "7fb0e381ab10b17f1c35fa3f88c7c2c8070d54ea",
+        "sha256": "e9f85f1cc01e5d8afc4d6663a94691fc5d5a49f005adf8d430fff64d2fd62527"
+      },
+      "gpuwm/namelist_compat.py": {
+        "bytes": 85267,
+        "git_blob": "4a9c6d00b63ea59c1b3375eabc73211d161ac181",
+        "sha256": "1e693ddceaf793f073f24e8d84ce6299f6878b3635c3a0a58719c0187b9b2209"
+      },
+      "gpuwm/namelist_import.py": {
+        "bytes": 267069,
+        "git_blob": "08f8449795caf68cfe375984da1593fa6a3076e9",
+        "sha256": "8a67cab5c9630f2865cec8e0e66372048f27673d703f78083f8d9130223c673c"
+      },
+      "gpuwm/physics_compat.py": {
+        "bytes": 188928,
+        "git_blob": "f5cf0991f34365fd9dd3b85eb28a8f37419d4416",
+        "sha256": "5d1108d382e12ffc7a1e8d59c415159d335ac207e472d16090caf6a45c6892d4"
+      },
+      "gpuwm/physics_menu.py": {
+        "bytes": 45816,
+        "git_blob": "c9905fdb88fa8ac799fee0fb6ea5394f00c87522",
+        "sha256": "ce3e715373cd3240af0b8b6ff12c35b9d810a36624bf98e692524d3000f11645"
+      },
+      "gpuwm/physics_registry.py": {
+        "bytes": 191480,
+        "git_blob": "50f36565f47369e76aa2755a171e8782c6cbd834",
+        "sha256": "e699d0043e7d867329fc14c84eccdc431daa8b71116e26a96c600db987095e4e"
+      },
+      "gpuwm/physics_registry_v2.json": {
+        "bytes": 402442,
+        "git_blob": "121d5e01cd69b96a50cb9adae789abeac532d00b",
+        "sha256": "0555052225e59e72ff337193bc6a0da59d874f96729c4de23b1e297b097eed95"
+      },
+      "gpuwm/source_adapters.py": {
+        "bytes": 113026,
+        "git_blob": "c4c2815e051c2710e6117dc7d671c3c430eaa198",
+        "sha256": "ee2e87be3d103bae5af19815ac2539614147f4bf8775e6dc2701550d876db319"
+      },
+      "gpuwm/source_authorities.py": {
+        "bytes": 55032,
+        "git_blob": "2310db09b2af66b7dda6152efee76f1607b10a59",
+        "sha256": "c5d9d93a730efdb3061c800d55ef0cccade5da203202ef3790d4abece8dc7c47"
+      },
+      "gpuwm/source_availability.py": {
+        "bytes": 56079,
+        "git_blob": "6df0269cf92f61ca4046c1455b28b2027e6a5b8b",
+        "sha256": "4e16025d49b44ad194f7a0ac681ab8c3754974e2dfa9df28bdeac8fd4b4a285d"
+      },
+      "gpuwm/source_coverage.py": {
+        "bytes": 18046,
+        "git_blob": "7554167ab9dbad853480e1ece1c0dfd1a18ea320",
+        "sha256": "2af0cd69fb958dca04a682245b655d3759232c9262852a5c6c7a33da56c487a6"
+      },
+      "gpuwm/source_credentials.py": {
+        "bytes": 10310,
+        "git_blob": "0e85ccb276226580ae906e17550fb80f56f351df",
+        "sha256": "92ad6ef2408ff70d73fdf088cabd1ecbdf1227fe662ff99c65cfa1c7e00b921b"
+      },
+      "gpuwm/source_cycles.py": {
+        "bytes": 19303,
+        "git_blob": "32c8bffce33b8333459a47490c0924007231f4a5",
+        "sha256": "48c91805679278085d4ce9d87acbea6aa4accc82fccaf68f456093af56dc5629"
+      }
+    },
+    "7ab2e3dcf59acb668015e3172feefc0418ee91b3": {
+      "gpuwm/config.py": {
+        "bytes": 278692,
+        "git_blob": "85d3ca79353bea5e75e76aeb55edbae0090a4d3c",
+        "sha256": "a12cd6855554c235cad167929a9e26f956b1f1fb17a6b34983b799cb9a9ef6c3"
+      },
+      "gpuwm/config_authority.py": {
+        "bytes": 4781,
+        "git_blob": "6b882f81ecc2664ca337f21b234c0e6e58951c26",
+        "sha256": "833ee736f456184e9ecd8c6fbd4b6b04e5117b1d1e0222b4c4529c3cc0323a53"
+      },
+      "gpuwm/config_keys.py": {
+        "bytes": 7482,
+        "git_blob": "5e9ac72fd2a05920700b6089e2b55d86aee2aabe",
+        "sha256": "ae64cfb3f526b955c45f9c0eb6ef1dfc538a6b5695a154ae2f723f55ffc5cde2"
+      },
+      "gpuwm/domain_wizard.py": {
+        "bytes": 404851,
+        "git_blob": "ead2a180676534e0a860896a6b666517f65166e4",
+        "sha256": "4e1993c1284397764db7329231dd81399fc99ec49a514edc5668e75360e7946f"
+      },
+      "gpuwm/experiment.py": {
+        "bytes": 273061,
+        "git_blob": "a1a2b1d1a705b8f93ff0b09d9286048329044f55",
+        "sha256": "2fd2cad77eaa3d99f1e3f4622766ebc9008ca19529090cab425db278765d4e18"
+      },
+      "gpuwm/fetch.py": {
+        "bytes": 402697,
+        "git_blob": "1ca2bfc8600726738c98e25be83e55ade76697e8",
+        "sha256": "e133911313e1e47402b0ee736a9e2056971d9821ce217d6278663943d97b5911"
+      },
+      "gpuwm/fortran_namelist.py": {
+        "bytes": 21656,
+        "git_blob": "14ce251ae1145c86731ae632132b72aaa4e12fbf",
+        "sha256": "efb950f52c1df31428619f4155641309cc15c83ce22064d4e5b846654d408dfe"
+      },
+      "gpuwm/grid_requirements.py": {
+        "bytes": 1021,
+        "git_blob": "1d32b42ebd63270428ea438232f70dcdc797e675",
+        "sha256": "5ed55b08a9ca06e47baf199499c47ea8544acfc8c3ca5955df1608186edbef14"
+      },
+      "gpuwm/hrrr_route_inputs.py": {
+        "bytes": 64168,
+        "git_blob": "7fb0e381ab10b17f1c35fa3f88c7c2c8070d54ea",
+        "sha256": "e9f85f1cc01e5d8afc4d6663a94691fc5d5a49f005adf8d430fff64d2fd62527"
+      },
+      "gpuwm/namelist_compat.py": {
+        "bytes": 85267,
+        "git_blob": "4a9c6d00b63ea59c1b3375eabc73211d161ac181",
+        "sha256": "1e693ddceaf793f073f24e8d84ce6299f6878b3635c3a0a58719c0187b9b2209"
+      },
+      "gpuwm/namelist_import.py": {
+        "bytes": 267069,
+        "git_blob": "08f8449795caf68cfe375984da1593fa6a3076e9",
+        "sha256": "8a67cab5c9630f2865cec8e0e66372048f27673d703f78083f8d9130223c673c"
+      },
+      "gpuwm/physics_compat.py": {
+        "bytes": 188928,
+        "git_blob": "f5cf0991f34365fd9dd3b85eb28a8f37419d4416",
+        "sha256": "5d1108d382e12ffc7a1e8d59c415159d335ac207e472d16090caf6a45c6892d4"
+      },
+      "gpuwm/physics_menu.py": {
+        "bytes": 45816,
+        "git_blob": "c9905fdb88fa8ac799fee0fb6ea5394f00c87522",
+        "sha256": "ce3e715373cd3240af0b8b6ff12c35b9d810a36624bf98e692524d3000f11645"
+      },
+      "gpuwm/physics_registry.py": {
+        "bytes": 191480,
+        "git_blob": "50f36565f47369e76aa2755a171e8782c6cbd834",
+        "sha256": "e699d0043e7d867329fc14c84eccdc431daa8b71116e26a96c600db987095e4e"
+      },
+      "gpuwm/physics_registry_v2.json": {
+        "bytes": 402442,
+        "git_blob": "121d5e01cd69b96a50cb9adae789abeac532d00b",
+        "sha256": "0555052225e59e72ff337193bc6a0da59d874f96729c4de23b1e297b097eed95"
+      },
+      "gpuwm/source_adapters.py": {
+        "bytes": 113026,
+        "git_blob": "c4c2815e051c2710e6117dc7d671c3c430eaa198",
+        "sha256": "ee2e87be3d103bae5af19815ac2539614147f4bf8775e6dc2701550d876db319"
+      },
+      "gpuwm/source_authorities.py": {
+        "bytes": 55032,
+        "git_blob": "2310db09b2af66b7dda6152efee76f1607b10a59",
+        "sha256": "c5d9d93a730efdb3061c800d55ef0cccade5da203202ef3790d4abece8dc7c47"
+      },
+      "gpuwm/source_availability.py": {
+        "bytes": 56079,
+        "git_blob": "6df0269cf92f61ca4046c1455b28b2027e6a5b8b",
+        "sha256": "4e16025d49b44ad194f7a0ac681ab8c3754974e2dfa9df28bdeac8fd4b4a285d"
+      },
+      "gpuwm/source_coverage.py": {
+        "bytes": 18046,
+        "git_blob": "7554167ab9dbad853480e1ece1c0dfd1a18ea320",
+        "sha256": "2af0cd69fb958dca04a682245b655d3759232c9262852a5c6c7a33da56c487a6"
+      },
+      "gpuwm/source_credentials.py": {
+        "bytes": 10310,
+        "git_blob": "0e85ccb276226580ae906e17550fb80f56f351df",
+        "sha256": "92ad6ef2408ff70d73fdf088cabd1ecbdf1227fe662ff99c65cfa1c7e00b921b"
+      },
+      "gpuwm/source_cycles.py": {
+        "bytes": 19303,
+        "git_blob": "32c8bffce33b8333459a47490c0924007231f4a5",
+        "sha256": "48c91805679278085d4ce9d87acbea6aa4accc82fccaf68f456093af56dc5629"
+      }
+    }
+  },
+  "schema": "handover-audit-parent-controls-v1"
+}

@@ -1,0 +1,13 @@
+[package]
+name = "solar-albedo-checkpoint-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "../src/checkpoint.rs"
+
+[dependencies]
+zip = { version = "=8.6.0", default-features = false }
+
+[workspace]

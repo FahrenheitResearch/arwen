@@ -46,6 +46,9 @@ def _cupyless(monkeypatch):
     monkeypatch.setattr(horiz, "_cupy", _no_cupy)
     monkeypatch.setattr(
         backend_module, "_gpu_runtime_installed", lambda: False)
+    # Both CUDA boundaries above are test doubles. Keep the process-wide
+    # CUDA visibility ban while exercising the missing-install selection.
+    monkeypatch.setattr("gpuwm.local_gpu.no_local_gpu", lambda: False)
 
 
 def test_the_three_prep_doors_default_to_auto():
@@ -173,8 +176,14 @@ def test_cuda_with_cupy_present_stays_lazy(monkeypatch,
     cuda branch returns the same lazy backend it always has, importing
     nothing at resolve time."""
 
+    from types import SimpleNamespace
+
     monkeypatch.setattr(
         backend_module, "_gpu_runtime_installed", lambda: True)
+    monkeypatch.setattr(
+        backend_module, "CudaPreprocessBackend",
+        lambda: SimpleNamespace(name="cuda"))
+    monkeypatch.setattr("gpuwm.local_gpu.no_local_gpu", lambda: False)
     assert resolve_preprocess_backend("cuda").name == "cuda"
 
 
@@ -205,6 +214,8 @@ def test_auto_with_unusable_runtime_names_the_runtime(
     monkeypatch.setattr(
         backend_module, "ParallelCpuPreprocessBackend",
         lambda **_kwargs: cpu)
+    # The backend and every runtime answer are host-only test doubles.
+    monkeypatch.setattr("gpuwm.local_gpu.no_local_gpu", lambda: False)
     assert resolve_preprocess_backend("auto") is cpu
     err = capsys.readouterr().err
     assert err.count("\n") == 1
@@ -244,6 +255,7 @@ def test_auto_with_cupy_installed_and_no_device_does_not_say_not_installed(
     monkeypatch.setattr(
         backend_module, "ParallelCpuPreprocessBackend",
         lambda **_kwargs: cpu)
+    monkeypatch.setattr("gpuwm.local_gpu.no_local_gpu", lambda: False)
     assert resolve_preprocess_backend("auto") is cpu
     err = capsys.readouterr().err
     assert err.count("\n") == 1
@@ -271,6 +283,9 @@ def test_auto_with_cupy_installed_but_unloadable_says_it_could_not_be_loaded(
     monkeypatch.setattr(
         backend_module, "ParallelCpuPreprocessBackend",
         lambda **_kwargs: cpu)
+    # sys.modules blocks the only device-bound import before any runtime
+    # call. This fake import failure must retain its own refusal reason.
+    monkeypatch.setattr("gpuwm.local_gpu.no_local_gpu", lambda: False)
     assert resolve_preprocess_backend("auto") is cpu
     err = capsys.readouterr().err
     assert err.count("\n") == 1

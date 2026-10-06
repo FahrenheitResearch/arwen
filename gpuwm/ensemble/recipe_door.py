@@ -1,4 +1,4 @@
-"""The front door for time-lagged and multi-model ensemble members.
+"""The front door for source-trajectory and seeded surface-state ensemble members.
 
 ``gpuwm ensemble CONFIG --recipe time-lagged`` (and ``go`` and ``run``, or
 ``[ensemble] recipe`` in the config) lands here.  The door owns no model
@@ -21,8 +21,11 @@ member's own config and chain plan, and the gates the ordinary door asks
 products and the disk).  ``--dry-run`` stops after the plan and the member
 configs, and spends nothing.
 
-A recipe member is a real source trajectory.  Nothing here perturbs a
-field, so the observation-calibration refusal does not apply to it.
+A source recipe member is a real source trajectory. Surface-state recipes
+share their unchanged source preparation and apply named, seeded GPU
+perturbations independently after each member's ordinary initialization.
+Named member rosters share each matching prepared authority and keep
+different land selectors and soil layouts in separately bound banks.
 """
 from __future__ import annotations
 
@@ -37,7 +40,7 @@ from types import SimpleNamespace
 #: automatic choice for a source with operational members and
 #: ``recentered`` has no observation-calibrated amplitude, so neither is
 #: a door option here.
-RECIPES = ("time-lagged", "multi-model")
+RECIPES = ("time-lagged", "multi-model", "surface-state", "member-roster")
 
 RECEIPT_NAME = "ensemble-recipe.json"
 RECEIPT_SCHEMA = "gpuwm-ensemble-recipe-door.v1"
@@ -66,7 +69,8 @@ def configured(config) -> bool:
         table = tomllib.loads(path.read_text(encoding="utf-8-sig")).get("ensemble")
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         return False
-    return isinstance(table, dict) and (table.get("recipe") is not None or bool(table.get("trajectories")))
+    return isinstance(table, dict) and (table.get("recipe") is not None
+        or bool(table.get("trajectories")) or bool(table.get("member_variants")))
 
 
 def refuse_continuation(command, config) -> None:
@@ -195,15 +199,6 @@ def _member_plan(request, payload, experiment, cycle):
             "an ensemble recipe fetches and prepares each member's own source "
             "trajectory, and this config has no [fetch] source and cycle. "
             "Next: gpuwm domain --help")
-    if len(experiment.domains) != 1:
-        # Breakage it prevents: this door prepares and reads one prepared
-        # domain per member; a tree's children would all be initialized
-        # from the first member's bundle and run as if they were distinct.
-        raise RecipeRefusal(
-            "an ensemble recipe runs one-domain configs: each member's nests "
-            "would need their own inputs from that member's trajectory, and "
-            "this door prepares one domain per member. Next: run the recipe "
-            "on the outer domain's config")
     start = _utc(experiment.start_time)
     end = start + timedelta(seconds=float(experiment.run_seconds))
     lead = fetch.get("forecast_start_hour", 0)
@@ -219,16 +214,18 @@ def _member_plan(request, payload, experiment, cycle):
     # The config's own source member is the base trajectory's, and a
     # time-lagged roster keeps it at every lagged cycle.  A multi-model
     # roster runs the listed trajectories, each naming its own member.
-    member = fetch.get("member") if request.recipe == "time-lagged" else None
+    member = fetch.get("member") if request.recipe in ("time-lagged", "surface-state", "member-roster") else None
     try:
         trajectories = tuple(SourceTrajectory(str(item["source"]), _utc(item["cycle"]), item.get("member"))
                              for item in request.trajectories)
         # A plain member count (no recipe named) is the planner's automatic
         # choice: the operational ensemble the source's adapter row declares.
+        variants = tuple(getattr(request, "member_variants", ()) or ())
         return build_recipe(source=str(fetch["source"]), cycle=base_cycle, start=start, end=end,
                             count=request.members, base_seed=request.base_seed,
                             kind=request.recipe or "auto", trajectories=trajectories,
-                            member=None if member is None else str(member))
+                             member=None if member is None else str(member),
+                             perturbation=request.perturbation, member_variants=variants)
     except RecipeRefusal:
         raise
     except ValueError as error:
@@ -301,12 +298,13 @@ def member_label(member) -> str:
 def member_configuration(raw, config, wps, recipe, member, directory):
     """Write the config and WPS namelist that prepare one member's trajectory.
 
-    The domain, physics and clock are the original document.  Only the
-    ``[fetch]`` table changes (:func:`member_fetch`): it names this
+    The domain and clock remain the original document. Source recipes
+    change only the ``[fetch]`` table (:func:`member_fetch`): it names this
     member's source and cycle and the lead at which that cycle reaches the
     shared start time.  A member from another model takes that model's own
     forcing cadence, and its WPS namelist is rewritten for it by the
-    ordinary writer.
+    ordinary writer. A named member roster also sets that member's existing
+    land selectors before the ordinary source preparation reads them.
     """
     from gpuwm.experiment import load_experiment
     from gpuwm.toml_document import emit_experiment_toml
@@ -314,9 +312,19 @@ def member_configuration(raw, config, wps, recipe, member, directory):
     trajectory = member.trajectory
     original = load_experiment(config)
     changed = deepcopy(raw)
+    if recipe.member_variants:
+        from gpuwm.ensemble.member_variants import variant_configuration
+        changed = variant_configuration(changed, recipe.member_variants[member.index])
     changed.pop("ensemble", None)
     changed["fetch"] = member_fetch(raw, original, recipe, member)
-    if "static" in changed:
+    static = changed.get("static")
+    if isinstance(static, dict) and isinstance(static.get("highres"), dict):
+        # Only a declared [static.highres] has a cache_root to pin: a
+        # [static] that names only a source parses to a disabled carrier
+        # holding the default root, and writing that root alone made a
+        # [static.highres] with no `enabled`, which refused every member
+        # of a base that names a static source (what `gpuwm domain`
+        # emits for a source whose metadata declares one).
         from gpuwm.static.highres_production import parse_static_table
         carrier = parse_static_table(changed["static"], source=str(config),
                                      base_dir=Path(config).resolve().parent)
@@ -350,11 +358,16 @@ class MemberPlan:
     #: The reviewed copy of the member's config, in the review's scratch
     #: folder: there while the gates are asked, gone before the run.
     config: Path
+    preparation_key: str = ""
+    variant_name: str | None = None
+    memory_key: str = ""
 
     @property
     def line(self) -> str:
         trajectory = self.member.trajectory
-        return (f"member {self.member.index}: {trajectory.source} "
+        return (f"member {self.member.index}"
+                + ("" if self.variant_name is None else f" ({self.variant_name})")
+                + f": {trajectory.source} "
                 f"{trajectory.cycle:%Y-%m-%dT%H}Z"
                 + ("" if trajectory.member is None else f" member {trajectory.member}"))
 
@@ -411,15 +424,34 @@ def review_members(raw, config, wps, recipe, *, scratch, options=None):
         except ValueError as error:
             raise RecipeRefusal(
                 f"{member_label(member)} cannot be prepared: {error}") from error
+        from gpuwm.ensemble.member_variants import preparation_binding_key
+        binding = preparation_binding_key(member.trajectory.identity, document, experiment=experiment)
+        variant_name = None
+        if recipe.member_variants:
+            variant = recipe.member_variants[member.index]
+            variant_name = variant["name"]
         plans.append(MemberPlan(member, table, chain,
-                                recipe.acquisition_window(member.trajectory)[0],
-                                experiment, target))
+                                 recipe.acquisition_window(member.trajectory)[0],
+                                 experiment, target, binding, variant_name,
+                                 preparation_binding_key(source, document, experiment=experiment)))
+    if recipe.member_variants:
+        from gpuwm.ensemble.member_variants import require_distinct_variants
+        try:
+            require_distinct_variants(raw, recipe.member_variants,
+                                     experiments=[plan.experiment for plan in plans])
+        except ValueError as error:
+            raise RecipeRefusal(str(error)) from error
     return tuple(plans)
 
 
 def prepare_member(config, experiment, *, source, directory, downloads, geog_root,
                    recipe_sha256, options=None):
-    """Fetch and prepare one trajectory through its source's own chain, and stop."""
+    """Prepare every domain from one trajectory through its ordinary source chain.
+
+    The chain consumes this member's complete experiment, including its
+    nests.  Its prepare-only result names the sealed tree when there is
+    more than one domain, so no child can inherit another member's inputs.
+    """
     import tomllib
 
     from gpuwm import regional_preparation, runplan
@@ -451,17 +483,31 @@ def prepare_member(config, experiment, *, source, directory, downloads, geog_roo
 def member_inputs(shared_inputs, prepared):
     """The ordinary preflight, applied to another member's prepared bundle."""
     from gpuwm import stage_cli
-    from gpuwm.prepared_single_domain_forecast import preflight_prepared_forecast
 
     root = Path(prepared["prepared_root"]).resolve()
     bundle = stage_cli.resolve_bundle(root)
-    digests = stage_cli.single_domain_digests(bundle)
     arguments = dict(shared_inputs.preflight_arguments)
+    config = Path(prepared["experiment_config"])
+    if bundle.get("layout") == "tree":
+        from gpuwm.prepared_domain_tree_forecast import preflight_prepared_tree
+
+        digests = stage_cli.tree_digests(bundle, config)
+        arguments.update(prepared_root=root, experiment_config=config,
+                         preparation_receipt_sha256=digests["preparation_receipt"],
+                         experiment_config_sha256=digests["experiment_config"])
+        # Recipe preparation is complete before forecasting.  A previous
+        # member's streamed head must not bind this member's sealed tree.
+        arguments.pop("prepared_head_sha256", None)
+        return preflight_prepared_tree(**arguments)
+
+    from gpuwm.prepared_single_domain_forecast import preflight_prepared_forecast
+
+    digests = stage_cli.single_domain_digests(bundle)
     arguments.update(source=bundle["source"], prepared_root=root,
                      proof_sha256=digests["proof"],
                      source_manifest_sha256=digests["source_manifest"],
                      prepared_content_sha256=digests["prepared_content"],
-                     experiment_config=Path(prepared["experiment_config"]),
+                     experiment_config=config,
                      wps_namelist=Path(prepared["wps_namelist"]))
     return preflight_prepared_forecast(**arguments)
 
@@ -471,22 +517,21 @@ def _say(text):
 
 
 def disk_refusal(plans, *, case_root, request, options=None) -> str | None:
-    """Why this ensemble's disk cannot hold it, or None: N downloads and N bundles.
+    """Why the disk cannot hold the ensemble's distinct source preparations.
 
-    Breakage it prevents: every member downloads its own window and
-    writes its own prepared bundle, so a disk with room for one run fills
-    partway through the members and the ensemble ends with nothing
-    usable.  Priced from the tables the single-run admission uses
-    (:func:`gpuwm.disk_budget.projected_run_bytes`), one row per member,
-    with what a matching download already left in its request cache taken
-    off.  Member history is charged only when the request keeps member
-    files; the aggregate products have no measured size and are left out.
+    Breakage it prevents: distinct source members download their own
+    windows and write their own bundles, so a disk with room for one run
+    fills partway through the members. Each distinct trajectory is priced
+    once from the single-run admission tables; seeded surface members
+    share unchanged preparation. Matching cached downloads are subtracted.
+    Member history is charged only when the request keeps member files;
+    the aggregate products have no measured size and are left out.
     """
     from gpuwm import disk_budget, runplan
     from gpuwm.go_cli import fetch_request, managed_download_dir, pin_request, pinned_transport
 
     posting = _posting(options or {})
-    rows, basis = [], []
+    rows, basis, distinct, preparation_banks = [], [], {}, {}
     for plan in plans:
         pinned, _basis = pinned_transport(plan.fetch, posting.get("transport"))
         fetch = pin_request(fetch_request(plan.fetch, p_top=plan.experiment.vertical.p_top), pinned)
@@ -499,13 +544,15 @@ def disk_refusal(plans, *, case_root, request, options=None) -> str | None:
             render=False, render_products="none",
             download_present_bytes=runplan._present_download_bytes(fetch, folder, True))
         rows.append(row)
+        distinct.setdefault(plan.member.trajectory.identity, row)
+        preparation_banks.setdefault(plan.preparation_key or plan.member.trajectory.identity, row)
         basis.append(f"member {plan.member.index}: {row['download']['basis']}")
     stream = max(rows, key=lambda row: int(row.get("compose_scratch_min_bytes") or 0))
     members = len(rows)
     projection = {
-        "download_bytes": sum(int(row["download_bytes"]) for row in rows),
-        "preparation_bytes": sum(int(row["preparation_bytes"]) for row in rows),
-        "history_bytes": (int(rows[0]["history_bytes"]) * members
+        "download_bytes": sum(int(row["download_bytes"]) for row in distinct.values()),
+        "preparation_bytes": sum(int(row["preparation_bytes"]) for row in preparation_banks.values()),
+        "history_bytes": (sum(int(row["history_bytes"]) for row in rows)
                           if request.keep_member_files else 0),
         "checkpoint_bytes": 0, "picture_bytes": 0,
         # One preparation runs at a time and removes its frame stream
@@ -559,14 +606,15 @@ def admit(plans, *, config, geog_root, case_root, request, options=None,
     try:
         go_cli._require_forecast_device()
         if not options.get("no_memory_gate"):
-            # Once per source: the forecast is the same grid for every
-            # member, and the preparation is priced per source.
+            # Once per prepared authority: surface arms share a bank,
+            # while different soil layouts retain their own inventory.
             seen = set()
             for plan in plans:
                 source = plan.member.trajectory.source
-                if source in seen:
+                binding = plan.memory_key or source
+                if binding in seen:
                     continue
-                seen.add(source)
+                seen.add(binding)
                 gate = go_cli.memory_gate(
                     {"config": plan.config, "source": source,
                      "cadence": plan.fetch.get("cadence")}, experiment=plan.experiment)
@@ -776,6 +824,7 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
 
     publish()
     prepared = {}
+    prepared_banks = {}
     try:
         for plan in plans:
             member = plan.member
@@ -787,16 +836,36 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
                 "gpuwm", command, str(config), "#", member_label(member)])
             member_config, member_wps, member_experiment = member_configuration(
                 raw, config, wps, recipe, member, directory / "source")
-            prepared[member.index] = prepare_member(
-                member_config, member_experiment, source=member.trajectory.source,
-                directory=directory, downloads=case_root, geog_root=geog_root,
-                recipe_sha256=recipe.sha256, options=options)
+            from gpuwm.ensemble.member_variants import preparation_binding_key
+            member_document = tomllib.loads(Path(member_config).read_text(encoding="utf-8"))
+            identity = preparation_binding_key(member.trajectory.identity, member_document,
+                                               experiment=member_experiment)
+            original_member = prepared_banks.get(identity)
+            if original_member is None:
+                prepared[member.index] = prepare_member(
+                    member_config, member_experiment, source=member.trajectory.source,
+                    directory=directory, downloads=case_root, geog_root=geog_root,
+                    recipe_sha256=recipe.sha256, options=options)
+                prepared_banks[identity] = member.index
+            else:
+                # Seeded surface members share their unchanged source
+                # trajectory. Each initialized tree applies its own GPU
+                # perturbation; copying prepared arrays would add disk use
+                # without creating a different initial source.
+                prepared[member.index] = dict(prepared[original_member])
+                _say(f"member {member.index} reuses member {original_member}'s "
+                     "prepared source; its seeded surface state is applied at initialization")
             receipt["members"].append({
                 "member_id": member.index, "seed": member.seed,
                 "source": member.trajectory.source, "cycle": member.trajectory.cycle.isoformat(),
                 "source_member": member.trajectory.member,
                 "trajectory_sha256": member.trajectory.identity,
+                "preparation_binding_sha256": identity,
                 "start_lead_hours": plan.start_lead,
+                **({} if not recipe.member_variants else
+                   {"variant": recipe.member_variants[member.index]}),
+                **({} if original_member is None else
+                   {"preparation_reused_from_member": original_member}),
                 **prepared[member.index]})
             publish()
             _notify(observer, "stage_end", label="prepare", exit_code=0, ok=True,
@@ -805,27 +874,28 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
         base = recipe.members[0].index
         where.update(stage="forecast", member_id=None, started=time.monotonic())
         bundle = stage_cli.resolve_bundle(Path(prepared[base]["prepared_root"]))
-        if bundle["layout"] != "single":
-            raise RecipeRefusal("the prepared member bundle is a domain tree; this door runs one domain per member")
         forecast_dir = root / "run"
         cache = {}
 
         def provider(*, shared_inputs, member_id, request):
             # Member ``base`` IS the bundle the runner preflighted; every other
             # member is the same preflight applied to its own prepared bundle.
-            if member_id == base:
+            if member_id == base or prepared[member_id] == prepared[base]:
                 return shared_inputs
-            if member_id not in cache:
+            binding = tuple(prepared[member_id][name] for name in
+                            ("prepared_root", "experiment_config", "wps_namelist"))
+            if binding not in cache:
                 # A member whose bundle the preflight refuses is that
                 # member's forecast failure, and the receipt says which.
                 where["member_id"] = member_id
-                cache[member_id] = member_inputs(shared_inputs, prepared[member_id])
+                cache[binding] = member_inputs(shared_inputs, prepared[member_id])
                 where["member_id"] = None
-            return cache[member_id]
+            return cache[binding]
 
         sim = stage_cli.sim_command(
             bundle, experiment_config=Path(prepared[base]["experiment_config"]),
-            wps_namelist=Path(prepared[base]["wps_namelist"]), outdir=forecast_dir,
+            wps_namelist=(None if prepared[base]["wps_namelist"] is None else
+                          Path(prepared[base]["wps_namelist"])), outdir=forecast_dir,
             physics_profile=None, progress_format="jsonl",
             render_products=options.get("render_products"),
             **({"devices": args.devices} if getattr(args, "devices", None) is not None else {}),
@@ -835,11 +905,17 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
         publish()
         _say(f"running {len(recipe.members)} members in {forecast_dir}")
         _notify(observer, "stage_begin", label="forecast", command=list(sim))
-        from gpuwm import prepared_single_domain_forecast as runner
-        with production_run_scope(request, output_directory=forecast_dir) as session:
-            if session.input_provider is not None or session.member_roster is not None:
-                raise RecipeRefusal("this ensemble session already has a member source owner")
-            session.input_provider = provider
+        if bundle["layout"] == "tree":
+            from gpuwm import prepared_domain_tree_forecast as runner
+        else:
+            from gpuwm import prepared_single_domain_forecast as runner
+        # Bind the prepared authority before the real session constructor
+        # validates member_variants and active surface controls. Binding it
+        # after entering the scope refused a fully prepared named roster.
+        with production_run_scope(request, output_directory=forecast_dir,
+                                  input_provider=provider,
+                                  **({"restart_roster": args.restart_roster}
+                                     if getattr(args, "restart_roster", None) is not None else {})) as session:
             code = runner.main(sim[3:], observer=observer)
             if code:
                 # The runner said why on its own line (a refusal, or a

@@ -132,6 +132,11 @@ def device_free_bytes() -> int | None:
     except Exception:                         # noqa: BLE001 - no runtime
         return None
     try:
+        # Garbage from earlier work in this process is not a tenant of the
+        # card, in a private pool or the default one
+        # (gpuwm.core.preflight.release_unreachable_device_memory).
+        from gpuwm.core.preflight import release_unreachable_device_memory
+        release_unreachable_device_memory(cp)
         allocator = cp.cuda.get_allocator()
         owner = getattr(allocator, "__self__", None)
         private = getattr(owner, "pool", None)
@@ -281,7 +286,7 @@ def slab_device_peak_bytes(cfg, rows: int, *, p_top: float,
 
 
 def admitted_slab_rows(cfg, rows: int, *, p_top: float, log=print,
-                       free_bytes=None) -> int:
+                       free_bytes=None, column_chunk: int | None = None) -> int:
     """The slab height a store load may use on this card, before its first slab.
 
     The requested height when its slab fits; otherwise the tallest slab that
@@ -297,7 +302,8 @@ def admitted_slab_rows(cfg, rows: int, *, p_top: float, log=print,
     free = int(free_bytes)
 
     def price(height):
-        return slab_device_peak_bytes(cfg, height, p_top=p_top)
+        return slab_device_peak_bytes(cfg, height, p_top=p_top,
+                                      column_chunk=column_chunk)
 
     need = price(rows)
     if need <= free:

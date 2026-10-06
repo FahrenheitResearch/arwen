@@ -159,6 +159,15 @@ this tip, an mp=6 pair through `rw-wps namelist-support` fails with
 ``unknown field `start_time` ``.  That is a separate instance of the same
 snapshot drift and belongs with whoever resyncs the report schema.
 
+## NetCDF reader dependency closure
+
+`vendor/netcrust/Cargo.toml` now selects a local `vendor/netcdf-reader`
+snapshot. That snapshot restores its original sibling `hdf5-reader` path
+so standalone facade builds use the same corrected fractal-heap parser as
+this workspace. Its Rust sources match the existing 0.3.0 registry mirror;
+the additional snapshot records its origin in its own `VENDOR.md`.
+The historical manifest checksum below remains the original donor record.
+
 ## File list (sha256, path relative to this directory)
 
 2a2a1c232581f4814f45faef3b779dbcc2087e0b2f304f84f954179f5ce299e9 *crates/rw-wps/Cargo.toml

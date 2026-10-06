@@ -714,13 +714,11 @@ def test_nothing_at_run_time_imports_the_oracle():
 def test_the_contract_marker_is_the_entry_the_backends_call():
     from gpuwm import bridges
 
-    from gpuwm.ingest.cpu_backend import MASKED_NEAREST_ENTRY
+    from gpuwm.noah_init_bridge import NOAH_SH2O_ENTRY
 
-    # The marker names the newest entry, the CPU backend's surface-nearest
-    # search, which is built after the chain, the soil stencil and every
-    # water entry: a library with it has all of them.
+    # The newest default entry initializes host soil liquid water.
     assert (bridges.BRIDGE_ABI_MARKERS["gpuwm_preprocess_cpu"]
-            == MASKED_NEAREST_ENTRY.encode("ascii"))
+            == NOAH_SH2O_ENTRY.encode("ascii"))
     assert _native().masked_nearest_entry
     assert _native().water_blend_missing == ()
     assert _native().wps_masked_chain_entry

@@ -44,7 +44,8 @@ from gpuwm.ingest.prepared_cache import (  # noqa: E402
     prepared_domain_config_identity)
 
 from hrrr_single_domain_benchmark import (  # noqa: E402
-    _experiment, _experiment_tables)
+    _experiment, _experiment_tables, _initial_hrrr_microphysics_receipt)
+from gpuwm.physics_compat import THOMPSON_RTE_RRTMGP_PROFILE_ID  # noqa: E402
 
 
 #: The suite these bundles are built with.  It is the ROUTE's own
@@ -92,6 +93,7 @@ def _on_the_baseline_terrain(tables: dict) -> dict:
 
 def _hrrr_experiment(*, run_seconds: float = 7200.0,
                      history_interval_seconds: float = 900.0,
+                     configuration_profile: str = PROFILE,
                      shared: dict | None = None):
     vertical = VerticalConfig(
         eta_levels=tuple(1.0 - index / NZ for index in range(NZ + 1)),
@@ -100,7 +102,8 @@ def _hrrr_experiment(*, run_seconds: float = 7200.0,
         HrrrTargetDomain.legacy_500x500(), nz=NZ, nx=48, ny=48)
     kwargs = dict(run_seconds=run_seconds, target=target,
                   start_time=CYCLE + timedelta(hours=SOURCE_HOURS[0]),
-                  history_interval_seconds=history_interval_seconds)
+                  history_interval_seconds=history_interval_seconds,
+                  physics_profile=configuration_profile)
     tables, _resolved = _experiment_tables(vertical, **kwargs)
     if shared:
         # A config-driven preparation (``physics_profile=None``): the
@@ -197,10 +200,12 @@ def _hrrr_bundle(tmp_path: Path, *, run_seconds: float = 7200.0,
                  publish_cycle: datetime | None = None,
                  scientific_identity: dict | None = None,
                  user_receipts: dict | None = None,
+                 configuration_profile: str = PROFILE,
                  shared: dict | None = None) -> _Bundle:
     tables, exp = _hrrr_experiment(
         run_seconds=run_seconds,
-        history_interval_seconds=history_interval_seconds, shared=shared)
+        history_interval_seconds=history_interval_seconds,
+        configuration_profile=configuration_profile, shared=shared)
     _on_the_baseline_terrain(tables)
     root = tmp_path / "prepared"
     native = root / "native"
@@ -467,8 +472,17 @@ def test_a_scheme_with_no_stock_wrf_contract_publishes_and_runs(
 
     assert 16 not in supported_stock_wrf_mp_physics()
     _bind_synthetic_geometry(monkeypatch)
+    # 4193eb0da, lane/286-fork-mynn, selects the coupled MP28 suite at
+    # the native default. This configured WDM6 export control starts from
+    # the admitted uncoupled baseline, without MP28-only scalar or forks.
     bundle = _hrrr_bundle(tmp_path, physics_profile=None,
-                          shared={"mp_physics": 16})
+                          configuration_profile=THOMPSON_RTE_RRTMGP_PROFILE_ID,
+                          # 188ffdf41, lane/sw-excess, keeps the configured
+                          # WDM6 export control explicit about MP28-only
+                          # scalar mixing and neutral Thompson selectors.
+                          shared={"mp_physics": 16, "scalar_pblmix": 0,
+                                  "thompson_version": "wrf_461",
+                                  "thompson_fork_snow_fall": "blend"})
     proof = json.loads(Path(bundle.handoff["proof"]).read_text(
         encoding="utf-8"))
     assert proof["stock_wrf_export"] == "optional"
@@ -477,6 +491,8 @@ def test_a_scheme_with_no_stock_wrf_contract_publishes_and_runs(
     assert "mp_physics=16" in proof["export"]["reason"]
     inputs = _preflight(bundle)
     assert inputs.experiment.root.run.mp_physics == 16
+    assert inputs.experiment.root.run.scalar_pblmix == 0
+    assert inputs.experiment.root.run.thompson_version == "wrf_461"
     assert inputs.export_source_receipt["status"] == "REFUSED"
 
     # A scheme WITH a contract keeps the READY slot it always had.
@@ -487,8 +503,10 @@ def test_a_scheme_with_no_stock_wrf_contract_publishes_and_runs(
     assert proof["export"]["status"] == "READY"
 
 
-@pytest.mark.parametrize("shared", [None, {"mp_physics": 16}],
-                         ids=["ready-export", "optional-export"])
+@pytest.mark.parametrize("shared", [None, {
+    "mp_physics": 16, "scalar_pblmix": 0,
+    "thompson_version": "wrf_461", "thompson_fork_snow_fall": "blend"}],
+    ids=["ready-export", "optional-export"])
 def test_preflight_checks_the_preprocessing_digest_with_or_without_export(
         tmp_path, monkeypatch, shared):
     """The proof's digest of its preprocessing receipt binds the
@@ -498,8 +516,12 @@ def test_preflight_checks_the_preprocessing_digest_with_or_without_export(
     match its receipt."""
 
     _bind_synthetic_geometry(monkeypatch)
-    kwargs = {} if shared is None else dict(physics_profile=None,
-                                            shared=shared)
+    # 4193eb0da, lane/286-fork-mynn: the default now carries MP28-only
+    # scalar mixing. Use the same configured WDM6 control as above so this
+    # test reaches the preprocessing-digest refusal it is intended to test.
+    kwargs = {} if shared is None else dict(
+        physics_profile=None, shared=shared,
+        configuration_profile=THOMPSON_RTE_RRTMGP_PROFILE_ID)
     bundle = _hrrr_bundle(tmp_path, **kwargs)
     proof_path = bundle.root / "proof.json"
     proof = json.loads(proof_path.read_text())
@@ -826,12 +848,44 @@ def _run_wrapper(tmp_path, monkeypatch, *, publish: bool):
     """
 
     import tools.prepare_hrrr_wrf as prepare
-    from test_prepare_hrrr_wrf import _cold_start_receipt
+    from test_hrrr_single_domain_benchmark import _decoded_native_hrrr_initialization
 
     run_seconds, history_seconds = 7200.0, 900.0
     tables, exp = _hrrr_experiment(
         run_seconds=run_seconds,
         history_interval_seconds=history_seconds)
+    # 4193eb0da, lane/286-fork-mynn, changes the route default to MP28/GSD.
+    # Generate the selected MP28 scheme's receipt with an explicitly authored
+    # analyzed fixture through the real producer. This publication fixture
+    # does not numerically qualify the full route's runtime configuration.
+    from gpuwm.ingest import real as real_initialization
+    initialize_real = real_initialization.initialize_real
+
+    def initialize_fixture_aerosol(snapshot, cfg, *args, **kwargs):
+        # These explicitly authored analyzed aerosol carriers belong only
+        # to the small decoded-source fixture. They pass through the real
+        # vertical operator and cloudy-cell number closure, with no WIF
+        # donor or missing-aerosol fallback supplying the receipt.
+        fields = dict(snapshot.fields)
+        for name, number in (("QNWFA", 1e8), ("QNIFA", 1e6)):
+            fields[name] = np.full_like(fields["TT"], number)
+            fields[name + "_SFC"] = fields[name][0].copy()
+        snapshot = dataclasses.replace(snapshot, fields=fields)
+        cfg = dataclasses.replace(cfg, mp28_aerosol_source="analysis")
+        return initialize_real(snapshot, cfg, *args, **kwargs)
+
+    with monkeypatch.context() as initialization_fixture:
+        initialization_fixture.setattr(
+            real_initialization, "initialize_real", initialize_fixture_aerosol)
+        initialized = _decoded_native_hrrr_initialization(exp.root.run.mp_physics)
+    cloudy = initialized.state.qc > 0
+    assert np.count_nonzero(cloudy) == 48
+    assert np.all(initialized.state.nwfa[cloudy] > 0)
+    assert np.all(initialized.state.nifa[cloudy] > 0)
+    assert np.all(initialized.state.nc[cloudy] > 0)
+    cold_start_receipt = _initial_hrrr_microphysics_receipt(
+        initialized.state, exp.root.run, initialized.hydrometeor_initialization)
+    assert cold_start_receipt["state_source_absent_fields"]["nc"]["seeded_cells"] == 48
     _on_the_baseline_terrain(tables)
     forcing_hours = (0, 1, 2)
 
@@ -934,8 +988,7 @@ def _run_wrapper(tmp_path, monkeypatch, *, publish: bool):
                 "schema": "gpuwm-prepared-physics-profile-v1",
                 "profile": PROFILE,
                 "resolved": resolved_run_settings(exp.root.run),
-                "hrrr_initialization": _cold_start_receipt(
-                    PROFILE),
+                "hrrr_initialization": cold_start_receipt,
             },
             "preparation": {
                 "preprocess_backend": {

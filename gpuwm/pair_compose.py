@@ -105,6 +105,58 @@ def product_name(path: Path) -> str:
     return name[match.end():] if match else name
 
 
+def _compose_pairs_rust(renderer: Path, pairs: dict, out_dir: Path, *,
+                        title: str, subtitle: str, left_label: str,
+                        right_label: str, theme: str | None = None) -> list[Path]:
+    """The sheets drawn by the renderer (``rw_wrfbatch --pair-sheet``).
+
+    This module keeps the pairing -- which file of each run is the same
+    product -- and hands the layout to the engine, which lays the panels
+    out on the same table as the maps: panels of one domain side by side
+    (a column for wide ones) under one header, a label strip per run, no
+    rescaling.  Pixels are still placed, never recomputed.
+    """
+
+    import json
+    import subprocess
+
+    from gpuwm import rustwx
+
+    sheets = []
+    for product in sorted(pairs):
+        left_path, right_path = pairs[product]
+        sheets.append({
+            "product": product.replace("_", " "),
+            "out": str(out_dir / f"{product}-pair.png"),
+            "legs": [{"label": left_label, "png": str(left_path)},
+                     {"label": right_label, "png": str(right_path)}],
+        })
+    request = out_dir / "pair-sheet-request.json"
+    request.write_text(json.dumps({
+        "schema": "arwen.pair-sheet-request.v1", "title": title,
+        "subtitle": subtitle or None, "sheets": sheets,
+        **({"theme": theme} if theme is not None else {})}, indent=1),
+        encoding="utf-8")
+    try:
+        done = subprocess.run(
+            [str(renderer), "--pair-sheet", str(request)],
+            capture_output=True, text=True, check=False,
+            env=rustwx.renderer_env())
+    finally:
+        request.unlink(missing_ok=True)
+    if done.returncode != 0:
+        reason = (done.stderr or done.stdout or "").strip().splitlines()
+        raise ValueError("the renderer could not compose the pair sheets: "
+                         + (reason[-1] if reason else f"exit {done.returncode}"))
+    written = [Path(sheet["out"]) for sheet in sheets]
+    (out_dir / "manifest.tsv").write_text(
+        "product\tleft\tright\tpair\n" + "\n".join(
+            f"{product}\t{pairs[product][0]}\t{pairs[product][1]}\t{out}"
+            for product, out in zip(sorted(pairs), written)) + "\n",
+        encoding="utf-8")
+    return written
+
+
 def _load_font(size: int, *, bold: bool = False):
     from PIL import ImageFont
 
@@ -134,7 +186,8 @@ def compose_pairs(left_dir: Path, right_dir: Path, out_dir: Path, *,
                   title: str, subtitle: str = "",
                   left_label: str | None = None,
                   right_label: str | None = None,
-                  panel_width: int = 900) -> list[Path]:
+                  panel_width: int = 900,
+                  theme: str | None = None) -> list[Path]:
     """Write one pair sheet per common product; return the sheet paths.
 
     Raises ``ValueError`` when the directories share no product PNGs --
@@ -189,6 +242,20 @@ def compose_pairs(left_dir: Path, right_dir: Path, out_dir: Path, *,
     right_label = right_label or right_dir.name or str(right_dir)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    from gpuwm import rustwx
+
+    # The engine composes when this install has one that speaks the
+    # sheet contract (``--abi`` names ``--pair-sheet``); an install
+    # without a built renderer keeps the Pillow compositor below.
+    renderer = rustwx.find_renderer()
+    if renderer is not None and rustwx.probe_renderer(renderer)[0]:
+        return _compose_pairs_rust(renderer, pairs, out_dir, title=title,
+                                   subtitle=subtitle, left_label=left_label,
+                                   right_label=right_label, theme=theme)
+
+    if theme is not None:
+        raise ValueError("pair sheets with --theme require the native renderer; build or install this release's renderer and retry")
 
     title_font = _load_font(34, bold=True)
     subtitle_font = _load_font(22)

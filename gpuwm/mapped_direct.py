@@ -28,7 +28,7 @@ from gpuwm.vertical_adaptation import (
 )
 from gpuwm.experiment import load_experiment, validate_boundary_timing
 from gpuwm.fortran_namelist import parse_namelist
-from gpuwm.ingest.horiz import interpolate_era5_to_lambert
+from gpuwm.ingest.horiz import declared_grid_pairing, interpolate_era5_to_lambert
 from gpuwm.ingest.soil_downscale import (
     declared_soil_texture_downscale, soil_mesh_plan_from_case)
 from gpuwm.ingest.lateral_bc import (
@@ -1904,8 +1904,13 @@ def prepare_mapped_wrf(
             # The terrain-smoothing root seam reads this attestation.
             from gpuwm.static.terrain_smoothing import smoothing_receipt
             smoothing = smoothing_receipt(static_highres)
-            root_static_receipt = ({"terrain_smoothing": smoothing}
-                                   if smoothing else None)
+            # The static-source root seam reads this attestation too.
+            from gpuwm.static.external_source import static_source_receipt
+            static_source = static_source_receipt(static_highres)
+            root_static_receipt = ({
+                **({"terrain_smoothing": smoothing} if smoothing else {}),
+                **({"static_source": static_source} if static_source else {}),
+            } or None)
         else:
             # The receipt binds native_geometry_contract(grid, cfg) AND the NPZ
             # SHA-256; the loader then re-derives the geometry fields from the
@@ -2249,8 +2254,15 @@ def prepare_mapped_wrf(
         # (gpuwm/ingest/soil.py: door_reconciled_soil_category); the raw
         # SCT_DOM let a land column carry the water soil category into RUC
         # (ENG-009).
+        from gpuwm.core.landuse import (
+            ruc_fractional_seaice as _ruc_fractional_seaice)
         soil = preprocess_land_surface_soil(
             initial_met.fields,
+            # real.exe's adjust_for_seaice_pre/post keep the fraction under
+            # fractional_seaice = 1 (threshold 0.02) and snap to 0/1 at 0.5
+            # otherwise (module_soil_pre.F:216-219, :337-343, :392-393 of the HRRR
+            # v4.1.21 fork).
+            fractional_seaice=_ruc_fractional_seaice(cfg),
             sf_surface_physics=int(cfg.sf_surface_physics),
             # Resolved, not defaulted: see gpuwm/ingest/hrrr_physics.py.
             num_soil_layers=soil_layer_count(cfg),
@@ -2708,6 +2720,12 @@ def prepare_mapped_wrf(
                     "in")),
             "static": static_output_receipt,
             "geometry": geometry_receipt,
+            # Present only when the root coordinates pair with their own
+            # source cells (horiz.declared_grid_pairing), so every
+            # interpolated preparation's proof is unchanged.
+            **({"source_pairing": "identity"}
+               if declared_grid_pairing(mapping_contract.get("grid"), grid)
+               == "identity" else {}),
         }
         if posted_source is not None:
             # They read every lead: the seal writes them from every lead

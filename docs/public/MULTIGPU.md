@@ -96,11 +96,43 @@ drains, and copies back.
 ## Transport
 
 `auto` chooses peer copies when both directions can reach the other card and
-CUDA staging otherwise. `peer` requires direct access and refuses an unreachable
+CUDA staging otherwise. When the run's cards sit on more than one NUMA node
+(two sockets), `auto` stages every cross-card pair: on a two-socket box the
+2x2 exchange's concurrent peer copies, mixing in-socket and cross-socket pairs,
+took 245 ms per step against 15 ms staged. The receipt names that reason on
+each staged pair. `peer` requires direct access and refuses an unreachable
 pair. `staged` leaves peer access off for CUDA staging. `host` explicitly copies
 through pinned host buffers. Slabs on the same card use device copies. Read the
 actual per-pair path in the receipt rather than treating the requested transport
 as a measurement.
+
+## Host threads
+
+Each slab steps on its own host thread, which issues that card's kernel
+launches, readbacks and halo copies. On a standard CPython build those threads
+share one interpreter lock and take turns: CuPy gives the lock up around every
+CUDA call, about 3,900 times per slab in an ordinary HRRR step and about
+140,000 in a radiation step, so adding cards adds lock traffic. On a two-socket
+4-card box the radiation steps took 13-25 s under the lock and 5-8 s without it.
+
+Run multi-card forecasts under a free-threaded Python 3.14 (`python3.14t`),
+for example `GPUWM_PYTHON=python3.14t ./install.sh`, or a `uv venv --python
+3.14t` environment with `gpuwm[gpu-cu13]` installed. CuPy, NumPy and netCDF4
+publish free-threaded wheels; `cftime` 1.6.6 and the render extra's `wrf-rust`
+do not yet, so the install builds them from source and needs a C compiler and
+the Rust toolchain the installer already requires. The slab threads then run
+at once. Importing netCDF4 would switch the lock
+back on, so the `gpuwm` command line and the prepared runner re-execute once
+with `PYTHON_GIL=0` on a free-threaded build (every netCDF4 session in the
+process is already serialized by its own lock). An explicit `PYTHON_GIL` in
+the environment is respected, including `PYTHON_GIL=1`. A multi-card run on a
+locked interpreter prints one `[devices]` line saying so; the run continues.
+
+On a host with more than one NUMA node, each slab thread is bound to the CPUs
+sysfs lists as local to its card. Nothing is bound on a one-node host or when
+the firmware reports no locality. The receipt's `host_threads` records the
+interpreter and whether its lock was on, and `rank_placements` records each
+slab's card, node, CPUs and whether the binding took.
 
 ## Admission and receipt
 

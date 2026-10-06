@@ -31,6 +31,7 @@ its own tier.  Those are seconds, not minutes.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from dataclasses import fields
@@ -212,6 +213,7 @@ def warm_kernels(profiles=None, *, levels: int = DEFAULT_LEVELS,
     """
 
     from gpuwm import kernel_compile_notice as notice
+    from gpuwm import nvrtc_ptx_cache as direct_cache
 
     profiles = tuple(profiles) if profiles else default_profiles()
     capability = notice.current_compute_capability()
@@ -228,11 +230,14 @@ def warm_kernels(profiles=None, *, levels: int = DEFAULT_LEVELS,
         device = device.decode(errors="replace")
     cache_dir = notice.cupy_kernel_cache_dir()
     entries_before = notice.scan_kernel_cache(cache_dir)[0]
+    direct_before = _direct_cache_inventory(cache_dir)
+    direct_event_start = len(direct_cache.cache_events())
     rows = []
     failed = []
     started = time.perf_counter()
     for profile in profiles:
         before = notice.scan_kernel_cache(cache_dir)[0]
+        direct_profile_start = len(direct_cache.cache_events())
         began = time.perf_counter()
         try:
             longwave = _run_profile(profile, levels)
@@ -253,6 +258,8 @@ def warm_kernels(profiles=None, *, levels: int = DEFAULT_LEVELS,
                    0, notice.scan_kernel_cache(cache_dir)[0] - before),
                "seconds": round(time.perf_counter() - began, 1),
                "downward_longwave": longwave}
+        direct_events = direct_cache.cache_events()[direct_profile_start:]
+        row.update(_direct_cache_counts(direct_events))
         rows.append(row)
         if say is not None:
             say(f"warm-kernels: {profile}: {row['kernels_compiled']} "
@@ -260,6 +267,8 @@ def warm_kernels(profiles=None, *, levels: int = DEFAULT_LEVELS,
                 f"downward longwave {longwave}")
     finished = notice.kernel_cache_state(
         cache_dir, compute_capability=capability)
+    direct_after = _direct_cache_inventory(cache_dir)
+    direct_events = direct_cache.cache_events()[direct_event_start:]
     return {
         "schema": WARM_KERNELS_SCHEMA,
         "device": str(device),
@@ -272,6 +281,40 @@ def warm_kernels(profiles=None, *, levels: int = DEFAULT_LEVELS,
         "seconds": round(time.perf_counter() - started, 1),
         "cache_entries_before": int(entries_before),
         "cache_entries_for_this_card": int(finished.entries_for_capability),
+        "direct_nvrtc_cache": {
+            "directory": str(cache_dir / "gpuwm-direct-nvrtc"),
+            "before": direct_before,
+            "after": direct_after,
+            "new_image_files": max(0, direct_after["image_files"]
+                                    - direct_before["image_files"]),
+            **_direct_cache_counts(direct_events),
+            "events": direct_events,
+        },
+    }
+
+
+def _direct_cache_inventory(cache_dir) -> dict:
+    """Count the direct compiler's image files separately from CuPy entries."""
+    count = size = 0
+    for root, _directories, names in os.walk(cache_dir / "gpuwm-direct-nvrtc"):
+        for name in names:
+            if not name.endswith(".image"):
+                continue
+            try:
+                size += os.stat(os.path.join(root, name)).st_size
+                count += 1
+            except OSError:
+                pass
+    return {"image_files": count, "bytes": size}
+
+
+def _direct_cache_counts(events) -> dict:
+    return {
+        "direct_nvrtc_images_compiled": sum(
+            row["status"] != "hit" for row in events),
+        "direct_nvrtc_cache_hits": sum(row["status"] == "hit" for row in events),
+        "direct_nvrtc_compile_seconds": sum(
+            row["compile_seconds"] for row in events),
     }
 
 
@@ -301,6 +344,13 @@ def warm_kernels_main(args) -> int:
               f"the cache at {report['cache_dir']} holds "
               f"{report['cache_entries_for_this_card']} for this card",
               flush=True)
+        direct = report["direct_nvrtc_cache"]
+        if direct["events"]:
+            print("warm-kernels: direct NVRTC cache: "
+                  f"{direct['direct_nvrtc_images_compiled']} image(s) compiled, "
+                  f"{direct['direct_nvrtc_cache_hits']} cache hit(s); "
+                  f"{direct['after']['image_files']} image file(s) in "
+                  f"{direct['directory']}", flush=True)
         if report["failed"]:
             print(f"warm-kernels: {len(report['failed'])} profile(s) "
                   "failed: " + ", ".join(row["profile"]

@@ -258,13 +258,23 @@ def test_fit_never_admits_a_preparation_the_host_cannot_hold(small_host):
     assert dims[0][0] * dims[0][1] < roomy[0][0] * roomy[0][1]
 
 
-def test_fit_keeps_a_domain_whose_preparation_fits_the_host(small_host):
+def test_fit_keeps_a_domain_whose_preparation_fits_the_host(small_host, monkeypatch):
     # A 902x720x76 root over 6 h peaks at 15.32e9 bytes in a real CPU
     # preparation (tests/test_cpu_preparation_host_ram.py), which a 16 GiB
     # host holds: sizing on the preparation's estimated peak keeps it.
     # The card is 64 GB so that HOST RAM is what binds whatever the
     # forecast margin: on the 48 GB card this test used until A163 the card
     # bound first at 896x718 at the first repair's 1.16 of the subtotal.
+    from gpuwm.ingest import preparation_workers
+
+    # 850d0957d, lane/28-c-a27, binds the historical peak to eight workers.
+    # baecc2bcf later adds scratch for wider pools. Declare the measured
+    # target's CPU budget here, retaining its card, RAM and 902x720 receipt.
+    monkeypatch.setattr(preparation_workers, "cpu_budget", lambda: {
+        "affinity_cpus": 8, "cgroup_cpus": None, "available_cpus": 8})
+    monkeypatch.setattr(preparation_workers, "host_available_bytes",
+                        lambda: small_host["bytes"])
+    assert preparation_workers.effective_workers() == 8
     free = int(wizard.card_assumed_free_gib(64.) * wizard.GIB)
     kwargs = dict(ratios=(), free_bytes=free, hours=6, start_time=START,
                   projection=wizard._projection_entries(35.3, -97.5, "auto"),

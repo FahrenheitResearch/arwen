@@ -22,7 +22,11 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 from pathlib import Path
+import tomllib
+
+import pytest
 
 from gpuwm.config import RunConfig, load_config, _KNOWN_TABLES
 from gpuwm.experiment import is_experiment_toml
@@ -47,9 +51,110 @@ def _frozen_constructors():
     }
 
 
+def _pop_fork_dycore_defaults(actual: dict) -> bool:
+    """The diff_6th_form / mp_zero_out fields at the values every earlier
+    configuration ran: WRF v4.6.1's filter and no zero-out pass."""
+    return (actual.pop("upper_wind_limiter_form") == "wrf_461"
+            and actual.pop("diff_6th_form") == "wrf_461"
+            and actual.pop("diff_6th_factor2") is None
+            and actual.pop("mp_zero_out") == 0
+            and actual.pop("mp_zero_out_thresh") == 1.0e-8
+            and actual.pop("mp_zero_out_all") == 0)
+
+
 def test_new_fields_are_reviewed_defaults_appended_last():
     """New fields remain appended, preserving positional construction."""
     names = [f.name for f in dataclasses.fields(RunConfig)]
+    assert names.pop() == "rrtmg_smoke_manifest"
+    assert RunConfig.__dataclass_fields__["rrtmg_smoke_manifest"].default == ""
+    # Lane-only radiation selectors follow the complete staged prefix.
+    assert names.pop() == "rrtmg_cloud_optics_form"
+    assert RunConfig.__dataclass_fields__["rrtmg_cloud_optics_form"].default == "wrf_461"
+    # The Thompson generation and the fork's snow fall, appended at the
+    # WRF v4.6.1 generation and the blend: every earlier configuration
+    # runs exactly what it ran (tests/test_thompson_wrf39.py).
+    assert names.pop() == "thompson_fork_snow_fall"
+    assert names.pop() == "thompson_version"
+    assert RunConfig.__dataclass_fields__["thompson_version"].default \
+        == "wrf_461"
+    assert RunConfig.__dataclass_fields__[
+        "thompson_fork_snow_fall"].default == "blend"
+    # The merged radiation options follow every staged field.
+    assert names[-3:] == ["swint_opt", "aer_opt", "alb_sol"]
+    for key in names[-3:]:
+        assert RunConfig.__dataclass_fields__[key].default == 0
+    names = names[:-3]
+    # The MYNN generation selector and its gsd_41 TKE option, appended at
+    # wrf_461 / False: every earlier configuration runs the same MYNN.
+    assert names.pop() == "bl_mynn_cloud_tendency_form"
+    assert RunConfig.__dataclass_fields__["bl_mynn_cloud_tendency_form"].default == "wrf_461"
+    assert names.pop() == "bl_mynn_gsd41_unsquared_qtke"
+    assert RunConfig.__dataclass_fields__["bl_mynn_gsd41_unsquared_qtke"].default is False
+    assert names.pop() == "bl_mynn_version"
+    assert RunConfig.__dataclass_fields__["bl_mynn_version"].default == "wrf_461"
+
+    # The RUC snow lineage preserves the WRF v4.6.1 form.  HRRR doors
+    # select the WRF v4.0-4.5 form explicitly (CHANGELOG).
+    assert names.pop() == "ruc_snow"
+    assert RunConfig.__dataclass_fields__["ruc_snow"].default == "wrf_461"
+    # The RUC 2 m diagnostic, appended at public WRF's flux form: every
+    # earlier configuration is unchanged by it.
+    assert names.pop() == "ruc_2m_diagnostic"
+    assert RunConfig.__dataclass_fields__["ruc_2m_diagnostic"].default == "flux"
+    # The RUC QVG cold start, appended at public WRF's form: every earlier
+    # configuration is unchanged by it.
+    assert names.pop() == "ruc_qvg_cold_start"
+    assert RunConfig.__dataclass_fields__["ruc_qvg_cold_start"].default == "wrf"
+    # The RUC irrigation rule preserves the WRF v4.6.1 relaxation.
+    # HRRR doors select the WRF v4.0-4.5 floor explicitly.
+    assert names.pop() == "ruc_irrigation"
+    assert RunConfig.__dataclass_fields__["ruc_irrigation"].default == "wrf_461"
+    # WRF's &dynamics advection orders, appended at their WRF 3/3/5
+    # defaults: every earlier configuration runs the same vertical ladder
+    # (vert_order 3) and the same flux5 horizontal momentum stencil.
+    assert names[-3:] == ["v_sca_adv_order", "v_mom_adv_order", "h_mom_adv_order"]
+    assert RunConfig.__dataclass_fields__["v_sca_adv_order"].default == 3
+    assert RunConfig.__dataclass_fields__["v_mom_adv_order"].default == 3
+    assert RunConfig.__dataclass_fields__["h_mom_adv_order"].default == 5
+    names = names[:-3]
+    # Export choices belong to the run plan, outside forecast settings.
+    assert "verify_visuals" not in names
+    assert names.pop() == "upper_wind_limiter_form"
+    assert RunConfig.__dataclass_fields__["upper_wind_limiter_form"].default == "wrf_461"
+    # The sixth-order filter's source form with the NOAA WRFV3.9 fork's
+    # second factor, and WRF's mp_zero_out trio, appended at WRF v4.6.1
+    # and off: every earlier configuration is unchanged
+    # (tests/test_diff6_fork_form.py).
+    assert names[-5:] == ["diff_6th_form", "diff_6th_factor2", "mp_zero_out",
+                          "mp_zero_out_thresh", "mp_zero_out_all"]
+    fields = RunConfig.__dataclass_fields__
+    assert fields["diff_6th_form"].default == "wrf_461"
+    assert fields["diff_6th_factor2"].default is None
+    assert (fields["mp_zero_out"].default, fields["mp_zero_out_all"].default,
+            fields["mp_zero_out_thresh"].default) == (0, 0, 1.0e-8)
+    names = names[:-5]
+    # The terrain-clock mode (lane/286-fixed-step-grid), appended last.
+    # "measured" is the derivation every configuration before the field
+    # ran under: the terrain clock and the substep rule rewrite the clock
+    # exactly as they did, so no trajectory and no fingerprint moves
+    # (restart_identity_payload and the checkpoint echo drop it at that
+    # value).  "pinned" is the one other value and is never selected by
+    # a frozen configuration.
+    assert names[-1] == "terrain_clock"
+    assert RunConfig.__dataclass_fields__["terrain_clock"].default \
+        == "measured"
+    names = names[:-1]
+    # The MYNN surface-layer generation, appended at WRF v4.6.1's form,
+    # which every earlier build ran: no configuration changes answers.
+    assert names.pop() == "mynn_sfclay_variant"
+    assert RunConfig.__dataclass_fields__["mynn_sfclay_variant"].default == "wrf_461"
+    # APPENDED LAST: ``fractional_seaice``, WRF's &physics switch between
+    # its two sea-ice thresholds (module_surface_driver.F:1365-1368), after
+    # ``ruc_soilprop``.  Default 0 keeps the 0.5 threshold every RUC run was
+    # pinned to, read by the RUC seam only, so every golden entry resolves
+    # to what it ran before plus the one key at 0.
+    assert names.pop() == "fractional_seaice"
+    assert RunConfig.__dataclass_fields__["fractional_seaice"].default == 0
     # The RUC SOILPROP lineage, appended at its WRF v4.0-4.5 form: a
     # non-RUC case never reads it, every RUC configuration changes answers
     # (CHANGELOG).
@@ -576,6 +681,7 @@ def test_every_existing_legacy_toml_resolves_identically():
             "tests/data/config_freeze_golden.json consciously.")
         cfg = load_config(path)
         actual = dataclasses.asdict(cfg)
+        assert actual.pop("terrain_clock") == "measured"
         assert actual.pop("use_rap_aero_icbc") is False
         assert actual.pop("diff_opt") == 2
         assert actual.pop("scalar_pblmix") == 0
@@ -590,9 +696,32 @@ def test_every_existing_legacy_toml_resolves_identically():
         assert actual.pop("lakedepth_default") == 50.0
         assert actual.pop("lake_min_elev") == 5.0
         assert actual.pop("spp_conv") == 0 and actual.pop("spp_pbl") == 0
+        assert actual.pop("swint_opt") == 0 and actual.pop("aer_opt") == 0
+        assert actual.pop("rrtmg_cloud_optics_form") == "wrf_461"
+        assert actual.pop("rrtmg_smoke_manifest") == ""
+        assert actual.pop("alb_sol") == 0
         # The RUC SOILPROP lineage changed its default: a non-RUC case
         # never reads it; a RUC case changes answers (CHANGELOG).
         assert actual.pop("ruc_soilprop") == "wrf_45"
+        # The Thompson generation, appended at the v4.6.1 default.
+        assert actual.pop("thompson_version") == "wrf_461"
+        assert actual.pop("thompson_fork_snow_fall") == "blend"
+        assert actual.pop("bl_mynn_version") == "wrf_461"
+        assert actual.pop("bl_mynn_gsd41_unsquared_qtke") is False
+        assert actual.pop("bl_mynn_cloud_tendency_form") == "wrf_461"
+        # The MYNN surface-layer generation, at the form every build ran.
+        assert actual.pop("mynn_sfclay_variant") == "wrf_461"
+        assert actual.pop("fractional_seaice") == 0
+        # The WRF v4.6.1 filter form and no zero-out pass, as before.
+        assert _pop_fork_dycore_defaults(actual)
+        # Generic RUC preserves irrigation and snow from WRF v4.6.1.
+        assert actual.pop("ruc_irrigation") == "wrf_461"
+        assert actual.pop("ruc_qvg_cold_start") == "wrf"
+        assert actual.pop("ruc_2m_diagnostic") == "flux"
+        assert actual.pop("ruc_snow") == "wrf_461"
+        assert actual.pop("v_sca_adv_order") == 3
+        assert actual.pop("v_mom_adv_order") == 3
+        assert actual.pop("h_mom_adv_order") == 5
         assert _pop_topo_radiation_defaults(actual)
         # These legacy files omit CQ. Its default-on defect fix is the
         # only approved change from the recorded field dictionary.
@@ -608,6 +737,7 @@ def test_frozen_case_constructed_configs_resolve_identically():
         cfg = ctor()
         assert key in GOLDEN, key
         actual = dataclasses.asdict(cfg)
+        assert actual.pop("terrain_clock") == "measured"
         assert actual.pop("use_rap_aero_icbc") is False
         assert actual.pop("diff_opt") == 2
         assert actual.pop("scalar_pblmix") == 0
@@ -622,9 +752,32 @@ def test_frozen_case_constructed_configs_resolve_identically():
         assert actual.pop("lakedepth_default") == 50.0
         assert actual.pop("lake_min_elev") == 5.0
         assert actual.pop("spp_conv") == 0 and actual.pop("spp_pbl") == 0
+        assert actual.pop("swint_opt") == 0 and actual.pop("aer_opt") == 0
+        assert actual.pop("rrtmg_cloud_optics_form") == "wrf_461"
+        assert actual.pop("rrtmg_smoke_manifest") == ""
+        assert actual.pop("alb_sol") == 0
         # The RUC SOILPROP lineage changed its default: a non-RUC case
         # never reads it; a RUC case changes answers (CHANGELOG).
         assert actual.pop("ruc_soilprop") == "wrf_45"
+        # The Thompson generation, appended at the v4.6.1 default.
+        assert actual.pop("thompson_version") == "wrf_461"
+        assert actual.pop("thompson_fork_snow_fall") == "blend"
+        assert actual.pop("bl_mynn_version") == "wrf_461"
+        assert actual.pop("bl_mynn_gsd41_unsquared_qtke") is False
+        assert actual.pop("bl_mynn_cloud_tendency_form") == "wrf_461"
+        # The MYNN surface-layer generation, at the form every build ran.
+        assert actual.pop("mynn_sfclay_variant") == "wrf_461"
+        assert actual.pop("fractional_seaice") == 0
+        # The WRF v4.6.1 filter form and no zero-out pass, as before.
+        assert _pop_fork_dycore_defaults(actual)
+        # Generic RUC preserves irrigation and snow from WRF v4.6.1.
+        assert actual.pop("ruc_irrigation") == "wrf_461"
+        assert actual.pop("ruc_qvg_cold_start") == "wrf"
+        assert actual.pop("ruc_2m_diagnostic") == "flux"
+        assert actual.pop("ruc_snow") == "wrf_461"
+        assert actual.pop("v_sca_adv_order") == 3
+        assert actual.pop("v_mom_adv_order") == 3
+        assert actual.pop("h_mom_adv_order") == 5
         assert _pop_topo_radiation_defaults(actual)
         # The constructors omit CQ too. Dry cases remain numerically
         # unchanged because their qv=None bypass does no CQ work.
@@ -639,3 +792,101 @@ def test_golden_inventory_matches_known_frozen_surface():
     expected |= {f"configs/{p.name}"
                  for p in _legacy_run_config_tomls()}
     assert set(GOLDEN) == expected
+
+
+def test_parameter_set_is_appended_to_the_experiment_config():
+    from gpuwm.experiment import ExperimentConfig
+    names = list(ExperimentConfig.__dataclass_fields__)
+    assert names[-2:] == ["smooth_cg_topo", "physics_params"]
+    assert ExperimentConfig.__dataclass_fields__["physics_params"].default is None
+    assert "physics_params" not in RunConfig.__dataclass_fields__
+
+
+@pytest.mark.parametrize("theme", ["paper", "woof-light", "woof-dark", "inherited"])
+def test_renderer_environment_preserves_emitted_config_bytes(monkeypatch, tmp_path, theme):
+    """Rendering choices cannot rewrite the ordinary forecast configuration.
+
+    A paired qualification run may provide its staging receipt to check the
+    exact same emissions across the two revisions without repinning physics
+    selectors when the staging branch advances.
+    """
+    from tools.renderer_recovery_identity import emitted_config_bytes
+
+    before = emitted_config_bytes()
+    reference = os.environ.get("GPUWM_RENDERER_IDENTITY_REFERENCE")
+    if reference:
+        receipt = json.loads(Path(reference).read_text(encoding="utf-8"))
+        assert before == receipt["identity"]["emitted_config_bytes"]
+    if theme == "inherited":
+        theme_file = tmp_path / "site-theme.json"
+        theme_file.write_text(json.dumps({"extends": "woof-dark", "name": "site"}),
+                              encoding="utf-8")
+        theme = str(theme_file)
+    for key, value in {
+            "RUSTWX_THEME": theme, "RUSTWX_RADAR_COLORS": "nws",
+            "RUSTWX_WIND_STREAMLINES": "1"}.items():
+        monkeypatch.setenv(key, value)
+    assert emitted_config_bytes() == before
+
+
+@pytest.mark.parametrize("payload", [
+    b'[grid]\nnx = 32\nny = 1\nnz = 16\ndx = 1000.0\ndy = 1000.0\nztop = 8000.0\n\n'
+    b'[dynamics]\ndt = 2.0\n\n[run]\nrun_seconds = 10.0\n',
+    b'[experiment]\nname = "area"\nrun_seconds = 120.0\nfeedback = 0\n\n'
+    b'[shared]\nnz = 16\nztop = 8000.0\nmoist = true\nspp_conv = 0\nspp_pbl = 0\n'
+    b'sf_lake_physics = 0\n\n[[domain]]\ngrid_id = 1\nparent_id = 0\n'
+    b'nx = 32\nny = 24\ndx = 2000.0\ntime_step = 10\n',
+], ids=["generic", "non-feature"])
+def test_generic_and_non_feature_emitted_config_bytes_are_frozen(payload):
+    """Formatting and ordering stay fixed as well as parsed field values.
+
+    Catalog naming and route changes must not change a configuration emitted
+    for an ordinary run, including explicitly disabled optional physics.
+    These are exact UTF-8 byte pins, so an equal parsed dictionary alone is
+    insufficient.
+    """
+    from gpuwm.toml_document import emit_experiment_toml
+
+    raw = tomllib.loads(payload.decode("utf-8"))
+    assert emit_experiment_toml(raw).encode("utf-8") == payload
+
+
+@pytest.mark.parametrize("option,default", [("verify_visuals", True)])
+def test_output_choice_leaves_forecast_identity_unchanged(tmp_path, option, default):
+    """The output choice changes neither forecast settings nor restart identity."""
+    from types import SimpleNamespace
+
+    from gpuwm.core.model import experiment_fingerprint, restart_identity_payload
+    from gpuwm.io.restart import configuration_echo
+    from gpuwm.runplan import PLAN_SCHEMA, build_plan, resolve_plan
+    from test_case_data import make_case_toml
+
+    config = make_case_toml(tmp_path)
+    default_plan = build_plan({
+        "schema": PLAN_SCHEMA, "name": "output-choice", "route": "experiment",
+        "config": {"path": str(config)}, "output_root": str(tmp_path / "run"),
+    }, source="output-choice", base_dir=tmp_path, sha256="0" * 64)
+    assert default_plan.run_options[option] is default
+    experiments = []
+    for selected in (False, True):
+        plan = build_plan({
+            "schema": PLAN_SCHEMA, "name": "output-choice",
+            "route": "experiment", "config": {"path": str(config)},
+            "output_root": str(tmp_path / "run"),
+            "run_options": {option: selected},
+        }, source="output-choice", base_dir=tmp_path, sha256="0" * 64)
+        assert plan.run_options[option] is selected
+        _, experiment, _ = resolve_plan(plan, require_inputs=False)
+        experiments.append(experiment)
+
+    without, with_export = experiments
+    assert without == with_export
+    assert restart_identity_payload(without) == restart_identity_payload(with_export)
+    catalog = SimpleNamespace(run_provenance={"inputs": "same-forcing-window"})
+    assert experiment_fingerprint(without, catalog) == \
+        experiment_fingerprint(with_export, catalog)
+    for original, exported in zip(without.domains, with_export.domains, strict=True):
+        before = configuration_echo(original.run)
+        after = configuration_echo(exported.run)
+        assert json.dumps(before, allow_nan=False).encode("utf-8") == \
+            json.dumps(after, allow_nan=False).encode("utf-8")

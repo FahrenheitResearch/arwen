@@ -1,0 +1,58 @@
+# GSI pin: NOAA-EMC/GSI db90edf, the commit RRFS v1 builds.
+#
+# One pin is one file like this; the scripts beside it (fetch_pin_sources.sh,
+# build_pin_libs.sh, build_pin_gsi.sh, Dockerfile.pin) read nothing that is
+# specific to one pin. Adding another GSI commit is a new file here.
+#
+# Sources of every value (PUBLIC, read 2026-10-03):
+#   GSI commit: rrfs-workflow tag v1.0.25b (commit e4a100b) sorc/Externals.cfg,
+#     [GSI] hash = db90edf; full hash from the GitHub commits API.
+#   Build modes: rrfs-workflow v1.0.25b sorc/CMakeLists.txt, GSI_ARGS:
+#     -DGSI_MODE=Regional -DENKF_MODE=FV3REG, CMAKE_BUILD_TYPE Release, no
+#     other GSI option (so OPENMP, BUILD_GSDCLOUD stay at GSI's defaults: off).
+#   Library versions: rrfs-workflow v1.0.25b versions/build.ver (the WCOSS2
+#     module set RRFS v1 builds against). Where build.ver names no version,
+#     GSI db90edf modulefiles/gsi_wcoss2.intel.lua does (netcdf-fortran comes
+#     from gsi_common.lua, the Fortran layer paired with netcdf-c 4.9.2).
+PIN_NAME=gsi-db90edf
+GSI_REPO=https://github.com/NOAA-EMC/GSI.git
+GSI_COMMIT=db90edfb9eedbb038a9093bf1ba896425a1ff383
+GSI_MODE=Regional
+# Each EnKF mode is one complete GSI and EnKF build from the same tree.
+# FV3REG is the mode RRFS builds; WRF is the one that reads WOOF's WRF-format
+# files. GSI's own executable is the same configuration in both.
+ENKF_MODES="WRF FV3REG"
+GSI_CMAKE_EXTRA=""
+
+# name|version|url ; fetched into src-pins/<PIN_NAME>/ and hashed into
+# SOURCES-<PIN_NAME>.sha256. The build scripts know how to build each name.
+# A url of the form git+<repo>@<commit>#<path>,<path>... is taken from that
+# commit (checked after the fetch) with only the paths named, as a tar.gz
+# that git archive writes; used where a release archive carries gigabytes of
+# data the library build does not read.
+PIN_SOURCES="
+cmake|3.20.2|https://github.com/Kitware/CMake/releases/download/v3.20.2/cmake-3.20.2-linux-x86_64.tar.gz
+zlib|1.2.11|https://zlib.net/fossils/zlib-1.2.11.tar.gz
+hdf5|1.14.0|https://support.hdfgroup.org/ftp/HDF5/releases/hdf5-1.14/hdf5-1.14.0/src/hdf5-1.14.0.tar.gz
+netcdf-c|4.9.2|https://downloads.unidata.ucar.edu/netcdf-c/4.9.2/netcdf-c-4.9.2.tar.gz
+netcdf-fortran|4.6.1|https://downloads.unidata.ucar.edu/netcdf-fortran/4.6.1/netcdf-fortran-4.6.1.tar.gz
+bacio|2.4.1|https://github.com/NOAA-EMC/NCEPLIBS-bacio/archive/refs/tags/v2.4.1.tar.gz
+bufr|12.2.0|https://github.com/NOAA-EMC/NCEPLIBS-bufr/archive/refs/tags/v12.2.0.tar.gz
+w3emc|2.12.0|https://github.com/NOAA-EMC/NCEPLIBS-w3emc/archive/refs/tags/v2.12.0.tar.gz
+ip|5.2.0|https://github.com/NOAA-EMC/NCEPLIBS-ip/archive/refs/tags/v5.2.0.tar.gz
+sigio|2.3.2|https://github.com/NOAA-EMC/NCEPLIBS-sigio/archive/refs/tags/v2.3.2.tar.gz
+sfcio|1.4.1|https://github.com/NOAA-EMC/NCEPLIBS-sfcio/archive/refs/tags/v1.4.1.tar.gz
+nemsio|2.5.4|https://github.com/NOAA-EMC/NCEPLIBS-nemsio/archive/refs/tags/v2.5.4.tar.gz
+wrf_io|1.2.0|https://github.com/NOAA-EMC/NCEPLIBS-wrf_io/archive/refs/tags/v1.2.0.tar.gz
+ncio|1.1.2|https://github.com/NOAA-EMC/NCEPLIBS-ncio/archive/refs/tags/v1.1.2.tar.gz
+ncdiag|1.1.2|https://github.com/NOAA-EMC/GSI-ncdiag/archive/refs/tags/v1.1.2.tar.gz
+crtm|2.4.0.1|git+https://github.com/JCSDA/crtm.git@7ecad4866c400d7d0db1413348ee225cfa99ff36#CMakeLists.txt,VERSION,LICENSE.md,COPYING,cmake,libsrc,test
+"
+# CRTM: its tag archive carries the coefficient files (several GB, read at
+# run time from a separate fix set, not at build time), so the library is
+# taken from the tag's commit with its source paths only.
+# CRTM: build.ver says crtm_ver=2.4.0.2, a WCOSS2 module with no public
+# source tag of that name. GSI db90edf's own WCOSS2 module file loads crtm
+# 2.4.0.1 (and crtm_fix 2.4.0.2 for the coefficients); spack maps 2.4.0.1 to
+# JCSDA/crtm tag v2.4.0_emc.3. That is the library built here, and the
+# difference is recorded in PIN-BUILDS.md.

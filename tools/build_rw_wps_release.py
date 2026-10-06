@@ -68,6 +68,11 @@ _TOP_LEVEL_EXCLUDES = {
     # Their checkpoint verification imports the forecast-only io.restart;
     # no standalone preparation door imports this module.
     "input_cycle.py",
+    # Nested health recovery (lane/prod-stability) restores a forecast
+    # from a checkpoint and re-arms the supervisor.  Its only importer,
+    # prepared_domain_tree_forecast.py, is the forecast runner this wheel
+    # does not carry; a preprocessing wheel runs no forecast to recover.
+    "stability_recovery.py",
     # Its only importer, go_cli.py, is excluded, as is its dependency
     # gpuwm.supervisor. A preprocessing wheel does not run forecasts.
     "forecast_supervisor.py",
@@ -85,6 +90,10 @@ _TOP_LEVEL_EXCLUDES = {
     # stages, so the unresolved-import scan refused the whole staging.  A
     # preprocessing wheel runs no forecast whose frames it could draw.
     "live_products.py",
+    # Forecast-history comparison calls the excluded render front door.
+    # Staging it leaves an unresolved gpuwm.render import in a package
+    # whose preparation commands do not create forecast history.
+    "render_compare.py",
     # The physics catalog behind `gpuwm physics-catalog` and New forecast's
     # Physics step.  Its importers are gpuwm/cli.py and gpuwm/runplan.py,
     # both excluded, and it reaches for gpuwm.domain_wizard,
@@ -286,15 +295,20 @@ _TOP_LEVEL_EXCLUDES = {
     # domain's ground and crest-level wind allow.  Both set the time step a
     # forecast integrates with, when the forecast starts, and besides each
     # other their only importers are gpuwm/runtime.py and the two prepared
-    # forecast runners, all excluded above.  Both reach gpuwm.core.adaptive_clock, which this
-    # wheel does not stage (it reaches the physics cadence in
-    # gpuwm.core.physics), so staging them made this builder's own
-    # unresolved-import scan refuse the whole staging and the RW-WPS
-    # package could not be built.  A preprocessing wheel takes no step.
+    # forecast runners, all excluded above. A preprocessing wheel takes
+    # no step and selects no terrain-dependent forecast clock. The shared
+    # adaptive-clock arithmetic is staged below because the namelist
+    # importer uses its acoustic count for a fixed step through WRF's
+    # adaptive clock; that does not call either terrain adaptation module.
     "acoustic_adaptation.py", "terrain_clock.py",
 }
 _CORE_MODULES = {
     "__init__.py",
+    # The namelist importer collapses equal adaptive-clock bounds using
+    # wrf_num_sound_steps. Its module imports adaptive_timestep at module
+    # scope; both use stdlib and numpy without initializing a forecast.
+    # The physics cadence refresh is function-local and recorded below.
+    "adaptive_clock.py", "adaptive_timestep.py",
     "constants.py",
     "diagnostics.py",
     # The C-library transcriptions the CPU paths hash through (A126):
@@ -559,8 +573,8 @@ _ENSEMBLE_MODULES = {
     "mapped_physical_contract.py", "mapped_posted_reuse.py",
     "physical_boundary.py", "physical_fields.py", "physical_store.py",
     "posted_native.py", "posted_physical.py", "posted_preparation.py",
-    "recipes.py", "runtime_preparation.py", "seeds.py",
-    "stochastic.py", "stochastic_seeds.py",
+    "member_variants.py", "recipes.py", "runtime_preparation.py", "seeds.py",
+    "stochastic.py", "stochastic_seeds.py", "surface_controls.py",
 }
 #: The only two files of ``gpuwm/io`` this wheel stages -- named
 #: individually rather than by excluding the rest of the package,
@@ -635,6 +649,7 @@ _IO_MODULES = {"__init__.py", "classic_product.py", "classic_tape.py",
                "wrf_output_schema.py"}
 _ROOT_DATA = {
     "native_wrf_support_v1.json",
+    "physics_params_registry_v1.json",
     "physics_registry_v2.json",
     "wrf_direct_v461_contract.json",
 }
@@ -668,6 +683,12 @@ _FORBIDDEN_STAGED_FILES = {
 }
 
 _OPTIONAL_STAGED_IMPORTS = {
+    ("gpuwm/core/adaptive_clock.py", "gpuwm.core.physics"):
+        "the physics cadence helpers inside _refresh_physics_cadence, "
+        "called by the executing adaptive driver. The function returns "
+        "before this import without a live physics driver; namelist "
+        "translation calls only wrf_num_sound_steps and standalone "
+        "preparation advances no forecast clock",
     ("gpuwm/config.py", "gpuwm.ensemble.request"):
         "the [ensemble] table's validator, imported only when a RunConfig "
         "TOML carries the table.  The request reads the batched forecast's "
@@ -750,9 +771,6 @@ _OPTIONAL_STAGED_IMPORTS = {
         "caller prices a downscaled forecast child "
         "(downscale_pricing.price_child).  The clause also catches a failed "
         "import and states the refusal without the cost",
-    ("gpuwm/core/streaming.py", "gpuwm.core.adaptive_clock"):
-        "adaptive forecast tile planning/step execution; StreamingOptions "
-        "and config validation reach none of these function-local imports",
     ("gpuwm/core/streaming.py", "gpuwm.io.restart"):
         "live forecast tile builder inventories restart tracker slots; "
         "standalone preparation constructs no tile stepper",
@@ -762,6 +780,14 @@ _OPTIONAL_STAGED_IMPORTS = {
         "--restart checkpoint is the run's input.  This package resumes no "
         "checkpoint and does not stage the restart reader, so a --cycle "
         "check here reads a prepared bundle's or declared forcing's start",
+    ("gpuwm/ingest/stream_resume.py", "gpuwm.io.restart"):
+        "the checkpoint clock of `seal-prefix --checkpoint` "
+        "(read_restart_header), imported inside main only when a forecast "
+        "checkpoint names the prefix to seal (lane/spot-resume).  This "
+        "package writes and resumes no checkpoint; a standalone "
+        "preparation seals by --checkpoint-seconds, and its staged "
+        "callers (fetch_as_posted, hrrr_hierarchy_direct) import only the "
+        "posted-marker helpers",
     ("gpuwm/core/streaming.py", "gpuwm.core.streamed_relocation"):
         "forecast-only replacement/adoption of a child store after a move",
     ("gpuwm/core/streaming.py", "gpuwm.core.physics_step_control"):
@@ -793,6 +819,14 @@ _OPTIONAL_STAGED_IMPORTS = {
         "as it is here without gpuwm.core.preflight and gpuwm.core.model, "
         "so an era5, gfs or mapped preparation publishes at its seal and "
         "neither import runs",
+    ("gpuwm/ingest/host_decode_window.py", "gpuwm.core.preflight"):
+        "the nominal GFS field count (source_analysis_fields_per_time) "
+        "inside plan_window, the planner's pre-fetch view that only "
+        "gpuwm/go_cli.py's memory line calls; go_cli is excluded above.  "
+        "The staged preparation path, gpuwm/gfs_direct.py, imports only "
+        "decode_window, available_host_bytes, threads_available and "
+        "gfs_decoded_lead_bytes, which price the window from the fetched "
+        "files themselves and reach no preflight import",
     ("gpuwm/ingest/boundary_stream.py", "gpuwm.core.urban_state"):
         "the BEM workspace count reader in prepared_head_urban_columns; "
         "forecast_installed() is checked before this import, so a "
@@ -1253,6 +1287,7 @@ include = ["gpuwm*", "tools"]
 [tool.setuptools.package-data]
 gpuwm = [
   "native_wrf_support_v1.json",
+  "physics_params_registry_v1.json",
   "physics_registry_v2.json",
   "wrf_direct_v461_contract.json",
   "authorities/*.json",
@@ -1260,6 +1295,7 @@ gpuwm = [
   "core/kernels/*.cuh",
   "data/noah_tables/*.TBL",
   "data/noah_tables/*.md",
+  "data/thompson/fork-build/*.F90",
 ]
 tools = ["*.sh"]
 """
@@ -1396,6 +1432,10 @@ def _stage_rw_wps_python_project(destination: Path) -> dict[str, object]:
                 source,
                 package / "data" / "noah_tables" / source.name,
             )
+    # Fork tables are generated from pinned public inputs at actual first use.
+    # Ship only the small original CPU harness, never the 345 MB coefficient set.
+    for source in sorted((REPO / "gpuwm" / "data" / "thompson" / "fork-build").glob("*.F90")):
+        _copy_source(source, package / "data" / "thompson" / "fork-build" / source.name)
     for name in sorted(_TOOL_FILES):
         _copy_source(REPO / "tools" / name, destination / "tools" / name)
     _copy_source(REPO / "README.md", destination / "README.md")

@@ -54,6 +54,11 @@ pub enum RustwxRenderError {
         #[source]
         source: image::ImageError,
     },
+    /// A run difference that cannot be drawn truthfully: the two runs are
+    /// on different grids, one of them lacks the product, or the product's
+    /// values are not quantities (an RGB image, category codes).
+    #[error("{0}")]
+    Difference(String),
     #[error("failed to write rendered PNG to {path}: {source}")]
     WriteFile {
         path: String,

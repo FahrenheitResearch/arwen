@@ -154,16 +154,20 @@ def prepare_dry_step(state, *, layout_trial="none", advection_family=False,
                                       has_msf=state.has_msf, msf=state.msfu)
     couple_v = prepare_couple_momentum(state.v, state.batch_muy, rv, state.c1h, state.c2h,
                                       has_msf=state.has_msf, msf=state.msfv)
+    from gpuwm.core.advection import vertical_orders
+    vsca, vmom = vertical_orders(cfg)
     advection_rows = ((state.batch_theta, state.rth_t, state.rdnw, state.msft, ""),
                       (state.u, state.ru_t, state.rdnw, state.msfu, "x"),
                       (state.v, state.rv_t, state.rdnw, state.msfv, "y"),
                       (state.w, state.rw_t, state.rdn, state.msft, "z"))
+    row_orders = {"": vsca, "x": vmom, "y": vmom, "z": vsca}
     if layout_trial == "none":
         omega = prepare_omega_columns(ru, rv, ww, state.dnw, state.c1h,
                                      dx=cfg.dx, dy=cfg.dy, has_msf=state.has_msf, msft=state.msft)
         advection = tuple(prepare_flux_div(field, ru, rv, ww, tendency, spacing,
                                           state.fnm, state.fnp, msf, dx=cfg.dx, dy=cfg.dy,
-                                          stagger=stagger, has_msf=state.has_msf)
+                                          stagger=stagger, has_msf=state.has_msf,
+                                          vorder=row_orders[stagger])
                           for field, tendency, spacing, msf, stagger in advection_rows)
         trial_receipt = {"selection": "none", "additional_workspace_bytes": 0,
                          "fused_zero_fields": (), "transitions_in_step": False}

@@ -50,6 +50,12 @@ command-line bins and their 9.8 MB test fixtures.
 
 ## Deliberate divergences from the source tree
 
+`vendor/netcrust` also carries a local NetCDF reader 0.3.0 snapshot from
+the checked-in registry mirror. Its manifest restores the original sibling
+HDF5 path, so external facade consumers keep the corrected fractal-heap
+parser without a workspace patch. Rust sources are unchanged from that
+mirror; the snapshot has its own `VENDOR.md` and license files.
+
 Colorbar unit annotations pass the already converted field units from
 `rustwx-render/src/lib.rs` into `RenderOpts` and the shared colorbar painter
 in `render.rs`. The label occupies the existing legend margin. No field
@@ -635,6 +641,27 @@ both orientations, with and without titles and timestamps, at three sizes.
       in the ambiguity refusal itself.  The python half
       (`gpuwm/da/enprod.py`) forwards its own `--domain` here, so the
       flag is a contract between the two halves and not a convenience.
+    * `rw_compare` -- one run's frame beside a reference model's own
+      fields for the same valid time: two panels on one grid, one
+      projection and one colour scale, with run minus reference in a
+      third for the continuous fields (`gpuwm render --compare hrrr`).
+      A sibling for the reason the other two are: two inputs of two
+      formats is neither one run's frames nor N members.  The run goes
+      through the same wrfout import; the reference's GRIB2 messages are
+      decoded by `rustwx-io` (selector extraction, indexed subset fetch
+      from the public bucket), so nothing here parses GRIB itself.  What
+      is new lives in `compare.rs`: the grid match (a pure index
+      translation between two encodings of ONE lattice is a window, read
+      off a fit of the offsets rather than a distance threshold, because
+      a GRIB grid definition and a model's own latitudes sit on two earth
+      radii), the diverging difference ladder with a neutral bin centred
+      on zero, the run's isobaric height read between layer interfaces,
+      and the sheet (`rustwx_render::compose_panel_images` under one
+      header band).  References and products are table rows in
+      `bin/compare.rs`; adding one is adding a row.  `rustwx-render`
+      gains four re-exports for the header band's text
+      (`draw_text`, `draw_text_bold`, `text_width`, `text_width_bold`),
+      which is this binary's only change outside its own crate.
     * `rw_obsgrid` -- the `gpuwm-obs.radar-grid.v1` observation grid, read
       NATIVELY.  This is the one input gap closed by a reader rather than
       a writer, and deliberately: the file is already classic NetCDF on
@@ -1276,6 +1303,14 @@ chunk per file, and the one codec the datasets use is the Blosc frame,
 which numcodecs decodes under zarr-python 2.18 and 3 (the proof opened
 every export with both).
 
+## wx-core GRIB2 writer templates (2026-10-02)
+
+The vendored `wx-core` GRIB2 writer adds templates 3.10 and 3.20,
+statistical template 4.8, Section 2 definitions, layer endpoints,
+explicit Earth radius and grouped spatial-difference packing 5.3.
+Latitude and scale fields use GRIB sign-magnitude encoding. Its reader
+retains projection metadata and exact bitmap point counts. The small
+golden fixture is independently decoded by ecCodes and wgrib2.
 ## Simulated radar (2026-10-02)
 
 `crates/rw-simradar` is the WOOF history consumer, writer adapter and PPI
@@ -1305,3 +1340,38 @@ The NEXRAD station table has 158 operational sites, with antenna MSL heights
 from the current NOAA antenna list and positions from the NOAA operational
 site map. Source URLs, dates, and hashes are recorded beside the table in
 `crates/rw-simradar/data/sites-provenance.json`.
+
+## Windowed lane: regular lat/lon grids draw through the inverse raster (2026-10-05)
+
+`crates/rustwx-products/src/windowed.rs::build_windowed_render_request`
+copies the projected map's `inverse_raster_projection` onto the panel's
+request, as the direct lane (`direct/rendering.rs`) and the generic `var:`
+lane (`rusty-weather/src/store_render.rs`) already did.  The windowed lane
+built the same map, with the inverse raster on it, and then dropped it.
+
+The breakage it answers, both seen on WOOF Global maps (MAP_PROJ 6 tapes)
+and both on the 6 h precipitation panel only, never on the pressure panel
+beside it:
+
+- Whole globe: the field went down the forward-projected contour path, and
+  a contour band that leaves the grid at its west edge and comes back in at
+  its east edge (the date line) was closed straight across the map, so
+  rain near the date line drew as horizontal streaks over the whole globe.
+  A maps lane worked around it by dropping one longitude column from the
+  tape.
+- Regional crop: with no inverse raster the domain frame takes the
+  rectangle INSCRIBED in the grid's coverage (the 2026-08-17 frame fix,
+  above, keys on the inverse raster being present), and a lat/lon window
+  shown in a conic presentation has a curved footprint, so the panel
+  shrank to a strip with its title and colour bar moved down the canvas.
+
+Only regular lat/lon grids carry an inverse raster
+(`inverse_raster_projection_for_latlon_mesh`), so every projected grid's
+windowed picture is unchanged: MEASURED, a Lambert WRF pair drew
+byte-identical `qpf_1h` and `mslp_10m_winds` PNGs before and after, and on
+WOOF Global T255 tapes (globe, North America and Europe windows) every
+`mslp_10m_winds` PNG is byte-identical while every `qpf_6h` PNG changes.
+Held by `crates/rw-wrfbatch/tests/global_latlon_panels.rs` (a U of rain
+crossing the date line leaves the southern ocean between its arms dry; a
+regional crop draws both halves of the pressure and precipitation pair
+across the same frame), both of which fail with this line removed.

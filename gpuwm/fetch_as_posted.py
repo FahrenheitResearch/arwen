@@ -506,7 +506,16 @@ class PostingLoop:
 
         for need in self.needs:
             lead = self.window.start_lead if need.lead is None else need.lead
-            if need.source == self.window.source and int(lead) in self._seen:
+            # A lead already seen covers the needs that ARE that lead.  A
+            # supplement or invariant names its own objects, which the lead's
+            # posted answer never asked: the breakage this prevents is the
+            # HRRR-PRS vegetation_surface wrfsfc f000 (6a69b356f), skipped
+            # because the analysis need had just marked lead 0 seen, then
+            # transferred without one HEAD while it might not be posted.
+            covered = not (need.role == "invariant"
+                           or need.role.startswith("supplement:"))
+            if (covered and need.source == self.window.source
+                    and int(lead) in self._seen):
                 continue
 
             def ask(need=need):
@@ -799,6 +808,8 @@ class PostingLoop:
         }
         if composed:
             marker["composed"] = [dict(item) for item in composed]
+        from gpuwm.ingest.stream_resume import preserve_posted_marker
+        marker = preserve_posted_marker(marker)
         path = self.folder / marker_name(lead)
         _write_json(path, marker)
         endpoint = next((item.get("endpoint") for item in objects

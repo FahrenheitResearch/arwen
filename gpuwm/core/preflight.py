@@ -583,6 +583,49 @@ def anisotropic_w_mixing_advisories(exp) -> list[str]:
     return lines
 
 
+#: The child step growth a generated adaptive nest carries
+#: (gpuwm.domain_wizard), and the value the advisory below measures from.
+GENERATED_NEST_STEP_GROWTH_PCT = 5
+
+
+def nest_step_growth_advisories(exp) -> list[str]:
+    """One line per adaptive nest whose step may grow faster than 5 percent.
+
+    The breakage this names: a 500 m child at ``max_step_increase_pct =
+    51`` -- WRF's own nest value, so an imported namelist carries it --
+    took a freshly measured CFL after an output alarm, grew to about
+    three times its spacing rule within a few steps and went non-finite
+    in vertical velocity many hours into a nested forecast.  The same
+    forecast at 5 percent ran to completion at the same pace.
+
+    Advisory, not a refusal: 51 is a legal WRF setting that many trees
+    run without incident, and refusing it would turn away every imported
+    nested namelist.  It changes no exit code and blocks nothing.
+    """
+
+    lines: list[str] = []
+    for dc in exp.domains:
+        run = dc.run
+        if int(getattr(dc, "parent_id", 0) or 0) == 0:
+            continue
+        if not getattr(run, "use_adaptive_time_step", False):
+            continue
+        growth = int(getattr(run, "max_step_increase_pct",
+                             GENERATED_NEST_STEP_GROWTH_PCT))
+        if growth <= GENERATED_NEST_STEP_GROWTH_PCT:
+            continue
+        lines.append(
+            f"d{dc.grid_id:02d} is an adaptive nest with "
+            f"max_step_increase_pct = {growth}: after an output alarm a "
+            "child at this growth has been reproduced taking steps about "
+            "three times its spacing rule and then failing with a "
+            "non-finite vertical velocity hours into a nested forecast. "
+            f"max_step_increase_pct = {GENERATED_NEST_STEP_GROWTH_PCT} on "
+            "the nest ran the same forecast to completion at the same "
+            "pace; generated nests already use it.")
+    return lines
+
+
 #: "The caller did not price this" -- distinct from a caller that priced
 #: it and got ``None``, which is the answer "this config does not stream".
 _UNPRICED = object()
@@ -861,6 +904,7 @@ def check_advisories(exp, config_path=None, *, machine=None,
     advisories = [feedback_advisory(exp)]
     advisories.extend(spawn_reservation_advisories(exp))
     advisories.extend(anisotropic_w_mixing_advisories(exp))
+    advisories.extend(nest_step_growth_advisories(exp))
     advisories.append(streaming_advisory(exp, machine=machine,
                                          envelope=streamed,
                                          tree_road=tree_road,
@@ -1766,6 +1810,17 @@ def read_compile_platform() -> tuple[str, str] | None:
 #: under-pricing is what put a run 1,630 MiB over; the bound is stated, not
 #: silently tightened.
 KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
+    # Three units the 2.8.6 staging line shipped without a row, read
+    # 2026-10-05 with tools/vram_reserve_probe.py frames on RTX 5090 /
+    # NVRTC 13.4.92 through the production loader: 0 B each.  The fork's
+    # order-five vertical scalar flux (f82847049), the fork's saved-wind
+    # limiter (4b2bd1665) and the prescribed-smoke time blend (ef8325e32).
+    "pd_vertical_sl": 0,
+    "rrtmg_smoke_manifest": 0,
+    "upper_wind_limiter": 0,
+    # Initialization-only parameter-table scaler, measured 2026-10-04
+    # through the production loader on RTX 5090 / NVRTC 13.4.92: 0 B.
+    "physics_params": 0,
     # The ensemble member bookkeeping, the stochastic pattern generator and
     # the RUC hydraulic SPP operator, read 2026-10-03 on RTX 5090 /
     # NVRTC 13.4.92: 0 B each (no kernel of the three holds a local array).
@@ -2063,6 +2118,12 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "thompson_aerosol_warm": 112,
     "tke_budget": 0,
     "topo_radiation": 40,
+    # WRF swint_opt = 1 and aer_opt = 3 (lane 286-aer-swint): 0 B on sm_120
+    # at NVRTC 13.4.92 (kernel_frame_recordings).
+    "swint": 0,
+    # Production loader on RTX 5090, NVRTC 13.4.92, 2026-10-04.
+    "solar_albedo": 0,
+    "rrtmg_aer3": 0,
     "uh_diag": 0,
     # The UW moist-turbulence PBL (bl_pbl_physics = 9): uwpbl_columns keeps
     # CAM's automatic arrays in a global per-column workspace
@@ -2318,6 +2379,24 @@ THOMPSON_SHALLOW_KERNEL_FRAMES = {
     "thompson_aerosol_sed": 2304,
 }
 THOMPSON_SHALLOW_LEVELS = 64
+
+# thompson_version = "wrf_39_noaa" compiles the aerosol units with
+# THOMPSON_AA_WRF39 (gpuwm.core.thompson_aerosol_launch.WRF39_DEFINES), and
+# the fork's fallout is a different frame: read 2026-10-05 through the
+# production loader on RTX 5090 / NVRTC 13.4.92, the sedimentation unit's
+# widest export is 11,264 B (9,216 at wrf_461) and its widest 64-level or
+# plain export is 2,816 B (2,304 at wrf_461).  The other five aerosol units
+# read the same frame at both generations.  This row does not move today's
+# reservation: that is the widest frame over every launched module, and
+# mp_physics = 28 always launches the classic ``thompson`` unit, whose rows
+# (11,264 / 2,816) equal the fork's.  Breakage prevented: nothing else reads
+# the fork's frames, so a change that narrows the classic unit would leave the
+# shipped HRRR configuration recipes (which select the fork generation)
+# under-priced by up to 2,048 B per resident thread with no gate failing.
+#   module -> (widest export, widest plain/64-level export)
+THOMPSON_WRF39_KERNEL_FRAMES = {
+    "thompson_aerosol_sed": (11264, 2816),
+}
 
 for _spec in LEVEL_SPECIALIZED_KERNEL_FRAMES.values():
     if (_spec.frame_bytes(_spec.unspecialized_levels)
@@ -3040,6 +3119,14 @@ def domain_kernel_modules(dc: DomainConfig, *,
         modules.add("terrain_drag_composed")
     if int(getattr(dc.run, "zadvect_implicit", 0) or 0) > 0:
         modules.add("ieva")                    # A158, gpuwm/core/ieva.py
+    # WRF swint_opt = 1 (gpuwm/core/swint.py) and aer_opt = 3 on the
+    # legacy RRTMG shortwave (gpuwm/core/rrtmg_aerosol_optics.py).
+    if int(getattr(dc.run, "swint_opt", 0) or 0) == 1:
+        modules.add("swint")
+    if int(getattr(dc.run, "alb_sol", 0) or 0) == 1:
+        modules.add("solar_albedo")
+    if int(getattr(dc.run, "aer_opt", 0) or 0) == 3:
+        modules.add("rrtmg_aer3")
     if int(getattr(dc.run, "sf_lake_physics", 0)) == 1:
         modules.add("lake")
     mp_physics = int(dc.run.mp_physics)
@@ -3210,6 +3297,19 @@ def kernel_local_frame_bytes(
                                dc, prices_refl=prices_refl)]
         if selected_levels and max(selected_levels) <= THOMPSON_SHALLOW_LEVELS:
             frames[module] = shallow_frame
+    # The fork generation is priced at its own frames whenever any domain
+    # launching the unit selects it; the 64-level rule is the one above
+    # (every launching domain at or under THOMPSON_SHALLOW_LEVELS).
+    for module, (deep_frame, shallow_frame) in THOMPSON_WRF39_KERNEL_FRAMES.items():
+        launching = [dc for dc in exp.domains
+                     if module in domain_kernel_modules(dc, prices_refl=prices_refl)]
+        if not any(getattr(dc.run, "thompson_version", "wrf_461") == "wrf_39_noaa"
+                   for dc in launching):
+            continue
+        shallow = max(int(dc.run.nz) for dc in launching) <= THOMPSON_SHALLOW_LEVELS
+        frame = shallow_frame if shallow else deep_frame
+        if frame > frames.get(module, -1):
+            frames[module] = frame
     return frames
 
 
@@ -4018,6 +4118,8 @@ def physics_field_names_2d(cfg: RunConfig | None = None) -> tuple[str, ...]:
         from gpuwm.core.surface_forcing import SURFACE_PRECIPITATION_FIELDS
         union.update(dict.fromkeys(SURFACE_PRECIPITATION_FIELDS))
         union["coszen"] = None
+    if cfg is not None and int(getattr(cfg, "alb_sol", 0)) == 1:
+        union.update(dict.fromkeys(("albsol", "albbcksol")))
     return tuple(union)
 
 
@@ -4378,7 +4480,8 @@ def mynn_pbl_scratch_slots(cfg: RunConfig, *, tile_buffer: bool = False
     chunk = mynn_pbl_column_chunk(cfg, tile_buffer=tile_buffer)
     nz, ny, nx = int(cfg.nz), int(cfg.ny), int(cfg.nx)
     slots: dict[str, tuple[int, ...]] = {}
-    slots.update(mynn_pbl_scratch_shapes(chunk, nz))
+    slots.update(mynn_pbl_scratch_shapes(chunk, nz,
+                                       bl_mynn_version=cfg.bl_mynn_version))
     slots.update(mynn_pbl_index_shapes(chunk, nz))
     slots.update(mynn_pbl_flag_shapes())
     slots.update(mynn_pbl_tendency_field_shapes(nz, ny, nx))
@@ -4852,6 +4955,13 @@ def scratch_slot_registry(cfg: RunConfig, *,
         slots.update(diff6_x=xs, diff6_y=ys)
     if cfg.diff_6th_opt:
         slots.update(diff6_z=fl, diff6_m=m)
+        # The NOAA WRFV3.9 fork's edge-to-edge form (diff_6th_form =
+        # "noaa_wrf39", the HRRR recipe request default) on a specified or
+        # nested domain: the padded field, padded tendency, padded planes
+        # and, under the slope taper, padded base geopotential that
+        # dycore.launch_diff6_to_edge filters (diff6_edge_workspace.py).
+        from gpuwm.core.diff6_edge_workspace import diff6_edge_slot_shapes
+        slots.update(diff6_edge_slot_shapes(cfg))
     if cfg.khdif > 0.0 or cfg.kvdif > 0.0:
         slots.update(diff_u=xs, diff_v=ys, diff_w=fl, diff_th=m)
 
@@ -5263,6 +5373,18 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
         "stress faces and scalar fluxes, so every configuration retains "
         "two distinct face backings"),
     ScratchSlotLifetime(
+        ("diff6_edge_field", "diff6_edge_tend", "diff6_edge_planes",
+         "diff6_edge_phb"),
+        "write_before_read",
+        "gpuwm/core/dycore.py:launch_diff6_to_edge,_diff6_edge_work; "
+        "gpuwm/core/diff6_edge_workspace.py",
+        "every padded copy (field, column mass, map factors, base "
+        "geopotential) is written whole by _edge_pad_into and the padded "
+        "tendency is zeroed before the kernel adds into it, all inside one "
+        "launch_diff6_to_edge call whose result is added into the caller's "
+        "diff6_* temporary before it returns; nothing is read across "
+        "calls, so no arena neighbour can be observed through them"),
+    ScratchSlotLifetime(
         ("moist_pd_q0", "moist_rq_t", "moist_absent_mass",
          "pd_fxl", "pd_fxc", "pd_fyl",
          "pd_fyc", "pd_fzl", "pd_fzc"), "write_before_read",
@@ -5641,6 +5763,7 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
          "mynn_pbl_initialize_work", "mynn_pbl_plume_layer",
          "mynn_pbl_plume_face", "mynn_pbl_plume_column",
          "mynn_pbl_plume_work", "mynn_pbl_plume_scratch",
+         "mynn_pbl_gsd41_condensation_work", "mynn_pbl_gsd41_thvl",
          "mynn_pbl_tendency", "mynn_pbl_tendency_work",
          "mynn_pbl_tendency_face", "mynn_pbl_stage_layer",
          "mynn_pbl_stage_dx", "mynn_pbl_out_du", "mynn_pbl_out_dv",
@@ -8470,7 +8593,8 @@ def estimate_experiment(
                 p_top=exp.vertical.p_top, column_chunk=None,
                 longwave=radiation_scheme_ids(dc.run)[0] == 4,
                 shortwave=radiation_scheme_ids(dc.run)[1] == 4,
-                resident_threads=device_profile.resident_thread_capacity)
+                resident_threads=device_profile.resident_thread_capacity,
+                aer_opt=int(getattr(dc.run, "aer_opt", 0)))
             if (4 in radiation_scheme_ids(dc.run)
                 and rrtmg_variant(dc.run) == RRTMG_VARIANT_LEGACY) else 0
             for dc in exp.domains)
@@ -8750,6 +8874,52 @@ def cap_free_to_device_wide(free_bytes: int, *, device_id: str | None = None
     return capped, capped < free
 
 
+def release_unreachable_device_memory(array_module=None) -> None:
+    """Hand back the device memory nothing in this process can reach.
+
+    Call it immediately before a card reading that decides something (an
+    admission, a pack, a tile plan).  Two kinds of bytes are this process's
+    own and free in every sense that matters, yet ``cudaMemGetInfo`` counts
+    them as used:
+
+    * arrays reachable only through a reference cycle.  The driver/state
+      attachment of a finished forecast is such a cycle, and its arrays stay
+      allocated until the cyclic collector happens to run; when it runs
+      depends on everything the process allocated before, not on the run
+      being admitted.
+    * blocks the default CuPy pool holds unused after earlier work.
+
+    So a reading taken without this depended on what ran earlier in the
+    process.  MEASURED (RTX 5090 held to 15 GiB free, the release gate's
+    one-process order): after the two member-sources ensemble identity
+    tests, the native decline gate read 2.87 GiB free and its first member
+    was refused (it needs 4.77 GiB); with one collection between the tests
+    and nothing else changed it read 13.3 GB and passed.  The C6 skeptic
+    saw the same reading admit the gate's four-member native pack as two
+    packs.  The same garbage is reachable in production wherever a process
+    runs a second forecast or ensemble after a first.
+
+    Live arrays are untouched (``free_all_blocks`` releases unreferenced
+    blocks only), so this has no numerical effect.  It is a whole-process
+    collection, which is why it belongs at the few decision readings and
+    never on a per-step path.  A process with no reachable card has nothing
+    to hand back and returns quietly.
+    """
+    import gc
+
+    gc.collect()
+    if array_module is None:
+        try:
+            import cupy as array_module
+        except Exception:                         # noqa: BLE001 - no CuPy
+            return
+    try:
+        array_module.cuda.get_current_stream().synchronize()
+        array_module.get_default_memory_pool().free_all_blocks()
+    except Exception:                             # noqa: BLE001 - no card
+        return
+
+
 def device_free_and_total_bytes(device: int | None = None) -> tuple[int, int]:
     """``(free, total)`` for one CUDA device, free as the tiling planner reads it.
 
@@ -8763,6 +8933,9 @@ def device_free_and_total_bytes(device: int | None = None) -> tuple[int, int]:
     4.32 GiB, with about 6 GiB held by other programs.  On Linux the two
     agree and the cap is a no-op.
 
+    The reading is taken after :func:`release_unreachable_device_memory`,
+    so it does not depend on what this process ran before.
+
     ``device`` None reads the current device, as ``cupy.cuda.Device()``
     does.
     """
@@ -8771,6 +8944,7 @@ def device_free_and_total_bytes(device: int | None = None) -> tuple[int, int]:
 
     selected = cp.cuda.Device() if device is None else cp.cuda.Device(device)
     with selected:
+        release_unreachable_device_memory(cp)
         free, total = cp.cuda.runtime.memGetInfo()
     free, _ = cap_free_to_device_wide(free, device_id=selected.pci_bus_id)
     return int(free), int(total)
@@ -9259,7 +9433,8 @@ def run_alloc_preflight(
                     ncol=dc.run.ny * dc.run.nx, nz=dc.run.nz,
                     p_top=exp.vertical.p_top, column_chunk=None,
                     longwave=radiation_scheme_ids(dc.run)[0] == 4,
-                    shortwave=radiation_scheme_ids(dc.run)[1] == 4)
+                    shortwave=radiation_scheme_ids(dc.run)[1] == 4,
+                    aer_opt=int(getattr(dc.run, "aer_opt", 0)))
                 for dc in legacy_44)
             holdings.append(cp.zeros(envelope, dtype=cp.uint8))
         if any(4 in radiation_scheme_ids(dc.run)

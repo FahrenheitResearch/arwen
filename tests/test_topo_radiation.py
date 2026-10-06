@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from tests.conftest import requires_gpu
+from conftest import requires_gpu
 
 FIXTURE = (Path(__file__).parent / "fixtures" / "wrf_topo_radiation_v471"
            / "topo_radiation_v471.npz")

@@ -16,6 +16,7 @@ import numpy as np
 from gpuwm.config import soil_layer_count
 from gpuwm.core.noah import noah_initial_snow_albedo
 from gpuwm.ingest.hrrr_surface import surface_fields_to_device
+from gpuwm.ingest.vegetation import initial_vegetation_fraction
 
 
 _CANONICAL_SURFACE_FIELDS = frozenset({
@@ -162,7 +163,8 @@ def initialize_prepared_physics(
     import cupy as cp
 
     from gpuwm.core.diagnostics import update_diagnostics
-    from gpuwm.core.landuse import initialize_landuse
+    from gpuwm.core.landuse import (initialize_landuse,
+                                    usemonalb_landuse_inputs)
     from gpuwm.core.physics import initialize_physics
     from gpuwm.ingest.ruc_mosaic import ruc_mosaic_physics_inputs
     from gpuwm.ingest.lake_physics import lake_physics_inputs
@@ -195,9 +197,11 @@ def initialize_prepared_physics(
         isoilwater=int(isoilwater),
         # real.exe's landmask/soil-category reconciliation decides a
         # disagreeing column from its soil temperature, then its SST.
-        soil_temperature=fields["TSLB"], sst=fields.get("SST"))
-    vegfra = 100.0 * monthly_interp_to_date(static["GREENFRAC"], valid_time)
-    lai = monthly_interp_to_date(static["LAI12M"], valid_time)
+        soil_temperature=fields["TSLB"], sst=fields.get("SST"),
+        **usemonalb_landuse_inputs(cfg, static, valid_time))
+    vegfra = initial_vegetation_fraction(met, static, valid_time)
+    from gpuwm.core.landuse import surface_leaf_area
+    lai = surface_leaf_area(cfg, static["LAI12M"], valid_time)
     lat, lon = grid.latlon_mass()
     from gpuwm.core.radiation_composition import make_radiation
     radiation_origin = (valid_time if simulation_start_time is None
@@ -226,10 +230,9 @@ def initialize_prepared_physics(
             cfg, static, landuse_attrs=landuse_attrs, xice=fields["SEAICE"],
             fractional_seaice=fractional_seaice),
         **({"cam_ozone": cam_ozone} if cam_ozone is not None else {}))
+    from gpuwm.core.landuse import surface_snow_albedo
     driver.fields["snoalb"][...] = cp.asarray(
-        noah_initial_snow_albedo(
-            static["SNOALB"], static["LU_INDEX"], driver.noah_params,
-            rdmaxalb=cfg.rdmaxalb),
+        surface_snow_albedo(cfg, static, driver.noah_params),
         dtype=cp.float32)
     driver.fields["lai"][...] = cp.asarray(lai, dtype=cp.float32)
     driver.fields["shdmin"][...] = cp.asarray(
@@ -322,8 +325,15 @@ def resolve_prepared_noah_surface(met, cfg, static, *, surface=None, soil_mesh=N
             "  A cache carrying neither is incomplete and must be prepared "
             "again; nothing here can reconstruct soil that was never "
             "written.")
+    from gpuwm.core.landuse import (
+        ruc_fractional_seaice as _ruc_fractional_seaice)
     soil = preprocess_land_surface_soil(
         fields, sf_surface_physics=int(cfg.sf_surface_physics),
+        # real.exe's adjust_for_seaice_pre/post keep the fraction under
+        # fractional_seaice = 1 (threshold 0.02) and snap to 0/1 at 0.5
+        # otherwise (module_soil_pre.F:216-219, :337-343, :392-393 of the HRRR
+        # v4.1.21 fork).
+        fractional_seaice=_ruc_fractional_seaice(cfg),
         # The RESOLVED count, the same number :func:`_soil_shape` above
         # allocates from.  Left off, RUC's soil ingest took its own
         # nine-level default, so a six-level config prepared a nine-level
@@ -382,4 +392,4 @@ def initialize_hrrr_physics(
 
 
 __all__ = ["initialize_hrrr_physics", "initialize_prepared_physics",
-           "resolve_prepared_noah_surface"]
+           "resolve_prepared_noah_surface", "initial_vegetation_fraction"]

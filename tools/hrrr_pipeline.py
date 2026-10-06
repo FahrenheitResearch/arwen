@@ -723,6 +723,7 @@ class HrrrPipelineProducer:
         self.series_hours = tuple(row[0] for row in series_rows)
         self.hour_payload_files = {
             row[0]: 24 + int(len(row) > 3) for row in series_rows}
+        self._base_hour_payload_files = dict(self.hour_payload_files)
         parsed_cycle = datetime.strptime(
             cycle.replace("T", " ").removesuffix("Z"),
             "%Y-%m-%d %H:%M:%S")
@@ -980,7 +981,13 @@ class HrrrPipelineProducer:
             raise ValueError(
                 f"invalid producer preflight timestamp: {producer_seconds!r}")
         self.preflight = values
-        self._validated_staging_root()
+        staging_root = self._validated_staging_root()
+        from gpuwm.ingest.native_supplements import gate_soil_surface_fields
+        soil_surface_count = len(gate_soil_surface_fields(
+            _read_tsv(staging_root / "gate.txt")))
+        self.hour_payload_files = {
+            hour: count + soil_surface_count
+            for hour, count in self._base_hour_payload_files.items()}
         return values
 
     def wait_hour(self, hour: int, timeout: float = 600.0) -> Path:

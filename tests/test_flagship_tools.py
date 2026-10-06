@@ -291,6 +291,41 @@ def test_products_use_wrf_rust_and_render_outer_inventory(
         assert artifact["sha256"] == _sha(path)
 
 
+def test_500_hpa_height_is_read_between_layer_interfaces(tmp_path):
+    """THE 2.8.6 DEFECT, pinned: wrf-rust's "height" is the layer mean, and
+    interpolated at the mass-level pressure it read 500 hPa high.  A frame
+    with PH, PHB and ZNW is read between its interfaces; on an isothermal
+    eta column that is the analytic height."""
+    nz, ny, nx = 30, 2, 3
+    znw = 1.0 - (np.arange(nz + 1) / nz) ** 1.3
+    psfc = np.array([101000.0, 92000.0, 86000.0])[None, None, :] * np.ones((1, ny, nx))
+    p_w = 2000.0 + znw[:, None, None] * (psfc - 2000.0)
+    path = tmp_path / "wrfout_d01_1999-05-03_12_00_00"
+    with netCDF4.Dataset(path, "w") as ds:
+        for name, size in (("Time", 1), ("bottom_top", nz), ("bottom_top_stag", nz + 1),
+                           ("south_north", ny), ("west_east", nx)):
+            ds.createDimension(name, size)
+        mass = ("Time", "bottom_top", "south_north", "west_east")
+        stag = ("Time", "bottom_top_stag", "south_north", "west_east")
+        ds.createVariable("P", "f8", mass)[:] = np.zeros((1, nz, ny, nx))
+        ds.createVariable("PB", "f8", mass)[:] = 0.5 * (p_w[:-1] + p_w[1:])[None]
+        ds.createVariable("PH", "f8", stag)[:] = np.zeros((1, nz + 1, ny, nx))
+        ds.createVariable("PHB", "f8", stag)[:] = (9.80665 * 7500.0 * np.log(psfc / p_w))[None]
+        ds.createVariable("ZNW", "f8", ("Time", "bottom_top_stag"))[:] = znw[None]
+    frame = products.Frame(domain="d01", path=path, time_index=0,
+                           valid_time="1999-05-03_12:00:00")
+    height = products._interface_height500(frame, (ny, nx))
+    truth = 7500.0 * np.log(psfc[0] / 50000.0) / 10.0
+    assert np.abs(height - truth).max() < 0.005
+    # Without interface geometry the caller keeps wrf-rust's reading.
+    bare = tmp_path / "wrfout_d01_1999-05-03_13_00_00"
+    with netCDF4.Dataset(bare, "w") as ds:
+        ds.createDimension("Time", 1)
+    assert products._interface_height500(
+        products.Frame(domain="d01", path=bare, time_index=0,
+                       valid_time="1999-05-03_13:00:00"), (ny, nx)) is None
+
+
 def test_index_space_coordinates_fail_before_product_writes(
         tmp_path, fake_wrf_rust, monkeypatch):
     run = tmp_path / "run"

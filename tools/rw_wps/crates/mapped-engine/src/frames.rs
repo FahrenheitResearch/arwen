@@ -708,7 +708,7 @@ fn frame_header(
             .parameters
             .as_ref()
             .expect("lambert declarations carry parameters");
-        json!({
+        let mut grid = json!({
             "projection": GRID_FAMILY_LAMBERT,
             "nx": collection.longitude.len(),
             "ny": collection.latitude.len(),
@@ -733,7 +733,11 @@ fn frame_header(
                 "shape_of_earth": parameters.shape_of_earth,
                 "source_wind_basis": declaration.wind_basis,
             },
-        })
+        });
+        if let Some(pairing) = declaration.same_grid_pairing.as_ref() {
+            grid["parameters"]["same_grid_pairing"] = json!(pairing);
+        }
+        grid
     } else {
         regular_latlon_grid(&collection.latitude, &collection.longitude)
     };
@@ -2055,6 +2059,46 @@ impl Committer<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_grid_pairing_reaches_the_frame_only_when_declared() {
+        let (_, collection, plan) = chain_fixture(false);
+        for selected in [false, true] {
+            let mut document = json!({
+                "name": "projected-pairing-test",
+                "coordinates": {"vertical": {"kind": "pressure", "units": "Pa"}},
+                "fields": {}, "target": {},
+                "grid": {
+                    "family": "lambert_conformal",
+                    "wind_basis": "grid_relative_with_rotation",
+                    "parameters": {
+                        "latin1": 50.0, "latin2": 50.0, "lov": 253.0,
+                        "lat1": 1.0, "lon1": 214.5,
+                        "dx_m": 32463.0, "dy_m": 32463.0,
+                        "nx": 2, "ny": 2,
+                        "earth_radius_m": 6371229.0, "shape_of_earth": 6
+                    }
+                }
+            });
+            if selected {
+                document["grid"]["same_grid_pairing"] = json!("identity");
+            }
+            let payload = serde_json::to_vec(&document).unwrap();
+            let mapping = Mapping {
+                doc: crate::node::Node::parse(&payload).unwrap(),
+                sha256: crate::digest::bytes_sha256(&payload),
+                path: "<projected-pairing-test>".to_owned(),
+            };
+            let header = frame_header(&mapping, plan.keys[0].0, plan.keys[0].0, &collection, &[]).unwrap();
+            let parameters = &header["grid"]["parameters"];
+            if selected {
+                assert_eq!(parameters["same_grid_pairing"], json!("identity"));
+            } else {
+                assert!(parameters.get("same_grid_pairing").is_none());
+                assert!(!serde_json::to_string(&header).unwrap().contains("same_grid_pairing"));
+            }
+        }
+    }
 
     fn chain_fixture(self_seed: bool) -> (Mapping, DecodedCollection, FramePlan) {
         let source = json!({"units": {"source": "1", "target": "1"}, "location": "mass",

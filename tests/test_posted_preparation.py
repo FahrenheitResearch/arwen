@@ -633,7 +633,7 @@ def _as_posted_tree(tmp_path, *, leads=(0, 1, 2), seal_manifest=None,
         frames.release(index - 1)
     manifest = seal_manifest if seal_manifest is not None else _manifest(leads)
     text = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
-    (writer.root / "source-input-manifest.json").write_text(text)
+    (writer.root / "source-input-manifest.json").write_bytes(text.encode("utf-8"))
     digest = hashlib.sha256(text.encode()).hexdigest()
     writer.write_posted_leads(
         markers if markers is not None else

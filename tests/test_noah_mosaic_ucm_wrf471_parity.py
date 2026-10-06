@@ -23,7 +23,7 @@ from gpuwm.core.urban_tables import load_urban_params
 from gpuwm.verify.noah_mosaic_oracle import (
     load, fixture_device_fields, wrf_to_gpuwm, gpuwm_to_wrf, soil_reduction, ulp_table)
 
-ROOT = Path(__file__).resolve().parents[1] / "gpuwm/data/noah_mosaic/oracle"
+ROOT = Path(__file__).resolve().parents[1] / "tests/data/oracles/noah_mosaic"
 D2 = ("sfcrunoff", "udrunoff", "potevp", "acsnom", "snopcx", "acsnow")
 GRID = tuple(n for n in _F2D if n != "reslin") + _F3D + ("ivgtyp", "isltyp", "ust", "mosaic_cat_index", "landusef2")
 TILES = MOSAIC_TILE_FIELDS + MOSAIC_SOIL_FIELDS + MOSAIC_URBAN_TILE_FIELDS + MOSAIC_URBAN_SOIL_FIELDS

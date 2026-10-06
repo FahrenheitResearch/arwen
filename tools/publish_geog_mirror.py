@@ -100,6 +100,14 @@ _PROVENANCE = {
         "30-arc-second lake depth for optional CLM lake physics",
         "distributed for WPS by NCAR; the download index does not state "
         "an ultimate source or a separate redistribution licence"),
+    "bnu_soiltype_top": (
+        "alternative 30-arc-second, 16-category top-layer soil texture",
+        "NCAR WPS geography distribution; the download index does not "
+        "state a separate redistribution licence"),
+    "bnu_soiltype_bot": (
+        "alternative 30-arc-second, 16-category bottom-layer soil texture",
+        "NCAR WPS geography distribution; the download index does not "
+        "state a separate redistribution licence"),
 }
 
 

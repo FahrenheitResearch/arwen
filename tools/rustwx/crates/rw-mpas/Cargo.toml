@@ -40,6 +40,14 @@ name = "rw_mpas_init"
 path = "src/bin/rw_mpas_init.rs"
 
 [[bin]]
+name = "rw_mpas_geometry"
+path = "src/bin/rw_mpas_geometry.rs"
+
+[[bin]]
+name = "rw_mpas_hostprep"
+path = "src/bin/rw_mpas_hostprep.rs"
+
+[[bin]]
 name = "rw_mpas_lbc"
 path = "src/bin/rw_mpas_lbc.rs"
 

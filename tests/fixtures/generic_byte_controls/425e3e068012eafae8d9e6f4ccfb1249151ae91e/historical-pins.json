@@ -1,0 +1,557 @@
+{
+  "audit_parent": "425e3e068012eafae8d9e6f4ccfb1249151ae91e",
+  "baseline_objects": {
+    "gpuwm/config.py": {
+      "bytes": 278692,
+      "git_blob": "85d3ca79353bea5e75e76aeb55edbae0090a4d3c",
+      "sha256": "a12cd6855554c235cad167929a9e26f956b1f1fb17a6b34983b799cb9a9ef6c3"
+    },
+    "gpuwm/config_authority.py": {
+      "bytes": 4781,
+      "git_blob": "6b882f81ecc2664ca337f21b234c0e6e58951c26",
+      "sha256": "833ee736f456184e9ecd8c6fbd4b6b04e5117b1d1e0222b4c4529c3cc0323a53"
+    },
+    "gpuwm/config_keys.py": {
+      "bytes": 7482,
+      "git_blob": "5e9ac72fd2a05920700b6089e2b55d86aee2aabe",
+      "sha256": "ae64cfb3f526b955c45f9c0eb6ef1dfc538a6b5695a154ae2f723f55ffc5cde2"
+    },
+    "gpuwm/domain_wizard.py": {
+      "bytes": 404851,
+      "git_blob": "ead2a180676534e0a860896a6b666517f65166e4",
+      "sha256": "4e1993c1284397764db7329231dd81399fc99ec49a514edc5668e75360e7946f"
+    },
+    "gpuwm/experiment.py": {
+      "bytes": 273061,
+      "git_blob": "a1a2b1d1a705b8f93ff0b09d9286048329044f55",
+      "sha256": "2fd2cad77eaa3d99f1e3f4622766ebc9008ca19529090cab425db278765d4e18"
+    },
+    "gpuwm/fetch.py": {
+      "bytes": 402697,
+      "git_blob": "1ca2bfc8600726738c98e25be83e55ade76697e8",
+      "sha256": "e133911313e1e47402b0ee736a9e2056971d9821ce217d6278663943d97b5911"
+    },
+    "gpuwm/fortran_namelist.py": {
+      "bytes": 21656,
+      "git_blob": "14ce251ae1145c86731ae632132b72aaa4e12fbf",
+      "sha256": "efb950f52c1df31428619f4155641309cc15c83ce22064d4e5b846654d408dfe"
+    },
+    "gpuwm/grid_requirements.py": {
+      "bytes": 1021,
+      "git_blob": "1d32b42ebd63270428ea438232f70dcdc797e675",
+      "sha256": "5ed55b08a9ca06e47baf199499c47ea8544acfc8c3ca5955df1608186edbef14"
+    },
+    "gpuwm/hrrr_route_inputs.py": {
+      "bytes": 64168,
+      "git_blob": "7fb0e381ab10b17f1c35fa3f88c7c2c8070d54ea",
+      "sha256": "e9f85f1cc01e5d8afc4d6663a94691fc5d5a49f005adf8d430fff64d2fd62527"
+    },
+    "gpuwm/namelist_compat.py": {
+      "bytes": 85267,
+      "git_blob": "4a9c6d00b63ea59c1b3375eabc73211d161ac181",
+      "sha256": "1e693ddceaf793f073f24e8d84ce6299f6878b3635c3a0a58719c0187b9b2209"
+    },
+    "gpuwm/namelist_import.py": {
+      "bytes": 267069,
+      "git_blob": "08f8449795caf68cfe375984da1593fa6a3076e9",
+      "sha256": "8a67cab5c9630f2865cec8e0e66372048f27673d703f78083f8d9130223c673c"
+    },
+    "gpuwm/physics_compat.py": {
+      "bytes": 188928,
+      "git_blob": "f5cf0991f34365fd9dd3b85eb28a8f37419d4416",
+      "sha256": "5d1108d382e12ffc7a1e8d59c415159d335ac207e472d16090caf6a45c6892d4"
+    },
+    "gpuwm/physics_menu.py": {
+      "bytes": 45816,
+      "git_blob": "c9905fdb88fa8ac799fee0fb6ea5394f00c87522",
+      "sha256": "ce3e715373cd3240af0b8b6ff12c35b9d810a36624bf98e692524d3000f11645"
+    },
+    "gpuwm/physics_registry.py": {
+      "bytes": 191480,
+      "git_blob": "50f36565f47369e76aa2755a171e8782c6cbd834",
+      "sha256": "e699d0043e7d867329fc14c84eccdc431daa8b71116e26a96c600db987095e4e"
+    },
+    "gpuwm/physics_registry_v2.json": {
+      "bytes": 402442,
+      "git_blob": "121d5e01cd69b96a50cb9adae789abeac532d00b",
+      "sha256": "0555052225e59e72ff337193bc6a0da59d874f96729c4de23b1e297b097eed95"
+    },
+    "gpuwm/source_adapters.py": {
+      "bytes": 113026,
+      "git_blob": "c4c2815e051c2710e6117dc7d671c3c430eaa198",
+      "sha256": "ee2e87be3d103bae5af19815ac2539614147f4bf8775e6dc2701550d876db319"
+    },
+    "gpuwm/source_authorities.py": {
+      "bytes": 55032,
+      "git_blob": "2310db09b2af66b7dda6152efee76f1607b10a59",
+      "sha256": "c5d9d93a730efdb3061c800d55ef0cccade5da203202ef3790d4abece8dc7c47"
+    },
+    "gpuwm/source_availability.py": {
+      "bytes": 56079,
+      "git_blob": "6df0269cf92f61ca4046c1455b28b2027e6a5b8b",
+      "sha256": "4e16025d49b44ad194f7a0ac681ab8c3754974e2dfa9df28bdeac8fd4b4a285d"
+    },
+    "gpuwm/source_coverage.py": {
+      "bytes": 18046,
+      "git_blob": "7554167ab9dbad853480e1ece1c0dfd1a18ea320",
+      "sha256": "2af0cd69fb958dca04a682245b655d3759232c9262852a5c6c7a33da56c487a6"
+    },
+    "gpuwm/source_credentials.py": {
+      "bytes": 10310,
+      "git_blob": "0e85ccb276226580ae906e17550fb80f56f351df",
+      "sha256": "92ad6ef2408ff70d73fdf088cabd1ecbdf1227fe662ff99c65cfa1c7e00b921b"
+    },
+    "gpuwm/source_cycles.py": {
+      "bytes": 19303,
+      "git_blob": "32c8bffce33b8333459a47490c0924007231f4a5",
+      "sha256": "48c91805679278085d4ce9d87acbea6aa4accc82fccaf68f456093af56dc5629"
+    }
+  },
+  "cases": {
+    "namelist/explicit_vertical_order3": {
+      "bytes": 3077,
+      "file": "namelist-explicit_vertical_order3.toml",
+      "sha256": "02fbdce85caf563ad2206f4dfe490d1d097ead9bada8c2d337a0794f75ae064e"
+    },
+    "namelist/omitted_legacy_defaults": {
+      "bytes": 3077,
+      "file": "namelist-omitted_legacy_defaults.toml",
+      "sha256": "02fbdce85caf563ad2206f4dfe490d1d097ead9bada8c2d337a0794f75ae064e"
+    },
+    "namelist/ordinary_fixed60_triplet": {
+      "bytes": 2752,
+      "file": "namelist-ordinary_fixed60_triplet.toml",
+      "sha256": "6bb5d7b2db171188a62dfff13dc7794ea4413a26fe2a09261b36447994b598bd"
+    },
+    "namelist/ruc_monthly_false0": {
+      "bytes": 3131,
+      "file": "namelist-ruc_monthly_false0.toml",
+      "sha256": "1ac8a6c6b0edcab7b57d834a41dcd9863211f539c4e583b789acb80d06f90a54"
+    },
+    "namelist/ruc_monthly_omitted": {
+      "bytes": 3097,
+      "file": "namelist-ruc_monthly_omitted.toml",
+      "sha256": "998c31c89ff379b130ed0673b7f3a0923f5616ec2754d7ee07dce3f71c409009"
+    },
+    "recipe/era5": {
+      "bytes": 3053,
+      "file": "recipe-era5.toml",
+      "sha256": "0801d4de0226b7186b776f869ec35a929eed1351eebf52b679a48061f41c28fb"
+    },
+    "recipe/gfs": {
+      "bytes": 3052,
+      "file": "recipe-gfs.toml",
+      "sha256": "23d3d64e2b7fd272d8dcf4cfcb84bd2304e19e4955363c4b7e1608e9b5258801"
+    },
+    "recipe/rap": {
+      "bytes": 3052,
+      "file": "recipe-rap.toml",
+      "sha256": "432da8422fecabad8c1559d66b0d82437397eec6240a10fa189ff2498bd62ed3"
+    },
+    "recipe/rrfs": {
+      "bytes": 3053,
+      "file": "recipe-rrfs.toml",
+      "sha256": "87613a4e54ed28a6ad326ff94e69a22ec86f20cf0188d43d7af40898ef089b2d"
+    }
+  },
+  "lane": "sfclay",
+  "matrix_sha256": "67342a3368337145bfc943d6d6dd8bcb584f9a2334ef6b7a05c8901df93b7c77",
+  "mode": "baseline",
+  "schema": "handover-audit-parent-byte-proof-v1",
+  "source_adapter_rows": {
+    "era5": {
+      "fields": {
+        "aliases": [],
+        "archive_windows": [
+          {
+            "bounds_stop_keys": [
+              "valid_time_stop_era5t",
+              "valid_time_stop"
+            ],
+            "bounds_url": "https://storage.googleapis.com/gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3/.zattrs",
+            "checked_at": "2026-09-25",
+            "documentation": [
+              "https://cloud.google.com/storage/docs/public-datasets/era5",
+              "https://storage.googleapis.com/gcp-public-data-arco-era5/ar/full_37-1h-0p25deg-chunk-1.zarr-v3/.zattrs"
+            ],
+            "early_hours": [],
+            "early_start": "",
+            "note": "Google's analysis-ready ERA5 store holds the reanalysis from 1940, extended with preliminary ERA5T days as they are published; the store publishes its own last day.",
+            "publication_lag_hours": 168.0,
+            "retention_hours": null,
+            "start": "1940-01-01T00",
+            "transport": "arco",
+            "user_note": "Recent dates are preliminary ERA5T; their publication time can vary."
+          },
+          {
+            "bounds_stop_keys": [],
+            "bounds_url": "",
+            "checked_at": "2026-09-06",
+            "documentation": [
+              "https://cds.climate.copernicus.eu/datasets/reanalysis-era5-pressure-levels?tab=overview",
+              "https://cds.climate.copernicus.eu/datasets/reanalysis-era5-complete?tab=overview",
+              "https://confluence.ecmwf.int/spaces/CKB/pages/76414402/ERA5+data+documentation"
+            ],
+            "early_hours": [],
+            "early_start": "",
+            "note": "ERA5 record begins in 1940. Recent dates are preliminary ERA5T; the approximately five-day publication delay is not guaranteed. Model levels require the same-hour surface donor as well.",
+            "publication_lag_hours": null,
+            "retention_hours": null,
+            "start": "1940-01-01T00",
+            "transport": "cds",
+            "user_note": "Recent dates are preliminary ERA5T; their publication time can vary."
+          }
+        ],
+        "boundary_species": [],
+        "cadence_mapping": "uniform-local-grib-time-series-v1",
+        "case_data_file": "era5-combined.grib",
+        "case_data_vtable": "data/vtables/Vtable.ERA5_CDO",
+        "certified_source_top_pa": null,
+        "composition_requirement": null,
+        "coverage_window": null,
+        "credentials": [
+          {
+            "breakage": "the retrieval cannot be requested at all -- this source is not downloaded by gpuwm but by the provider's own client, which reads a personal account key from that file and fails several commands later with its own exception if it is absent",
+            "credential_id": "copernicus-cds-api-key",
+            "display_name": "Copernicus CDS key",
+            "location": ".cdsapirc",
+            "location_kind": "home_file",
+            "needed_for": "acquisition",
+            "obtain_url": "https://cds.climate.copernicus.eu"
+          }
+        ],
+        "cycle_grid": {
+          "basis": "ERA5T preliminary is published about five days behind real time, on the 6-hourly analysis grid this row's forcing_interval_seconds declares",
+          "delay_hours": 120.0,
+          "delays": [],
+          "horizons": [],
+          "hours": [
+            0,
+            6,
+            12,
+            18
+          ],
+          "record_end": null,
+          "search_hours": 168,
+          "usual_delay_hours": null
+        },
+        "decoder": "rusty-weather/grib-core",
+        "default_physics_profile": null,
+        "default_product": "pressure-level+single-level",
+        "display_name": "ERA5 reanalysis (ECMWF)",
+        "ensemble_control_source": null,
+        "ensemble_source": null,
+        "extendable_source_top_pa": null,
+        "fetch_entire_window": false,
+        "fetch_requires_retrieve": true,
+        "field_mapping": "era5-grib1-vtable-to-native-state-v1",
+        "file_family": "GRIB1",
+        "forcing_interval_seconds": 21600.0,
+        "forecast_time_cycle_argument": false,
+        "forecast_time_owner": null,
+        "level_mapping": "pressure-level-to-explicit-wrf-eta-v2",
+        "max_forecast_hour": 0,
+        "member_set": null,
+        "notes": "Certified slice: one specified Lambert domain, WSM6, YSU, classic MM5 surface layer (option 91), Noah, an explicit validated eta coordinate, a model top covered by the supplied pressure levels, a uniformly spaced combined GRIB1 series beginning at f00, and explicit hash-bound WPS geometry/static/orography inputs. Unchanged stock WRF v4.6.1 accepted the 250x200 at 12 km, 12-hour proof products and completed a finite model step. The named-source hierarchy route now accepts namelist-bound static one-way Lambert layouts through at least d06 using invariant SOILGEO or exact per-domain source orography; that broader envelope is not yet stock-WRF certified.",
+        "packaged_profile": null,
+        "record_kind": "reanalysis",
+        "required_products": [
+          "pressure-level",
+          "single-level",
+          "invariants"
+        ],
+        "requires_ensemble_calibration": false,
+        "root_target_interior_axis": null,
+        "runnable": true,
+        "runner": "era5_combined_grib1_v1",
+        "seed_fields": [
+          "air_pressure",
+          "air_temperature",
+          "eastward_wind",
+          "northward_wind",
+          "mean_sea_level_pressure"
+        ],
+        "selection_owner": "gpuwm.era5_member",
+        "source_id": "era5",
+        "source_kind": "deterministic_state",
+        "status": "certified_stock_wrf",
+        "stock_wrf_gate": "wrf-v4.6.1-pass-201ffde-250x200x49-12km-12h",
+        "time_axis": "analysis_times",
+        "upstream_ingest": "gpuwm_native_existing",
+        "upstream_model_id": null
+      },
+      "sha256": "9560603ae87936bd0c4ea25a869fa12a4fb569cee36f8fc39574d166d6dc173c"
+    },
+    "gfs": {
+      "fields": {
+        "aliases": [
+          "gfs-0p25",
+          "gfs-0.25"
+        ],
+        "archive_windows": [
+          {
+            "bounds_stop_keys": [],
+            "bounds_url": "",
+            "checked_at": "2026-09-06",
+            "documentation": [
+              "https://www.emc.ncep.noaa.gov/emc/pages/numerical_forecast_systems/gfs/implementations.php"
+            ],
+            "early_hours": [],
+            "early_start": "",
+            "note": "The current /atmos/ object layout starts at the 2021-03-22 12Z implementation. Older archive objects use different paths; this is a transport-layout boundary, not the start of the scientific record.",
+            "publication_lag_hours": null,
+            "retention_hours": null,
+            "start": "2021-03-22T12",
+            "transport": "s3",
+            "user_note": ""
+          }
+        ],
+        "boundary_species": [],
+        "cadence_mapping": "uniform-gfs-forecast-series-v1",
+        "case_data_file": null,
+        "case_data_vtable": null,
+        "certified_source_top_pa": 10000.0,
+        "composition_requirement": null,
+        "coverage_window": null,
+        "credentials": [],
+        "cycle_grid": {
+          "basis": "NCEP runs the global system at 00/06/12/18 UTC; publication is decided by the per-object completeness probe; a whole run is usually published within 6 hours of its start (measured 2026-09-26 on the public mirror)",
+          "delay_hours": 0.0,
+          "delays": [],
+          "horizons": [],
+          "hours": [
+            0,
+            6,
+            12,
+            18
+          ],
+          "record_end": null,
+          "search_hours": 48,
+          "usual_delay_hours": 6.0
+        },
+        "decoder": "rusty-weather/grib-core",
+        "default_physics_profile": null,
+        "default_product": "pgrb2.0p25",
+        "display_name": "GFS (global, 0.25 degree)",
+        "ensemble_control_source": null,
+        "ensemble_source": "gefs",
+        "extendable_source_top_pa": 1.0,
+        "fetch_entire_window": false,
+        "fetch_requires_retrieve": false,
+        "field_mapping": "gfs-pgrb2-raw-code-to-native-state-v1",
+        "file_family": "GRIB2",
+        "forcing_interval_seconds": 10800.0,
+        "forecast_time_cycle_argument": false,
+        "forecast_time_owner": "gfs_forecast_hours",
+        "level_mapping": "21-pressure-level-to-explicit-wrf-eta-v2",
+        "max_forecast_hour": 384,
+        "member_set": null,
+        "notes": "Certified slice: one specified Lambert domain, GFS pgrb2.0p25 with complete 1000..100-hPa state and exact four Noah soil layers, WSM6, YSU, classic MM5 surface layer (option 91), Noah, and any explicit eta grid whose model top is covered by GFS. Numeric GRIB2 identifiers and both soil fixed surfaces are validated before decode; unchanged stock WRF v4.6.1 accepted the f000/f003 proof and completed a finite model step. The same named-source implementation now accepts namelist-bound static one-way Lambert hierarchies through at least d06; that broader envelope is runnable but remains separately stock-WRF gated.",
+        "packaged_profile": null,
+        "record_kind": "forecast",
+        "required_products": [
+          "pgrb2.0p25"
+        ],
+        "requires_ensemble_calibration": false,
+        "root_target_interior_axis": null,
+        "runnable": true,
+        "runner": "gfs_pgrb2_0p25_v1",
+        "seed_fields": [
+          "air_pressure",
+          "air_temperature",
+          "eastward_wind",
+          "northward_wind",
+          "mean_sea_level_pressure"
+        ],
+        "selection_owner": null,
+        "source_id": "gfs",
+        "source_kind": "deterministic_state",
+        "status": "certified_stock_wrf",
+        "stock_wrf_gate": "wrf-v4.6.1-pass-gfs-20260720-00z-250x200x49-f000-f003",
+        "time_axis": null,
+        "upstream_ingest": "full",
+        "upstream_model_id": "gfs"
+      },
+      "sha256": "960ad0f54e0a8e7dec238e39f85d66fc0d27bc21dca63544668c9272945a1847"
+    },
+    "rap": {
+      "fields": {
+        "aliases": [
+          "rap-awip32"
+        ],
+        "archive_windows": [
+          {
+            "bounds_stop_keys": [],
+            "bounds_url": "",
+            "checked_at": "2026-09-25",
+            "documentation": [
+              "https://noaa-rap-pds.s3.amazonaws.com/?list-type=2&delimiter=/&prefix=rap.2021022",
+              "https://noaa-rap-pds.s3.amazonaws.com/rap.20210222/rap.t00z.awip32f00.grib2",
+              "https://noaa-rap-pds.s3.amazonaws.com/rap.20210425/rap.t09z.awip32f00.grib2",
+              "https://noaa-rap-pds.s3.amazonaws.com/rap.20210425/rap.t10z.awip32f00.grib2",
+              "https://noaa-rap-pds.s3.amazonaws.com/rap.20210426/rap.t12z.awip32f00.grib2",
+              "https://registry.opendata.aws/noaa-rap/"
+            ],
+            "early_hours": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9
+            ],
+            "early_start": "2021-02-22T00",
+            "note": "The mirror's rap.YYYYMMDD awip32 objects begin on 2021-02-22 with the 00 to 09 UTC runs only (their whole forecasts, f00 on); every hour of the day begins on 2021-04-26 00 UTC. 2021-02-21 holds none. Older RAP runs are kept only by NCEI, which this route does not read.",
+            "publication_lag_hours": null,
+            "retention_hours": null,
+            "start": "2021-04-26T00",
+            "transport": "aws",
+            "user_note": ""
+          }
+        ],
+        "boundary_species": [],
+        "cadence_mapping": "uniform-hourly-forecast-series-v1",
+        "case_data_file": null,
+        "case_data_vtable": null,
+        "certified_source_top_pa": null,
+        "composition_requirement": null,
+        "coverage_window": {
+          "dx_m": 32463.0,
+          "earth_radius_m": 6371229.0,
+          "lat1": 1.0,
+          "lon1": -145.5,
+          "nx": 349,
+          "ny": 277,
+          "stand_lon": -107.0,
+          "truelat1": 50.0,
+          "truelat2": 50.0
+        },
+        "credentials": [],
+        "cycle_grid": null,
+        "decoder": "packaged RAP awip32 profile + vendored rusty-weather GRIB2 bridges",
+        "default_physics_profile": null,
+        "default_product": "awip32",
+        "display_name": "RAP (32 km North America)",
+        "ensemble_control_source": null,
+        "ensemble_source": null,
+        "extendable_source_top_pa": null,
+        "fetch_entire_window": false,
+        "fetch_requires_retrieve": false,
+        "field_mapping": "packaged-rw-wps-rap-awip32-grib2-v1",
+        "file_family": "GRIB2",
+        "forcing_interval_seconds": 3600.0,
+        "forecast_time_cycle_argument": false,
+        "forecast_time_owner": null,
+        "level_mapping": "39-pressure-level-to-explicit-wrf-eta-v2",
+        "max_forecast_hour": 51,
+        "member_set": null,
+        "notes": "RAP through the GENERIC mapped route as a packaged profile: one awip32 file (AWIPS grid 221, 32 km Lambert, North America) per hourly valid time carries the 39-level pressure state (the HRRR wrfprs ladder, byte for byte), the surface/2m/10m fields, in-band terrain and the nine-node RUC soil column.  Pressure-level humidity is RH and rides the declared RH-to-specific-humidity derivation the GFS profile proved.  There is no RAP decode code on this route.  The 13 km hybrid product is a separate rap-native table row. The native rotated lat-lon wrfprs product (GDT 32769) is outside the declared grid families.  Not yet accepted by unchanged stock WRF.",
+        "packaged_profile": "rap-awip32-grib2-v1",
+        "record_kind": "forecast",
+        "required_products": [
+          "awip32"
+        ],
+        "requires_ensemble_calibration": false,
+        "root_target_interior_axis": null,
+        "runnable": true,
+        "runner": "mapped_composition_v1",
+        "seed_fields": [],
+        "selection_owner": null,
+        "source_id": "rap",
+        "source_kind": "deterministic_state",
+        "status": "runnable_mapping_not_stock_wrf_certified",
+        "stock_wrf_gate": "live-unchanged-stock-wrf-gate-pending",
+        "time_axis": null,
+        "upstream_ingest": "declarative_mapping_v1_over_packaged_profile",
+        "upstream_model_id": "rap"
+      },
+      "sha256": "b77e3ad17ef326df64d4a4234daef1bdec00067ad45f769b612208b757754c2c"
+    },
+    "rrfs": {
+      "fields": {
+        "aliases": [
+          "rrfs-ops"
+        ],
+        "archive_windows": [
+          {
+            "bounds_stop_keys": [],
+            "bounds_url": "",
+            "checked_at": "2026-09-25",
+            "documentation": [
+              "https://noaa-rrfs-ops-pds.s3.amazonaws.com/?list-type=2&max-keys=5&prefix=rrfs.20260813/00/rrfs.t00z.prslev"
+            ],
+            "early_hours": [],
+            "early_start": "",
+            "note": "The operational RRFS bucket begins on 2026-08-13, the day after the prototype feed stopped; the prototype's objects are not read.",
+            "publication_lag_hours": null,
+            "retention_hours": null,
+            "start": "2026-08-13T00",
+            "transport": "aws",
+            "user_note": ""
+          }
+        ],
+        "boundary_species": [],
+        "cadence_mapping": "uniform-hourly-forecast-series-v1",
+        "case_data_file": null,
+        "case_data_vtable": null,
+        "certified_source_top_pa": null,
+        "composition_requirement": null,
+        "coverage_window": {
+          "dx_m": 3000.0,
+          "earth_radius_m": 6371229.0,
+          "lat1": 21.138123,
+          "lon1": -122.719528,
+          "nx": 1799,
+          "ny": 1059,
+          "stand_lon": -97.5,
+          "truelat1": 38.5,
+          "truelat2": 38.5
+        },
+        "credentials": [],
+        "cycle_grid": null,
+        "decoder": "packaged RRFS prslev+2dfld profile + vendored rusty-weather GRIB2 bridges",
+        "default_physics_profile": null,
+        "default_product": "prslev",
+        "display_name": "RRFS (operational 3 km CONUS)",
+        "ensemble_control_source": null,
+        "ensemble_source": "rrfs-ens",
+        "extendable_source_top_pa": null,
+        "fetch_entire_window": false,
+        "fetch_requires_retrieve": false,
+        "field_mapping": "packaged-rw-wps-rrfs-prslev-2dfld-grib2-v1",
+        "file_family": "GRIB2",
+        "forcing_interval_seconds": 3600.0,
+        "forecast_time_cycle_argument": false,
+        "forecast_time_owner": null,
+        "level_mapping": "45-pressure-level-to-explicit-wrf-eta-v2",
+        "max_forecast_hour": 84,
+        "member_set": null,
+        "notes": "RRFS -- HRRR's operational successor, flowing today on noaa-rrfs-ops-pds and NOMADS rrfs/v1.0 through the GENERIC mapped route as a packaged profile.  The 3 km CONUS grid is bit-for-bit HRRR's Lambert (every geolocating octet identical, measured from real bytes), so the HRRR wrfprs machinery carries it; RRFS's own facts are table data: a 45-level pressure ladder (70 hPa where HRRR has 75, 2 hPa top, no 1013.2 hPa entry) and the state split across a prslev/2dfld file PAIR -- prslev alone carries zero surface fields and zero soil, so both products are required and both files are passed per valid time.  SPFH is direct; the nine-node RUC soil column is octet-identical to HRRR's.  There is no RRFS decode code on this route.  NOT reachable today and not claimed by this row: the natlev native-level product, the 3 km North-America rotated grid and the thinned subset files exist only in the frozen prototype bucket noaa-rrfs-pds (halted 2026-08-12 by design) with no live front door; the relocatable firewx nest changes grid daily. The public rrfsens member subset has its own rrfs-ens row; its 250 hPa top and missing land state do not replace this full-column route. Not yet accepted by unchanged stock WRF.",
+        "packaged_profile": "rrfs-prslev-2dfld-grib2-v1",
+        "record_kind": "forecast",
+        "required_products": [
+          "prslev",
+          "2dfld"
+        ],
+        "requires_ensemble_calibration": true,
+        "root_target_interior_axis": null,
+        "runnable": true,
+        "runner": "mapped_composition_v1",
+        "seed_fields": [],
+        "selection_owner": null,
+        "source_id": "rrfs",
+        "source_kind": "deterministic_state",
+        "status": "runnable_mapping_not_stock_wrf_certified",
+        "stock_wrf_gate": "live-unchanged-stock-wrf-gate-pending",
+        "time_axis": null,
+        "upstream_ingest": "declarative_mapping_v1_over_packaged_profile",
+        "upstream_model_id": "rrfs"
+      },
+      "sha256": "2f767815537dac6725c2859a3ba5fbedeb59bf2c59cf537d3095d56b1124bfb6"
+    }
+  }
+}

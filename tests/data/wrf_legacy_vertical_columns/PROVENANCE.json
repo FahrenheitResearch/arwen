@@ -1,0 +1,12 @@
+{
+    "source_sha256":  "3c347937a5d78e60f2fe7ff85e208ef144e79c7a6b46cc4b22fcaa2c98a9b5c1",
+    "oracle_binary_sha256":  "fbdf4a64050f964912a45b3f438468dce9744aec8220eee4856a2d8650b70b9f",
+    "generator":  "evidence/takeover/takeover-columns.py in the local report packet",
+    "construction":  "real_interior inputs resampled vertically, horizontal mass fluxes zero, random signed Omega, stretched seven-layer subset and fifty-layer operational eta ladder",
+    "source_commit":  "40ee6058c2fc6624cbfbbe8cf1c20c59e6a45827",
+    "reference_flags":  [
+                            "-O0",
+                            "-ffp-contract=off",
+                            "-fcheck=all"
+                        ]
+}

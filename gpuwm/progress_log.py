@@ -839,6 +839,8 @@ class StepLog:
                 "valid_time": format_model_time(valid_time),
                 "path": str(Path(path).resolve()),
                 "size_bytes": size,
+                **({"wall_seconds": round(float(wall_seconds), 6)}
+                   if wall_seconds > 0.0 else {}),
             })
 
     # -- what the tree does to itself ---------------------------------

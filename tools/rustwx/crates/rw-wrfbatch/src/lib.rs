@@ -17,8 +17,14 @@
 //! place known in degrees onto that panel ([`annotate`]).
 
 pub mod annotate;
+pub mod compare;
+pub mod verification;
+pub mod verification_io;
+pub mod verification_render;
+pub mod station_overlay;
 pub mod panel;
 pub mod ensemble_products;
+pub mod ensemble_reduce;
 
 #[path = "grib_import.rs"]
 pub mod grib_import;

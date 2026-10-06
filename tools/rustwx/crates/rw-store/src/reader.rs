@@ -11,7 +11,7 @@ use std::path::Path;
 
 use memmap2::Mmap;
 use rayon::prelude::*;
-use rustwx_core::{MAX_GRID_CELLS, MAX_VOLUME_ELEMENTS};
+use rustwx_core::{MAX_GRID_CELLS, checked_volume_elements};
 
 use crate::codec::{decode_affine_i16, decode_f32_tile};
 use crate::error::{RwResult, RwStoreError};
@@ -246,18 +246,9 @@ fn validate_hour_meta(meta: &RwsHourMeta, header: &RwsHeader) -> RwResult<()> {
                         var.name, pair[0], pair[1]
                     )));
                 }
-                let elements = levels.checked_mul(cells).ok_or_else(|| {
-                    RwStoreError::Meta(format!(
-                        "pressure variable '{}' element count overflows usize",
-                        var.name
-                    ))
+                checked_volume_elements(levels, cells).map_err(|error| {
+                    RwStoreError::Meta(format!("pressure variable '{}': {error}", var.name))
                 })?;
-                if elements > MAX_VOLUME_ELEMENTS {
-                    return Err(RwStoreError::Meta(format!(
-                        "pressure variable '{}' has {elements} values; limit is {MAX_VOLUME_ELEMENTS}",
-                        var.name
-                    )));
-                }
                 column_chunks
             }
             other => {

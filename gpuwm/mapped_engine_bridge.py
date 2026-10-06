@@ -38,7 +38,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from gpuwm.bridges import (default_bridge_dir, accept_resolved,
+from gpuwm.bridges import (default_bridge_dir,
+                           legacy_bridge_candidates, accept_resolved,
                            executable_name, packaged_bridge_dir)
 from gpuwm.ingest.source_coverage import \
     ForcingSeriesRefusal as _ForcingSeriesRefusal
@@ -478,6 +479,7 @@ def engine_candidates() -> tuple[Path, ...]:
         root / "libexec" / "bridges" / filename,
         packaged_bridge_dir() / filename,
         default_bridge_dir() / filename,
+        *legacy_bridge_candidates(filename),
     ))
     return tuple(candidates)
 

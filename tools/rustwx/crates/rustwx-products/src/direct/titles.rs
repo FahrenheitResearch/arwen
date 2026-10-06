@@ -83,7 +83,9 @@ pub(super) fn native_stat_label_for_request(
 }
 
 fn model_title_prefix(model: ModelId) -> String {
-    model.as_str().replace('-', " ").to_ascii_uppercase()
+    // A theme may name the model (`text.model_label`).
+    rustwx_render::theme::active_theme()
+        .model_name(&model.as_str().replace('-', " ").to_ascii_uppercase())
 }
 
 pub(super) fn apply_native_stat_title_prefix(

@@ -114,6 +114,10 @@ fn run() -> Result<String, String> {
     if argv.is_empty() || argv.iter().any(|a| a == "--help" || a == "-h") {
         return Err(usage());
     }
+    // The release resolver probes this contract before supplying inputs.
+    if argv.iter().any(|argument| argument == "--abi") {
+        return Ok(ABI_MARKER.to_string());
+    }
     let args = Args::parse(argv)?;
 
     let cfg = InitConfig {

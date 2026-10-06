@@ -1,3 +1,6 @@
+#ifndef RP_CLOUD_FORM
+#define RP_CLOUD_FORM 0
+#endif
 // Device prep twin of rrtmg_legacy_prep.py, WRF v4.6.1 option 4.
 // Third-party algorithm: Copyright (c) 2020 Atmospheric and Environmental
 // Research. BSD-3-Clause; see licenses/LICENSE-AER-RRTMG-BSD-3-Clause.txt.
@@ -164,8 +167,8 @@ extern "C" __global__ void rp_prep(
         if (icloud) {
             rec = hc ? rp_max(2.5f, RP_MU(rc[j], 1.e6f)) : 5.0f;
             float xdiff = RP_SU(land[c], 1.5f);
-            if (hc && xdiff>0.0f && rec<=2.5f && cf[j]>0.0f) rec=10.5f;
-            if (hc && xdiff<0.0f && rec<=2.5f && cf[j]>0.0f) rec=7.5f;
+            if (hc && xdiff>0.0f && rec<=2.5f && cf[j]>0.0f) rec=(sw && RP_CLOUD_FORM) ? 9.6f : 10.5f;
+            if (hc && xdiff<0.0f && rec<=2.5f && cf[j]>0.0f) rec=(sw && RP_CLOUD_FORM) ? 5.4f : 7.5f;
             ric = hi ? rp_max(5.0f, RP_MU(ri[j], 1.e6f)) : 10.0f;
             if (hi && ric<=5.0f && cf[j]>0.0f)
                 ric = rp_max(rp_rei(t[j], retab, 75), 5.0f);
@@ -180,7 +183,7 @@ extern "C" __global__ void rp_prep(
         float iq = iceflg>=4 ? qice : RP_AD(qice, qsnow);
         iw[b+k] = RP_DV(rp_path(iq, pd[j], g), den);
         if (iceflg==5) {
-            float smf=0.99f;
+            float smf=RP_CLOUD_FORM ? 1.0f : 0.99f;
             if (rsc>130.0f) {
                 float q=RP_DV(130.0f, rsc);
                 smf=rp_min(smf, RP_MU(q,q)); rsc=130.0f;

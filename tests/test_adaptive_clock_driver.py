@@ -152,6 +152,168 @@ def _driver(model, cfls, **kw):
                                tick_den=TICK_DEN, **kw)
 
 
+def _capped_alarm_tree(*, remaining_s=30, child_step_s=10):
+    model = _tree(root_dt_s=30, ratio=3, history_s=300)
+    for gid, spacing, minimum, maximum in ((1, 2250., 7, 30), (2, 750., 2, child_step_s)):
+        run = model.node(gid).cfg.run
+        run.dx = run.dy = spacing
+        run.target_cfl, run.target_hcfl = 1.4, .98
+        run.min_time_step, run.max_time_step = minimum, maximum
+        run.starting_time_step = maximum
+        model.node(gid).clock.ticks = (300 - remaining_s) * TICK_DEN
+    model.node(2).clock.spec.step_ticks = child_step_s * TICK_DEN
+    model.node(2).clock.step_ticks = child_step_s * TICK_DEN
+    return model
+
+
+def test_full_step_alarm_does_not_hide_new_child_cfl():
+    model = _capped_alarm_tree()
+    clocks = {gid: model.node(gid).clock for gid in (1, 2)}
+    cfls = {1: (1.1121699810028076, .8173311948776245),
+            2: (1.0441844463348389, .7775784134864807)}
+    driver = _driver(model, cfls)
+    driver(0, clocks)
+    assert clocks[1].step_ticks == 30 * TICK_DEN
+    assert clocks[2].step_ticks == 10 * TICK_DEN
+    # Preserve WRF's root equality policy, without calling a full child
+    # step shortened just because it lands on the same alarm.
+    assert driver.controllers[1].stepping_to_time
+    assert not driver.controllers[2].stepping_to_time
+    assert clocks[2].adaptive_state["stepping_to_time"] is False
+    _executor_boundary(clocks)
+    cfls[2] = (2.848759651184082, .8600732684135437)
+    driver(1, clocks)
+    assert clocks[2].step_ticks == 2 * TICK_DEN
+    assert driver.controllers[2].last_dt == Fraction(12, 5)
+
+
+def test_actual_child_clipping_keeps_baseline_and_physics_cadence():
+    model = _capped_alarm_tree(remaining_s=15)
+    physics = FakePhysics()
+    model.node(2).state.physics = physics
+    clocks = {gid: model.node(gid).clock for gid in (1, 2)}
+    driver = _driver(model, {1: (.5, .1), 2: (.5, .1)})
+    driver(0, clocks)
+    assert clocks[1].step_ticks == 15 * TICK_DEN
+    assert clocks[2].step_ticks == 750
+    assert driver.controllers[2].stepping_to_time
+    assert driver.controllers[2].last_dt == 10
+    assert physics.stepra == 36
+    assert clocks[2].adaptive_state["stepping_to_time"] is True
+    assert clocks[2].adaptive_state["last_dt_num"] == 10
+
+
+def test_root_clipping_does_not_protect_an_unchanged_child_step():
+    model = _capped_alarm_tree(remaining_s=15, child_step_s=5)
+    clocks = {gid: model.node(gid).clock for gid in (1, 2)}
+    driver = _driver(model, {1: (.5, .1), 2: (.5, .1)})
+    driver(0, clocks)
+    assert driver.controllers[1].stepping_to_time
+    assert clocks[1].step_ticks == 15 * TICK_DEN
+    assert clocks[2].step_ticks == 5 * TICK_DEN
+    assert not driver.controllers[2].stepping_to_time
+
+
+def test_ordinary_nest_quantization_is_not_alarm_clipping():
+    model = _capped_alarm_tree(child_step_s=8)
+    clocks = {gid: model.node(gid).clock for gid in (1, 2)}
+    driver = _driver(model, {1: (.5, .1), 2: (.5, .1)})
+    driver(0, clocks)
+    assert driver.controllers[1].stepping_to_time
+    assert clocks[1].step_ticks == 30 * TICK_DEN
+    assert clocks[2].step_ticks == 750
+    assert not driver.controllers[2].stepping_to_time
+
+
+def test_checkpoint_retains_full_step_child_cfl_policy():
+    model = _capped_alarm_tree()
+    clocks = {gid: model.node(gid).clock for gid in (1, 2)}
+    cfls = {1: (.5, .1), 2: (1.0441844463348389, .7775784134864807)}
+    driver = _driver(model, cfls)
+    driver(0, clocks)
+    _executor_boundary(clocks)
+    saved = {gid: dict(clocks[gid].adaptive_state) for gid in clocks}
+    resumed = _capped_alarm_tree()
+    resumed_clocks = {gid: resumed.node(gid).clock for gid in clocks}
+    for gid, clock in resumed_clocks.items():
+        clock.ticks = clocks[gid].ticks
+        clock.step_ticks = clocks[gid].step_ticks
+        clock.adaptive_state = saved[gid]
+    cfls[2] = (2.848759651184082, .8600732684135437)
+    restored = _driver(resumed, cfls)
+    driver(1, clocks)
+    restored(1, resumed_clocks)
+    for gid in clocks:
+        assert resumed_clocks[gid].step_ticks == clocks[gid].step_ticks
+        assert resumed_clocks[gid].adaptive_state == clocks[gid].adaptive_state
+
+
+def test_healthy_capped_steps_are_identical_with_full_step_alarms():
+    with_alarm, without_alarm = _capped_alarm_tree(), _capped_alarm_tree()
+    without_alarm.root.clock.spec.history_ticks = 0
+    models = (with_alarm, without_alarm)
+    drivers = [_driver(model, {1: (.5, .1), 2: (.5, .1)}) for model in models]
+    for period in range(20):
+        snapshots = []
+        for model, driver in zip(models, drivers):
+            clocks = {gid: model.node(gid).clock for gid in (1, 2)}
+            driver(period, clocks)
+            snapshots.append([(clock.step_ticks, model.node(gid).cfg.run.dt,
+                               model.node(gid).cfg.run.time_step_sound)
+                              for gid, clock in clocks.items()])
+            _executor_boundary(clocks)
+        assert snapshots[0] == snapshots[1] == [(3000, 30., 8), (1000, 10., 8)]
+
+
+def test_genuine_root_clipping_protects_each_shortened_descendant():
+    model = _three_level_tree(root_dt_s=27, ratios=(3, 3))
+    clocks = {gid: model.node(gid).clock for gid in (1, 2, 3)}
+    clocks[1].spec.history_ticks = 5400
+    for gid, maximum in ((1, 27), (2, 9), (3, 3)):
+        run = model.node(gid).cfg.run
+        run.starting_time_step = run.max_time_step = maximum
+        run.min_time_step = 1
+        clocks[gid].ticks = 4050
+    driver = _driver(model, {gid: (.5, .1) for gid in clocks})
+    driver(0, clocks)
+    assert [clocks[gid].step_ticks for gid in clocks] == [1344, 672, 224]
+    assert all(driver.controllers[gid].stepping_to_time for gid in clocks)
+    assert [driver.controllers[gid].last_dt for gid in clocks] == [27, 9, 3]
+
+
+def test_optional_optimizer_is_not_called_for_an_alarm_projection():
+    model = _capped_alarm_tree(remaining_s=15)
+    model.root.cfg.run.adaptive_nest_lattice = True
+    clocks = {gid: model.node(gid).clock for gid in (1, 2)}
+    driver = _driver(model, {1: (.5, .1), 2: (.5, .1)})
+    driver._nest_lattice_step = lambda *args: pytest.fail("alarm projection optimized")
+    driver(0, clocks)
+    assert clocks[1].step_ticks == 1500
+    assert clocks[2].step_ticks == 750
+    assert driver.controllers[2].stepping_to_time
+
+
+def test_bounded_root_division_at_full_alarm_is_not_time_clipping():
+    model = _three_level_tree(root_dt_s=63, ratios=(3, 3))
+    clocks = {gid: model.node(gid).clock for gid in (1, 2, 3)}
+    clocks[1].spec.history_ticks = 6276
+    for gid, numerator, denominator in ((1, 6276, 100), (2, 450, 100), (3, 1, 1)):
+        run = model.node(gid).cfg.run
+        run.starting_time_step = run.max_time_step = numerator
+        run.starting_time_step_den = run.max_time_step_den = denominator
+        run.min_time_step = 1
+    driver = _driver(model, {gid: (.5, .1) for gid in clocks})
+    driver(0, clocks)
+    # 6276=12*523 needs too many substeps. The ordinary bounded
+    # lattice shortens it, equally in the live and no-alarm projections.
+    assert clocks[1].step_ticks < 6276
+    assert driver.controllers[1].stepping_to_time
+    assert not driver.controllers[2].stepping_to_time
+    assert not driver.controllers[3].stepping_to_time
+    for gid in (2, 3):
+        assert clocks[gid - 1].step_ticks % clocks[gid].step_ticks == 0
+
+
 def _late_nest_tree(root_dt_s=30, ratio=5, start_s=60):
     """A nest whose first period is NOT period 0."""
     root_ticks = root_dt_s * TICK_DEN
@@ -822,6 +984,46 @@ def test_a_checkpoint_without_the_cumulus_key_still_resumes():
         "started": True, "radiation_seen": None, "radiation_actual": None}
     d = _driver(model, {1: (0.5, 0.1), 2: (0.5, 0.1)})
     assert 1 not in d._cumulus_fired
+
+
+@pytest.mark.parametrize("alarm_landing", [False, True])
+def test_lowered_resume_ceiling_bounds_first_step_and_saved_cfl(alarm_landing):
+    model = _capped_alarm_tree()
+    for gid, old_dt, cap in ((1, 30, 6), (2, 10, 3)):
+        node = model.node(gid)
+        node.cfg.run.min_time_step = 1
+        node.cfg.run.max_time_step = cap
+        node.clock.adaptive_state = {
+            "last_dt_num": old_dt, "last_dt_den": 1,
+            "last_max_vert_cfl": 1.4, "last_max_horiz_cfl": .98,
+            "stepping_to_time": alarm_landing, "started": True,
+            "radiation_seen": 240., "radiation_actual": 60.,
+            "cumulus_fired": 240.}
+    driver = _driver(model, {1: (.5, .1), 2: (.5, .1)})
+    assert driver.controllers[1].last_dt == 6
+    assert driver.controllers[2].last_dt == 3
+    assert driver.controllers[1].last_max_vert_cfl == pytest.approx(.28)
+    assert driver.controllers[2].last_max_horiz_cfl == pytest.approx(.294)
+    assert driver._radiation_seen == {1: 240., 2: 240.}
+    assert driver._cumulus_fired == {1: 240., 2: 240.}
+    clocks = {gid: model.node(gid).clock for gid in (1, 2)}
+    driver(1, clocks)
+    assert clocks[1].step_ticks <= 6 * TICK_DEN
+    assert clocks[2].step_ticks <= 3 * TICK_DEN
+    assert clocks[1].step_ticks % clocks[2].step_ticks == 0
+
+
+def test_explicit_shorter_resume_baseline_rescales_saved_cfl():
+    model = _capped_alarm_tree()
+    model.root.clock.adaptive_state = {
+        "last_dt_num": 30, "last_dt_den": 1,
+        "last_max_vert_cfl": 1.2, "last_max_horiz_cfl": .6,
+        "stepping_to_time": True, "started": True}
+    driver = _driver(model, {1: (.5, .1), 2: (.5, .1)},
+                     restart_dt={1: Fraction(15)})
+    assert driver.controllers[1].last_dt == 15
+    assert driver.controllers[1].last_max_vert_cfl == .6
+    assert driver.controllers[1].last_max_horiz_cfl == .3
 
 
 # ---------------------------------------------------- the substep floor

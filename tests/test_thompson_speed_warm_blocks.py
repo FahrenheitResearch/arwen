@@ -33,7 +33,7 @@ def test_warm_launch_bits(monkeypatch):
         groups = fixture._run_network(column)[:3]
         return _bits([{name: cp.asnumpy(value) for name, value in group.items()} for group in groups])
     candidate = run()
-    monkeypatch.setattr(launcher, 'get_kernel', _reference_kernel(launcher.get_kernel))
+    monkeypatch.setattr(launcher, 'aerosol_kernel', _reference_kernel(launcher.aerosol_kernel))
     reference = run()
     for key in reference:
         np.testing.assert_array_equal(candidate[key], reference[key], err_msg=str(key))

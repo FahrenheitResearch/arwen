@@ -298,6 +298,12 @@ def _load_verified_hrrr_native_window(
         fields[name] = _map_f32(payload, (ny, nx))
     for name in _SOIL_3D:
         fields[name] = _map_f32(soil_dir / f"{name}.f32le", (9, ny, nx))
+    from .native_supplements import gate_soil_surface_fields
+    for name in gate_soil_surface_fields(gate):
+        payload = soil_dir / f"{name}.f32le"
+        if manifest_entries is not None and payload.relative_to(root) not in manifest_entries:
+            raise ValueError("analyzed vegetation is not bound by the source manifest")
+        fields[name] = _map_f32(payload, (ny, nx))
     return HrrrNativeSnapshot(
         valid_time=cycle + timedelta(hours=forecast_hour),
         forecast_hour=forecast_hour,
@@ -390,9 +396,76 @@ def hrrr_source_grid() -> LambertGrid:
     )
 
 
+#: On the identity route, how far (in source cells) the projected position
+#: of a target point may sit from its lattice position before the target
+#: is refused as not the native grid.  The native grid's two descriptions
+#: (WPS's sphere, where the model integrates, and the GRIB header's,
+#: which :func:`hrrr_source_grid` reproduces; hrrr_target
+#: .native_grid_identity) agree at the south-west corner and drift apart
+#: with distance from it: MEASURED 0.20 cells at the grid centre and 0.35
+#: at the north-east corner.  Half a cell is the geometric limit past
+#: which a point belongs to another cell.
+IDENTITY_SNAP_LIMIT_CELLS = 0.5
+
+
+def _snap_to_native_lattice(global_x, global_y, *, nx: int, ny: int):
+    """The identity route's coordinates: every target point on its own
+    native lattice position, exactly, from the target array's shape.
+
+    ``(ny, nx)`` is the mass grid: point ``(j, i)`` is source cell
+    ``(j, i)``, fraction 0, so the parabolic and bilinear operators
+    return that cell's value exactly (their ``x == 0`` branch).
+    ``(ny, nx + 1)`` is the u staggering: face ``i`` sits at ``i - 1/2``,
+    half way between two cells; ``(ny + 1, nx)`` the v staggering.  The
+    outermost faces, half a cell past the grid's edge, take the edge
+    cell.  The projected positions are not used, only checked: the
+    largest distance between them and the lattice is returned (the
+    sphere drift above) and past :data:`IDENTITY_SNAP_LIMIT_CELLS` the
+    target is refused by name.
+    """
+    global_x = np.asarray(global_x, dtype=np.float64)
+    global_y = np.asarray(global_y, dtype=np.float64)
+    shape = tuple(global_x.shape)
+    if shape == (ny, nx):
+        offset_x, offset_y = 0.0, 0.0
+    elif shape == (ny, nx + 1):
+        offset_x, offset_y = -0.5, 0.0
+    elif shape == (ny + 1, nx):
+        offset_x, offset_y = 0.0, -0.5
+    else:
+        raise ValueError(
+            "the identity route maps the native grid's mass, u or v "
+            f"staggering ({ny} x {nx}, {ny} x {nx + 1} or {ny + 1} x {nx}); "
+            f"got a target of shape {shape}")
+    rows, cols = np.indices(shape, dtype=np.float64)
+    exact_x = cols + offset_x
+    exact_y = rows + offset_y
+    distance = float(max(np.abs(exact_x - global_x).max(),
+                         np.abs(exact_y - global_y).max()))
+    if not distance <= IDENTITY_SNAP_LIMIT_CELLS:
+        raise ValueError(
+            "the target was declared the native HRRR grid but a point of "
+            f"it projects {distance:.3f} cells from its lattice position "
+            f"(limit {IDENTITY_SNAP_LIMIT_CELLS:g}); it is not that grid")
+    # The outer faces: -0.5 and nx - 0.5 (ny - 0.5) are half a cell past
+    # the edge; they take the edge cell.
+    snapped_x = np.clip(exact_x, 0.0, float(nx - 1))
+    snapped_y = np.clip(exact_y, 0.0, float(ny - 1))
+    return snapped_x, snapped_y, distance
+
+
 def _projected_index_geometry(snapshot: HrrrNativeSnapshot,
-                              target_lat, target_lon):
-    """Resolve exact zero-based HRRR-window interpolation coordinates."""
+                              target_lat, target_lon, *,
+                              identity: bool = False):
+    """Resolve exact zero-based HRRR-window interpolation coordinates.
+
+    ``identity`` (the target is the native grid itself,
+    :func:`gpuwm.ingest.hrrr_target.native_grid_identity`): the
+    coordinates are snapped onto the native lattice
+    (:func:`_snap_to_native_lattice`) and no interpolation halo past the
+    window is demanded, because every operator clamps its stencil at
+    the window's edge and a whole-cell position reads one cell.
+    """
 
     source_x, source_y = hrrr_source_grid().latlon_to_ij(
         target_lat, target_lon)
@@ -400,14 +473,35 @@ def _projected_index_geometry(snapshot: HrrrNativeSnapshot,
     # zero-based indices in the original south-to-north GRIB scan.
     global_x = np.asarray(source_x, dtype=np.float64) - 1.0
     global_y = np.asarray(source_y, dtype=np.float64) - 1.0
+    if identity:
+        from gpuwm.ingest.hrrr_target import HRRR_SOURCE_NX, HRRR_SOURCE_NY
+
+        if (snapshot.i_start, snapshot.nx, snapshot.j_start,
+                snapshot.ny) != (0, HRRR_SOURCE_NX, 0, HRRR_SOURCE_NY):
+            raise ValueError(
+                "the identity route needs the whole native grid as its "
+                f"window, got i={snapshot.i_start}..+{snapshot.nx}, "
+                f"j={snapshot.j_start}..+{snapshot.ny}")
+        global_x, global_y, _snap = _snap_to_native_lattice(
+            global_x, global_y, nx=HRRR_SOURCE_NX, ny=HRRR_SOURCE_NY)
     global_ix = np.floor(global_x).astype(np.int64)
     global_iy = np.floor(global_y).astype(np.int64)
     ix = global_ix - snapshot.i_start
     iy = global_iy - snapshot.j_start
-    if (np.min(ix - 1) < 0 or np.max(ix + 2) >= snapshot.nx
+    if not identity and (
+            np.min(ix - 1) < 0 or np.max(ix + 2) >= snapshot.nx
             or np.min(iy - 1) < 0 or np.max(iy + 2) >= snapshot.ny):
         raise ValueError(
             "HRRR bridge window lacks the four-point interpolation halo")
+    if identity:
+        # A whole-cell position on the last column floors to nx - 1,
+        # whose bilinear partner nx would be read (unweighted) by the
+        # operators that check it; spell it as the cell before with a
+        # unit fraction, which both operators return exactly.
+        for index, limit in ((ix, snapshot.nx), (iy, snapshot.ny)):
+            np.subtract(index, 1, out=index, where=index >= limit - 1)
+        global_ix = ix + snapshot.i_start
+        global_iy = iy + snapshot.j_start
     x = global_x - snapshot.i_start
     y = global_y - snapshot.j_start
     nearest_ix = (
@@ -493,11 +587,13 @@ class _ProjectedGpuPlan:
 
     operator = PROJECTED_OPERATOR_CUDA
 
-    def __init__(self, snapshot: HrrrNativeSnapshot, target_lat, target_lon):
+    def __init__(self, snapshot: HrrrNativeSnapshot, target_lat, target_lon,
+                 *, identity: bool = False):
         cp = _cupy()
+        self.route = "identity" if identity else "interpolated"
         (x, y, ix, iy, nearest_ix, nearest_iy,
          global_ix, global_iy) = _projected_index_geometry(
-             snapshot, target_lat, target_lon)
+             snapshot, target_lat, target_lon, identity=identity)
         global_x = x + snapshot.i_start
         global_y = y + snapshot.j_start
         self.source_shape = (snapshot.ny, snapshot.nx)
@@ -590,10 +686,11 @@ class _ProjectedCpuPlan:
     """
 
     def __init__(self, snapshot: HrrrNativeSnapshot, target_lat, target_lon,
-                 backend):
+                 backend, *, identity: bool = False):
+        self.route = "identity" if identity else "interpolated"
         (x, y, ix, iy, nearest_ix, nearest_iy,
          global_ix, global_iy) = _projected_index_geometry(
-             snapshot, target_lat, target_lon)
+             snapshot, target_lat, target_lon, identity=identity)
         global_x = x + snapshot.i_start
         global_y = y + snapshot.j_start
         self.source_shape = (snapshot.ny, snapshot.nx)
@@ -1541,14 +1638,23 @@ def interpolate_hrrr_to_lambert(
     plan_type = (
         _ProjectedGpuPlan if getattr(engine, "name", None) == "cuda"
         else _ProjectedCpuPlan)
+    # The target IS the native grid: copy index for index
+    # (gpuwm.ingest.hrrr_target.native_grid_identity).
+    from gpuwm.ingest.hrrr_target import native_grid_identity
+
+    identity = native_grid_identity(grid)
     if plan_type is _ProjectedGpuPlan:
-        mass_plan = plan_type(snapshot, mass_lat, mass_lon)
-        u_plan = plan_type(snapshot, u_lat, u_lon)
-        v_plan = plan_type(snapshot, v_lat, v_lon)
+        mass_plan = plan_type(snapshot, mass_lat, mass_lon,
+                              identity=identity)
+        u_plan = plan_type(snapshot, u_lat, u_lon, identity=identity)
+        v_plan = plan_type(snapshot, v_lat, v_lon, identity=identity)
     else:
-        mass_plan = plan_type(snapshot, mass_lat, mass_lon, engine)
-        u_plan = plan_type(snapshot, u_lat, u_lon, engine)
-        v_plan = plan_type(snapshot, v_lat, v_lon, engine)
+        mass_plan = plan_type(snapshot, mass_lat, mass_lon, engine,
+                              identity=identity)
+        u_plan = plan_type(snapshot, u_lat, u_lon, engine,
+                           identity=identity)
+        v_plan = plan_type(snapshot, v_lat, v_lon, engine,
+                           identity=identity)
     source = snapshot.fields
     _require_source_physical_ranges(source)
     target_landmask = np.asarray(target_landmask)
@@ -1600,6 +1706,8 @@ def interpolate_hrrr_to_lambert(
     # Bilinear interpolation preserves both non-negativity and compact support.
     if "PMSL" in source:
         out["PMSL"] = mass_plan.apply(source["PMSL"], method="parabolic")
+    if "VEGFRA" in source:
+        out["VEGFRA"] = mass_plan.apply(source["VEGFRA"], method="bilinear")
     for name in ("QC", "QI", "QR", "QS", "QG"):
         out[name] = mass_plan.apply(source[name], method="bilinear")
     # Do not derive/map RH here.  With FLAG_SH, real.exe diagnoses rh_gc from

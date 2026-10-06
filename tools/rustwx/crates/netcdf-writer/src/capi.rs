@@ -41,6 +41,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 
 use crate::error::NcWriteError;
+use crate::patch::NcPatcher;
 use crate::schema::Schema;
 use crate::types::{AttrValue, NcFormat, NcType, VarData};
 use crate::writer::NcWriter;
@@ -618,6 +619,145 @@ pub unsafe extern "C" fn gpuwm_ncwrite_num_records(writer: *const NcWriter) -> u
         match unsafe { writer.as_ref() } {
             Some(writer) => writer.num_records(),
             None => u64::MAX,
+        }
+    })
+}
+
+// ------------------------------------------------------------------ patch
+//
+// Rewrite chosen variables of an existing classic file in a copy; see
+// `crate::patch`. These entry points are newer than the ABI marker and no
+// default path depends on them, so the Python seam binds them on first use
+// and names the rebuild when a library predates them.
+
+/// Copy `template` to a partial file beside `target` and open the copy
+/// for rewriting variable data. Returns null on error. `target` must not
+/// exist; it appears only when `gpuwm_ncwrite_patch_finish` succeeds.
+///
+/// # Safety
+/// Both paths must describe readable UTF-8 of the given lengths.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpuwm_ncwrite_patch_open(
+    template: *const u8,
+    template_len: usize,
+    target: *const u8,
+    target_len: usize,
+) -> *mut NcPatcher {
+    guard(std::ptr::null_mut(), || {
+        clear_error();
+        let Some(template) = (unsafe { utf8(template, template_len) }) else {
+            set_error("patch_open template path is not valid UTF-8");
+            return std::ptr::null_mut();
+        };
+        let Some(target) = (unsafe { utf8(target, target_len) }) else {
+            set_error("patch_open target path is not valid UTF-8");
+            return std::ptr::null_mut();
+        };
+        match NcPatcher::open(PathBuf::from(template), PathBuf::from(target)) {
+            Ok(patcher) => Box::into_raw(Box::new(patcher)),
+            Err(err) => {
+                fail(err);
+                std::ptr::null_mut()
+            }
+        }
+    })
+}
+
+/// Describe the template's variables into this thread's report slot (read
+/// it with `gpuwm_ncwrite_last_scan`). Line one is `numrecs`, a tab and the
+/// record count; each further line is the variable name, its nc_type code,
+/// `1` for a record variable or `0` for a fixed one, and its elements per
+/// slab, tab separated, in definition order.
+///
+/// # Safety
+/// `patcher` live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpuwm_ncwrite_patch_describe(patcher: *const NcPatcher) -> i32 {
+    guard(ERR, || {
+        clear_error();
+        LAST_SCAN.with(|slot| slot.borrow_mut().clear());
+        let Some(patcher) = (unsafe { patcher.as_ref() }) else {
+            return set_error("patch_describe called with a null patcher");
+        };
+        let mut report = format!("numrecs\t{}", patcher.num_records());
+        for var in patcher.variables() {
+            report.push_str(&format!(
+                "\n{}\t{}\t{}\t{}",
+                var.name,
+                var.ty.code(),
+                u8::from(var.is_record),
+                var.elems
+            ));
+        }
+        LAST_SCAN.with(|slot| *slot.borrow_mut() = report);
+        OK
+    })
+}
+
+/// Rewrite one variable of the patched copy. `record < 0` names a fixed
+/// variable; otherwise it is the record whose slab is rewritten. `data`
+/// is native-endian in the declared `nc_type`, which must be the
+/// variable's stored type or `NC_DOUBLE` values that narrow to the stored
+/// type exactly; anything else is refused before a byte moves.
+///
+/// # Safety
+/// `patcher` live; `name` valid UTF-8; `data` readable for `nbytes`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpuwm_ncwrite_patch_put(
+    patcher: *mut NcPatcher,
+    name: *const u8,
+    name_len: usize,
+    record: i64,
+    nc_type: u32,
+    data: *const u8,
+    nbytes: usize,
+) -> i32 {
+    guard(ERR, || {
+        clear_error();
+        let Some(patcher) = (unsafe { patcher.as_mut() }) else {
+            return set_error("patch_put called with a null patcher");
+        };
+        let Some(name) = (unsafe { utf8(name, name_len) }) else {
+            return set_error("patch_put name is not valid UTF-8");
+        };
+        let Some(raw) = (unsafe { bytes(data, nbytes) }) else {
+            return set_error("patch_put data is null but nbytes > 0");
+        };
+        let record = u64::try_from(record).ok();
+        with_payload(nc_type, raw, |payload| patcher.put(name, record, payload))
+    })
+}
+
+/// Flush, fsync and rename the patched copy onto its target. CONSUMES the
+/// pointer whether it succeeds or fails.
+///
+/// # Safety
+/// `patcher` live and not previously finished or aborted.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpuwm_ncwrite_patch_finish(patcher: *mut NcPatcher) -> i32 {
+    guard(ERR, || {
+        clear_error();
+        if patcher.is_null() {
+            return set_error("patch_finish called with a null patcher");
+        }
+        let patcher = *unsafe { Box::from_raw(patcher) };
+        match patcher.finish() {
+            Ok(_) => OK,
+            Err(err) => fail(err),
+        }
+    })
+}
+
+/// Free a patcher WITHOUT finishing it. The partial copy is removed and
+/// nothing appears at the target path.
+///
+/// # Safety
+/// `patcher` live and not previously finished or aborted.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpuwm_ncwrite_patch_abort(patcher: *mut NcPatcher) {
+    guard((), || {
+        if !patcher.is_null() {
+            drop(unsafe { Box::from_raw(patcher) });
         }
     })
 }

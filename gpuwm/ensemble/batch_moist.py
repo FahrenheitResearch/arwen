@@ -285,6 +285,8 @@ def prepare_scalars_stage(state, cfg, ru, rv, ww, dt_eff, final, *, apply_relax=
     forced = cfg.specified or cfg.nested
     bx, by = cfg.open_x or forced, cfg.open_y or forced
     pd = final and cfg.moist_adv_opt == 1 and not (cfg.open_x or cfg.open_y)
+    from gpuwm.core.advection import vertical_orders
+    vorder_scalar = vertical_orders(cfg)[0]
     supplied = frozenset()
     selection = evaluated = None
     capture_rows = []
@@ -343,10 +345,19 @@ def prepare_scalars_stage(state, cfg, ru, rv, ww, dt_eff, final, *, apply_relax=
                 specs.append(spec); strides[parameter] = stride
             flux_spec = KernelSpec('pd_advection', 'pd_fluxes', tuple(specs))
             flux_args = arrays + (_F(cfg.dx), _F(cfg.dy), _F(dt_eff)) + buffers + tuple(
-                _I(value) for value in (nz, ny, nx, state.has_msf, bx, by))
+                _I(value) for value in (nz, ny, nx, state.has_msf, bx, by, vorder_scalar))
             flux = prepare_batch_kernel_launch(flux_spec, state.members,
                 ((nx + 1 + _TPB - 1) // _TPB, ny + 1, nz + 1), (_TPB, 1, 1),
                 flux_args, pointer_strides=strides)
+            if vorder_scalar == 5:
+                primary = flux
+                vertical = prepare_batch_kernel_launch(
+                    KernelSpec('pd_vertical_sl', 'pd_vertical_sl', tuple(specs)), state.members,
+                    ((nx + 1 + _TPB - 1) // _TPB, ny + 1, nz + 1), (_TPB, 1, 1),
+                    flux_args, pointer_strides=strides)
+                def flux(primary=primary, vertical=vertical):
+                    primary()
+                    vertical()
             r_arrays = (q0_eff, mu0) + buffers + (state.c1h, state.c2h, state.rdnw, state.msft)
             r_names = ('q0', 'mu_old', 'fxl', 'fxc', 'fyl', 'fyc', 'fzl', 'fzc',
                        'c1h', 'c2h', 'rdnw', 'msft')
@@ -366,7 +377,7 @@ def prepare_scalars_stage(state, cfg, ru, rv, ww, dt_eff, final, *, apply_relax=
         else:
             flux = prepare_flux_div(q, ru, rv, ww, tend, state.rdnw, state.fnm, state.fnp,
                 state.msft, dx=cfg.dx, dy=cfg.dy, open_x=bx, open_y=by,
-                has_msf=state.has_msf, spec=forced)
+                has_msf=state.has_msf, spec=forced, vorder=vorder_scalar)
             renorm = None
             update = _prepare_update(binding, q, q0, tend, mu0, mu, dt_eff,
                                      physics=physics, fixed=fixed, clamp=final,

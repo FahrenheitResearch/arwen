@@ -41,6 +41,12 @@ def _scalar(value: Any, where: str) -> str:
         return "[" + ", ".join(
             _scalar(item, f"{where}[{index}]")
             for index, item in enumerate(value)) + "]"
+    if isinstance(value, dict):
+        # Mixed scalar/table arrays need inline tables; homogeneous table
+        # arrays still use the ordinary array-of-tables emission below.
+        return "{ " + ", ".join(
+            f"{_key(key)} = {_scalar(item, f'{where}.{key}')}"
+            for key, item in value.items()) + " }"
     raise ValueError(
         f"{where} holds {type(value).__name__}, which is not a TOML "
         "value; a branched configuration is written from the parsed "

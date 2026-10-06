@@ -121,7 +121,8 @@ def library_names() -> tuple[str, ...]:
 
 def library_candidates() -> tuple[Path, ...]:
     """Deterministic candidate paths, best first (the nc-writer ladder)."""
-    from gpuwm.bridges import default_bridge_dir, packaged_bridge_dir
+    from gpuwm.bridges import (default_bridge_dir, legacy_bridge_candidates,
+                               packaged_bridge_dir)
     from gpuwm.rustwx import crate_dir
 
     filename = library_names()[0]
@@ -136,6 +137,7 @@ def library_candidates() -> tuple[Path, ...]:
         root / "libexec" / "bridges" / filename,
         packaged_bridge_dir() / filename,
         default_bridge_dir() / filename,
+        *legacy_bridge_candidates(filename),
     ))
     return tuple(candidates)
 

@@ -72,6 +72,10 @@ SITE_FILES = (
     "gpuwm/ensemble/batch_physics_init.py",
     "gpuwm/ensemble/batch_product_output.py",
     "gpuwm/ensemble/batch_products.py",
+    # 3fa941d96, lane/ensemble-nested-pack delivered at ff238b1d9, adds
+    # the native member RUC unit. Audit its actual source/options recording.
+    "gpuwm/ensemble/batch_ruc.py",
+    "gpuwm/ensemble/surface_recipe.py",
 )
 
 #: Two cached loaders, nest interpolation, and the one Noah-MP compile
@@ -83,7 +87,11 @@ SITE_FILES = (
 #: of the speed lanes' five files (the cumulus clock compiles two), and the
 #: CLM lake's own ``--fmad=false`` site beside the two cached loaders
 #: (``_load_module_without_fmad``, 2.8.5), which records in its own function.
-EXPECTED_SITE_COUNT = 27
+# The surface-state recipe records its seeded preparation unit at the
+# compiler call too, so the same source/options audit covers that site.
+# 3fa941d96, lane/ensemble-nested-pack: the one recorded member RUC
+# constructor joins the 28 retained sites; no compiler source is changed.
+EXPECTED_SITE_COUNT = 29
 
 #: ``cp.RawModule`` constructors under ``gpuwm/`` that are NOT manifest
 #: sites, each with the reason.  Closed and literal: a new constructor
@@ -117,11 +125,30 @@ RAWMODULE_CONSTRUCTORS_OUTSIDE_THE_MANIFEST = {
         "functions plus the fused sfctmp and driver sources), one module per "
         "soil geometry; it records through record_module in the same function "
         "under its own key, as the P3 composed unit above does"),
+    "gpuwm/core/storm_tracking.py": (
+        "the vortex tracker's one-kernel isobaric height, a transcription of "
+        "the rw-isobaric crate's column read graded word for word against it "
+        "by tests/test_storm_tracking_isobaric_gpu.py; it runs between steps "
+        "to steer a nest, computes no forecast field and is not a "
+        "translation unit the manifest freezes"),
     "gpuwm/da/fixed_order_gemm.py": (
         "the LETKF analysis's fixed-order batched products, one RawKernel per "
         "float dtype compiled on first use; they run in the data-assimilation "
         "analysis, not a forecast step, record nothing and are not a "
         "translation unit the manifest freezes"),
+    "gpuwm/da/radar_tten.py": (
+        "the research data-assimilation line's radar latent heating, one "
+        "RawKernel per entry point compiled on first use: the builder runs "
+        "between legs, and its one model-side kernel runs only while a "
+        "forcing is attached by the cycle driver's opt-in flag; it records "
+        "nothing and is graded against NOAA's compiled Fortran instead"),
+    "gpuwm/da/hydrometeor_analysis.py": (
+        "the radar precipitation analysis of the research DA line (NOAA's "
+        "Thompson retrieval and GSD precipitation block, glibc_flt64.cuh "
+        "prepended), one RawModule compiled on first use; it runs in the "
+        "data-assimilation analysis, not a forecast step, records nothing and "
+        "is graded bit for bit against NOAA's own Fortran by "
+        "tools/gsd_precip_oracle"),
     "gpuwm/core/noah_mosaic.py": (
         "the Noah mosaic tile loop's two compile sites (with and without the "
         "urban canopy, --fmad=false); each records through record_module in "

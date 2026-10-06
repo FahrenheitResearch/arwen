@@ -23,6 +23,7 @@ pub struct Closed {
 
 pub const VERTICAL_INTERPOLATION: &str =
     "linear in ln(pressure) between the two model mass levels that bracket the level in each column";
+pub const GEOPOTENTIAL_BETWEEN_INTERFACES: &str = "linear in ln(pressure) between the two model layer interfaces (PH + PHB) that bracket the level in each column, each interface's pressure linear in eta (ZNU, ZNW) between the mass-level pressures and the top interface at P_TOP; a layer-mean geopotential read at the mass-level pressure would sit 4 to 6 m high at 500 hPa";
 pub const BELOW_GROUND_TEMPERATURE: &str = "below the lowest model level: the ECMWF rule (Trenberth, Berry and Buja 1993, NCAR/TN-396, equation 16), as NCL vinth2p_ecmwf and GeoCAT interp_hybrid_to_pressure(extrapolate=True) implement it; the below_ground mask flags points under the surface";
 pub const BELOW_GROUND_GEOPOTENTIAL: &str = "below the lowest model level: the ECMWF rule (Trenberth, Berry and Buja 1993, NCAR/TN-396, equation 15), as NCL vinth2p_ecmwf and GeoCAT interp_hybrid_to_pressure(extrapolate=True) implement it; the below_ground mask flags points under the surface";
 pub const BELOW_GROUND_LOWEST: &str =
@@ -129,7 +130,12 @@ fn variable_attrs(
         a.insert("coordinates".into(), json!(coordinates.join(" ")));
     }
     if row.kind == VariableKind::Level && !domain.levels_kept.is_empty() {
-        a.insert("vertical_interpolation".into(), json!(VERTICAL_INTERPOLATION));
+        let between_interfaces = domain.geopotential_between_interfaces
+            && matches!(Op::parse(&row.op), Ok(Op::Geopotential));
+        a.insert(
+            "vertical_interpolation".into(),
+            json!(if between_interfaces { GEOPOTENTIAL_BETWEEN_INTERFACES } else { VERTICAL_INTERPOLATION }),
+        );
         let rule = match row.below_ground.as_deref() {
             Some("ecmwf-temperature") => BELOW_GROUND_TEMPERATURE,
             Some("ecmwf-geopotential") => BELOW_GROUND_GEOPOTENTIAL,
@@ -448,6 +454,9 @@ fn group_attrs(domain: &DomainState, request: &Request, omitted: &[(String, Stri
             json!(if domain.lid_stated { "P_TOP" } else { "the top model mass level (the history files state no P_TOP)" }),
         );
         a.insert("vertical_interpolation".into(), json!(VERTICAL_INTERPOLATION));
+        if domain.geopotential_between_interfaces {
+            a.insert("geopotential_vertical_interpolation".into(), json!(GEOPOTENTIAL_BETWEEN_INTERFACES));
+        }
         a.insert(
             "below_ground_rule".into(),
             json!("temperature and geopotential: the ECMWF rule (Trenberth, Berry and Buja 1993, NCAR/TN-396) ERA5's pressure levels are filled with; every other field: the lowest model level's value; below_ground = 1 where the level's pressure exceeds the surface pressure"),
@@ -653,6 +662,9 @@ fn readme(request: &Request, state: &State, slug: &str, zip: bool) -> String {
         text.push_str(&format!(
             "\nOn pressure levels: {VERTICAL_INTERPOLATION}. Below the lowest model level temperature and geopotential follow the ECMWF rule ERA5's pressure levels are filled with (Trenberth, Berry and Buja 1993), and every other field takes the lowest model level's value. The {MASK_NAME} mask is 1 where a level lies under the ground surface; drop those points with ds.where(ds.{MASK_NAME} == 0) if you want only model column.\n"
         ));
+        if state.domains.values().any(|d| d.geopotential_between_interfaces) {
+            text.push_str(&format!("Geopotential, inside the model column: {GEOPOTENTIAL_BETWEEN_INTERFACES}.\n"));
+        }
     }
     text.push_str("\nThe receipt (ml-export-receipt.json) lists every input file by name and SHA-256, the time each frame took, and every variable left out and why.\n");
     text

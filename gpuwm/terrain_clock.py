@@ -1134,6 +1134,13 @@ class ClockAdaptation:
     #: cells held or stopped alike with it and without; module docstring),
     #: so the map never lengthens a step for it.
     implicit_vertical: bool = False
+    #: ``RunConfig.terrain_clock = "pinned"``: the configured clock runs
+    #: and the measured derivation is carried as :attr:`advice` only.
+    pinned: bool = False
+    #: Under ``pinned``, what the measured rule would have done:
+    #: ``(division, time_step_sound, ceiling)``, the three fields the
+    #: measured derivation writes.  ``None`` where the clock is measured.
+    advice: tuple | None = None
 
     @property
     def dt(self) -> Fraction:
@@ -1144,6 +1151,15 @@ class ClockAdaptation:
         return (self.division != 1
                 or self.time_step_sound != self.configured_sound
                 or self.ceiling is not None)
+
+    @property
+    def advice_differs(self) -> bool:
+        """Pinned, and the measured rule would have changed the clock."""
+        if not self.pinned or self.advice is None:
+            return False
+        division, count, ceiling = self.advice
+        return (int(division) != 1 or int(count) != self.configured_sound
+                or ceiling is not None)
 
     @property
     def adaptive_unheld(self) -> bool:
@@ -1165,6 +1181,8 @@ class ClockAdaptation:
 
     @property
     def status(self) -> str:
+        if self.pinned:
+            return "PINNED"
         if self.crest is None:
             return "NO_WIND_READING"
         # Ground where the adaptive clock held no longest step tried is
@@ -1174,6 +1192,40 @@ class ClockAdaptation:
                 or (self.adapted and self.beyond_measured)):
             return "BEYOND_MEASURED"
         return "ADAPTED" if self.adapted else "AS_CONFIGURED"
+
+    def _advice_runs(self) -> str:
+        """What the measured rule would have run, in the words
+        :meth:`_runs` uses for a changed domain."""
+        division, count, ceiling = self.advice
+        parts = []
+        if int(division) != 1:
+            parts.append(f"{_seconds(self.configured_dt / int(division))} "
+                         f"steps instead of {_seconds(self.configured_dt)}")
+        if int(count) != self.configured_sound:
+            least = "at least " if self.adaptive else ""
+            parts.append(f"{least}{int(count)} acoustic substeps per step "
+                         f"instead of {self.configured_sound}")
+        if ceiling is not None:
+            parts.append(f"an adaptive step capped at "
+                         f"{_seconds(Fraction(ceiling))}")
+        return " and ".join(parts)
+
+    def pinned_sentence(self) -> str:
+        """The line a pinned domain prints: what runs, and what the
+        measured rule would have done instead (not applied)."""
+
+        what = ("no wind reading" if self.crest is None else self._what())
+        if self.advice_differs:
+            return (f"time step: {self.label}'s clock is pinned, so it runs "
+                    f"{_seconds(self.configured_dt)} steps on "
+                    f"{self.configured_sound} acoustic substeps as "
+                    f"configured; {what}, and the measured terrain clock "
+                    f"would have run {self._advice_runs()} (advice only, "
+                    "recorded in the receipt and not applied)")
+        return (f"time step: {self.label}'s clock is pinned and runs "
+                f"{_seconds(self.configured_dt)} steps on "
+                f"{self.configured_sound} acoustic substeps as configured; "
+                f"{what}, and the measured terrain clock holds that clock")
 
     def _what(self) -> str:
         crest = self.crest
@@ -1331,6 +1383,21 @@ class ClockAdaptation:
             row["max_time_step_from"] = self.cap_source
         if self.adaptive and self.time_step_sound != self.configured_sound:
             row["min_time_step_sound"] = int(self.time_step_sound)
+        if self.pinned:
+            # Written only under the pinned clock, so every measured
+            # receipt reads as it did.  The advice is the measured
+            # derivation's three fields, in the receipt's own spellings.
+            division, count, ceiling = self.advice or (1, self.configured_sound, None)
+            row["clock"] = "pinned"
+            row["advice"] = {
+                "applied": False,
+                "dt_s": _rational(self.configured_dt / int(division)),
+                "step_division": int(division),
+                "time_step_sound": int(count),
+                "max_time_step_s": (None if ceiling is None
+                                    else _rational(Fraction(ceiling))),
+                "differs": bool(self.advice_differs),
+            }
         if self.crest is not None:
             row.update(self.crest.receipt())
         if self.reading is not None:
@@ -1418,7 +1485,31 @@ def derive_clock(grid_id: int, run, dt: Fraction, slope: float,
     shortest steps (:func:`gpuwm.core.adaptive_clock.least_sound_steps`),
     since it derives its count from the live step and gives four at every
     short one, and a larger count it needs becomes the floor under it.
+
+    Under ``run.terrain_clock = "pinned"`` the same reading is taken and
+    the same derivation made, but it is carried as the adaptation's
+    ``advice`` and the domain runs its configured step and count: division
+    1, no ceiling, ``time_step_sound`` as configured.  The receipt row
+    then says ``clock = "pinned"`` and what the measured rule would have
+    done, so a pinned run never hides the map's verdict; it declines to
+    apply it.
     """
+
+    measured = _derive_measured(grid_id, run, dt, slope, crest,
+                                label=label, table=table)
+    if str(getattr(run, "terrain_clock", "measured")) != "pinned":
+        return measured
+    return replace(
+        measured, division=1, time_step_sound=measured.configured_sound,
+        ceiling=None, pinned=True,
+        advice=(int(measured.division), int(measured.time_step_sound),
+                measured.ceiling))
+
+
+def _derive_measured(grid_id: int, run, dt: Fraction, slope: float,
+                     crest: CrestWind | None, *, label: str | None = None,
+                     table: StableStepMap | None = None) -> ClockAdaptation:
+    """:func:`derive_clock`'s measured derivation, whatever the mode."""
 
     from gpuwm.core.adaptive_clock import least_sound_steps
 
@@ -1736,6 +1827,15 @@ def adapt_experiment_clock(
     # clock stays as configured.
     changed_ids = {a.grid_id for a in changed}
     for adaptation in final:
+        if adaptation.pinned:
+            # A pinned domain never changes, so it is never in ``changed``;
+            # it says what it runs and what the map would have done, and
+            # it says so as a caution where that differs, because the
+            # map's verdict is a stop seen on measured ground.
+            say = caution if adaptation.advice_differs else announce
+            if say is not None:
+                say(adaptation.pinned_sentence())
+            continue
         if adaptation.grid_id in changed_ids or adaptation.unheld:
             if adaptation.beyond_measured:
                 if caution is not None:

@@ -8,6 +8,7 @@ calls with state carried forward, both soil geometries and widths from one
 column to 100,000; refusals must name the reference's first failure.
 """
 import importlib.util
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -30,7 +31,7 @@ def _bench():
     return module
 
 
-def _capture(monkeypatch, scenario, nzs):
+def _capture(monkeypatch, scenario, nzs, snow='wrf_45'):
     from gpuwm.core.ruc_runtime import _ruc_lsm_step_reference
     bench = _bench()
     recorded = []
@@ -39,7 +40,8 @@ def _capture(monkeypatch, scenario, nzs):
     def capture(values, **kw):
         keywords = {name: kw[name] for name in (
             'delt', 'conflx', 'ivgtyp', 'iland', 'nroot', 'ilnb', 'isice',
-            'c1sn', 'c2sn', 'isncovr_opt', 'mminlu', 'parameters')}
+            'c1sn', 'c2sn', 'isncovr_opt', 'mminlu', 'parameters',
+            'soilprop', 'snow')}
         recorded.append(({name: value.copy() for name, value in values.items()}, keywords))
         return original(values, **kw)
 
@@ -47,7 +49,8 @@ def _capture(monkeypatch, scenario, nzs):
         scoped.setattr(ruc, 'ruc_surface_temperature_step', capture)
         _, cfg, driver, atmosphere, cold = bench.build(97, 61, 20, nzs, scenario, 11)
         bench.forcing(driver, 1, 11, (61, 97), cold)
-        bench.call(driver, atmosphere, 1, _ruc_lsm_step_reference)
+        bench.call(driver, atmosphere, 1,
+                   partial(_ruc_lsm_step_reference, ruc_snow=snow))
     return recorded[0]
 
 
@@ -72,11 +75,15 @@ def _assert_words(left, right, run):
 @pytest.mark.parametrize('nzs', [9, 6])
 @pytest.mark.parametrize('scenario', ['mixed', 'warm'])
 @pytest.mark.parametrize('width', [1, 37, 5917, 99991, 100000])
-def test_successive_full_width_words(monkeypatch, nzs, scenario, width):
-    values, keywords = _resize(*_capture(monkeypatch, scenario, nzs), width)
+@pytest.mark.parametrize('snow', ['wrf_45', 'wrf_461'])
+def test_successive_full_width_words(monkeypatch, nzs, scenario, width, snow):
+    values, keywords = _resize(*_capture(monkeypatch, scenario, nzs, snow), width)
     run = cp.arange(width) % 5 != 1
     flags = cp.empty(RUC_SFCTMP_FLAGS_SIZE, dtype=cp.uint64)
     for step in range(6):
+        # The generator traces at 12 s; a different step also checks that
+        # the fork's snowfall melt deduction uses the live step.
+        keywords['delt'] = 12.0 if step % 2 == 0 else 20.0
         reference = ruc_sfctmp_full_width_reference(values, run=run, **keywords)
         result = ruc_sfctmp_full_width_fused(values, run=run, flags=flags, **keywords)
         ruc_sfctmp_raise_from_flags(flags)
@@ -108,7 +115,8 @@ def test_negative_control_and_refusal(monkeypatch):
 
 
 @pytest.mark.parametrize('nzs', [9, 6])
-def test_driver_carries_fused_state(monkeypatch, nzs):
+@pytest.mark.parametrize('snow', ['wrf_45', 'wrf_461'])
+def test_driver_carries_fused_state(monkeypatch, nzs, snow):
     from gpuwm.core.ruc_runtime import _ruc_lsm_step_reference
     bench = _bench()
     original = ruc.ruc_surface_temperature_step
@@ -121,6 +129,8 @@ def test_driver_carries_fused_state(monkeypatch, nzs):
         # The fused stages compile the SOILPROP lineage the driver was
         # handed (the runtime default, wrf_45), as the reference runs it.
         keys['soilprop'] = kw['soilprop']
+        # ... and the snow lineage likewise (ruc_snow, the selected snow lineage).
+        keys['snow'] = kw['snow']
         run = cp.ones(values['snhei'].size, dtype=cp.bool_)
         result = ruc_sfctmp_full_width_fused(values, run=run, **keys)
         _assert_words({name: getattr(reference, name) for name in result}, result, run)
@@ -130,7 +140,8 @@ def test_driver_carries_fused_state(monkeypatch, nzs):
     _, cfg, driver, atmosphere, cold = bench.build(97, 61, 20, nzs, 'mixed', 11)
     for step in range(1, 13):
         bench.forcing(driver, step, 11, (61, 97), cold)
-        bench.call(driver, atmosphere, step, _ruc_lsm_step_reference)
+        bench.call(driver, atmosphere, step,
+                   partial(_ruc_lsm_step_reference, ruc_snow=snow))
 
 
 @pytest.mark.parametrize('failure', [

@@ -13,7 +13,7 @@ from typing import Literal
 
 from gpuwm.ensemble.admission import EnsembleMemoryModel, _integer
 
-ExecutionMode = Literal["member_batched", "ordinary_member", "ordinary_streamed_member"]
+ExecutionMode = Literal["member_batched", "ordinary_member", "ordinary_streamed_member", "ordinary_concurrent_members"]
 
 
 @dataclass(frozen=True)
@@ -50,9 +50,9 @@ class MemberBatch:
         if not members or len(set(members)) != len(members):
             raise ValueError("one batch needs distinct member indices")
         object.__setattr__(self, "member_indices", members)
-        if self.execution_mode not in ("member_batched", "ordinary_member", "ordinary_streamed_member"):
+        if self.execution_mode not in ("member_batched", "ordinary_member", "ordinary_streamed_member", "ordinary_concurrent_members"):
             raise ValueError("unknown ensemble execution mode")
-        if self.execution_mode != "member_batched" and len(members) != 1:
+        if self.execution_mode not in ("member_batched", "ordinary_concurrent_members") and len(members) != 1:
             raise ValueError("ordinary execution advances one member at a time")
         if self.required_bytes is not None:
             object.__setattr__(self, "required_bytes", _integer(self.required_bytes, "required_bytes"))
@@ -79,6 +79,8 @@ class MemberPackingPlan:
     batches: tuple[MemberBatch, ...]
     inventory_id: str = ""
     inventory_ids: tuple[str, ...] = ()
+    max_ordinary_members_per_device: int | None = None
+    memory_capacities: tuple[int, ...] = ()
 
     def __post_init__(self):
         requested = _integer(self.requested_members, "requested_members", positive=True)
@@ -96,6 +98,13 @@ class MemberPackingPlan:
         placements = tuple((batch.wave, batch.device_id) for batch in self.batches)
         if len(set(placements)) != len(placements):
             raise ValueError("a physical card can own only one member batch per wave")
+        if self.max_ordinary_members_per_device is not None:
+            cap = _integer(self.max_ordinary_members_per_device, "max_ordinary_members_per_device", positive=True)
+            object.__setattr__(self, "max_ordinary_members_per_device", cap)
+            if any(batch.members > cap for batch in self.batches if batch.execution_mode != "member_batched"):
+                raise ValueError("an ordinary batch exceeds its requested per-device concurrency cap")
+        if self.memory_capacities and len(self.memory_capacities) != len(self.cards):
+            raise ValueError("one uncapped memory-fit capacity is required per sampled device")
 
     @property
     def waves(self):
@@ -112,10 +121,14 @@ class MemberPackingPlan:
                  for card, capacity in zip(self.cards, self.capacities)]
         for card, inventory_id in zip(cards, self.inventory_ids):
             card["inventory_id"] = inventory_id
+        for card, capacity in zip(cards, self.memory_capacities):
+            card["memory_member_capacity"] = capacity
         return {"requested_members": self.requested_members, "scheduled_members": self.requested_members,
                 "inventory_id": self.inventory_id, "waves": self.waves,
                 "cards": cards,
                 "batches": [batch.receipt() for batch in self.batches],
+                **({} if self.max_ordinary_members_per_device is None else
+                   {"max_ordinary_members_per_device": self.max_ordinary_members_per_device}),
                 "physics_changed": False, "halo_exchange": False}
 
 
@@ -155,7 +168,8 @@ def _models_for_cards(model, cards, name):
     raise TypeError(f"{name} needs an execution-adapter memory inventory")
 
 
-def pack_members(requested_members, cards, model, *, batched=True, reason="", streamed_model=None):
+def pack_members(requested_members, cards, model, *, batched=True, reason="", streamed_model=None,
+                 concurrent_ordinary=False, max_ordinary_members_per_device=None):
     """Pack all members across physical cards, then sequential waves.
 
     ``batched=False`` keeps each member in the ordinary runner, including its
@@ -167,8 +181,13 @@ def pack_members(requested_members, cards, model, *, batched=True, reason="", st
     ``model`` may be one common model or ``{device_id: model}``. A mapping
     binds each card's actual context, kernel and physics workspace envelope;
     every sampled card needs its own entry, including a card with zero fit.
+    ``max_ordinary_members_per_device`` bounds only ordinary concurrency.
+    The uncapped memory fit is recorded when that policy is active; smaller
+    memory fits still win. An omitted policy retains existing packing.
     """
     requested = _integer(requested_members, "requested_members", positive=True)
+    if max_ordinary_members_per_device is not None:
+        max_ordinary_members_per_device = _integer(max_ordinary_members_per_device, "max_ordinary_members_per_device", positive=True)
     cards = tuple(cards)
     if not cards or any(not isinstance(card, CardBudget) for card in cards):
         raise ValueError("member packing needs sampled physical card budgets")
@@ -177,10 +196,18 @@ def pack_members(requested_members, cards, model, *, batched=True, reason="", st
     models, device_bound = _models_for_cards(model, cards, "member packing")
     if not isinstance(batched, bool):
         raise TypeError("batched must be a boolean")
+    if not isinstance(concurrent_ordinary, bool) or (batched and concurrent_ordinary):
+        raise ValueError("ordinary concurrency applies only to original member execution")
     streamed_models = ({card.device_id: None for card in cards} if streamed_model is None else
                        _models_for_cards(streamed_model, cards, "streamed_model")[0])
-    capacities = tuple(models[card.device_id].largest_that_fits(card.available_bytes, max_members=requested if batched else 1)
-                       for card in cards)
+    capacities = tuple(
+        min(requested, card.available_bytes // max(1, models[card.device_id].required_bytes(1)))
+        if concurrent_ordinary else
+        models[card.device_id].largest_that_fits(card.available_bytes, max_members=requested if batched else 1)
+        for card in cards)
+    memory_capacities = capacities
+    if max_ordinary_members_per_device is not None and not batched:
+        capacities = tuple(min(capacity, max_ordinary_members_per_device) for capacity in capacities)
     # A resident-capable card gets the first members before a card that
     # needs tile fallback. Preserve the selected order within either group.
     assignments = tuple(sorted(zip(cards, capacities), key=lambda row: row[1] == 0))
@@ -192,9 +219,13 @@ def pack_members(requested_members, cards, model, *, batched=True, reason="", st
                 break
             card_model = models[card.device_id]
             if capacity:
-                count = min(capacity if batched else 1, requested - next_member)
-                mode = "member_batched" if batched and count > 1 else "ordinary_member"
-                need = card_model.required_bytes(count)
+                count = min(capacity if batched or concurrent_ordinary else 1, requested - next_member)
+                mode = ("member_batched" if batched and count > 1 else
+                        "ordinary_concurrent_members" if concurrent_ordinary and count > 1 else "ordinary_member")
+                # Original models share no priced allocation. Charge their
+                # entire one-member inventory, including fixed workspaces,
+                # once for each live member rather than assuming pack banks.
+                need = card_model.required_bytes(1) * count if concurrent_ordinary else card_model.required_bytes(count)
                 explanation = reason
             else:
                 count, mode = 1, "ordinary_streamed_member"
@@ -212,7 +243,9 @@ def pack_members(requested_members, cards, model, *, batched=True, reason="", st
         wave += 1
     inventory_ids = tuple(models[card.device_id].inventory_id for card in cards) if device_bound else ()
     return MemberPackingPlan(requested, cards, capacities, tuple(batches),
-                             "per-card" if device_bound else model.inventory_id, inventory_ids)
+                             "per-card" if device_bound else model.inventory_id, inventory_ids,
+                             max_ordinary_members_per_device,
+                             () if max_ordinary_members_per_device is None else memory_capacities)
 
 
 __all__ = ["CardBudget", "MemberBatch", "MemberPackingPlan", "card_budgets_from_readings", "pack_members"]

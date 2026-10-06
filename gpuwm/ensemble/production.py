@@ -18,7 +18,7 @@ import time
 
 from gpuwm.ensemble.execution import (
     MemberRunControl, execute_member_packing, failed_member_rows, member_run_scope,
-    name_failing_members,
+    name_failing_members, execute_concurrent_members,
 )
 from gpuwm.ensemble.request import EnsembleRequest
 from gpuwm.ensemble.runtime_context import MemberOutputCapture, member_output_scope
@@ -45,12 +45,12 @@ def release_finished_member(array_module=None):
     refused or dropped to tiles after two full forecasts.
     """
     import gc
-    gc.collect()
     # The frees above are queued on this thread's stream. An array module
     # without a stream interface (a planning fixture) has nothing to wait for.
     current_stream = getattr(getattr(array_module, "cuda", None), "get_current_stream", None)
     if current_stream is not None:
         current_stream().synchronize()
+    gc.collect()
 
 
 @contextmanager
@@ -81,6 +81,80 @@ def _json_scalar(value):
     raise TypeError(f"ensemble receipt cannot serialize {type(value).__name__}")
 
 
+# Allocation reuse changes no experiment selector. Its qualification covers
+# the complete original carried fields and original prepared runner owners.
+_COMPONENT_WORKSPACE_REUSE_QUALIFIED = True
+_COMPONENT_EDGE_STATE_ONLY_QUALIFIED = True
+
+
+def _component_route_receipt(route):
+    """Freeze counters and final clock metadata without retaining live owners."""
+    from dataclasses import fields
+    from fractions import Fraction
+    from gpuwm.core.clock import DomainClock
+    def scalar(value):
+        if isinstance(value, DomainClock):
+            return {name: getattr(value, name) for name in value.__slots__}
+        if is_dataclass(value):
+            return {field.name: getattr(value, field.name) for field in fields(value)}
+        if isinstance(value, Fraction):
+            return {"numerator": value.numerator, "denominator": value.denominator}
+        return _json_scalar(value)
+    return json.loads(json.dumps(route, default=scalar))
+
+
+def _prepared_component_route_plan(member_inputs, *, card, collector, array_module,
+                                   device_profile=None, stochastic_provider=None):
+    """Price a genuine parent/nest component wave before any runner starts."""
+    from fractions import Fraction
+    from gpuwm.core.preflight import estimate_experiment, FORECAST_POOL_HEADROOM
+    from gpuwm.core.mynn_pbl_scratch import mynn_pricing_memory
+    from gpuwm.ensemble.admission import ordinary_memory_model_from_estimate
+    from gpuwm.ensemble.prepared_component_reservation import plan_prepared_component_reservation
+    from gpuwm.ensemble.production_memory import ordinary_ensemble_memory_model
+    if stochastic_provider is not None and any(stochastic_provider.enabled_for_experiment(value.experiment)
+                                               for value in member_inputs.values()):
+        return None, "active stochastic rates require their original per-member driver callbacks; packed production has no stochastic leaf handoff"
+    estimates = []
+    forecast_bytes = {}
+    try:
+        total = card.total_bytes
+        if total is None:
+            _, total = array_module.cuda.runtime.memGetInfo()
+        with mynn_pricing_memory(total_bytes=int(total), free_bytes=card.available_bytes):
+            for member, prepared in member_inputs.items():
+                estimate = estimate_experiment(prepared.experiment,
+                    forcing_interval_seconds=prepared.boundary_interval_seconds,
+                    profile=device_profile, vram_gib=int(total) / (1024 ** 3))
+                estimates.append((estimate, prepared.experiment))
+                forecast_bytes[member] = ordinary_memory_model_from_estimate(estimate,
+                    inventory_id="original-forecast-before-component-runners").required_bytes(1)
+            first, experiment = estimates[0]
+            _, external, output_margin = ordinary_ensemble_memory_model(first, experiment, collector,
+                inventory_id="original-output-before-component-runners", other_variants=tuple(estimates[1:]))
+            rows = tuple(component.inventory(1) for component in external)
+            output_bytes = sum(row["required_bytes"] for row in rows) + output_margin.required_bytes(rows)
+            extra_queues = 16 << 20
+            fraction = Fraction(str(FORECAST_POOL_HEADROOM)) - 1
+            queue_margin = (extra_queues * fraction.numerator + fraction.denominator - 1) // fraction.denominator
+            decision = plan_prepared_component_reservation(member_inputs,
+                ordinary_forecast_bytes=forecast_bytes,
+                fixed_bytes={"collector": output_bytes, "stochastic": 0,
+                             "cuda_owners": extra_queues, "allocator_margin": queue_margin},
+                evidence={"ordinary": "complete original per-member estimate on the selected card before runner threads",
+                          "native": "automatic immutable prepared authorities and original component inventories",
+                          "collector": "original complete headline output reservations and allocator margin",
+                          "stochastic": "inactive for this component cohort",
+                          "cuda_owners": "16 MiB additional route/RPC/event ownership reserve",
+                          "allocator_margin": "original forecast headroom applied to the additional queue reserve"},
+                available_bytes=card.available_bytes, device_id=card.device_id,
+                reuse_original_workspaces=_COMPONENT_WORKSPACE_REUSE_QUALIFIED,
+                edge_state_only=_COMPONENT_EDGE_STATE_ONLY_QUALIFIED)
+    except (ValueError, TypeError, AttributeError, KeyError, OSError) as error:
+        return None, f"the prepared component allocation inventory cannot bind its original authorities: {error}"
+    return (decision, None) if decision.eligible else (None, decision.ordinary_reason)
+
+
 class PreparedEnsembleSession:
     """The worker and source-provider interface, independent of a CLI route.
 
@@ -102,13 +176,14 @@ class PreparedEnsembleSession:
                  cards=None, device_scope=None, renderer=None, member_roster=None,
                  stochastic_provider=None, array_module=None,
                  card_bootstrap_factory=None, source_execution=None,
-                 identical_members=None):
+                 identical_members=None, restart_roster=None):
         self.request = EnsembleRequest.from_mapping(request)
         if identical_members is not None and (
                 not isinstance(identical_members, str) or not identical_members.strip()):
             raise ValueError("identical_members states, in words, why this engine gate "
                              "runs copies of one forecast")
         self.identical_members = identical_members
+        self.restart_roster = None if restart_roster is None else Path(restart_roster)
         self.output_directory = Path(output_directory)
         self.collector = collector
         self.input_provider = input_provider
@@ -131,6 +206,8 @@ class PreparedEnsembleSession:
                 raise ValueError("a posted source owner cannot also replace inputs through another member provider")
         self._stochastic_authorities = {}
         self._stochastic_input_bindings = {}
+        self._surface_receipts = {}
+        self._member_land_layouts = {}
         if self.stochastic_provider is None and self.request.stochastic is not None:
             from gpuwm.ensemble.stochastic_model import StochasticModelProvider
             self.stochastic_provider = StochasticModelProvider.from_mapping(self.request.stochastic)
@@ -141,6 +218,12 @@ class PreparedEnsembleSession:
             if member_roster is not None else tuple(range(self.request.members)))
         if len(self.member_order) != self.request.members:
             raise ValueError("requested member count differs from the verified source roster")
+        if (self.request.member_variants
+                and input_provider is None and member_roster is None and source_execution is None):
+            raise ValueError("member_variants selects each member's own land and surface state, "
+                             "and this session has no bound member inputs: every member would "
+                             "run one prepared land column under its variant's name. "
+                             "Next: gpuwm ensemble CONFIG --recipe member-roster")
         if ((self.request.sources or self.request.perturbation is not None)
                 and input_provider is None and member_roster is None and source_execution is None):
             # Breakage it prevents: the request names a source (or a
@@ -195,7 +278,7 @@ class PreparedEnsembleSession:
         started = time.perf_counter()
         out = Path(output_directory or self.output_directory)
         out.mkdir(parents=True, exist_ok=True)
-        if (out / "ensemble-run.json").exists():
+        if (out / "ensemble-run.json").exists() and self.restart_roster is None:
             raise FileExistsError("ensemble output already exists; use a new run directory")
         exp = inputs.experiment
         if self.stochastic_provider is not None:
@@ -230,6 +313,25 @@ class PreparedEnsembleSession:
             exp = inputs.experiment
             member_inputs_by_id = {member: self._configured_member_inputs(prepared)
                                   for member, prepared in member_inputs_by_id.items()}
+        self._remember_member_land_layouts(member_inputs_by_id)
+        checkpoint_members = self.restart_roster is not None or any(
+            float(getattr(prepared.experiment, "restart_interval_s", 0) or 0) > 0
+            for prepared in member_inputs_by_id.values())
+        resumed, resume_rows = None, {}
+        if runner_options.get("restart") is not None:
+            raise ValueError("an ensemble needs --restart-roster, because one checkpoint cannot identify every member")
+        if checkpoint_members:
+            from gpuwm.ensemble import restart_roster
+            identities = restart_roster.identity_record(self.request, self.member_order,
+                member_inputs_by_id, {member: self._member_seed(member) for member in self.member_order})
+            if self.restart_roster is not None:
+                resumed = restart_roster.verify_roster(self.restart_roster, identities, root=out)
+                resume_rows = {row["member_id"]: row for row in resumed["members"]}
+            restart_roster.atomic_json(out / restart_roster.IDENTITIES, identities)
+            restart_roster.atomic_json(out / restart_roster.INPUTS, {"schema": restart_roster.CONTRACT,
+                "members": [{"member_id": member, **{name: str(getattr(prepared, name, "") or "")
+                    for name in ("prepared_root", "experiment_config", "wps_namelist")}}
+                    for member, prepared in member_inputs_by_id.items()]})
         variants = []
         seen_variants = set()
         for prepared in member_inputs_by_id.values():
@@ -263,7 +365,13 @@ class PreparedEnsembleSession:
                 keep_member_files=self.request.keep_member_files,
                 member_order=self.member_order,
                 member_metadata=metadata,
-                retain_member_diagnostics=self.request.retain_member_diagnostics)
+                retain_member_diagnostics=self.request.retain_member_diagnostics,
+                **({"resume": True} if resumed is not None else {}))
+        if resumed is not None:
+            restore = getattr(self.collector, "restore_resume", None)
+            if not callable(restore):
+                raise ValueError("ensemble continuation needs its durable diagnostic collector, including completed members")
+            restore()
         member_archive = getattr(self.collector, "member_archive", None)
         if member_archive is not None:
             for member, prepared in member_inputs_by_id.items():
@@ -291,6 +399,8 @@ class PreparedEnsembleSession:
                                 exp, array_module=cp,
                                 other_experiments=tuple(prepared.experiment for prepared in variants
                                                         if prepared.experiment is not exp))
+                        from gpuwm.core.preflight import release_unreachable_device_memory
+                        release_unreachable_device_memory(cp)
                         free, total = cp.cuda.runtime.memGetInfo()
                         reusable = int(cp.get_default_memory_pool().free_bytes())
                         props = cp.cuda.runtime.getDeviceProperties(device)
@@ -312,10 +422,12 @@ class PreparedEnsembleSession:
                             fft_workspaces[card.device_id] = self.stochastic_provider.sample_fft_workspace_bytes(exp,
                                 array_module=cp, other_experiments=tuple(prepared.experiment for prepared in variants
                                                                         if prepared.experiment is not exp))
-                        estimates = tuple((estimate_experiment(prepared.experiment,
-                            forcing_interval_seconds=prepared.boundary_interval_seconds,
-                            profile=profile, vram_gib=card.total_bytes / (1024 ** 3)), prepared.experiment)
-                            for prepared in variants)
+                        from gpuwm.core.mynn_pbl_scratch import mynn_pricing_memory
+                        with mynn_pricing_memory(total_bytes=card.total_bytes, free_bytes=card.available_bytes):
+                            estimates = tuple((estimate_experiment(prepared.experiment,
+                                forcing_interval_seconds=prepared.boundary_interval_seconds,
+                                profile=profile, vram_gib=card.total_bytes / (1024 ** 3)), prepared.experiment)
+                                for prepared in variants)
                         estimate, forecast_exp = estimates[0]
                         priced, external, margin = ordinary_ensemble_memory_model(estimate, forecast_exp, self.collector,
                             inventory_id=f"ordinary-ensemble-device-{card.device_id}",
@@ -324,6 +436,11 @@ class PreparedEnsembleSession:
                         model[card.device_id] = priced
                         ordinary_admissions[card.device_id] = (external, margin)
         cards = tuple(cards)
+        if checkpoint_members:
+            # One member owns the durable diagnostic snapshot until its
+            # roster seals. Another card may otherwise retire pending packs
+            # while this member's checkpoint is being hashed and carried.
+            cards = cards[:1]
         resolved_request = replace(self.request, member_device_ids=tuple(card.device_id for card in cards))
         from gpuwm.ensemble.progress import (
             EnsembleProgressAdapter, MemberTerminalProgress, progress_host)
@@ -338,25 +455,120 @@ class PreparedEnsembleSession:
         progress_adapter = EnsembleProgressAdapter(host,
             member_ids=self.member_order, run_seconds=float(exp.run_seconds),
             control=run_control,
+            check_products=getattr(self.collector, "check_products", None),
             # A run with no progress host of its own (gpuwm go, gpuwm
             # ensemble, gpuwm sim) still says where each member is.
             terminal=(None if host is not None else
                       MemberTerminalProgress(self.member_order, float(exp.run_seconds))))
+        if resumed is not None:
+            prior = json.loads((out / "ensemble-run.json").read_text(encoding="utf-8"))
+            prior_progress = {row["member_id"]: row for row in
+                prior.get("ensemble_progress", {}).get("members", ())}
+            from gpuwm.ensemble.restart_roster import resolve_file
+            for member, row in resume_rows.items():
+                progress_adapter.restore_member(member, elapsed_seconds=row["model_elapsed_seconds"],
+                    outer_step=(prior_progress.get(member, {}).get("outer_step", 0)
+                        if row["status"] == "completed" else 0),
+                    checkpoint=(resolve_file(out, row["checkpoint"]) if row["status"] == "checkpoint" else None))
         has_radar = any(radar_enabled(prepared) for prepared in member_inputs_by_id.values())
-        native = self.native_executor is not None and self.source_execution is None and not has_radar
+        native = (self.native_executor is not None and self.source_execution is None
+                  and not has_radar and not checkpoint_members)
+        original_reasons = {}
+        # These selections already require the original model. Diagnose them
+        # before starting a first-member native probe so all ordinary members
+        # can enter the admitted concurrent wave together.
+        from gpuwm.ensemble.ordinary_execution import OrdinaryRecipeExecution
+        original_source = self.source_execution is None or isinstance(self.source_execution, OrdinaryRecipeExecution)
+        if self.request.members > 1 and self.native_executor is None and original_source:
+            from gpuwm.ensemble.suite_capabilities import plan_suite
+            for member, prepared in member_inputs_by_id.items():
+                domains = tuple(getattr(prepared.experiment, "domains", ()))
+                reasons = []
+                for domain in domains:
+                    reasons.extend(f"domain {domain.grid_id}: {reason}" for reason in
+                                   plan_suite(domain.run, members=self.request.members).native_fallback_reasons)
+                if len(domains) > 1:
+                    reasons.append("nested members retain the original parent FORCE, child clocks and feedback")
+                if reasons:
+                    original_reasons[member] = list(dict.fromkeys(reasons))
+        ordinary_cuda_available = cp is not None and callable(getattr(getattr(cp, "cuda", None), "Stream", None))
+        from gpuwm.ensemble.ordinary_concurrency import plan_ordinary_concurrency
+        concurrency_plans = {member: plan_ordinary_concurrency(prepared.experiment)
+            for member, prepared in member_inputs_by_id.items()}
+        for member, concurrency in concurrency_plans.items():
+            if not concurrency.eligible and member in original_reasons:
+                original_reasons[member].extend(concurrency.reasons)
+        concurrent_ordinary = bool(not checkpoint_members and original_reasons and ordinary_cuda_available
+            and not has_radar and original_source and all(
+                int(getattr(getattr(prepared.experiment, "devices", None), "count", 1)) <= 1
+                for prepared in member_inputs_by_id.values())
+            and all(concurrency.eligible for concurrency in concurrency_plans.values()))
+        if concurrent_ordinary:
+            # Private member allocators cannot borrow cached default-pool
+            # blocks. Return unused blocks before charging the sampled budget
+            # that included them. Live immutable tables are unaffected.
+            for card in cards:
+                with scope(card.device_id):
+                    cp.cuda.get_current_stream().synchronize()
+                    cp.get_default_memory_pool().free_all_blocks()
         packing = pack_members(self.request.members, tuple(cards), model, batched=native,
+            concurrent_ordinary=concurrent_ordinary,
+            max_ordinary_members_per_device=self.request.max_ordinary_members_per_device,
             reason=("qualified native member executor" if native else
                     "posted member sources retain original native initialization and streaming seals"
                     if self.source_execution is not None else
                     "simulated radar retains original member volume writers and live native consumers"
                     if has_radar else
                     "ordinary runner preserves this configuration and each member clock"))
+        component_plans, component_rows = {}, []
+        component_candidate = (not checkpoint_members and self.request.members > 1 and self.native_executor is None and
+            original_source and not has_radar and ordinary_cuda_available and concurrent_ordinary)
+        if component_candidate:
+            from gpuwm.ensemble.production_component_route import source_component_route_reason
+            accepts_handoff = ("schedule_dispatch" in parameters or any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()))
+            source_reason = source_component_route_reason(self.source_execution)
+            for batch in packing.batches:
+                if batch.execution_mode != "ordinary_concurrent_members" or batch.members < 2:
+                    continue
+                ids = tuple(self.member_order[slot] for slot in batch.member_indices)
+                reason = (source_reason or (None if accepts_handoff else
+                    "the original member runner has no schedule_dispatch handoff for its writer and controller owners"))
+                decision = None
+                if reason is None:
+                    card = next(card for card in cards if card.device_id == batch.device_id)
+                    with scope(card.device_id):
+                        decision, reason = _prepared_component_route_plan(
+                            {member: member_inputs_by_id[member] for member in ids}, card=card,
+                            collector=self.collector, array_module=cp,
+                            device_profile=profiles.get(card.device_id), stochastic_provider=self.stochastic_provider)
+                key = (batch.wave, batch.device_id)
+                if decision is not None:
+                    component_plans[key] = decision.reservation
+                    for member in ids:
+                        original_reasons.pop(member, None)
+                else:
+                    for member in ids:
+                        original_reasons[member] = [reason]
+                component_rows.append({"wave": batch.wave, "device_id": batch.device_id,
+                    "member_ids": list(ids), "eligible": decision is not None,
+                    "ordinary_reason": reason, "complete_native_rk_graph": False,
+                    **({} if decision is None else {"memory": decision.reservation.receipt()})})
         manifest = {"schema": "gpuwm-ensemble-run.v1", "status": "running",
                     "request": self.request.receipt(), "packing": packing.receipt(),
+                    **({} if not self.request.member_variants else {"member_variants": [
+                        self._variant_receipt(member) for member in self.member_order]}),
                     # Stated only by an engine gate that runs copies on purpose.
                     **({} if self.identical_members is None else
                        {"identical_members": self.identical_members}),
-                    "members_completed": [], "member_history_files": [],
+                    "members_completed": [member for member, row in resume_rows.items() if row["status"] == "completed"],
+                    "completed_member_results": [{"member_id": member, "result": row["result"]}
+                        for member, row in resume_rows.items() if row["status"] == "completed"],
+                    "requested_run_seconds": float(exp.run_seconds),
+                    "resumed_members": [{"member_id": member, "status": row["status"],
+                        "model_elapsed_seconds": row["model_elapsed_seconds"]} for member, row in resume_rows.items()],
+                    "restart_policy": ("original per-member runners and durable member restart roster" if checkpoint_members else "unchanged"),
+                    "member_history_files": [],
                     "member_radar_products": [],
                     "member_order": list(self.member_order),
                     "source_roster": (None if self.member_roster is None else self.member_roster.receipt()),
@@ -365,13 +577,27 @@ class PreparedEnsembleSession:
                     "runtime_stochastic_authorities": [dict(self._stochastic_authorities[id(prepared)], member_id=member)
                         for member, prepared in member_inputs_by_id.items() if id(prepared) in self._stochastic_authorities],
                     "ordinary_memory_sampling": ordinary_sampling,
+                    "ordinary_fallback_reasons": [dict(member_id=member, reasons=reasons)
+                        for member, reasons in original_reasons.items()],
+                    "ordinary_concurrency": [dict(member_id=member, **plan.receipt())
+                        for member, plan in concurrency_plans.items()],
                     "ordinary_memory_inventory": [
                         (model[card.device_id] if isinstance(model, Mapping) else model).inventory(1)
                         for card in cards],
                     "shared_preparation": True,
                     "time_step_policy": "ordinary per-member clock; qualified fixed-clock native packs",
                     "streaming_input_policy": "unchanged from prepared input authority"}
+        if component_rows:
+            manifest["prepared_component_admission"] = component_rows
+            manifest["prepared_component_waves"] = []
+            if component_plans:
+                manifest["time_step_policy"] = "original per-member adaptive clocks; native components join only ready compatible groups"
         _atomic_json(out / "ensemble-run.json", manifest)
+        if original_reasons:
+            import sys
+            for member, reasons in original_reasons.items():
+                print(f"ensemble: member {member} uses its ordinary runner: " + "; ".join(reasons),
+                      file=sys.stderr, flush=True)
         # Probability publication belongs to the roster collector. This lock
         # protects durable run progress when independent cards complete together.
         import threading
@@ -467,8 +693,10 @@ class PreparedEnsembleSession:
             return InitializedCardBootstrap(holder["inputs"], holder["node"], holder["evidence"])
 
         automatic = None
-        if (not has_radar and self.source_execution is None and self.native_executor is None and hasattr(inputs, "execution_plan")
-                and self.cards is None and self.memory_model is None):
+        if (not checkpoint_members and not has_radar and self.source_execution is None and self.native_executor is None and hasattr(inputs, "execution_plan")
+                and self.cards is None and self.memory_model is None
+                and not component_plans
+                and not (original_reasons and ordinary_cuda_available)):
             from gpuwm.ensemble.prepared_execution import make_automatic_prepared_executor
             automatic = make_automatic_prepared_executor(admitted_runner, request=resolved_request,
                 collector=self.collector, output_directory=out, member_roster=self.member_roster,
@@ -481,11 +709,91 @@ class PreparedEnsembleSession:
                     self.stochastic_provider.enabled_for_experiment(exp)))
         first_result = None
 
+        def execute_component_wave(batch, reservation):
+            # Return only finalized records before collecting joined model cycles.
+            from gpuwm.ensemble.prepared_nested_batch import ProductionNestedPackFactory
+            from gpuwm.ensemble.production_component_route import run_production_component_wave
+            def source_context(*, member_id, actual_inputs, authority, source_receipt):
+                with manifest_lock:
+                    if authority is not None:
+                        rows = {row["member_id"]: row for row in manifest["runtime_stochastic_authorities"]}
+                        rows[member_id] = dict(authority, member_id=member_id)
+                        manifest["runtime_stochastic_authorities"] = [rows[member]
+                            for member in self.member_order if member in rows]
+                    manifest["posted_source_execution"] = source_receipt
+                    _atomic_json(out / "ensemble-run.json", manifest)
+            factory = ProductionNestedPackFactory(qualification_receipt={
+                "scope": "original prepared runners with qualified parent/nest and production physics components",
+                "default_route_enabled": True, "complete_native_rk_graph": False},
+                reuse_original_workspaces=_COMPONENT_WORKSPACE_REUSE_QUALIFIED,
+                edge_state_only=_COMPONENT_EDGE_STATE_ONLY_QUALIFIED)
+            with scope(batch.device_id):
+                joined = run_production_component_wave(self, runner,
+                    member_inputs={member: member_inputs_by_id[member] for member in batch.member_indices},
+                    output_directory=out, reservation=reservation,
+                    progress_adapter=progress_adapter, control=run_control,
+                    runner_options=runner_options, progress_key=progress_key, device_id=batch.device_id,
+                    operation_authority=lambda *, member_id, **unused: {
+                        "prepared_authority_sha256": dict(getattr(member_inputs_by_id[member_id], "authority_sha256", {}) or {})},
+                    source_context_callback=(source_context if self.source_execution is not None else None),
+                    array_module=cp, pack_factory=factory)
+            results = []
+            for member in batch.member_indices:
+                single = replace(batch, member_indices=(member,), execution_mode="ordinary_member",
+                    required_bytes=batch.required_bytes // batch.members)
+                record = finalize_member_result(single, joined.member_results[member],
+                    member_inputs=member_inputs_by_id[member], capture=joined.captures[member],
+                    member_out=joined.output_directories[member])
+                results.append({"member_id": member, "result": record})
+            route = _component_route_receipt(joined.execution)
+            execution = route["execution"]
+            packed = any(row.get("packed") for row in execution.get("operations", ()))
+            with manifest_lock:
+                manifest["prepared_component_waves"].append({"wave": batch.wave,
+                    "device_id": batch.device_id, "member_ids": list(batch.member_indices),
+                    "native_component_operations": packed, "complete_native_rk_graph": False,
+                    "route": route})
+                manifest["prepared_component_waves"].sort(key=lambda row: (row["wave"], row["device_id"]))
+                _atomic_json(out / "ensemble-run.json", manifest)
+            return {"status": "PASS", "backend": ("original_members_with_native_components"
+                if packed else "ordinary_concurrent_members"), "members": results,
+                "complete_native_rk_graph": False, "component_route": route}
+
         def execute(batch):
             # Packing owns local slots. All source, RNG and output interfaces
             # retain the original global member identifiers.
             batch = replace(batch, member_indices=tuple(self.member_order[slot] for slot in batch.member_indices))
             try:
+                if batch.execution_mode == "ordinary_concurrent_members":
+                    reservation = component_plans.get((batch.wave, batch.device_id))
+                    if reservation is not None:
+                        with scope(batch.device_id), finished_member_release(cp):
+                            return execute_component_wave(batch, reservation)
+                    from gpuwm.ensemble.member_stream import member_cuda_scope
+                    return execute_concurrent_members(batch, execute_admitted,
+                        member_scope=lambda **kwargs: member_cuda_scope(array_module=cp, **kwargs),
+                        control=run_control)
+                if concurrent_ordinary and batch.execution_mode == "ordinary_member":
+                    # A one-member wave on each of several cards still needs
+                    # independent grid-ID CFL banks and physics cache owners.
+                    from gpuwm.ensemble.member_stream import member_cuda_scope
+                    with member_cuda_scope(array_module=cp, device_id=batch.device_id,
+                                           member_id=batch.member_indices[0]) as owned:
+                        result = execute_admitted(batch)
+                    return dict(result, cuda_scope=owned.receipt())
+                if (batch.execution_mode != "member_batched" and int(getattr(getattr(
+                        member_inputs_by_id[batch.member_indices[0]].experiment, "devices", None), "count", 1)) <= 1):
+                    # Sequential models retain the original stream and pool.
+                    # Independent cards still cannot share grid-ID CFL banks.
+                    from gpuwm.core.cfl_member import member_cfl_scope
+                    with member_cfl_scope():
+                        try:
+                            return execute_admitted(batch)
+                        finally:
+                            current_stream = getattr(getattr(cp, "cuda", None), "get_current_stream", None)
+                            if current_stream is not None:
+                                with scope(batch.device_id):
+                                    current_stream().synchronize()
                 return execute_admitted(batch)
             except Exception as error:
                 # The error says which member it belongs to, in its own
@@ -494,7 +802,56 @@ class PreparedEnsembleSession:
                     wave=batch.wave, execution_mode=batch.execution_mode)
                 raise
 
+        def finalize_member_result(batch, result, *, member_inputs=None, capture=None, member_out=None, overlay=None):
+            """Publish the same original report/capture after either joined route."""
+            member = batch.member_indices[0]
+            record = asdict(result) if is_dataclass(result) else result
+            if self.request.member_variants:
+                if batch.execution_mode == "member_batched":
+                    record = dict(record, member_variants=[self._variant_receipt(index)
+                        for index in batch.member_indices])
+                else:
+                    record = dict(record, member_variant=self._variant_receipt(member))
+            if batch.execution_mode != "member_batched" and member in self._surface_receipts:
+                record = dict(record, surface_perturbation=self._surface_receipts[member])
+            if batch.execution_mode != "member_batched" and overlay is not None and overlay.get("changed"):
+                record = dict(record, ensemble_execution_overlay=overlay)
+            if batch.execution_mode != "member_batched" and capture.counter_calendars:
+                record = dict(record)
+                record["ensemble_counter_observations"] = [
+                    calendar.receipt(member_id=member, episode=episode)
+                    for calendar in capture.counter_calendars.values()
+                    for observed_member, episode in calendar._progress
+                    if observed_member == member]
+            if isinstance(record, dict) and record.get("status") not in (None, "PASS"):
+                raise RuntimeError("ordinary member returned a failing forecast receipt")
+            radar_products = (None if batch.execution_mode == "member_batched" else
+                finish_member_radar(member_inputs, member_out, result,
+                                    keep_member_files=self.request.keep_member_files))
+            with manifest_lock:
+                if radar_products is not None:
+                    manifest["member_radar_products"].append(dict(radar_products,
+                        member_id=member, directory=str(member_out.relative_to(out))))
+                    manifest["member_radar_products"].sort(key=lambda row: self.member_order.index(row["member_id"]))
+                manifest["members_completed"].extend(batch.member_indices)
+                manifest["members_completed"].sort()
+                if batch.execution_mode != "member_batched":
+                    manifest["completed_member_results"].append({"member_id": member, "result": record})
+                manifest["surface_perturbations"] = [self._surface_receipts[member]
+                    for member in self.member_order if member in self._surface_receipts]
+                if self.source_execution is not None:
+                    manifest["posted_source_execution"] = self.source_execution.receipt()
+                _atomic_json(out / "ensemble-run.json", manifest)
+                if checkpoint_members:
+                    from gpuwm.ensemble.restart_roster import seal
+                    save = getattr(self.collector, "save_resume", None)
+                    if callable(save):
+                        save()
+                    seal(out)
+            return record
+
         def execute_admitted(batch):
+            member_inputs = capture = member_out = overlay = None
             with scope(batch.device_id):
                 if batch.execution_mode == "member_batched":
                     native_options = dict(runner_options)
@@ -507,21 +864,43 @@ class PreparedEnsembleSession:
                         raise RuntimeError("admitted native pack returned no forecast receipt")
                 else:
                     member = batch.member_indices[0]
+                    resume = resume_rows.get(member, {})
+                    if resume.get("status") == "completed":
+                        return resume["result"]
                     member_inputs = member_inputs_by_id[member]
                     member_inputs, overlay = ordinary_inputs(member_inputs, batch)
+                    initialize = self._initialization_callback(member)
+                    retained_models = []
+                    if concurrent_ordinary:
+                        previous = initialize
+                        def initialize(**kwargs):
+                            # Hold construction owners while this worker's
+                            # queue is active. Another member's GC pass cannot
+                            # collect a completed asynchronous model early.
+                            retained_models.append(kwargs.get("model") or kwargs.get("state"))
+                            if previous is not None:
+                                previous(**kwargs)
                     capture = MemberOutputCapture(self.collector.submit, member,
                         member_history_required(member_inputs, self.request.keep_member_files),
-                        initialize_callback=self._initialization_callback(member))
+                        initialize_callback=initialize)
                     options = dict(runner_options)
                     options["first_products"] = None
-                    options[progress_key] = progress_adapter.callback_for_member(member)
+                    member_progress = progress_adapter.callback_for_member(member)
+                    if checkpoint_members:
+                        from gpuwm.ensemble.restart_roster import CheckpointProgress
+                        member_progress = CheckpointProgress(member_progress, collector=self.collector,
+                            root=out, manifest_lock=manifest_lock)
+                    options[progress_key] = member_progress
                     member_out = out / "members" / f"member-{member:04d}"
+                    if resume.get("status") == "checkpoint":
+                        from gpuwm.ensemble.restart_roster import resolve_file
+                        options["restart"] = resolve_file(out, resume["checkpoint"])
                     if first_result is not None and member == first_result.first_member_id:
                         result = first_result.report
                     else:
-                        member_out.mkdir(parents=True, exist_ok=False)
-                        # Every time-lagged and multi-model member ends here:
-                        # its device state goes before the next member starts.
+                        member_out.mkdir(parents=True, exist_ok=self.restart_roster is not None)
+                        # Every original member retains its own model until
+                        # its queue completes, including concurrent waves.
                         with finished_member_release(cp), member_output_scope(capture):
                             if self.source_execution is None:
                                 result = runner(member_inputs, output_directory=member_out, **options)
@@ -552,32 +931,14 @@ class PreparedEnsembleSession:
                             episode = int(episodes[-1].split("-", 1)[1]) if episodes else 0
                             self.collector.add_member_file(path, member_id=member,
                                 grid_id=int(match.group(1)), episode=episode)
-                record = asdict(result) if is_dataclass(result) else result
-                if batch.execution_mode != "member_batched" and overlay is not None and overlay.get("changed"):
-                    record = dict(record, ensemble_execution_overlay=overlay)
-                if batch.execution_mode != "member_batched" and capture.counter_calendars:
-                    record = dict(record)
-                    record["ensemble_counter_observations"] = [
-                        calendar.receipt(member_id=member, episode=episode)
-                        for calendar in capture.counter_calendars.values()
-                        for observed_member, episode in calendar._progress
-                        if observed_member == member]
-                if isinstance(record, dict) and record.get("status") not in (None, "PASS"):
-                    raise RuntimeError("ordinary member returned a failing forecast receipt")
-                radar_products = (None if batch.execution_mode == "member_batched" else
-                    finish_member_radar(member_inputs, member_out, result,
-                                        keep_member_files=self.request.keep_member_files))
-                with manifest_lock:
-                    if radar_products is not None:
-                        manifest["member_radar_products"].append(dict(radar_products,
-                            member_id=member, directory=str(member_out.relative_to(out))))
-                        manifest["member_radar_products"].sort(key=lambda row: self.member_order.index(row["member_id"]))
-                    manifest["members_completed"].extend(batch.member_indices)
-                    manifest["members_completed"].sort()
-                    if self.source_execution is not None:
-                        manifest["posted_source_execution"] = self.source_execution.receipt()
-                    _atomic_json(out / "ensemble-run.json", manifest)
-                return record
+                return finalize_member_result(batch, result, member_inputs=member_inputs,
+                    capture=capture, member_out=member_out, overlay=overlay)
+
+        def surface_inventory():
+            from gpuwm.ensemble.surface_recipe import surface_realization_inventory
+            receipts = [self._surface_receipts[member] for member in self.member_order
+                        if member in self._surface_receipts]
+            return surface_realization_inventory(receipts)
 
         try:
             if automatic is not None:
@@ -614,13 +975,20 @@ class PreparedEnsembleSession:
                 manifest["posted_source_execution"] = self.source_execution.require_complete()
             files = sorted(out.glob("members/**/wrfout_*"))
             files = [path for path in files if path.is_file() and path.suffix != ".json"]
+            ledger = getattr(self.collector, "history_ledger", None)
+            identities = [] if ledger is None else ledger.validate_retirements()
+            histories = ([row["path"] for row in identities] if identities else
+                         [str(path.relative_to(out)) for path in files])
             if files and not self.request.keep_member_files:
                 raise RuntimeError("aggregate-only execution unexpectedly wrote member histories")
             manifest.update(status="PASS", wall_seconds=time.perf_counter() - started,
                             completed_seconds=float(exp.run_seconds), products=products,
                             ensemble_progress=progress_adapter.receipt(),
-                            member_history_files=[str(path.relative_to(out)) for path in files],
+                            member_history_files=histories,
                             member_results=completed_records)
+            manifest["surface_perturbations"] = [self._surface_receipts[member]
+                for member in self.member_order if member in self._surface_receipts]
+            manifest["surface_realization_inventory"] = surface_inventory()
             _atomic_json(out / "ensemble-run.json", manifest)
             self.last_manifest = manifest
             self.last_output_directory = out
@@ -632,6 +1000,9 @@ class PreparedEnsembleSession:
                 "ensemble_manifest": "ensemble-run.json"})
             return manifest
         except BaseException as error:
+            cancel = getattr(self.collector, "cancel_products", None)
+            if cancel is not None:
+                cancel()
             if self.source_execution is not None:
                 manifest["posted_source_execution"] = self.source_execution.receipt()
             # A stop is not a member failure: the run was interrupted and
@@ -645,7 +1016,16 @@ class PreparedEnsembleSession:
                             failed_members=[] if stopped else failed_member_rows(error),
                             members_not_completed=[member for member in self.member_order
                                                    if member not in completed])
+            manifest["surface_perturbations"] = [self._surface_receipts[member]
+                for member in self.member_order if member in self._surface_receipts]
+            manifest["surface_realization_inventory"] = surface_inventory()
             _atomic_json(out / "ensemble-run.json", manifest)
+            if checkpoint_members:
+                from gpuwm.ensemble.restart_roster import seal
+                save = getattr(self.collector, "save_resume", None)
+                if callable(save):
+                    save()
+                    seal(out)
             raise
 
     def completed_products(self):
@@ -660,7 +1040,12 @@ class PreparedEnsembleSession:
         for domain in self.last_manifest["products"].get("domain_manifests", ()):
             path = self.last_output_directory / domain["manifest"]
             document = json.loads(path.read_text(encoding="utf-8"))
-            if any(frame["status"] not in ("complete", "unavailable") for frame in document["frames"]):
+            deferred = bool(getattr(self.collector, "defer_replay", False))
+            output_order = getattr(self.collector, "member_order", self.member_order)
+            if any(frame["status"] not in ("complete", "unavailable") and not
+                   (deferred and frame["status"] == "pending" and
+                    frame["members_received"] == sorted(output_order))
+                   for frame in document["frames"]):
                 raise RuntimeError("ensemble product manifest still contains an incomplete roster")
             for frame in document["frames"]:
                 for relative in (*frame.get("products", ()), *frame.get("maps", ())):
@@ -669,17 +1054,16 @@ class PreparedEnsembleSession:
         return self.last_manifest["products"]
 
     def _initialization_callback(self, member_id, *, seed=None, prepared_member=None):
-        if self.stochastic_provider is None:
+        from gpuwm.ensemble.surface_recipe import is_surface_recipe
+        from gpuwm.ensemble.member_variants import member_surface_options
+        surface_options = member_surface_options(self.request, member_id)
+        if self.stochastic_provider is None and not is_surface_recipe(surface_options):
             return None
-        from gpuwm.ensemble.seeds import member_seed
         prepared = (prepared_member if prepared_member is not None else None
                     if self.member_roster is None else self.member_roster.select((member_id,))[0])
         if prepared is None and self.source_execution is not None:
             prepared = self.source_execution.stochastic_member_binding(member_id)
-        if seed is None:
-            seed = (self.source_execution.member_metadata[member_id]["seed"]
-                    if self.source_execution is not None else
-                    member_seed(self.request.base_seed, member_id) if prepared is None else prepared.seed)
+        seed = self._member_seed(member_id, seed=seed, prepared_member=prepared)
         def initialize(*, model=None, prepared_case=None, state=None, cfg=None, grid=None, clock=None):
             binding = (self.source_execution.stochastic_member_binding(member_id)
                        if self.source_execution is not None else prepared)
@@ -689,7 +1073,63 @@ class PreparedEnsembleSession:
             else:
                 self.stochastic_provider.bind_state(state=state, cfg=cfg, clock=clock,
                     member_id=member_id, seed=seed, prepared_member=binding)
-        return initialize
+        from gpuwm.ensemble.surface_recipe import surface_initialization_callback
+        from types import SimpleNamespace
+        selected = SimpleNamespace(perturbation=surface_options)
+        def record(receipt):
+            if self.request.member_variants:
+                receipt = dict(receipt, member_variant=self._variant_receipt(member_id,
+                    seed=seed, prepared_member=prepared))
+            self._surface_receipts[member_id] = receipt
+        return surface_initialization_callback(selected, member_id=member_id, seed=seed,
+            previous=(None if self.stochastic_provider is None else initialize),
+            record=record,
+            array_module=self.array_module)
+
+    def _member_seed(self, member_id, *, seed=None, prepared_member=None):
+        """Keep a supplied/source seed authoritative through member callbacks."""
+        if seed is not None:
+            return seed
+        if self.source_execution is not None:
+            return self.source_execution.member_metadata[member_id]["seed"]
+        if prepared_member is None and self.member_roster is not None:
+            prepared_member = self.member_roster.select((member_id,))[0]
+        if prepared_member is not None:
+            return prepared_member.seed
+        from gpuwm.ensemble.seeds import member_seed
+        return member_seed(self.request.base_seed, member_id)
+
+    def _variant_receipt(self, member_id, *, seed=None, prepared_member=None):
+        variant = self.request.member_variants[member_id]
+        if seed is None and member_id in self._surface_receipts:
+            seed = self._surface_receipts[member_id]["seed"]
+        return {"member_id": member_id, "seed": self._member_seed(member_id,
+                    seed=seed, prepared_member=prepared_member),
+                "name": variant["name"], "physics": dict(variant["physics"]),
+                "surface": dict(variant["surface"]),
+                **({} if member_id not in self._member_land_layouts else {
+                    "resolved_land": [dict(row) for row in self._member_land_layouts[member_id]]})}
+
+    def _remember_member_land_layouts(self, member_inputs):
+        """Record each member's loaded domain selectors before initialization."""
+        if not self.request.member_variants:
+            return
+        from gpuwm.config import soil_layer_count
+        self._member_land_layouts = {member: [
+            {"grid_id": int(domain.grid_id),
+             "sf_surface_physics": int(domain.run.sf_surface_physics),
+             "num_soil_layers": soil_layer_count(domain.run)}
+            for domain in inputs.experiment.domains]
+            for member, inputs in member_inputs.items()}
+        for member, rows in self._member_land_layouts.items():
+            requested = self.request.member_variants[member]["physics"]
+            for row in rows:
+                for key, value in requested.items():
+                    if row[key] != value:
+                        raise ValueError(
+                            f"member {member} domain {row['grid_id']} requests {key}={value}, "
+                            f"but its input provider bound {key}={row[key]}; "
+                            "the wrong land column would run this member's forecast")
 
     def _configured_member_inputs(self, inputs):
         if self.stochastic_provider is None:

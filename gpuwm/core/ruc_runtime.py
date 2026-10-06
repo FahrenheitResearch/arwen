@@ -95,10 +95,14 @@ from gpuwm.core.surface_forcing import SurfacePrecipitationForcing
 #: VEGPARM's ``MODI-RUC`` section (21 categories, water 17, snow/ice 15).
 DEFAULT_VEGETATION_DATASET = "MODIFIED_IGBP_MODIS_NOAH"
 
-#: ``XICE_THRESHOLD``, WRF Registry default 0.5.  gpuwm has no namelist field
-#: for it, so it is pinned here and published in
-#: :data:`RUC_RUNTIME_RESTRICTIONS` rather than left implicit.
+#: ``XICE_THRESHOLD`` under ``fractional_seaice = 0``, WRF's Registry
+#: default 0.5 (module_surface_driver.F:1365-1366) and the value every RUC
+#: run before ``RunConfig.fractional_seaice`` was pinned to.
 XICE_THRESHOLD = 0.5
+#: The threshold under ``fractional_seaice = 1`` (module_surface_driver.F
+#: :1367-1368 of the HRRR v4.1.21 fork; operational HRRR, hrrr_wrf.nl:154).
+#: :class:`RucRuntimeParameters` resolves the run's value from the config.
+XICE_THRESHOLD_FRACTIONAL = 0.02
 
 #: ``seaice_albedo_default``, Registry.EM_COMMON:2636 default 0.65.  Applied
 #: to ALBBCK before the call, ``module_surface_driver.F:3453-3459``.
@@ -192,14 +196,16 @@ def _ruc_fractional_reblend(
 
 
 def _ruc_seaice_albedo_override(
-        albbck, xice, seaice_albedo_default, *, arrays):
+        albbck, xice, seaice_albedo_default, *, arrays,
+        xice_threshold: float = XICE_THRESHOLD):
     """WRF v4.6.1 ``module_surface_driver.F:3453-3459``.
 
     Kept as a pure array operation so the two legal configuration values can
     be distinguished without executing the much larger RUC column.
+    ``xice_threshold`` is the run's (0.5 or 0.02 by ``fractional_seaice``).
     """
     xp = arrays
-    ice = (xice >= np.float32(XICE_THRESHOLD)) & (
+    ice = (xice >= np.float32(xice_threshold)) & (
         xice <= np.float32(1.0))
     return xp.where(
         ice, np.float32(seaice_albedo_default), albbck
@@ -310,12 +316,15 @@ RUC_RUNTIME_RESTRICTIONS: tuple[tuple[str, str, str], ...] = (
         "has no MYJ PBL, so nothing can select it.",
     ),
     (
-        "lai_comes_from_the_table",
-        "rdlai2d=False; LAI is SOILVEGIN's table value for the column's "
-        "vegetation category, refreshed every call.",
-        "WRF's rdlai2d=.true. path takes a prescribed 2-D LAI instead.  "
-        "gpuwm's ingest has no monthly LAI field for RUC, and inventing one "
-        "would be a fabricated forcing.",
+        "lai_source_follows_rdlai2d",
+        "rdlai2d=False (the default): LAI is SOILVEGIN's table value for "
+        "the column's vegetation category, refreshed every call.  "
+        "rdlai2d=True: the monthly LAI12M field interpolated to the start "
+        "date (real.exe, module_initialize_real.F:1197) stays as the LSM's "
+        "LAI and SOILVEGIN leaves it alone (module_sf_ruclsm.F:7028, :7075).",
+        "The static catalogue carries LAI12M and the driver seeds the lai "
+        "field from it at start; the switch decides whether SOILVEGIN "
+        "overwrites that seed.  The receipt records the value that ran.",
     ),
     (
         "snow_cover_option_is_compile_time",
@@ -504,12 +513,27 @@ class RucRuntimeParameters:
             self, bundle=None, *,
             dataset_identifier: str = DEFAULT_VEGETATION_DATASET,
             seaice_albedo_default: float = SEAICE_ALBEDO_DEFAULT,
-            num_soil_layers: int = NUM_SOIL_LAYERS):
+            num_soil_layers: int = NUM_SOIL_LAYERS,
+            rdlai2d: bool = False,
+            fractional_seaice: int = 0):
         if int(num_soil_layers) not in WRF_SUPPORTED_NUM_SOIL_LAYERS:
             raise ValueError(
                 f"RUC num_soil_layers {num_soil_layers!r} is not one of "
                 f"{WRF_SUPPORTED_NUM_SOIL_LAYERS}")
         self.num_soil_layers = int(num_soil_layers)
+        if type(rdlai2d) is not bool:
+            raise TypeError("rdlai2d must be bool")
+        self.rdlai2d = rdlai2d
+        if (isinstance(fractional_seaice, bool)
+                or fractional_seaice not in (0, 1)):
+            raise ValueError(
+                f"fractional_seaice must be 0 or 1, got {fractional_seaice!r}")
+        self.fractional_seaice = int(fractional_seaice)
+        # module_surface_driver.F:1365-1368 (HRRR v4.1.21 fork): the one
+        # threshold every sea-ice test in the seam, the fused driver and the
+        # CLM lake read.
+        self.xice_threshold = (XICE_THRESHOLD_FRACTIONAL
+                               if self.fractional_seaice else XICE_THRESHOLD)
         self.bundle = load_ruc_parameters() if bundle is None else bundle
         self.dataset_identifier = str(dataset_identifier)
         value = float(seaice_albedo_default)
@@ -541,7 +565,7 @@ class RucRuntimeParameters:
                         "bytes": int(entry.get("canonical_bytes", 0)),
                         "sha256": str(entry.get("canonical_sha256", "")),
                     }
-        return {
+        identity = {
             # The same string the checkpoint header binds; one spelling.
             "algorithm": LAND_SURFACE_ALGORITHM_IDENTITIES[3],
             "wrf_source": "phys/module_sf_ruclsm.F:LSMRUC + "
@@ -561,7 +585,7 @@ class RucRuntimeParameters:
             "soil_geometry_evidence": (
                 "wrf-oracle" if self.num_soil_layers == NUM_SOIL_LAYERS
                 else "internal-consistency-only"),
-            "xice_threshold": float(XICE_THRESHOLD),
+            "xice_threshold": float(self.xice_threshold),
             "seaice_albedo_default": float(self.seaice_albedo_default),
             "isncovr_opt": int(ISNCOVR_OPT),
             "c1sn": float(C1SN),
@@ -571,6 +595,14 @@ class RucRuntimeParameters:
             "column_solver": "host-fp32",
             "tables": payload,
         }
+        # Absent at their defaults, as in a header written before the
+        # switches existed, so earlier RUC checkpoints keep their
+        # manifest; set, each binds the trajectory it changes.
+        if self.fractional_seaice:
+            identity["fractional_seaice"] = int(self.fractional_seaice)
+        if self.rdlai2d:
+            identity["rdlai2d"] = True
+        return identity
 
 
 def ruc_cold_start(fields, *, params: RucRuntimeParameters) -> None:
@@ -665,7 +697,12 @@ def ruc_lsm_step(
     lakemodel: int = 0,
     pattern_spp_lsm=None,
     field_sf=None,
+    ruc_irrigation: str = "wrf_461",
     ruc_soilprop: str = "wrf_45",
+    ruc_qvg_cold_start: str = "wrf",
+    ruc_2m_diagnostic: str = "flux",
+    ruc_snow: str = "wrf_461",
+    alb_sol: int = 0,
 ) -> dict[str, int]:
     """One ``CASE (RUCLSMSCHEME)`` arm.  Mutates ``fields`` in place.
 
@@ -676,16 +713,40 @@ def ruc_lsm_step(
     """
     import cupy as cp
 
+    if int(alb_sol) == 1:
+        fields = dict(fields, albedo=fields["albsol"],
+                      albbck=fields["albbcksol"])
+
     if int(itimestep) < 1:
         raise ValueError("LSMRUC ktau is one-based and starts at 1")
+    if params.rdlai2d and not getattr(params, "_seeded_lai_verified", False):
+        # initialize_physics starts LAI not-a-number under rdlai2d; every
+        # road that has the monthly LAI12M field seeds it before the first
+        # step.  One that did not would integrate RUC on no leaf area at
+        # all, so it is refused here, once per run, by name.
+        if not bool(cp.isfinite(fields["lai"]).all()):
+            raise ValueError(
+                "rdlai2d=true keeps the monthly LAI12M leaf area interpolated "
+                "to the start date as RUC's LAI (module_sf_ruclsm.F:7075), "
+                "but this road seeded no LAI field before the first land-"
+                "surface step, so RUC would read no leaf area at all. Run "
+                "from a source whose static catalogue carries LAI12M, or set "
+                "rdlai2d=false for SOILVEGIN's table LAI")
+        params._seeded_lai_verified = True
     # Second line behind validate_run_config, at the seam that consumes each
-    # value, so the registry's citation of this file is true for all four.
-    from gpuwm.core.ruc_mosaic import mosaic_option
+    # value, so the registry's citation of this file is true for all five.
+    from gpuwm.core.ruc_mosaic import irrigation_form, mosaic_option
     mosaic_option(mosaic_lu, "mosaic_lu")
     mosaic_option(mosaic_soil, "mosaic_soil")
     mosaic_option(lakemodel, "lakemodel")
-    from gpuwm.core.ruc_tier import ruc_soilprop_form
+    irrigation_form(ruc_irrigation)
+    from gpuwm.core.ruc_tier import (ruc_2m_diagnostic_form,
+                                     ruc_qvg_cold_start_form, ruc_snow_form,
+                                     ruc_soilprop_form)
     ruc_soilprop_form(ruc_soilprop)
+    ruc_qvg_cold_start_form(ruc_qvg_cold_start)
+    ruc_2m_diagnostic_form(ruc_2m_diagnostic)
+    ruc_snow_form(ruc_snow)
     from gpuwm.core.ruc_spp import validate_spp_mode
     enabled_spp = validate_spp_mode(spp_lsm)
     if int(flag_sm_adj) != 0:
@@ -714,14 +775,18 @@ def ruc_lsm_step(
             mosaic_soil=mosaic_soil, flag_sm_adj=flag_sm_adj, spp_lsm=1,
             lakemodel=lakemodel,
             pattern_spp_lsm=pattern_spp_lsm, field_sf=field_sf,
-            ruc_soilprop=ruc_soilprop)
+            ruc_irrigation=ruc_irrigation, ruc_soilprop=ruc_soilprop,
+            ruc_qvg_cold_start=ruc_qvg_cold_start,
+            ruc_2m_diagnostic=ruc_2m_diagnostic, ruc_snow=ruc_snow)
 
     from gpuwm.core.ruc_fused import step
 
     return step(fields, atmosphere, params=params, precipitation=precipitation,
                 dt=dt, itimestep=itimestep, mosaic_lu=mosaic_lu,
                 mosaic_soil=mosaic_soil, lakemodel=lakemodel,
-                soilprop=ruc_soilprop)
+                irrigation=ruc_irrigation, soilprop=ruc_soilprop,
+                qvg_cold_start=ruc_qvg_cold_start,
+                diagnostic_2m=ruc_2m_diagnostic, snow=ruc_snow)
 
 
 def _ruc_lsm_step_reference(
@@ -739,7 +804,11 @@ def _ruc_lsm_step_reference(
     lakemodel: int = 0,
     pattern_spp_lsm=None,
     field_sf=None,
+    ruc_irrigation: str = "wrf_461",
     ruc_soilprop: str = "wrf_45",
+    ruc_qvg_cold_start: str = "wrf",
+    ruc_2m_diagnostic: str = "flux",
+    ruc_snow: str = "wrf_461",
 ) -> dict[str, int]:
     """One ``CASE (RUCLSMSCHEME)`` arm.  Mutates ``fields`` in place.
 
@@ -753,13 +822,19 @@ def _ruc_lsm_step_reference(
     if int(itimestep) < 1:
         raise ValueError("LSMRUC ktau is one-based and starts at 1")
     # Second line behind validate_run_config, at the seam that consumes each
-    # value, so the registry's citation of this file is true for all four.
-    from gpuwm.core.ruc_mosaic import mosaic_option
+    # value, so the registry's citation of this file is true for all five.
+    from gpuwm.core.ruc_mosaic import irrigation_form, mosaic_option
     mosaic_option(mosaic_lu, "mosaic_lu")
     mosaic_option(mosaic_soil, "mosaic_soil")
     mosaic_option(lakemodel, "lakemodel")
-    from gpuwm.core.ruc_tier import ruc_soilprop_form
+    irrigation_form(ruc_irrigation)
+    from gpuwm.core.ruc_tier import (ruc_2m_diagnostic_form,
+                                     ruc_qvg_cold_start_form, ruc_snow_form,
+                                     ruc_soilprop_form)
     ruc_soilprop_form(ruc_soilprop)
+    ruc_qvg_cold_start_form(ruc_qvg_cold_start)
+    ruc_2m_diagnostic_form(ruc_2m_diagnostic)
+    ruc_snow_form(ruc_snow)
     from gpuwm.core.ruc_spp import validate_spp_mode
     enabled_spp = validate_spp_mode(spp_lsm)
     if int(flag_sm_adj) != 0:
@@ -800,7 +875,7 @@ def _ruc_lsm_step_reference(
     # reaches the column's snow-free albedo on the same step.
     device["albbck"], ice = _ruc_seaice_albedo_override(
         device["albbck"], device["xice"], params.seaice_albedo_default,
-        arrays=cp)
+        arrays=cp, xice_threshold=params.xice_threshold)
     ice_component = ice & (device["xice"] <= np.float32(1.0))
     ice_fraction = device["xice"]
     # module_surface_driver.F:3461-3473.  The static optics are grid-cell
@@ -856,18 +931,20 @@ def _ruc_lsm_step_reference(
     result = ruc_land_surface_step(
         values, dt=float(dt), ktau=int(itimestep), zs=params.zs,
         ivgtyp=device["ivgtyp"], isltyp=device["isltyp"],
-        myj=False, em_core=1, lakemodel=lakemodel, frpcpn=True, rdlai2d=False,
+        myj=False, em_core=1, lakemodel=lakemodel, frpcpn=True,
+        rdlai2d=bool(params.rdlai2d),
         mosaic_lu=int(mosaic_lu), mosaic_soil=int(mosaic_soil),
         landusef=fields.get("landusef"), soilctop=fields.get("soilctop"),
         iswater=params.iswater, isice=params.isice,
-        xice_threshold=float(XICE_THRESHOLD),
+        xice_threshold=float(params.xice_threshold),
         ilnb=int(DEFINED_ILNB), ilnb_chain=False,
         c1sn=float(C1SN), c2sn=float(C2SN),
         isncovr_opt=int(ISNCOVR_OPT),
         mminlu=params.dataset_identifier, parameters=params.bundle,
         leaves=leaves, stages=stages, arrays=device_arrays,
         spp_lsm=spp_lsm, pattern_spp_lsm=pattern_spp_lsm, field_sf=field_sf,
-        soilprop=ruc_soilprop)
+        irrigation=ruc_irrigation, soilprop=ruc_soilprop,
+        qvg_cold_start=ruc_qvg_cold_start, snow=ruc_snow)
 
     for name, argument in RUC_STATE_BINDING.items():
         device[name] = cp.ascontiguousarray(
@@ -923,10 +1000,12 @@ def _ruc_lsm_step_reference(
     # the fields it reads come down and the three it writes go back up, which
     # is a bounded and named cost instead of the whole slab.
     diagnostic_inputs = ("psfc", "chs2", "cqs2", "tsk", "hfx", "qfx", "qsfc")
+    # Half the lowest layer, LSMRUC's conflx, for the log-profile form.
+    half_layer = (dz1 * np.float32(0.5)).astype(np.float32)
     # These fields share the horizontal shape and dtype. Packing preserves
     # their bits and drains the stream once instead of once per field.
     inputs = ([device[name] for name in diagnostic_inputs]
-              + [temperature, qv, rho, p_mid, cqs])
+              + [temperature, qv, rho, p_mid, cqs, half_layer])
     if any(value.dtype != inputs[0].dtype or value.shape != inputs[0].shape
            for value in inputs):
         diagnostic_slab = [np.ascontiguousarray(cp.asnumpy(value))
@@ -935,12 +1014,12 @@ def _ruc_lsm_step_reference(
         diagnostic_slab = cp.asnumpy(cp.stack(inputs))
     host = {name: diagnostic_slab[index]
             for index, name in enumerate(diagnostic_inputs)}
-    t_host, q_host, rho_host, p_host, cqs_host = (
+    t_host, q_host, rho_host, p_host, cqs_host, half_host = (
         diagnostic_slab[len(diagnostic_inputs):])
     _sfcdiags_ruclsm(
         host,
         t3d=t_host, qv3d=q_host, rho3d=rho_host, p3d=p_host,
-        cqs=cqs_host)
+        cqs=cqs_host, half_layer=half_host, form=ruc_2m_diagnostic)
     for name in ("t2", "th2", "q2"):
         device[name] = cp.asarray(host[name])
 
@@ -953,7 +1032,7 @@ def _ruc_lsm_step_reference(
     water = ((device["xland"] - np.float32(1.5) >= np.float32(0.0))
              & ~lake)
     seaice = (~water & ~lake) & (
-        device["xice"] >= np.float32(XICE_THRESHOLD))
+        device["xice"] >= np.float32(params.xice_threshold))
     populations = cp.asnumpy(cp.stack([
         cp.count_nonzero(~water & ~seaice & ~lake),
         cp.count_nonzero(water), cp.count_nonzero(lake),
@@ -1041,7 +1120,8 @@ def sfcdiags_exner_powers(psfc) -> tuple[np.ndarray, np.ndarray]:
     return scale, inverse
 
 
-def _sfcdiags_ruclsm(host, *, t3d, qv3d, rho3d, p3d, cqs) -> None:
+def _sfcdiags_ruclsm(host, *, t3d, qv3d, rho3d, p3d, cqs, half_layer=None,
+                     form="flux") -> None:
     """``SFCDIAGS_RUCLSM``, ``module_sf_sfcdiags_ruclsm.F:7-146``.
 
     Only the ``flux = .true.`` arms exist here: ``flux`` is a hardcoded local
@@ -1098,9 +1178,57 @@ def _sfcdiags_ruclsm(host, *, t3d, qv3d, rho3d, p3d, cqs) -> None:
     # :131-141.  The final cap is at PSFC and T2.
     q2 = np.minimum(_saturation_mixing_ratio(psfc, t2), q2).astype(np.float32)
 
+    if form == "log_profile":
+        t2, th2, q2 = _sfcdiags_log_profile(
+            tsk=host["tsk"], t1=t1, qlev1=qlev1, qsfcmr=qsfcmr,
+            half_layer=half_layer, scale=scale, t2=t2, th2=th2, q2=q2)
+
     host["t2"] = np.ascontiguousarray(t2)
     host["th2"] = np.ascontiguousarray(th2)
     host["q2"] = np.ascontiguousarray(q2)
+
+
+def _sfcdiags_log_profile(*, tsk, t1, qlev1, qsfcmr, half_layer, scale, t2,
+                          th2, q2):
+    """The operational RAP/HRRR branch's 2 m block, its
+    ``module_sf_sfcdiags_ruclsm.F:150-179``, in the device epilogue's float32
+    order (glibc ``logf``, as ``gfk_log``)."""
+    from gpuwm.core.noahmp_libm import logf
+
+    f32 = np.float32
+
+    def log(values):
+        flat = np.asarray(values, dtype=f32).reshape(-1)
+        return np.array([logf(value) for value in flat],
+                        dtype=f32).reshape(np.shape(values))
+
+    def factor(fh):
+        top = (f32(f32(2.0) + f32(0.05)) / (f32(0.05) + fh).astype(f32)).astype(f32)
+        bottom = ((half_layer + f32(0.05)).astype(f32)
+                  / (f32(0.05) + fh).astype(f32)).astype(f32)
+        return (log(top) / log(bottom)).astype(f32)
+
+    t2 = np.array(t2, dtype=f32, copy=True)
+    th2 = np.array(th2, dtype=f32, copy=True)
+    q2 = np.array(q2, dtype=f32, copy=True)
+    d_t = (t1 - tsk).astype(f32)
+    d_q = (qlev1 - qsfcmr).astype(f32)
+    warm = d_t > f32(0.0)
+    if np.any(warm):
+        fh = np.minimum(np.maximum((f32(1.0) - (d_t / f32(10.0)).astype(f32)).astype(f32),
+                                   f32(0.01)), f32(1.0)).astype(f32)
+        fac = np.where(warm, factor(np.where(warm, fh, f32(1.0))), f32(0.0)).astype(f32)
+        t2_alt = (tsk + (fac * d_t).astype(f32)).astype(f32)
+        t2 = np.where(warm, t2_alt, t2).astype(f32)
+        th2 = np.where(warm, (t2_alt * scale).astype(f32), th2).astype(f32)
+    moist = d_q > f32(0.0)
+    if np.any(moist):
+        fh = np.minimum(np.maximum((f32(1.0) - (d_q / f32(0.003)).astype(f32)).astype(f32),
+                                   f32(0.01)), f32(1.0)).astype(f32)
+        fac = np.where(moist, factor(np.where(moist, fh, f32(1.0))), f32(0.0)).astype(f32)
+        q2 = np.where(moist, (qsfcmr + (fac * d_q).astype(f32)).astype(f32),
+                      q2).astype(f32)
+    return t2, th2, q2
 
 
 __all__ = [

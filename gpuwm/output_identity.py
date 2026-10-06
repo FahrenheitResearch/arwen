@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from pathlib import Path
 from dataclasses import dataclass
@@ -187,7 +188,7 @@ class PublicationFile:
                 or not _address_matches(self.path, self.written)):
             raise _changed(self.path)
 
-    def published(self, path):
+    def published(self, path, *, allow_missing=False):
         """The revision at ``path``, proved to be the file this handle validated.
 
         A rename moves a name, not a file. The retained handle keeps naming
@@ -207,11 +208,21 @@ class PublicationFile:
             if written != now:
                 raise _changed(path, f"its {label} went from {written} to "
                                      f"{now} after it was validated")
-        revision = publication_revision(path, expected=current)
+        try:
+            revision = publication_revision(path, expected=current)
+        except (FileNotFoundError, OutputChangedError):
+            if not allow_missing or os.path.lexists(path):
+                raise
+            # A history consumer may unlink the name as soon as the rename
+            # returns. The retained descriptor still owns the validated,
+            # already hashed file. No replacement at this address is accepted.
+            return _revision(self.handle)
         # Where the id follows the directory entry, a replacement could take
         # the entry the retained file just left. The retained file cannot
         # then also report that entry, so observe it once more.
         if _revision(self.handle) != revision:
+            if allow_missing and not os.path.lexists(path):
+                return _revision(self.handle)
             raise _changed(path, "the address stopped naming the validated file")
         return revision
 
@@ -298,8 +309,14 @@ def file_record(path, *, completed=None) -> dict[str, object]:
         return observed.record()
 
 
-def file_records(paths, *, completed=(), before_record=None):
-    """One receipt owner for every ordinary and prepared output inventory."""
+def file_records(paths, *, completed=(), before_record=None, allow_missing=False):
+    """Record outputs, retaining writer evidence for consumed history frames.
+
+    A completed forecast may have handed its history to a consumer that
+    removes files to bound disk use. Its writer proof describes the bytes
+    written even when that address is now absent. Other callers require
+    current files, and retained files still receive the revision checks.
+    """
     by_path = {}
     for proof in completed:
         if not isinstance(proof, CompletedFileRecord):
@@ -313,5 +330,22 @@ def file_records(paths, *, completed=(), before_record=None):
         if before_record is not None:
             before_record(index, path)
         key = os.path.abspath(path)
-        records.append(file_record(path, completed=by_path.get(key)))
+        proof = by_path.get(key)
+        try:
+            record = file_record(path, completed=proof)
+        except (FileNotFoundError, OutputChangedError):
+            # Include deletion between opening the file and the final
+            # address check. A replaced or modified retained file continues
+            # to fail; only an absent address can use completion evidence.
+            if not allow_missing or os.path.lexists(key):
+                raise
+            record = (proof.record() if proof is not None else
+                      {"path": key, "bytes": None, "sha256": None})
+            record.update(available=False, identity_source=(
+                "writer-completion" if proof is not None else "unavailable"))
+            logging.getLogger(__name__).warning(
+                "History file missing at finalization: %s; %s", key,
+                "retaining its writer-completion SHA-256"
+                if proof is not None else "no writer-completion SHA-256 is available")
+        records.append(record)
     return records

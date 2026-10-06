@@ -187,6 +187,12 @@ def prepare_acoustic_substep_launch(state, cfg, dtau, coefficients, *, mudf=None
             _scalar_state(state), cfg, dtau,
             tuple(_scalar_array(state, value) for value in coefficients),
             mudf=_scalar_array(state, mudf))
+    if (getattr(cfg, "upper_wind_limiter_form", "wrf_461") == "noaa_wrf39"
+            and cfg.damp_opt == 3):
+        raise BatchStateUnsupported(
+            "the member-batched acoustic graph does not bind the fork's "
+            "saved-wind limiter; upper_wind_limiter_form = noaa_wrf39 "
+            "runs on the ordinary door")
     bindings = _Bindings(state, cfg)
     nz, ny, nx = cfg.nz, cfg.ny, cfg.nx
     original.wphi_level_tier(nz)

@@ -1164,6 +1164,30 @@ def _fake_hrrr_product(request, *, workers, retries,
     return {"kind": request.kind}
 
 
+def _install_runtime_surface_inputs(monkeypatch):
+    """Keep mocked transfers complete when the source declares extra fields.
+
+    Only the generated input bytes are substituted. The shipped manifest,
+    envelope census, digest verification and frozen runtime binding still
+    determine whether a completed file resumes.
+    """
+    from gpuwm import runtime_surface_fetch
+
+    def append(path, *, adapter, cycle, lead, host, **kwargs):
+        evidence = []
+        for name, product, selector, units, numeric in adapter.runtime_surface_fields:
+            payload = _grib2_stream(1)
+            with Path(path).open("ab") as target:
+                target.write(payload)
+            evidence.append({"field": name, "units": units, "selector": selector,
+                "numeric_selector": dict(numeric), "source_file": f"fixture-{product}-f{lead:02d}",
+                "url": "https://example.invalid/runtime-surface", "bytes": len(payload),
+                "sha256": hashlib.sha256(payload).hexdigest(), "fetch_mode": "fixture"})
+        return evidence
+
+    monkeypatch.setattr(runtime_surface_fetch, "append_runtime_surface_records", append)
+
+
 def test_fetch_hrrr_downloads_wrfnat_and_soil_products(tmp_path,
                                                        monkeypatch):
     seen = []
@@ -2729,6 +2753,7 @@ def test_fetch_hrrr_wait_times_out_accurately_and_resumes(tmp_path,
     """The accurate timeout: the complete f00 prefix is manifested (so a
     re-run RESUMES rather than refusing at the pre-manifest-interrupt
     gate), and the error says exactly what was and was not fetched."""
+    _install_runtime_surface_inputs(monkeypatch)
     schedule = {
         ("wrfnat", 0, "nomads"): 0.0, ("wrfprs", 0, "nomads"): 0.0,
         # f01 never publishes anywhere within the window.

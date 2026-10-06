@@ -87,8 +87,10 @@ def test_staging_is_released_while_identity_waits_and_callback_waits_for_hash(
         tmp_path, monkeypatch):
     hashing, release, landed, consumed = Event(), Event(), Event(), Event()
     capture = getattr(output_identity, "completed_file_record", None)
+    hashing_paths = []
 
     def delayed(*args, **kwargs):
+        hashing_paths.append(Path(args[0]))
         hashing.set()
         release.wait()
         return capture(*args, **kwargs)
@@ -110,7 +112,8 @@ def test_staging_is_released_while_identity_waits_and_callback_waits_for_hash(
             writer._raise_failure()
             assert writer._thread.is_alive()
         assert hashing.is_set(), "completion never started the output hash"
-        assert path.is_file()
+        assert not path.exists(), "history was exposed before its hash completed"
+        assert len(hashing_paths) == 1 and hashing_paths[0].is_file()
         assert reference() is None, "hashing retained a weather array"
         assert writer.pending == 1
         assert not landed.is_set()
@@ -133,8 +136,13 @@ def test_staging_is_released_while_identity_waits_and_callback_waits_for_hash(
     assert len(writer.paths) == len(writer.completed_records) == 1
 
 
-def test_hash_failure_preserves_file_and_prevents_completion(tmp_path, monkeypatch):
-    def fail(*args, **kwargs):
+def test_hash_failure_preserves_hidden_file_and_prevents_completion(tmp_path, monkeypatch):
+    hashing_paths = []
+    durable = []
+
+    def fail(candidate, **kwargs):
+        hashing_paths.append(Path(candidate))
+        durable.append(Path(candidate).read_bytes())
         raise OSError("injected checksum read failure")
 
     monkeypatch.setattr(output_identity, "completed_file_record", fail, raising=False)
@@ -147,7 +155,12 @@ def test_hash_failure_preserves_file_and_prevents_completion(tmp_path, monkeypat
         writer.close()
     assert isinstance(error.value.__cause__, OSError)
     assert "checksum read failure" in str(error.value.__cause__)
-    assert path.is_file()
+    assert not path.exists()
+    assert len(hashing_paths) == 1
+    assert not hashing_paths[0].exists()
+    quarantined = list((tmp_path / ".quarantine").iterdir())
+    assert len(quarantined) == 1 and quarantined[0].read_bytes() == durable[0]
+    assert set(tmp_path.iterdir()) == {tmp_path / ".quarantine"}
     assert writer.paths == [] and not landed
     assert not writer._thread.is_alive()
     assert writer.pending == 0
@@ -182,8 +195,10 @@ def test_cancellation_stops_identity_before_completion_and_keeps_durable_bytes(
         tmp_path, monkeypatch):
     started, release, abort = Event(), Event(), Event()
     capture = output_identity.completed_file_record
+    hashing_paths = []
 
     def delayed(*args, **kwargs):
+        hashing_paths.append(Path(args[0]))
         started.set()
         release.wait()
         return capture(*args, **kwargs)
@@ -196,24 +211,96 @@ def test_cancellation_stops_identity_before_completion_and_keeps_durable_bytes(
     _queue_cpu_ticket(writer, path)
     try:
         assert started.wait(2)
-        durable = path.read_bytes()
+        assert not path.exists()
+        durable = hashing_paths[0].read_bytes()
         abort.set()
     finally:
         release.set()
         with pytest.raises(RuntimeError, match="wrfout writer failed") as error:
             writer.close()
     assert isinstance(error.value.__cause__, InterruptedError)
-    assert path.read_bytes() == durable
+    assert not path.exists()
+    assert not hashing_paths[0].exists()
+    quarantined = list((tmp_path / ".quarantine").iterdir())
+    assert len(quarantined) == 1 and quarantined[0].read_bytes() == durable
+    assert set(tmp_path.iterdir()) == {tmp_path / ".quarantine"}
     assert not landed and not writer.paths and not writer.completed_records
+
+
+def test_cancellation_after_hash_never_exposes_final_history(tmp_path, monkeypatch):
+    abort = Event()
+    capture = output_identity.completed_file_record
+    completed = []
+
+    def cancel_after_hash(candidate, **kwargs):
+        proof = capture(candidate, **kwargs)
+        completed.append(proof)
+        abort.set()
+        return proof
+
+    monkeypatch.setattr(output_identity, "completed_file_record", cancel_after_hash)
+    writer = _manual_async_writer(abort)
+    path = tmp_path / "frame"
+    _queue_cpu_ticket(writer, path)
+    with pytest.raises(RuntimeError, match="wrfout writer failed") as error:
+        writer.close()
+    assert isinstance(error.value.__cause__, InterruptedError)
+    assert len(completed) == 1
+    assert not path.exists() and not Path(completed[0].path).exists()
+    assert not writer.paths and not writer.completed_records
+    quarantined = list((tmp_path / ".quarantine").iterdir())
+    assert len(quarantined) == 1
+    assert hashlib.sha256(quarantined[0].read_bytes()).hexdigest() == completed[0].sha256
+    assert set(tmp_path.iterdir()) == {tmp_path / ".quarantine"}
+
+
+def test_temp_mutation_after_hash_with_restored_mtime_never_publishes(
+        tmp_path, monkeypatch):
+    capture = output_identity.completed_file_record
+    completed = []
+    modified = []
+
+    def mutate_after_hash(candidate, **kwargs):
+        candidate = Path(candidate)
+        proof = capture(candidate, **kwargs)
+        completed.append(proof)
+        before = candidate.stat()
+        original = candidate.read_bytes()
+        assert hashlib.sha256(original).hexdigest() == proof.sha256
+        payload = bytearray(original)
+        payload[-1] ^= 1
+        candidate.write_bytes(payload)
+        os.utime(candidate, ns=(before.st_atime_ns, before.st_mtime_ns))
+        after = candidate.stat()
+        assert (after.st_size, after.st_mtime_ns) == (before.st_size, before.st_mtime_ns)
+        modified.append(bytes(payload))
+        return proof
+
+    monkeypatch.setattr(output_identity, "completed_file_record", mutate_after_hash)
+    writer = _manual_async_writer(Event())
+    path = tmp_path / "frame"
+    _queue_cpu_ticket(writer, path)
+    with pytest.raises(RuntimeError, match="wrfout writer failed") as error:
+        writer.close()
+    assert isinstance(error.value.__cause__, output_identity.OutputChangedError)
+    assert len(completed) == len(modified) == 1
+    assert not path.exists() and not Path(completed[0].path).exists()
+    assert not writer.paths and not writer.completed_records
+    quarantined = list((tmp_path / ".quarantine").iterdir())
+    assert len(quarantined) == 1 and quarantined[0].read_bytes() == modified[0]
+    assert hashlib.sha256(modified[0]).hexdigest() != completed[0].sha256
+    assert set(tmp_path.iterdir()) == {tmp_path / ".quarantine"}
 
 
 def test_another_domain_can_publish_while_first_domain_hash_waits(tmp_path, monkeypatch):
     started, release, second_landed = Event(), Event(), Event()
     capture = output_identity.completed_file_record
     first_path, second_path = tmp_path / "first", tmp_path / "second"
+    first_temporary = []
 
     def delayed(path, **kwargs):
-        if path == first_path:
+        if not started.is_set():
+            first_temporary.append(Path(path))
             started.set()
             release.wait()
         return capture(path, **kwargs)
@@ -226,7 +313,8 @@ def test_another_domain_can_publish_while_first_domain_hash_waits(tmp_path, monk
         assert started.wait(2)
         _queue_cpu_ticket(second, second_path)
         assert second_landed.wait(2), "payload hashing held the global NetCDF lock"
-        assert first_path.is_file() and second_path.is_file()
+        assert not first_path.exists() and second_path.is_file()
+        assert len(first_temporary) == 1 and first_temporary[0].is_file()
         assert first.pending == 1 and not first.paths
     finally:
         release.set()
@@ -286,19 +374,23 @@ def test_publication_stays_bound_to_validated_native_file(
 
 
 @pytest.mark.parametrize("replacement_kind", ("different-bytes", "same-bytes"))
-def test_async_hash_keeps_the_published_descriptor_and_original_bytes(
+def test_async_hash_keeps_the_hidden_descriptor_and_original_bytes(
         tmp_path, monkeypatch, replacement_kind):
     path = tmp_path / "frame"
     original_bytes = []
     superseded = []
+    mutated_paths = []
     capture = output_identity.completed_file_record
 
     def replace_before_hash(candidate, **kwargs):
-        original_bytes.append(path.read_bytes())
+        candidate = Path(candidate)
+        mutated_paths.append(candidate)
+        assert not path.exists()
+        original_bytes.append(candidate.read_bytes())
         replacement = tmp_path / "replacement"
         replacement.write_bytes(original_bytes[0] if replacement_kind == "same-bytes"
                                 else b"not the native writer output")
-        superseded.append(_supersede(replacement, path))
+        superseded.append(_supersede(replacement, candidate))
         return capture(candidate, **kwargs)
 
     monkeypatch.setattr(output_identity, "completed_file_record", replace_before_hash)
@@ -311,12 +403,47 @@ def test_async_hash_keeps_the_published_descriptor_and_original_bytes(
     assert "changed" in str(error.value.__cause__)
     assert not writer.completed_records and not writer.paths and not landed
     assert not writer._thread.is_alive() and writer.pending == 0
+    assert not path.exists()
     for aside in superseded:
         if aside is not None:
             aside.unlink()
     assert any(candidate.read_bytes() == original_bytes[0]
                for candidate in tmp_path.rglob("*")
-               if candidate.is_file() and candidate != path)
+               if candidate.is_file() and candidate not in mutated_paths)
+
+
+def test_external_consumer_deleting_at_rename_keeps_completed_identity(
+        tmp_path, monkeypatch):
+    import gpuwm.io.wrfout as wrfout
+
+    path = tmp_path / "frame"
+    publish = wrfout.replace_file_with_retry
+    expected = []
+
+    def discard(source, destination, *args, **kwargs):
+        payload = Path(source).read_bytes()
+        expected.append({"path": str(Path(destination).resolve()),
+                         "bytes": len(payload),
+                         "sha256": hashlib.sha256(payload).hexdigest()})
+        result = publish(source, destination, *args, **kwargs)
+        Path(destination).unlink()
+        return result
+
+    monkeypatch.setattr(wrfout, "replace_file_with_retry", discard)
+    writer = _manual_async_writer(Event())
+    landed = []
+    writer.landing_observer = lambda **kwargs: landed.append(kwargs)
+    try:
+        _queue_cpu_ticket(writer, path)
+    finally:
+        writer.close()
+    assert not path.exists()
+    assert writer.paths == [path]
+    assert len(landed) == len(writer.completed_records) == len(expected) == 1
+    assert writer.completed_records[0].record() == expected[0]
+    assert _inventory(writer.paths, writer) == [
+        {**expected[0], "available": False,
+         "identity_source": "writer-completion"}]
 
 
 def test_writer_failure_shows_the_cause_and_its_remedy(tmp_path, monkeypatch):

@@ -25,7 +25,7 @@ from gpuwm.core.device_cache import cuda_cache
 import cupy as cp
 import numpy as np
 
-from gpuwm.core.kernels import get_kernel
+from gpuwm.core.kernels import get_kernel, get_kernel_int_defines
 from gpuwm.core.mynn_pbl_scratch import (
     MYNN_PBL_COLUMN_CHUNK,
     MynnPblScratch,
@@ -33,6 +33,8 @@ from gpuwm.core.mynn_pbl_scratch import (
     SLOT_DELT,
     SLOT_DISS_HEAT,
     SLOT_EXCHANGE,
+    SLOT_GSD41_CONDENSATION_WORK,
+    SLOT_GSD41_THVL,
     SLOT_INITIALIZE,
     SLOT_INITIALIZE_WORK,
     SLOT_LEVEL2_FULL,
@@ -591,6 +593,7 @@ def mynn_pblh_scale_columns_cuda(
     dx: object,
     *,
     scratch=None,
+    bl_mynn_version: str = "wrf_461",
 ) -> MynnPblhScaleResult:
     """Evaluate WRF ``GET_PBLH`` and ``SCALE_AWARE`` on device columns."""
 
@@ -614,7 +617,7 @@ def mynn_pblh_scale_columns_cuda(
         psig_shcu=scaled["psig_shcu"],
     )
     blocks = (ncol + _TPB - 1) // _TPB
-    kernel = get_kernel("mynn_pbl", "mynn_pblh_scale_columns")
+    kernel = mynn_pbl_kernel("mynn_pblh_scale_columns", bl_mynn_version)
     kernel(
         (blocks,), (_TPB,),
         (theta, energy, interface, depth, sea, spacing,
@@ -628,6 +631,8 @@ def mynn_mixlength_default_cuda(
     values: Mapping[str, object],
     *,
     bl_mynn_mixlength: int = 1,
+    bl_mynn_version: str = "wrf_461",
+    bl_mynn_gsd41_unsquared_qtke: bool = False,
     scratch=None,
 ) -> MynnMixlengthResult:
     """Evaluate WRF ``mym_length`` options 1 and 2 on device columns."""
@@ -664,7 +669,14 @@ def mynn_mixlength_default_cuda(
     vectors = work.group(SLOT_MIXLENGTH_WORK,
                          tuple(f"w{k}" for k in range(5)), (ncol, nz))
     blocks = (ncol + _TPB - 1) // _TPB
-    kernel = get_kernel("mynn_pbl", "mynn_mixlength_default_columns")
+    _mynn_version_check(bl_mynn_version)
+    kernel = mynn_pbl_kernel("mynn_mixlength_default_columns", bl_mynn_version)
+    # gsd_41 builds its option-2 buoyancy flux from flt, flq and the lowest
+    # level's vt and vq (GSD MYNN v4.1 module_bl_mynn.F:1015); wrf_461 takes
+    # fltv, so its argument list is the one it always had.
+    gsd41_args = () if bl_mynn_version == "wrf_461" else (
+        scalars["flt"], scalars["flq"], columns["vt"], columns["vq"],
+        np.int32(1 if bl_mynn_gsd41_unsquared_qtke else 0))
     kernel(
         (blocks,), (_TPB,),
         (
@@ -674,6 +686,7 @@ def mynn_mixlength_default_cuda(
             scalars["fltv"], scalars["zi"], scalars["psig_bl"],
             result.el, result.qkw, *vectors.values(),
             np.int32(bl_mynn_mixlength), np.int32(nz), np.int32(ncol),
+            *gsd41_args,
         ),
     )
     return result
@@ -692,6 +705,8 @@ def mynn_turbulence_default_cuda(
     bl_mynn_mixlength: int = 1,
     spp_pbl: int = 0,
     scratch=None,
+    bl_mynn_version: str = "wrf_461",
+    bl_mynn_gsd41_unsquared_qtke: bool = False,
 ) -> MynnTurbulenceResult:
     """Evaluate default WRF ``mym_turbulence`` on complete GPU columns."""
 
@@ -759,7 +774,9 @@ def mynn_turbulence_default_cuda(
         "cldfra": columns["cldfra"], "edmf_w": columns["edmf_w"],
         "edmf_a": columns["edmf_a"],
         **scalars,
-    }, bl_mynn_mixlength=bl_mynn_mixlength, scratch=work)
+    }, bl_mynn_mixlength=bl_mynn_mixlength, scratch=work,
+        bl_mynn_version=bl_mynn_version,
+        bl_mynn_gsd41_unsquared_qtke=bl_mynn_gsd41_unsquared_qtke)
     # mynn_turbulence_default_interfaces returns before k == 0, so the surface element of all
     # nine products keeps the zero WRF gave them.  Same reasoning as above.
     products = work.one(SLOT_TURBULENCE,
@@ -774,7 +791,8 @@ def mynn_turbulence_default_cuda(
     )
     count = ncol * nz
     blocks = (count + _TPB - 1) // _TPB
-    kernel = get_kernel("mynn_pbl", "mynn_turbulence_default_interfaces")
+    kernel = mynn_pbl_kernel("mynn_turbulence_default_interfaces",
+                             bl_mynn_version)
     kernel(
         (blocks,), (_TPB,),
         (
@@ -802,6 +820,7 @@ def mynn_predict_default_cuda(
     bl_mynn_edmf_tke: int = 0,
     tke_budget: int = 0,
     scratch=None,
+    bl_mynn_version: str = "wrf_461",
 ) -> MynnPredictResult:
     """Evaluate default WRF ``mym_predict`` with one GPU thread per column."""
 
@@ -841,7 +860,7 @@ def mynn_predict_default_cuda(
     vectors = work.group(SLOT_PREDICT_WORK,
                          tuple(f"w{k}" for k in range(10)), (ncol, nz))
     blocks = (ncol + _TPB - 1) // _TPB
-    kernel = get_kernel("mynn_pbl", "mynn_predict_default_columns")
+    kernel = mynn_pbl_kernel("mynn_predict_default_columns", bl_mynn_version)
     kernel(
         (blocks,), (_TPB,),
         (
@@ -863,6 +882,7 @@ def mynn_condensation_default_cuda(
     bl_mynn_cloudpdf: int = 2,
     spp_pbl: int = 0,
     scratch=None,
+    bl_mynn_version: str = "wrf_461",
 ) -> MynnCondensationResult:
     """Evaluate WRF ``mym_condensation`` CASE(2) with one thread per column.
 
@@ -912,6 +932,28 @@ def mynn_condensation_default_cuda(
         SLOT_CONDENSATION,
         ("qc_bl", "qi_bl", "cldfra", "vt", "vq", "sgm"), (ncol, nz)))
     blocks = (ncol + _TPB - 1) // _TPB
+    _mynn_version_check(bl_mynn_version)
+    if bl_mynn_version == "gsd_41":
+        if spp_pbl:
+            raise ValueError("MYNN gsd_41 condensation has no SPP kernel")
+        # GSD MYNN v4.1 mym_condensation CASE(2): sigma from local gradients
+        # times a length from el, in-cloud condensate, no QI_BL.  Five work
+        # columns (q1, rh, a, b, cld) per column, behind the key only,
+        # drawn from the declared workspace (written before read).
+        gsd41_work = work.one(SLOT_GSD41_CONDENSATION_WORK, (ncol, 5 * nz))
+        mynn_pbl_kernel("mynn_condensation_gsd41_columns", "gsd_41")(
+            (blocks,), (_TPB,),
+            (
+                columns["dz"], _pair_array(values["zw"], (ncol, nz + 1), "zw"),
+                columns["th"], columns["thl"], columns["qw"], columns["p"],
+                columns["exner"], columns["el"], scalars["dx"],
+                scalars["pblh"], scalars["hfx"], columns["sgm"],
+                result.qc_bl, result.qi_bl, result.cldfra, result.vt,
+                result.vq, result.sgm, gsd41_work,
+                np.int32(nz), np.int32(ncol),
+            ),
+        )
+        return result
     if spp_pbl:
         from gpuwm.core.spp_kernel_sources import load_spp_module
         kernel = load_spp_module("mynn_pbl").get_function("mynn_condensation_default_columns")
@@ -992,6 +1034,31 @@ def _tendency_flag_identity_cuda(
         raise ValueError("MYNN tendency lane requires FLAG_OZONE false")
 
 
+#: The MYNN generations the column solver carries, by source
+#: (RunConfig.bl_mynn_version).  ``wrf_461`` compiles mynn_pbl.cu as
+#: written; ``gsd_41`` compiles the same file with MYNN_GSD41 defined, which
+#: switches in the GSD MYNN v4.1 rows (NOAA-EMC WRF 3.9 module_bl_mynn.F)
+#: ported so far.  The default build never sees a gsd_41 line, so every
+#: wrf_461 run is the same machine code as before the selector existed.
+MYNN_VERSIONS = ("wrf_461", "gsd_41")
+
+
+def _mynn_version_check(bl_mynn_version: str) -> None:
+    if bl_mynn_version not in MYNN_VERSIONS:
+        raise ValueError(
+            f"bl_mynn_version={bl_mynn_version!r} names no MYNN generation "
+            f"this solver carries ({', '.join(MYNN_VERSIONS)}).")
+
+
+def mynn_pbl_kernel(func: str, bl_mynn_version: str = "wrf_461"):
+    """The ``mynn_pbl.cu`` kernel ``func`` compiled for one MYNN generation."""
+
+    _mynn_version_check(bl_mynn_version)
+    if bl_mynn_version == "wrf_461":
+        return get_kernel("mynn_pbl", func)
+    return get_kernel_int_defines("mynn_pbl", func, (("MYNN_GSD41", 1),))
+
+
 _TENDENCIES_SOLVED = (
     "du", "dv", "dth", "dqv", "dqc", "dqi", "dqs", "dozone", "thl",
 )
@@ -1047,6 +1114,8 @@ def _tendency_launch(
     nz: int,
     onoff: float,
     work,
+    bl_mynn_version: str = "wrf_461",
+    bl_mynn_cloud_tendency_form: str = "wrf_461",
 ) -> MynnTendenciesResult:
     """Launch ``mynn_tendencies_columns`` for one already-validated batch."""
 
@@ -1061,7 +1130,9 @@ def _tendency_launch(
     scratch.update(work.group(SLOT_TENDENCY_FACE, ("khdz", "kmdz"),
                               (ncol, nz + 1)))
     blocks = (ncol + _TPB - 1) // _TPB
-    kernel = get_kernel("mynn_pbl", "mynn_tendencies_columns")
+    gsd41_args = () if bl_mynn_version == "wrf_461" else (
+        columns["qc"], columns["qi"], np.int32(bl_mynn_cloud_tendency_form == "gsd_41"))
+    kernel = mynn_pbl_kernel("mynn_tendencies_columns", bl_mynn_version)
     kernel(
         (blocks,), (_TPB,),
         (
@@ -1073,7 +1144,7 @@ def _tendency_launch(
                 "dtz", "rhoinv", "delp", "khdz", "kmdz", "a", "b", "c", "d",
                 "cpw", "dpw", "sqv2", "sqc2", "sqi2", "sqs2",
             )),
-            DTYPE(onoff), np.int32(nz), np.int32(ncol),
+            DTYPE(onoff), np.int32(nz), np.int32(ncol), *gsd41_args,
         ),
     )
     return result
@@ -1172,6 +1243,8 @@ def mynn_tendencies_default_cuda(
     flag_qnbca: bool = False,
     flag_ozone: bool = False,
     scratch=None,
+    bl_mynn_version: str = "wrf_461",
+    bl_mynn_cloud_tendency_form: str = "wrf_461",
 ) -> MynnTendenciesResult:
     """Evaluate WRF ``mynn_tendencies`` with the mass flux admitted on device.
 
@@ -1207,9 +1280,20 @@ def mynn_tendencies_default_cuda(
         flag_qnwfa, flag_qnifa, flag_qnbca, flag_ozone,
         bl_mynn_mixscalars,
     )
+    if type(bl_mynn_cloud_tendency_form) is not str or bl_mynn_cloud_tendency_form not in ("wrf_461", "gsd_41"):
+        raise ValueError("bl_mynn_cloud_tendency_form must be wrf_461 or gsd_41")
+    if bl_mynn_cloud_tendency_form == "gsd_41" and bl_mynn_version != "gsd_41":
+        raise ValueError("gsd_41 cloud tendencies require the gsd_41 MYNN version")
+    if bl_mynn_version == "gsd_41":
+        missing_water = [name for name in ("qc", "qi") if name not in values]
+        if missing_water:
+            raise TypeError("gsd_41 tendencies require original mixing ratios: " + ", ".join(missing_water))
     work = _scratch_for(scratch, _tendency_ncol(values))
     columns, interfaces, scalars, ncol, nz = _tendency_device_arrays(
         values, work)
+    if bl_mynn_version == "gsd_41":
+        for name in ("qc", "qi"):
+            columns[name] = _pair_array(values[name], (ncol, nz), name)
     qn_columns: dict[str, cp.ndarray] = {}
     qn_interfaces: dict[str, cp.ndarray] = {}
     if bl_mynn_mixscalars == 1:
@@ -1228,8 +1312,9 @@ def mynn_tendencies_default_cuda(
             qn_interfaces[name] = _pair_array(
                 values[name], (ncol, nz + 1), name)
     onoff = 0.0 if bl_mynn_edmf_mom == 0 else 1.0
+    _mynn_version_check(bl_mynn_version)
     result = _tendency_launch(columns, interfaces, scalars, ncol, nz, onoff,
-                              work)
+                              work, bl_mynn_version, bl_mynn_cloud_tendency_form)
     if bl_mynn_mixscalars == 1:
         # The five stock qn solves (module_bl_mynn.F:4654-4860) in WRF's
         # solve order, launched from the scalar translation unit. The
@@ -1274,6 +1359,8 @@ def mynn_initialize_default_cuda(
     bl_mynn_mixlength: int = 1,
     spp_pbl: int = 0,
     scratch=None,
+    bl_mynn_version: str = "wrf_461",
+    bl_mynn_gsd41_unsquared_qtke: bool = False,
 ) -> MynnInitializeResult:
     """Evaluate WRF ``mym_initialize`` on complete device columns.
 
@@ -1329,7 +1416,11 @@ def mynn_initialize_default_cuda(
     vectors = work.one(
         SLOT_INITIALIZE_WORK, (ncol, _INITIALIZE_SCRATCH_VECTORS * nz))
     blocks = (ncol + _TPB - 1) // _TPB
-    kernel = get_kernel("mynn_pbl", "mynn_initialize_default_columns")
+    _mynn_version_check(bl_mynn_version)
+    kernel = mynn_pbl_kernel("mynn_initialize_default_columns",
+                             bl_mynn_version)
+    gsd41_args = () if bl_mynn_version == "wrf_461" else (
+        np.int32(1 if bl_mynn_gsd41_unsquared_qtke else 0),)
     kernel(
         (blocks,), (_TPB,),
         (
@@ -1343,6 +1434,7 @@ def mynn_initialize_default_cuda(
             vectors,
             np.int32(1 if initialize_qke else 0),
             np.int32(bl_mynn_mixlength), np.int32(nz), np.int32(ncol),
+            *gsd41_args,
         ),
     )
     return result
@@ -1358,6 +1450,7 @@ def mynn_dmp_mf_cuda(
     spp_pbl: int = 0,
     scratch=None,
     export_sink: dict | None = None,
+    bl_mynn_version: str = "wrf_461",
 ) -> MynnDmpMfResult:
     """Evaluate WRF ``DMP_mf`` on complete device columns.
 
@@ -1464,15 +1557,26 @@ def mynn_dmp_mf_cuda(
         ztop=plume_columns["ztop"],
         maxmf=plume_columns["maxmf"],
     )
+    _mynn_version_check(bl_mynn_version)
+    nup = 10 if bl_mynn_version == "gsd_41" else _DMP_NUP
     plume_scratch = work.one(
         SLOT_PLUME_WORK,
-        (ncol, _DMP_PLUME_VECTORS * _DMP_NUP * (nz + 1)))
+        (ncol, _DMP_PLUME_VECTORS * nup * (nz + 1)))
     work_scratch = work.one(
         SLOT_PLUME_SCRATCH,
-        (ncol, _DMP_WORK_VECTORS * nz + _DMP_NUP * nz))
+        (ncol, _DMP_WORK_VECTORS * nz + nup * nz))
     blocks = (ncol + _TPB - 1) // _TPB
+    _mynn_version_check(bl_mynn_version)
+    if bl_mynn_version != "wrf_461" and bl_mynn_mixscalars != 0:
+        # The scalar-mixing exports come from the sibling unit, which
+        # carries the v4.6.1 shallow-cumulus cloud only; a gsd_41 run there
+        # would hand radiation v4.6.1 grid-mean plume water as in-cloud.
+        raise ValueError(
+            "MYNN gsd_41 mass flux does not run with bl_mynn_mixscalars=1")
     if bl_mynn_mixscalars == 0:
-        kernel = get_kernel("mynn_pbl", "mynn_dmp_mf_columns")
+        kernel = mynn_pbl_kernel("mynn_dmp_mf_columns", bl_mynn_version)
+        gsd41_args = () if bl_mynn_version == "wrf_461" else (
+            _pair_array(values["sgm"], (ncol, nz), "sgm"),)
         kernel(
             (blocks,), (_TPB,),
             (
@@ -1484,6 +1588,7 @@ def mynn_dmp_mf_cuda(
                   for name in MYNN_DMP_MF_INTERFACE_OUTPUTS),
                 result.maxwidth, result.ktop, result.ztop, result.maxmf,
                 plume_scratch, work_scratch, np.int32(nz), np.int32(ncol),
+                *gsd41_args,
             ),
         )
         return result
@@ -1574,7 +1679,8 @@ def _driver_prep_cuda(layers, ust, ncol: int, nz: int, work):
     return zw, outputs
 
 
-def _driver_surface_cuda(layers, qv1, scalars, ncol: int, nz: int, work):
+def _driver_surface_cuda(layers, qv1, scalars, ncol: int, nz: int, work,
+                         bl_mynn_version: str = "wrf_461"):
     """The surface-flux block, z/L, and ``pmz``/``phh`` (``:1057-1097``).
 
     ``pmz``/``phh`` come out of this kernel now.  They used to be evaluated on
@@ -1612,13 +1718,17 @@ def _driver_surface_cuda(layers, qv1, scalars, ncol: int, nz: int, work):
              "pmz", "phh")
     outputs = work.group(SLOT_SURFACE, names, (ncol,))
     blocks = (ncol + _TPB - 1) // _TPB
-    get_kernel("mynn_pbl", "mynn_driver_surface_columns")(
+    # gsd_41 keeps the surface layer's 1/L (GSD MYNN v4.1 :4412), so the
+    # kernel reads the field it was handed.
+    gsd41_args = () if bl_mynn_version == "wrf_461" else (scalars["rmol"],)
+    mynn_pbl_kernel("mynn_driver_surface_columns", bl_mynn_version)(
         (blocks,), (_TPB,),
         (
             layers["rho"], layers["exner"], layers["dz"], qv1,
             scalars["ust"], scalars["hfx"], scalars["qfx"], scalars["ts"],
             *(outputs[name] for name in names),
             np.int32(nz), np.int32(ncol),
+            *gsd41_args,
         ),
     )
     return outputs
@@ -1656,6 +1766,9 @@ def mynn_bl_driver_cuda(
     flag_qnbca: bool = False,
     flag_ozone: bool = False,
     scratch=None,
+    bl_mynn_version: str = "wrf_461",
+    bl_mynn_gsd41_unsquared_qtke: bool = False,
+    bl_mynn_cloud_tendency_form: str = "wrf_461",
 ) -> dict[str, cp.ndarray]:
     """Device twin of :func:`gpuwm.core.mynn_pbl.mynn_bl_driver`.
 
@@ -1693,6 +1806,14 @@ def mynn_bl_driver_cuda(
         raise ValueError("MYNN driver requires spp_pbl in {0,1}")
     if mix_chem is not False:
         raise ValueError("MYNN driver lane requires mix_chem false")
+    _mynn_version_check(bl_mynn_version)
+    if bl_mynn_version != "wrf_461" and spp_pbl:
+        # The stochastic kernels are specialised from the v4.6.1 source
+        # (gpuwm/core/spp_kernel_sources.py); a perturbed gsd_41 step would
+        # run without the gsd_41 rows while claiming them.
+        raise ValueError("MYNN gsd_41 generation does not run with spp_pbl=1")
+    if type(bl_mynn_gsd41_unsquared_qtke) is not bool:
+        raise TypeError("bl_mynn_gsd41_unsquared_qtke must be a bool")
     # W4 full admission (mf-close2, Stage B): same widening as the CPU
     # twin -- the driver feeds the mixscalars arms its leaf routines
     # already implement.  Any value outside {0,1} stays refused.
@@ -1720,6 +1841,13 @@ def mynn_bl_driver_cuda(
     ncol, nz = next(iter(shapes))
     if nz < 4:
         raise ValueError("MYNN driver requires nz >= 4")
+    gsd41_water = {}
+    if bl_mynn_version == "gsd_41":
+        missing_water = [name for name in ("qv", "qc", "qi") if name not in values]
+        if missing_water:
+            raise TypeError("gsd_41 driver requires original mixing ratios: " + ", ".join(missing_water))
+        gsd41_water = {name: _pair_array(values[name], (ncol, nz), name)
+                       for name in ("qv", "qc", "qi")}
     scalars = {
         name: _pair_array(values[name], (ncol,), name)
         for name in (*MYNN_DRIVER_SCALAR_INPUTS, "pblh", "rmol")
@@ -1768,6 +1896,20 @@ def mynn_bl_driver_cuda(
     delt_column[...] = delt
 
     zw, prep = _driver_prep_cuda(layers, scalars["ust"], ncol, nz, work)
+    pblh_thetav = prep["thetav"]
+    if bl_mynn_version == "gsd_41":
+        # GSD MYNN v4.1 GET_PBLH reads theta-v of the liquid-water theta
+        # with the carried subgrid cloud (module_bl_mynn.F:4084-4096,
+        # :4236-4264, :4146, :4378); the other consumers keep thetav.
+        pblh_thetav = work.one(SLOT_GSD41_THVL, (ncol, nz))
+        count_thvl = ncol * nz
+        mynn_pbl_kernel("mynn_gsd41_thvl_columns", "gsd_41")(
+            ((count_thvl + _TPB - 1) // _TPB,), (_TPB,),
+            (layers["th"], layers["exner"], layers["sqv"], layers["sqc"],
+             layers["sqi"], layers["tk"], layers["qc_bl"],
+             layers["cldfra_bl"], pblh_thetav,
+             np.int32(1 if flag_qi else 0), np.int32(count_thvl)),
+        )
 
     if initflag > 0:
         # module_bl_mynn.F:674-688.  qi_bl is absent from the Fortran's
@@ -1778,8 +1920,8 @@ def mynn_bl_driver_cuda(
             layers[name][...] = DTYPE(0.0)
         qke_seed = prep["qke_seed"]
         seeded_pblh = mynn_pblh_scale_columns_cuda(
-            prep["thetav"], qke_seed, zw, layers["dz"], scalars["xland"],
-            scalars["dx"], scratch=work,
+            pblh_thetav, qke_seed, zw, layers["dz"], scalars["xland"],
+            scalars["dx"], scratch=work, bl_mynn_version=bl_mynn_version,
         )
         scalars["pblh"] = seeded_pblh.zi
         kpbl = seeded_pblh.kzi
@@ -1800,6 +1942,8 @@ def mynn_bl_driver_cuda(
             bl_mynn_mixlength=bl_mynn_mixlength,
             spp_pbl=spp_pbl,
             scratch=work,
+            bl_mynn_version=bl_mynn_version,
+            bl_mynn_gsd41_unsquared_qtke=bl_mynn_gsd41_unsquared_qtke,
         )
         for name in ("el", "qke", "tsq", "qsq", "cov", "sm", "sh"):
             layers[name][...] = getattr(seeded, name)
@@ -1815,8 +1959,8 @@ def mynn_bl_driver_cuda(
     # are re-bound from this result on the next two lines, so the reuse is a
     # dead-value overwrite rather than an alias.
     pblh_scale = mynn_pblh_scale_columns_cuda(
-        thetav, layers["qke"], zw, layers["dz"], scalars["xland"],
-        scalars["dx"], scratch=work,
+        pblh_thetav, layers["qke"], zw, layers["dz"], scalars["xland"],
+        scalars["dx"], scratch=work, bl_mynn_version=bl_mynn_version,
     )
     scalars["pblh"] = pblh_scale.zi
     kpbl = pblh_scale.kzi
@@ -1824,7 +1968,8 @@ def mynn_bl_driver_cuda(
     psig_shcu = pblh_scale.psig_shcu
 
     # ---- module_bl_mynn.F:1057-1097 surface fluxes and z/L ---------------
-    surface = _driver_surface_cuda(layers, qv1, scalars, ncol, nz, work)
+    surface = _driver_surface_cuda(layers, qv1, scalars, ncol, nz, work,
+                                   bl_mynn_version)
     flt = surface["flt"]
     fltv = surface["fltv"]
     flq = surface["flq"]
@@ -1855,6 +2000,7 @@ def mynn_bl_driver_cuda(
         bl_mynn_cloudpdf=bl_mynn_cloudpdf,
         spp_pbl=spp_pbl,
         scratch=work,
+        bl_mynn_version=bl_mynn_version,
     )
     qc_bl = condensed.qc_bl
     qi_bl = condensed.qi_bl
@@ -1888,6 +2034,7 @@ def mynn_bl_driver_cuda(
         mix_chem=mix_chem,
         spp_pbl=spp_pbl,
         scratch=work,
+        bl_mynn_version=bl_mynn_version,
     )
     qc_bl = plumes.qc_bl
     cldfra_bl = plumes.cldfra_bl
@@ -1913,6 +2060,8 @@ def mynn_bl_driver_cuda(
         bl_mynn_mixlength=bl_mynn_mixlength,
         spp_pbl=spp_pbl,
         scratch=work,
+        bl_mynn_version=bl_mynn_version,
+        bl_mynn_gsd41_unsquared_qtke=bl_mynn_gsd41_unsquared_qtke,
     )
 
     # ---- module_bl_mynn.F:1215-1221 prognostic solve ---------------------
@@ -1932,12 +2081,13 @@ def mynn_bl_driver_cuda(
         bl_mynn_edmf_tke=bl_mynn_edmf_tke,
         tke_budget=tke_budget,
         scratch=work,
+        bl_mynn_version=bl_mynn_version,
     )
 
     # ---- module_bl_mynn.F:1223-1233 dissipative heating, dheat_opt=1 -----
     diss_heat = work.one(SLOT_DISS_HEAT, (ncol, nz))
     column_blocks = (ncol + _TPB - 1) // _TPB
-    get_kernel("mynn_pbl", "mynn_driver_diss_heat_columns")(
+    mynn_pbl_kernel("mynn_driver_diss_heat_columns", bl_mynn_version)(
         (column_blocks,), (_TPB,),
         (turbulence.el, predicted.qke, layers["p"], diss_heat,
          np.int32(nz), np.int32(ncol)),
@@ -1948,7 +2098,8 @@ def mynn_bl_driver_cuda(
         {
             "dz": layers["dz"], "rho": layers["rho"], "u": layers["u"],
             "v": layers["v"], "th": layers["th"], "tk": layers["tk"],
-            "qv": qv1, "p": layers["p"], "exner": layers["exner"],
+            "qv": gsd41_water.get("qv", qv1), "p": layers["p"], "exner": layers["exner"],
+            **({name: gsd41_water[name] for name in ("qc", "qi")} if gsd41_water else {}),
             "thl": thl, "sqv": layers["sqv"], "sqc": layers["sqc"],
             "sqi": layers["sqi"], "sqs": kzero, "ozone": zero_column,
             "tcd": turbulence.tcd, "qcd": turbulence.qcd,
@@ -1988,6 +2139,8 @@ def mynn_bl_driver_cuda(
         flag_qnc=flag_qnc, flag_qni=flag_qni, flag_qnwfa=flag_qnwfa,
         flag_qnifa=flag_qnifa, flag_qnbca=flag_qnbca,
         scratch=work,
+        bl_mynn_version=bl_mynn_version,
+        bl_mynn_cloud_tendency_form=bl_mynn_cloud_tendency_form,
     )
 
     # module_bl_mynn.F:5358 retrieve_exchange_coeffs.
@@ -2000,6 +2153,16 @@ def mynn_bl_driver_cuda(
         (layers["dz"], turbulence.dfm, turbulence.dfh, exch_m, exch_h,
          np.int32(nz), np.int32(count)),
     )
+
+    if bl_mynn_version == "gsd_41":
+        # GSD MYNN v4.1 module_bl_mynn.F:4690-4713: the carried subgrid
+        # cloud fraction decays at most 0.25*delt/ts_decay per call.
+        # layers["cldfra_bl"] is still the field this call was handed.
+        mynn_pbl_kernel("mynn_gsd41_cloud_decay", "gsd_41")(
+            ((count + _TPB - 1) // _TPB,), (_TPB,),
+            (cldfra_bl, qc_bl, layers["cldfra_bl"], layers["u"], layers["v"],
+             scalars["dx"], delt_column, np.int32(nz), np.int32(ncol)),
+        )
 
     # ---- module_bl_mynn.F:1311-1355 write-back ---------------------------
     return {
@@ -2037,6 +2200,7 @@ __all__ = [
     "MynnPredictResult",
     "MynnTendenciesResult",
     "MynnTurbulenceResult",
+    "MYNN_VERSIONS",
     "launch_mynn_level2_pairs",
     "mynn_bl_driver_cuda",
     "mynn_condensation_default_cuda",
@@ -2044,6 +2208,7 @@ __all__ = [
     "mynn_initialize_default_cuda",
     "mynn_level2_pairs_cuda",
     "mynn_mixlength_default_cuda",
+    "mynn_pbl_kernel",
     "mynn_pblh_scale_columns_cuda",
     "mynn_predict_default_cuda",
     "mynn_tendencies_default_cuda",

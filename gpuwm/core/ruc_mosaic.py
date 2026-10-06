@@ -117,24 +117,109 @@ def surface_mixture(base, *, isltyp, shdmin, shdmax, vegfrac, znt, lai,
     return base
 
 
+#: The two WRF forms of LSMRUC's post-SFCTMP irrigation, by WRF lineage.
+#:
+#: ``wrf_45``: WRF v4.0 to v4.5 ``phys/module_sf_ruclsm.F:970-999``, the
+#: form the operational RAP/HRRR branch of WRF also carries.  A HARD FLOOR,
+#: applied whatever ``mosaic_lu`` says: where the cropland fraction is
+#: positive and the leaf area index exceeds 1.1, each root layer is held at
+#: or above ``(1.1*WLTSMC - DRYSMC) * lufrac(crop)``; otherwise, where the
+#: dominant category is the crop/natural mosaic and the leaf area index
+#: exceeds 0.7, at or above ``(1.2*WLTSMC - DRYSMC) * lufrac(natural) * 0.4``.
+#: The floor is scaled by the category FRACTION, so it is idempotent and
+#: never lifts a cell past the share of it that is cropland.  WRF fills the
+#: fractions from LANDUSEF whatever ``mosaic_lu`` says; a gpuwm run that
+#: carries no LANDUSEF (``mosaic_lu = 0``) gives the dominant category the
+#: whole cell, WRF's arithmetic on a one-hot LANDUSEF (the crop arm is then
+#: the dominant-cropland form these lines carry commented out at :971).
+#:
+#: ``wrf_461``: WRF v4.6.1 ``:985-1009``, under ``mosaic_lu == 1`` only.  A
+#: PER-STEP RELAXATION: where any crop or crop/natural fraction exists and
+#: the greenness factor exceeds 0.75, each root layer below
+#: ``newsm = cropsm*cropfr + (1-cropfr)*soilm1d`` is set to ``newsm``.  Since
+#: ``soilm1d < newsm`` exactly when ``soilm1d < cropsm``, every step moves the
+#: layer a fraction ``cropfr`` of the way to the FULL ``1.1*WLTSMC``, so a
+#: cell with any sliver of cropland converges to 1.1 times its wilting point
+#: within the first forecast hour where the rule fires.  The rule is not
+#: what wets a dry top soil level everywhere in the first hour: that is
+#: SOILPROP's v4.6.1 diffusivity (``ruc_soilprop``,
+#: :mod:`gpuwm.core.ruc_tier`).  MEASURED on a 3 km October afternoon cut
+#: over Kansas and Colorado (106,671 land cells, table leaf area, wrf_45
+#: SOILPROP): the two irrigation forms differ by 0.003 m3/m3 in the
+#: top-level mean and 0.13 K in 2 m dewpoint after one hour.  Kept
+#: selected by default for generic runs. The operational namelist
+#: importer and configuration recipe explicitly select the wrf_45 form.
+IRRIGATION_FORMS = ("wrf_45", "wrf_461")
+IRRIGATION_DEFAULT = "wrf_461"
+
+
+def irrigation_form(value):
+    """The kernel selector (0 or 1) for a named irrigation form, or refuse."""
+    if type(value) is not str or value not in IRRIGATION_FORMS:
+        raise ValueError(
+            f"RUC ruc_irrigation={value!r} must be one of {IRRIGATION_FORMS}: "
+            "'wrf_45' holds root layers at a crop-fraction-scaled floor "
+            "(WRF v4.0-4.5, the operational RAP/HRRR form) and 'wrf_461' "
+            "relaxes them to the full 1.1 x wilting point every step (WRF "
+            "v4.6.1); an unknown name cannot select either without "
+            "guessing which soil water the forecast adds")
+    return IRRIGATION_FORMS.index(value)
+
+
 def irrigate(soilm1d, *, landusef, vegfrac, shdmin, shdmax, wilt, qmin,
-             nroot, crop, natural, active, arrays=np):
+             nroot, crop, natural, active, form=IRRIGATION_DEFAULT,
+             lai=None, ivgtyp=None, arrays=np):
     """WRF LSMRUC's post-SFCTMP irrigation, including its water addition.
 
     Only soil moisture changes. WRF does not update liquid water or fluxes
     here and does not record the added water in a budget accumulator.
+    ``form`` names which WRF lineage's rule applies (:data:`IRRIGATION_FORMS`);
+    ``wrf_45`` reads ``lai`` (the leaf area index the scheme is running
+    with, table or 2-D) and ``ivgtyp`` (the dominant category) for its gates.
     """
     f = arrays.float32
-    if landusef.shape[0] < max(crop, natural):
-        raise ValueError("RUC landusef omits the table's crop/natural categories; "
-                         "LSMRUC irrigation cannot index the source fractions")
-    croparea, naturalarea = landusef[crop - 1], landusef[natural - 1]
-    factor = arrays.maximum(f(0), arrays.minimum(f(1),
-        ((vegfrac - shdmin).astype(f) / arrays.maximum(f(1), (shdmax - shdmin).astype(f))).astype(f)))
-    enabled = active & ((croparea > 0) | (naturalarea > 0)) & (factor > f(.75))
-    cropsm = ((f(1.1) * wilt).astype(f) - qmin).astype(f)
-    cropfr = arrays.minimum(f(1), (croparea + (f(.4) * naturalarea).astype(f)).astype(f))
+    selector = irrigation_form(form)
+    if landusef is None:
+        # A run without LANDUSEF (mosaic_lu = 0): the wrf_45 floor gives the
+        # dominant category the whole cell, WRF's arithmetic on a one-hot
+        # LANDUSEF.  wrf_461 never reaches here without fractions.
+        if selector == 1 or ivgtyp is None:
+            raise ValueError("RUC irrigation without LANDUSEF needs the wrf_45 "
+                             "form and the dominant category to stand in for "
+                             "the crop and crop/natural fractions")
+        category = arrays.asarray(ivgtyp)
+        croparea = (category == crop).astype(f)
+        naturalarea = (category == natural).astype(f)
+    else:
+        if landusef.shape[0] < max(crop, natural):
+            raise ValueError("RUC landusef omits the table's crop/natural categories; "
+                             "LSMRUC irrigation cannot index the source fractions")
+        croparea, naturalarea = landusef[crop - 1], landusef[natural - 1]
+    if selector == 1:
+        factor = arrays.maximum(f(0), arrays.minimum(f(1),
+            ((vegfrac - shdmin).astype(f) / arrays.maximum(f(1), (shdmax - shdmin).astype(f))).astype(f)))
+        enabled = active & ((croparea > 0) | (naturalarea > 0)) & (factor > f(.75))
+        cropsm = ((f(1.1) * wilt).astype(f) - qmin).astype(f)
+        cropfr = arrays.minimum(f(1), (croparea + (f(.4) * naturalarea).astype(f)).astype(f))
+        for k in range(soilm1d.shape[0]):
+            newsm = ((cropsm * cropfr).astype(f) +
+                     ((f(1) - cropfr).astype(f) * soilm1d[k]).astype(f)).astype(f)
+            soilm1d[k] = arrays.where(enabled & (k < nroot) & (soilm1d[k] < newsm), newsm, soilm1d[k])
+        return
+    if lai is None or ivgtyp is None:
+        raise ValueError("RUC irrigation 'wrf_45' gates on the leaf area index "
+                         "and the dominant category; both must be supplied")
+    leaf = arrays.asarray(lai, dtype=f)
+    category = arrays.asarray(ivgtyp)
+    # WRF v4.5.2 phys/module_sf_ruclsm.F:970-999.  ``cropsm*lufrac(crop)`` and
+    # ``cropsm * lufrac(natural)*0.4`` in Fortran's left-to-right order.
+    crop_arm = active & (croparea > 0) & (leaf > f(1.1))
+    natural_arm = active & ~crop_arm & (category == natural) & (leaf > f(0.7))
+    crop_floor = (((f(1.1) * wilt).astype(f) - qmin).astype(f) * croparea).astype(f)
+    natural_floor = ((((f(1.2) * wilt).astype(f) - qmin).astype(f) * naturalarea).astype(f)
+                     * f(0.4)).astype(f)
+    floor = arrays.where(crop_arm, crop_floor,
+                         arrays.where(natural_arm, natural_floor, f(-1.0))).astype(f)
+    enabled = crop_arm | natural_arm
     for k in range(soilm1d.shape[0]):
-        newsm = ((cropsm * cropfr).astype(f) +
-                 ((f(1) - cropfr).astype(f) * soilm1d[k]).astype(f)).astype(f)
-        soilm1d[k] = arrays.where(enabled & (k < nroot) & (soilm1d[k] < newsm), newsm, soilm1d[k])
+        soilm1d[k] = arrays.where(enabled & (k < nroot) & (soilm1d[k] < floor), floor, soilm1d[k])

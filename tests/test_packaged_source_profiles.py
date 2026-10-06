@@ -96,31 +96,25 @@ def test_every_shipped_profile_validates_as_an_ordinary_mapping(profile_id):
         authorities["composition"], authorities["mapping"])
     profile = packaged_profile(profile_id)
     bindings = dict(contract.get("field_sources") or {})
-    if bindings:
-        # A cross-source profile: terrain and the soil pair ride a
-        # contributing-source binding, so the soil-depth contract
-        # validates against the pinned DONOR table -- exactly the check
-        # decode performs once the donor's bytes are pinned -- and the
-        # data/provenance roles live on the binding, not a supplement.
+    terrain_bindings = [binding for binding in bindings.values()
+                        if "terrain_height" in binding["fields"]]
+    if terrain_bindings:
         assert "terrain_height" not in contract["supplements"]
-        terrain_bindings = [
-            binding for binding in bindings.values()
-            if "terrain_height" in binding["fields"]
-        ]
         assert len(terrain_bindings) == 1
-        binding = terrain_bindings[0]
-        assert binding["data_role"] == profile["data_role"]
-        assert binding["provenance_role"] == profile["provenance_role"]
+        terrain = terrain_bindings[0]
+    else:
+        terrain = contract["supplements"]["terrain_height"]
+    assert terrain["data_role"] == profile["data_role"]
+    assert terrain["provenance_role"] == profile["provenance_role"]
+    soil_bindings = [binding for binding in bindings.values()
+                     if "soil_temperature" in binding["fields"]]
+    if soil_bindings:
+        assert len(soil_bindings) == 1
         contributing = packaged_contributing_mappings(profile_id)
-        donor = load_mapping(contributing[str(binding["mapping_role"])])
+        donor = load_mapping(contributing[str(soil_bindings[0]["mapping_role"])])
         validate_soil_layer_contract(contract["soil_layers"], mapping=donor)
     else:
-        # And its soil contract binds each declared depth to a selector.
-        validate_soil_layer_contract(
-            contract["soil_layers"], mapping=mapping)
-        supplement = contract["supplements"]["terrain_height"]
-        assert supplement["data_role"] == profile["data_role"]
-        assert supplement["provenance_role"] == profile["provenance_role"]
+        validate_soil_layer_contract(contract["soil_layers"], mapping=mapping)
 
 
 @pytest.mark.parametrize("profile_id", packaged_profile_ids())

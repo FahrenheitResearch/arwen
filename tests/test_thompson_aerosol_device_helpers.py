@@ -2001,9 +2001,13 @@ def test_the_effective_radius_reimplementations_are_gone_and_stayed_gone():
 #: How many PLAIN ``powf(`` calls each aerosol translation unit still has.
 #: Every one of them was MEASURED, and every one of them is inert; the counts
 #: are pinned so a NEW plain ``powf`` cannot arrive un-measured.
+#: b0556bd76, lane/286-fork-thompson, added the fork ice-number bound and
+#: graupel sublimation coefficient. The site-bound Fortran/CUDA receipt below
+#: records 17,893 ice operands, including 4,018 saved real-column operands,
+#: and zero complete output changes under plain-to-CR power substitution.
 _PLAIN_POWF_INVENTORY = {
-    "thompson_aerosol_common.cuh": 6,
-    "thompson_aerosol_cold.cu": 17,
+    "thompson_aerosol_common.cuh": 7,
+    "thompson_aerosol_cold.cu": 18,
     "thompson_aerosol_warm.cu": 9,
     "thompson_aerosol_state.cu": 0,
 }
@@ -2016,7 +2020,7 @@ def test_every_surviving_plain_powf_was_measured_and_is_inert():
     used everywhere, and this test is why that is a decision rather than an
     oversight.
 
-    MEASURED, three ways, all on this tree:
+    MEASURED for the original wrf_461 paths, three ways:
 
     * Recompiling ``thompson_aerosol_cold`` AND ``thompson_aerosol_warm`` with
       EVERY remaining plain ``powf`` rewritten to ``thompson_aa_powf_cr`` and
@@ -2030,7 +2034,7 @@ def test_every_surviving_plain_powf_was_measured_and_is_inert():
       ``thompson_aa_bound_rain_number`` / ``_bound_ice_number`` likewise moves
       zero of the same 506 quantities.
 
-    So they stay as they are.  Two of the four surviving header calls are the
+    So they stay as they are.  Four of the six original header calls are the
     ``powf(10.0f, exponent)`` inside ``thompson_aa_decade_index``/``_double``,
     which are a VERBATIM promotion of ``thompson.cu``:3084-3105 and are gated
     bitwise against that copy by
@@ -2057,9 +2061,46 @@ def test_every_surviving_plain_powf_was_measured_and_is_inert():
         "translation unit must be measured against the Fortran oracle before "
         "it lands; update the counts only with the measurement.\n"
         f"got {counted}\nwant {_PLAIN_POWF_INVENTORY}")
-    # And the four sites the header keeps are the two decade indices and the
-    # two terminal size bounds -- nothing else.
+    # The original six sites are the two decade functions (two calls each)
+    # and the two terminal bounds. The seventh is the fork ice bound below.
     header = _HEADER.read_text(encoding="utf-8")
+    # b0556bd76, lane/286-fork-thompson: retain both deliberate fork powf
+    # additions only with the source-bound numerical receipt, never a recount.
+    import hashlib
+    import json
+
+    receipt_path = (Path(__file__).parent / "data"
+                    / "thompson_fork_plain_powf_receipt.json")
+    assert hashlib.sha256(receipt_path.read_bytes()).hexdigest() == (
+        "e9a8ee7538da5d19dd7719e2da7fcf51bd1a19caa5f72831323d4eec789e6cd3")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["owner_commit"] == "b0556bd76b1f1276e7d52ece6d96242bf3f90f48"
+    assert receipt["owner_lane"] == "lane/286-fork-thompson"
+    fork_start = header.index("__device__ __forceinline__ void "
+                              "thompson_aa_wrf39_bound_ice_number(")
+    fork_helper = header[fork_start:header.index("\n}\n", fork_start) + 3]
+    assert hashlib.sha256(fork_helper.encode()).hexdigest() == receipt["helper_sha256"]
+    cold = (_KERNELS / "thompson_aerosol_cold.cu").read_text(encoding="utf-8")
+    coefficient = re.search(
+        r"const float t2_qg_sd = 0\.28f \* powf\(0\.632f, 0\.33333334326744080f\)"
+        r"\s*\* sqrtf\(442\.0f\) \* 1\.9021706581115723f;", cold)
+    assert coefficient is not None
+    assert hashlib.sha256(coefficient[0].encode()).hexdigest() == receipt["coefficient_statement_sha256"]
+    probe_tool = (Path(__file__).parents[1] / "tools" / "thompson_fork_oracle"
+                  / "plain_powf_probe.py")
+    assert hashlib.sha256(probe_tool.read_bytes()).hexdigest() == receipt["probe_tool_sha256"]
+    ice = receipt["ice"]
+    assert ice["rows"] == 17893
+    assert ice["saved_real_columns"]["added_rows"] == 4018
+    assert ice["base_differences_vs_fortran"] == 0
+    assert ice["plain_branch_differences_vs_fortran"] == 0
+    assert ice["cr_branch_differences_vs_fortran"] == 0
+    assert ice["complete_helper_output_changes_under_cr"] == 0
+    assert ice["output_plain_sha256"] == ice["output_cr_sha256"]
+    scalar = receipt["sublimation_coefficient"]
+    assert scalar["complete_coefficient_changes_under_cr"] == 0
+    assert scalar["plain_coefficient_differences_vs_fortran"] == 0
+    assert scalar["cr_coefficient_differences_vs_fortran"] == 0
 
     def body_of(name):
         for kind in ("float", "int", "void", "bool", "double"):

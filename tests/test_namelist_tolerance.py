@@ -40,7 +40,7 @@ def test_gui_and_utility_sections_and_omitted_mixing_import(tmp_path):
         assert "do not read" in auxiliary_keys[pair].reason
     assert "mix_full_fields" in report.format()
     assert "Namelist defaults" in report.format()
-    assert "tendencies can differ" in report.format()
+    assert "established full-field mixing resolution" in report.format()
 
 
 def test_genuinely_unknown_wps_section_is_named(tmp_path):
@@ -78,7 +78,14 @@ def test_all_seventeen_formerly_required_defaults_import_together():
     originals = deepcopy((wps, inp))
     text, report = _import_parsed(wps, inp)
     tables = tomllib.loads(text)
-    assert len(report.namelist_defaults) == 17
+    # The seventeen FILLED defaults, and the one that is recorded without
+    # being filled: an omitted use_theta_m, whose default depends on the
+    # WRF line the namelist was written for (the translation resolves it;
+    # the row says which Registry answered and what chose the line).
+    filled = [entry for entry in report.namelist_defaults
+              if entry.key != "use_theta_m"]
+    assert len(filled) == 17
+    assert len(report.namelist_defaults) == 18
     assert tables["domain"][0]["nx"] == 31
     assert tables["shared"]["nz"] == 30
     assert tables["experiment"]["start_time"] == datetime(1993, 3, 13)

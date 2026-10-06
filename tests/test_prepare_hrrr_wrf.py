@@ -111,8 +111,15 @@ _PROFILE_MICROPHYSICS = {
 def _producer_receipt(profile: str) -> dict[str, object]:
     """Whatever the real producer emits for ``profile``, verbatim."""
 
-    result = _decoded_native_hrrr_initialization(
-        _PROFILE_MICROPHYSICS[profile])
+    from gpuwm.physics_compat import single_domain_runtime_switches
+
+    # Resolve the actual named profile, including newly added source forms.
+    # The receipt still comes from the unchanged real cold-start producer.
+    scheme = single_domain_runtime_switches(profile)["mp_physics"]
+    fixture_inputs = {} if scheme != 28 else {
+        "landmask": np.ones((2, 3), dtype=np.float64),
+        "mp28_aerosol_source": "synthetic"}
+    result = _decoded_native_hrrr_initialization(scheme, **fixture_inputs)
     return _initial_hrrr_microphysics_receipt(
         result.state, profile, result.hydrometeor_initialization)
 
@@ -194,6 +201,8 @@ def _fixture_decoder(tmp_path: Path) -> Path:
                 "atmosphere_selected_per_time\t561\n"
                 "hybrid_levels\t50\n"
                 "soil_selected_per_time\t18\n"
+                "optional_soil_surface_fields\tVEGFRA\n"
+                "optional_soil_surface_units\tVEGFRA=percent\n"
                 f"window_zero_based_inclusive\ti={i0}..{i1} j={j0}..{j1}\n"
                 f"window_shape\t{ny}x{nx}\n"
                 "qice_mapping\tPASS discipline=0 category=1 parameter=82 "
@@ -256,9 +265,10 @@ def _fixture_decoder(tmp_path: Path) -> Path:
                 put(soil / "SOILT.f32le", np.full((9, ny, nx),
                                                    283.0 + 0.05 * hour))
                 put(soil / "SOILW.f32le", np.full((9, ny, nx), 0.25))
+                put(soil / "VEGFRA.f32le", surface * 37.5)
                 ready(signals / f"f{hour:02d}.ready", (
                     ("status", "PASS"), ("forecast_hour", hour),
-                    ("payload_files", 24),
+                    ("payload_files", 25),
                     ("producer_elapsed_seconds", time.perf_counter() - started),
                 ))
             shutil.copytree(staging, publish)
@@ -725,6 +735,25 @@ def test_bridge_extension_refuses_changed_suffix_authority(tmp_path):
             old_hours=[0, 1], new_hours=[0, 1, 2])
 
 
+def test_bridge_extension_refuses_dropped_optional_soil_surface_field(tmp_path):
+    prior = _fake_sealed_bridge(tmp_path / "prior", [0, 1])
+    suffix = _fake_sealed_bridge(tmp_path / "suffix", [1, 2])
+    gate = prior / "gate.txt"
+    gate.write_text(gate.read_text() +
+        "optional_soil_surface_fields\tVEGFRA\n"
+        "optional_soil_surface_units\tVEGFRA=percent\n")
+    for hour in (0, 1):
+        (prior / f"soil-f{hour:02d}" / "VEGFRA.f32le").write_bytes(b"vegetation")
+    (prior / "SHA256SUMS").write_text("".join(
+        f"{_file_sha256(path)}  ./{path.relative_to(prior).as_posix()}\n"
+        for path in sorted(prior.rglob("*"))
+        if path.is_file() and path.name != "SHA256SUMS"))
+    with pytest.raises(ValueError, match="optional soil surface inventory changes"):
+        prepare._bridge_manifest_extension(
+            predecessor=prior, suffix=suffix, output=tmp_path / "merged",
+            old_hours=[0, 1], new_hours=[0, 1, 2])
+
+
 def test_source_manifest_extension_requires_exact_unchanged_prefix(tmp_path):
     root = tmp_path / "source"
     root.mkdir()
@@ -1155,6 +1184,12 @@ def test_public_wrapper_extension_passes_production_tree_contracts(
         prior_bridge / "atmosphere-f00" / "TT.f32le")
     assert (extended_bridge / "atmosphere-f01" / "TT.f32le").samefile(
         prior_bridge / "atmosphere-f01" / "TT.f32le")
+    assert (extended_bridge / "soil-f00" / "VEGFRA.f32le").samefile(
+        prior_bridge / "soil-f00" / "VEGFRA.f32le")
+    for hour in (0, 1, 2):
+        vegetation = np.fromfile(
+            extended_bridge / f"soil-f{hour:02d}" / "VEGFRA.f32le", dtype="<f4")
+        assert np.all(vegetation == np.float32(37.5))
     assert (output / "native-static.npz").samefile(
         prior / "native-static.npz")
     prior_header = json.loads((
@@ -1171,9 +1206,12 @@ def test_public_wrapper_extension_passes_production_tree_contracts(
         header["identity"]["namelist_extension_invariant"]
     assert header["identity"]["forcing_hours"] == [0, 1, 2]
     assert len(header["metadata"]["lbc"]["intervals"]) == 2
-    PreparedCacheReader(
+    cache_reader = PreparedCacheReader(
         output / "native" / "prepared-cache",
-        expected_identity=header["identity"]).verify_all()
+        expected_identity=header["identity"])
+    cache_reader.verify_all()
+    np.testing.assert_allclose(cache_reader.read_array("met/VEGFRA"), 37.5,
+                               rtol=0.0, atol=1e-5)
     old_name, old_entry = next(iter(prior_header["arrays"].items()))
     new_entry = header["arrays"][old_name]
     assert (output / "native" / "prepared-cache" /
@@ -2482,7 +2520,7 @@ def test_cpu_native_preparation_checks_every_slot_against_the_controller(
                         for path in sorted(source.iterdir())), encoding="utf-8")
     monkeypatch.setenv("GPUWM_HRRR_DECODER", str(_fixture_decoder(tmp_path)))
     # Auto must find no card, whether or not this box has one.
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "-1")
     try:
         bridge = resolve_cpu_bridge()
     except FileNotFoundError:

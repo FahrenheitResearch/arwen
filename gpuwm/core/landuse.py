@@ -365,6 +365,114 @@ def reconciled_soil_category(
     return soil
 
 
+def prescribed_monthly_field(monthly, valid_time) -> np.ndarray:
+    """WRF REAL interpolation for a prescribed monthly surface field.
+
+    The static builder stores float64. real.exe reads REAL values and rounds
+    each multiply, sum and division to float32. Reuse the existing temporal
+    operator that follows module_initialize_real.F:7545-7611 in the pinned
+    fork, including its integer day weights and year wrap.
+    """
+    from gpuwm.ingest.wif_climatology import monthly_interp_to_date
+
+    value = np.asarray(monthly, dtype=np.float32)
+    if value.ndim != 3 or value.shape[0] != 12:
+        raise ValueError(
+            "monthly surface field must be (12, ny, nx), got shape "
+            f"{value.shape}")
+    return monthly_interp_to_date(value, valid_time.strftime("%Y-%m-%d"))
+
+
+def surface_leaf_area(cfg, lai12m, valid_time) -> np.ndarray:
+    """Prescribed REAL LAI when selected; retain the historical seed otherwise."""
+    if (int(getattr(cfg, "sf_surface_physics", 0)) == 3
+            and bool(getattr(cfg, "rdlai2d", False))):
+        return prescribed_monthly_field(lai12m, valid_time)
+    from gpuwm.static.build import monthly_interp_to_date
+
+    return monthly_interp_to_date(lai12m, valid_time)
+
+
+def monthly_background_albedo(albedo12m, landmask, valid_time) -> np.ndarray:
+    """real.exe's ALBBCK under ``usemonalb``: ALBEDO12M on the run date.
+
+    ``dyn_em/module_initialize_real.F:1192`` interpolates the twelve
+    mid-month values to the date (``monthly_interp_to_date``), ``:1235``
+    turns the percent into a fraction and ``:1236-1238`` set every water
+    point (LANDMASK < 0.5) to 0.08.  ``landuse_init`` then leaves the
+    field alone (``module_physics_init.F:1611``), so this is the snow-free
+    albedo every land-surface scheme sees when the switch is on.
+    """
+    monthly = np.asarray(albedo12m, dtype=np.float32)
+    if monthly.ndim != 3 or monthly.shape[0] != 12:
+        raise ValueError(
+            "ALBEDO12M must be (12, ny, nx) mid-month values, got shape "
+            f"{monthly.shape}")
+    albbck = prescribed_monthly_field(monthly, valid_time) / np.float32(100.0)
+    water = np.asarray(landmask, dtype=np.float32) < np.float32(0.5)
+    return np.where(water, np.float32(0.08), albbck).astype(np.float32)
+
+
+def monthly_snow_albedo(snoalb, landmask) -> np.ndarray:
+    """real.exe's SNOALB as ``landuse_init`` reads it: percent to fraction,
+    water 0.08 (``module_initialize_real.F:1236-1239``)."""
+    value = np.asarray(snoalb, dtype=np.float32) / np.float32(100.0)
+    water = np.asarray(landmask, dtype=np.float32) < np.float32(0.5)
+    return np.where(water, np.float32(0.08), value).astype(np.float32)
+
+
+def surface_snow_albedo(cfg, static, params) -> np.ndarray:
+    """RUC's prescribed SNOALB when selected; retain other surface seeds."""
+    if (int(getattr(cfg, "sf_surface_physics", 0)) == 3
+            and bool(getattr(cfg, "usemonalb", False))):
+        return monthly_snow_albedo(static["SNOALB"], static["LANDMASK"])
+    from gpuwm.core.noah import noah_initial_snow_albedo
+
+    return noah_initial_snow_albedo(
+        static["SNOALB"], static["LU_INDEX"], params, rdmaxalb=cfg.rdmaxalb)
+
+
+def ruc_fractional_seaice(cfg) -> bool:
+    """Whether land-use initialization runs WRF's fractional sea-ice branch.
+
+    ``module_physics_init.F:1463-1465`` gives ``landuse_init`` the same
+    threshold the surface driver runs (0.02 under ``fractional_seaice =
+    1``).  ``RunConfig.fractional_seaice`` is admitted for RUC only, so a
+    default configuration answers False, the value these routes passed
+    before the field existed.
+    """
+    return int(getattr(cfg, "fractional_seaice", 0)) == 1
+
+
+def usemonalb_landuse_inputs(cfg, static, valid_time) -> dict:
+    """The ``initialize_landuse`` keywords a static catalogue supplies.
+
+    Off (the default) contributes nothing, so every caller that threads
+    this is byte-identical to the call it made before.  On, it needs the
+    two geogrid fields real.exe reads; a catalogue without them is refused
+    by name rather than quietly falling back to the table albedo, which
+    would silently run the configuration the switch was meant to replace.
+    """
+    if (int(getattr(cfg, "sf_surface_physics", 0)) != 3
+            or not bool(getattr(cfg, "usemonalb", False))):
+        return {}
+    missing = [name for name in ("ALBEDO12M", "SNOALB", "LANDMASK")
+               if static.get(name) is None]
+    if missing:
+        raise ValueError(
+            "usemonalb=true needs the monthly background albedo ALBEDO12M "
+            "and the maximum snow albedo SNOALB from the static catalogue "
+            "(real.exe reads both from geogrid); this catalogue lacks "
+            f"{missing}, so landuse_init would have no ALBBCK to leave in "
+            "place")
+    return {
+        "usemonalb": True,
+        "albbck_monthly": monthly_background_albedo(
+            static["ALBEDO12M"], static["LANDMASK"], valid_time),
+        "snoalb": monthly_snow_albedo(static["SNOALB"], static["LANDMASK"]),
+    }
+
+
 def initialize_landuse(
         lu_index, *, soil_type, landmask, snow, xice,
         valid_time, cen_lat: float, mminlu: str, iswater: int,
@@ -373,13 +481,23 @@ def initialize_landuse(
         fractional_seaice: bool = False,
         urban_legend: bool = False,
         soil_temperature=None, sst=None,
-        tbl_dir: Path | None = None) -> LanduseInitialization:
+        tbl_dir: Path | None = None,
+        usemonalb: bool = False, albbck_monthly=None,
+        snoalb=None) -> LanduseInitialization:
     """Transcribe the WRF real-data/``landuse_init`` cold-start contract.
 
     ``valid_time`` supplies WRF's one-based integer ``JULDAY``.  The table
     always has a fixed seasonal state for a run: winter is day <105 or >288
     in the Northern Hemisphere, with the selection reversed south of the
-    equator.  ``usemonalb`` is deliberately false, matching real74.
+    equator.
+
+    ``usemonalb`` (WRF ``&physics usemonalb``, ``landuse_init`` at
+    ``module_physics_init.F:1611-1618``): false, the default, takes the
+    table's seasonal ALBD row as ALBBCK and brightens it by SCFX under
+    snow; true leaves real.exe's monthly ALBBCK (``albbck_monthly``, from
+    :func:`monthly_background_albedo`) in place and takes ``snoalb`` as the
+    albedo of a snow-covered cell.  Sea-ice cells keep the table's ice row
+    under both (``:1635``).
 
     ``soil_temperature`` (a ``(nsoil, ny, nx)`` profile; its top level is
     the one WRF reads) and ``sst`` are the evidence real.exe's final
@@ -447,7 +565,7 @@ def initialize_landuse(
             f"cannot select {season}")
 
     row = table.values[season - 1, ivgtyp - 1]
-    albbck = np.asarray(row[..., 0] / 100.0, np.float32)
+    table_albbck = np.asarray(row[..., 0] / 100.0, np.float32)
     mavail = np.asarray(row[..., 1], np.float32)
     embck = np.asarray(row[..., 2], np.float32)
     z0 = np.asarray(row[..., 3] / 100.0, np.float32)
@@ -456,9 +574,32 @@ def initialize_landuse(
     snow_effect = np.asarray(
         table.values[table.luseas - 1, ivgtyp - 1, 5], np.float32)
     snowc = np.asarray(snow >= np.float32(10.0), np.float32)
-    albedo = np.where(
-        snowc > np.float32(0.5),
-        albbck * (np.float32(1.0) + snow_effect), albbck).astype(np.float32)
+    if type(usemonalb) is not bool:
+        raise TypeError("usemonalb must be bool")
+    if usemonalb:
+        # module_physics_init.F:1611: ``IF(.NOT.usemonalb)ALBBCK=ALBD/100``,
+        # so ALBBCK stays what real.exe interpolated from ALBEDO12M; :1635
+        # still writes the ice row over every sea-ice cell.
+        if albbck_monthly is None or snoalb is None:
+            raise ValueError(
+                "usemonalb=True needs real.exe's monthly ALBBCK and SNOALB "
+                "(gpuwm.core.landuse.monthly_background_albedo and "
+                "monthly_snow_albedo); without them landuse_init has no "
+                "background albedo to leave in place and no snow albedo "
+                "for a snow-covered cell")
+        monthly = _surface_field(
+            albbck_monthly, shape, "albbck_monthly", np.float32)
+        snow_albedo = _surface_field(snoalb, shape, "snoalb", np.float32)
+        albbck = np.where(seaice, table_albbck, monthly).astype(np.float32)
+        # :1614-1615: a snow-covered cell takes SNOALB outright.
+        albedo = np.where(
+            snowc > np.float32(0.5), snow_albedo, albbck).astype(np.float32)
+    else:
+        albbck = table_albbck
+        albedo = np.where(
+            snowc > np.float32(0.5),
+            albbck * (np.float32(1.0) + snow_effect),
+            albbck).astype(np.float32)
     emiss = embck.copy()
     if np.any(seaice):
         if fractional_seaice:
@@ -492,4 +633,9 @@ def initialize_landuse(
 
 __all__ = ["LANDUSE_COLUMNS", "LanduseInitialization", "LanduseTable",
            "initialize_landuse", "load_landuse_table",
-           "reconciled_soil_category", "soil_category_matched_to_land"]
+           "monthly_background_albedo", "monthly_snow_albedo",
+           "prescribed_monthly_field", "surface_leaf_area",
+           "surface_snow_albedo",
+           "reconciled_soil_category", "ruc_fractional_seaice",
+           "soil_category_matched_to_land",
+           "usemonalb_landuse_inputs"]

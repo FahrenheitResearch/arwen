@@ -6,6 +6,7 @@ import numpy as np
 
 from gpuwm.core.clock import build_schedule, resolve_clock
 from gpuwm.experiment import VerticalConfig
+from gpuwm.physics_compat import THOMPSON_RTE_RRTMGP_PROFILE_ID
 from gpuwm.ingest.hrrr_surface import surface_fields_to_device
 from tools.hrrr_two_domain_forecast import _experiment
 from tools.hrrr_build_native_static import benchmark_grid
@@ -71,9 +72,16 @@ def test_single_domain_500x500_benchmark_geometry_and_physics_are_frozen():
     vertical = VerticalConfig(
         eta_levels=tuple(float(value) for value in ETA),
         p_top=10_000.0, hybrid_opt=2, etac=0.2)
+    # 4193eb0da, lane/286-fork-mynn: named HRRR defaults now select the
+    # MP28/GSD/MYNN/RUC suite. This historical 500x500 benchmark keeps its
+    # explicit MP8/YSU/MM5/Noah full-radiation profile across route changes.
+    # 3e5245839, lane/ruc-evap-gap: monthly source defaults now cover Noah
+    # as well as RUC. This frozen benchmark keeps both prescribed fields off.
     exp = benchmark_experiment(
         vertical, run_seconds=300.0,
-        start_time=datetime(2026, 7, 20, 6))
+        start_time=datetime(2026, 7, 20, 6),
+        physics_profile=THOMPSON_RTE_RRTMGP_PROFILE_ID,
+        usemonalb=False, rdlai2d=False)
     assert exp.start_time == datetime(2026, 7, 20, 6)
     assert len(exp.domains) == 1
     dc = exp.domains[0]
@@ -82,7 +90,7 @@ def test_single_domain_500x500_benchmark_geometry_and_physics_are_frozen():
     assert (cfg.dx, cfg.dy, cfg.dt) == (
         999.8071015811862, 999.8071015811862, 5.0)
     assert dc.parent_id == 0 and cfg.specified and not cfg.nested
-    # 1.8 froze this route's default at the full-radiation suite:
+    # 1.8 froze this benchmark at the full-radiation suite:
     # Thompson mp8 with longwave AND shortwave on, nocturnally valid.  It
     # replaced (6, 0, 1) -- WSM6 with longwave OFF -- whose frozen
     # downward longwave cratered nocturnal skin temperature (the 1.7.1
@@ -93,6 +101,7 @@ def test_single_domain_500x500_benchmark_geometry_and_physics_are_frozen():
             cfg.ra_sw_physics) == (8, 4, 4)
     assert (cfg.sf_sfclay_physics, cfg.sf_surface_physics,
             cfg.bl_pbl_physics, cfg.cu_physics) == (91, 2, 1, 0)
+    assert cfg.usemonalb is False and cfg.rdlai2d is False
     assert cfg.radt_minutes == 12.0
     assert dc.history_interval_s == 300.0
     grid = benchmark_grid()

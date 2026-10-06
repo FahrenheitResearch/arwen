@@ -784,9 +784,10 @@ def test_every_option_carries_the_registrys_own_couplings():
     # the scheme's own cloud-optics row).  The carriers today, named by
     # (component, option) because "off" is an id in every component:
     # microphysics off on a native HRRR source, and every turbulence
-    # closure, which carries the run door's diffusion-selector refusals
-    # (mix_full_fields = false under diff_opt = 2 on all five, diff_opt
-    # = 1 on the three closures that supply no coordinate coefficients)
+    # closure, which carries the run door's diffusion-selector refusal
+    # (diff_opt = 1 on the three closures that supply no coordinate
+    # coefficients; mix_full_fields = false under diff_opt = 2 carries
+    # none since the run door admits it)
     # and, on the 1.5-order TKE closure, the PBL pairing under diff_opt
     # = 2 that lane/282-namelist-tolerance wrote when diff_opt = 1
     # admitted it.  The forward is held equal to the table above, so a
@@ -802,13 +803,11 @@ def test_every_option_carries_the_registrys_own_couplings():
     for option in turbulence:
         rules = carriers[("turbulence", option)]
         # Terrain admission adds more rules after the diffusion rules.
-        # Identify the metric mixing refusal by its condition, so this
-        # check keeps measuring that coupling rather than list order.
-        metric_mix = [rule for rule in rules
-                      if rule.get("settings") == {"diff_opt": [2],
-                                                  "mix_full_fields": [False]}]
-        assert len(metric_mix) == 1
-        assert metric_mix[0]["remedy_settings"] == {"mix_full_fields": True}
+        # The metric mixing refusal retired with the run door's; no rule
+        # may carry it back (identified by its condition, not list order).
+        assert not [rule for rule in rules
+                    if rule.get("settings") == {"diff_opt": [2],
+                                                "mix_full_fields": [False]}]
         assert any(rule["settings"] == {"diff_opt": [1]}
                    for rule in rules) is (
             option in {"closure-supplied", "constant-k", "smagorinsky-3d"})

@@ -144,6 +144,14 @@ def point_batches(rows, *, states, setup, grid, analysis_time, analysis_times,
     if len(columns) != count or count < 1:
         raise ValueError('Member columns do not match the forecast roster; evaluate every member once.')
     shape = (grid.nz, grid.ny, grid.nx)
+    # The eta layer thicknesses place each layer interface between the
+    # mass levels; the Rust rw-isobaric reader (gpuwm.isobaric_bridge)
+    # reads the column between them.  Without them the refractivity
+    # operator keeps the layer-mean heights.
+    from gpuwm import isobaric_bridge
+    dnw = setup.get('dnw') if isinstance(setup, dict) else None
+    eta_w = (isobaric_bridge.interfaces_from_layer_thickness(dnw)
+             if dnw is not None and np.size(dnw) == grid.nz else None)
     groups, accepted = {}, []
     temperatures = {(r.source, r.station_id, r.valid_time, r.level_pa): r.value
                     for _, r in revisions.values() if r.variable == 'temperature_k'}
@@ -182,9 +190,24 @@ def point_batches(rows, *, states, setup, grid, analysis_time, analysis_times,
                 continue
             k = int(np.argmin(abs(z - height)))
             for col in columns:
-                p = np.exp(np.interp(height, z, np.log(col['p'][:, j, i])))
-                t = np.interp(height, z, col['t'][:, j, i])
-                q = np.interp(height, z, col['q'][:, j, i])
+                p_mass = col['p'][:, j, i]
+                if eta_w is None:
+                    p = np.exp(np.interp(height, z, np.log(p_mass)))
+                    t = np.interp(height, z, col['t'][:, j, i])
+                    q = np.interp(height, z, col['q'][:, j, i])
+                else:
+                    # Pressure between the layer interfaces, and t and q
+                    # at the heights of their own mass-level pressures:
+                    # the layer-mean height belongs to a lower pressure
+                    # than the mass level's (about 5 m at 500 hPa).
+                    z_w = grid.z_w[:, j, i]
+                    log_p_w = isobaric_bridge.interface_log_pressure(
+                        p_mass, eta_interface=eta_w)
+                    z_m = isobaric_bridge.mass_level_heights(
+                        z_w, p_mass, eta_interface=eta_w)
+                    p = np.exp(np.interp(height, z_w, log_p_w))
+                    t = np.interp(height, z_m, col['t'][:, j, i])
+                    q = np.interp(height, z_m, col['q'][:, j, i])
                 h.append(float(refractivity_n(p, t, q)))
         elif pressure is not None and label in ('sonde_level', 'amv_assigned_pressure', ''):
             if row.variable not in ('temperature_k', 'wind_u_m_s', 'wind_v_m_s', 'dewpoint_k'):

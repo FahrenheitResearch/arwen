@@ -3371,13 +3371,19 @@ fn wrf_gdex_hist3d_rejects_off_cadence_valid_times() {
 
 
 #[test]
-fn operational_rrfs_contract_matches_current_forcing_provider() {
+fn rrfs_v1_contract_matches_current_forcing_provider() {
     assert_eq!("hrrr-prs".parse::<ModelId>().unwrap(), ModelId::Hrrr);
     assert_eq!("rrfs".parse::<ModelId>().unwrap(), ModelId::Rrfs);
     assert!(supported_models().contains(&ModelId::Rrfs));
     assert!(supported_models().contains(&ModelId::Aifs));
     assert_eq!(supported_forecast_hours(ModelId::Rrfs, 0), (0..=84).collect::<Vec<u16>>());
-    assert!(supported_forecast_hours(ModelId::Rrfs, 3).is_empty());
+    assert_eq!(model_summary(ModelId::Rrfs).cycle_hours_utc, (0..24).collect::<Vec<_>>());
+    for hour in 0..24 {
+        let last = if hour % 6 == 0 { 84 } else { 18 };
+        assert_eq!(supported_forecast_hours(ModelId::Rrfs, hour),
+                   (0..=last).collect::<Vec<u16>>());
+    }
+    assert!(supported_forecast_hours(ModelId::Rrfs, 24).is_empty());
     let recipe = plot_recipe_fetch_plan("mslp_10m_winds", ModelId::Rrfs).unwrap();
     assert_eq!(recipe.product, "2dfld-conus");
     assert_eq!(recipe.fields.len(), 3);
@@ -3389,6 +3395,26 @@ fn operational_rrfs_contract_matches_current_forcing_provider() {
     for legacy in [ModelId::RrfsA, ModelId::RrfsPublic] {
         let prior = ModelRunRequest::new(legacy, CycleSpec::new("20260812",0).unwrap(),0,"prs-conus").unwrap();
         assert!(resolve_urls(&prior).unwrap().iter().all(|url|url.grib_url.starts_with("https://noaa-rrfs-pds.s3.amazonaws.com/")));
+    }
+}
+
+#[test]
+fn rrfs_hourly_reference_products_keep_the_published_filename_and_source_contract() {
+    let cycle = CycleSpec::new("20261004", 7).unwrap();
+    for (product, file_product) in [("2dfld-conus", "2dfld"), ("prs-conus", "prslev"),
+                                  ("surface", "2dfld"), ("prslev-conus", "prslev")] {
+        let request = ModelRunRequest::new(ModelId::Rrfs, cycle.clone(), 2, product).unwrap();
+        let expected = format!("rrfs.20261004/07/rrfs.t07z.{file_product}.3km.f002.conus.grib2");
+        let urls = resolve_urls(&request).unwrap();
+        let nomads = urls.iter().find(|url| url.source == SourceId::Nomads).unwrap();
+        assert_eq!(nomads.grib_url, format!("https://nomads.ncep.noaa.gov/pub/data/nccf/com/rrfs/v1.0/{expected}"));
+        assert_eq!(nomads.idx_url.as_deref(), Some(format!("{}.idx", nomads.grib_url).as_str()));
+        let aws = urls.iter().find(|url| url.source == SourceId::Aws).unwrap();
+        assert_eq!(aws.grib_url, format!("https://noaa-rrfs-ops-pds.s3.amazonaws.com/{expected}"));
+    }
+    for (name, expected) in [("rrfs", ModelId::Rrfs), ("rrfs-ops", ModelId::Rrfs),
+                             ("rrfs_public", ModelId::RrfsPublic), ("rrfs_a", ModelId::RrfsA)] {
+        assert_eq!(name.parse::<ModelId>().unwrap(), expected);
     }
 }
 

@@ -10,7 +10,7 @@ form and returns ``{case: {name: ndarray}}`` with Fortran index order preserved
 (``order='F'``), so a WRF ``(i, k, j)`` array is indexed ``[i, k, j]`` here
 and a parity test transposes it to gpuwm's ``(k, j, i)`` in plain sight.
 
-Fixtures live under ``gpuwm/data/noah_mosaic/oracle/<family>/``, with a
+Fixtures live under ``tests/data/oracles/noah_mosaic/<family>/``, with a
 ``PROVENANCE.md`` naming the WRF tree, the compiler and the SHA-256 of every
 source that built them.
 """
@@ -21,8 +21,10 @@ from pathlib import Path
 import numpy as np
 
 from gpuwm.core.fp32_ulp import fp32_ulp_distance
+from gpuwm.verify.wrf471_fixtures import require_fixture_dir
 
-ORACLE_ROOT = Path(__file__).resolve().parent.parent / "data" / "noah_mosaic" / "oracle"
+# Test data in a source checkout, not package data (gpuwm.verify.wrf471_fixtures).
+ORACLE_ROOT = Path(__file__).resolve().parents[2] / "tests" / "data" / "oracles" / "noah_mosaic"
 
 _KINDS = {"f4": np.dtype("<f4"), "i4": np.dtype("<i4")}
 
@@ -67,7 +69,7 @@ def load_case(case_dir: str | Path) -> dict[str, np.ndarray]:
 
 def load(directory: str | Path) -> dict[str, dict[str, np.ndarray]]:
     """Every case under ``directory``: ``<case>.npz`` packs or raw directories."""
-    directory = Path(directory)
+    directory = require_fixture_dir(directory, "Noah mosaic")
     cases = {}
     for child in sorted(directory.iterdir()):
         if child.suffix == ".npz" and child.is_file():

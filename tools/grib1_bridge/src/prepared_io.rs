@@ -22,6 +22,50 @@ pub struct PreparedArray {
     pub hash_prefix_length: usize,
 }
 
+#[repr(C)]
+pub struct PreparedHashArray {
+    pub data: *const u8,
+    pub data_length: usize,
+    pub hash_prefix: *const u8,
+    pub hash_prefix_length: usize,
+}
+
+/// Hash independent immutable prepared payloads without materializing a
+/// second copy. A caller may supply read-only mapped NPY payloads.
+///
+/// # Safety
+/// Every payload and prefix stays readable and unchanged for the entire
+/// call. The result buffer holds `count * 32` bytes and overlaps no input.
+#[no_mangle]
+pub unsafe extern "C" fn gpuwm_hash_prepared_arrays(
+    jobs: *const PreparedHashArray, count: usize, workers: usize,
+    digests: *mut u8,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if jobs.is_null() || digests.is_null() { return ERR_NULL; }
+        if workers == 0 || count > usize::MAX / 32 { return ERR_DIMENSION; }
+        for index in 0..count {
+            let job = &*jobs.add(index);
+            if job.data.is_null() || job.hash_prefix.is_null() { return ERR_NULL; }
+        }
+        let jobs = jobs as usize;
+        let digests = digests as usize;
+        crate::parallel::run_ranges(count, workers, |start, stop| {
+            for index in start..stop {
+                let job = unsafe { &*(jobs as *const PreparedHashArray).add(index) };
+                let mut hash = Sha256::new();
+                hash.update(unsafe { std::slice::from_raw_parts(
+                    job.hash_prefix, job.hash_prefix_length) });
+                let data = unsafe { std::slice::from_raw_parts(job.data, job.data_length) };
+                for chunk in data.chunks(BUFFER_BYTES) { hash.update(chunk); }
+                unsafe { std::ptr::copy_nonoverlapping(
+                    hash.finalize().as_ptr(), (digests as *mut u8).add(index * 32), 32) };
+            }
+        });
+        OK
+    })).unwrap_or(ERR_PANIC)
+}
+
 unsafe fn write_array(job: &PreparedArray, digest: *mut u8, created: *mut u8) -> std::io::Result<()> {
     let path = std::str::from_utf8(std::slice::from_raw_parts(job.path, job.path_length))
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "prepared path is not UTF-8"))?;
@@ -88,4 +132,40 @@ pub unsafe extern "C" fn gpuwm_write_prepared_arrays(
         });
         OK
     })).unwrap_or(ERR_PANIC)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mapped_hash_abi_matches_sha256_known_answer_at_every_width() {
+        let data = b"abc";
+        let prefix = b"";
+        let jobs: Vec<_> = (0..3).map(|_| PreparedHashArray {
+            data: data.as_ptr(), data_length: data.len(),
+            hash_prefix: prefix.as_ptr(), hash_prefix_length: 0,
+        }).collect();
+        for workers in [1, 8, 32] {
+            let mut result = [0u8; 96];
+            assert_eq!(unsafe { gpuwm_hash_prepared_arrays(
+                jobs.as_ptr(), jobs.len(), workers, result.as_mut_ptr()) }, OK);
+            for digest in result.chunks(32) {
+                let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+                assert_eq!(hex, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+            }
+        }
+    }
+
+    #[test]
+    fn mapped_hash_abi_refuses_zero_workers_before_reading_inputs() {
+        let data = b"abc";
+        let job = PreparedHashArray {
+            data: data.as_ptr(), data_length: data.len(),
+            hash_prefix: data.as_ptr(), hash_prefix_length: 0,
+        };
+        let mut result = [0u8; 32];
+        assert_eq!(unsafe { gpuwm_hash_prepared_arrays(
+            &job, 1, 0, result.as_mut_ptr()) }, ERR_DIMENSION);
+    }
 }

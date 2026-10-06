@@ -47,7 +47,7 @@ Two download sources serve byte-identical archives:
   accepts the new bytes when the size stays inside a sanity band, and
   records the archive as unpinned in the local manifest.
 
-The optional lake-depth archive is available from NCAR only. Source
+The optional lake-depth and BNU soil archives are available from NCAR only. Source
 availability is declared per archive; a request through the mirror uses
 the declared upstream source for a dataset the mirror does not carry.
 
@@ -272,6 +272,18 @@ GEOG_ARCHIVES: tuple[GeogArchive, ...] = (
         "lake_depth", "lake_depth.tar.bz2", 2425674,
         "7f016173f4999e67d9757bddb9e80f1b1f3794bfe820fd78b215eb599d59fd76",
         1884949370, in_mandatory_bundle=False,
+        required_by=(), optional_for=_WRF_ONLY, available_sources=("ncar",)),
+    # Alternative 30 arc-second, 16-category soil textures selected by
+    # geog_data_res=bnu_soil_30s. Pinned from official TLS downloads.
+    GeogArchive(
+        "bnu_soiltype_top", "bnu_soiltype_top.tar.bz2", 8198836,
+        "7a7eb86d585c3dc6b32297f1ea4622d929aacadc70f16e14e0193a06f233038a",
+        933120270, in_mandatory_bundle=False,
+        required_by=(), optional_for=_WRF_ONLY, available_sources=("ncar",)),
+    GeogArchive(
+        "bnu_soiltype_bot", "bnu_soiltype_bot.tar.bz2", 8078617,
+        "49306298749e3ed2a6172dfe7af0023a5be0e9f5f5230a2cfd6421ebce3e81b1",
+        933120273, in_mandatory_bundle=False,
         required_by=(), optional_for=_WRF_ONLY, available_sources=("ncar",)),
 )
 
@@ -1264,6 +1276,15 @@ def _fetch_geog_locked(*, root: Path, datasets: tuple[str, ...], source: str,
 
 
 def fetch_geog_main(args) -> int:
+    static_source = getattr(args, "static_source", None)
+    if static_source is not None:
+        # A published static file a configuration names with [static]
+        # source (gpuwm.static.external_source), staged beside the
+        # datasets under <root>/static_sources/<id>/.
+        from gpuwm.static.external_source import fetch_static_source
+        root = Path(args.root) if args.root is not None else default_geog_root()
+        fetch_static_source(static_source, root)
+        return 0
     datasets = parse_datasets(args.datasets)
     source = resolve_source(args.source, args.bundle)
     if args.root is not None:
@@ -1337,6 +1358,13 @@ def register_cli(subparsers) -> None:
         help="accept an NCAR archive whose bytes no longer match the "
              "packaged pin (recorded as unpinned; refused outside a "
              "sanity size band); never applies to the mirror")
+    parser.add_argument(
+        "--static-source", default=None, metavar="ID",
+        help="stage only the published static file of this static-source "
+             "row (gpuwm/data/static_sources/static-sources.v1.toml), the "
+             "file a configuration names with [static] source; verified "
+             "against the row's size and SHA-256 and staged under "
+             "<root>/static_sources/<ID>/")
     parser.add_argument(
         "--list", action="store_true",
         help="print the dataset/size/source table and per-dataset "

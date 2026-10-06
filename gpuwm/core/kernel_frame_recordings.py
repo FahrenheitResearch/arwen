@@ -707,9 +707,28 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
     compute_capability='120',
     nvrtc_build='13.4.92',
     platform_family='linux',
-    measured='2026-10-02',
+    measured='2026-10-05',
     complete=True,
     frames=MappingProxyType({
+        # Three standalone units the 2.8.6 staging line added without a row
+        # (so this recording stopped being complete): the fork's order-five
+        # vertical scalar flux pd_vertical_sl (f82847049), the fork's
+        # saved-wind limiter upper_wind_limiter (4b2bd1665) and the
+        # prescribed-smoke time blend rrtmg_smoke_manifest (ef8325e32).
+        # Read 2026-10-05 with `tools/vram_reserve_probe.py frames` on an
+        # RTX 5090 (box B, 170 SMs), CuPy 14.2.0, nvidia-cuda-nvrtc 13.4.92,
+        # through the production loader: 0 B each.  The same reading
+        # reproduced every other row of this recording to the byte.
+        'pd_vertical_sl': 0,
+        'rrtmg_smoke_manifest': 0,
+        'upper_wind_limiter': 0,
+        # Initialization-only parameter-table scaler, driver attributes
+        # read through the production loader on 2026-10-04, CuPy 14.2.0,
+        # NVRTC 13.4.92 (CL-38855100), -std=c++17: 0 B local, 16 registers,
+        # 0 B static shared and constant memory. The assembled source SHA
+        # is PHYSICS_PARAMS_MEASURED_SOURCE_SHA256 below. Earlier module
+        # readings remain unchanged; this extends their complete coverage.
+        'physics_params': 0,
         # The 2.8.5 ensemble line's three units, read 2026-10-03 with
         # `tools/vram_reserve_probe.py frames` on this card, CuPy 14.2.0,
         # NVRTC 13.4.92 (CL-38855100), fresh CuPy and compute caches: 0 B
@@ -896,8 +915,22 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         'urban_bep': 0,
         'urban_bep_couple': 0,
         'urban_ucm': 0,
+        # Lane 286-aer-swint: WRF swint_opt = 1 (swint.cu) and aer_opt = 3
+        # (rrtmg_aer3.cu), read 2026-10-03 on this card at this build through
+        # the production loader (tools/hrrr_radiation_driver_oracle/
+        # read_frames.py, the get_function().attributes route of
+        # tools/vram_reserve_probe.py): 0 B for every entry point of both.
+        'rrtmg_aer3': 0,
+        'swint': 0,
+        # Production loader, RTX 5090, same compiler, 2026-10-04.
+        # Oracle replay covers all 2,048 columns at three radiation calls.
+        'solar_albedo': 0,
     }),
 )
+
+# The exact production source of the measured parameter-table shader.
+PHYSICS_PARAMS_MEASURED_SOURCE_SHA256 = (
+    "84d8f6741e1ea69c6bd48f7ef7589526d09382edf0c213a8a4ffbbc8072eeaca")
 
 #: A167: sm_120 at NVRTC 12.9.86, the compiler of the default gpuwm[gpu]
 #: extra (cupy-cuda12x[ctk], RESOLVED_TOOLCHAIN_PINS) and of the shipped

@@ -8,6 +8,9 @@ from pathlib import Path
 from types import SimpleNamespace
 import time
 import threading
+import os
+import sys
+import tempfile
 import numpy as np
 from gpuwm.certify.kernel_manifest import record_module
 
@@ -186,7 +189,8 @@ class NativeDiagnosticSpool:
     def __init__(self, root, *, members, requests, latitude, longitude,
                  renderer, domain="d01", keep_member_files=False,
                  unavailable_products=(), tile_rows=32, events=None,
-                 member_order=None, member_metadata=()):
+                 member_order=None, member_metadata=(), export_coordinates=False,
+                 gpu_replay=False, resume=False):
         from gpuwm.ensemble.batch_products import _positive_int
         self.root = Path(root)
         self._lock = threading.RLock()
@@ -195,6 +199,7 @@ class NativeDiagnosticSpool:
         self.member_order = _member_order(self.members, member_order)
         self.member_positions = {member: position for position, member in enumerate(self.member_order)}
         self.member_metadata = tuple(member_metadata)
+        self.gpu_replay = bool(gpu_replay)
         self.requests = tuple(requests)
         self.latitude, self.longitude = np.asarray(latitude), np.asarray(longitude)
         self.shape = self.latitude.shape
@@ -214,22 +219,79 @@ class NativeDiagnosticSpool:
         self.frames = {}
         self.deleted = []
         self.member_files = []
+        self._processing = set()
+        self.coordinate_file = None
+        self._publish_coordinates = bool(export_coordinates)
         (self.root / self.domain).mkdir(parents=True, exist_ok=True)
         self.manifest_path = self.root / self.domain / "ensemble-manifest.json"
         if self.manifest_path.exists():
-            raise FileExistsError("ensemble manifest already exists; use a new run output directory")
+            if not resume:
+                raise FileExistsError("ensemble manifest already exists; use a new run output directory")
+            record = json.loads(self.manifest_path.read_text(encoding="utf-8"))
+            if (record.get("schema") != self.CONTRACT or record.get("member_order") != list(self.member_order)
+                    or record.get("member_metadata") != list(self.member_metadata)
+                    or record.get("products") != [request.describe() for request in self.requests]):
+                raise ValueError("retained ensemble spool belongs to another member or product roster")
+            self.deleted, self.member_files = record["deleted_scratch"], record["member_files"]
+            from gpuwm.ensemble.product_worker import _identity, _owned_path
+            if record.get("coordinates_file") is not None:
+                self.coordinate_file = dict(record["coordinates_file"])
+                _identity(_owned_path(self.root, self.coordinate_file["path"]), expected=self.coordinate_file)
+            for row in record["frames"]:
+                row = dict(row)
+                packs = []
+                for pack in row.pop("diagnostic_files", ()):
+                    if not {"path", "member_ids", "sha256", "bytes"} <= set(pack):
+                        raise ValueError("retained ensemble diagnostic pack lacks its committed identity")
+                    path = _owned_path(self.root, pack["path"])
+                    _identity(path, expected=pack)
+                    packs.append({**pack, "path": path, "member_ids": tuple(pack["member_ids"])})
+                received = [member for pack in packs for member in pack["member_ids"]]
+                if (row.get("domain") != self.domain or row.get("members_expected") != self.members
+                        or any(type(member) is not int or member not in self.member_positions for member in received)
+                        or len(set(received)) != len(received)
+                        or (row["status"] == "pending" and sorted(received) != row["members_received"])):
+                    raise ValueError("retained ensemble diagnostic packs changed their member or domain roster")
+                row["packs"] = packs
+                self.frames[row["valid_time"]] = row
+            return
+        if export_coordinates:
+            self._ensure_coordinate_file()
         self._manifest()
+
+    def _ensure_coordinate_file(self):
+        """Persist static coordinates once without expanding a process request."""
+        with self._lock:
+            if self.coordinate_file is None:
+                from gpuwm.io.classic_product import ClassicProduct
+                directory = self.root / ".ensemble-diagnostics" / self.domain
+                directory.mkdir(parents=True, exist_ok=True)
+                path = directory / "coordinates.nc"
+                with ClassicProduct(path) as writer:
+                    writer.createDimension("south_north", self.shape[0])
+                    writer.createDimension("west_east", self.shape[1])
+                    for name, values in (("XLAT", self.latitude), ("XLONG", self.longitude)):
+                        writer.createVariable(name, "float32", ("south_north", "west_east"))[:] = values
+                self.coordinate_file = {"path": self._relative(path), "sha256": _sha(path),
+                    "bytes": path.stat().st_size}
+            return dict(self.coordinate_file)
 
     def _relative(self, path):
         return Path(path).resolve().relative_to(self.root.resolve()).as_posix()
 
     def _manifest(self):
+        with self._lock:
+            return self._manifest_locked()
+
+    def _manifest_locked(self):
         frames = []
         for frame in self.frames.values():
             row = {k: v for k, v in frame.items() if k != "packs"}
             if frame["status"] == "pending":
                 row["diagnostic_files"] = [{"path": self._relative(pack["path"]),
-                    "member_ids": list(pack["member_ids"])} for pack in frame["packs"]]
+                    "member_ids": list(pack["member_ids"]),
+                    **{key: pack[key] for key in ("sha256", "bytes") if key in pack}}
+                    for pack in frame["packs"]]
             frames.append(row)
         record = {"schema": self.CONTRACT, "members_requested": self.members,
                   "member_order": list(self.member_order),
@@ -243,27 +305,36 @@ class NativeDiagnosticSpool:
                   "unavailable_products": list(self.unavailable_products),
                   "frames": frames,
                   "deleted_scratch": list(self.deleted)}
+        if self.coordinate_file is not None and self._publish_coordinates:
+            record["coordinates_file"] = self.coordinate_file
         temporary = self.manifest_path.with_suffix(".json.pending")
         temporary.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         temporary.replace(self.manifest_path)
         return record
 
-    def add_member_file(self, path, *, member_id, domain=None):
+    def add_member_file(self, path, *, member_id, domain=None, identity=None):
         """Register an explicitly retained ordinary member history."""
         with self._lock:
-            return self._add_member_file(path, member_id=member_id, domain=domain)
+            return self._add_member_file(path, member_id=member_id, domain=domain, identity=identity)
 
-    def _add_member_file(self, path, *, member_id, domain=None):
+    def _add_member_file(self, path, *, member_id, domain=None, identity=None):
         if not self.keep_member_files:
             raise ValueError("member histories require keep_member_files")
         member = index(member_id)
         if member not in self.member_positions:
             raise ValueError("member history index is outside the ensemble roster")
         path = Path(path)
-        if not path.is_file():
+        if identity is None and not path.is_file():
             raise ValueError("retained member history must exist before registration")
-        self.member_files.append({"member_id": member, "domain": domain or self.domain,
-                                  "path": self._relative(path), "bytes": path.stat().st_size})
+        record = {"member_id": member, "domain": domain or self.domain,
+            "path": self._relative(path), "bytes": path.stat().st_size if identity is None else identity["bytes"]}
+        previous = next((row for row in self.member_files if row["path"] == record["path"]), None)
+        if previous is not None:
+            if previous != record:
+                raise ValueError("member history path changed its recorded identity")
+            return previous
+        self.member_files.append(record)
+        self.member_files.sort(key=lambda row: (self.member_positions[row["member_id"]], row["path"]))
         self._manifest()
 
     def submit(self, fields, *, member_ids, valid_time, unavailable_fields=(), array_module=None):
@@ -323,15 +394,91 @@ class NativeDiagnosticSpool:
                 variable.units = request.units
                 variable[:] = xp.asnumpy(fields[request.field])
         pending.replace(path)
-        frame["packs"].append({"path": path, "member_ids": ids})
+        frame["packs"].append({"path": path, "member_ids": ids,
+            "sha256": _sha(path), "bytes": path.stat().st_size})
         frame["members_received"] = sorted(frame["members_received"] + list(ids))
         self._manifest()
         return len(frame["members_received"]) == self.members
+
+    def adopt_committed_pack(self, path, *, member_ids, valid_time, available_fields,
+                            unavailable_fields=(), sha256, bytes=None):
+        """Adopt an immutable native spill from an independent member process."""
+        import shutil
+        ids = tuple(index(member) for member in member_ids)
+        fields, missing = sorted(available_fields), sorted(unavailable_fields)
+        requested = {request.field for request in self.requests}
+        if (not ids or len(set(ids)) != len(ids) or any(member not in self.member_positions for member in ids)
+                or set(fields) | set(missing) != requested or set(fields) & set(missing)):
+            raise ValueError("adopted native diagnostic pack has an invalid roster or field contract")
+        source = Path(path)
+        if not source.is_file() or source.is_symlink() or _sha(source) != sha256:
+            raise ValueError("adopted diagnostic pack does not match its committed SHA-256")
+        if bytes is not None and source.stat().st_size != bytes:
+            raise ValueError("adopted diagnostic pack changed its committed byte size")
+        valid = str(valid_time)
+        from gpuwm import netcdf_bridge
+        with netcdf_bridge.Dataset(source) as reader:
+            observed_ids = tuple(int(member) for member in np.asarray(reader.variables["member_ids"][:]).ravel())
+            if observed_ids != ids or reader.getncattr("valid_time") != valid:
+                raise ValueError("adopted diagnostic words do not match their declared member/time identity")
+            for field in fields:
+                if reader.variables[field].shape != (len(ids),) + self.shape:
+                    raise ValueError("adopted diagnostic words do not match the receiving coordinate grid")
+        with self._lock:
+            frame = self.frames.setdefault(valid, {"valid_time": valid, "domain": self.domain,
+                "status": "pending", "members_received": [], "members_expected": self.members,
+                "packs": [], "products": [], "maps": [], "available_fields": fields,
+                "unavailable_fields": missing})
+            if frame["available_fields"] != fields or frame["unavailable_fields"] != missing:
+                raise ValueError("adopted member packs disagree on diagnostic availability")
+            if frame["status"] != "pending" or set(ids) & set(frame["members_received"]):
+                raise ValueError("adopted diagnostic member/time was already submitted")
+            slug = hashlib.sha256(valid.encode("utf-8")).hexdigest()[:24]
+            directory = self.root / ".ensemble-diagnostics" / self.domain / slug
+            directory.mkdir(parents=True, exist_ok=True)
+            destination = directory / f"pack-{len(frame['packs']):06d}.nc"
+            pending = destination.with_suffix(".nc.pending")
+            if destination.exists() or pending.exists():
+                raise FileExistsError("adopted diagnostic destination is already owned")
+            shutil.copyfile(source, pending)
+            if _sha(pending) != sha256:
+                raise ValueError("adopted native diagnostic copy changed its committed SHA-256")
+            pending.replace(destination)
+            frame["packs"].append({"path": destination, "member_ids": ids,
+                "sha256": sha256, "bytes": destination.stat().st_size})
+            frame["members_received"] = sorted(frame["members_received"] + list(ids))
+            self._manifest()
+            return len(frame["members_received"]) == self.members
 
     def replay_memory_plan(self):
         """Exact maximum replay tile plus GPU outputs; host caches are separate."""
         return replay_memory_plan_for_shape(self.requests, self.shape,
                                             members=self.members, tile_rows=self.tile_rows)
+
+    def retire_private_coordinates(self):
+        """Remove the worker-only coordinate input once no hour can replay.
+
+        ``finish_in_subprocess`` writes coordinates.nc as private input for
+        the isolated Rust worker. It is published only when the spool was
+        built with export_coordinates (deferred replay hands it to a later
+        consumer). Otherwise it is owned scratch, and leaving it behind put a
+        diagnostic NetCDF in every finished output tree. A pending hour still
+        needs it, so it stays until every frame is settled.
+        """
+        with self._lock:
+            if (self.coordinate_file is None or self._publish_coordinates
+                    or self._processing
+                    or any(frame["status"] == "pending" for frame in self.frames.values())):
+                return None
+            path = self.root / self.coordinate_file["path"]
+            record = None
+            if path.is_file():
+                record = {"path": self._relative(path), "bytes": path.stat().st_size}
+                path.unlink()
+                self.deleted.append(record)
+            self.coordinate_file = None
+            self._manifest()
+            return record
 
     def retire_pending_frame(self, valid_time, *, reason, status="incomplete"):
         """Finish roster accounting without publishing a partial probability."""
@@ -354,28 +501,41 @@ class NativeDiagnosticSpool:
     def finish(self, valid_time, *, available_bytes, array_module=None,
                render_products=("mean", "spread", "min", "max", "prob", "paintball", "postage")):
         """Reduce one complete-roster frame and publish its finished Rust maps."""
+        valid = str(valid_time)
         with self._lock:
-            return self._finish(valid_time, available_bytes=available_bytes,
+            if valid in self._processing:
+                raise ValueError("ensemble frame already has an active replay")
+            self._processing.add(valid)
+        try:
+            # The durable pack roster is immutable after completion. Replay
+            # borrows it without holding the manifest lock over CUDA work or
+            # Rust rendering, so the next hour can commit concurrently.
+            return self._finish(valid, available_bytes=available_bytes,
                                 array_module=array_module, render_products=render_products)
+        finally:
+            with self._lock:
+                self._processing.remove(valid)
 
     def _finish(self, valid_time, *, available_bytes, array_module=None,
-                render_products=("mean", "spread", "min", "max", "prob", "paintball", "postage")):
+                render_products=("mean", "spread", "min", "max", "prob", "paintball", "postage"),
+                retire_diagnostics=True):
         from dataclasses import replace
         from gpuwm import rustwx
-        if array_module is None:
+        if array_module is None and self.gpu_replay:
             import cupy as array_module
         xp = array_module
         valid = str(valid_time)
         frame = self.frames[valid]
         if frame["status"] != "pending" or frame["members_received"] != sorted(self.member_order):
             raise ValueError("probability frame requires exactly the complete requested member roster")
-        self.replay_memory_plan().admit(self.members, available_bytes=available_bytes)
+        if self.gpu_replay:
+            self.replay_memory_plan().admit(self.members, available_bytes=available_bytes)
         ny, nx = self.shape
         requests = tuple(r for r in self.requests if r.field in frame["available_fields"])
         if not requests:
             frame.update(status="complete", products=[], maps=[])
             self._manifest()
-            for pack in frame["packs"]:
+            for pack in frame["packs"] if retire_diagnostics else ():
                 path = pack["path"]
                 size = path.stat().st_size
                 path.unlink()
@@ -384,6 +544,161 @@ class NativeDiagnosticSpool:
             return {k: v for k, v in frame.items() if k != "packs"}
         started = time.perf_counter()
         plan = product_memory_plan(requests, {r.field: self.shape for r in requests}, members=self.members)
+        if self.gpu_replay:
+            outputs = self._gpu_reference_replay(frame, requests, plan,
+                available_bytes=available_bytes, array_module=xp)
+        else:
+            outputs, retired = rustwx.reduce_ensemble_diagnostics(self.renderer,
+                packs=frame["packs"], member_order=self.member_order, shape=self.shape,
+                valid_time=valid, requests=requests, inventory=plan.inventory(self.members),
+                scratch_directory=frame["packs"][0]["path"].parent)
+            self.deleted.extend({"path": self._relative(row["path"]), "bytes": row["bytes"]}
+                                for row in retired)
+        reduction_seconds = time.perf_counter() - started
+        metadata = {r.field: SimpleNamespace(shape=(self.members,) + self.shape) for r in requests}
+        product = SimpleNamespace(calls=1, _xp=np, fields=metadata, requests=requests,
+            members=self.members, outputs=outputs)
+        token = valid.replace(":", "-").replace("/", "-").replace("\\", "-")
+        directory = self.root / self.domain / "ensemble" / "products"
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / f"ensemble_{token}.nc"
+        pending = path.with_suffix(".nc.pending")
+        started = time.perf_counter()
+        # Postage source planes belong to the private render cache. The public
+        # aggregate contains only statistics, probabilities and membership.
+        public = SimpleNamespace(**vars(product))
+        public.requests = tuple(replace(r, postage_stamp=False) for r in requests)
+        event_attrs = {}
+        if self.member_order != tuple(range(self.members)) or self.member_metadata:
+            event_attrs.update(ensemble_member_order=json.dumps(self.member_order),
+                              ensemble_member_metadata=json.dumps(self.member_metadata, sort_keys=True))
+        if self.events:
+            event_attrs["ensemble_events"] = json.dumps(self.events, sort_keys=True)
+        write_product_frame(pending, public, valid_time=valid, latitude=self.latitude, longitude=self.longitude,
+                            global_attrs=event_attrs or None)
+        pending.replace(path)
+        render_source = None
+        if any(r.postage_stamp for r in requests) and "postage" in render_products:
+            scratch = frame["packs"][0]["path"].parent
+            render_source = scratch / "aggregate-render-source.nc"
+            if render_source.exists():
+                raise FileExistsError("private render source already exists; an unowned cache cannot be replaced")
+            write_product_frame(render_source, product, valid_time=valid,
+                                latitude=self.latitude, longitude=self.longitude, global_attrs=event_attrs or None)
+        write_seconds = time.perf_counter() - started
+        started = time.perf_counter()
+        maps, transcript = rustwx.run_ensemble_product_renderer(self.renderer, render_source or path,
+            out_dir=self.root / "maps", fields=tuple(r.field for r in requests),
+            domain=self.domain, products=render_products)
+        frame.update(status="complete", products=[self._relative(path)], maps=[self._relative(p) for p in maps],
+            reduction_seconds=reduction_seconds, write_seconds=write_seconds,
+            render_seconds=time.perf_counter() - started, renderer_transcript=transcript,
+            replay_backend="cuda_reference" if self.gpu_replay else "rust_cpu",
+            gpu_replay_required_bytes=self.replay_memory_plan().required_bytes(self.members) if self.gpu_replay else 0,
+            host_product_payload_bytes=sum(a.nbytes for a in outputs.values()),
+            host_extra_replay_cache_bytes=0 if all(r.postage_stamp for r in requests) else self.members * ny * nx * 4)
+        self._manifest()
+        if render_source is not None:
+            size = render_source.stat().st_size
+            render_source.unlink()
+            self.deleted.append({"path": self._relative(render_source), "bytes": size})
+        for pack in frame["packs"] if retire_diagnostics else ():
+            path = pack["path"]
+            size = path.stat().st_size
+            path.unlink()
+            self.deleted.append({"path": self._relative(path), "bytes": size})
+        self._manifest()
+        return {k: v for k, v in frame.items() if k != "packs"}
+
+    def finish_in_subprocess(self, valid_time, *, available_bytes, consumer,
+                render_products=("mean", "spread", "min", "max", "prob", "paintball", "postage")):
+        """Keep product writing, hashes and render orchestration off forecast GIL."""
+        from copy import deepcopy
+        from gpuwm.ensemble.product_worker import REQUEST_SCHEMA, RESULT_SCHEMA, _owned_path, _identity, _signature
+        valid = str(valid_time)
+        coordinate = self._ensure_coordinate_file()
+        with self._lock:
+            if valid in self._processing:
+                raise ValueError("ensemble frame already has an active replay")
+            original = self.frames[valid]
+            if original["status"] != "pending" or original["members_received"] != sorted(self.member_order):
+                raise ValueError("probability frame requires exactly the complete requested member roster")
+            frame = deepcopy(original)
+            self._processing.add(valid)
+        root = self.root.resolve()
+        completed = False
+        directory = None
+        try:
+            directory = Path(tempfile.mkdtemp(prefix="product-process-", dir=frame["packs"][0]["path"].parent))
+            request_path, result_path, log_path = (directory / name for name in ("request.json", "result.json", "worker.log"))
+            coordinate["path"] = str(root / coordinate["path"])
+            for pack in frame["packs"]:
+                pack["path"] = str(Path(pack["path"]).resolve())
+            request = {"schema": REQUEST_SCHEMA, "parent_pid": os.getpid(), "root": str(root),
+                "domain": self.domain, "valid_time": valid, "shape": list(self.shape),
+                "member_order": list(self.member_order), "member_metadata": list(self.member_metadata),
+                "requests": [row.describe() for row in self.requests], "events": self.events,
+                "coordinate_file": coordinate, "frame": frame, "tile_rows": self.tile_rows,
+                "available_bytes": int(available_bytes), "renderer": str(self.renderer.resolve()),
+                "render_products": list(render_products)}
+            request_path.write_text(json.dumps(request, sort_keys=True) + "\n", encoding="utf-8")
+            environment = dict(os.environ, CUDA_VISIBLE_DEVICES="", GPUWM_NO_LOCAL_GPU="1")
+            consumer.run_owned([sys.executable, "-m", "gpuwm.ensemble.product_worker",
+                str(request_path), "--result", str(result_path)], environment=environment, log_path=log_path)
+            if result_path.is_symlink():
+                raise ValueError("isolated ensemble result cannot be a symlink")
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            row = result.get("row", {})
+            if (result.get("schema") != RESULT_SCHEMA or result.get("domain") != self.domain
+                    or result.get("valid_time") != valid or row.get("valid_time") != valid
+                    or row.get("status") != "complete" or row.get("members_received") != sorted(self.member_order)):
+                raise ValueError("isolated ensemble result changed its committed hour or roster")
+            expected_paths = set(row.get("products", ())) | set(row.get("maps", ()))
+            records = result.get("artifactRecords", ())
+            if (len(records) != len(expected_paths)
+                    or {record.get("path") for record in records} != expected_paths):
+                raise ValueError("isolated ensemble result omitted product hashes")
+            for record in records:
+                _identity(_owned_path(root, record.get("path")), expected=record)
+            signatures = {pack["path"]: _identity(pack["path"], expected=pack)[1]
+                for pack in original["packs"]}
+            with self._lock:
+                if self.frames[valid] is not original or original["status"] != "pending":
+                    raise ValueError("isolated ensemble hour authority changed during replay")
+                original.update(row)
+                self.deleted.extend(result.get("deletedScratch", ()))
+                self._manifest()
+                for pack in original["packs"]:
+                    path = pack["path"]
+                    if _signature(path.stat()) != signatures[path]:
+                        raise ValueError("diagnostic spill changed before verified retirement")
+                    size = path.stat().st_size
+                    path.unlink()
+                    self.deleted.append({"path": self._relative(path), "bytes": size})
+                self._manifest()
+            completed = True
+            return row
+        finally:
+            try:
+                if directory is not None:
+                    paths = (request_path, result_path, result_path.with_suffix(".json.pending"))
+                    for path in (*paths, *((log_path,) if completed else ())):
+                        if path.is_file() and not path.is_symlink():
+                            size = path.stat().st_size
+                            path.unlink()
+                            self.deleted.append({"path": self._relative(path), "bytes": size})
+                    if completed:
+                        directory.rmdir()
+            finally:
+                with self._lock:
+                    self._processing.remove(valid)
+
+    def _gpu_reference_replay(self, frame, requests, plan, *, available_bytes, array_module):
+        """Keep the existing CUDA implementation only as an exact test oracle."""
+        from dataclasses import replace
+        from gpuwm import rustwx
+        xp = array_module
+        ny, nx = self.shape
         outputs = {row["name"]: np.empty(row["shape"], dtype=row["dtype"])
                    for row in plan.inventory(self.members)}
         for request in requests:
@@ -424,60 +739,7 @@ class NativeDiagnosticSpool:
                     outputs[f"{request.field}:spaghetti"][..., start:start + count - 1, :] = xp.asnumpy(tile.outputs[f"{request.field}:spaghetti"])[..., :count - 1, :]
             del tile, values, member_cache, words
         xp.cuda.get_current_stream().synchronize()
-        reduction_seconds = time.perf_counter() - started
-        metadata = {r.field: SimpleNamespace(shape=(self.members,) + self.shape) for r in requests}
-        product = SimpleNamespace(calls=1, _xp=np, fields=metadata, requests=requests,
-            members=self.members, outputs=outputs)
-        token = valid.replace(":", "-").replace("/", "-").replace("\\", "-")
-        directory = self.root / self.domain / "ensemble" / "products"
-        directory.mkdir(parents=True, exist_ok=True)
-        path = directory / f"ensemble_{token}.nc"
-        pending = path.with_suffix(".nc.pending")
-        started = time.perf_counter()
-        # Postage source planes belong to the private render cache. The public
-        # aggregate contains only statistics, probabilities and membership.
-        public = SimpleNamespace(**vars(product))
-        public.requests = tuple(replace(r, postage_stamp=False) for r in requests)
-        event_attrs = {}
-        if self.member_order != tuple(range(self.members)) or self.member_metadata:
-            event_attrs.update(ensemble_member_order=json.dumps(self.member_order),
-                              ensemble_member_metadata=json.dumps(self.member_metadata, sort_keys=True))
-        if self.events:
-            event_attrs["ensemble_events"] = json.dumps(self.events, sort_keys=True)
-        write_product_frame(pending, public, valid_time=valid, latitude=self.latitude, longitude=self.longitude,
-                            global_attrs=event_attrs or None)
-        pending.replace(path)
-        render_source = None
-        if any(r.postage_stamp for r in requests) and "postage" in render_products:
-            scratch = frame["packs"][0]["path"].parent
-            render_source = scratch / "aggregate-render-source.nc"
-            if render_source.exists():
-                raise FileExistsError("private render source already exists; an unowned cache cannot be replaced")
-            write_product_frame(render_source, product, valid_time=valid,
-                                latitude=self.latitude, longitude=self.longitude, global_attrs=event_attrs or None)
-        write_seconds = time.perf_counter() - started
-        started = time.perf_counter()
-        maps, transcript = rustwx.run_ensemble_product_renderer(self.renderer, render_source or path,
-            out_dir=self.root / "maps", fields=tuple(r.field for r in requests),
-            domain=self.domain, products=render_products)
-        frame.update(status="complete", products=[self._relative(path)], maps=[self._relative(p) for p in maps],
-            reduction_seconds=reduction_seconds, write_seconds=write_seconds,
-            render_seconds=time.perf_counter() - started, renderer_transcript=transcript,
-            gpu_replay_required_bytes=self.replay_memory_plan().required_bytes(self.members),
-            host_product_payload_bytes=sum(a.nbytes for a in outputs.values()),
-            host_extra_replay_cache_bytes=0 if all(r.postage_stamp for r in requests) else self.members * ny * nx * 4)
-        self._manifest()
-        if render_source is not None:
-            size = render_source.stat().st_size
-            render_source.unlink()
-            self.deleted.append({"path": self._relative(render_source), "bytes": size})
-        for pack in frame["packs"]:
-            path = pack["path"]
-            size = path.stat().st_size
-            path.unlink()
-            self.deleted.append({"path": self._relative(path), "bytes": size})
-        self._manifest()
-        return {k: v for k, v in frame.items() if k != "packs"}
+        return outputs
 
 
 _HEADLINE_SOURCE = r'''
@@ -553,7 +815,7 @@ def headline_diagnostic_memory_plan(shape, *, refl_levels=0, host_inputs=False):
 
 
 class HeadlineDiagnosticCollector:
-    """Synchronous ordinary-output callback for resident and streamed members.
+    """Commit ordinary diagnostics and drain complete hours independently.
 
     The callback borrows only the real physics/output diagnostics. It never
     reads a stale resident state for a streamed domain or changes stepping.
@@ -564,18 +826,24 @@ class HeadlineDiagnosticCollector:
                  thresholds=None, keep_member_files=False, available_bytes=None,
                  tile_rows=32, render_products=("mean", "spread", "min", "max", "prob", "paintball", "postage"),
                  events=None, array_module=None, member_order=None, member_metadata=(),
-                 retain_member_diagnostics=False):
+                 retain_member_diagnostics=False, defer_replay=False, gpu_replay=False, resume=False):
         if array_module is None:
             import cupy as array_module
         self.xp, self.root, self.members = array_module, Path(root), index(members)
         self.member_order = _member_order(self.members, member_order)
         self.member_metadata = tuple(member_metadata)
         self.member_archive = None
+        self.renderer, self.start_time = Path(renderer), start_time
+        # NumPy is the explicit host-only planning facade. Real collectors
+        # require the native CPU contract before a member starts stepping.
+        if not gpu_replay and array_module is not np:
+            from gpuwm import rustwx
+            rustwx.require_ensemble_diagnostic_reducer(self.renderer)
         if retain_member_diagnostics:
             from gpuwm.ensemble.member_diagnostics import MemberDiagnosticArchive
             self.member_archive = MemberDiagnosticArchive(self.root,
-                member_order=self.member_order, member_metadata=self.member_metadata, start_time=start_time)
-        self.renderer, self.start_time = Path(renderer), start_time
+                member_order=self.member_order, member_metadata=self.member_metadata, start_time=start_time,
+                **({"resume": True} if resume else {}))
         self.requests = tuple(requests) if requests is not None else default_product_requests(
             DEFAULT_THRESHOLDS, thresholds=thresholds)[0]
         self.events = {str(name): tuple(conditions) for name, conditions in (events or {}).items()}
@@ -598,6 +866,34 @@ class HeadlineDiagnosticCollector:
         self._lock = threading.RLock()
         self._kernels = {}
         self._events = {}
+        self._resume_output_ticks, self._resume_rain_ticks = set(), {}
+        from gpuwm.ensemble.product_consumer import DiagnosticProductConsumer
+        from gpuwm.ensemble.history_ledger import EnsembleHistoryLedger
+        self.gpu_replay = bool(gpu_replay)
+        self.product_consumer = DiagnosticProductConsumer(self.xp, gpu_replay=self.gpu_replay)
+        self.history_ledger = EnsembleHistoryLedger(self.root, member_order=self.member_order, resume=resume)
+        self.defer_replay = bool(defer_replay)
+
+    def save_resume(self, *, timeout=60):
+        with self._lock:
+            # Member callbacks cannot enqueue another frame while the existing
+            # product owner drains. The consumer stays open for later hours.
+            self.product_consumer.wait_idle(timeout=timeout)
+            from gpuwm.ensemble.collector_resume import save
+            return save(self)
+
+    def restore_resume(self):
+        with self._lock:
+            from gpuwm.ensemble.collector_resume import restore
+            return restore(self)
+
+    def _schedule_product(self, spool, valid, *, device=0):
+        budget = self._budget() if self.gpu_replay else 0
+        self.product_consumer.submit((spool.domain, valid), device=device,
+            replay=(lambda: spool.finish(valid, available_bytes=budget,
+                array_module=self.xp, render_products=self.render_products)) if self.gpu_replay else
+                (lambda: spool.finish_in_subprocess(valid, available_bytes=budget,
+                    consumer=self.product_consumer, render_products=self.render_products)))
 
     def _device_kernels(self, device):
         if device not in self._kernels:
@@ -631,6 +927,10 @@ class HeadlineDiagnosticCollector:
     def _record_rain(self, key, tick, cumulative):
         """Record exact member words; repeated observation of a tick is allowed."""
         history = self.rain_history.setdefault(key, {})
+        if tick <= self._resume_rain_ticks.get(key, -1):
+            if tick in history and cumulative.tobytes() != history[tick].tobytes():
+                raise ValueError("resumed member precipitation differs at a retained clock")
+            return history
         if not np.isfinite(cumulative).all():
             raise ValueError("member cumulative precipitation is nonfinite; QPF would be invalid")
         if tick in history:
@@ -751,6 +1051,10 @@ class HeadlineDiagnosticCollector:
                         unavailable.append(row)
             return {"schema": NativeDiagnosticSpool.CONTRACT, "members_requested": self.members,
                 "member_order": list(self.member_order), "member_metadata": list(self.member_metadata),
+                "native_product_consumer": self.product_consumer.receipt(),
+                "deferred_replay": self.defer_replay,
+                "history_identity_ledger": (self.history_ledger.path.relative_to(self.root.resolve()).as_posix()
+                    if self.history_ledger.records else None),
                 "member_diagnostics": (None if self.member_archive is None else self.member_archive.receipt()),
                 "domain_manifests": domains, "pending_rosters": pending,
                 "unavailable_products": unavailable, "member_files": list(self.member_files),
@@ -767,9 +1071,26 @@ class HeadlineDiagnosticCollector:
                 "diagnostic_buffers": [{"device": key[0], "shape": key[1],
                     "required_bytes": storage.plan.required_bytes(1)} for key, storage in self.workspaces.items()]}
 
+    def check_products(self):
+        self.product_consumer.check()
+
+    def cancel_products(self):
+        self.product_consumer.close(cancel=True)
+
     def require_complete(self):
-        """Check aligned output rosters; differing member grids stay explicit."""
+        """Check aligned output rosters; differing member grids stay explicit.
+
+        A complete roster's hour is replayed by the product consumer after the
+        last member commits it, so it stays "pending" until that replay
+        lands. Judging completeness before the consumer drains reported a
+        whole roster as incomplete ("received [0, 1, 2, 3] of 4") at the end
+        of every native pack. Wait for the scheduled hours first; a consumer
+        failure raises as itself here.
+        """
+        self.product_consumer.wait_idle(timeout=None)
         missing = self.receipt()["pending_rosters"]
+        if self.defer_replay:
+            missing = [row for row in missing if row["members_received"] != sorted(self.member_order)]
         if missing:
             first = missing[0]
             raise RuntimeError(f"ensemble output roster incomplete for {first['domain']} at {first['valid_time']}: "
@@ -778,6 +1099,7 @@ class HeadlineDiagnosticCollector:
 
     def finish_run(self):
         """Retire unpublishable products and release only owned diagnostics."""
+        self.product_consumer.close()
         with self._lock:
             if self.member_archive is not None:
                 self.member_archive.finish()
@@ -788,33 +1110,73 @@ class HeadlineDiagnosticCollector:
                     spool = entry["spool"]
                     frame = spool.frames[valid]
                     if frame["status"] == "pending":
+                        if self.defer_replay and frame["members_received"] == sorted(self.member_order):
+                            continue
                         reason = ("member coordinates differ at this valid time; a common-grid aggregate would misplace weather"
                                   if geometry_mismatch else "requested member output roster is incomplete")
                         spool.retire_pending_frame(valid, reason=reason,
                             status="unavailable" if geometry_mismatch else "incomplete")
+            for spool in self.spools.values():
+                spool.retire_private_coordinates()
             return self.receipt()
 
-    def add_member_file(self, path, *, member_id, grid_id, episode=0):
+    def history_committed(self, proof, *, member_id, grid_id, episode=0, valid_time):
+        """Ledger a writer-committed history only when this ensemble retains it.
+
+        The ordinary writer reports every history it commits. Two kinds are
+        not this collector's: a history written while the request does not
+        retain member files (a member's simulated radar needs its histories
+        and deletes them itself), and a history its caller wrote outside this
+        output tree. Registering either made the writer fail ("member
+        histories require keep_member_files" or "is not in the subpath"),
+        and a ledgered radar history would later be demanded back without a
+        retirement receipt. Only retained histories inside the tree are
+        ledgered, which is every history the production session keeps.
+        """
+        if not self.keep_member_files:
+            return None
+        try:
+            Path(proof.path).resolve().relative_to(self.root.resolve())
+        except ValueError:
+            return None
+        return self.add_member_file(proof.path, member_id=member_id, grid_id=grid_id,
+            episode=episode, valid_time=valid_time, proof=proof)
+
+    def add_member_file(self, path, *, member_id, grid_id, episode=0, proof=None, valid_time=None):
         """Register the opt-in ordinary history without changing its bytes."""
         with self._lock:
             if not self.keep_member_files:
                 raise ValueError("member histories require keep_member_files")
             domain = f"d{index(grid_id):02d}" + (f"-episode-{index(episode):03d}" if episode else "")
             path = Path(path)
-            if not path.is_file():
+            if proof is None and not path.is_file():
                 raise ValueError("retained member history must exist before registration")
+            if proof is not None:
+                identity = self.history_ledger.register(proof, member_id=member_id,
+                    grid_id=grid_id, episode=episode, valid_time=valid_time)
+            else:
+                identity = next((row for row in self.history_ledger.inventory()
+                                 if row["path"] == path.resolve().relative_to(self.root.resolve()).as_posix()), None)
             record = {"member_id": index(member_id), "domain": domain,
-                "path": path.resolve().relative_to(self.root.resolve()).as_posix(), "bytes": path.stat().st_size}
+                "path": path.resolve().relative_to(self.root.resolve()).as_posix(),
+                "bytes": path.stat().st_size if identity is None else identity["bytes"]}
+            previous = next((row for row in self.member_files if row["path"] == record["path"]), None)
+            if previous is not None:
+                if previous != record:
+                    raise ValueError("retained history changed its registered bytes")
+                return previous
             self.member_files.append(record)
+            self.member_files.sort(key=lambda row: (self.member_order.index(row["member_id"]), row["path"]))
             for spool in self.spools.values():
                 if spool.domain == domain or spool.domain.startswith(domain + "-grid-"):
-                    spool.add_member_file(path, member_id=member_id, domain=domain)
+                    spool.add_member_file(path, member_id=member_id, domain=domain, identity=identity)
             return record
 
     def submit(self, *, state, streamed, metadata, refl_field, valid_time,
                grid_id, episode, member_id):
         """Consume the ordinary writer callback's borrowed fields once."""
         with self._lock:
+            self.product_consumer.check()
             return self._submit(state=state, streamed=streamed, metadata=metadata,
                 refl_field=refl_field, valid_time=valid_time, grid_id=grid_id,
                 episode=episode, member_id=member_id)
@@ -852,14 +1214,24 @@ class HeadlineDiagnosticCollector:
             # cannot be painted on the earlier frame's static mesh.
             domain += "-grid-" + geometry[:12]
             key = (domain, geometry)
+        rain_key = (index(grid_id), index(episode), index(member_id), geometry)
+        tick = self._tick(valid_time)
+        if (rain_key, tick) in self._resume_output_ticks:
+            return None
         if key not in self.spools:
             self.spools[key] = NativeDiagnosticSpool(self.root, members=self.members,
                 requests=self.requests, latitude=latitude, longitude=longitude,
                 renderer=self.renderer, domain=domain, keep_member_files=self.keep_member_files,
                 member_order=self.member_order, member_metadata=self.member_metadata,
+                export_coordinates=self.defer_replay,
+                gpu_replay=self.gpu_replay,
                 tile_rows=self.tile_rows, events={name: [{"field": c.field, "units": c.units,
                     "threshold": c.threshold, "comparison": c.comparison} for c in conditions]
                     for name, conditions in self.events.items()})
+            for row in self.member_files:
+                if row["domain"] == domain or domain.startswith(row["domain"] + "-grid-"):
+                    self.spools[key].add_member_file(self.root / row["path"],
+                        member_id=row["member_id"], domain=row["domain"], identity=row)
         spool = self.spools[key]
         device = int(xp.cuda.runtime.getDevice())
         diagnose, difference, composite = self._device_kernels(device)
@@ -979,5 +1351,6 @@ class HeadlineDiagnosticCollector:
         cohort = self.cohorts.setdefault((index(grid_id), index(episode), valid), {})
         entry = cohort.setdefault(geometry, {"members": set(), "spool": spool})
         entry["members"].add(index(member_id))
-        return spool.finish(valid, available_bytes=self._budget(), array_module=xp,
-                            render_products=self.render_products) if complete else None
+        if complete and not self.defer_replay:
+            self._schedule_product(spool, valid, device=device)
+        return None

@@ -39,6 +39,21 @@ from dataclasses import dataclass
 #: start reads, uploaded once per leg and held through it.
 OBSERVATION_BYTES_PER_POINT = 5
 
+#: Device bytes per model mass point that radar latent heating
+#: (:mod:`gpuwm.da.radar_tten`, ``--radar-tten``) holds through a forced
+#: leg: the leg's reflectivity in NOAA's convention, the member's one
+#: tendency slot and the pre-microphysics theta the forcing keeps, all
+#: float32.
+RADAR_TTEN_HELD_BYTES_PER_POINT = 12
+
+#: Device bytes per model mass point the radar heating builder holds for a
+#: moment before the leg's first step, beside the held arrays: the
+#: background read off the state (theta, pressure and height, float32), the
+#: cone-filled reflectivity (float32) and the two float64 volumes the
+#: smoother alternates between.  Freed before the step, so it competes with
+#: the step working set rather than adding to it.
+RADAR_TTEN_BUILD_BYTES_PER_POINT = 32
+
 #: The analysis routes, in the order the solve takes them.  ``resident``
 #: holds every whole-domain array on the card and solves at the
 #: configured chunk; ``reduced-chunk`` is the same route when the solve
@@ -98,6 +113,10 @@ class CycleAdmission:
     analysis_detail: dict | None = None
     free_bytes: int | None = None
     budget_bytes: int | None = None
+    #: Radar latent heating: held through a forced leg, and the builder's
+    #: transient before its first step (0 when the cycle forces nothing).
+    radar_tten_held_bytes: int = 0
+    radar_tten_build_bytes: int = 0
 
     @property
     def fits(self) -> bool:
@@ -112,6 +131,8 @@ class CycleAdmission:
             "forecast_step_bytes": int(self.forecast_step_bytes),
             "observation_bytes": int(self.observation_bytes),
             "perturbation_bytes": int(self.perturbation_bytes),
+            "radar_tten_held_bytes": int(self.radar_tten_held_bytes),
+            "radar_tten_build_bytes": int(self.radar_tten_build_bytes),
             "analysis_route": self.analysis_route,
             "analysis_bytes": int(self.analysis_bytes),
             "analysis_routes": [
@@ -163,7 +184,8 @@ def worst_analysis(prices):
 
 def price_cycle(exp_leg, *, forcing_intervals: int, observation_points: int,
                 perturbation_bytes: int, profile=None,
-                analysis=None) -> CycleAdmission:
+                analysis=None, radar_tten_points: int = 0
+                ) -> CycleAdmission:
     """The device peak of the cycle's largest trajectory and its analysis.
 
     ``exp_leg`` is the experiment that trajectory runs: the root alone,
@@ -173,6 +195,8 @@ def price_cycle(exp_leg, *, forcing_intervals: int, observation_points: int,
     forecast estimate takes is put back.  ``analysis`` is the leg
     analysis's :class:`gpuwm.da.letkf.AnalysisDevicePrice` (see
     :func:`worst_analysis`), or None when no analysis runs on the card.
+    ``radar_tten_points`` is the mass-point count of a cycle that forces
+    its members with radar latent heating, 0 when it does not.
     """
     from gpuwm.core import preflight
 
@@ -186,7 +210,10 @@ def price_cycle(exp_leg, *, forcing_intervals: int, observation_points: int,
             dycore_state_workspace_bytes=0)
     resident = int(estimate.resident_bytes)
     step = int(estimate.workspace_bytes + estimate.transient_peak_bytes)
-    observations = OBSERVATION_BYTES_PER_POINT * int(observation_points)
+    radar_held = RADAR_TTEN_HELD_BYTES_PER_POINT * int(radar_tten_points)
+    radar_build = RADAR_TTEN_BUILD_BYTES_PER_POINT * int(radar_tten_points)
+    observations = (OBSERVATION_BYTES_PER_POINT * int(observation_points)
+                    + radar_held)
     perturbation = int(perturbation_bytes)
     # A member is perturbed on the root before its first step and before
     # a newborn child is built, so the perturbation competes with the
@@ -196,7 +223,10 @@ def price_cycle(exp_leg, *, forcing_intervals: int, observation_points: int,
                             for domain in estimate.domains
                             if int(domain.grid_id) == root_id)
                         + estimate.k_tables_bytes)
-    trajectory = max(resident + step, root_resident + perturbation)
+    # The radar heating builder runs after the restore, the increment and
+    # any perturbation, and its volumes are freed before the first step.
+    trajectory = max(resident + step, root_resident + perturbation,
+                     resident + radar_build)
 
     def envelope(peak: int) -> int:
         return int(preflight.machine_peak_envelope_bytes(
@@ -232,7 +262,8 @@ def price_cycle(exp_leg, *, forcing_intervals: int, observation_points: int,
         forcing_intervals=int(estimate.retained_forcing_intervals),
         basis=estimate.envelope_basis, analysis_routes=tuple(routes),
         analysis_route=first[0], analysis_bytes=int(first[1]),
-        analysis_detail=detail)
+        analysis_detail=detail, radar_tten_held_bytes=radar_held,
+        radar_tten_build_bytes=radar_build)
 
 
 def admit_cycle(price: CycleAdmission, *, free_bytes: int) -> CycleAdmission:
@@ -273,6 +304,11 @@ def admit_cycle(price: CycleAdmission, *, free_bytes: int) -> CycleAdmission:
     if decided.observation_bytes:
         parts.append(f"the leg's reflectivity observations "
                      f"{_gib(decided.observation_bytes)}")
+    if decided.radar_tten_held_bytes:
+        parts.append(f"of which the radar latent heating holds "
+                     f"{_gib(decided.radar_tten_held_bytes)} through the leg "
+                     f"and builds with {_gib(decided.radar_tten_build_bytes)} "
+                     "before the first step")
     if decided.perturbation_bytes:
         parts.append(f"the first leg's member perturbation "
                      f"{_gib(decided.perturbation_bytes)} on the root, "

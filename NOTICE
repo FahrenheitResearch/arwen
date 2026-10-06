@@ -780,7 +780,7 @@ below; a renderer shipped without it would satisfy clause 2 nowhere.
 
 Compiled artifacts (release bridge bundles and platform wheels)
 
-Thirty-one Rust executables and libraries (gpuwm.bridge_assets
+Thirty-seven Rust executables and libraries (gpuwm.bridge_assets
 .BUNDLED_ARTIFACTS) are distributed in compiled form: as GitHub release
 bridge bundles, and staged into platform wheels at gpuwm/libexec/bridges/.
 They are built from the three bridge dependency trees and the terminal
@@ -940,7 +940,7 @@ lakes, admin 0 boundary lines and admin 1 states and provinces lines
 (public domain, https://www.naturalearthdata.com/), simplified and
 delta-coded. The file carries the same notice in its "notice" field.
 
-The storm wiki's seed pages (gpuwm/gui/seed/wiki-seed.json) are built by
+The Weather Library's seed pages (gpuwm/gui/seed/wiki-seed.json) are built by
 tools/wiki_seed/build_seed.py from rows and statistics of public records:
 IBTrACS v04r01 (NOAA NCEI, a work of the United States Government; NCEI
 asks users to cite Knapp et al. 2010, doi:10.1175/2009BAMS2755.1, and
@@ -949,7 +949,7 @@ National Weather Service glossary (NOAA, works of the United States
 Government), the Census Bureau's 2020 county codes (a work of the United
 States Government) and Natural Earth 1:110m countries and states (public
 domain). Every record carries its source, licence and retrieval date in
-the file, and each wiki page shows them in its references.
+the file, and each Weather Library page shows them in its references.
 
 The map of the gpuwm gui page (gpuwm/gui/static/map/basemap.bin) is
 built from the same Natural Earth and Census layers by

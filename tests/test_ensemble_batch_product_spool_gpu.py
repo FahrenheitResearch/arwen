@@ -128,7 +128,8 @@ def test_ordinary_collector_uses_live_streamed_frame_and_exact_clock_windows(tmp
             row = collector(state=state, streamed=streamed, metadata={"XLAT": coords, "XLONG": longitude},
                 refl_field=cp.full((2, 3, 5), 45, cp.float32), valid_time=start + timedelta(hours=hour),
                 grid_id=1, episode=0, member_id=member)
-            assert (row is not None) == (member == 1)
+            assert row is None
+    collector.finish_run()
     spool = next(iter(collector.spools.values()))
     first = spool.frames["2026-10-02_00:00:00"]
     assert set(first["unavailable_fields"]) == {"qpf_1h", "qpf_3h", "qpf_6h", "gust"}
@@ -210,6 +211,9 @@ def test_counter_baseline_before_delayed_history_and_same_tick_output(tmp_path):
     state = SimpleNamespace(physics=SimpleNamespace(output_fields=lambda: {"RAINNC": rain}))
     row = collector(state=state, streamed=None, metadata={"XLAT": latitude, "XLONG": longitude},
         refl_field=None, valid_time=valid, grid_id=1, episode=0, member_id=0)
+    assert row is None
+    collector.finish_run()
+    row = next(iter(collector.spools.values())).frames[valid.strftime("%Y-%m-%d_%H:%M:%S")]
     with netcdf_bridge.Dataset(tmp_path / row["products"][0]) as reader:
         for name in ("rain_total_mean", "qpf_1h_mean"):
             np.testing.assert_array_equal(np.asarray(reader.variables[name][:]).astype(np.float32), np.float32(4))
@@ -240,6 +244,100 @@ def test_off_scheme_zero_counter_has_no_surface_driver_or_extra_output(tmp_path)
     row = collector(state=SimpleNamespace(physics=None), streamed=None,
         metadata={"XLAT": latitude, "XLONG": longitude}, refl_field=None, valid_time=valid,
         grid_id=1, episode=0, member_id=0)
+    assert row is None
+    collector.finish_run()
+    row = next(iter(collector.spools.values())).frames[valid.strftime("%Y-%m-%d_%H:%M:%S")]
     with netcdf_bridge.Dataset(tmp_path / row["products"][0]) as reader:
         np.testing.assert_array_equal(np.asarray(reader.variables["qpf_1h_mean"][:]).astype(np.float32), np.float32(0))
     assert next(iter(collector.spools.values())).frames[valid.strftime("%Y-%m-%d_%H:%M:%S")]["unavailable_fields"] == []
+
+
+def test_async_owned_stream_and_independent_process_spills_match_synchronous_bytes(tmp_path):
+    import cupy as cp
+    from gpuwm.ensemble.product_consumer import DiagnosticProductConsumer
+    renderer = _renderer()
+    latitude = np.broadcast_to(np.linspace(35, 35.1, 3, dtype=np.float32)[:, None], (3, 5)).copy()
+    longitude = np.broadcast_to(np.linspace(-99, -98.9, 5, dtype=np.float32), (3, 5)).copy()
+    requests = (FieldProducts("temperature2", "K", (293.15,), paintball=True, postage_stamp=True),)
+    values = cp.asarray(np.arange(2 * 3 * 5, dtype=np.float32).reshape(2, 3, 5) + np.float32(285))
+    valid = "2026-10-04_00:00:00"
+    reference = NativeDiagnosticSpool(tmp_path / "reference", members=2, requests=requests,
+        latitude=latitude, longitude=longitude, renderer=renderer, gpu_replay=True)
+    reference.submit({"temperature2": values}, member_ids=(0, 1), valid_time=valid)
+    before = values.get().tobytes()
+    expected = reference.finish(valid, available_bytes=1 << 27)
+    adopted = NativeDiagnosticSpool(tmp_path / "adopted", members=2, requests=requests,
+        latitude=latitude, longitude=longitude, renderer=renderer)
+    for member in (1, 0):
+        child = NativeDiagnosticSpool(tmp_path / f"child-{member}", members=1,
+            member_order=(member,), requests=requests, latitude=latitude,
+            longitude=longitude, renderer=renderer, export_coordinates=True)
+        child.submit({"temperature2": values[member:member+1]}, member_ids=(member,), valid_time=valid)
+        manifest = json.loads(child.manifest_path.read_text())
+        pack = manifest["frames"][0]["diagnostic_files"][0]
+        complete = adopted.adopt_committed_pack(child.root / pack["path"],
+            member_ids=pack["member_ids"], valid_time=valid,
+            available_fields=("temperature2",), sha256=pack["sha256"], bytes=pack["bytes"])
+        assert complete == (member == 0)
+    consumer = DiagnosticProductConsumer(cp)
+    consumer.submit(("d01", valid), device=int(cp.cuda.runtime.getDevice()),
+        replay=lambda: adopted.finish_in_subprocess(valid, available_bytes=1 << 27, consumer=consumer))
+    consumer.close()
+    actual = adopted.frames[valid]
+    for kind in ("products", "maps"):
+        assert len(expected[kind]) == len(actual[kind])
+        for left, right in zip(expected[kind], actual[kind]):
+            assert hashlib.sha256((reference.root / left).read_bytes()).digest() == hashlib.sha256((adopted.root / right).read_bytes()).digest()
+    assert values.get().tobytes() == before
+
+
+@pytest.mark.parametrize("comparison", ["ge", "gt", "le", "lt"])
+def test_rust_cpu_reducer_matches_cuda_file_bytes_for_degenerate_member_words(tmp_path, comparison):
+    import cupy as cp
+    renderer = _renderer()
+    order = (19, 3, 8, 2)
+    latitude = np.broadcast_to(np.linspace(35, 35.1, 3, dtype=np.float32)[:, None], (3, 7)).copy()
+    longitude = np.broadcast_to(np.linspace(-99, -98.9, 7, dtype=np.float32), (3, 7)).copy()
+    words = np.arange(4 * 3 * 7, dtype=np.float32).reshape(4, 3, 7)
+    words[:, 0, 0] = np.asarray([0x7fc01234, 0xffc05678, 0x7fc00000, 0x7fc12345], np.uint32).view(np.float32)
+    words[:, 0, 1] = (np.inf, -np.inf, 1, -1)
+    words[:, 0, 2] = (-0., 0., -0., 0.)
+    largest = np.finfo(np.float32).max
+    words[:, 0, 3] = (largest, 1, -largest, 1)
+    words[:, 0, 4] = (1e20, 1, -1e20, 1)
+    words[:, 0, 5] = (10, np.nextafter(np.float32(10), np.float32(np.inf)),
+        np.nextafter(np.float32(10), np.float32(-np.inf)), 0)
+    words[:, 0, 6] = (-largest, largest, -largest, largest)
+    words[:, 1, 0] = np.asarray([0x00000001, 0x00000002, 0x80000001, 0x80000000], np.uint32).view(np.float32)
+    words[:, 1, 1] = np.asarray([0x00800000, 0x00800000, 0x007fffff, 0x007fffff], np.uint32).view(np.float32)
+    words[:, 1, 2] = np.asarray([0x80000001, 0x80000002, 0x80000003, 0x80000004], np.uint32).view(np.float32)
+    request = FieldProducts("wind10", "m s-1", (0, 10, 25), comparison=comparison,
+        paintball=True, spaghetti=True, postage_stamp=True)
+    valid = "2026-10-04_00:00:00"
+    rows = []
+    for label, gpu in (("cuda", True), ("cpu", False)):
+        spool = NativeDiagnosticSpool(tmp_path / label, members=4, member_order=order,
+            requests=(request,), latitude=latitude, longitude=longitude,
+            renderer=renderer, gpu_replay=gpu, tile_rows=3)
+        for member in reversed(order):
+            position = order.index(member)
+            spool.submit({"wind10": cp.asarray(words[position:position+1])},
+                member_ids=(member,), valid_time=valid)
+        if gpu:
+            row = spool.finish(valid, available_bytes=1 << 27, render_products=("prob", "postage"))
+        else:
+            from gpuwm.ensemble.product_consumer import DiagnosticProductConsumer
+            consumer = DiagnosticProductConsumer()
+            consumer.submit((spool.domain, valid), device=0,
+                replay=lambda: spool.finish_in_subprocess(valid, available_bytes=1 << 27,
+                    consumer=consumer, render_products=("prob", "postage")))
+            consumer.close()
+            row = spool.frames[valid]
+        rows.append((spool, row))
+    reference, expected = rows[0]
+    candidate, actual = rows[1]
+    assert actual["gpu_replay_required_bytes"] == 0 and actual["replay_backend"] == "rust_cpu"
+    for kind in ("products", "maps"):
+        assert len(expected[kind]) == len(actual[kind])
+        for left, right in zip(expected[kind], actual[kind]):
+            assert (reference.root / left).read_bytes() == (candidate.root / right).read_bytes()

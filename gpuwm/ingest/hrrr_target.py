@@ -74,6 +74,68 @@ def hrrr_coverage_envelope() -> tuple[float, float, float, float]:
             float(latitude.max()), float(longitude.max()))
 
 
+#: How far, in degrees, a target's south-west mass point may sit from the
+#: native grid's own and still be the native grid
+#: (:func:`native_grid_identity`).  The native grid is described twice:
+#: WPS's sphere (6,370 km, where the model integrates and where a target
+#: spelled from HRRR's own namelist.wps lands) and the GRIB header's
+#: (6,371.229 km, :data:`gpuwm.ingest.hrrr.HRRR_EARTH_RADIUS_M`, which
+#: :func:`gpuwm.ingest.hrrr.hrrr_source_grid` reproduces).  The two
+#: agree at the south-west corner by construction and drift apart by
+#: the radius ratio (MEASURED: +0.173 / +0.102 cells in x / y at the
+#: centre, +0.347 / +0.204 at the north-east corner).  This tolerance
+#: covers the GRIB anchor's rounding to six decimal places, without
+#: admitting a nearby shifted grid.
+NATIVE_GRID_CORNER_TOLERANCE_DEG = 3.0e-6
+
+#: Numerical tolerance against either of the two declared spacings:
+#: the WPS spacing or its GRIB-sphere equivalent.  An arbitrary spacing
+#: between those two is a different grid and must still interpolate.
+NATIVE_GRID_SPACING_RTOL = 1.0e-9
+
+
+def native_grid_identity(grid: LambertGrid) -> bool:
+    """Whether ``grid`` IS the native HRRR mass grid, point for point.
+
+    True when the target has the native grid's dimensions, cone and
+    standard longitude, one of the two declared spacings within
+    :data:`NATIVE_GRID_SPACING_RTOL`, and its south-west mass point within
+    :data:`NATIVE_GRID_CORNER_TOLERANCE_DEG` of the native grid's.  Such a
+    target takes the identity route: every mass point copies its own
+    source cell, nothing is interpolated between cells, and no
+    interpolation halo past the grid's edge is demanded.  The route that
+    refused this grid demanded that halo for the outermost row and
+    column, and the one-row trim it advised moved the relaxation zone
+    one row inward of HRRR's own.
+    """
+    from gpuwm.ingest.hrrr import (
+        HRRR_GRID_SPACING_M, HRRR_WPS_EQUIVALENT_DX_M, hrrr_source_grid)
+
+    if not isinstance(grid, LambertGrid):
+        return False
+    if (int(grid.e_we) - 1, int(grid.e_sn) - 1) != (HRRR_SOURCE_NX,
+                                                     HRRR_SOURCE_NY):
+        return False
+    source = hrrr_source_grid()
+    if not (math.isclose(float(grid.truelat1), float(source.truelat1),
+                         abs_tol=1.0e-9)
+            and math.isclose(float(grid.truelat2), float(source.truelat2),
+                             abs_tol=1.0e-9)
+            and math.isclose(float(grid.stand_lon), float(source.stand_lon),
+                             abs_tol=1.0e-9)):
+        return False
+    if not any(math.isclose(float(grid.dx), float(spacing),
+                            rel_tol=NATIVE_GRID_SPACING_RTOL)
+               for spacing in (HRRR_GRID_SPACING_M, HRRR_WPS_EQUIVALENT_DX_M)):
+        return False
+    corner_lat, corner_lon = grid.ij_to_latlon(1.0, 1.0)
+    native_lat, native_lon = source.ij_to_latlon(1.0, 1.0)
+    return (abs(float(corner_lat) - float(native_lat))
+            <= NATIVE_GRID_CORNER_TOLERANCE_DEG
+            and abs(float(corner_lon) - float(native_lon))
+            <= NATIVE_GRID_CORNER_TOLERANCE_DEG)
+
+
 @dataclass(frozen=True)
 class HrrrSourceWindow:
     """Zero-based inclusive HRRR source window with interpolation halos."""
@@ -87,6 +149,11 @@ class HrrrSourceWindow:
     surface_fallback_radius_cells: int
     target_source_i_range: tuple[float, float]
     target_source_j_range: tuple[float, float]
+    #: ``"interpolated"`` (every window before the identity route) or
+    #: ``"identity"``: the target is the native grid itself
+    #: (:func:`native_grid_identity`), the window is the whole grid and
+    #: no halo past its edge is demanded.
+    route: str = "interpolated"
 
     @property
     def nx(self) -> int:
@@ -100,7 +167,7 @@ class HrrrSourceWindow:
         return self.i_start, self.i_end, self.j_start, self.j_end
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        document = {
             "zero_based_inclusive": {
                 "i": [self.i_start, self.i_end],
                 "j": [self.j_start, self.j_end],
@@ -115,6 +182,11 @@ class HrrrSourceWindow:
             "target_source_i_range": list(self.target_source_i_range),
             "target_source_j_range": list(self.target_source_j_range),
         }
+        if self.route != "interpolated":
+            # Written only on the identity route, so every interpolated
+            # window's record is byte for byte what it was.
+            document["route"] = self.route
+        return document
 
     def matches_record(self, recorded) -> bool:
         """Whether a recorded :meth:`to_dict` describes this window.
@@ -407,6 +479,23 @@ def required_hrrr_source_window(
     from gpuwm.ingest.hrrr import hrrr_source_grid
 
     source = hrrr_source_grid()
+    if native_grid_identity(grid):
+        # The identity route: the target is the native grid.  Every mass
+        # point copies its own source cell, the u and v faces between
+        # cells read their two neighbours and the outermost faces, half
+        # a cell past the grid's edge, take the edge cell (zero gradient;
+        # they are the specified boundary row, which the lateral boundary
+        # tables overwrite from the first step).  So the whole grid is
+        # the window and no halo past it is demanded.  The soil donor
+        # search keeps its radius, clipped at the edge as always.
+        return HrrrSourceWindow(
+            i_start=0, i_end=HRRR_SOURCE_NX - 1,
+            j_start=0, j_end=HRRR_SOURCE_NY - 1,
+            parabolic_lower_halo_cells=0, parabolic_upper_halo_cells=0,
+            surface_fallback_radius_cells=radius,
+            target_source_i_range=(0.0, float(HRRR_SOURCE_NX - 1)),
+            target_source_j_range=(0.0, float(HRRR_SOURCE_NY - 1)),
+            route="identity")
     coordinates = []
     mass_coordinates = None
     for latitude, longitude in (

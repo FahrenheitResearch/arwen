@@ -45,10 +45,12 @@ use rw_obs::pack::{
     GEO_SCHEMA, GRID_SCHEMA,
 };
 use rw_obs::seam::{
-    seam_bounds, seam_time, wrap_longitude, Provenance, QUANTITY_COMPOSITE_REFLECTIVITY, UNITS_DBZ,
+    seam_bounds, seam_time, wrap_longitude, Provenance, QUANTITY_COMPOSITE_REFLECTIVITY,
+    QUANTITY_PRECIPITATION_ACCUMULATION, UNITS_DBZ, UNITS_MM,
 };
 use rw_obs::{err, gunzip_if_wrapped, hex_sha256};
-use rustwx_core::{CanonicalField, FieldSelector};
+use rustwx_core::{CanonicalField, FieldSelector, GridShape, LatLonGrid, SelectedField2D};
+use grib_core::grib2::{grid_latlon, unpack, Grib2File};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -89,6 +91,108 @@ const DEFAULT_NO_ECHO_DBZ: f64 = -35.0;
 /// mask should have covered is the bug that refusal exists to catch.
 const MASKED_FILL_DBZ: f64 = -35.0;
 
+const REFLECTIVITY_UNIT_MAPPINGS: &[(&str, f64)] = &[("dBZ", 1.0)];
+/// Liquid-water mass per area and equivalent depth have identical numbers:
+/// one kilogram per square metre is one millimetre of water.
+const ACCUMULATION_UNIT_MAPPINGS: &[(&str, f64)] = &[("mm", 1.0), ("kg/m^2", 1.0)];
+const RATE_UNIT_MAPPINGS: &[(&str, f64)] = &[("mm/hr", 1.0)];
+const QUALITY_UNIT_MAPPINGS: &[(&str, f64)] = &[("non-dim", 1.0)];
+
+/// Archive quantity conventions, selected by product metadata.
+struct ProductDecodeSpec {
+    product: &'static str,
+    selector: Option<FieldSelector>,
+    native_parameter: Option<[u8; 3]>,
+    quantity: &'static str,
+    units: &'static str,
+    accepted_units: &'static [(&'static str, f64)],
+    coverage_ceiling: f64,
+    no_echo_ceiling: Option<f64>,
+    fill: f64,
+    accumulation_seconds: Option<u32>,
+}
+
+impl ProductDecodeSpec {
+    /// `(value, observed, below_detection)`. Missing cells never become dry.
+    fn normalize(&self, raw: f64, no_echo: f64) -> (f64, bool, bool) {
+        if !raw.is_finite() || raw <= self.coverage_ceiling {
+            (self.fill, false, false)
+        } else if self.no_echo_ceiling.is_some_and(|ceiling| raw <= ceiling) {
+            (no_echo, true, true)
+        } else {
+            (raw, true, false)
+        }
+    }
+}
+
+fn decode_specs() -> Vec<ProductDecodeSpec> {
+    vec![
+        ProductDecodeSpec {
+            product: DEFAULT_PRODUCT,
+            selector: Some(FieldSelector::altitude_msl(CanonicalField::CompositeReflectivity, PRODUCT_ALTITUDE_M)),
+            native_parameter: None,
+            quantity: QUANTITY_COMPOSITE_REFLECTIVITY,
+            units: UNITS_DBZ,
+            accepted_units: REFLECTIVITY_UNIT_MAPPINGS,
+            coverage_ceiling: NO_COVERAGE_CEILING_DBZ,
+            no_echo_ceiling: Some(NO_ECHO_CEILING_DBZ),
+            fill: MASKED_FILL_DBZ,
+            accumulation_seconds: None,
+        },
+        ProductDecodeSpec {
+            product: "MultiSensor_QPE_01H_Pass1_00.00",
+            selector: Some(FieldSelector::altitude_msl(CanonicalField::TotalPrecipitation, 0)),
+            native_parameter: None,
+            quantity: QUANTITY_PRECIPITATION_ACCUMULATION,
+            units: UNITS_MM,
+            accepted_units: ACCUMULATION_UNIT_MAPPINGS,
+            // Published missing=-1 and no coverage=-3; zero is observed dry.
+            coverage_ceiling: -0.5,
+            no_echo_ceiling: None,
+            fill: 0.0,
+            accumulation_seconds: Some(3600),
+        },
+        ProductDecodeSpec {
+            product: "MultiSensor_QPE_01H_Pass2_00.00",
+            selector: Some(FieldSelector::altitude_msl(CanonicalField::TotalPrecipitation, 0)),
+            native_parameter: None,
+            quantity: QUANTITY_PRECIPITATION_ACCUMULATION,
+            units: UNITS_MM,
+            accepted_units: ACCUMULATION_UNIT_MAPPINGS,
+            coverage_ceiling: -0.5,
+            no_echo_ceiling: None,
+            fill: 0.0,
+            accumulation_seconds: Some(3600),
+        },
+        // The public MRMS parameter table pins these product-specific rows:
+        // https://www.nssl.noaa.gov/projects/mrms/operational/tables.php
+        // They use the existing grib-core parser and unpacker directly so
+        // a precipitation rate never masquerades as an accumulation selector.
+        ProductDecodeSpec {
+            product: "PrecipRate_00.00", selector: None, native_parameter: Some([209, 6, 1]),
+            quantity: "precipitation_rate", units: "mm/hr", accepted_units: RATE_UNIT_MAPPINGS,
+            coverage_ceiling: -0.5, no_echo_ceiling: None, fill: 0.0, accumulation_seconds: None,
+        },
+        ProductDecodeSpec {
+            product: "RadarQualityIndex_00.00", selector: None, native_parameter: Some([209, 8, 0]),
+            quantity: "radar_quality_index", units: "non-dim", accepted_units: QUALITY_UNIT_MAPPINGS,
+            coverage_ceiling: -0.5, no_echo_ceiling: None, fill: 0.0, accumulation_seconds: None,
+        },
+        ProductDecodeSpec {
+            product: "RadarOnly_QPE_01H_00.00", selector: None, native_parameter: Some([209, 6, 2]),
+            quantity: QUANTITY_PRECIPITATION_ACCUMULATION, units: UNITS_MM,
+            accepted_units: ACCUMULATION_UNIT_MAPPINGS,
+            coverage_ceiling: -0.5, no_echo_ceiling: None, fill: 0.0, accumulation_seconds: Some(3600),
+        },
+    ]
+}
+
+fn decode_spec(product: &str) -> Result<ProductDecodeSpec, Box<dyn Error>> {
+    decode_specs().into_iter().find(|spec| spec.product == product).ok_or_else(|| {
+        err(format!("no decoded quantity metadata for product {product:?}"))
+    })
+}
+
 const LIST_SCHEMA: &str = "gpuwm-obs.mrms-list.v1";
 const NEAREST_SCHEMA: &str = "gpuwm-obs.mrms-nearest.v1";
 const FETCH_SCHEMA: &str = "gpuwm-obs.mrms-fetch.v1";
@@ -100,11 +204,12 @@ const VERIFY_SCHEMA: &str = "gpuwm-obs.mrms-verify.v1";
 /// from under a pinned wrapper is caught at probe time rather than at parse
 /// time three receipts later.
 const ABI_MARKER: &str = "gpuwm-obs.mrms-fetch.v1\tproduct\twindow\tbucket\tfiles\tbytes\t\
-sha256\tgpuwm-obs.obs-grid.v1\tcomposite_reflectivity\tdBZ";
+sha256\tgpuwm-obs.obs-grid.v1\tcomposite_reflectivity\tdBZ\t\
+precipitation_accumulation\tmm\taccumulation_seconds";
 
 const USAGE: &str = "\
 usage: rw_mrms <list|nearest|fetch|decode|grid|verify> [OPTIONS]
-       rw_mrms --version | --help | --abi
+       rw_mrms --version | --help | --abi | --list-products
 
   list     report the MRMS objects a window resolves to, moving no payload
   nearest  report the one object nearest a valid time, refusing a distant match
@@ -117,7 +222,8 @@ archive options
   --bucket NAME           default: noaa-mrms-pds (anonymous list+get, probed
                           2026-08-03 for keys from 2020 through 2026)
   --region NAME           bucket top-level directory. Default: CONUS
-  --product NAME          default: MergedReflectivityQCComposite_00.50
+  --product NAME          default: MergedReflectivityQCComposite_00.50.
+                          --list-products prints native decoded quantity rows
   --start TIME            window start, 2021-12-10T21:00:00Z or 20211210T210000
   --end TIME              window end (inclusive)
   --valid-time TIME       nearest: the instant to match
@@ -164,6 +270,19 @@ fn run(args: &[String]) -> Result<String, Box<dyn Error>> {
         "--help" | "-h" | "help" => return Ok(USAGE.to_string()),
         "--version" | "-V" => return Ok(format!("rw_mrms {VERSION}\n")),
         "--abi" => return Ok(format!("{ABI_MARKER}\n")),
+        "--list-products" => {
+            let products = decode_specs().iter().map(|spec| serde_json::json!({
+                "product": spec.product, "quantity": spec.quantity, "units": spec.units,
+                "selector": spec.selector, "native_grib_parameter": spec.native_parameter,
+                "accumulation_seconds": spec.accumulation_seconds,
+                "accepted_unit_mappings": spec.accepted_units,
+                "missing_ceiling": spec.coverage_ceiling,
+                "below_detection_ceiling": spec.no_echo_ceiling,
+            })).collect::<Vec<_>>();
+            return Ok(format!("{}\n", serde_json::json!({
+                "schema": "gpuwm.observation-products.v1", "products": products,
+            })));
+        }
         _ => {}
     }
     let options = Options::parse(&args[1..])?;
@@ -578,9 +697,13 @@ struct GridSpec {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SentinelReport {
+    #[serde(rename = "missing_ceiling", alias = "no_coverage_ceiling_dbz")]
     no_coverage_ceiling_dbz: f64,
+    #[serde(rename = "below_detection_ceiling", alias = "no_echo_ceiling_dbz")]
     no_echo_ceiling_dbz: f64,
+    #[serde(rename = "below_detection_value", alias = "no_echo_value_dbz")]
     no_echo_value_dbz: f64,
+    #[serde(rename = "masked_fill", alias = "masked_fill_dbz")]
     masked_fill_dbz: f64,
     no_coverage_cells: usize,
     no_echo_cells: usize,
@@ -595,11 +718,15 @@ struct GridPackMeta {
     status: String,
     quantity: String,
     units: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    accumulation_seconds: Option<u32>,
     valid_time: String,
-    provenance: Provenance,
+    provenance: serde_json::Value,
     grid: GridSpec,
     sentinels: SentinelReport,
+    #[serde(rename = "value_min", alias = "value_min_dbz")]
     value_min_dbz: f64,
+    #[serde(rename = "value_max", alias = "value_max_dbz")]
     value_max_dbz: f64,
     arrays: std::collections::BTreeMap<String, ArrayEntry>,
     payload_bytes: usize,
@@ -619,6 +746,9 @@ struct GeoPackMeta {
 
 /// The decoded field, already subset and already in seam conventions.
 struct Field {
+    units: String,
+    source_units: String,
+    unit_multiplier: f64,
     grid: GridSpec,
     latitude: Vec<f64>,
     longitude: Vec<f64>,
@@ -639,20 +769,87 @@ fn load_field(
     raw: &[u8],
     bbox: Option<BoundingBox>,
     no_echo_dbz: f64,
+    spec: &ProductDecodeSpec,
 ) -> Result<Field, Box<dyn Error>> {
     let (stream, _was_gzipped) = gunzip_if_wrapped(raw, "MRMS archive object")?;
-    let selector = FieldSelector::altitude_msl(
-        CanonicalField::CompositeReflectivity,
-        PRODUCT_ALTITUDE_M,
-    );
-    let field = rustwx_io::extract_field_from_bytes(&stream, selector)
-        .map_err(|e| err(format!("MRMS decode failed: {e}")))?;
-    if field.units != UNITS_DBZ {
-        return Err(err(format!(
-            "MRMS decode returned units {:?}, the seam pins {UNITS_DBZ:?}",
-            field.units
-        )));
+    let mut field: DecodedField = if let Some(parameter) = spec.native_parameter {
+        decode_native_product(&stream, parameter, spec.units)?
+    } else {
+        rustwx_io::extract_field_from_bytes(&stream, spec.selector.ok_or_else(|| err("MRMS product has no selector"))?)
+            .map_err(|e| err(format!("MRMS decode failed: {e}")))?.into()
+    };
+    if spec.native_parameter.is_none() {
+        let file = Grib2File::from_bytes(&stream).map_err(|e| err(format!("MRMS grid metadata will not parse: {e}")))?;
+        if file.messages.len() == 1 && file.messages[0].grid.template == 0 {
+            let grid = &file.messages[0].grid;
+            let (mut lat, mut lon) = grid_latlon(grid).map_err(|e| err(format!("MRMS native grid will not place: {e}")))?;
+            if grid.scan_mode & 0x40 != 0 {
+                unpack::flip_rows(&mut lat, grid.nx as usize, grid.ny as usize);
+                unpack::flip_rows(&mut lon, grid.nx as usize, grid.ny as usize);
+            }
+            // Retain the GRIB's binary64 angular geometry. FieldSelector's
+            // coordinate interchange is f32 and cannot pin cell bounds.
+            field.native_coordinates = Some((lat, lon));
+        }
     }
+    canonical_field(field, bbox, no_echo_dbz, spec)
+}
+
+struct DecodedField {
+    units: String,
+    grid: LatLonGrid,
+    values: Vec<f32>,
+    native_coordinates: Option<(Vec<f64>, Vec<f64>)>,
+}
+
+impl From<SelectedField2D> for DecodedField {
+    fn from(field: SelectedField2D) -> Self {
+        Self { units: field.units, grid: field.grid, values: field.values, native_coordinates: None }
+    }
+}
+
+fn decode_native_product(bytes: &[u8], parameter: [u8; 3], units: &str) -> Result<DecodedField, Box<dyn Error>> {
+    let file = Grib2File::from_bytes(bytes).map_err(|e| err(format!("MRMS product will not parse as GRIB2: {e}")))?;
+    let matches = file.messages.iter().filter(|message|
+        [message.discipline, message.product.parameter_category, message.product.parameter_number] == parameter
+        && message.product.level_type == 102 && message.product.level_value == 0.0
+        && message.product.second_level_type == 255
+    ).collect::<Vec<_>>();
+    if matches.len() != 1 {
+        return Err(err(format!("MRMS product requires one GRIB parameter {parameter:?} at 0 m MSL, found {}", matches.len())));
+    }
+    let message = matches[0];
+    if message.grid.template != 0 || message.grid.is_reduced || message.grid.scan_mode & 0x30 != 0 {
+        return Err(err("MRMS product-specific decode requires regular latitude/longitude rows without alternating/column scanning"));
+    }
+    let shape = GridShape::new(message.grid.nx as usize, message.grid.ny as usize)?;
+    // Both coordinates and payload stay in the message's declared row order.
+    // Pairing grid_latlon with a row-normalizing unpacker would mirror rows.
+    let values = unpack::unpack_message(message).map_err(|e| err(format!("MRMS product will not unpack: {e}")))?;
+    let (latitude, longitude) = grid_latlon(&message.grid).map_err(|e| err(format!("MRMS product grid will not place: {e}")))?;
+    if values.len() != shape.len() || latitude.len() != shape.len() || longitude.len() != shape.len() {
+        return Err(err("MRMS product grid and unpacked values have different cell counts"));
+    }
+    let grid = LatLonGrid::new(shape, latitude.iter().map(|x| *x as f32).collect(), longitude.iter().map(|x| *x as f32).collect())?;
+    Ok(DecodedField {units: units.to_string(), grid, values: values.into_iter().map(|x| x as f32).collect(),
+                    native_coordinates: Some((latitude, longitude))})
+}
+
+/// Canonicalize only observed values. Sentinel classification stays in the
+/// archive's original units, before any registered numeric conversion.
+fn canonical_field(
+    field: impl Into<DecodedField>,
+    bbox: Option<BoundingBox>,
+    no_echo_dbz: f64,
+    spec: &ProductDecodeSpec,
+) -> Result<Field, Box<dyn Error>> {
+    let field = field.into();
+    let (_, unit_multiplier) = spec.accepted_units.iter()
+        .find(|(units, _)| *units == field.units)
+        .copied()
+        .ok_or_else(|| err(format!(
+            "archive units {:?} have no conversion to canonical units {:?}", field.units, spec.units
+        )))?;
     let source_nx = field.grid.shape.nx;
     let source_ny = field.grid.shape.ny;
     let cells = source_nx
@@ -670,6 +867,12 @@ fn load_field(
             field.grid.lon_deg.len()
         )));
     }
+    let (native_lat, native_lon) = field.native_coordinates.as_ref().map(|(lat, lon)| (lat.as_slice(), lon.as_slice())).unwrap_or((&[], &[]));
+    if (!native_lat.is_empty() || !native_lon.is_empty()) && (native_lat.len() != cells || native_lon.len() != cells) {
+        return Err(err("MRMS native angular geometry differs from the payload cell count"));
+    }
+    let latitude_at = |index| if native_lat.is_empty() {f64::from(field.grid.lat_deg[index])} else {native_lat[index]};
+    let longitude_at = |index| if native_lon.is_empty() {f64::from(field.grid.lon_deg[index])} else {native_lon[index]};
 
     // The grid is a regular latitude/longitude template, so a lon/lat box is
     // a rectangle in index space and can be found from one row and one
@@ -680,7 +883,7 @@ fn load_field(
             let mut i_lo = usize::MAX;
             let mut i_hi = 0usize;
             for i in 0..source_nx {
-                let lon = wrap_longitude(f64::from(field.grid.lon_deg[i]));
+                let lon = wrap_longitude(longitude_at(i));
                 if lon >= box_.west && lon <= box_.east {
                     i_lo = i_lo.min(i);
                     i_hi = i_hi.max(i);
@@ -689,7 +892,7 @@ fn load_field(
             let mut j_lo = usize::MAX;
             let mut j_hi = 0usize;
             for j in 0..source_ny {
-                let lat = f64::from(field.grid.lat_deg[j * source_nx]);
+                let lat = latitude_at(j * source_nx);
                 if lat >= box_.south && lat <= box_.north {
                     j_lo = j_lo.min(j);
                     j_hi = j_hi.max(j);
@@ -720,27 +923,29 @@ fn load_field(
     for j in j_start..j_end {
         for i in i_start..i_end {
             let index = j * source_nx + i;
-            latitude.push(f64::from(field.grid.lat_deg[index]));
-            longitude.push(wrap_longitude(f64::from(field.grid.lon_deg[index])));
+            latitude.push(latitude_at(index));
+            longitude.push(wrap_longitude(longitude_at(index)));
             let raw_value = f64::from(field.values[index]);
-            if !raw_value.is_finite() || raw_value <= NO_COVERAGE_CEILING_DBZ {
+            let (value, is_valid, no_echo) = spec.normalize(raw_value, no_echo_dbz);
+            let value = if is_valid && !no_echo { value * unit_multiplier } else { value };
+            if !is_valid {
                 // Either the decoder masked it (bitmap -> NaN) or the
                 // product states no radar coverage. Both are unobserved.
                 no_coverage_cells += 1;
-                values.push(MASKED_FILL_DBZ);
+                values.push(value);
                 valid.push(false);
-            } else if raw_value <= NO_ECHO_CEILING_DBZ {
+            } else if no_echo {
                 no_echo_cells += 1;
-                values.push(no_echo_dbz);
+                values.push(value);
                 valid.push(true);
-                value_min = value_min.min(no_echo_dbz);
-                value_max = value_max.max(no_echo_dbz);
+                value_min = value_min.min(value);
+                value_max = value_max.max(value);
             } else {
                 echo_cells += 1;
-                values.push(raw_value);
+                values.push(value);
                 valid.push(true);
-                value_min = value_min.min(raw_value);
-                value_max = value_max.max(raw_value);
+                value_min = value_min.min(value);
+                value_max = value_max.max(value);
             }
         }
     }
@@ -755,15 +960,22 @@ fn load_field(
     }
     // The seam refuses a field whose valid cells leave the quantity's bound,
     // and it is cheaper to say which archive object did it here.
-    let (low, high) = seam_bounds(QUANTITY_COMPOSITE_REFLECTIVITY).unwrap();
+    let (low, high) = match spec.quantity {
+        "precipitation_rate" => (0.0, 2000.0),
+        "radar_quality_index" => (0.0, 1.0),
+        quantity => seam_bounds(quantity).ok_or_else(|| err("MRMS product has no validity bounds"))?,
+    };
     if value_min < low || value_max > high {
         return Err(err(format!(
-            "decoded reflectivity spans [{value_min:.3}, {value_max:.3}] dBZ, outside the \
-             seam bound [{low}, {high}]"
+            "decoded {} spans [{value_min:.3}, {value_max:.3}] {}, outside the seam bound [{low}, {high}]",
+            spec.quantity, spec.units
         )));
     }
 
     Ok(Field {
+        units: spec.units.to_string(),
+        source_units: field.units,
+        unit_multiplier,
         grid: GridSpec {
             kind: "regular_latlon".to_string(),
             nx,
@@ -778,10 +990,10 @@ fn load_field(
         values,
         valid,
         sentinels: SentinelReport {
-            no_coverage_ceiling_dbz: NO_COVERAGE_CEILING_DBZ,
-            no_echo_ceiling_dbz: NO_ECHO_CEILING_DBZ,
-            no_echo_value_dbz: no_echo_dbz,
-            masked_fill_dbz: MASKED_FILL_DBZ,
+            no_coverage_ceiling_dbz: spec.coverage_ceiling,
+            no_echo_ceiling_dbz: spec.no_echo_ceiling.unwrap_or(spec.coverage_ceiling),
+            no_echo_value_dbz: if spec.no_echo_ceiling.is_some() { no_echo_dbz } else { spec.fill },
+            masked_fill_dbz: spec.fill,
             no_coverage_cells,
             no_echo_cells,
             echo_cells,
@@ -1050,26 +1262,28 @@ fn cmd_decode(options: &Options) -> Result<String, Box<dyn Error>> {
         ))
     })?;
 
-    let field = load_field(&raw, options.bbox, options.no_echo_dbz())?;
+    let spec = decode_spec(options.product()?)?;
+    let field = load_field(&raw, options.bbox, options.no_echo_dbz(), &spec)?;
     let shape = vec![field.grid.ny, field.grid.nx];
     let mut builder = PayloadBuilder::new();
     builder.push_f64("values", &field.values, shape.clone());
     builder.push_mask("valid", &field.valid, shape);
     let (payload, arrays) = builder.finish();
 
+    let mut provenance = serde_json::to_value(Provenance::new(
+        "mrms", options.product()?, rw_obs::absolute_uri(&path), sha256, seam_time(Utc::now()),
+    ))?;
+    provenance["source_units"] = serde_json::json!(field.source_units);
+    provenance["canonical_units"] = serde_json::json!(field.units);
+    provenance["unit_multiplier"] = serde_json::json!(field.unit_multiplier);
     let meta = GridPackMeta {
         schema: GRID_SCHEMA.to_string(),
         status: "READY".to_string(),
-        quantity: QUANTITY_COMPOSITE_REFLECTIVITY.to_string(),
-        units: UNITS_DBZ.to_string(),
+        quantity: spec.quantity.to_string(),
+        units: field.units.clone(),
+        accumulation_seconds: spec.accumulation_seconds,
         valid_time: seam_time(valid_time),
-        provenance: Provenance::new(
-            "mrms",
-            options.product()?,
-            rw_obs::absolute_uri(&path),
-            sha256,
-            seam_time(Utc::now()),
-        ),
+        provenance,
         grid: field.grid.clone(),
         sentinels: field.sentinels.clone(),
         value_min_dbz: field.value_min,
@@ -1092,10 +1306,12 @@ fn cmd_decode(options: &Options) -> Result<String, Box<dyn Error>> {
         quantity: &'a str,
         units: &'a str,
         valid_time: &'a str,
-        provenance: &'a Provenance,
+        provenance: &'a serde_json::Value,
         grid: &'a GridSpec,
         sentinels: &'a SentinelReport,
+        #[serde(rename = "value_min")]
         value_min_dbz: f64,
+        #[serde(rename = "value_max")]
         value_max_dbz: f64,
     }
 
@@ -1122,7 +1338,8 @@ fn cmd_decode(options: &Options) -> Result<String, Box<dyn Error>> {
 fn cmd_grid(options: &Options) -> Result<String, Box<dyn Error>> {
     let (_path, raw, _sha) = source_bytes(options)?;
     let out = out_pack_path(options)?;
-    let field = load_field(&raw, options.bbox, options.no_echo_dbz())?;
+    let spec = decode_spec(options.product()?)?;
+    let field = load_field(&raw, options.bbox, options.no_echo_dbz(), &spec)?;
     let shape = vec![field.grid.ny, field.grid.nx];
     let mut builder = PayloadBuilder::new();
     builder.push_f64("latitude", &field.latitude, shape.clone());
@@ -1239,6 +1456,82 @@ fn cmd_verify(options: &Options) -> Result<String, Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn liquid_mass_accumulations_become_canonical_depth_without_changing_values() {
+        use rustwx_core::{GridShape, LatLonGrid};
+        let spec = decode_spec("MultiSensor_QPE_01H_Pass2_00.00").unwrap();
+        let field = |units| SelectedField2D::new(
+            spec.selector.unwrap(), units,
+            LatLonGrid {shape: GridShape {nx: 2, ny: 1}, lat_deg: vec![35.0; 2], lon_deg: vec![-100.0,-99.0]},
+            vec![0.0, 5.0],
+        ).unwrap();
+        let decoded = canonical_field(field("kg/m^2"), None, DEFAULT_NO_ECHO_DBZ, &spec).unwrap();
+        assert_eq!(spec.quantity, QUANTITY_PRECIPITATION_ACCUMULATION);
+        assert_eq!(decoded.units, "mm");
+        assert_eq!(decoded.source_units, "kg/m^2");
+        assert_eq!(decoded.unit_multiplier, 1.0);
+        assert_eq!(decoded.values, vec![0.0,5.0]);
+        assert_eq!(decoded.valid, vec![true,true]);
+        assert_eq!(decoded.value_min, 0.0);
+        assert_eq!(decoded.value_max, 5.0);
+        assert!(canonical_field(field("m/s"), None, DEFAULT_NO_ECHO_DBZ, &spec).is_err());
+    }
+
+    #[test]
+    fn precipitation_metadata_keeps_dry_cells_and_masks_both_missing_sentinels() {
+        let specs = decode_specs();
+        for spec in specs.iter().filter(|spec| spec.accumulation_seconds.is_some()) {
+            assert_eq!(spec.quantity, QUANTITY_PRECIPITATION_ACCUMULATION);
+            assert_eq!(spec.units, "mm");
+            assert_eq!(spec.accumulation_seconds, Some(3600));
+            assert_eq!(spec.normalize(0.0, -35.0), (0.0, true, false));
+            assert_eq!(spec.normalize(5.0, -35.0), (5.0, true, false));
+            assert_eq!(spec.normalize(-1.0, -35.0), (0.0, false, false));
+            assert_eq!(spec.normalize(-3.0, -35.0), (0.0, false, false));
+            assert_eq!(spec.normalize(f64::NAN, -35.0), (0.0, false, false));
+        }
+        let reflectivity = decode_spec(DEFAULT_PRODUCT).unwrap();
+        assert_eq!(reflectivity.normalize(-99.0, -35.0), (-35.0, true, true));
+        assert_eq!(reflectivity.normalize(-999.0, -35.0), (-35.0, false, false));
+    }
+
+    #[test]
+    fn rate_and_quality_rows_keep_units_parameters_and_dry_support_separate() {
+        let rate = decode_spec("PrecipRate_00.00").unwrap();
+        assert_eq!(rate.native_parameter, Some([209, 6, 1]));
+        assert_eq!(rate.selector, None);
+        assert_eq!(rate.quantity, "precipitation_rate");
+        assert_eq!(rate.units, "mm/hr");
+        assert_eq!(rate.accumulation_seconds, None);
+        let quality = decode_spec("RadarQualityIndex_00.00").unwrap();
+        assert_eq!(quality.native_parameter, Some([209, 8, 0]));
+        assert_eq!(quality.quantity, "radar_quality_index");
+        for spec in [&rate, &quality] {
+            assert_eq!(spec.normalize(0.0, -35.0), (0.0, true, false));
+            assert_eq!(spec.normalize(-1.0, -35.0), (0.0, false, false));
+            assert_eq!(spec.normalize(-3.0, -35.0), (0.0, false, false));
+        }
+        let qpe = decode_spec("RadarOnly_QPE_01H_00.00").unwrap();
+        assert_eq!(qpe.native_parameter, Some([209, 6, 2]));
+        assert_eq!(qpe.accumulation_seconds, Some(3600));
+        assert_eq!(qpe.units, "mm");
+    }
+
+    #[test]
+    fn rate_values_are_not_rescaled_as_mass_accumulation() {
+        let spec = decode_spec("PrecipRate_00.00").unwrap();
+        let field = DecodedField {
+            units: "mm/hr".to_string(),
+            grid: LatLonGrid {shape: GridShape {nx: 3, ny: 1}, lat_deg: vec![35.0; 3], lon_deg: vec![-100.0, -99.0, -98.0]},
+            values: vec![0.0, 12.0, -3.0],
+            native_coordinates: None,
+        };
+        let result = canonical_field(field, None, DEFAULT_NO_ECHO_DBZ, &spec).unwrap();
+        assert_eq!(result.units, "mm/hr");
+        assert_eq!(result.values, vec![0.0, 12.0, 0.0]);
+        assert_eq!(result.valid, vec![true, true, false]);
+    }
 
     #[test]
     fn help_version_and_abi_are_stable_surfaces() {

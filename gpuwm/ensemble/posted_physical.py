@@ -120,7 +120,8 @@ def _recipe_from_document(row):
                         datetime.fromisoformat(row["end"]),
                         tuple(RecipeMember(value["index"], value["seed"], source(value["trajectory"]))
                               for value in row["members"]),
-                        tuple(source(value) for value in row["donor_population"]), row["calibration"])
+                        tuple(source(value) for value in row["donor_population"]), row["calibration"],
+                        row.get("perturbation"))
 
 
 def validate_provider_plan(provider_plan):
@@ -144,7 +145,12 @@ def validate_provider_plan(provider_plan):
     identities = tuple(member.trajectory.identity for member in recipe.members)
     if recipe.kind == "control" and any(identity != recipe.base.identity for identity in identities):
         raise ValueError("every control member must retain the unchanged base trajectory")
-    if recipe.kind != "control" and len(set(identities)) != len(identities):
+    if recipe.kind == "surface-state":
+        from gpuwm.ensemble.surface_controls import shared_surface_options
+        shared_surface_options(recipe.perturbation, len(recipe.members))
+        if any(identity != recipe.base.identity for identity in identities):
+            raise ValueError("surface-state members must retain the unchanged base trajectory")
+    if recipe.kind not in ("control", "surface-state") and len(set(identities)) != len(identities):
         raise ValueError("posted physical provider repeats a source member trajectory")
     if (isinstance(provider_plan["amplitude"], bool) or not isinstance(provider_plan["amplitude"], (int, float))
             or not math.isfinite(provider_plan["amplitude"]) or provider_plan["amplitude"] < 0):

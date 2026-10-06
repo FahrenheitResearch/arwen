@@ -37,8 +37,8 @@ use std::path::Path;
 
 use crate::direct::project_points_with_projection;
 use rustwx_render::{
-    Color, MapRenderRequest, ProjectedLineOverlay, ProjectedMarkerShape, ProjectedPlaceLabel,
-    ProjectedPointOverlay,
+    Color, ColorScale, ColormapBuildOptions, MapRenderRequest, ProjectedLineOverlay,
+    ProjectedMarkerShape, ProjectedPlaceLabel, ProjectedPointOverlay, StaticPlotStyle, build_colormap,
 };
 use serde::{Deserialize, Serialize};
 
@@ -97,6 +97,28 @@ pub struct PointSpec {
     pub shape: String,
 }
 
+/// A measured or scored scalar in the map's display units.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ValuePointSpec {
+    pub lat: f64,
+    pub lon: f64,
+    pub value: f64,
+}
+
+/// Scalar dots using the field palette, or an explicitly supplied error palette.
+/// Product selection is metadata, so the same overlay file can accompany a batch.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ValuePointLayer {
+    #[serde(default)]
+    pub products: Vec<String>,
+    pub units: String,
+    pub points: Vec<ValuePointSpec>,
+    #[serde(default)]
+    pub scale: Option<ColorScale>,
+    #[serde(default = "default_marker_radius")]
+    pub radius_px: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LabelSpec {
     pub lat: f64,
@@ -129,6 +151,8 @@ pub struct MapOverlays {
     pub labels: Vec<LabelSpec>,
     #[serde(default)]
     pub rings: Vec<RingSpec>,
+    #[serde(default)]
+    pub value_layers: Vec<ValuePointLayer>,
 }
 
 /// Everything one `--annotate FILE.json` can say on a panel.
@@ -171,6 +195,7 @@ impl MapOverlays {
             && self.points.is_empty()
             && self.labels.is_empty()
             && self.rings.is_empty()
+            && self.value_layers.is_empty()
     }
 
     /// Every `(lat, lon)` this overlay set needs projected, in the order
@@ -192,6 +217,9 @@ impl MapOverlays {
             for radius_km in &ring.radii_km {
                 points.extend(ring_points(ring.lat, ring.lon, *radius_km, ring.segments));
             }
+        }
+        for layer in &self.value_layers {
+            points.extend(layer.points.iter().map(|point| (point.lat, point.lon)));
         }
         points
     }
@@ -269,6 +297,40 @@ impl MapOverlays {
                     width: ring.width.max(1),
                     role: Default::default(),
                 });
+            }
+        }
+        for layer in &self.value_layers {
+            let points = take(layer.points.len());
+            if !layer.products.is_empty()
+                && !layer.products.iter().any(|product| {
+                    request.field.product.as_named() == Some(product.as_str())
+                })
+            {
+                continue;
+            }
+            if layer.units != request.field.units {
+                return Err(format!(
+                    "scalar overlay units {:?} differ from map units {:?}",
+                    layer.units, request.field.units
+                ));
+            }
+            let cmap = build_colormap(
+                layer.scale.as_ref().unwrap_or(&request.scale),
+                ColormapBuildOptions {
+                    render_density: StaticPlotStyle::from_env().render_density(request.render_density),
+                    legend: request.legend,
+                },
+            );
+            for (point, xy) in layer.points.iter().zip(points) {
+                if !point.value.is_finite() || !xy.0.is_finite() || !xy.1.is_finite() {
+                    continue;
+                }
+                let mut dot = ProjectedPlaceLabel::new(xy.0, xy.1);
+                dot.style.marker_radius_px = layer.radius_px.max(1);
+                dot.style.marker_fill = cmap.map(point.value).into();
+                dot.style.marker_outline = Color::rgba(20, 24, 28, 255);
+                dot.style.marker_outline_width = 1;
+                request.projected_place_labels.push(dot);
             }
         }
         Ok(())
@@ -422,6 +484,41 @@ mod tests {
     fn an_empty_overlay_file_is_a_no_op_rather_than_an_error() {
         let overlays: MapOverlays = serde_json::from_str("{}").unwrap();
         assert!(overlays.is_empty());
+    }
+
+    #[test]
+    fn scalar_marks_use_the_field_colormap_and_product_selection() {
+        use rustwx_core::{Field2D, GridShape, LatLonGrid, ProductKey};
+        let lat = vec![34.0, 34.0, 35.0, 35.0];
+        let lon = vec![-99.0, -98.0, -99.0, -98.0];
+        let scale = ColorScale::Discrete(rustwx_render::DiscreteColorScale {
+            levels: vec![0.0, 10.0, 20.0],
+            colors: vec![Color::rgba(0, 0, 200, 255), Color::rgba(200, 0, 0, 255)],
+            extend: rustwx_render::ExtendMode::Both,
+            mask_below: None,
+        });
+        let field = Field2D::new(ProductKey::named("scalar"), "degC", LatLonGrid {
+            shape: GridShape {nx: 2, ny: 2}, lat_deg: lat.clone(), lon_deg: lon.clone(),
+        }, vec![15.0; 4]).unwrap();
+        let mut request = MapRenderRequest::from_core_field(field, scale.clone());
+        let marks = MapOverlays {
+            value_layers: vec![ValuePointLayer {
+                products: vec!["scalar".to_string()], units: "degC".to_string(),
+                points: vec![ValuePointSpec {lat: 34.5, lon: -98.5, value: 15.0}],
+                scale: None, radius_px: 5,
+            }], ..MapOverlays::default()
+        };
+        marks.apply(&mut request, &lat, &lon, None, (-99.0,-98.0,34.0,35.0), 1.0).unwrap();
+        let cmap = build_colormap(&scale, ColormapBuildOptions {
+            render_density: StaticPlotStyle::from_env().render_density(request.render_density),
+            legend: request.legend,
+        });
+        assert_eq!(request.projected_place_labels.len(), 1);
+        assert_eq!(request.projected_place_labels[0].style.marker_fill, Color::from(cmap.map(15.0)));
+        request.field.product = rustwx_render::ProductKey::named("other");
+        request.projected_place_labels.clear();
+        marks.apply(&mut request, &lat, &lon, None, (-99.0,-98.0,34.0,35.0), 1.0).unwrap();
+        assert!(request.projected_place_labels.is_empty());
     }
 
     #[test]

@@ -488,7 +488,7 @@ def _mcica_gpu_module():
     if device not in _MCICA_GPU_MODULE:
         import os
         import cupy as cp
-        from cupy.cuda import compiler as _cc
+        from gpuwm import nvrtc_ptx_cache as _cc
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "kernels", "rrtmg_mcica_wrf.cu")
         with open(path, encoding="utf-8") as fh:

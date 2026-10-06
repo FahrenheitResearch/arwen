@@ -105,7 +105,7 @@ record, and `tests/test_physics_composition_walk.py` regenerates it on
 every release cut and compares it byte for byte. As measured:
 
 - **3557 of 11431 admission attempts are accepted**, covering **3549 distinct
-  accepted suites**, against 29 registered templates. The presets are a
+  accepted suites**, against 32 registered templates. The presets are a
   corner of the space, not the space.
 - **Every accepted run keeps every switch the file set**, checked
   against the resolved per-domain `RunConfig`. Zero rewrites. An
@@ -1933,7 +1933,7 @@ user-facing walkthrough -- the symptom, how to tell which version is
 actually executing, and how to correct the config -- is
 [NOCTURNAL-DEWPOINTS.md](NOCTURNAL-DEWPOINTS.md).
 
-The table below classifies all **28 shipped single-domain profiles**
+The table below classifies all **31 shipped single-domain profiles**
 (`gpuwm.physics_compat.SINGLE_DOMAIN_PHYSICS_PROFILES`, which is the
 `--physics-profile` choice list). The registry carries one further
 template that no fixed-template route declares and so has no row here
@@ -1955,6 +1955,9 @@ load, by the same guard.
 | `wsm6-mynn-mynn-noah-rte-rrtmgp-implemented-unverified-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
 | `wsm6-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
 | `thompson-mp8-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** (Thompson with MYNN and RUC; the catalog's coastal fog and stratus preset) |
+| `thompson-mp8-mynn-mynn-ruc-monthly-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** (Thompson, MYNN and RUC with prescribed monthly surface seeds) |
+| `thompson-mp8-mynn-mynn-ruc-monthly-solar-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** (the monthly suite with solar-angle land albedo) |
+| `thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** (aerosol-aware Thompson with the GSD MYNN v4.1 form over RUC) |
 | `wsm6-mynn-mynn-noahmp-rte-rrtmgp-expert-only-v1` | RTE+RRTMGP / RTE+RRTMGP | **yes** |
 | `20crv3-wsm6-ysu-mm5-noah-kf-rte-rrtmgp-implemented-unverified-v1` | RTE+RRTMGP / RTE+RRTMGP (declared as the aggregate `ra_physics = 4`) | **yes** |
 | `milbrandt2mom-mp9-ysu-mm5-noah-ntiedtke-rrtmg-legacy-v1` | legacy RRTMG / legacy RRTMG | **yes** |

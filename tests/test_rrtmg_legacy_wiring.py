@@ -42,17 +42,16 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from conftest import HAS_GPU
+
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SW_FIXTURES = os.path.join(_REPO, "tools", "rrtmg_wrf461_oracle",
                             "sw_fixtures", "fixtures_real.npz")
 
-try:
+if HAS_GPU:
     import cupy as cp
-    cp.cuda.runtime.getDeviceCount()
-    HAS_GPU = True
-except Exception:                                       # pragma: no cover
+else:
     cp = None
-    HAS_GPU = False
 
 
 def gpu_gate(fn):
@@ -996,18 +995,28 @@ def test_child_construction_site_requires_the_parent():
 
 @gpu_gate
 def test_live_latitude_cache_matches_fresh_owners(env, monkeypatch):
-    """A neutral tile reused north/south/north matches fresh radiation."""
+    """A neutral tile reused north/south/north matches fresh radiation.
+
+    Tile buffers and moving grids overwrite ``latitude_deg`` in place.  The
+    adapter retains no latitude-derived ozone: every call interpolates the
+    CAM climatology from the live latitude, so a reused buffer cannot read
+    a stale field.  Checked three ways: bits equal a freshly built adapter,
+    each call hands the live latitude to the interpolation, and no
+    latitude-bound ozone cache exists to go stale.
+    """
     from gpuwm.core.rrtmg_legacy import RRTMGLegacyRadiation
     from gpuwm.ingest import wrf_ozone
     shape = (env.ny, env.nx)
     reused = RRTMGLegacyRadiation(
         START, np.zeros(shape, np.float32), env.lon.reshape(shape),
         p_top=env.p_top)
-    interp = wrf_ozone.interp_ozone_to_latitudes
-    calls = []
-    def measured(*args, **kwargs):
-        calls.append(1)
-        return interp(*args, **kwargs)
+    assert not getattr(reused, "geography_cache_dependencies", {})
+    assert not hasattr(reused, "_ozone_lat_interp")
+    interp = wrf_ozone.ozn_latitude_time_int
+    seen = []
+    def measured(julday, julian, xlat, *args, **kwargs):
+        seen.append(np.array(xlat, copy=True))
+        return interp(julday, julian, xlat, *args, **kwargs)
     for latitude in (env.lat, -env.lat, env.lat):
         fresh = RRTMGLegacyRadiation(
             START, latitude.reshape(shape).copy(), env.lon.reshape(shape),
@@ -1015,15 +1024,16 @@ def test_live_latitude_cache_matches_fresh_owners(env, monkeypatch):
         want = _host_result(_call(fresh, env))
         reused.latitude_deg[:] = latitude.reshape(shape)
         with monkeypatch.context() as patch:
-            patch.setattr(wrf_ozone, "interp_ozone_to_latitudes", measured)
-            count = len(calls)
+            patch.setattr(wrf_ozone, "ozn_latitude_time_int", measured)
+            seen.clear()
             for _ in range(DUAL_RUNS):
                 got = _host_result(_call(reused, env))
                 for name in want:
                     bits_equal(name, got[name], want[name])
-            assert len(calls) == count + 1
-        np.testing.assert_array_equal(reused._ozone_latitude,
-                                      reused.latitude_deg)
+            assert len(seen) == DUAL_RUNS
+            for xlat in seen:
+                np.testing.assert_array_equal(
+                    xlat, latitude.reshape(-1).astype(np.float32))
 
 
 @gpu_gate

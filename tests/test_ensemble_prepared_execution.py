@@ -453,6 +453,75 @@ def test_automatic_handoff_bootstraps_each_member_and_packs_them_as_their_own_so
     assert result.admission["native_admitted"] and not result.admission["fallback_reasons"]
 
 
+def test_surface_callback_uses_roster_seed_and_changes_driver_before_member_snapshot(tmp_path, monkeypatch):
+    from gpuwm.ensemble.prepared_execution import _bootstrap_member_sources
+    from gpuwm.ensemble.prepared_batch import native_prepared_eligibility
+    from gpuwm.ensemble.production import PreparedEnsembleSession
+    from gpuwm.ensemble.runtime_context import current_capture
+    from gpuwm.ensemble import surface_recipe
+    inputs, root = source()
+    other_inputs, other = source()
+    for node in (root, other):
+        node.state.physics.fields["xland"] = np.ones((8, 8), dtype=np.float32)
+    assert native_prepared_eligibility(inputs, root, members=2).eligible
+    selected = {3: SimpleNamespace(member_id=3, seed=731), 7: SimpleNamespace(member_id=7, seed=907)}
+    roster = SimpleNamespace(members=tuple(selected.values()), select=lambda ids: tuple(selected[index] for index in ids))
+    request = {"members": 2, "base_seed": 42, "recipe": "surface-state",
+               "perturbation": {"kind": "surface-state", "soil_moisture_scale": [0.8, 1.2]}}
+    session = PreparedEnsembleSession(request, output_directory=tmp_path,
+                                     member_roster=roster, array_module=_pooled_xp())
+    events = []
+    def realize(value, *, seed, **unused):
+        events.append(("realized", seed))
+        return object(), {"realized_fp32_hex": "device-drawn-words"}
+    def apply(state, *, member_id, seed, domain_id, **unused):
+        events.append(("surface-applied", member_id, seed, domain_id))
+        state.physics.fields["soil"][...] = np.float32(907)
+        return {"member_id": member_id, "seed": seed, "domain_id": domain_id,
+                "realized_fp32_hex": "device-drawn-words"}
+    monkeypatch.setattr(surface_recipe, "realize_surface_recipe", realize)
+    monkeypatch.setattr(surface_recipe, "apply_surface_recipe", apply)
+    original_static = other.state.physics.fields["xland"].tobytes()
+    def runner(member_inputs, **options):
+        assert member_inputs is other_inputs
+        capture = current_capture()
+        assert capture.member_id == 7
+        model = SimpleNamespace(walk_parent_first=lambda: iter((other,)))
+        capture.initialize_callback(model=model)
+        events.append(("snapshot-handoff", 7))
+        return options["ensemble_bootstrap"](inputs=member_inputs, node=other, model=model)
+    sources, receipts = _bootstrap_member_sources(runner, node=root, ids=(3, 7), first_id=3,
+        member_inputs_for=lambda member: other_inputs, out=tmp_path, options={},
+        array_module=_pooled_xp(), initialize_callback_factory=session._initialization_callback)
+    assert events == [("realized", 907), ("surface-applied", 7, 907, 1), ("snapshot-handoff", 7)]
+    np.testing.assert_array_equal(sources.snapshots[7].physics.member_array("driver/fields/soil"),
+                                  np.full((4, 8, 8), 907, dtype=np.float32))
+    assert sources.snapshots[7].physics.member_array("driver/fields/xland").tobytes() == original_static
+    assert session._surface_receipts[7]["seed"] == 907
+    assert receipts[0]["member_id"] == 7 and receipts[0]["forecast_steps"] == 0
+
+
+def test_surface_receipt_metadata_does_not_substitute_another_members_numerical_scalars():
+    from gpuwm.ensemble.prepared_batch import bind_member_sources
+    inputs, node = source()
+    _other_inputs, other = source()
+    for member, owner in ((0, node), (1, other)):
+        owner.state._ensemble_surface_state = {
+            "identity": {"member_id": member, "seed": 900 + member},
+            "receipt": {"realized_fp32_hex": str(member)},
+        }
+    sources = _member_sources(0, {1: other})
+    assert sources.compatibility_reasons(node) == ()
+    assert "_ensemble_surface_state" not in sources.snapshots[1].prepared.scalars
+    bind_member_sources(node, sources)
+    plan = plan_initialized_member_execution(inputs, node,
+        {"members": 2, "recipe": "surface-state", "perturbation": {
+            "kind": "surface-state", "soil_moisture_scale": [0.8, 1.2]}},
+        collector(2), evidence=evidence(), model_factory=model,
+        input_provider=lambda **unused: inputs)
+    assert plan.native and not plan.fallback_reasons
+
+
 def test_automatic_handoff_declines_an_incompatible_member_after_bootstrapping_it(tmp_path):
     inputs, node = source()
     members = {member: _distinct_source(member) for member in (1, 2)}

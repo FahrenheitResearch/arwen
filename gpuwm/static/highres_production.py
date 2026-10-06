@@ -74,6 +74,8 @@ from typing import Mapping
 
 import numpy as np
 
+from gpuwm.progress import prep_stage
+
 from .build import HALO
 from .terrain_smoothing import WPS_DEFAULT, smoothing_for
 from .highres import (BoundRaster, MODIS21_ISLAKE, MODIS21_ISURBAN,
@@ -207,6 +209,9 @@ class HighresStaticConfig:
     terrain_smoothing: tuple[tuple, ...] = ()
     sf_urban_physics: int = 0
     use_wudapt_lcz: int = 0
+    #: The published static file this configuration takes its geography
+    #: from ([static] source; gpuwm.static.external_source), or None.
+    static_source: object = None
 
     def smoothing_for(self, domain_id):
         """This carrier's terrain smoothing for one domain."""
@@ -229,6 +234,8 @@ class HighresStaticConfig:
         if self.sf_urban_physics > 0:
             echoed["urban_legend"] = "urban"
             echoed["use_wudapt_lcz"] = self.use_wudapt_lcz
+        if self.static_source is not None:
+            echoed["static_source"] = self.static_source.echo()
         return echoed
 
     def applies_to(self, grid) -> bool:
@@ -390,9 +397,29 @@ def resolve_static_highres(raw, *, source: str, base_dir, spacings_m=None, run_c
     or below a :data:`HIGHRES_DEFAULT_BY_DX` row take that row.
     ``spacings_m`` stands in for the spacings read from ``raw["domain"]``
     when the caller already holds the built experiment.
+
+    A static source the ``[fetch]`` source's metadata selects is a default:
+    a ``[projection]`` off the row's cone does not take it and resolves
+    exactly as before the row existed (WPS_GEOG statics; see
+    :func:`gpuwm.static.source_defaults.defaulted_source_fallback`).  A
+    ``[static] source`` the configuration names is kept, and refused by
+    name where the grid is not on the row's cone.
     """
-    if isinstance(raw, Mapping) and raw.get("static") is not None:
-        config = parse_static_table(raw["static"], source=source, base_dir=base_dir)
+    from .source_defaults import with_declared_source_static_defaults
+    raw = with_declared_source_static_defaults(raw)
+    declared = raw.get("static") if isinstance(raw, Mapping) else None
+    if isinstance(declared, Mapping) and "highres" not in declared:
+        # A [static] table that names only a static source keeps the
+        # grid-spacing default of a configuration that declares none.
+        carrier = parse_static_table(declared, source=source, base_dir=base_dir)
+        if spacings_m is None:
+            spacings_m = raw_domain_spacings(raw)
+        config = default_static_highres(spacings_m)
+        if carrier is not None and carrier.static_source is not None:
+            config = (carrier if config is None
+                      else replace(config, static_source=carrier.static_source))
+    elif declared is not None:
+        config = parse_static_table(declared, source=source, base_dir=base_dir)
     else:
         if spacings_m is None:
             spacings_m = raw_domain_spacings(raw)
@@ -422,18 +449,28 @@ def parse_static_table(raw, *, source: str, base_dir
     if not isinstance(raw, dict):
         raise ValueError(
             f"[static] of {source} must be a table, got {raw!r}.")
-    unknown = sorted(set(raw) - {"highres"})
+    known_keys = ("highres", "source", "source_fields")
+    unknown = sorted(set(raw) - set(known_keys))
     if unknown:
         named = ", ".join(
-            f"{key!r}{did_you_mean(key, ('highres',))}" for key in unknown)
+            f"{key!r}{did_you_mean(key, known_keys)}" for key in unknown)
         raise ValueError(
-            f"[static] of {source} does not have a table {named}; the one "
-            "known sub-table is [static.highres].")
+            f"[static] of {source} does not have a key or table {named}; "
+            "known: the sub-table [static.highres] and the keys source and "
+            "source_fields.")
+    from .external_source import parse_static_source
+    static_source = parse_static_source(raw, source=source)
     table = raw.get("highres")
+    if table is None and static_source is not None:
+        # A static source alone: a disabled carrier that replaces no
+        # statics by overlay and carries the source to every build.
+        return HighresStaticConfig(
+            enabled=False, cache_root=default_highres_cache_root(),
+            static_source=static_source)
     if table is None:
         raise ValueError(
             f"[static] of {source} declares nothing; declare "
-            "[static.highres] or remove the table.")
+            "[static.highres] or [static] source, or remove the table.")
     if not isinstance(table, dict):
         raise ValueError(
             f"[static.highres] of {source} must be a table, got {table!r}.")
@@ -526,7 +563,8 @@ def parse_static_table(raw, *, source: str, base_dir
                                terrain_source=str(terrain_source),
                                fields=str(fields),
                                landcover_source=str(landcover),
-                               max_dx_m=max_dx_m)
+                               max_dx_m=max_dx_m,
+                               static_source=static_source)
 
 
 # ---------------------------------------------------------------------------
@@ -687,13 +725,15 @@ def _fetch_terrain(bbox: FootprintBBox, cache_root: Path, coverage, *,
         return bound, manifest
 
     if coverage.source_id == "copernicus-dem-glo30":
-        tiles, absent = fetch_copernicus_dem_tiles(bbox, cache_root,
-                                                   urlopen=urlopen)
+        with prep_stage("static_terrain_fetch", label="Fetch high-resolution terrain"):
+            tiles, absent = fetch_copernicus_dem_tiles(bbox, cache_root,
+                                                     urlopen=urlopen)
         datum = COPERNICUS_DEM_VERTICAL_DATUM
         nodata = None
     elif coverage.source_id == "srtm-gl1":
-        tiles, absent = fetch_srtm_gl1_tiles(bbox, cache_root,
-                                             urlopen=urlopen)
+        with prep_stage("static_terrain_fetch", label="Fetch high-resolution terrain"):
+            tiles, absent = fetch_srtm_gl1_tiles(bbox, cache_root,
+                                               urlopen=urlopen)
         datum = SRTM_GL1_VERTICAL_DATUM
         nodata = SRTM_GL1_NODATA
     else:  # pragma: no cover - registry and dispatch are edited together
@@ -714,8 +754,10 @@ def _fetch_terrain(bbox: FootprintBBox, cache_root: Path, coverage, *,
     }
     if not tiles:
         return None, manifest
-    window, window_audit = derive_global_terrain_window(
-        tiles, bbox, cache_root, sea_level_fill=None, source_nodata=nodata)
+    with prep_stage("static_terrain_window", label="Build terrain source window",
+                    count=len(tiles)):
+        window, window_audit = derive_global_terrain_window(
+            tiles, bbox, cache_root, sea_level_fill=None, source_nodata=nodata)
     bound = _bound(
         window, source_id=coverage.source_id, role="terrain",
         source_url=coverage.source_url, license_id=coverage.license_id,
@@ -1195,10 +1237,12 @@ def _apply_terrain_only(baseline, grid, *, config: HighresStaticConfig,
     except CoverageError as error:
         raise HighresRefusal("missing-source-coverage", str(error))             from error
 
-    overrides, source_audit = build_terrain_override(
-        grid, terrain=terrain, halo=HALO, baseline=baseline,
-        terrain_smoothing=terrain_smoothing)
-    merged, merge_audit = merge_terrain_override(baseline, overrides)
+    with prep_stage("static_terrain_warp", label="Resample terrain onto domain"):
+        overrides, source_audit = build_terrain_override(
+            grid, terrain=terrain, halo=HALO, baseline=baseline,
+            terrain_smoothing=terrain_smoothing)
+    with prep_stage("static_terrain_merge", label="Merge terrain into static fields"):
+        merged, merge_audit = merge_terrain_override(baseline, overrides)
 
     counts = _replacement_counts(baseline, merged, _REPLACED_FIELDS_TERRAIN)
     cell_count = int(np.asarray(baseline["HGT_M"]).size)
@@ -1609,6 +1653,7 @@ def parse_sealed_static_highres(echo, *, source: str, base_dir,
     urban, lcz = sealed_urban_legend(echo, source=source)
     table = dict(echo)
     rows = table.pop("terrain_smoothing", None)
+    source_echo = table.pop("static_source", None)
     table.pop("urban_legend", None)
     table.pop("use_wudapt_lcz", None)
     config = parse_static_table({"highres": table}, source=source,
@@ -1625,6 +1670,10 @@ def parse_sealed_static_highres(echo, *, source: str, base_dir,
                                or 0))
     elif urban:
         config = replace(config, sf_urban_physics=1, use_wudapt_lcz=lcz)
+    if source_echo is not None:
+        from .external_source import setting_from_echo
+        config = replace(config, static_source=setting_from_echo(
+            source_echo, source=source))
     if rows is None:
         return config
     from .terrain_smoothing import smoothing_rows_from_echo
@@ -1678,6 +1727,8 @@ def apply_prepared_highres(baseline, grid, *, config, domain_id, case_date,
     """
     from .terrain_smoothing import require_root_smoothing
     require_root_smoothing(config, domain_id, baseline_receipt)
+    from .external_source import require_root_static_source
+    require_root_static_source(config, domain_id, baseline_receipt, grid=grid)
     if not overlay_active(config, grid):
         return baseline, baseline_receipt
     previous = (baseline_receipt.get("highres")

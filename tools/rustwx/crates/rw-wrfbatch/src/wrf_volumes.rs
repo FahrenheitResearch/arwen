@@ -8,9 +8,19 @@
 //! 3D variables the model ingest writes for HRRR/GFS: `temperature_iso`,
 //! `dewpoint_iso`, `u_iso`, `v_iso`, `height_iso`. This module reads WRF's 3D
 //! fields through `wrf-core`'s `getvar` (which already handles destaggering,
-//! theta -> T, geopotential -> height, and QVAPOR -> Td) and log-pressure
-//! interpolates each column onto the canonical isobaric levels, so imported
-//! WRF runs produce soundings exactly like the downloaded models do.
+//! theta -> T, and QVAPOR -> Td) and log-pressure interpolates each column
+//! onto the canonical isobaric levels, so imported WRF runs produce soundings
+//! exactly like the downloaded models do.
+//!
+//! Height is not read off the mass levels.  The model knows its height at
+//! the interfaces of its layers (PH + PHB); a layer-mean height paired with
+//! the mass-level pressure reads 4 to 6 m high at 500 hPa, because on an eta
+//! grid the mean of two interface heights belongs to the geometric mean of
+//! their pressures and the mass level sits at the arithmetic mean.  Every
+//! isobaric height here is read between interfaces
+//! ([`rw_isobaric::isobaric_heights_into`]); a frame without the interface
+//! geometry falls back to the mass-level pairing by name and says so in the
+//! import's notes ([`ColumnHeights::MassLevels`]).
 #![allow(dead_code)]
 // `try_interpolate_iso_volumes` takes the five column fields + shape as separate
 // slices by design (the shared raw/post-processed reader contract); factoring
@@ -21,8 +31,9 @@ use rustwx_core::checked_volume_elements;
 // The log-pressure column walk is shared with the ML exporter
 // (crates/rw-isobaric), so a chart and a training sample read off one
 // history file agree about where a pressure level is.
-use rw_isobaric::{bracket, lerp};
+use rw_isobaric::{InterfaceStencil, STANDARD_GRAVITY, bracket, isobaric_heights_into, lerp};
 use rw_store::PressureVolumeInput;
+use wrf_core::file::SharedField;
 use wrf_core::{ComputeOpts, VarOutput, WrfFile, getvar};
 
 const STANDARD_LEVEL_COUNT: usize = 37;
@@ -55,9 +66,9 @@ fn standard_levels() -> Vec<u16> {
 /// Callers that receive an error must not begin the 3-D volume read. A caller
 /// that already owns independent 2-D products may retain them; a volume-only
 /// caller may instead return the error. The returned value is the total known
-/// owned byte count. The per-volume store ceiling remains an independent check
-/// in addition to the aggregate working-set ceiling, which is the memory this
-/// host has available now and never less than 4 GiB
+/// owned byte count. Per-volume checked addressability remains independent of the aggregate
+/// working-set ceiling, which is the memory this host has available now and
+/// never less than 4 GiB
 /// ([`volume_owned_ceiling`]).
 pub(crate) fn preflight_iso_volume_shape(nz: usize, cells: usize) -> Result<u64, String> {
     preflight_iso_volume_shape_within(nz, cells, rusty_weather::host_memory::available_bytes())
@@ -109,7 +120,7 @@ fn preflight_iso_volume_shape_within(
 }
 
 /// The complete known owned working set of one volume build, after the
-/// shape, store-volume and overflow checks. Host independent.
+/// shape, addressability and overflow checks. Host independent.
 fn iso_volume_owned_bytes(nz: usize, cells: usize) -> Result<u128, String> {
     if nz < 2 {
         return Err(format!(
@@ -204,6 +215,209 @@ pub struct SurfaceFallback {
     pub v_10m: Vec<f32>,
 }
 
+/// Where a column's isobaric heights are read from.
+pub(crate) enum ColumnHeights<'a> {
+    /// Interface values, `[(nz + 1) * cells]` bottom up, of which
+    /// `per_metre` make one metre (geopotential with standard gravity, or
+    /// heights with 1), read in log-pressure between the interfaces whose
+    /// pressures `stencil` finds from the mass-level pressures.
+    Interfaces {
+        interface: &'a [f64],
+        per_metre: f64,
+        stencil: &'a InterfaceStencil,
+    },
+    /// THE NAMED FALLBACK, for a frame without interface geometry: heights
+    /// at the mass levels, `[nz * cells]`, read at the mass-level pressure.
+    /// On an eta grid these are layer means and the surface reads about
+    /// 5 m high at 500 hPa; the caller says so ([`mass_level_heights_note`]).
+    MassLevels(&'a [f64]),
+}
+
+impl ColumnHeights<'_> {
+    fn expected_len(&self, nz: usize, cells: usize) -> Option<usize> {
+        match self {
+            Self::Interfaces { .. } => nz.checked_add(1)?.checked_mul(cells),
+            Self::MassLevels(_) => nz.checked_mul(cells),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Interfaces { interface, .. } => interface.len(),
+            Self::MassLevels(heights) => heights.len(),
+        }
+    }
+}
+
+/// A raw wrfout frame's interface geometry: geopotential on the layer
+/// interfaces (PH + PHB, m2 s-2) and where each interface sits between the
+/// mass levels (from ZNU and ZNW).
+pub(crate) struct InterfaceGeometry {
+    pub geopotential: SharedField,
+    pub stencil: InterfaceStencil,
+}
+
+/// The heights one frame's isobaric surfaces are read from, owned.
+pub(crate) enum FrameHeights {
+    Interfaces(InterfaceGeometry),
+    /// The named fallback: `getvar("height")`, metres at the mass levels.
+    MassLevels(Vec<f64>),
+}
+
+impl FrameHeights {
+    /// The frame's interface geometry, or -- the named fallback, for a frame
+    /// without it -- its mass-level heights together with the note the
+    /// import must carry.  `stage` names the read in an error.
+    pub(crate) fn read(
+        file: &WrfFile,
+        timeidx: usize,
+        stage: &str,
+    ) -> Result<(Self, Option<String>), String> {
+        match read_interface_geometry(file, timeidx) {
+            Ok(geometry) => Ok((Self::Interfaces(geometry), None)),
+            Err(reason) => {
+                let height = getvar(file, "height", Some(timeidx), &ComputeOpts::default())
+                    .map_err(|err| format!("read WRF height ({stage}): {err}"))?;
+                check_native_3d_output(&height, "height", file.nz, file.ny, file.nx)?;
+                Ok((
+                    Self::MassLevels(height.data),
+                    Some(mass_level_heights_note(&reason)),
+                ))
+            }
+        }
+    }
+
+    pub(crate) fn view(&self) -> ColumnHeights<'_> {
+        match self {
+            Self::Interfaces(geometry) => ColumnHeights::Interfaces {
+                interface: &geometry.geopotential,
+                per_metre: STANDARD_GRAVITY,
+                stencil: &geometry.stencil,
+            },
+            Self::MassLevels(heights) => ColumnHeights::MassLevels(heights),
+        }
+    }
+}
+
+/// The frame's [`InterfaceGeometry`], or why it has none.
+///
+/// `ZNU` is read when the frame carries it and is otherwise the middle of
+/// each layer in `ZNW`, which is how WRF defines it.
+pub(crate) fn read_interface_geometry(
+    file: &WrfFile,
+    timeidx: usize,
+) -> Result<InterfaceGeometry, String> {
+    let missing: Vec<&str> = ["PH", "PHB", "ZNW"]
+        .into_iter()
+        .filter(|name| !file.has_var(name))
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!("the frame carries no {}", missing.join(", ")));
+    }
+    let read = |name: &str| {
+        file.read_var(name, timeidx)
+            .map_err(|err| format!("read WRF {name}: {err}"))
+    };
+    let eta_interface = read("ZNW")?;
+    let stencil = if file.has_var("ZNU") {
+        InterfaceStencil::new(&read("ZNU")?, &eta_interface)
+    } else {
+        InterfaceStencil::from_interfaces(&eta_interface)
+    }
+    .map_err(|err| format!("the frame's eta levels: {err}"))?;
+    if stencil.levels() != file.nz {
+        return Err(format!(
+            "the frame's eta levels describe {} layers and its fields {}",
+            stencil.levels(),
+            file.nz
+        ));
+    }
+    let geopotential = file
+        .geopotential_stag(timeidx)
+        .map_err(|err| format!("read WRF PH + PHB: {err}"))?;
+    let expected = file
+        .nz
+        .checked_add(1)
+        .and_then(|levels| levels.checked_mul(file.nxy()));
+    if Some(geopotential.len()) != expected {
+        return Err(format!(
+            "WRF PH + PHB has {} values, not {} interfaces of {} cells",
+            geopotential.len(),
+            file.nz + 1,
+            file.nxy()
+        ));
+    }
+    Ok(InterfaceGeometry {
+        geopotential,
+        stencil,
+    })
+}
+
+/// The note an import carries when its isobaric heights took the named
+/// fallback, so the product's metadata says which heights a reader is
+/// looking at.
+pub(crate) fn mass_level_heights_note(reason: &str) -> String {
+    format!(
+        "isobaric heights (height_iso, the isobaric height charts and soundings) are mass-level heights read at the mass-level pressure, not read between layer interfaces, because {reason}: exact for a height-coordinate model, about 5 m high at 500 hPa for an eta-coordinate one (interface heights need PH, PHB and ZNW)"
+    )
+}
+
+/// Isobaric heights at `levels` (hPa) from mass-level `pressure_hpa`, read
+/// from `heights` -- the chart-plane twin of the sounding volume's height.
+pub(crate) fn heights_at_levels(
+    pressure_hpa: &[f64],
+    heights: &ColumnHeights<'_>,
+    nz: usize,
+    cells: usize,
+    levels: &[u16],
+) -> Result<Vec<(u16, Vec<f32>)>, String> {
+    match heights {
+        ColumnHeights::MassLevels(data) => {
+            interpolate_field_at_levels(pressure_hpa, data, nz, cells, levels)
+        }
+        ColumnHeights::Interfaces { .. } => {
+            let mut planes = try_init_planes("height_levels", levels.len(), cells)?;
+            fill_interface_heights(pressure_hpa, heights, nz, cells, levels, &mut planes)?;
+            Ok(pack(levels, planes))
+        }
+    }
+}
+
+/// Write the interface-read heights at `levels` into `planes`.
+fn fill_interface_heights(
+    pressure_hpa: &[f64],
+    heights: &ColumnHeights<'_>,
+    nz: usize,
+    cells: usize,
+    levels: &[u16],
+    planes: &mut [Vec<f32>],
+) -> Result<(), String> {
+    let ColumnHeights::Interfaces {
+        interface,
+        per_metre,
+        stencil,
+    } = heights
+    else {
+        return Err("mass-level heights have no interfaces to be read between".into());
+    };
+    if stencil.levels() != nz {
+        return Err(format!(
+            "the interface stencil has {} layers and the fields {nz}",
+            stencil.levels()
+        ));
+    }
+    let targets: Vec<f64> = levels.iter().map(|level| f64::from(*level)).collect();
+    isobaric_heights_into(
+        interface,
+        *per_metre,
+        pressure_hpa,
+        stencil,
+        cells,
+        &targets,
+        planes,
+    )
+}
+
 /// Read WRF 3D fields for `timeidx` and interpolate them to the canonical
 /// isobaric levels, returning the five `*_iso` volumes the skew-T needs plus
 /// the lowest-model-level [`SurfaceFallback`] (so callers can fill in any 2D
@@ -222,12 +436,18 @@ pub struct SurfaceFallback {
 /// would be pure store weight.
 pub(crate) const CHART_RECIPE_LEVELS_HPA: [u16; 6] = [200, 250, 300, 500, 700, 850];
 
+/// What [`build_iso_volumes`] returns: the five sounding volumes, the
+/// chart-only RH and vorticity level planes, the lowest-model-level surface
+/// fallback, and the note the import must carry when the heights took the
+/// named mass-level fallback ([`mass_level_heights_note`]).
+pub type IsoVolumeBuild = (Vec<IsoVolume>, Vec<IsoVolume>, SurfaceFallback, Option<String>);
+
 pub fn build_iso_volumes(
     file: &WrfFile,
     timeidx: usize,
     cells: usize,
     progress: &mut dyn FnMut(String),
-) -> Result<(Vec<IsoVolume>, Vec<IsoVolume>, SurfaceFallback), String> {
+) -> Result<IsoVolumeBuild, String> {
     // This must precede the first getvar: an otherwise valid 2-D grid can be
     // too large for either a 37-level dense store volume or the aggregate
     // native/output working set. In that case callers omit these products
@@ -255,9 +475,13 @@ pub fn build_iso_volumes(
     progress("reading WRF dewpoint (sounding field 3/5)".to_string());
     let td = read("td", "sounding field 3/5")?; // degC
     check_native_3d_output(&td, "td", nz, ny, nx)?;
-    progress("reading WRF height (sounding field 4/5)".to_string());
-    let height = read("height", "sounding field 4/5")?; // m MSL
-    check_native_3d_output(&height, "height", nz, ny, nx)?;
+    // Heights between layer interfaces when the frame has them; the
+    // mass-level pairing by name when it does not.
+    progress("reading WRF interface geopotential (sounding field 4/5)".to_string());
+    let (heights, height_note) = FrameHeights::read(file, timeidx, "sounding field 4/5")?;
+    if let Some(note) = &height_note {
+        progress(note.clone());
+    }
 
     // Earth-relative winds. `uvmet` returns [u_earth.., v_earth..]
     // (2 * nz * cells). There is intentionally NO ua/va fallback: those are
@@ -337,14 +561,14 @@ pub fn build_iso_volumes(
         &pressure.data,
         &temp.data,
         &dewpoint_k,
-        &height.data,
+        heights.view(),
         u_wind,
         v_wind,
         nz,
         cells,
         progress,
     )?;
-    Ok((volumes, recipe_volumes, surface))
+    Ok((volumes, recipe_volumes, surface, height_note))
 }
 
 /// Interpolate one native `[nz, ny, nx]` field onto the given isobaric
@@ -388,8 +612,10 @@ pub(crate) fn interpolate_field_at_levels(
 /// Interpolate pre-read WRF column fields onto the canonical isobaric levels
 /// and derive the lowest-level surface fallback. All inputs are row-major
 /// `[nz, ny, nx]` (index `k * cells + c`) in skew-T units: pressure hPa,
-/// temperature K, dewpoint K, height m, winds m/s. Shared by the raw-wrfout
+/// temperature K, dewpoint K, winds m/s. Shared by the raw-wrfout
 /// ([`build_iso_volumes`]) and post-processed (`TK`/`Z`/`P`) reader paths.
+/// `heights` is where the height volume is read from: between layer
+/// interfaces, or the named mass-level fallback ([`ColumnHeights`]).
 ///
 /// File readers must call [`preflight_iso_volume_shape`] with trustworthy
 /// metadata before reading their 3-D inputs. This function repeats that
@@ -403,7 +629,7 @@ pub(crate) fn try_interpolate_iso_volumes(
     pressure_hpa: &[f64],
     temp_k: &[f64],
     dewpoint_k: &[f64],
-    height_m: &[f64],
+    heights: ColumnHeights<'_>,
     u_ms: &[f64],
     v_ms: &[f64],
     nz: usize,
@@ -415,7 +641,7 @@ pub(crate) fn try_interpolate_iso_volumes(
         pressure_hpa,
         temp_k,
         dewpoint_k,
-        height_m,
+        &heights,
         u_ms,
         v_ms,
         nz,
@@ -431,11 +657,11 @@ pub(crate) fn try_interpolate_iso_volumes(
         .try_reserve_exact(nz)
         .map_err(|err| format!("reserve {nz}-level WRF pressure column: {err}"))?;
     column_pressure.resize(nz, 0.0);
-    Ok(interpolate_iso_volumes_with_allocations(
+    interpolate_iso_volumes_with_allocations(
         pressure_hpa,
         temp_k,
         dewpoint_k,
-        height_m,
+        &heights,
         u_ms,
         v_ms,
         nz,
@@ -445,7 +671,7 @@ pub(crate) fn try_interpolate_iso_volumes(
         surface,
         column_pressure,
         progress,
-    ))
+    )
 }
 
 struct IsoPlanes {
@@ -472,7 +698,7 @@ fn interpolate_iso_volumes_with_allocations(
     pressure_hpa: &[f64],
     temp_k: &[f64],
     dewpoint_k: &[f64],
-    height_m: &[f64],
+    heights: &ColumnHeights<'_>,
     u_ms: &[f64],
     v_ms: &[f64],
     nz: usize,
@@ -482,7 +708,11 @@ fn interpolate_iso_volumes_with_allocations(
     surface: SurfaceFallback,
     mut col_p: Vec<f64>,
     progress: &mut dyn FnMut(String),
-) -> (Vec<IsoVolume>, SurfaceFallback) {
+) -> Result<(Vec<IsoVolume>, SurfaceFallback), String> {
+    let mass_heights = match heights {
+        ColumnHeights::MassLevels(data) => Some(*data),
+        ColumnHeights::Interfaces { .. } => None,
+    };
     let progress_step = (cells / 10).max(1);
     for c in 0..cells {
         if c % progress_step == 0 {
@@ -512,10 +742,15 @@ fn interpolate_iso_volumes_with_allocations(
             if let Some(value) = lerp(v_ms[i0], v_ms[i1], t) {
                 planes.v_wind[li][c] = value as f32;
             }
-            if let Some(value) = lerp(height_m[i0], height_m[i1], t) {
+            if let Some(height_m) = mass_heights
+                && let Some(value) = lerp(height_m[i0], height_m[i1], t)
+            {
                 planes.height[li][c] = value as f32;
             }
         }
+    }
+    if mass_heights.is_none() {
+        fill_interface_heights(pressure_hpa, heights, nz, cells, levels, &mut planes.height)?;
     }
 
     let volumes = vec![
@@ -545,7 +780,7 @@ fn interpolate_iso_volumes_with_allocations(
             levels: pack(levels, planes.height),
         },
     ];
-    (volumes, surface)
+    Ok((volumes, surface))
 }
 
 pub(crate) fn check_native_3d_output(
@@ -613,7 +848,7 @@ fn validate_interpolation_inputs(
     pressure_hpa: &[f64],
     temp_k: &[f64],
     dewpoint_k: &[f64],
-    height_m: &[f64],
+    heights: &ColumnHeights<'_>,
     u_ms: &[f64],
     v_ms: &[f64],
     nz: usize,
@@ -629,7 +864,6 @@ fn validate_interpolation_inputs(
         ("pressure", pressure_hpa),
         ("temperature", temp_k),
         ("dewpoint", dewpoint_k),
-        ("height", height_m),
         ("u wind", u_ms),
         ("v wind", v_ms),
     ] {
@@ -639,6 +873,24 @@ fn validate_interpolation_inputs(
                 values.len()
             ));
         }
+    }
+    let (name, layers) = match heights {
+        ColumnHeights::Interfaces { stencil, .. } => ("interface height", stencil.levels()),
+        ColumnHeights::MassLevels(_) => ("height", nz),
+    };
+    if layers != nz {
+        return Err(format!(
+            "WRF {name} describes {layers} layers, expected {nz}"
+        ));
+    }
+    let height_expected = heights
+        .expected_len(nz, cells)
+        .ok_or_else(|| format!("WRF {name} dimensions overflow the platform address space"))?;
+    if heights.len() != height_expected {
+        return Err(format!(
+            "WRF {name} has {} values, expected {height_expected} for {nz} levels x {cells} cells",
+            heights.len()
+        ));
     }
     Ok(())
 }
@@ -718,26 +970,15 @@ mod tests {
     }
 
     #[test]
-    fn volume_preflight_checks_store_and_owned_working_set_ceilings_without_allocating() {
+    fn volume_preflight_accepts_large_arrays_and_checks_owned_working_set_without_allocating() {
         // A host that does not report its memory is held at the floor, the
         // fixed ceiling every host had before the ceiling read the host.
         let floor_host = |nz, cells| preflight_iso_volume_shape_within(nz, cells, None);
-        let largest_supported_grid = rustwx_core::MAX_VOLUME_ELEMENTS / STANDARD_LEVEL_COUNT;
-        assert!(
-            u128::from(floor_host(2, largest_supported_grid).unwrap())
-                < WRF_VOLUME_OWNED_FLOOR_BYTES
-        );
-
-        // The store-volume ceiling holds on any host, however much it has.
-        for available in [None, Some(u64::MAX)] {
-            let error = preflight_iso_volume_shape_within(2, largest_supported_grid + 1, available)
-                .expect_err("one cell past the 37-level ceiling must be omitted");
-            assert!(error.contains("37-level"), "unexpected error: {error}");
-            assert!(
-                error.contains(&rustwx_core::MAX_VOLUME_ELEMENTS.to_string()),
-                "shared ceiling must be visible in the error: {error}"
-            );
-        }
+        // The former element ceiling must not omit a volume on a host with memory.
+        let large_cells = 2695 * 1585;
+        assert!(checked_volume_elements(50, large_cells).unwrap() > 134_217_728);
+        assert!(preflight_iso_volume_shape_within(50, large_cells, Some(64 << 30)).is_ok());
+        assert!(floor_host(50, large_cells).is_err());
 
         assert_eq!(
             floor_host(79, 800 * 800).unwrap(),
@@ -824,13 +1065,13 @@ mod tests {
         }
     }
 
-    /// The interpolator repeats the shape and store checks but not the host
+    /// The interpolator repeats the shape and addressability checks but not the host
     /// comparison: its inputs are resident and already counted in use.
     #[test]
     fn the_interpolator_does_not_count_its_resident_inputs_against_the_host_again() {
         assert!(iso_volume_owned_bytes(55, 1132 * 906).is_ok());
-        let largest_supported_grid = rustwx_core::MAX_VOLUME_ELEMENTS / STANDARD_LEVEL_COUNT;
-        assert!(iso_volume_owned_bytes(2, largest_supported_grid + 1).is_err());
+        assert!(iso_volume_owned_bytes(50, 2695 * 1585).is_ok());
+        assert!(iso_volume_owned_bytes(2, usize::MAX).is_err());
         assert!(iso_volume_owned_bytes(1, 1).is_err());
     }
 
@@ -870,7 +1111,7 @@ mod tests {
             &one_value,
             &one_value,
             &one_value,
-            &one_value,
+            ColumnHeights::MassLevels(&one_value),
             &one_value,
             &one_value,
             2,
@@ -950,7 +1191,7 @@ mod tests {
             &pressure,
             &temp,
             &dewp,
-            &height,
+            ColumnHeights::MassLevels(&height),
             &u,
             &v,
             3,

@@ -39,6 +39,7 @@ real compiler behind them.
 from __future__ import annotations
 
 import ast
+import hashlib
 import os
 import re
 import subprocess
@@ -269,6 +270,21 @@ def test_complete_recordings_cover_the_current_standalone_source_set():
     for recording in pf.KERNEL_LOCAL_FRAME_RECORDINGS:
         if recording.complete:
             assert set(recording.frames) == standalone, recording.box
+
+
+def test_parameter_scaler_has_a_measured_production_source_and_frame():
+    """A measurable initialization shader must retain its physical reading."""
+    from gpuwm.core import kernel_frame_recordings as kfr, kernels
+
+    row = kfr.SM120_NVRTC_13_4_92
+    assert row.platform_key == ("120", "13.4.92")
+    assert row.frames["physics_params"] == 0
+    assert pf.KERNEL_MAX_LOCAL_SIZE_BYTES["physics_params"] == 0
+    assert "physics_params" not in pf.UNMEASURED_KERNEL_MODULES
+    assert kernels.module_options("physics_params") == ("-std=c++17",)
+    assert hashlib.sha256(kernels.module_source("physics_params").encode()).hexdigest() == (
+        kfr.PHYSICS_PARAMS_MEASURED_SOURCE_SHA256), (
+            "parameter shader source changed; re-read driver attributes before replacing its profile")
 
 
 def test_every_noahmp_composed_recording_is_its_own_platform_and_stays_out_of_the_standalone_tables():

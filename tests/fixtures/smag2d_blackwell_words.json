@@ -1,0 +1,3180 @@
+{
+  "schema": "gpuwm-smag2d-blackwell-random-fixtures-v1",
+  "reference_compiler_target": 120,
+  "reference_physical_target": 120,
+  "runtime_ftz": true,
+  "original_source_sha256": {
+    "production": "b60a029091011e77e3261c62b6b494cbd2d92ad3d2a09a0eae902d548cc422fd",
+    "direct_w": "a39b17b4c569e1e69f31e780578d54ff0459d178e20479ab5f118920e32e8361"
+  },
+  "scenarios": [
+    {
+      "scenario": [
+        false,
+        false,
+        false,
+        false,
+        false
+      ],
+      "kernels": [
+        {
+          "kernel": "smag2d_km",
+          "variant": "production",
+          "input_sha256": "33a06c8c56112d7227bb305289c043fc1c3109cd085fc8be0579475595ab7265",
+          "output_arg_indices": [
+            2,
+            3
+          ],
+          "output_sha256": [
+            "6b8534278853c4658ee9320079ae8fed8e443457161cb437512f60755cd040db",
+            "8dc636a01012b737afff1b3317de721cc9e240a4adce901050c6ebe840d0dc3b"
+          ]
+        },
+        {
+          "kernel": "smag_hd_s",
+          "variant": "production",
+          "input_sha256": "14e8a997ce844258efa2b1359e83e4a9a48e5c6db3324b222c5bd6bf5b60de89",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "cfffa8714da3b5167d8bb00e3a3ba4f27f5f2a8e4b074a905c75c86100d98972"
+          ]
+        },
+        {
+          "kernel": "smag_hd_u",
+          "variant": "production",
+          "input_sha256": "97d18b529b579d4642c3340b35d6677133319a67d7e4031d4f850458188083aa",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "d8dbb5bb482a70c960634df2d4d983739838af43c64df9821c1848397cde8f99"
+          ]
+        },
+        {
+          "kernel": "smag_hd_v",
+          "variant": "production",
+          "input_sha256": "63f6ff3265d70694770607d62c33478fa9da586ccd9af96e736d3e899b66f9e5",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "0b3b5703fa72f2d7c1c251699258282fd43c37f063006da51737b08c450f434e"
+          ]
+        },
+        {
+          "kernel": "smag_hd_w",
+          "variant": "production",
+          "input_sha256": "8c9a202ac16c534c78536f4143c21ba2a9c351188a077e9a7b3636762a8fd93d",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "5e97eda51e4d1d2114e971f39f401e961cfec3194372994135d97295828a4828"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_deform",
+          "variant": "production",
+          "input_sha256": "4ba4c51788f7957b9fc1c4a73db4a8b42bf55084172cfd2aafcdc68070120b68",
+          "output_arg_indices": [
+            22,
+            23,
+            24
+          ],
+          "output_sha256": [
+            "4726b1a3753620917c278ca5a634ba4c7c563e342edfa7b6f07fe186b4445747",
+            "e8ff72d28df87a459e408e150866a382fe913f80767309a1654f70f73b9f61d5",
+            "00ddbefb2ab95c942e3b5e5e986ef9c9c0922341d2b9a737f33ef873e151a81a"
+          ]
+        },
+        {
+          "kernel": "wrf_smag2d_km",
+          "variant": "production",
+          "input_sha256": "b4fe7a5b5cdfb8a85ecb56463d81754f25336e38129c070b19b82f3bc5f2a6a3",
+          "output_arg_indices": [
+            27,
+            28
+          ],
+          "output_sha256": [
+            "7f9942c0d7d70cd996e54248dc01e2e321594b0a54b62e8a8368cc5b9e580623",
+            "47f57e52db4f97daa2a40fdd6c16692d5c080e3a0fbd98247b6d4780a265df53"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_u",
+          "variant": "production",
+          "input_sha256": "ef0bfa429f42fef8dd2f23d9df9c8a59eb198eaa97d2c03e1489e796e0867cf7",
+          "output_arg_indices": [
+            25
+          ],
+          "output_sha256": [
+            "4f1733fcac68b94f4ebd748e651c49812925d6626c09e08138ec502a15af3cdc"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_v",
+          "variant": "production",
+          "input_sha256": "d973bf4640d0eeac333056480e0fb82edf29a863cd9f7acb16c6f75c0c217ec6",
+          "output_arg_indices": [
+            25
+          ],
+          "output_sha256": [
+            "0a88d6196b71a87b316ac4b8b30925410f47d759fee77fbbd2552e59a7c90cf4"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_flux_s",
+          "variant": "production",
+          "input_sha256": "e498b6ac92dab7004e9aa3ba2f87562b19f762df47546a5bc2a6a1b9128dbd3d",
+          "output_arg_indices": [
+            27,
+            28
+          ],
+          "output_sha256": [
+            "fe3fb14c0a06f889e6d97c7fc0e63bb0c6159d0d597d13c7948a6bdbfa4b08fc",
+            "24106f9dc74759eca5bb8c258f4d9fedb9a5906c6e1bbe63ec5752b19b5177cd"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_s",
+          "variant": "production",
+          "input_sha256": "443ad65a29fc70077b89c86eefa3e6b6ca33918582f09d92829795e3c778d9fe",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "bd8872c0419ef2599e556cc0f56ff7b0e6115243eb63e8745ba5c5059211be0e"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_w_stress",
+          "variant": "production",
+          "input_sha256": "ff22ceeef3fb541bea973cef9babb56715f9f8593dda917e7e0788165071ac0e",
+          "output_arg_indices": [
+            23,
+            24
+          ],
+          "output_sha256": [
+            "2659e95b1601360abd9893ac761f3c8371e073ca7587950ee8fb58e630789646",
+            "56771a94f17b17e31e853933cf078e00d489f25ebf0860b1125eeb18af2fc077"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_w_stress",
+          "variant": "production",
+          "input_sha256": "fa0c5b7c7baf3473b9654f5f0b178c68bb0fece9de8a8f14c239eff90c61ffaa",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "c509183f6dfaea0b36edd2d54ced7a86f031514a8fdb5b8831b46362727a84e3"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_w",
+          "variant": "direct_w",
+          "input_sha256": "622b7fc3912bff86c73ee7914f26fe9db20343b891b1fe539f6774c8e45a00eb",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "11b874c741be3528da360adc113031887ae1807f620dfff80894a1cb59369e0b"
+          ]
+        },
+        {
+          "kernel": "wrf_tke_rhs",
+          "variant": "production",
+          "input_sha256": "88c57c6c4a6ca97ce64966629993508c6887c9824ffacb8c12fb163c558f34f0",
+          "output_arg_indices": [
+            45,
+            46,
+            47,
+            48,
+            49
+          ],
+          "output_sha256": [
+            "23d072170357872bf67cee5b5d55186c880641f56a89024fe576c2c84fb535c8",
+            "f580486160eed0c740b9698e923665bcd20015ef6d68f7b074c654984cb485e8",
+            "30815fe08ab2259595ebd80ae37f748fe5a3da6b8a5d3229acabb98fc8801a62",
+            "9246d864e5b9fc11ce3dd01d9ffb937be530a3c7b80360568767f0c7b30b2edb",
+            "8030e31b7af268c24a5c4f0b99cda372d07cea82fd76d34259fa11e3c6a094ce"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_km_bc",
+          "variant": "production",
+          "input_sha256": "ca254b46b693816a9bcf9a9339af8a971af2a0c616e30faf8e7091e72995a99b",
+          "output_arg_indices": [
+            0,
+            1
+          ],
+          "output_sha256": [
+            "1a116f71afe3bf416e7da4585503f099ed0cb7a2b34282b037544b66d4dc5314",
+            "03ae0ace4a02f28dd4654f4a6014f369fad57593ca8377cd87caf05e8f94e806"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_u",
+          "variant": "production",
+          "input_sha256": "e45fae2e2ae4515bde13881355f3d7577cebc16f235ab0aecb3111ff827af55a",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "ce87b6fd0048814d47a68c44b687ab7bc36095e60017e2561b5abd644469639c"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_v",
+          "variant": "production",
+          "input_sha256": "64b3fb6cc2c256f78d36e25998c8e26292bba244e7dc5a4c275b8d6c6cf5e468",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "116157cd6bba199e5772bbea91facd25b2c8c4b56b5b98cb84b838774afb2257"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_w",
+          "variant": "production",
+          "input_sha256": "622b7fc3912bff86c73ee7914f26fe9db20343b891b1fe539f6774c8e45a00eb",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "00a26f02939c4e34a396364709a01f2e82f82a9f1240443558232cea85d3ca4b"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_u",
+          "variant": "production",
+          "input_sha256": "72d82f8c23b6bd1264cafe38402c9f2ceb8765a6859c01bcb995eb3eda99ff88",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "2a826211fa228a4e60e4488fb9f7bcdbb5d7a95bc7d2acc41945585133c812ab"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_v",
+          "variant": "production",
+          "input_sha256": "28f3bd87b1f748e9f49c806ca38231eab23541b9a7c2237435773753a30543a7",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "a8cef30db3502bd35e620afbc5b9c7d2184a25cf3dca23eada966c5485c745b7"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_scalars",
+          "variant": "production",
+          "input_sha256": "a0ba1dddc33af586a244f7165e9a94eef077dfd36424cbb2fc32d1c7a4ab641f",
+          "output_arg_indices": [
+            26,
+            27
+          ],
+          "output_sha256": [
+            "2d6d734e72c0b1bc36a5b628bced7ec0f3d800df4469983dfede19c191f86d36",
+            "edc3c7bf11541d0289a2bfc03fa3c01b92007dbc36584c705c6011ddc8f78141"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_w_primitives",
+          "variant": "production",
+          "input_sha256": "c6a153c8213e17484c37be89c033ae070bf088e7a02dd4199bda3250451beda4",
+          "output_arg_indices": [
+            22,
+            23,
+            24,
+            25
+          ],
+          "output_sha256": [
+            "670f50e7dc8331d3cf15fb3ca44cc604b5400e7fdc49021a0bb773e5a4713fff",
+            "9b29f8dd695591e9a66e4feda5c0d8596b5bb11b9762c17d9fdcf659b9d580ab",
+            "40285f029ea11daf1ecf0784414424628ee4f8e5622c48b898f45805e7a57158",
+            "df4461be7c8e01cd88d917628c9a9e7d05fe50822f869a057d4cf12255485ead"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_w_cached",
+          "variant": "production",
+          "input_sha256": "97f0eca3de8cace3a7811fda218a38e67a6df5768386d4cf59b2a34525deb6b6",
+          "output_arg_indices": [
+            27
+          ],
+          "output_sha256": [
+            "6eb19f80059648c460ea8450d63e1793040f4b64dfe005d0a5bc95e081ed4018"
+          ]
+        },
+        {
+          "kernel": "wrf_calc_n2",
+          "variant": "production",
+          "input_sha256": "2a133c5fee8115359296118a9f7b1ffdfa9f7fbe0925b328b235322af78c2ddd",
+          "output_arg_indices": [
+            30
+          ],
+          "output_sha256": [
+            "456920bc105348c3fd162edd95f8b5db981402814356b3dd6c10e4d6834d5a76"
+          ]
+        },
+        {
+          "kernel": "wrf_smag3d_km",
+          "variant": "production",
+          "input_sha256": "c73deeb08b274bc6d914a86e221fe8392d66f30f28a55865a659ebc2de1b9515",
+          "output_arg_indices": [
+            31,
+            32,
+            33,
+            34
+          ],
+          "output_sha256": [
+            "89480cd40d29bbecf9c4a25742cf190942ebc00db39dbadf0051929c7a4c3153",
+            "cddd5d88b4fd45183792170fc606232606746cd7e316504c2af68f8df2d2e7f9",
+            "02e2442d91d477efce23f07092948e72cc29d3448db6271d6d188994e4b6679e",
+            "a7fae5d2abf8681e59b57a88871d6153aefbb2846b63a24ba54b90b33df5d8be"
+          ]
+        },
+        {
+          "kernel": "wrf_tke_km",
+          "variant": "production",
+          "input_sha256": "a7cf89a9773a91adb1ecf388a182cb26adc4e0e35d8075a7517425b3276b380b",
+          "output_arg_indices": [
+            34,
+            35,
+            36,
+            37
+          ],
+          "output_sha256": [
+            "1c9b7ded72ed2cf7ea3a8b2d106e312484dfa65d3dcdf4fb1251be21ebca1b62",
+            "a7b5d5b3b0c8149eb4bb4b63e0c7037da8e15bcdbcc3d37ae713784b3b584550",
+            "688d3bc13ccd765fd276d57f3a02e6edec2a071642dd9e45ac20af2d7faedcdc",
+            "edca91908d95e4ccd44f690eeeb631299325e873592f8254ce9ef6ee720524f2"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_s",
+          "variant": "production",
+          "input_sha256": "12c3f5610b9aeefc6f09d85eeb02a66d2daabca2acbbe1776600156dbc292a14",
+          "output_arg_indices": [
+            27
+          ],
+          "output_sha256": [
+            "27ad6d6ea6891705e50249e9f1544b48687ce5c130184c3459e029b3ab9889aa"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_u_cd0",
+          "variant": "production",
+          "input_sha256": "26dece2b6640827dc957c5911e884091f0bc0fc25b1163f26d827266ab023cb9",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "c4b5c96a9276aced8989096d91ded2e85cc8ad6aef315edaf14847c1ca660463"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_v_cd0",
+          "variant": "production",
+          "input_sha256": "369e5cef8ccbb782a62e2fe01c703630b06e7f7946fcf5b3d6f4d99af8ee6287",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "17984a04d79b1356a7e026ef65fda480b5af10462fbc93c30fad8be7160f0823"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_heat_const",
+          "variant": "production",
+          "input_sha256": "43588a32d7a70989464773342bf802b2795e9cc0acb8c3c03ad224277b3b31b6",
+          "output_arg_indices": [
+            23,
+            25
+          ],
+          "output_sha256": [
+            "24637d698f3a1cbe5693e4d5b6228355d52df81f6e536bdbe200037bba70c7b7",
+            "fd8ecb0bf5332760db97df256eb6a2e1bda9d74553a52d280aac88009bae3a34"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": [
+        true,
+        false,
+        false,
+        false,
+        false
+      ],
+      "kernels": [
+        {
+          "kernel": "smag2d_km",
+          "variant": "production",
+          "input_sha256": "4a71437e3df6260b6f6bc612c263aafa902e6997b61b8dfc960826a718e47741",
+          "output_arg_indices": [
+            2,
+            3
+          ],
+          "output_sha256": [
+            "6b8534278853c4658ee9320079ae8fed8e443457161cb437512f60755cd040db",
+            "8dc636a01012b737afff1b3317de721cc9e240a4adce901050c6ebe840d0dc3b"
+          ]
+        },
+        {
+          "kernel": "smag_hd_s",
+          "variant": "production",
+          "input_sha256": "bdb7d1199109322f585dcb6af07dee845376f4bf01202229d3babd53b5bdc672",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "45c0b8bcdbb7a29b863ae94a41af94d13285cca75f4f38086d6b6beec8318b2f"
+          ]
+        },
+        {
+          "kernel": "smag_hd_u",
+          "variant": "production",
+          "input_sha256": "46b370ef842935f20b36045006ba3026ed397479f62df9b492e47fecdc529395",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "1862be29c0c300bf716c5003ad532f3ab0514b1cea4bb991b1ccff59f2392fb9"
+          ]
+        },
+        {
+          "kernel": "smag_hd_v",
+          "variant": "production",
+          "input_sha256": "b2e3920b9be4ff0d0c2d345ef9021587e0d21c00cfb8325f26cbc050e3c2fbe7",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "01bcb4e49948d4df45fe1719e799c2c24f2ab850fced9183129775fe7d39c58d"
+          ]
+        },
+        {
+          "kernel": "smag_hd_w",
+          "variant": "production",
+          "input_sha256": "d53312c2f0a595eb4a9ab03d4ea35a222273a32aa75646a6bf51bec563600d6f",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "d9df74e3f1dd4400bd876302552e779d33bc5768968248b4ef8d4e56f3e6af3e"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_deform",
+          "variant": "production",
+          "input_sha256": "e3c9f00d0c86f421fd08e39252f5ff4cce1e2f4904e1d33e7bcba6c2a3672fee",
+          "output_arg_indices": [
+            22,
+            23,
+            24
+          ],
+          "output_sha256": [
+            "4726b1a3753620917c278ca5a634ba4c7c563e342edfa7b6f07fe186b4445747",
+            "e8ff72d28df87a459e408e150866a382fe913f80767309a1654f70f73b9f61d5",
+            "00ddbefb2ab95c942e3b5e5e986ef9c9c0922341d2b9a737f33ef873e151a81a"
+          ]
+        },
+        {
+          "kernel": "wrf_smag2d_km",
+          "variant": "production",
+          "input_sha256": "150cdc0c02a9c97430fb38686806c53c1d27ff24b482fb4dfb06ea294df5ef84",
+          "output_arg_indices": [
+            27,
+            28
+          ],
+          "output_sha256": [
+            "dcde77f4f1cb3df57035e3739b2cfff8a58649c0b5e7741ea82e02124243bd8e",
+            "26260ff432ec4d76fcac91ad05a8c4c6073a43fa4594ead13062a5b661c60e2d"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_u",
+          "variant": "production",
+          "input_sha256": "9fbce670e36b2513ee893ee322d6dc138f01ce1c103022aae0546b6ad661baa8",
+          "output_arg_indices": [
+            25
+          ],
+          "output_sha256": [
+            "96883a620927d6a9e48c9ee5874181ba82391da29a975a68d6ab4e9b54c04b59"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_v",
+          "variant": "production",
+          "input_sha256": "44d26df919f66296e324cb2550c1e93b650d66fb9b3b9e102e600570042940de",
+          "output_arg_indices": [
+            25
+          ],
+          "output_sha256": [
+            "b1c7d0205702b13def8275e3e88ff1f74c9e40bb506d913c770dc9f56a4c4522"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_flux_s",
+          "variant": "production",
+          "input_sha256": "7a40ff279a624bbcf404dfcb606a34b9687856614d4575bb9f836a7e4ba1a536",
+          "output_arg_indices": [
+            27,
+            28
+          ],
+          "output_sha256": [
+            "6a666ea42e20b7837686255a8fff86aa70b2072bfeb9fa56df1b113d3d34aa84",
+            "02cc731d0f0e73cedc575cf120f8d3c9b8555ecd27cca7697a8c49ff7c947448"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_s",
+          "variant": "production",
+          "input_sha256": "8e12e6b08e6a3001451fc1b4f742eea74fca6cb875f57014794f65727e2641fa",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "28948e33f55e1030145f90152c04dd03349d4ab0f0631d89849309dd5be66327"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_w_stress",
+          "variant": "production",
+          "input_sha256": "bda395a3b7bf99a5b3d451d40b88ccf826b9ea52c2c021f393e86cb490917fd3",
+          "output_arg_indices": [
+            23,
+            24
+          ],
+          "output_sha256": [
+            "7f34154382369ac4dd07d1e0ba90354f59c73ad8794d1fce49efcb066ffa7190",
+            "837761f183d816a63ea54bfd122b38a65fae7070c53ffa13c3dd5a7aed70ad22"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_w_stress",
+          "variant": "production",
+          "input_sha256": "6cd18659d98b8990286c4f569d3378dad7762a2b2c03dd025665fc606ea5560c",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "4f376cb15cde7d49b9a3db66de392b54610054dd02dacbd2c7b1bfd6cf7a8fd1"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_w",
+          "variant": "direct_w",
+          "input_sha256": "a5619b633b3187616c0ec4d8c36bccc11cbf32fb41d89a21846e772080ddab3f",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "e1ddcda9a4e80a74b6124bfac5db91e2f994078fe077358fb7455706398572f5"
+          ]
+        },
+        {
+          "kernel": "wrf_tke_rhs",
+          "variant": "production",
+          "input_sha256": "4d2e5bb7fbca31203dac9478934b0f07a087d8434d8cc8ecefe65930f8e690ac",
+          "output_arg_indices": [
+            45,
+            46,
+            47,
+            48,
+            49
+          ],
+          "output_sha256": [
+            "e8407ad54e9a4536254ea59c6fde3793145789e7ebffbdb28135001b14800eb3",
+            "dc0cd2fdbc7b1c890c8ce596d0b19919c8bb3ff21ea7d378ace2d0f48570c4b1",
+            "84321d72a1cce38522ecda4baa0ed381985fcc536d507b8082d1439cd0432694",
+            "b6cd6ec9072c653ee8539b56a8cee9e50d9f8323be4336c9d03e045e6bc1218c",
+            "3b902e440e1f093b6205fcd06d4036471ee8ceb5883f8a94737afed5d0135aeb"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_km_bc",
+          "variant": "production",
+          "input_sha256": "5739ec677efc46f5d479eb9bb4bbd7c5425aa202558917fb1f29e847c9362a51",
+          "output_arg_indices": [
+            0,
+            1
+          ],
+          "output_sha256": [
+            "492800611950046db68cf3e0f2e956fed47775ed3cae864da295f5bdf4525a75",
+            "cd5a41693fa6a8b2677f7398c88d2c210eeac0a05de00d7127cdb84c459369c2"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_u",
+          "variant": "production",
+          "input_sha256": "dd70f0b8403df5b37d755e2e4ef062076ff80392318d10463657fed0bd8f2bf2",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "e77980e70d6b1f3ea863af8b5a58b77a0b07fc12dc3e3827f82e302919d9c79d"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_v",
+          "variant": "production",
+          "input_sha256": "fc5e627b0df2d12612aad34145026c100fb616dfaa2708b121a13eba97a16436",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "4e9a5f3abebd22797df56a655c067eb02a5417df12108ec35619d7d07d8d153f"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_w",
+          "variant": "production",
+          "input_sha256": "a5619b633b3187616c0ec4d8c36bccc11cbf32fb41d89a21846e772080ddab3f",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "7833ab1176f228eb4fc993e8c6cd5d9f7d342df44971c352d8b40f1ef08f8bde"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_u",
+          "variant": "production",
+          "input_sha256": "98b602acb1f2ea02f3b0a1e0c8eeeb40bb372c887692c0f93d5d9963d621a713",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "b3d80ddbdfdb0a3841fa4339081ab5c618d4966c504e1585e5e45b02e1d238f4"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_v",
+          "variant": "production",
+          "input_sha256": "dc0fa1af539cda58da6af9c6124aad26b2c65d6f183db47240dfdd3914bcb9bf",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "6001279e0643aa986a22c7785da24b74505fda866812851dcb77eb6d5cd0c525"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_scalars",
+          "variant": "production",
+          "input_sha256": "a6dcdd5860cee585677a9a94d541f05b5026cde136f83c8bfeb1ff7579a052a8",
+          "output_arg_indices": [
+            26,
+            27
+          ],
+          "output_sha256": [
+            "e17af55cf24ab8c663874fdcc2ce6658f1c3bf09dac88e74eafd802f7fe61569",
+            "57a237b55ddcd550ae25972404f05e972e8b3ed8a079205b046cef2aadc5da92"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_w_primitives",
+          "variant": "production",
+          "input_sha256": "1765b0828fb5a114cbc874c24ec28d8cbf8b026ddfa9fad5f279ab47d22ed45f",
+          "output_arg_indices": [
+            22,
+            23,
+            24,
+            25
+          ],
+          "output_sha256": [
+            "670f50e7dc8331d3cf15fb3ca44cc604b5400e7fdc49021a0bb773e5a4713fff",
+            "25ebe0c4ca54854d2920b5c5b08afdb51ed3986f5ff03cff0c6ef7445d01304c",
+            "6fb06ac5749a54f706509b3cd82b2f1b78d7f222a30c3b226ade9f2a20869091",
+            "979f59934b7da2bafb8ee952cb184b3420787e9cdd0d8c32dabd7c2ae81a0b4b"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_w_cached",
+          "variant": "production",
+          "input_sha256": "555d66c79745bab4cf5ada423f8ad6f283ee3a4d1fdd5428dc63fbf30c77289e",
+          "output_arg_indices": [
+            27
+          ],
+          "output_sha256": [
+            "06d8456b87636738687cb359c0d5d1e9655fae46b1d7594bda945f89cd682075"
+          ]
+        },
+        {
+          "kernel": "wrf_calc_n2",
+          "variant": "production",
+          "input_sha256": "caec3ab29cf69b4624bae542d1e528c02ff8fedbc75fc84b09fb0e85669f3d9f",
+          "output_arg_indices": [
+            30
+          ],
+          "output_sha256": [
+            "9c18b980989d46769083f74bb409680de91d1dfc1c4b7e77f7efdc1308b67830"
+          ]
+        },
+        {
+          "kernel": "wrf_smag3d_km",
+          "variant": "production",
+          "input_sha256": "bd51c3656b2aa41d7e5cc1b5c2d0c12290cfbe11b67259e0fc67adb281dc2e5f",
+          "output_arg_indices": [
+            31,
+            32,
+            33,
+            34
+          ],
+          "output_sha256": [
+            "c9ff2defbba18ea24cfdbfb51bd9da71f1464c092104835278893701e972cf65",
+            "668f1fd4b729b007e74d35e1d5ce552930c826329c387c3b038351ecf2ef2727",
+            "eafc7570402a686c45a9ce4289f6b31209993c7ff8eec2ae0fa225af7425243e",
+            "e272715d10f33e950db76b31c8bbbfdcbf923d648c76e562191c636d45ccbe2b"
+          ]
+        },
+        {
+          "kernel": "wrf_tke_km",
+          "variant": "production",
+          "input_sha256": "54812002c0bb5a2779073a9bb2a07c71c0b25b9c790786d73e8f40532204ccf7",
+          "output_arg_indices": [
+            34,
+            35,
+            36,
+            37
+          ],
+          "output_sha256": [
+            "aa9ff234fb6fb4aea9051aa5037f7dee8dea5558e2065117ecff16535ad16957",
+            "e5ce665e6c2621d16d4060bcdd8e4174c9f526165844102e6e4a4381aa2587bc",
+            "238c1fd5f33a94914ddfe800e5680e598c1bf2e4994c5afb638769e0eb8a5137",
+            "840b358939c3846878bf91eed8e70283b420e03a0bd74e922e8681fca4975bb4"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_s",
+          "variant": "production",
+          "input_sha256": "6c5c5bf5d1ca28ebb93bdbd6c6941f6e9f1fadf3233a4d74800922b3e3de4e63",
+          "output_arg_indices": [
+            27
+          ],
+          "output_sha256": [
+            "3de7fefff13c5051baa27455f853553baff85a7f5806984e4b30e9ee38f7a82e"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_u_cd0",
+          "variant": "production",
+          "input_sha256": "524e64f455c8bb0a222e5259911932f3c70d27f9d68f384119e19e09afac719f",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "55906fb93f5bced41e74c497fb10293ba36ac941cdd02631d547895122f23641"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_v_cd0",
+          "variant": "production",
+          "input_sha256": "3b11fa1d8590e5dc7ff6250d0b8adbddd5d694b3cab068a96c87ee2bea163af4",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "04e856a15bdca0d076ce64ac593f0565f20a29cc81000f55d479533d637b777d"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_heat_const",
+          "variant": "production",
+          "input_sha256": "9e7734c1560be60c8315ee2739deb48118fd453048f89f8e0918ec086a68e1c9",
+          "output_arg_indices": [
+            23,
+            25
+          ],
+          "output_sha256": [
+            "c115a0430dca10298b3c56a1a6188414271b97355c7a9ffdad344675d9615c3b",
+            "19169eec0247da69f771d0d13f4da43950bcef6eb1e2ca3fb9e3a7a2caba9b43"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": [
+        true,
+        true,
+        false,
+        false,
+        true
+      ],
+      "kernels": [
+        {
+          "kernel": "smag2d_km",
+          "variant": "production",
+          "input_sha256": "4a71437e3df6260b6f6bc612c263aafa902e6997b61b8dfc960826a718e47741",
+          "output_arg_indices": [
+            2,
+            3
+          ],
+          "output_sha256": [
+            "6b8534278853c4658ee9320079ae8fed8e443457161cb437512f60755cd040db",
+            "8dc636a01012b737afff1b3317de721cc9e240a4adce901050c6ebe840d0dc3b"
+          ]
+        },
+        {
+          "kernel": "smag_hd_s",
+          "variant": "production",
+          "input_sha256": "9c7315848aa533b9a11ca3221366fd3d07122e235a02804d8ee7a97328632adb",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "ff04c2f7b317a35d0850d101cc99491ab497cc092060dde910775605458caf38"
+          ]
+        },
+        {
+          "kernel": "smag_hd_u",
+          "variant": "production",
+          "input_sha256": "923cb4a55590909fcb94bf403f521b29c23fda21cce5ceaf46c8c7f34d3ef7fe",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "457e8864bea8a32bfe1b2b7e14087a10ce86a3f92223847841f0824351c3ec6c"
+          ]
+        },
+        {
+          "kernel": "smag_hd_v",
+          "variant": "production",
+          "input_sha256": "69f30701cb0022fdc07b661a6104fc759d34ce0feb55ab6adc2f11628c7dbda6",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "57ebe4f5612336caeabde8b101ead7b7c439efd91014f8f858b34629b69f418d"
+          ]
+        },
+        {
+          "kernel": "smag_hd_w",
+          "variant": "production",
+          "input_sha256": "1ab9bd0286f61f01ad27fc2e0e6e4c006fe6cf2a98898f80a4dc455739075466",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "292e0fd2242cae4960f5fadbca75f4a02d197202d000c59d1a6439f7eee8c291"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_deform",
+          "variant": "production",
+          "input_sha256": "2e34569c4c01607480ec5ec5431b0f09dc7ba875c5d5dcd36bd0dfd985d006dc",
+          "output_arg_indices": [
+            22,
+            23,
+            24
+          ],
+          "output_sha256": [
+            "02cdefb2c3b1d55dc01773b21c8c01cf62764f02c84eeefbd10c4b0191f2db63",
+            "1b60909ff6286dd3f949c35dffb85d38b72036e98f7ad62c83a093d044331d49",
+            "bf0242fb27482077921f3a163973009db759658575528b3001deaa5cb987682e"
+          ]
+        },
+        {
+          "kernel": "wrf_smag2d_km",
+          "variant": "production",
+          "input_sha256": "308a7eba234bba3338886ecaa5d95c1d0fee25377db09f156d7c097207d42df4",
+          "output_arg_indices": [
+            27,
+            28
+          ],
+          "output_sha256": [
+            "dcde77f4f1cb3df57035e3739b2cfff8a58649c0b5e7741ea82e02124243bd8e",
+            "26260ff432ec4d76fcac91ad05a8c4c6073a43fa4594ead13062a5b661c60e2d"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_u",
+          "variant": "production",
+          "input_sha256": "03a79083aee09e6b8e5d66215b98c373af280a6fceb4afff3aaea052431b37c9",
+          "output_arg_indices": [
+            25
+          ],
+          "output_sha256": [
+            "f8084ec45a67d504ca86ad9eac70f3d389be0b481c5b62958814bf43c3b79bd4"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_v",
+          "variant": "production",
+          "input_sha256": "386fcc2773f62e264fc6a6dea9b11672d23f69784e3ea1f25925624a7a02e6c3",
+          "output_arg_indices": [
+            25
+          ],
+          "output_sha256": [
+            "0884e863b814245b8c5a75bf1e7a8c122eb30e0d527a201536d6b84292e63228"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_flux_s",
+          "variant": "production",
+          "input_sha256": "125e05258abdac9ee8235f0a77b1c6ea7839f1a38537f2a76dc6ab42851e5c54",
+          "output_arg_indices": [
+            27,
+            28
+          ],
+          "output_sha256": [
+            "67ac012ad69e8ab52177c62d98d87b731c8119b73518dbe9d1a357db6908960e",
+            "220b017721883ed8b2031a514c3ee3f9b3d1bb8fb3bf65a93262ac9f3e0d023c"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_s",
+          "variant": "production",
+          "input_sha256": "520f9ead729f650579139b5c494fa5b69588fd591c75f22734b14430dbf83d48",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "fc4d9bb12cf8a03eb2291be1b5ffab75039764292c88c640ac8a0490df943075"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_w_stress",
+          "variant": "production",
+          "input_sha256": "01638e157544f649a559b83aa0176e0bee23e2b40de04a06966a16f2c7c24c64",
+          "output_arg_indices": [
+            23,
+            24
+          ],
+          "output_sha256": [
+            "e709619e0c5841213cbd55252bf6c3cca3d40d9f5da035cca52997aa664acfff",
+            "4e251924323ce530ccdb643fc8586f855e1104ad9eb8678c6537ff6567da60e0"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_w_stress",
+          "variant": "production",
+          "input_sha256": "64979aeba0248b1455a163941e5d9566aa1bc856468c40a5e756132fa99e98ea",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "3e61d130c06ec470e2c376ed3396c96c441750b424c0949c1b1543fc85679e3c"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_w",
+          "variant": "direct_w",
+          "input_sha256": "cc57cf62d7994b175f3640ec31ab922106edd771e7edb013520d8a9ece40408f",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "dcbf3621b29063e9f30453d16a6586ff1bec93322356549f387b68fa584f8963"
+          ]
+        },
+        {
+          "kernel": "wrf_tke_rhs",
+          "variant": "production",
+          "input_sha256": "8390ee250d6ad768028ac479a6bbb18343c284edb72df2784676c1025331c505",
+          "output_arg_indices": [
+            45,
+            46,
+            47,
+            48,
+            49
+          ],
+          "output_sha256": [
+            "fc9972aa0cab98357a3fdbcc7d41331aeff7271b9ee61c4ddefa91c404ab252a",
+            "86d69a49e801b3a98441c16b04f9c0d4b98a2bf4c4e57999f12fefe863fd4ba8",
+            "0e515abe2402e993a381a43e912a07391805454dc1f37ac02c0e6add5798db63",
+            "b987c88092b9c734027da74591ae3c26207571968ba43f0804e2363077383ce1",
+            "e192beb964f5f9690566fbf428d2a2da8492798db5ecdf6b5fe053e688148d8c"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_km_bc",
+          "variant": "production",
+          "input_sha256": "5739ec677efc46f5d479eb9bb4bbd7c5425aa202558917fb1f29e847c9362a51",
+          "output_arg_indices": [
+            0,
+            1
+          ],
+          "output_sha256": [
+            "492800611950046db68cf3e0f2e956fed47775ed3cae864da295f5bdf4525a75",
+            "cd5a41693fa6a8b2677f7398c88d2c210eeac0a05de00d7127cdb84c459369c2"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_u",
+          "variant": "production",
+          "input_sha256": "3df9219f8761073bbb85174f1d8a18730e6f4d9437552d5645f1d2e61da83049",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "34578a992e944600a78f25c8d3bc1cee3c6ec9cfccb2c725b811f70aeaf0a02d"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_v",
+          "variant": "production",
+          "input_sha256": "395337a9f032fe437b7157279fcdc00ac33ef80c7e06f367cd9ef9940b5b596f",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "e7ca9bbc783ecac50997aec49d921f7a64e5972175ddb6c39543df0e25ea544e"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_w",
+          "variant": "production",
+          "input_sha256": "cc57cf62d7994b175f3640ec31ab922106edd771e7edb013520d8a9ece40408f",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "981e4111fddafb46cc93a4b58eafb96ce7af5e76803a8dc5c7adfd7d37c78f7a"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_u",
+          "variant": "production",
+          "input_sha256": "752a63cad83d681dbb41c146e32f5c096deabee8c99d3a5eb4182ed662bdfabf",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "1a038274cfbd0e286e09fabc94eac7fc513b5ec60bc2af128ab7bb85785b92f6"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_v",
+          "variant": "production",
+          "input_sha256": "5ddb4cd4df3c631e8dcf9c40a38dbbc6e833fc6f865024975940b90bf7344964",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "7c7bf9e63b5ddd611b7edf5c4ca8463f414eef0e2782dd587e77e4171393c420"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_scalars",
+          "variant": "production",
+          "input_sha256": "46a0e25ce27ddde9f9960c106b72a5fdc9b1d606fbd077468aced50cb0198e04",
+          "output_arg_indices": [
+            26,
+            27
+          ],
+          "output_sha256": [
+            "6e6794a9d9c6e4dcf2ee92c244aea0c6d57c1fe8215e52fe77baf7647743fecc",
+            "57a237b55ddcd550ae25972404f05e972e8b3ed8a079205b046cef2aadc5da92"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_w_primitives",
+          "variant": "production",
+          "input_sha256": "930fe31f88bdf8d21501870dd3b7ef0dff4b52959d48f2dc9b938adb2c4b7295",
+          "output_arg_indices": [
+            22,
+            23,
+            24,
+            25
+          ],
+          "output_sha256": [
+            "46ac4a1fc2bf255f6e087cff5da50dc10ea7bde5ab9a40f1841dfaf9b158b7fa",
+            "5bed8ee2c4ef629de51c9e399203ffb3196b3b3e46f2fd4aed8ab19ffddbafde",
+            "de462c94e71f4f4a17e633eb54ba565cb51aee42e2e0a4e488ea2f32e029d696",
+            "dd16ec26e4ed506b803ba72814e18a16bf2c45984aabab40eb26f12771f9d508"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_w_cached",
+          "variant": "production",
+          "input_sha256": "e8ab47599d39ce7d4c0f066f0bff4031373b467f2444f6a3c91b2a01c03386b5",
+          "output_arg_indices": [
+            27
+          ],
+          "output_sha256": [
+            "3267f09774d8a3ef16e161b944f842f359ef9e45620a6ba242385c789cb4d08a"
+          ]
+        },
+        {
+          "kernel": "wrf_calc_n2",
+          "variant": "production",
+          "input_sha256": "578a9281217a39527d57bf77c33ddce219ad3013203b3108a2976bc2e4a024f8",
+          "output_arg_indices": [
+            30
+          ],
+          "output_sha256": [
+            "56880d1fe0d52d609f968f0909281a3617bdf6303b2eceb9bf14011e8bcbe553"
+          ]
+        },
+        {
+          "kernel": "wrf_smag3d_km",
+          "variant": "production",
+          "input_sha256": "232a068cb2201840d5a13319f183a94e4ccccd380baa8d53d5887d9a998dca7a",
+          "output_arg_indices": [
+            31,
+            32,
+            33,
+            34
+          ],
+          "output_sha256": [
+            "e147b9a80bdb5170a9bff8f236780d6a74cbdff58e887a9ff0dffbe27aa4035e",
+            "6f700b205482b50f3c5f911e2dc8b38b98676647a8fe34ff0650bff970f480ba",
+            "e147b9a80bdb5170a9bff8f236780d6a74cbdff58e887a9ff0dffbe27aa4035e",
+            "0b840c1e82a578f2528cbb424201ec19c5f51d529271651ea90d30102b7e9790"
+          ]
+        },
+        {
+          "kernel": "wrf_tke_km",
+          "variant": "production",
+          "input_sha256": "455e3b74f63519638b1db25286c3189d8990ac400b654180e7036a8a35c84ec1",
+          "output_arg_indices": [
+            34,
+            35,
+            36,
+            37
+          ],
+          "output_sha256": [
+            "69591d430820bbfce115c403ca5087957ebafb60ae08c82a1fed7150a7f6640a",
+            "1e26fb1b4a380b4bc9cdfeafaf5b2e2459ca3e6ce49e30688370802efcddf5ad",
+            "69591d430820bbfce115c403ca5087957ebafb60ae08c82a1fed7150a7f6640a",
+            "1e26fb1b4a380b4bc9cdfeafaf5b2e2459ca3e6ce49e30688370802efcddf5ad"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_s",
+          "variant": "production",
+          "input_sha256": "4fe14bc083ae0d7e808685b1278d6f00c75ab6ac4cf26de24557f0c40a7c7322",
+          "output_arg_indices": [
+            27
+          ],
+          "output_sha256": [
+            "2c58a7cce92f6abad2d80ec313d5540245fb30f31567bb908aad1bf099c7b023"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_u_cd0",
+          "variant": "production",
+          "input_sha256": "4db3c85ff66cbf7d72b406ef3d5a4f11e550d8968527800dc4add8e04c552712",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "ad4ffd90eff616032720c3d5d97d5458f0ac05ec9f045068022fa5b722c78ac8"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_v_cd0",
+          "variant": "production",
+          "input_sha256": "13f653d80f767439954cb222d401261b8f8dfcfff68b7988badd6aeb90b0b0a7",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "1b0a034d5d44df3eaefdcbd610feda42fd79cfc9cd14edf8cbc092fed5433540"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_heat_const",
+          "variant": "production",
+          "input_sha256": "c18061c6d381848d5e6125342a304419c07cfdcd98f719303236e3f6c421eba9",
+          "output_arg_indices": [
+            23,
+            25
+          ],
+          "output_sha256": [
+            "0c5730ab1fa81d17fc9e674666e3e0e2bcc0ba528c2bc17ab4cd0bf72444229f",
+            "bb7a0eaca24711341cc85042cf04b4d4ae5fe3836ba1790bc6635d72604394bb"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": [
+        true,
+        true,
+        true,
+        false,
+        false
+      ],
+      "kernels": [
+        {
+          "kernel": "smag2d_km",
+          "variant": "production",
+          "input_sha256": "4a71437e3df6260b6f6bc612c263aafa902e6997b61b8dfc960826a718e47741",
+          "output_arg_indices": [
+            2,
+            3
+          ],
+          "output_sha256": [
+            "6b8534278853c4658ee9320079ae8fed8e443457161cb437512f60755cd040db",
+            "8dc636a01012b737afff1b3317de721cc9e240a4adce901050c6ebe840d0dc3b"
+          ]
+        },
+        {
+          "kernel": "smag_hd_s",
+          "variant": "production",
+          "input_sha256": "9c7315848aa533b9a11ca3221366fd3d07122e235a02804d8ee7a97328632adb",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "ff04c2f7b317a35d0850d101cc99491ab497cc092060dde910775605458caf38"
+          ]
+        },
+        {
+          "kernel": "smag_hd_u",
+          "variant": "production",
+          "input_sha256": "cf5f0692736e7f320a931d09092a25d6aeb46d88411416e3d1e9b2bb6533a717",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "457e8864bea8a32bfe1b2b7e14087a10ce86a3f92223847841f0824351c3ec6c"
+          ]
+        },
+        {
+          "kernel": "smag_hd_v",
+          "variant": "production",
+          "input_sha256": "69f30701cb0022fdc07b661a6104fc759d34ce0feb55ab6adc2f11628c7dbda6",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "57ebe4f5612336caeabde8b101ead7b7c439efd91014f8f858b34629b69f418d"
+          ]
+        },
+        {
+          "kernel": "smag_hd_w",
+          "variant": "production",
+          "input_sha256": "1ab9bd0286f61f01ad27fc2e0e6e4c006fe6cf2a98898f80a4dc455739075466",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "292e0fd2242cae4960f5fadbca75f4a02d197202d000c59d1a6439f7eee8c291"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_deform",
+          "variant": "production",
+          "input_sha256": "da1ce4ddfc0bd69ae3477aad835804b5fcb774bc323305fd9c70bb328da3b50c",
+          "output_arg_indices": [
+            22,
+            23,
+            24
+          ],
+          "output_sha256": [
+            "bccfda445adda1b4053c434008077266ae7a2818fd7ac4fe46ebfaeed229589b",
+            "cdb111b7feca7ae3f7726f577c9d87feb946fa393391616b06fa321e4aede73e",
+            "5ec72269cd1a77980d23b9d9df0ed58b54d4bde6b29f6ef506cc98b688eaf00f"
+          ]
+        },
+        {
+          "kernel": "wrf_smag2d_km",
+          "variant": "production",
+          "input_sha256": "ab77346367e0162507209c74732e395fd14a78cb77b43b24bb04d407903b5194",
+          "output_arg_indices": [
+            27,
+            28
+          ],
+          "output_sha256": [
+            "bd65a028733de7fc0b40371f28f7245e42b800eaa444fca14356986f41a94467",
+            "9e24f7e2a8c233aecb122644ca49310f7262c3a527268b69da16e1b7f2e0fbd9"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_u",
+          "variant": "production",
+          "input_sha256": "80ab08052148257208e406da4ab5e38497d668d891f7f6a1288603c2f6d9d7ed",
+          "output_arg_indices": [
+            25
+          ],
+          "output_sha256": [
+            "76c2eb8532036cd9c13dbf052b37e49c5589b8f6bbf39c30b7c26b87c12bf83b"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_v",
+          "variant": "production",
+          "input_sha256": "80681df675451661626b1ae1f9eb05cd1988c12289981f03d1373f58bc26c538",
+          "output_arg_indices": [
+            25
+          ],
+          "output_sha256": [
+            "2661fd01eba6b52259c39feda2faec2d0d4311cc8fb8d4b2dd4eadfe117d792c"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_flux_s",
+          "variant": "production",
+          "input_sha256": "4ad2f66c27eb9ed5bf12dd2c397ec85999092a9864ea0860fb3ccac2ac5553f1",
+          "output_arg_indices": [
+            27,
+            28
+          ],
+          "output_sha256": [
+            "836e625f2ecb3beeee716dbf3581c4a2690fcdbea614869a91e962aff03cc16a",
+            "03ee8172ef280c853b24d8483609fc8d5a70ef3818ef0ae75a6838ac0cc00a5f"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_s",
+          "variant": "production",
+          "input_sha256": "bcd6f349d5734c1dc6fbd964208cd619be6ab3fe299baf723fe8004920f133de",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "eedb940c209fc0557129db012de03e61c5fa33c9b91e72f0a37bd81487ccb45c"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_w_stress",
+          "variant": "production",
+          "input_sha256": "1005eee484c3c80cc2b0c5d0f7a31d40d9392736a072711e9d35897fc99b56d6",
+          "output_arg_indices": [
+            23,
+            24
+          ],
+          "output_sha256": [
+            "9cf998d8a3e4ba4d56e846eb1808c649c7b947e80d2eaea195c21036d864c644",
+            "8f1b701feed6e01d02c5f982a5755242ac86caea49ed709a1c061a67916463c4"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_w_stress",
+          "variant": "production",
+          "input_sha256": "fadcda9172c695c7ecd96ff785c6d9ab2d6e4545344a9a115480668cf13e4811",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "a53c5b2d8827051fd094feba2a46a89ec68b633d8aee6b9561e093cc619ebb97"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_w",
+          "variant": "direct_w",
+          "input_sha256": "ab282783baf10ce51a051373473c510ff62467269b4bf2de81604c2f9e4a742e",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "220f09baf12a1716acccc95bebf8f10b38afbad01cd8fab21474108d8db91de4"
+          ]
+        },
+        {
+          "kernel": "wrf_tke_rhs",
+          "variant": "production",
+          "input_sha256": "35fe4bb961727d765ac193e68fe2bb8a7079e2c6ca05d74a73c6e74be4796d8e",
+          "output_arg_indices": [
+            45,
+            46,
+            47,
+            48,
+            49
+          ],
+          "output_sha256": [
+            "6b6301cd7e009d929dc54743738dc453516b481231aad6e7324153af50d68337",
+            "c7415badf256f6df3f0938eb25be2b1ac22f1e91c3ddadccad58dc0ca7b682b0",
+            "44939adf0a6c26250f24e87671329e862131f4addc3ea3d4803a07bc9928fefc",
+            "8099e44f2d922465cbbea6d54a36eef9b34d344b5cad87a7479189ebab98a85b",
+            "28b24f1456614b9ead6979dfe7ec4fc828ee0d106d39f4e8aab9a8211ab2ade7"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_km_bc",
+          "variant": "production",
+          "input_sha256": "33e0e1c00e759f7f915b4fd26d12b8a42fa87b4994662fbe5992abfdc72f4439",
+          "output_arg_indices": [
+            0,
+            1
+          ],
+          "output_sha256": [
+            "900634d2831548326a73ebb603b2e452e48026ffef9d7ca8ebf7d68428342926",
+            "62a928805aaddceeedbd37a2c776181c1e7fdfafc0cfed5a780d62360a05d688"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_u",
+          "variant": "production",
+          "input_sha256": "b2e7927f664e7753653143e419e989558d7e16ec20615d3a2e8759455bf4cfaa",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "ef37a94fa631b39fa40361dcca4533f3e8367130d4e8d19b91c9d9635fa2895f"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_v",
+          "variant": "production",
+          "input_sha256": "eaa8633f6deec80cda7a6a853ee9f24b825152b7afe602a530003599271bc561",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "2b19a62a0242657a10967aadd18e083bbc01ab83e39ae03527c005c82ba1599c"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_w",
+          "variant": "production",
+          "input_sha256": "ab282783baf10ce51a051373473c510ff62467269b4bf2de81604c2f9e4a742e",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "ed55e78bd22fb134672e84a66a5b92376a706472d7d89b90e9544017eec3a22b"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_u",
+          "variant": "production",
+          "input_sha256": "1e044af185d222bd3f068f26646ca4107ef054819401566f829eff8ac94b3257",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "3692514097981b229c05715727a46f0e9e37d87b472a01b68b8b5a05f42178e6"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_v",
+          "variant": "production",
+          "input_sha256": "5ea1b17cc5961d94abfe9d343a2fc26c8ed1a1a70225110b339dfb9ee8ea7a16",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "c3a631573dda3610071c8f1b682ac9c3da80d7ee5d4849bbdb4b12f6f3954585"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_scalars",
+          "variant": "production",
+          "input_sha256": "2ceb3aac9e54971f0e6390dfba21f05e882500391e8d420595ef05df18bda61d",
+          "output_arg_indices": [
+            26,
+            27
+          ],
+          "output_sha256": [
+            "e17af55cf24ab8c663874fdcc2ce6658f1c3bf09dac88e74eafd802f7fe61569",
+            "57a237b55ddcd550ae25972404f05e972e8b3ed8a079205b046cef2aadc5da92"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_w_primitives",
+          "variant": "production",
+          "input_sha256": "eeb88e040fb4bc0003d115b6bf6bf0056f9c1aa0a0440ac63a862beab7ac1061",
+          "output_arg_indices": [
+            22,
+            23,
+            24,
+            25
+          ],
+          "output_sha256": [
+            "670f50e7dc8331d3cf15fb3ca44cc604b5400e7fdc49021a0bb773e5a4713fff",
+            "5bed8ee2c4ef629de51c9e399203ffb3196b3b3e46f2fd4aed8ab19ffddbafde",
+            "0c0411b6680cd8d5aef192dbe59b52d280accac0e8145dd309827fdedb8efa8c",
+            "dd16ec26e4ed506b803ba72814e18a16bf2c45984aabab40eb26f12771f9d508"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_w_cached",
+          "variant": "production",
+          "input_sha256": "b02b4515ebc91f7af4d866c96c78489f364328568a886d3e5d9f8dc4efa3a869",
+          "output_arg_indices": [
+            27
+          ],
+          "output_sha256": [
+            "fa6007cc4780fe10c4fe3d27700203dba28db5b1ff9400ac168ab3a4eb9234d5"
+          ]
+        },
+        {
+          "kernel": "wrf_calc_n2",
+          "variant": "production",
+          "input_sha256": "c67a16a8da83b7d45963a601e053a34794c0d52e0e07efb2899a2dc8e9b7a642",
+          "output_arg_indices": [
+            30
+          ],
+          "output_sha256": [
+            "6493213be16e4ae9ed5e3d99848da04ca12bb75d6fb169f44126f327115b1714"
+          ]
+        },
+        {
+          "kernel": "wrf_smag3d_km",
+          "variant": "production",
+          "input_sha256": "9057fb726cf7a471ea0dea169bd129317b77208a6bfbda47c76286391e0f508a",
+          "output_arg_indices": [
+            31,
+            32,
+            33,
+            34
+          ],
+          "output_sha256": [
+            "d63f5414f87ae8d55389a63c155ceb21db2bea64bc7c1eebb7cdaa09909d306c",
+            "32897a5d46bcb38bc83c2ad5f6953ad51af3c5a792235bfa0967d5e20257007f",
+            "d63f5414f87ae8d55389a63c155ceb21db2bea64bc7c1eebb7cdaa09909d306c",
+            "5be8150d89863788818de3e0d2dcf3713f643db9ebc5c2a4f155e66206ef3b3e"
+          ]
+        },
+        {
+          "kernel": "wrf_tke_km",
+          "variant": "production",
+          "input_sha256": "03c98d11dd6c2b0426a2221eae4b4b6bc31bb9ef2870b8e667826e73aa0a2610",
+          "output_arg_indices": [
+            34,
+            35,
+            36,
+            37
+          ],
+          "output_sha256": [
+            "69591d430820bbfce115c403ca5087957ebafb60ae08c82a1fed7150a7f6640a",
+            "1e26fb1b4a380b4bc9cdfeafaf5b2e2459ca3e6ce49e30688370802efcddf5ad",
+            "69591d430820bbfce115c403ca5087957ebafb60ae08c82a1fed7150a7f6640a",
+            "1e26fb1b4a380b4bc9cdfeafaf5b2e2459ca3e6ce49e30688370802efcddf5ad"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_s",
+          "variant": "production",
+          "input_sha256": "080fb493f8c74cb58015b21a2d64929eb62291214f2585e69e48263b1716050c",
+          "output_arg_indices": [
+            27
+          ],
+          "output_sha256": [
+            "52378936218cce40a71c2ac134da9994fc46463df768a67d30ee959e0372b6f4"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_u_cd0",
+          "variant": "production",
+          "input_sha256": "7426cc68588178363381f0272467c9e728fa768bd206681bb0d4791df1aa6a80",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "d84a565c94b31ff118f531bd76e17f7ccc42cfdbe350a26a20d05231c65f6275"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_v_cd0",
+          "variant": "production",
+          "input_sha256": "9168b44c19aeb92902bd3cfcb76571a6f2ee525b0888a2737fb7cf351b406b96",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "881448aaeba89e9d0624c93afd2df79982ca99e35a1c29732c5170f813a11c29"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_heat_const",
+          "variant": "production",
+          "input_sha256": "ab863fead30b865f08619a2de42c9a981db80843858c238247916e6686fa1478",
+          "output_arg_indices": [
+            23,
+            25
+          ],
+          "output_sha256": [
+            "9f2f6828c3d6d7c1a068aed84f3220e3ca06ec23f3e29799dae5586c26dcd2fd",
+            "b56a733f261caee388efde6085c9c10a5e7790b6e4587a356fda23f181c67492"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": [
+        true,
+        true,
+        false,
+        true,
+        true
+      ],
+      "kernels": [
+        {
+          "kernel": "smag2d_km",
+          "variant": "production",
+          "input_sha256": "4a71437e3df6260b6f6bc612c263aafa902e6997b61b8dfc960826a718e47741",
+          "output_arg_indices": [
+            2,
+            3
+          ],
+          "output_sha256": [
+            "6b8534278853c4658ee9320079ae8fed8e443457161cb437512f60755cd040db",
+            "8dc636a01012b737afff1b3317de721cc9e240a4adce901050c6ebe840d0dc3b"
+          ]
+        },
+        {
+          "kernel": "smag_hd_s",
+          "variant": "production",
+          "input_sha256": "9c7315848aa533b9a11ca3221366fd3d07122e235a02804d8ee7a97328632adb",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "ff04c2f7b317a35d0850d101cc99491ab497cc092060dde910775605458caf38"
+          ]
+        },
+        {
+          "kernel": "smag_hd_u",
+          "variant": "production",
+          "input_sha256": "923cb4a55590909fcb94bf403f521b29c23fda21cce5ceaf46c8c7f34d3ef7fe",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "457e8864bea8a32bfe1b2b7e14087a10ce86a3f92223847841f0824351c3ec6c"
+          ]
+        },
+        {
+          "kernel": "smag_hd_v",
+          "variant": "production",
+          "input_sha256": "9ea8a7837b2e42d74769a32f9184d78ee3c8e9100f6ba4db095c10e5ba6bbc91",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "57ebe4f5612336caeabde8b101ead7b7c439efd91014f8f858b34629b69f418d"
+          ]
+        },
+        {
+          "kernel": "smag_hd_w",
+          "variant": "production",
+          "input_sha256": "1ab9bd0286f61f01ad27fc2e0e6e4c006fe6cf2a98898f80a4dc455739075466",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "292e0fd2242cae4960f5fadbca75f4a02d197202d000c59d1a6439f7eee8c291"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_deform",
+          "variant": "production",
+          "input_sha256": "3c8ed3d820518d7871562331c79f80bce22d5b6bff851ba669f3a15f27b266ca",
+          "output_arg_indices": [
+            22,
+            23,
+            24
+          ],
+          "output_sha256": [
+            "02cdefb2c3b1d55dc01773b21c8c01cf62764f02c84eeefbd10c4b0191f2db63",
+            "1a0c2bdc73f98d5bd1995bbbf78d9ef50465f5a4591c6326dbcbea61a338e647",
+            "442ee6bfee91b2c48ecf53d4f2efdd249ff1326a0410649d664b5ba449e1f1de"
+          ]
+        },
+        {
+          "kernel": "wrf_smag2d_km",
+          "variant": "production",
+          "input_sha256": "2003d6b9b9ce9da45ffee79bfa37922bbf272eff6368ebef0a0c27091bb4fe55",
+          "output_arg_indices": [
+            27,
+            28
+          ],
+          "output_sha256": [
+            "a33f6e81b4903e8b3daf06b89bc3c9b7838ea82302f2b60205d80fcd003fbc11",
+            "aa9caec22f93b2ce0b029ad195fcc2594fba44c4821b0a6aaae8619e29a5033e"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_u",
+          "variant": "production",
+          "input_sha256": "580e01d45e1665aa37d33f09c9915e22e71c190724382b6cd365c6988d744db9",
+          "output_arg_indices": [
+            25
+          ],
+          "output_sha256": [
+            "0ea6c3125712fb7f5f6b501a718b61caaee2b7b945ec3a474a73b1930476a5d7"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_v",
+          "variant": "production",
+          "input_sha256": "751d70dbd9dbea191c72ed877c2c70d2048fec474815e823c57c85ae1cb9dccf",
+          "output_arg_indices": [
+            25
+          ],
+          "output_sha256": [
+            "4a22ddfa80705bc0d9ea3208d0a3eb13511161a7113f9869b52b1c062a3163b1"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_flux_s",
+          "variant": "production",
+          "input_sha256": "a0aa7641b36604bae677e22853a8cb1ad9bba8e15ba6866877185c47f4452609",
+          "output_arg_indices": [
+            27,
+            28
+          ],
+          "output_sha256": [
+            "67ac012ad69e8ab52177c62d98d87b731c8119b73518dbe9d1a357db6908960e",
+            "8fb161dd453d13d0a5c65c74deac64b805237d08d439eeaca6cd86d58dd407db"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_s",
+          "variant": "production",
+          "input_sha256": "154c73ed3934cd0b610243f3f6c1694dd1096a42873da0254d5f9dca2308b30d",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "bcb0c0aa9ef9920d73576946f87e75d136e67386865b1400b3de1168cbd1262f"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_w_stress",
+          "variant": "production",
+          "input_sha256": "6f7410b79beda2274d6100625e433e9af6f8bb2510f97bfc4bc5c88f861dddbb",
+          "output_arg_indices": [
+            23,
+            24
+          ],
+          "output_sha256": [
+            "e40de21954d677d7dfe5eefe4ca09086096d0aba5f5abaa797dcd19c83256266",
+            "f8f14eb92418b4fba80220840657cc673887de6294289543fc146d10e3de279e"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_w_stress",
+          "variant": "production",
+          "input_sha256": "708dc0705d93fdef67580ace974cc0549e9036162ad0b0504f1348d1e68051f9",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "3a94716a492ead6cc86aaaff969c7a6b72906ed71c244698cae8e6a0483e6296"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_w",
+          "variant": "direct_w",
+          "input_sha256": "a09c77355eb17931ba72ca1214168837068671587e17f2f690ed061075667264",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "89039f68e3941fc49ace982c3cc555477e96a500e00cc87cfaf6fa1f7ed0a379"
+          ]
+        },
+        {
+          "kernel": "wrf_tke_rhs",
+          "variant": "production",
+          "input_sha256": "4d0d7a0d68e8a2094ec9b57b495c69e73c45c96ee4aafc60583e241765a7e96d",
+          "output_arg_indices": [
+            45,
+            46,
+            47,
+            48,
+            49
+          ],
+          "output_sha256": [
+            "f2c1eebee492a88feb3cb520f9759824c78a3d9b70bb08fe082f75ce59e66a44",
+            "0f00344bd99e7283e098526bd3c6190b92050d2b857e3590e8930cc40b45c72f",
+            "c1f848d0834b046d7047bccf1b64d19cb62a3cbd99f4dce2a15a5be75f5db8ff",
+            "ea06feef39fbca92dd980cc6ae3a54c4f27c0e97aee979ee556ec0deee71f919",
+            "6aa3567775aeeaca857388c303ee729126032d7b44d1729c85055c375b1d5193"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_km_bc",
+          "variant": "production",
+          "input_sha256": "9b785580b124be64f3084e10dd3881a849de0129f03580fab18d7207a004c82a",
+          "output_arg_indices": [
+            0,
+            1
+          ],
+          "output_sha256": [
+            "bffe21b6cb6f4ea6e6bce7e9ed86ff54713f6eb9b3a58743b93741ece3eec375",
+            "6d3d7ef9b30577fbc3250ad6e66e77d8f8391117a36b93c1369dbbbdc4aeee81"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_u",
+          "variant": "production",
+          "input_sha256": "0082bf5fa5e6a19fc0fe8a15ca41e1df86249ece008fe9f1ce63cb1d21f07c7b",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "f9ad52e3e955484b89634d875304173c3da16cf1c753f0f5fadeb54002dcc14a"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_v",
+          "variant": "production",
+          "input_sha256": "813e38795c913749d0f1729c77490a8edd43c43fa5aba7e0423ebdfe2f47fa6a",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "0f712c985a6cd9c53c72c6b73c375d463e1da0b7e39d0e30d04c1c6e43ef65f8"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_w",
+          "variant": "production",
+          "input_sha256": "a09c77355eb17931ba72ca1214168837068671587e17f2f690ed061075667264",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "981e4111fddafb46cc93a4b58eafb96ce7af5e76803a8dc5c7adfd7d37c78f7a"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_u",
+          "variant": "production",
+          "input_sha256": "2d01e983365c4ffd2a1c344fed6f686eb49c5eadaf5d25f0464377509f4bfc95",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "1a038274cfbd0e286e09fabc94eac7fc513b5ec60bc2af128ab7bb85785b92f6"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_v",
+          "variant": "production",
+          "input_sha256": "577736a113019d91a2585f0de5b0f02b7b1c80367f4622ea4665b2e2cd24c0fd",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "2c13d2c114d4164ce5d567523024b3b3dec236ae589d6933c2a06cfd7f32aa81"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_scalars",
+          "variant": "production",
+          "input_sha256": "f48e5c075651875f0d5a0f00bbab66681f537b00821ad84471f19d72c3ba6507",
+          "output_arg_indices": [
+            26,
+            27
+          ],
+          "output_sha256": [
+            "6e6794a9d9c6e4dcf2ee92c244aea0c6d57c1fe8215e52fe77baf7647743fecc",
+            "57a237b55ddcd550ae25972404f05e972e8b3ed8a079205b046cef2aadc5da92"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_w_primitives",
+          "variant": "production",
+          "input_sha256": "d4450443bfd0e2aac29aadc21997535cb2c06d6171cf669c31a67c4ba062543d",
+          "output_arg_indices": [
+            22,
+            23,
+            24,
+            25
+          ],
+          "output_sha256": [
+            "46ac4a1fc2bf255f6e087cff5da50dc10ea7bde5ab9a40f1841dfaf9b158b7fa",
+            "5bed8ee2c4ef629de51c9e399203ffb3196b3b3e46f2fd4aed8ab19ffddbafde",
+            "de462c94e71f4f4a17e633eb54ba565cb51aee42e2e0a4e488ea2f32e029d696",
+            "c3c4a87e8a68651a5f9201fce9acce43526c07541895b779b1e2c4809722e944"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_w_cached",
+          "variant": "production",
+          "input_sha256": "7f95f9521ee43b5734fee134ee448048a76fe608de3a20ff8e762c296044caba",
+          "output_arg_indices": [
+            27
+          ],
+          "output_sha256": [
+            "fad44db384c77e1ec12c75d46c8af5430f4556f4f957845d5fd34d43eb8e0e47"
+          ]
+        },
+        {
+          "kernel": "wrf_calc_n2",
+          "variant": "production",
+          "input_sha256": "023a5eee852673f18d4f8242f86c076ac1f852869c9e8e660a78a3af95c62d2f",
+          "output_arg_indices": [
+            30
+          ],
+          "output_sha256": [
+            "7dea12a40fda437ec6cb4791c0b3172db72f1f80f79565beb52948caf60b0cb6"
+          ]
+        },
+        {
+          "kernel": "wrf_smag3d_km",
+          "variant": "production",
+          "input_sha256": "6f3b3d3d14b87b86bb04e306f114b80b55c2278f8dbd47bdeeda93fc78033af1",
+          "output_arg_indices": [
+            31,
+            32,
+            33,
+            34
+          ],
+          "output_sha256": [
+            "287178bd17aa0eda9544127245ad3977eeeace9c667bf3e4e67d51c9b1445ff0",
+            "9f4df2dc19c365c68b2f93c041af460d83660aa4b4cbdadb5ffd85cf3039f975",
+            "287178bd17aa0eda9544127245ad3977eeeace9c667bf3e4e67d51c9b1445ff0",
+            "aeb9df0c11d0f658f3bb978a3deddfd3fd3bc73504def6161f04fa7daa5e65e6"
+          ]
+        },
+        {
+          "kernel": "wrf_tke_km",
+          "variant": "production",
+          "input_sha256": "7a18c886b8e7df7149599d90b4d213154c040ec9a1ba7922bcd790eadef72a4e",
+          "output_arg_indices": [
+            34,
+            35,
+            36,
+            37
+          ],
+          "output_sha256": [
+            "69591d430820bbfce115c403ca5087957ebafb60ae08c82a1fed7150a7f6640a",
+            "1e26fb1b4a380b4bc9cdfeafaf5b2e2459ca3e6ce49e30688370802efcddf5ad",
+            "69591d430820bbfce115c403ca5087957ebafb60ae08c82a1fed7150a7f6640a",
+            "1e26fb1b4a380b4bc9cdfeafaf5b2e2459ca3e6ce49e30688370802efcddf5ad"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_s",
+          "variant": "production",
+          "input_sha256": "1025370479ede245ada9f5207dd152668a0f92325c70a7f7c645abde04bd87fd",
+          "output_arg_indices": [
+            27
+          ],
+          "output_sha256": [
+            "2c58a7cce92f6abad2d80ec313d5540245fb30f31567bb908aad1bf099c7b023"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_u_cd0",
+          "variant": "production",
+          "input_sha256": "6f8344f0689a6b5e578b86e945af5008731ee2d82531a475b8e625963d8ba2f3",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "ad4ffd90eff616032720c3d5d97d5458f0ac05ec9f045068022fa5b722c78ac8"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_v_cd0",
+          "variant": "production",
+          "input_sha256": "8c460eef0ee00698d7328c64d95054419a0d707d151f00afe7aa8c6205991bc3",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "857fdf02d1c8e6f1d915171ac93113a935ca993c9bf91505481dcaea3b620d8b"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_heat_const",
+          "variant": "production",
+          "input_sha256": "5347a5eaea0c17dea6e2a3ca3d76d3b0da2a3b23c8cecaa4405dad0c167bbadc",
+          "output_arg_indices": [
+            23,
+            25
+          ],
+          "output_sha256": [
+            "0c5730ab1fa81d17fc9e674666e3e0e2bcc0ba528c2bc17ab4cd0bf72444229f",
+            "bb7a0eaca24711341cc85042cf04b4d4ae5fe3836ba1790bc6635d72604394bb"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": [
+        false,
+        true,
+        true,
+        true,
+        false
+      ],
+      "kernels": [
+        {
+          "kernel": "smag2d_km",
+          "variant": "production",
+          "input_sha256": "33a06c8c56112d7227bb305289c043fc1c3109cd085fc8be0579475595ab7265",
+          "output_arg_indices": [
+            2,
+            3
+          ],
+          "output_sha256": [
+            "6b8534278853c4658ee9320079ae8fed8e443457161cb437512f60755cd040db",
+            "8dc636a01012b737afff1b3317de721cc9e240a4adce901050c6ebe840d0dc3b"
+          ]
+        },
+        {
+          "kernel": "smag_hd_s",
+          "variant": "production",
+          "input_sha256": "2a6047e26487fb9e422d466a688f3d5ebda443400abf10cd1f9f103d6cd6713f",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "fbac23cf011b37c22f207aec27e98c2c0c0d72ccbab0e6f5caccecb9ec202792"
+          ]
+        },
+        {
+          "kernel": "smag_hd_u",
+          "variant": "production",
+          "input_sha256": "302dc1a2ce4b5e16dbf275903b7b37400aa8a2cbbdd0f1082c14280f16b68788",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "de2a5bf97b4d1240c0755d6036e208e36350ac1cf6be11e55f45d2dff40d935c"
+          ]
+        },
+        {
+          "kernel": "smag_hd_v",
+          "variant": "production",
+          "input_sha256": "82cbc82f8e2f0a8ef92c5f2ddcc20ab81dc8e45e81b0a3ab9f804eb09155b5e5",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "3b4ed13a1a51f75a55601ffffc1421c4ca322eaa413100d3c97d9707ca7da80a"
+          ]
+        },
+        {
+          "kernel": "smag_hd_w",
+          "variant": "production",
+          "input_sha256": "b09d3db89371b51d5cc326f799cafbae32e287954465743f8dfd091f0ec5cf21",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "771892431fc7dd12eb183a485a2a475ca358482fdf4b436fc28e8e99ab335c8f"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_deform",
+          "variant": "production",
+          "input_sha256": "ae0994ea42cbff8a58c408d260fe2deb209e638d2635672547cb8e0c897a098a",
+          "output_arg_indices": [
+            22,
+            23,
+            24
+          ],
+          "output_sha256": [
+            "bccfda445adda1b4053c434008077266ae7a2818fd7ac4fe46ebfaeed229589b",
+            "448372affd9f3ab19d8c171f1bb3325fac620c1a2178bc95142aa38366b1ed8d",
+            "45b8244671b76a6f5b38edc7c8229ad41b5bb8abe4f8404ffa259a13ea77e1b8"
+          ]
+        },
+        {
+          "kernel": "wrf_smag2d_km",
+          "variant": "production",
+          "input_sha256": "cbb7de5e1dfc87a6f64eaf4c8f4183963f96c7e6921cacfa14c19c7973e02f7d",
+          "output_arg_indices": [
+            27,
+            28
+          ],
+          "output_sha256": [
+            "68d746a5ecd3fff4926b8726f87d07354d254b9667dbb863b0cff36b0af74473",
+            "5205c80efbd11824e772c205586ace41ca3b0a5465abb540bcac3d352bf4eae0"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_u",
+          "variant": "production",
+          "input_sha256": "8ec27cf23dc8151311a59de3996a6e257dbf59c5f929839d25565b448e4baa05",
+          "output_arg_indices": [
+            25
+          ],
+          "output_sha256": [
+            "abd3fc903d96e3fbd2704ab4e8bc04217ff85303b18c9e0ce4a8a865b2f73eb1"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_v",
+          "variant": "production",
+          "input_sha256": "7d6448cee2720bb8a021fa725bcecca2a2b9c5cccc9ca3912233cf2d474d41e3",
+          "output_arg_indices": [
+            25
+          ],
+          "output_sha256": [
+            "6e41b4339c3376c402c34f928dc90b12ba54c31dbbabf07cb654ba86703c5bdc"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_flux_s",
+          "variant": "production",
+          "input_sha256": "dd3a32d44de233a89db532ef5ec7e3832cba65a1282b13fd4f9544c2993a7aef",
+          "output_arg_indices": [
+            27,
+            28
+          ],
+          "output_sha256": [
+            "0f2ca4df4afb898724d86af7d364e0752c6517b2a5ead01a69830f804bb1f93d",
+            "edcf12cb01426df5f2cf7fcabd0bd4e007f3067b0dfba9a5fab628175684b8b0"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_s",
+          "variant": "production",
+          "input_sha256": "f62fb45ee468258b4d721d130b649f8ae12ddf4000e0e16201d53fe4b68a1c8a",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "c5f2861fc0d254943908ccf8388a99fcaf32b0424b2e41d936904ba16373ef63"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_w_stress",
+          "variant": "production",
+          "input_sha256": "4aa082f790f450590a8e7c654a43c25141297b516740bc93fda516772ede3508",
+          "output_arg_indices": [
+            23,
+            24
+          ],
+          "output_sha256": [
+            "eab1206feaff7dc15b4d72bd823b52b955565cd6c9f6a3801407036b6f0d202f",
+            "dd7d61fb5744379e637d7a02a09884e274cb3a865580f3630ddb37ddbf818039"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_w_stress",
+          "variant": "production",
+          "input_sha256": "9a159fed0ca57ddfd466258ce2ec0b22d5a9ecf3f81919f9a7508a55405e41da",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "39ea17b5b5fa84f40e45cab470f5e6f987b5de9f8cbaf7d59d5d0bb8b952b546"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_w",
+          "variant": "direct_w",
+          "input_sha256": "a28ff4192bbcc663c0f9ee5411497b3eaccbb95484fdd18f952dec2bedea43c0",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "a8e4269abd06ab66390a0194151f7c22e4fa84b66c1e400045ee071e61fec56b"
+          ]
+        },
+        {
+          "kernel": "wrf_tke_rhs",
+          "variant": "production",
+          "input_sha256": "ae014da2a11353aa5706f6ee299b06dc3013be2e57f85e8ee52b1d9ea3a5f4c6",
+          "output_arg_indices": [
+            45,
+            46,
+            47,
+            48,
+            49
+          ],
+          "output_sha256": [
+            "b6b26ef90161787f08b94a0c21378923b47d945ebcea1dfa18a5392617d6bf89",
+            "08a8e9cd964b272c3686c9f86445156dd86ab12e0f901e6f5da721106ed12c92",
+            "2d2983bb3c07560e828a78e76069a7b3d063cf70d1f90695db00f142fa199a1c",
+            "c3a3015edd256204b4b10f6d37b20a5bee65344c4982be64a29814789d5319a8",
+            "e400759167f2deeb3ab62ef733def5b2d965ad1aa80a13c9fbf6ced8eb48cfa4"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_km_bc",
+          "variant": "production",
+          "input_sha256": "4f95c78b40b97bee1459565cd748c851a702b475518e0b5eb036cfbbf29c08e2",
+          "output_arg_indices": [
+            0,
+            1
+          ],
+          "output_sha256": [
+            "9304a7bf96fd457712ef2dac4792c05997386552b9459a88ccb5fc6ccec58e76",
+            "61629e22d98df31c3a2b91548ab1b8272a13ea9b454f62d189d44bc2f36d72cf"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_u",
+          "variant": "production",
+          "input_sha256": "f88d7ebea4de8942571a791310112bf163565f51c0d6e962ee836b9e9524200a",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "de79bbf4cb0f00976dba93a3ddd4ed4327d6c0d133f3e0b8cd2f34fc4ef28c94"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_v",
+          "variant": "production",
+          "input_sha256": "35a5fb8c68b04b569ef9fa121a4830576b25ad27b5f3dd6d5768e79c810ae69b",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "f66fb0b17ec8e71e48bade94d79ca36e4033cad06c3ca23caa089b36f7da786b"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_w",
+          "variant": "production",
+          "input_sha256": "a28ff4192bbcc663c0f9ee5411497b3eaccbb95484fdd18f952dec2bedea43c0",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "174fbeadd536de754b274e7cc56bcd18d45ef80423d8309a111f77652a837ead"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_u",
+          "variant": "production",
+          "input_sha256": "f925d18bafb34e31d28252fde5bfe2009001e6bddd1c30461ffb224e9a62014c",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "c355751e73e9b08ca2fc16b199e760a8896103a331cce9cad55fa13347d40582"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_v",
+          "variant": "production",
+          "input_sha256": "305f96b3f542ca8abac85b506bec8096ff60d1a1750bbc93dfb940bac9efa082",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "052cb89e40212f7402479bebb7ff92ffaa89752e0847efde4cfc75cc2c4f4757"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_scalars",
+          "variant": "production",
+          "input_sha256": "ee51d534d34dd78e6060a8aa4df8c36bcbcdb468358d364ec9c12982dbc6b35e",
+          "output_arg_indices": [
+            26,
+            27
+          ],
+          "output_sha256": [
+            "2d6d734e72c0b1bc36a5b628bced7ec0f3d800df4469983dfede19c191f86d36",
+            "edc3c7bf11541d0289a2bfc03fa3c01b92007dbc36584c705c6011ddc8f78141"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_w_primitives",
+          "variant": "production",
+          "input_sha256": "e41b68275cc174e18e4a2bb4a6e26aff8b6f40d2537b7e713cf48b50ac9788b7",
+          "output_arg_indices": [
+            22,
+            23,
+            24,
+            25
+          ],
+          "output_sha256": [
+            "670f50e7dc8331d3cf15fb3ca44cc604b5400e7fdc49021a0bb773e5a4713fff",
+            "8681ea128596d703946f9e47cc0aaabd9ebe6db9cc9aaed11d0dcf5f182e3def",
+            "84bac675a31d43342d3db12e53bf56836bdd46aedb88fe33012378c39fe9a87b",
+            "130408ecc90e3fb796a0bf2f73ccb8ec90d43c3d6ab12ddf38dfe42edf9d8d8d"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_w_cached",
+          "variant": "production",
+          "input_sha256": "7260ee987c62c8fd8db7f620af2370b7432e854cd19dfe63292eac0b687c5243",
+          "output_arg_indices": [
+            27
+          ],
+          "output_sha256": [
+            "178a9c3a6a2625b71133a6e3f69fb62bb8d4182894116a4d66b264a12c0d8999"
+          ]
+        },
+        {
+          "kernel": "wrf_calc_n2",
+          "variant": "production",
+          "input_sha256": "fe3cc7a005ced626859a48f310049108352a5e8341239cf831446da785ed1733",
+          "output_arg_indices": [
+            30
+          ],
+          "output_sha256": [
+            "2eb466fe9cd9efa768c21894c61f58624a07f56cddf0f772bac71f31e2c9cfc6"
+          ]
+        },
+        {
+          "kernel": "wrf_smag3d_km",
+          "variant": "production",
+          "input_sha256": "a66e6f1f59ed60491856d713f83675d9419979c78994bd54a7bbf112c33af78b",
+          "output_arg_indices": [
+            31,
+            32,
+            33,
+            34
+          ],
+          "output_sha256": [
+            "f71231c9ffeded4d0ae12ee2ed51943b790bec4b2118e8648291297bc8d4aed2",
+            "b84d12fdbcb1c297532fcfa3a3278fc61ee0bd9bceb48d19578d7c9b7ef8fc54",
+            "f71231c9ffeded4d0ae12ee2ed51943b790bec4b2118e8648291297bc8d4aed2",
+            "a0861c7c2a48c08b41392f54545d5c58de56aa8338ef3e9f4b3a8f926c62e33f"
+          ]
+        },
+        {
+          "kernel": "wrf_tke_km",
+          "variant": "production",
+          "input_sha256": "e6663b9d7a147a60c233a27503ee4ee6eb38798dfaf6c54b50ca0646242afe12",
+          "output_arg_indices": [
+            34,
+            35,
+            36,
+            37
+          ],
+          "output_sha256": [
+            "f3891bd665e27e200c62b99e23579ad8baa023865b966bab38a57c1f7deb09c6",
+            "b23ebd0bbc8451ca0e9ad7f62d2995172aa455bf7702c2b6dc40fea612e34da8",
+            "f3891bd665e27e200c62b99e23579ad8baa023865b966bab38a57c1f7deb09c6",
+            "b23ebd0bbc8451ca0e9ad7f62d2995172aa455bf7702c2b6dc40fea612e34da8"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_s",
+          "variant": "production",
+          "input_sha256": "176f3f58c4ad0078bbab7e819052a28cf44b29d20b14833dd68a1e924a15d0e6",
+          "output_arg_indices": [
+            27
+          ],
+          "output_sha256": [
+            "c4b4ff974ba67c35c2d2fc861e01d09e92146b51d6677cb2eabce820707badd6"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_u_cd0",
+          "variant": "production",
+          "input_sha256": "1120e978497b6da88b419c96f48cb873e76bdfe0899aa8561c01f3333c45ab88",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "57583021de7905d4811d3892ac74f7ac30e40c994b4d40d896d085ac1dbd6f37"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_v_cd0",
+          "variant": "production",
+          "input_sha256": "b043c3ad0bbd73e005fd084e5e88c03c8bd56d7c97c69498f2c21419f6418c9d",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "261001a848623f989e939a9237d6c3edf55697830d696bef007d60a5a7d58eac"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_heat_const",
+          "variant": "production",
+          "input_sha256": "9ae082584dcbc534ae83a9a7fdf6c4af755d152a537e6128fc5d01c8b4ce3ed6",
+          "output_arg_indices": [
+            23,
+            25
+          ],
+          "output_sha256": [
+            "6f69ea3523cc1e4a1e004668b9edc06f815ee86ebcdb8e848a5df45319af63ee",
+            "2fdcadb5c821ea02227f4b5ef118ac18fbb52ab3af5abeb1db1550897276790d"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": [
+        false,
+        false,
+        true,
+        false,
+        true
+      ],
+      "kernels": [
+        {
+          "kernel": "smag2d_km",
+          "variant": "production",
+          "input_sha256": "33a06c8c56112d7227bb305289c043fc1c3109cd085fc8be0579475595ab7265",
+          "output_arg_indices": [
+            2,
+            3
+          ],
+          "output_sha256": [
+            "6b8534278853c4658ee9320079ae8fed8e443457161cb437512f60755cd040db",
+            "8dc636a01012b737afff1b3317de721cc9e240a4adce901050c6ebe840d0dc3b"
+          ]
+        },
+        {
+          "kernel": "smag_hd_s",
+          "variant": "production",
+          "input_sha256": "14e8a997ce844258efa2b1359e83e4a9a48e5c6db3324b222c5bd6bf5b60de89",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "cfffa8714da3b5167d8bb00e3a3ba4f27f5f2a8e4b074a905c75c86100d98972"
+          ]
+        },
+        {
+          "kernel": "smag_hd_u",
+          "variant": "production",
+          "input_sha256": "86ddfb90c237fe19e78a0161b67a0d5b42d2e423ad5d5ace10b3c113ed7856d6",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "d8dbb5bb482a70c960634df2d4d983739838af43c64df9821c1848397cde8f99"
+          ]
+        },
+        {
+          "kernel": "smag_hd_v",
+          "variant": "production",
+          "input_sha256": "63f6ff3265d70694770607d62c33478fa9da586ccd9af96e736d3e899b66f9e5",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "0b3b5703fa72f2d7c1c251699258282fd43c37f063006da51737b08c450f434e"
+          ]
+        },
+        {
+          "kernel": "smag_hd_w",
+          "variant": "production",
+          "input_sha256": "8c9a202ac16c534c78536f4143c21ba2a9c351188a077e9a7b3636762a8fd93d",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "5e97eda51e4d1d2114e971f39f401e961cfec3194372994135d97295828a4828"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_deform",
+          "variant": "production",
+          "input_sha256": "b70c4c02428be277a90948bc6a591233ef60e0cf5d141e213dbcce7bfc133ead",
+          "output_arg_indices": [
+            22,
+            23,
+            24
+          ],
+          "output_sha256": [
+            "643f5bffb1f7e17141be1b14f57f0d769c709dfe043630552e7cb57d68790d00",
+            "f9dd43ddcdde498ad5c21518d86b87131689a208e16b735b0f796374a7d7468e",
+            "59641e3f9602b2f2b5c212b59244333bcd3cc8f4b646483313f4b512736ae228"
+          ]
+        },
+        {
+          "kernel": "wrf_smag2d_km",
+          "variant": "production",
+          "input_sha256": "49dc982b0e49805b1a2372a33fd6a143199d3012cb1ac4da10fd3a5b4395e8e0",
+          "output_arg_indices": [
+            27,
+            28
+          ],
+          "output_sha256": [
+            "e92cdfb78650d80425251cd28ff39317ba59643e98aa296da700f5b917297b91",
+            "ed9fb8fe6b96cf8fc3ea2a3afc49a261c33903de96a4f863b842b92bf411592b"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_u",
+          "variant": "production",
+          "input_sha256": "ce87116762dc669cd02e006925e5b9527deb4dbff6240c8913870dcf73472f9f",
+          "output_arg_indices": [
+            25
+          ],
+          "output_sha256": [
+            "6c2cd0772eedefe70a310099d6cc1f7a0f6883996df1cb45ba8e01fe29bb88ab"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_v",
+          "variant": "production",
+          "input_sha256": "08820e3666c752fc85c4c5e1e20168c49c3ea1ffd142f45622620bec1c123257",
+          "output_arg_indices": [
+            25
+          ],
+          "output_sha256": [
+            "6583afa58d9180dd3d09f7616d421026df43bb8da2195cbe7038fb972482d963"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_flux_s",
+          "variant": "production",
+          "input_sha256": "0d97b5d4f471db44486cdacab451ce5415cad2717d57cdcb8122c1901ab31836",
+          "output_arg_indices": [
+            27,
+            28
+          ],
+          "output_sha256": [
+            "0f9bf0084867b22863c7e9b099498f80afde58eee2e846a9f00aa04e7a6d52f4",
+            "24106f9dc74759eca5bb8c258f4d9fedb9a5906c6e1bbe63ec5752b19b5177cd"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_s",
+          "variant": "production",
+          "input_sha256": "42bb2b74f29245ad2d3a6fb4d378f9834cb828a7049199449000dde09d674302",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "347fb6d7b3b70c1a536b4df91f924eb395c7dca39ebff2c248bd62d8f6cd2f63"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_w_stress",
+          "variant": "production",
+          "input_sha256": "6a63c9b73b6876cc70afee6d0aaa03fcdb50bb0a1bd601ad2aef11730067c846",
+          "output_arg_indices": [
+            23,
+            24
+          ],
+          "output_sha256": [
+            "777d1cfab35c7683877b5f35e87bac89748dccc571f50d2c4f7e4d8b8c6d1918",
+            "014f67d1f3b80f265a5faf661ba59d0edd1496355e335c56dbe6b5a8a8e046eb"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_w_stress",
+          "variant": "production",
+          "input_sha256": "a0219a8153372ca4bcd583bc08014e516b80e93fcb13b598fea8975fe4aef35a",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "c7c9e117c0565c85fc41469033a13f08f1cfd83527ce9d3ce51b5cda50c14328"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_w",
+          "variant": "direct_w",
+          "input_sha256": "38b41e9e0474dbf13e0859617a03d152b2080720b974fab161e1acf9b1c8d1a0",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "87275fa596a2cfa0f78eac5eb79720ad1ffd260f3eb5a3a9c2c07cdf8354fffc"
+          ]
+        },
+        {
+          "kernel": "wrf_tke_rhs",
+          "variant": "production",
+          "input_sha256": "98bfd0dd4750f3108d575e28cad63b8dad7ec30543b0e44d458cad1d6e7fdf13",
+          "output_arg_indices": [
+            45,
+            46,
+            47,
+            48,
+            49
+          ],
+          "output_sha256": [
+            "3b8da974b6290f31b28751ac4ff106154440872d9c1908a846db5d6d9560d164",
+            "ba9057ac48bf7bc35b58a3ca2349b967993dfe67b02d0f58697b3a997f6b6f17",
+            "f3915e873a575211412f665c82cc912f4b83df675e79a0cfa0e667c5400250e4",
+            "81f634f4762a251cc78b560971c07870bd5b7db62512b5db382c03f54a61188c",
+            "45af4e788585073f707a8d3128a5cefeea738058e55770c26b6409c3475b57a5"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_km_bc",
+          "variant": "production",
+          "input_sha256": "ab5ce059ac9ffd16921f31ffb6586be28c0e1efa6eff15cf8a29716164ccf75d",
+          "output_arg_indices": [
+            0,
+            1
+          ],
+          "output_sha256": [
+            "51615f09cc3aa3335f725f2b067b49562f04ce6bb66c00bbc95b31f2877b8565",
+            "e1ff0486fb315a4468221a1c027e1897a302183210134751c640ca89bef51af3"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_u",
+          "variant": "production",
+          "input_sha256": "384f32db35110a24d11dec77394257078df62e210ffc63bb96d2d3a7cec7ce4a",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "587a1e714f19d03c63a1c48dd7970f7cb330bb323238bce742f9263f93ded352"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_v",
+          "variant": "production",
+          "input_sha256": "549535e7a9cb1e3a33133dccb6b44c97bc005bbeb5fe16914593856ecfae5d55",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "894c4a434af6c4ff4840a7cfce958aa32693563d68f74d7ac2e68f68754e8068"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_w",
+          "variant": "production",
+          "input_sha256": "38b41e9e0474dbf13e0859617a03d152b2080720b974fab161e1acf9b1c8d1a0",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "45158dfc85a0bf1a6a128f09d301e196f0739b5ace950825ba50431e05ce316a"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_u",
+          "variant": "production",
+          "input_sha256": "29883821eb85afe9dd0813072c17abfbcc5c2b4d3e7f17094affd74925a74b50",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "77f8bb68457099e683b03ec55ecbe68577b17e579daf2f55ee320d5395dacb98"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_v",
+          "variant": "production",
+          "input_sha256": "4c318bfb5fc07b4ae664d1a575e886357234eb0e0af15bf60baddc5728db0771",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "b6429c70a86e3f825cf527aae1d38080b453eac9aa747990331f7a4c360c83d9"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_scalars",
+          "variant": "production",
+          "input_sha256": "455a1e45794a78106687eea0d4444f8eae76f90c0f91930e625a07e51df1099b",
+          "output_arg_indices": [
+            26,
+            27
+          ],
+          "output_sha256": [
+            "2d6d734e72c0b1bc36a5b628bced7ec0f3d800df4469983dfede19c191f86d36",
+            "edc3c7bf11541d0289a2bfc03fa3c01b92007dbc36584c705c6011ddc8f78141"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_w_primitives",
+          "variant": "production",
+          "input_sha256": "bb27cd0ef862a8c4dc6fd58fcdc94258637312b2513ad74b9325a2dbca6105d2",
+          "output_arg_indices": [
+            22,
+            23,
+            24,
+            25
+          ],
+          "output_sha256": [
+            "46ac4a1fc2bf255f6e087cff5da50dc10ea7bde5ab9a40f1841dfaf9b158b7fa",
+            "9b29f8dd695591e9a66e4feda5c0d8596b5bb11b9762c17d9fdcf659b9d580ab",
+            "49646b3802474f393153900453c46900250e3d51d2d3579d1b81fc143a947890",
+            "df4461be7c8e01cd88d917628c9a9e7d05fe50822f869a057d4cf12255485ead"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_w_cached",
+          "variant": "production",
+          "input_sha256": "8736cd7d0b5d5302890b6324bac10f7beb8a4dff3237715a9dbf0a3621088674",
+          "output_arg_indices": [
+            27
+          ],
+          "output_sha256": [
+            "139b3addc9d93057f70ed3b7fc8b78effbd7d47a631e0d06b9326b47054d0a6c"
+          ]
+        },
+        {
+          "kernel": "wrf_calc_n2",
+          "variant": "production",
+          "input_sha256": "9b6b35f6898d467d5e4abfc3bc0d0649d602bde40886e6515fb9d36602cbb32a",
+          "output_arg_indices": [
+            30
+          ],
+          "output_sha256": [
+            "590c1977d13970d5d94443e3378c3d366130c1e4b0aa222ec27a3289678463d0"
+          ]
+        },
+        {
+          "kernel": "wrf_smag3d_km",
+          "variant": "production",
+          "input_sha256": "4265e3d49af059e30dc460a75af634839ab583d47239b1f3626dcbe15f37d0b2",
+          "output_arg_indices": [
+            31,
+            32,
+            33,
+            34
+          ],
+          "output_sha256": [
+            "5e0702bc2e85bf23ca95722e59ecf2169b22b916985f7c2428841905648264d4",
+            "ac48e1ada03688e0119006ef00f836673af75e4c4adcce774770a66b929f28d7",
+            "1b9aeb1b30808f2f3480a84ca01c008ae4cf2befb27d93da0e0b719a96673ca1",
+            "a89717cd53923caa6ad163706bc3b8e926cccf31b9917a2b18d9adb2f9796648"
+          ]
+        },
+        {
+          "kernel": "wrf_tke_km",
+          "variant": "production",
+          "input_sha256": "5789b19b5f99f26bffdd76da7456e65af114e577fc3a3dcd5409db18e17c164d",
+          "output_arg_indices": [
+            34,
+            35,
+            36,
+            37
+          ],
+          "output_sha256": [
+            "1c9b7ded72ed2cf7ea3a8b2d106e312484dfa65d3dcdf4fb1251be21ebca1b62",
+            "a7b5d5b3b0c8149eb4bb4b63e0c7037da8e15bcdbcc3d37ae713784b3b584550",
+            "9aad34e7f45b5837e1fb696ae06e946d5a366db34245e7afe49e5d245f4b6bb9",
+            "aafca7ded3a02549707f94675d48b10db8cf2d5a7c2026b954d5c32e5a6d4c2d"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_s",
+          "variant": "production",
+          "input_sha256": "293b373ca63307dc2984477ece1a0a9084933547ac25ce47d01ce8ab44c0eca4",
+          "output_arg_indices": [
+            27
+          ],
+          "output_sha256": [
+            "27ad6d6ea6891705e50249e9f1544b48687ce5c130184c3459e029b3ab9889aa"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_u_cd0",
+          "variant": "production",
+          "input_sha256": "8c271886f795dcb025af9d2396e049fa2bd0e0dbf8d4624e25493a1879433415",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "84fdd1480e331c41fd36df16703db5166832c6345802c1fdccc9352f17923d05"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_v_cd0",
+          "variant": "production",
+          "input_sha256": "fde80db3c0747f443877d908821ef702cba9b13124abd32e6fdad1c6ca6ef7ee",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "a8bc6806e027bbb9d690ad8424fc71912ca1f6664df6b080e83ca05b8fe396fd"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_heat_const",
+          "variant": "production",
+          "input_sha256": "b600459c5928ce52c2a3c68a1bf2910044c58bf9466fbc1b98a420f049fad0d8",
+          "output_arg_indices": [
+            23,
+            25
+          ],
+          "output_sha256": [
+            "24637d698f3a1cbe5693e4d5b6228355d52df81f6e536bdbe200037bba70c7b7",
+            "fd8ecb0bf5332760db97df256eb6a2e1bda9d74553a52d280aac88009bae3a34"
+          ]
+        }
+      ]
+    },
+    {
+      "scenario": [
+        false,
+        true,
+        false,
+        true,
+        true
+      ],
+      "kernels": [
+        {
+          "kernel": "smag2d_km",
+          "variant": "production",
+          "input_sha256": "33a06c8c56112d7227bb305289c043fc1c3109cd085fc8be0579475595ab7265",
+          "output_arg_indices": [
+            2,
+            3
+          ],
+          "output_sha256": [
+            "6b8534278853c4658ee9320079ae8fed8e443457161cb437512f60755cd040db",
+            "8dc636a01012b737afff1b3317de721cc9e240a4adce901050c6ebe840d0dc3b"
+          ]
+        },
+        {
+          "kernel": "smag_hd_s",
+          "variant": "production",
+          "input_sha256": "2a6047e26487fb9e422d466a688f3d5ebda443400abf10cd1f9f103d6cd6713f",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "fbac23cf011b37c22f207aec27e98c2c0c0d72ccbab0e6f5caccecb9ec202792"
+          ]
+        },
+        {
+          "kernel": "smag_hd_u",
+          "variant": "production",
+          "input_sha256": "97a4f313b8f7577e1ec79907370c45f2c0ff331891a0ecc57c5ee51e7f9c0f02",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "de2a5bf97b4d1240c0755d6036e208e36350ac1cf6be11e55f45d2dff40d935c"
+          ]
+        },
+        {
+          "kernel": "smag_hd_v",
+          "variant": "production",
+          "input_sha256": "82cbc82f8e2f0a8ef92c5f2ddcc20ab81dc8e45e81b0a3ab9f804eb09155b5e5",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "3b4ed13a1a51f75a55601ffffc1421c4ca322eaa413100d3c97d9707ca7da80a"
+          ]
+        },
+        {
+          "kernel": "smag_hd_w",
+          "variant": "production",
+          "input_sha256": "b09d3db89371b51d5cc326f799cafbae32e287954465743f8dfd091f0ec5cf21",
+          "output_arg_indices": [
+            7
+          ],
+          "output_sha256": [
+            "771892431fc7dd12eb183a485a2a475ca358482fdf4b436fc28e8e99ab335c8f"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_deform",
+          "variant": "production",
+          "input_sha256": "b07809d51dd17b915621b01767e8fcbb635e5432f02d6561b9307e9b4bcbd433",
+          "output_arg_indices": [
+            22,
+            23,
+            24
+          ],
+          "output_sha256": [
+            "02cdefb2c3b1d55dc01773b21c8c01cf62764f02c84eeefbd10c4b0191f2db63",
+            "1a0c2bdc73f98d5bd1995bbbf78d9ef50465f5a4591c6326dbcbea61a338e647",
+            "442ee6bfee91b2c48ecf53d4f2efdd249ff1326a0410649d664b5ba449e1f1de"
+          ]
+        },
+        {
+          "kernel": "wrf_smag2d_km",
+          "variant": "production",
+          "input_sha256": "9e74acdc92cfbc6bb873d40e05478fabbcfb3131326020c81a8b45e220f04ab2",
+          "output_arg_indices": [
+            27,
+            28
+          ],
+          "output_sha256": [
+            "5c9ea2b30e93e83b6aea70af19a0b169985ff10f07d7c2065e789187a5d3567d",
+            "87580abaf5359d9f76e2ce37f0aa2db6066071e88add8b1b0308ec3a9559a95d"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_u",
+          "variant": "production",
+          "input_sha256": "3decfb2481bb803593791b06e7a1351e7414a97ec31b85acd1b21da0831006f0",
+          "output_arg_indices": [
+            25
+          ],
+          "output_sha256": [
+            "ca36c754bc1643a9861f2a99096ef532340e02f05bb252ccb68c1021ab5fabe3"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_v",
+          "variant": "production",
+          "input_sha256": "7520b6828462d05d4bc6013698c4ecbecbbb956a7dd9df47b575255fc5f2f6e8",
+          "output_arg_indices": [
+            25
+          ],
+          "output_sha256": [
+            "165430f2d87bb14d9763bb7b429b9814b5b04572b68d31fb33f09d395be7d959"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_flux_s",
+          "variant": "production",
+          "input_sha256": "28eb726b9fd8c8725131f691ccad5497f7680ef08048600426c287f30b415c2a",
+          "output_arg_indices": [
+            27,
+            28
+          ],
+          "output_sha256": [
+            "fe8ca1243585acaf30296b9fc6bfe63942385129866b195f49724110df5c22dc",
+            "edcf12cb01426df5f2cf7fcabd0bd4e007f3067b0dfba9a5fab628175684b8b0"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_s",
+          "variant": "production",
+          "input_sha256": "74f7363d1e158c13b385b629eff32a7eb04d70d8c18fa85eb6121024e0bde174",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "a868785efde56ac09c85141bb2ab7a33ff7105320d5928999552e3c790a9ddd6"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_w_stress",
+          "variant": "production",
+          "input_sha256": "45078e85123dc91cd848106964879160d0f45a2deb7bf9b8381b5c2b1be3ad64",
+          "output_arg_indices": [
+            23,
+            24
+          ],
+          "output_sha256": [
+            "72ed32f569111a8b12498a30811f5c6d9c3e3924e213d543d4c504bc4918542f",
+            "113303f473f415f0ff34fc626a313b540b20557d0c69d73df655e2845e273a09"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_w_stress",
+          "variant": "production",
+          "input_sha256": "34899d6df8c69bbe7a97222759342a23972ad827bb0c8d26736fbd23f2e9f402",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "51b19e5a58ac5802ee3fabec4bbaed5a85c8543d7af92477df8ffbda392955d1"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_w",
+          "variant": "direct_w",
+          "input_sha256": "6709baf4213896247a83edd8372dd570b2589ec2db2df30d899b528e3b276c18",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "663dea39f0ee617af867672e1e6853e428cafd93f61552e044cb2a81a95cdfa1"
+          ]
+        },
+        {
+          "kernel": "wrf_tke_rhs",
+          "variant": "production",
+          "input_sha256": "66c0aab7734daf3b343a7e164df324e95e5feb5da0bd0a8d33848c88616fd5d7",
+          "output_arg_indices": [
+            45,
+            46,
+            47,
+            48,
+            49
+          ],
+          "output_sha256": [
+            "b10fe7117a742efa20b40588c9233e0b27d17b653a11734cf07801dc7a500eb5",
+            "c2addb6e481d9fa67fb0d1e7c408d2fc92c771fca2d25b237fb2d014e5dcdf48",
+            "00cacd530cbbae945fbe16047cf06856c590e9171e71b61d120aa5195aca0868",
+            "28db54ad437491e1bc8e2ef7448c621a87d197e96b56e00fec19485accad335a",
+            "9800959cf34af6cc6eb2074ba5a10fd013050da8ba716ed23bd5adff96f3160a"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_km_bc",
+          "variant": "production",
+          "input_sha256": "cb97169628fccffbcca545d7eadbac874cc36769afb8e64a74d9b8dd0680def9",
+          "output_arg_indices": [
+            0,
+            1
+          ],
+          "output_sha256": [
+            "e3a2382a4197def2a20bf020e6c8a46385a68a7f90303a6f2528dcc058907f57",
+            "3dda42f5961b3b10ccaab0c881f3ce1a6d179984abda566be961c55b2144b0c1"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_u",
+          "variant": "production",
+          "input_sha256": "73742ef0a450f3830a7e57e3e0c8b728f4dc81dba0f3bc80750651a05aacef8e",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "48713dde35430b13f7829ef3cd0b29bd84b5add4a817119f2d0b056cfa7e73e8"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_v",
+          "variant": "production",
+          "input_sha256": "5042e88336e19ae6d73608123623f377bc6b217e7373ddb8701e940d996f789c",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "8ef47628b42bac842e22f564d2d827e292ab657da5fe174ff922ad54e9451a55"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_w",
+          "variant": "production",
+          "input_sha256": "6709baf4213896247a83edd8372dd570b2589ec2db2df30d899b528e3b276c18",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "dfc50e3c47a834ee91747c9da33648500309a446d9065fd184e87302f5a310d9"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_u",
+          "variant": "production",
+          "input_sha256": "3fa47f261334f5e1a5feb56838104edddfe3055e9bd0e126d22a55ee16fd5811",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "8830b2fe70c53795258f3e847cb9ad803781df0f479cdd1022b9252ddb8ed1cf"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_v",
+          "variant": "production",
+          "input_sha256": "7de3f43edb76e494dcd2ed7252b45800b740cb450fd7556a343a12c3b181d82b",
+          "output_arg_indices": [
+            24
+          ],
+          "output_sha256": [
+            "4f42eaf5dfe2675e2dd5902fb8f4a320a2ae2a131971c09de9eaa973916e8efe"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_scalars",
+          "variant": "production",
+          "input_sha256": "ae96e3de42bfbdcc82506f326ede2ab4d92f9ab3abfddcff684d72109df2382b",
+          "output_arg_indices": [
+            26,
+            27
+          ],
+          "output_sha256": [
+            "2d6d734e72c0b1bc36a5b628bced7ec0f3d800df4469983dfede19c191f86d36",
+            "edc3c7bf11541d0289a2bfc03fa3c01b92007dbc36584c705c6011ddc8f78141"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_w_primitives",
+          "variant": "production",
+          "input_sha256": "15248de3de23fba3223a2f0e709b0f3e886a5c99139717010886e4d24bb9a693",
+          "output_arg_indices": [
+            22,
+            23,
+            24,
+            25
+          ],
+          "output_sha256": [
+            "46ac4a1fc2bf255f6e087cff5da50dc10ea7bde5ab9a40f1841dfaf9b158b7fa",
+            "8681ea128596d703946f9e47cc0aaabd9ebe6db9cc9aaed11d0dcf5f182e3def",
+            "ddf6f7da7beadee582bbecf8e730b68b274c311934cf8edcab04852fd3db400a",
+            "130408ecc90e3fb796a0bf2f73ccb8ec90d43c3d6ab12ddf38dfe42edf9d8d8d"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_hd_w_cached",
+          "variant": "production",
+          "input_sha256": "a81add2080c12799cd96b79aaf314c34b8d129250d21147cbff40f6696d78e05",
+          "output_arg_indices": [
+            27
+          ],
+          "output_sha256": [
+            "a8811c6bc7716e23f9823261686855f0a3ffeb0adf1974b9779f1da46f22e12c"
+          ]
+        },
+        {
+          "kernel": "wrf_calc_n2",
+          "variant": "production",
+          "input_sha256": "61e832cd171c89e7658734f1a3bdb3c6f81411bbb6c899195bed1e8a5f3aae5f",
+          "output_arg_indices": [
+            30
+          ],
+          "output_sha256": [
+            "22b9e11b2805b614f8b43f175f0cf0f9a46a3e65d5425f8c40e48aee92f34d5f"
+          ]
+        },
+        {
+          "kernel": "wrf_smag3d_km",
+          "variant": "production",
+          "input_sha256": "d8727f1e935641cfca4eacd8d50bcb668326aa1ac52976b392047513aa8ff287",
+          "output_arg_indices": [
+            31,
+            32,
+            33,
+            34
+          ],
+          "output_sha256": [
+            "d5709a301fb8ada9e6862e157542f500e8173c96b35b51511519ef96c0754284",
+            "af15d777fa083ef63f5a66f5a15b325776c9780619fb3680b0028113ddd01199",
+            "d5709a301fb8ada9e6862e157542f500e8173c96b35b51511519ef96c0754284",
+            "c46d1edb5e50b4c0cea05c87d1edcd5260d3d15128500b9919b308dac48607cd"
+          ]
+        },
+        {
+          "kernel": "wrf_tke_km",
+          "variant": "production",
+          "input_sha256": "d79beec830dc92674bcba438237fc53a1517eaf0706897c72f1e6f261e4f32cd",
+          "output_arg_indices": [
+            34,
+            35,
+            36,
+            37
+          ],
+          "output_sha256": [
+            "f3891bd665e27e200c62b99e23579ad8baa023865b966bab38a57c1f7deb09c6",
+            "b23ebd0bbc8451ca0e9ad7f62d2995172aa455bf7702c2b6dc40fea612e34da8",
+            "f3891bd665e27e200c62b99e23579ad8baa023865b966bab38a57c1f7deb09c6",
+            "b23ebd0bbc8451ca0e9ad7f62d2995172aa455bf7702c2b6dc40fea612e34da8"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_vd_s",
+          "variant": "production",
+          "input_sha256": "8047ca9882ab6d9321e85422c517c5f8aa8c5e70a032c4be8928ac96f8479381",
+          "output_arg_indices": [
+            27
+          ],
+          "output_sha256": [
+            "c4b4ff974ba67c35c2d2fc861e01d09e92146b51d6677cb2eabce820707badd6"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_u_cd0",
+          "variant": "production",
+          "input_sha256": "c475cdcf4d4195676d046c6b975df9f3bfe1ef845d8d4c49da5955ddaa0729fb",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "4cca14334f1209eaada9ddaeff712c5dbf85497f2c494638f80191cf435310d7"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_v_cd0",
+          "variant": "production",
+          "input_sha256": "3797634d2dd699145d8f69ac743bb67635c9ce10892b7c34df1ebe58393b0e0b",
+          "output_arg_indices": [
+            23
+          ],
+          "output_sha256": [
+            "b7697ce070a854ecc17a5b0b66dfad482a09eb2906edfb71346fcbd327b07922"
+          ]
+        },
+        {
+          "kernel": "wrf_smag_surface_heat_const",
+          "variant": "production",
+          "input_sha256": "127813f3cd6e7a4dd75927614d22b46e78df66edbf52d431aa3c5b9ce7a49fa8",
+          "output_arg_indices": [
+            23,
+            25
+          ],
+          "output_sha256": [
+            "6f69ea3523cc1e4a1e004668b9edc06f815ee86ebcdb8e848a5df45319af63ee",
+            "2fdcadb5c821ea02227f4b5ef118ac18fbb52ab3af5abeb1db1550897276790d"
+          ]
+        }
+      ]
+    }
+  ]
+}

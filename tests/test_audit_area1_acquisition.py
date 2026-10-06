@@ -1040,7 +1040,7 @@ def test_r_no_source_branch_reads_the_window_before_it_is_checked(hours):
 
 def test_r_single_analysis_remains_valid_acquisition():
     for source in fetch.fetch_front_door_sources():
-        fetch.validate_fetch_hints({"source": source, "cycle": "2026-07-29T00", "hours": 0},
+        fetch.validate_fetch_hints({"source": source, "cycle": _archive_test_cycle(source), "hours": 0},
                                   source="unit")
 
 
@@ -1081,6 +1081,13 @@ def _no_transport(monkeypatch):
     monkeypatch.setattr(era5_arco, "retrieve_era5_arco", contact)
 
 
+def _archive_test_cycle(source):
+    from gpuwm import cf_archive_fetch
+    if fetch.native_cf_fetch_contract(source) is not None:
+        return cf_archive_fetch.row(fetch_routes.canonical_source(source))["coverage_start"][:13]
+    return "2026-08-17T00"
+
+
 def _emit_domain(tmp_path, source):
     """`gpuwm domain` for SOURCE, at a point inside its own coverage."""
 
@@ -1092,7 +1099,7 @@ def _emit_domain(tmp_path, source):
     rc = cli.main([
         "domain", f"--point={centre[0]:.4f},{centre[1]:.4f}",
         "--card", "16gb", "--root-dx", "3", "--hours", "6",
-        "--source", source, "--cycle", "2026-08-17T00", "--out", str(out)])
+        "--source", source, "--cycle", _archive_test_cycle(source), "--out", str(out)])
     assert rc == 0, f"{source} did not plan"
     return out
 

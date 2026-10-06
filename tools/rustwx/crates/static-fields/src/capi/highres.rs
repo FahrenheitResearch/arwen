@@ -31,16 +31,16 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use super::{
-    bytes, clear_error, guard, register_fieldset, set_error, utf8,
-    with_fieldset, with_grid, ERR, OK,
+    ERR, OK, bytes, clear_error, guard, register_fieldset, set_error, utf8, with_fieldset,
+    with_fieldsets, with_grid,
 };
+use crate::HALO;
 use crate::error::StaticError;
 use crate::highres::{self, BoundRasterSpec};
 use crate::projection::GridSpec;
 use crate::raster::warp;
-use crate::raster::{geotiff, Crs, Raster};
+use crate::raster::{Crs, Raster, geotiff};
 use crate::types::{Field, FieldSet, Grid2, Stack3};
-use crate::HALO;
 
 static AUDITS: Mutex<BTreeMap<u64, String>> = Mutex::new(BTreeMap::new());
 
@@ -51,19 +51,14 @@ fn remember_audit(handle: u64, audit: String) {
         .insert(handle, audit);
 }
 
-fn resolve_spec(
-    grid: u64,
-    from_request: Option<GridSpec>,
-) -> Result<GridSpec, String> {
+fn resolve_spec(grid: u64, from_request: Option<GridSpec>) -> Result<GridSpec, String> {
     if grid != 0 {
         if let Some(spec) = with_grid(grid, |grid| grid.spec.clone()) {
             return Ok(spec);
         }
         return Err(format!("unknown grid handle {grid}"));
     }
-    from_request.ok_or_else(|| {
-        "highres request carries no grid_spec and no grid handle".into()
-    })
+    from_request.ok_or_else(|| "highres request carries no grid_spec and no grid handle".into())
 }
 
 fn copy_out(buf: *mut u8, cap: usize, payload: &str) -> i64 {
@@ -209,14 +204,8 @@ pub unsafe extern "C" fn gpuwm_static_highres_terrain(
             Err(message) => return set_error(message),
         };
         let halo = request.halo.unwrap_or(HALO);
-        let built = request.terrain.open().and_then(|raster| {
-            highres::build_terrain_grid(
-                &spec,
-                &raster,
-                halo,
-                request.smooth_passes,
-            )
-        });
+        let built =
+            highres::build_terrain_bound(&spec, &request.terrain, halo, request.smooth_passes);
         match built {
             Err(err) => set_error(err.to_string()),
             Ok(hgt) => {
@@ -244,8 +233,6 @@ fn build_overrides(
     let extended = highres::extended_spec(spec, halo);
     let ny = (spec.e_sn - 1) as usize;
     let nx = (spec.e_we - 1) as usize;
-    let (eny, enx) =
-        ((extended.e_sn - 1) as usize, (extended.e_we - 1) as usize);
     let crop_stack = |stack: &Stack3| -> Stack3 {
         let mut out = Stack3 {
             planes: stack.planes,
@@ -255,149 +242,53 @@ fn build_overrides(
         };
         for plane in 0..stack.planes {
             for row in 0..ny {
-                let src =
-                    plane * stack.ny * stack.nx + (row + halo) * stack.nx + halo;
+                let src = plane * stack.ny * stack.nx + (row + halo) * stack.nx + halo;
                 let dst = plane * ny * nx + row * nx;
-                out.data[dst..dst + nx]
-                    .copy_from_slice(&stack.data[src..src + nx]);
+                out.data[dst..dst + nx].copy_from_slice(&stack.data[src..src + nx]);
             }
         }
         out
     };
 
-    // Terrain leg.
-    let hgt = {
-        let raster = request.terrain.open()?;
-        highres::build_terrain_grid(
-            spec,
-            &raster,
-            halo,
-            request.smooth_passes,
-        )?
-    };
-
-    // Land-cover leg.
-    let (raw, nodata) = {
-        request.landcover.verify()?;
-        geotiff::read_band1_raw(
-            &request.landcover.path,
-            request
-                .landcover
-                .crs_override
-                .as_deref()
-                .map(Crs::parse_override)
-                .transpose()?,
-            request.landcover.nodata_override,
-        )?
-    };
-    let mapping: BTreeMap<i64, i64> =
-        request.landcover_mapping.iter().copied().collect();
-    let luf_extended = highres::resample_mapped_categories(
-        &raw,
-        &request.landcover.path.display().to_string(),
-        &extended,
-        &mapping,
-        21,
-        nodata,
-    )?;
+    // Terrain and land-cover source payloads are windowed.
+    let hgt = highres::build_terrain_bound(spec, &request.terrain, halo, request.smooth_passes)?;
+    let mapping: BTreeMap<i64, i64> = request.landcover_mapping.iter().copied().collect();
+    let luf_extended =
+        highres::resample_mapped_categories_bound(&request.landcover, &extended, &mapping, 21)?;
     highres::require_coverage("land cover", &luf_extended.data)?;
     let luf = crop_stack(&luf_extended);
-    let islake = if request.islake > 0 { Some(request.islake) } else { None };
-    let landmask =
-        crate::fields::landmask_from_landusef(&luf, request.iswater, islake)?;
-    let lu_index = crate::fields::lu_index_from_landusef(
-        &luf,
-        &landmask,
-        request.iswater,
-        islake,
-    )?;
+    let islake = if request.islake > 0 {
+        Some(request.islake)
+    } else {
+        None
+    };
+    let landmask = crate::fields::landmask_from_landusef(&luf, request.iswater, islake)?;
+    let lu_index = crate::fields::lu_index_from_landusef(&luf, &landmask, request.iswater, islake)?;
 
     // Soil leg.
-    let mut audit_layers: BTreeMap<String, serde_json::Value> =
-        BTreeMap::new();
+    let mut audit_layers: BTreeMap<String, serde_json::Value> = BTreeMap::new();
     let mut soil_fields: BTreeMap<String, Field> = BTreeMap::new();
     for (layer_name, weights) in &request.depth_weights {
-        // Read + co-register the component/depth planes.
-        let mut planes: BTreeMap<String, Vec<Vec<f64>>> = BTreeMap::new();
-        let mut geometry: Option<(usize, usize, [f64; 6], Crs)> = None;
-        for component in ["sand", "silt", "clay"] {
-            let mut stack: Vec<Vec<f64>> = Vec::new();
-            for (depth, _) in weights {
-                let key = format!("{component}_{depth}");
-                let source =
-                    request.soil_sources.get(&key).ok_or_else(|| {
-                        StaticError::Missing(format!(
-                            "missing SoilGrids sources: [('{component}', \
-                             '{depth}')]"
-                        ))
-                    })?;
-                let raster = source.open()?;
-                match &geometry {
-                    None => {
-                        geometry = Some((
-                            raster.ny,
-                            raster.nx,
-                            raster.transform,
-                            raster.crs.clone(),
-                        ))
-                    }
-                    Some((gny, gnx, gtransform, gcrs)) => {
-                        if raster.ny != *gny
-                            || raster.nx != *gnx
-                            || raster.transform != *gtransform
-                            || raster.crs != *gcrs
-                        {
-                            return Err(StaticError::Invalid(
-                                "SoilGrids source rasters are not \
-                                 co-registered"
-                                    .into(),
-                            ));
-                        }
-                    }
-                }
-                stack.push(raster.values);
-            }
-            planes.insert(component.into(), stack);
-        }
-        let (gny, gnx, gtransform, gcrs) = geometry.unwrap();
-        let weight_values: Vec<f64> =
-            weights.iter().map(|(_, weight)| *weight).collect();
-        let (category, valid, raw_total) = highres::soilgrids_categories(
-            &planes,
-            &weight_values,
-            gny * gnx,
-        )?;
-        let carrier = Raster {
-            ny: gny,
-            nx: gnx,
-            values: vec![0.0; 0],
-            transform: gtransform,
-            crs: gcrs,
+        let soil_request = ResampleRequest {
+            kind: "soil-categories".into(),
+            grid_spec: extended.clone(),
+            source: None,
+            method: None,
+            mapping: Vec::new(),
+            category_count: 16,
+            soil_sources: request.soil_sources.clone(),
+            depth_weights: weights.clone(),
         };
-        let (dst_crs, dst_transform, (dny, dnx)) =
-            highres::raster_geometry(&extended)?;
-        let fractions_extended = warp::reproject_category_fractions(
-            &category,
-            &valid,
-            &carrier,
-            &dst_crs,
-            dst_transform,
-            dny,
-            dnx,
-            16,
-        )?;
+        let (fractions_extended, mut layer_audit) = soil_category_fractions(&soil_request)?;
         let mut fractions = crop_stack(&fractions_extended);
-        debug_assert_eq!((dny, dnx), (eny, enx));
 
         // Water pillars, missing-land fallback, land normalization —
         // the `build_highres_overrides` soil-layer tail, verbatim.
-        let water: Vec<bool> =
-            landmask.data.iter().map(|value| *value == 0.0).collect();
+        let water: Vec<bool> = landmask.data.iter().map(|value| *value == 0.0).collect();
         for cell in 0..ny * nx {
             if water[cell] {
                 for plane in 0..16 {
-                    fractions.data[plane * ny * nx + cell] =
-                        if plane == 13 { 1.0 } else { 0.0 };
+                    fractions.data[plane * ny * nx + cell] = if plane == 13 { 1.0 } else { 0.0 };
                 }
             }
         }
@@ -423,16 +314,12 @@ fn build_overrides(
         } else {
             "SOILCBOT"
         };
-        let missing_count =
-            missing_land.iter().filter(|flag| **flag).count();
+        let missing_count = missing_land.iter().filter(|flag| **flag).count();
         if missing_count > 0 {
             let fallback = request
                 .soil_fallback_handle
                 .and_then(|handle| {
-                    with_fieldset(handle, |set| {
-                        set.fields.get(fallback_name).cloned()
-                    })
-                    .flatten()
+                    with_fieldset(handle, |set| set.fields.get(fallback_name).cloned()).flatten()
                 })
                 .ok_or_else(|| {
                     StaticError::Invalid(format!(
@@ -483,34 +370,19 @@ fn build_overrides(
         soil_fields.insert(frac_name.into(), Field::Stack(fractions));
         soil_fields.insert(dom_name.into(), Field::Plane(dom));
 
-        let totals: Vec<f64> = raw_total
-            .iter()
-            .zip(&valid)
-            .filter(|(_, ok)| **ok)
-            .map(|(value, _)| *value)
-            .collect();
-        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-        for value in &totals {
-            lo = lo.min(*value);
-            hi = hi.max(*value);
-        }
-        audit_layers.insert(
-            layer_name.clone(),
-            serde_json::json!({
-                "raw_component_total_percent_min": lo,
-                "raw_component_total_percent_max": hi,
-                "valid_source_pixels":
-                    valid.iter().filter(|ok| **ok).count(),
-                "fallback_land_cells": missing_count,
-            }),
-        );
+        layer_audit["fallback_land_cells"] = serde_json::json!(missing_count);
+        audit_layers.insert(layer_name.clone(), layer_audit);
     }
 
     let mut fields = FieldSet::default();
     fields.fields.insert("HGT_M".into(), Field::Plane(hgt));
     fields.fields.insert("LANDUSEF".into(), Field::Stack(luf));
-    fields.fields.insert("LANDMASK".into(), Field::Plane(landmask));
-    fields.fields.insert("LU_INDEX".into(), Field::Plane(lu_index));
+    fields
+        .fields
+        .insert("LANDMASK".into(), Field::Plane(landmask));
+    fields
+        .fields
+        .insert("LU_INDEX".into(), Field::Plane(lu_index));
     for (name, field) in soil_fields {
         fields.fields.insert(name, field);
     }
@@ -586,32 +458,30 @@ pub unsafe extern "C" fn gpuwm_static_highres_merge(
             Ok(request) => request,
             Err(err) => return set_error(format!("highres merge JSON: {err}")),
         };
-        let Some(baseline_set) = with_fieldset(baseline, FieldSet::clone) else {
-            return set_error(format!("unknown fieldset handle {baseline}"));
-        };
-        let Some(override_set) = with_fieldset(overrides, FieldSet::clone) else {
-            return set_error(format!("unknown fieldset handle {overrides}"));
-        };
-        let merged = match request.mode.as_str() {
-            "terrain" => {
-                let hgt = match override_set.fields.get("HGT_M") {
-                    Some(Field::Plane(grid)) => grid.clone(),
-                    _ => {
-                        return set_error(
-                            "terrain-only overrides missing ['HGT_M']",
-                        )
-                    }
-                };
-                highres::merge_terrain_override(&baseline_set, &hgt)
-            }
-            "all" => {
-                highres::merge_highres_overrides(&baseline_set, &override_set)
-            }
-            other => {
-                return set_error(format!(
+        let merged = with_fieldsets(
+            baseline,
+            overrides,
+            |baseline_set, override_set| match request.mode.as_str() {
+                "terrain" => {
+                    let hgt = match override_set.fields.get("HGT_M") {
+                        Some(Field::Plane(grid)) => grid,
+                        _ => {
+                            return Err(StaticError::Invalid(
+                                "terrain-only overrides missing ['HGT_M']".into(),
+                            ));
+                        }
+                    };
+                    highres::merge_terrain_override(baseline_set, hgt)
+                }
+                "all" => highres::merge_highres_overrides(baseline_set, override_set),
+                other => Err(StaticError::Invalid(format!(
                     "unknown merge mode {other:?} (terrain|all)"
-                ))
-            }
+                ))),
+            },
+        );
+        let merged = match merged {
+            Ok(result) => result,
+            Err(handle) => return set_error(format!("unknown fieldset handle {handle}")),
         };
         match merged {
             Err(err) => set_error(err.to_string()),
@@ -620,8 +490,7 @@ pub unsafe extern "C" fn gpuwm_static_highres_merge(
                     return set_error("out_handle is null");
                 }
                 let handle = register_fieldset(fields);
-                let audit_json = serde_json::to_string(&audit)
-                    .unwrap_or_else(|_| "{}".into());
+                let audit_json = serde_json::to_string(&audit).unwrap_or_else(|_| "{}".into());
                 remember_audit(handle, audit_json);
                 unsafe { *out_handle = handle };
                 OK
@@ -659,7 +528,10 @@ pub unsafe extern "C" fn gpuwm_static_highres_audit_json(
 #[unsafe(no_mangle)]
 pub extern "C" fn gpuwm_static_highres_audit_drop(handle: u64) {
     guard((), || {
-        AUDITS.lock().expect("audit registry poisoned").remove(&handle);
+        AUDITS
+            .lock()
+            .expect("audit registry poisoned")
+            .remove(&handle);
     })
 }
 
@@ -719,8 +591,7 @@ pub unsafe extern "C" fn gpuwm_static_highres_fieldset_new(
         if data.is_null() && data_len > 0 {
             return set_error("fieldset data pointer is null");
         }
-        let values =
-            unsafe { std::slice::from_raw_parts(data, data_len) };
+        let values = unsafe { std::slice::from_raw_parts(data, data_len) };
         let mut fields = FieldSet::default();
         let mut cursor = 0usize;
         for entry in &spec.fields {
@@ -728,7 +599,11 @@ pub unsafe extern "C" fn gpuwm_static_highres_fieldset_new(
             let slice = values[cursor..cursor + n].to_vec();
             cursor += n;
             let field = if entry.planes == 1 {
-                Field::Plane(Grid2 { ny: entry.ny, nx: entry.nx, data: slice })
+                Field::Plane(Grid2 {
+                    ny: entry.ny,
+                    nx: entry.nx,
+                    data: slice,
+                })
             } else {
                 Field::Stack(Stack3 {
                     planes: entry.planes,
@@ -751,6 +626,83 @@ pub unsafe extern "C" fn gpuwm_static_highres_fieldset_new(
 // USDA triangle on raw arrays
 // ---------------------------------------------------------------------------
 
+/// Register caller-owned fields without a domain-sized concatenation buffer.
+/// Each field is copied once into the registry; the caller keeps its buffers.
+///
+/// # Safety
+/// `spec_json` is readable for `spec_len` bytes. `pointers` has `field_count`
+/// readable entries, each readable for the number of f64 values in its spec.
+/// `out_handle` is writable. Null buffers are allowed only for empty fields.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpuwm_static_highres_fieldset_new_ptrs(
+    spec_json: *const u8,
+    spec_len: usize,
+    pointers: *const *const f64,
+    field_count: usize,
+    out_handle: *mut u64,
+) -> i32 {
+    guard(ERR, || {
+        clear_error();
+        if out_handle.is_null() {
+            return set_error("out_handle is null");
+        }
+        let Some(text) = (unsafe { utf8(spec_json, spec_len) }) else {
+            return set_error("fieldset spec pointer/UTF-8 invalid");
+        };
+        let spec: FieldsetSpec = match serde_json::from_str(text) {
+            Ok(spec) => spec,
+            Err(err) => return set_error(format!("fieldset spec JSON: {err}")),
+        };
+        if spec.fields.len() != field_count {
+            return set_error("fieldset pointer count differs from spec");
+        }
+        if pointers.is_null() && field_count > 0 {
+            return set_error("fieldset pointer table is null");
+        }
+        let pointers = if field_count == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(pointers, field_count) }
+        };
+        let mut fields = FieldSet::default();
+        for (entry, pointer) in spec.fields.iter().zip(pointers) {
+            let Some(n) = entry
+                .planes
+                .checked_mul(entry.ny)
+                .and_then(|n| n.checked_mul(entry.nx))
+                .filter(|n| *n <= isize::MAX as usize / std::mem::size_of::<f64>())
+            else {
+                return set_error("fieldset dimensions overflow");
+            };
+            if pointer.is_null() && n > 0 {
+                return set_error("fieldset data pointer is null");
+            }
+            let data = if n == 0 {
+                Vec::new()
+            } else {
+                unsafe { std::slice::from_raw_parts(*pointer, n) }.to_vec()
+            };
+            let field = if entry.planes == 1 {
+                Field::Plane(Grid2 {
+                    ny: entry.ny,
+                    nx: entry.nx,
+                    data,
+                })
+            } else {
+                Field::Stack(Stack3 {
+                    planes: entry.planes,
+                    ny: entry.ny,
+                    nx: entry.nx,
+                    data,
+                })
+            };
+            fields.fields.insert(entry.name.clone(), field);
+        }
+        unsafe { *out_handle = register_fieldset(fields) };
+        OK
+    })
+}
+
 /// The USDA texture triangle on raw f64 arrays; writes i16 categories.
 /// LANE 3 (routed `usda_texture_category` body).
 ///
@@ -767,9 +719,7 @@ pub unsafe extern "C" fn gpuwm_static_highres_usda(
 ) -> i32 {
     guard(ERR, || {
         clear_error();
-        if (sand.is_null() || silt.is_null() || clay.is_null() || out.is_null())
-            && n > 0
-        {
+        if (sand.is_null() || silt.is_null() || clay.is_null() || out.is_null()) && n > 0 {
             return set_error("usda buffers are null");
         }
         let sand = unsafe { std::slice::from_raw_parts(sand, n) };
@@ -778,9 +728,7 @@ pub unsafe extern "C" fn gpuwm_static_highres_usda(
         match highres::usda_texture_category(sand, silt, clay) {
             Err(err) => set_error(err.to_string()),
             Ok(categories) => {
-                unsafe {
-                    std::ptr::copy_nonoverlapping(categories.as_ptr(), out, n)
-                };
+                unsafe { std::ptr::copy_nonoverlapping(categories.as_ptr(), out, n) };
                 OK
             }
         }
@@ -817,6 +765,37 @@ fn sixteen() -> usize {
     16
 }
 
+#[derive(Default)]
+struct SoilCategoryCache {
+    entries: std::collections::VecDeque<((usize, usize), Vec<i16>)>,
+    bytes: usize,
+}
+impl SoilCategoryCache {
+    fn contains(&self, key: (usize, usize)) -> bool {
+        self.entries.iter().any(|(k, _)| *k == key)
+    }
+    fn insert(&mut self, key: (usize, usize), data: Vec<i16>) {
+        let size = data.len() * std::mem::size_of::<i16>();
+        while self.bytes + size > 64 * 1024 * 1024 {
+            if let Some((_, old)) = self.entries.pop_front() {
+                self.bytes -= old.len() * std::mem::size_of::<i16>();
+            }
+        }
+        self.bytes += size;
+        self.entries.push_back((key, data));
+    }
+    fn get(&mut self, key: (usize, usize)) -> &[i16] {
+        let position = self
+            .entries
+            .iter()
+            .position(|(k, _)| *k == key)
+            .expect("cached category tile");
+        let entry = self.entries.remove(position).unwrap();
+        self.entries.push_back(entry);
+        &self.entries.back().unwrap().1
+    }
+}
+
 /// Read + co-register the SoilGrids component planes, take the
 /// depth-weighted mean, classify it and warp the categories onto the
 /// grid: `_soilgrids_categories` followed by `_resample_category_array`,
@@ -829,174 +808,146 @@ fn soil_category_fractions(
             "soil-categories requires depth_weights".into(),
         ));
     }
-    let mut planes: BTreeMap<String, Vec<Vec<f64>>> = BTreeMap::new();
-    let mut geometry: Option<(usize, usize, [f64; 6], Crs)> = None;
+    let mut readers: BTreeMap<String, Vec<(geotiff::TiffReader, BoundRasterSpec)>> =
+        BTreeMap::new();
+    let mut carrier: Option<Raster> = None;
     for component in ["sand", "silt", "clay"] {
-        let mut stack: Vec<Vec<f64>> = Vec::new();
+        let mut stack = Vec::new();
         for (depth, _) in &request.depth_weights {
             let key = format!("{component}_{depth}");
             let source = request.soil_sources.get(&key).ok_or_else(|| {
                 StaticError::Missing(format!(
-                    "missing SoilGrids sources: [('{component}', \
-                     '{depth}')]"
+                    "missing SoilGrids sources: [('{component}', '{depth}')]"
                 ))
             })?;
-            let raster = source.open()?;
-            match &geometry {
-                None => {
-                    geometry = Some((
-                        raster.ny,
-                        raster.nx,
-                        raster.transform,
-                        raster.crs.clone(),
-                    ))
+            let (reader, geometry) = highres::open_bound_reader(source)?;
+            if let Some(own) = &carrier {
+                if own.ny != geometry.ny
+                    || own.nx != geometry.nx
+                    || own.transform != geometry.transform
+                    || own.crs != geometry.crs
+                {
+                    return Err(StaticError::Invalid(
+                        "SoilGrids source rasters are not co-registered".into(),
+                    ));
                 }
-                Some((gny, gnx, gtransform, gcrs)) => {
-                    if raster.ny != *gny
-                        || raster.nx != *gnx
-                        || raster.transform != *gtransform
-                        || raster.crs != *gcrs
-                    {
-                        return Err(StaticError::Invalid(
-                            "SoilGrids source rasters are not \
-                             co-registered"
-                                .into(),
-                        ));
+            } else {
+                carrier = Some(geometry);
+            }
+            stack.push((reader, source.clone()));
+        }
+        readers.insert(component.into(), stack);
+    }
+    let carrier = carrier.expect("three components");
+    let weights: Vec<f64> = request.depth_weights.iter().map(|(_, w)| *w).collect();
+    let mut classify = |c: usize, r: usize, w: usize, h: usize| {
+        let mut planes = BTreeMap::new();
+        for (component, stack) in &mut readers {
+            let mut data = Vec::new();
+            for (reader, source) in stack {
+                let nodata = source.nodata_override.or(reader.nodata);
+                let mut values = reader.read_window_raw(c, r, w, h)?;
+                for value in &mut values {
+                    if value.is_nan() || nodata == Some(*value) {
+                        *value = f64::NAN;
+                    } else {
+                        *value *= source.scale_factor;
                     }
                 }
+                data.push(values);
             }
-            stack.push(raster.values);
+            planes.insert(component.clone(), data);
         }
-        planes.insert(component.into(), stack);
-    }
-    let (gny, gnx, gtransform, gcrs) = geometry.expect("three components");
-    let weights: Vec<f64> =
-        request.depth_weights.iter().map(|(_, w)| *w).collect();
-    let (category, valid, raw_total) =
-        highres::soilgrids_categories(&planes, &weights, gny * gnx)?;
-    let carrier = Raster {
-        ny: gny,
-        nx: gnx,
-        values: vec![0.0; 0],
-        transform: gtransform,
-        crs: gcrs,
+        highres::soilgrids_categories(&planes, &weights, w * h)
     };
-    let (dst_crs, dst_transform, (dny, dnx)) =
-        highres::raster_geometry(&request.grid_spec)?;
-    let fractions = warp::reproject_category_fractions(
-        &category,
-        &valid,
+    // Audit the complete source exactly once in bounded windows, including
+    // source pixels outside the destination. Target reads classify only the
+    // touched source windows and retain the same per-pixel arithmetic order.
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    let mut valid_count = 0usize;
+    // Classification is reused across overlapping destination source windows.
+    // Fixed 64 MiB of category tiles replaces both full-domain depth stacks and
+    // repeated triangle evaluation. A large source evicts old tiles naturally.
+    let mut cache = SoilCategoryCache::default();
+    for r in (0..carrier.ny).step_by(256) {
+        for c in (0..carrier.nx).step_by(256) {
+            let (category, valid, totals) =
+                classify(c, r, 256.min(carrier.nx - c), 256.min(carrier.ny - r))?;
+            for (value, ok) in totals.iter().zip(valid) {
+                if ok {
+                    lo = lo.min(*value);
+                    hi = hi.max(*value);
+                    valid_count += 1;
+                }
+            }
+            cache.insert((c, r), category);
+        }
+    }
+    let (dst_crs, dst_transform, (dny, dnx)) = highres::raster_geometry(&request.grid_spec)?;
+    let fractions = warp::reproject_categories_windowed(
         &carrier,
         &dst_crs,
         dst_transform,
         dny,
         dnx,
         request.category_count,
+        |c, r, w, h| {
+            let mut out = vec![0i16; w * h];
+            if w == 0 || h == 0 {
+                return Ok(out);
+            }
+            for tr in (r / 256)..=((r + h - 1) / 256) {
+                for tc in (c / 256)..=((c + w - 1) / 256) {
+                    let (sc, sr) = (tc * 256, tr * 256);
+                    let tw = 256.min(carrier.nx - sc);
+                    let th = 256.min(carrier.ny - sr);
+                    if !cache.contains((sc, sr)) {
+                        let (category, _, _) = classify(sc, sr, tw, th)?;
+                        cache.insert((sc, sr), category);
+                    }
+                    let tile = cache.get((sc, sr));
+                    let start = c.max(sc);
+                    let end = (c + w).min(sc + tw);
+                    for row in r.max(sr)..(r + h).min(sr + th) {
+                        out[(row - r) * w + start - c..(row - r) * w + end - c].copy_from_slice(
+                            &tile[(row - sr) * tw + start - sc..(row - sr) * tw + end - sc],
+                        );
+                    }
+                }
+            }
+            Ok(out)
+        },
     )?;
-    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-    for (value, ok) in raw_total.iter().zip(&valid) {
-        if *ok {
-            lo = lo.min(*value);
-            hi = hi.max(*value);
-        }
-    }
     let audit = serde_json::json!({
-        "raw_component_total_percent_min": lo,
-        "raw_component_total_percent_max": hi,
-        "valid_source_pixels": valid.iter().filter(|ok| **ok).count(),
+        "raw_component_total_percent_min":lo,
+        "raw_component_total_percent_max":hi,
+        "valid_source_pixels":valid_count,
     });
     Ok((fractions, audit))
 }
 
-fn resample(
-    request: &ResampleRequest,
-) -> Result<(FieldSet, String), StaticError> {
+fn resample(request: &ResampleRequest) -> Result<(FieldSet, String), StaticError> {
     let mut fields = FieldSet::default();
     match request.kind.as_str() {
         "continuous" => {
             let source = request.source.as_ref().ok_or_else(|| {
-                StaticError::Invalid(
-                    "continuous resampling requires a source raster".into(),
-                )
+                StaticError::Invalid("continuous resampling requires a source raster".into())
             })?;
-            let method = warp::Resampling::parse(
-                request.method.as_deref().unwrap_or("average"),
-            )?;
-            let raster = source.open()?;
-            let plane = highres::resample_continuous(
-                &raster,
-                &request.grid_spec,
-                method,
-            )?;
+            let method = warp::Resampling::parse(request.method.as_deref().unwrap_or("average"))?;
+            let plane = highres::resample_continuous_bound(source, &request.grid_spec, method)?;
             fields.fields.insert("VALUES".into(), Field::Plane(plane));
             Ok((fields, "{}".into()))
         }
         "mapped-categories" => {
             let source = request.source.as_ref().ok_or_else(|| {
-                StaticError::Invalid(
-                    "mapped-category resampling requires a source raster"
-                        .into(),
-                )
+                StaticError::Invalid("mapped-category resampling requires a source raster".into())
             })?;
-            source.verify()?;
-            let mapping: BTreeMap<i64, i64> =
-                request.mapping.iter().copied().collect();
-            let crs_override = source
-                .crs_override
-                .as_deref()
-                .map(Crs::parse_override)
-                .transpose()?;
-            let mut reader = geotiff::TiffReader::open(&source.path)?;
-            if reader.sample_type() == geotiff::SampleType::U8 {
-                // A categorical byte band stays bytes: the same answer
-                // as the f64 read below at under half its memory.
-                let (w, h) = (reader.width, reader.height);
-                let values = reader.read_window_u8(0, 0, w, h)?;
-                let crs = match (&reader.crs, crs_override) {
-                    (Some(own), _) => own.clone(),
-                    (None, Some(given)) => given,
-                    (None, None) => {
-                        return Err(StaticError::Invalid(format!(
-                            "raster {:?} has no CRS and declares no \
-                             crs_override",
-                            source.path
-                        )))
-                    }
-                };
-                let carrier = Raster {
-                    ny: h,
-                    nx: w,
-                    values: Vec::new(),
-                    transform: reader.transform,
-                    crs,
-                };
-                let fractions = highres::resample_mapped_categories_u8(
-                    &values,
-                    &carrier,
-                    &source.path.display().to_string(),
-                    &request.grid_spec,
-                    &mapping,
-                    request.category_count,
-                    source.nodata_override.or(reader.nodata),
-                )?;
-                fields
-                    .fields
-                    .insert("FRACTIONS".into(), Field::Stack(fractions));
-                return Ok((fields, "{}".into()));
-            }
-            drop(reader);
-            let (raw, nodata) = geotiff::read_band1_raw(
-                &source.path,
-                crs_override,
-                source.nodata_override,
-            )?;
-            let fractions = highres::resample_mapped_categories(
-                &raw,
-                &source.path.display().to_string(),
+            let mapping: BTreeMap<i64, i64> = request.mapping.iter().copied().collect();
+            let fractions = highres::resample_mapped_categories_bound(
+                source,
                 &request.grid_spec,
                 &mapping,
                 request.category_count,
-                nodata,
             )?;
             fields
                 .fields
@@ -1089,9 +1040,7 @@ pub unsafe extern "C" fn gpuwm_static_highres_transform_points(
         };
         let request: TransformRequest = match serde_json::from_str(text) {
             Ok(request) => request,
-            Err(err) => {
-                return set_error(format!("highres transform JSON: {err}"))
-            }
+            Err(err) => return set_error(format!("highres transform JSON: {err}")),
         };
         if (x.is_null() || y.is_null()) && n > 0 {
             return set_error("transform_points buffers are null");
@@ -1131,19 +1080,28 @@ struct DeriveFailure {
 
 impl DeriveFailure {
     fn coverage(message: String) -> Self {
-        DeriveFailure { coverage: true, error: StaticError::Invalid(message) }
+        DeriveFailure {
+            coverage: true,
+            error: StaticError::Invalid(message),
+        }
     }
 }
 
 impl From<StaticError> for DeriveFailure {
     fn from(error: StaticError) -> Self {
-        DeriveFailure { coverage: false, error }
+        DeriveFailure {
+            coverage: false,
+            error,
+        }
     }
 }
 
 impl From<std::io::Error> for DeriveFailure {
     fn from(error: std::io::Error) -> Self {
-        DeriveFailure { coverage: false, error: StaticError::Io(error) }
+        DeriveFailure {
+            coverage: false,
+            error: StaticError::Io(error),
+        }
     }
 }
 
@@ -1162,113 +1120,61 @@ fn derive_window(request: &DeriveRequest) -> Result<String, DeriveFailure> {
                 )
                 .into());
             }
-            let mut tiles: Vec<Raster> = Vec::with_capacity(
-                request.tiles.len(),
-            );
-            let mut first_nodata: Option<f64> = None;
-            for (index, path) in request.tiles.iter().enumerate() {
-                let (raster, nodata) =
-                    geotiff::read_band1_raw(path, Some(Crs::Geographic), None)?;
-                if index == 0 {
-                    first_nodata = nodata;
-                }
-                // Mask the tile's own nodata so painting skips it.
-                let mut raster = raster;
-                if let Some(sentinel) = nodata {
-                    for value in raster.values.iter_mut() {
-                        if *value == sentinel {
-                            *value = f64::NAN;
-                        }
-                    }
-                }
-                tiles.push(raster);
-            }
             let global = request.kind == "global-terrain-window";
-            let resolution =
-                if global { Some(request.resolution_deg.unwrap_or(1.0 / 3600.0)) } else { None };
-            let (mut mosaic, holes) = warp::mosaic(
-                &tiles,
+            let resolution = if global {
+                Some(request.resolution_deg.unwrap_or(1.0 / 3600.0))
+            } else {
+                None
+            };
+            let first = geotiff::TiffReader::open(&request.tiles[0])?;
+            let first_nodata = first.nodata;
+            drop(first);
+            let fill = if global && !request.keep_holes {
+                Some(request.sea_level_fill.unwrap_or(0.0))
+            } else {
+                None
+            };
+            let (ny, nx, holes, _) = warp::mosaic_tiffs(
+                &request.tiles,
                 bounds,
                 resolution,
                 request.source_nodata,
+                &request.out_path,
+                if global { None } else { first_nodata },
+                fill,
             )?;
-            let audit;
-            if global {
-                let keep_holes = request.keep_holes;
-                let fill = request.sea_level_fill.unwrap_or(0.0);
-                // The Python fills on the float32 plane; replicate the
-                // f32 fill value bit for bit.
-                let fill = fill as f32 as f64;
-                for value in mosaic.values.iter_mut() {
-                    if value.is_nan() {
-                        if !keep_holes {
-                            *value = fill;
-                        }
-                    } else {
-                        // Round-trip through f32 like the Python's
-                        // `dtype="float32"` mosaic plane.
-                        *value = *value as f32 as f64;
-                    }
-                }
-                audit = if keep_holes {
+            let audit = if global {
+                if request.keep_holes {
                     serde_json::json!({
-                        "output_resolution_deg":
-                            resolution.unwrap_or(1.0 / 3600.0),
-                        "output_shape": [mosaic.ny, mosaic.nx],
-                        "hole_pixels": holes,
-                        "sea_level_filled_pixels": 0,
-                        "total_pixels": mosaic.ny * mosaic.nx,
+                        "output_resolution_deg": resolution.unwrap(),
+                        "output_shape": [ny, nx], "hole_pixels": holes,
+                        "sea_level_filled_pixels": 0, "total_pixels": ny * nx,
                         "sea_level_fill_m": serde_json::Value::Null,
                         "source_nodata": request.source_nodata,
-                        "resampling":
-                            "nearest (latitude-banded source resolutions)",
+                        "resampling": "nearest (latitude-banded source resolutions)",
                     })
                 } else {
                     serde_json::json!({
-                        "output_resolution_deg":
-                            resolution.unwrap_or(1.0 / 3600.0),
-                        "output_shape": [mosaic.ny, mosaic.nx],
-                        "sea_level_filled_pixels": holes,
-                        "total_pixels": mosaic.ny * mosaic.nx,
-                        "sea_level_fill_m":
-                            request.sea_level_fill.unwrap_or(0.0),
+                        "output_resolution_deg": resolution.unwrap(),
+                        "output_shape": [ny, nx], "sea_level_filled_pixels": holes,
+                        "total_pixels": ny * nx,
+                        "sea_level_fill_m": request.sea_level_fill.unwrap_or(0.0),
                         "source_nodata": request.source_nodata,
-                        "resampling":
-                            "nearest (latitude-banded source resolutions)",
+                        "resampling": "nearest (latitude-banded source resolutions)",
                     })
-                };
-                geotiff::write_band1(
-                    &request.out_path,
-                    &mosaic,
-                    geotiff::SampleType::F32,
-                    None,
-                )?;
+                }
             } else {
-                audit = serde_json::json!({
-                    "output_shape": [mosaic.ny, mosaic.nx],
-                    "hole_pixels": holes,
-                    "total_pixels": mosaic.ny * mosaic.nx,
-                    "nodata": first_nodata,
-                });
-                geotiff::write_band1(
-                    &request.out_path,
-                    &mosaic,
-                    geotiff::SampleType::F32,
-                    first_nodata,
-                )?;
-            }
+                serde_json::json!({ "output_shape": [ny, nx], "hole_pixels": holes,
+                    "total_pixels": ny * nx, "nodata": first_nodata })
+            };
             Ok(audit.to_string())
         }
         "landcover-window" => {
             let source_path = request.source.as_ref().ok_or_else(|| {
-                StaticError::Invalid(
-                    "landcover-window requires a source raster".into(),
-                )
+                StaticError::Invalid("landcover-window requires a source raster".into())
             })?;
             let bbox = request.bounds_lonlat.ok_or_else(|| {
-                StaticError::Invalid(
-                    "landcover-window requires bounds_lonlat".into(),
-                )
+                StaticError::Invalid("landcover-window requires bounds_lonlat".into())
             })?;
             let margin = request.margin_m.unwrap_or(2000.0);
             let mut reader = geotiff::TiffReader::open(source_path)?;
@@ -1286,11 +1192,9 @@ fn derive_window(request: &DeriveRequest) -> Result<String, DeriveFailure> {
             let mut east = f64::NEG_INFINITY;
             let mut north = f64::NEG_INFINITY;
             for j in 0..41 {
-                let lat =
-                    lat_min + (lat_max - lat_min) * j as f64 / 40.0;
+                let lat = lat_min + (lat_max - lat_min) * j as f64 / 40.0;
                 for i in 0..41 {
-                    let lon =
-                        lon_min + (lon_max - lon_min) * i as f64 / 40.0;
+                    let lon = lon_min + (lon_max - lon_min) * i as f64 / 40.0;
                     let (x, y) = projection.forward(lon, lat);
                     if x.is_finite() && y.is_finite() {
                         west = west.min(x);
@@ -1305,9 +1209,7 @@ fn derive_window(request: &DeriveRequest) -> Result<String, DeriveFailure> {
             // degrees (read as degrees, 2 km was 2000 degrees and the
             // window was the whole global raster).
             let (margin_x, margin_y) = match crs {
-                Crs::Geographic => {
-                    highres::margin_degrees(lat_min, lat_max, margin)
-                }
+                Crs::Geographic => highres::margin_degrees(lat_min, lat_max, margin),
                 _ => (margin, margin),
             };
             west -= margin_x;
@@ -1323,10 +1225,8 @@ fn derive_window(request: &DeriveRequest) -> Result<String, DeriveFailure> {
             let height_f = (south - north) / t[4];
             let col_off = col_off_f.floor();
             let row_off = row_off_f.floor();
-            let width =
-                (width_f + (col_off_f - col_off)).ceil() as i64;
-            let height =
-                (height_f + (row_off_f - row_off)).ceil() as i64;
+            let width = (width_f + (col_off_f - col_off)).ceil() as i64;
+            let height = (height_f + (row_off_f - row_off)).ceil() as i64;
             let (col_off, row_off) = (col_off as i64, row_off as i64);
             let full_w = reader.width as i64;
             let full_h = reader.height as i64;
@@ -1359,58 +1259,53 @@ fn derive_window(request: &DeriveRequest) -> Result<String, DeriveFailure> {
             // Pixel count of every raw category in the window, for the
             // receipt (what the crosswalk collapsed, what was unclassified).
             let mut category_pixels: BTreeMap<String, u64> = BTreeMap::new();
-            if reader.sample_type() == geotiff::SampleType::U8 {
-                let values = reader.read_window_u8(
-                    clip_col as usize,
-                    clip_row as usize,
-                    nx,
-                    ny,
-                )?;
-                let mut counts = [0u64; 256];
-                for value in &values {
-                    counts[*value as usize] += 1;
-                }
-                for (value, count) in counts.iter().enumerate() {
+            reader.set_cache_budget(8 * 1024 * 1024);
+            let bytes = reader.sample_type() == geotiff::SampleType::U8;
+            let mut byte_counts = [0u64; 256];
+            geotiff::write_band1_tiles(
+                &request.out_path,
+                ny,
+                nx,
+                &window_transform,
+                &crs,
+                geotiff::SampleType::U8,
+                nodata,
+                |c, r, w, h| {
+                    if bytes {
+                        let values = reader.read_window_u8(
+                            clip_col as usize + c,
+                            clip_row as usize + r,
+                            w,
+                            h,
+                        )?;
+                        for value in &values {
+                            byte_counts[*value as usize] += 1;
+                        }
+                        Ok(values.into_iter().map(|value| value as f64).collect())
+                    } else {
+                        let values = reader.read_window_raw(
+                            clip_col as usize + c,
+                            clip_row as usize + r,
+                            w,
+                            h,
+                        )?;
+                        for value in &values {
+                            if value.is_finite() {
+                                *category_pixels
+                                    .entry((*value as i64).to_string())
+                                    .or_insert(0) += 1;
+                            }
+                        }
+                        Ok(values)
+                    }
+                },
+            )?;
+            if bytes {
+                for (value, count) in byte_counts.iter().enumerate() {
                     if *count > 0 {
                         category_pixels.insert(value.to_string(), *count);
                     }
                 }
-                geotiff::write_band1_u8(
-                    &request.out_path,
-                    &values,
-                    ny,
-                    nx,
-                    &window_transform,
-                    &crs,
-                    nodata,
-                )?;
-            } else {
-                let values = reader.read_window_raw(
-                    clip_col as usize,
-                    clip_row as usize,
-                    nx,
-                    ny,
-                )?;
-                for value in &values {
-                    if value.is_finite() {
-                        *category_pixels
-                            .entry((*value as i64).to_string())
-                            .or_insert(0) += 1;
-                    }
-                }
-                let window = Raster {
-                    ny,
-                    nx,
-                    values,
-                    transform: window_transform,
-                    crs,
-                };
-                geotiff::write_band1(
-                    &request.out_path,
-                    &window,
-                    geotiff::SampleType::U8,
-                    nodata,
-                )?;
             }
             Ok(serde_json::json!({
                 "output_shape": [ny, nx],
@@ -1466,11 +1361,7 @@ pub unsafe extern "C" fn gpuwm_static_highres_derive_window(
         match derive_window(&request) {
             Err(failure) => {
                 set_error(failure.error.to_string());
-                if failure.coverage {
-                    -2
-                } else {
-                    -1
-                }
+                if failure.coverage { -2 } else { -1 }
             }
             Ok(audit) => copy_out(buf, cap, &audit),
         }

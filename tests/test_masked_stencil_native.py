@@ -149,6 +149,48 @@ def test_every_refusal_matches_in_words_and_facts():
         hrrr._build_masked_bilinear_stencil(x, y, valid[0], apply)
 
 
+@pytest.mark.parametrize("seed", range(6))
+def test_targets_on_the_last_column_and_row_take_their_own_cell(seed):
+    """A target that IS the source grid has its last column on ``nx - 1``
+    and its last row on ``ny - 1``.  Both builders refused it as leaving
+    the window (floor + 1 is past the edge), so the identity route's soil
+    stencil could not be built on the whole native grid.  Such a point now
+    takes its own cell with weight 1, spelled as the cell before with a
+    unit fraction; one step past the last cell is still refused.  Rust and
+    the oracle agree byte for byte, including where the own cell is not
+    valid and the donor search runs."""
+    rng = np.random.default_rng(100 + seed)
+    ny, nx = int(rng.integers(2, 30)), int(rng.integers(2, 30))
+    valid = rng.random((ny, nx)) < [1.0, 0.7, 0.3, 0.05, 1.0, 0.5][seed]
+    rows, cols = np.indices((ny, nx), dtype=np.float64)
+    apply = rng.random((ny, nx)) < 0.8
+    closed = EDGES if seed % 2 else ()
+    for workers in (1, 3):
+        got = _pair(cols, rows, valid, apply, 8, closed, workers)
+    if isinstance(got, BaseException):
+        return
+    iy, ix, weights, _report = got
+    assert iy.min() >= 0 and iy.max() < ny and ix.min() >= 0 and ix.max() < nx
+    own = valid & apply
+    # Every valid applied target on a whole cell copies that cell: the
+    # weight on it is exactly 1, on the other corners exactly 0.
+    on_own = (iy == rows.astype(np.int32)) & (ix == cols.astype(np.int32))
+    total = np.where(on_own, weights, np.float32(0.0)).sum(axis=0)
+    assert np.all(total[own] == np.float32(1.0))
+    assert np.all(np.where(on_own, np.float32(0.0), weights)[:, own] == 0.0)
+    # The last column and row are the cell before with a unit fraction.
+    last = own[:, -1]
+    assert np.all(ix[0, last, -1] == nx - 2)
+    assert np.all(ix[1, last, -1] == nx - 1)
+    assert np.all(weights[1, :-1, -1][own[:-1, -1]] == np.float32(1.0))
+    top = own[-1, :]
+    assert np.all(iy[0, -1, top] == ny - 2)
+    assert np.all(iy[2, -1, top] == ny - 1)
+    # One step past the last cell is refused alike by both.
+    _pair(cols + 1.0e-9, rows, valid, apply, 8, closed)
+    _pair(cols, rows + 1.0e-9, valid, apply, 8, closed)
+
+
 def test_a_large_sparse_window_matches_with_distant_donors_listed():
     """Many fallback targets, donors past the radius and past the listing
     cap, a whole-grid window (every edge closed) and chunks of targets

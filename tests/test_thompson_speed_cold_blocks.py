@@ -37,7 +37,7 @@ def test_cold_launch_bits(monkeypatch, scenario):
     # Repeat the real column across partial and complete blocks.
     monkeypatch.setattr(fixture, '_host', lambda rows, name: np.tile(host(rows, name), 17))
     candidate = _bits(fixture._run_cold_network(scenario, 10.0, tables))
-    monkeypatch.setattr(launcher, 'get_kernel', _reference_kernel(launcher.get_kernel))
+    monkeypatch.setattr(launcher, 'aerosol_kernel', _reference_kernel(launcher.aerosol_kernel))
     reference = _bits(fixture._run_cold_network(scenario, 10.0, tables))
     for key in reference:
         np.testing.assert_array_equal(candidate[key], reference[key], err_msg=str(key))

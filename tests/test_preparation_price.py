@@ -33,6 +33,20 @@ ROOT = Path(__file__).resolve().parents[1]
 GIB = 2 ** 30
 
 
+@pytest.fixture(autouse=True)
+def _stand_in_cards_are_not_the_local_device(monkeypatch):
+    """Every card in this file is a stand-in with a stated free memory.
+
+    The CPU battery legs set GPUWM_NO_LOCAL_GPU, and since 083ac7cd0
+    (lane/sw-excess) the backend selection refuses CUDA under it before any
+    probe.  That refusal is right for the local device and has its own
+    tests (tests/test_preprocess_no_local_gpu.py); here it would hide the
+    pricing decisions this file exists to hold, none of which opens a
+    device.  The process-wide CUDA visibility ban stays in force.
+    """
+    monkeypatch.setattr("gpuwm.local_gpu.no_local_gpu", lambda: False)
+
+
 def _cfg(nx, ny, nz, **overrides):
     """The measured runs' physics (mp=8, terrain, km_opt=4, YSU, Noah)."""
     values = dict(dx=3000.0, dy=3000.0, ztop=20000.0, dt=15.0,

@@ -371,6 +371,13 @@ def managed_download_dir(case_root: Path, fetch_table: dict) -> Path:
                     manifest = candidate / fetch.FETCH_MANIFEST_NAME
                     if manifest.is_file():
                         payload = json.loads(manifest.read_text(encoding="utf-8"))
+                        if fetch.native_cf_fetch_contract(source) is not None:
+                            from gpuwm import cf_archive_fetch
+                            if payload.get("schema") != cf_archive_fetch.MANIFEST_SCHEMA:
+                                raise ValueError("The native CF cache has no recognized fetch receipt")
+                            cf_archive_fetch.check_prior_request(candidate,source=source,cycle=cycle,
+                                hours=request.get("hours",0),cadence=request.get("cadence"),area=area)
+                            return candidate
                         table_route = source in fetch_routes.route_ids()
                         schema = (fetch_routes.ROUTE_MANIFEST_SCHEMA if table_route
                                   else fetch.FETCH_MANIFEST_SCHEMA)
@@ -3858,17 +3865,24 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
     # comparison here sees; one larger than the machine's RAM is killed
     # after the download.  Host RAM does not depend on the card, so it is
     # read even when no card could be.
+    #
+    # Weighed against the RAM this host can still give -- MemAvailable and
+    # every cgroup limit, never more than its MemTotal -- and never against
+    # the card: a 64 GiB host beside a 96 GB card was told its preparation
+    # fit "the 93.93 GiB budget" and was SIGKILLed in its decode
+    # (gpuwm.ingest.host_decode_window).
     preparation_refusal = preparation_warning = None
+    host = _preparation_host(phases)
     weigh_preparation = getattr(phases, "host_preparation_refusal", None)
     if weigh_preparation is not None:
-        preparation_host = getattr(phases, "host_ram_bytes", None)
-        if preparation_host is None:
-            from gpuwm.core.streaming import _host_total_bytes
-            preparation_host = _host_total_bytes()
+        preparation_host = host["budget_bytes"]
         preparation_refusal = weigh_preparation(preparation_host)
         preparation_warning = getattr(
             phases, "host_preparation_warning", lambda _host: None)(
                 preparation_host)
+    decode = _decode_window_clause(
+        exp, source, host, forcing_intervals=forcing_intervals,
+        forcing_interval_seconds=forcing_interval)
 
     if probe is None:
         # No numbers: price the phases and print the verdict, but never
@@ -3883,9 +3897,11 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
         verdict = f"{phases.verdict(None)} ({probe_reason})" if probe_reason else phases.verdict(None)
         if planner_note and planner_note not in verdict:
             verdict += "; " + planner_note
+        verdict += "; " + decode["sentence"]
         if preparation_refusal is not None:
             verdict += "; " + preparation_refusal
-        return {"verdict": verdict,
+        return {"verdict": verdict, "host": host, "decode_window": decode["window"],
+                "decode_warning": decode["warning"],
                 "refuse": planner_refuse or preparation_refusal is not None,
                 "warn": False, "free_bytes": None,
                 "probe_reason": probe_reason, "phases": phases, "device_probe": probe,
@@ -3908,7 +3924,9 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
         forcing_interval_seconds=forcing_interval,
         profile=profile)
     peak = phases.peak_envelope_bytes
-    verdict = phases.verdict(budget)
+    # The card's budget is the forecast's and the card's alone; the host
+    # side is said beside it with its own number (decode clause below).
+    verdict = _card_budget_words(phases.verdict(budget))
     # A resident reference number cannot admit a configuration for which the
     # native tree planner explicitly refused the configured execution road.
     # A planning REPORT that died is not such a refusal (planner_gate).
@@ -3918,6 +3936,7 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
         verdict += "; " + preparation_on_cpu_note
     if planner_note and planner_note not in verdict:
         verdict += "; " + planner_note
+    verdict += "; " + decode["sentence"]
     if preparation_refusal is not None:
         refuse = True
         verdict += "; and " + preparation_refusal
@@ -3961,7 +3980,94 @@ def memory_gate(plan: dict, *, vram_gib: float | None = None,
         "preparation_warning": preparation_warning,
         "card_refuse": card_refuse,
         "preparation_on_cpu": preparation_on_cpu_note,
+        # The host RAM the preparation was weighed against, and the decode
+        # window it will open at that RAM.
+        "host": host,
+        "decode_window": decode["window"],
+        "decode_warning": decode["warning"],
     }
+
+
+def _card_budget_words(verdict: str) -> str:
+    """Name the forecast verdict's budget as the CARD's.
+
+    The phases verdict says "the N GiB budget"; on a host with less RAM
+    than its card that number read as the preparation's budget.
+    """
+
+    return verdict.replace(" GiB budget", " GiB card budget")
+
+
+def _preparation_host(phases) -> dict:
+    """This host's RAM for a preparation: available, total and the budget.
+
+    The budget is the smaller of what the host can still give
+    (``MemAvailable`` under every memory cgroup) and its total (``MemTotal``
+    under the cgroup limit, or the planner machine's RAM).  ``None`` only
+    when neither can be read: unknown RAM never refuses.
+    """
+
+    from gpuwm.ingest.host_decode_window import available_host_bytes
+
+    total = getattr(phases, "host_ram_bytes", None)
+    if total is None:
+        from gpuwm.core.streaming import _host_total_bytes
+        total = _host_total_bytes()
+    available = available_host_bytes()
+    known = [int(value) for value in (available, total) if value is not None]
+    return {"available_bytes": available, "total_bytes": total,
+            "budget_bytes": min(known) if known else None}
+
+
+def _decode_window_clause(exp, source, host, *, forcing_intervals,
+                          forcing_interval_seconds=None) -> dict:
+    """The preparation's decode window at this host's RAM, in one clause.
+
+    Priced on the source's largest lead objects
+    (:func:`gpuwm.ingest.host_decode_window.plan_window`), which the
+    transport may not deliver (a NOMADS crop is far smaller), so a host
+    that cannot hold even one such lead is WARNED, never refused here; the
+    decode sizes its real window from the objects it reads.
+    """
+
+    from gpuwm.ingest.host_decode_window import (
+        GIB, plan_window, threads_available)
+
+    budget = host["budget_bytes"]
+    where = ("this host's RAM is unreadable, so the preparation's decode "
+             "is not bounded by it" if budget is None else
+             f"the preparation is budgeted against this host's RAM, not the "
+             f"card: {budget / GIB:.2f} GiB available"
+             + ("" if host["total_bytes"] is None else
+                f" of {int(host['total_bytes']) / GIB:.2f} GiB")
+             + " (MemAvailable under any cgroup limit)")
+    from gpuwm.core.preflight import (DEFAULT_FORCING_INTERVAL_SECONDS,
+                                      lbc_intervals)
+    try:
+        leads = lbc_intervals(
+            float(exp.run_seconds),
+            float(forcing_interval_seconds or DEFAULT_FORCING_INTERVAL_SECONDS),
+            retained_intervals=forcing_intervals) + 1
+    except Exception:  # a gate never dies on its estimate
+        leads = None
+    window = None
+    if leads is not None and source is not None:
+        window = plan_window(
+            source=str(source), leads=leads, threads=threads_available(),
+            p_top_pa=getattr(getattr(exp, "vertical", None), "p_top", None),
+            available=budget)
+    if window is None:
+        return {"sentence": where, "window": None, "warning": None}
+    sentence = (f"{where}; at whole-globe {source} leads its "
+                f"{window.sentence(leads)}")
+    warning = None
+    if budget is not None and window.batch_bytes > budget:
+        warning = (f"decoding one whole-globe {source} lead holds about "
+                   f"{window.batch_bytes / GIB:.2f} GiB of host RAM, more "
+                   f"than the {budget / GIB:.2f} GiB this host has "
+                   "available, so a full-file fetch may be killed in its "
+                   "decode after the download; a host with more RAM moves it")
+    return {"sentence": sentence, "window": window, "warning": warning}
 
 
 def _planner_machine(probe, profile=None):
@@ -4136,8 +4242,8 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
     # refused against a managed downloads path the reader never named.
     # Only an explicit `--data-dir` overrides the config here; the
     # default leaves the config's own root to speak.
-    local_input = acquires and bool(
-        runplan.drivability_for(fetch.get("source")).get("requires_source_root"))
+    from gpuwm.source_drivability import local_input_requested
+    local_input = acquires and local_input_requested(fetch)
     if args.data_dir is not None:
         data_dir = Path(args.data_dir)
     elif local_input:
@@ -4279,6 +4385,8 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
                   file=sys.stderr)
         if gate.get("preparation_warning"):
             print(f"warning: {gate['preparation_warning']}.", file=sys.stderr)
+        if gate.get("decode_warning"):
+            print(f"warning: {gate['decode_warning']}.", file=sys.stderr)
     from gpuwm.geog_assets import default_geog_root
     geog_root = (data.geog_root if data is not None
                  else Path(args.geog_root) if args.geog_root is not None
@@ -4669,6 +4777,10 @@ def go_main(args, *, observer=None) -> int:
     then refused that envelope again after the fetch and the preparation.
     """
     from gpuwm.core.resident_admission import memory_gate_override
+    from gpuwm.verification_visuals import verification_scope
+    enabled = getattr(args, "verify_visuals", None)
+    if enabled is None:
+        enabled = os.environ.get("GPUWM_VERIFY_VISUALS", "1").lower() not in ("0", "false", "off")
     from gpuwm.ensemble.door import request_for_config, production_run_scope
     from gpuwm.ensemble.runtime_context import current_session
     inherited = current_session()
@@ -4684,6 +4796,16 @@ def go_main(args, *, observer=None) -> int:
         raise GoRefusal(str(refusal)) from None
     if getattr(args, "command", None) == "ensemble" and request is None and Path(args.config).is_file():
         raise GoRefusal("ensemble requires --members N or [ensemble].members in CONFIG")
+    if getattr(args, "restart_roster", None) is not None:
+        if request is None:
+            raise GoRefusal("--restart-roster requires the original ensemble configuration")
+        from gpuwm.ensemble.restart_roster import resume_prepared_roster
+        return resume_prepared_roster(args, request, observer=observer)
+    if getattr(args, "prepare_only", False):
+        # Source preparation owns one trajectory even when its configuration
+        # also describes a forecast ensemble. It creates no member session.
+        with memory_gate_override(getattr(args, "no_memory_gate", False)), verification_scope(enabled):
+            return _go_launch(args, observer=observer)
     from gpuwm.ensemble import member_inputs
     # A plain member count (N > 1, no recipe named) is given real members
     # too: this chain prepares ONE trajectory, so launching it would run N
@@ -4701,14 +4823,16 @@ def go_main(args, *, observer=None) -> int:
         # other ensemble uses.
         from gpuwm.core.resident_admission import memory_gate_override as _gate
         try:
-            with _gate(getattr(args, "no_memory_gate", False)), _each_advisory_once():
+            with _gate(getattr(args, "no_memory_gate", False)), verification_scope(enabled), _each_advisory_once():
                 return _go_recipe(args, request, observer=observer)
         except recipe_door.RecipeRefusal as refusal:
             raise GoRefusal(str(refusal)) from None
 
-    with memory_gate_override(getattr(args, "no_memory_gate", False)), \
+    with memory_gate_override(getattr(args, "no_memory_gate", False)), verification_scope(enabled), \
             _each_advisory_once(), production_run_scope(request,
-                output_directory=getattr(args, "outdir", None) or Path(args.config).with_suffix("")):
+                output_directory=getattr(args, "outdir", None) or Path(args.config).with_suffix(""),
+                **({"restart_roster": args.restart_roster}
+                   if getattr(args, "restart_roster", None) is not None else {})):
         return _go_launch(args, observer=observer)
 
 
@@ -4736,10 +4860,6 @@ _RECIPE_UNCONSUMED_FLAGS = (
     ("--section", "render_section",
      "the ensemble draws its aggregate maps and no stage of it cuts a "
      "vertical section, so the line would be read by nothing"),
-    ("--keep-checkpoints", "keep_checkpoints",
-     "a recipe ensemble cannot be resumed (no door continues a set of "
-     "members prepared from different sources), and the count would be "
-     "read by nothing"),
 )
 
 
@@ -4932,8 +5052,11 @@ def _go_recipe(args, request, *, observer=None) -> int:
     if cycle is not None:
         config, payload = _at_flag_cycle(args, config, payload, cycle)
     _extend_outdir(args, config, payload)
-    return recipe_door.run_recipe_ensemble(args, request, observer=observer,
-                                           options=posting)
+    if getattr(args, "prepare_only", False):
+        return _prepare_only_launch(args, config=config, payload=payload, observer=observer)
+    with _checkpoint_retention(getattr(args, "keep_checkpoints", None)):
+        return recipe_door.run_recipe_ensemble(args, request, observer=observer,
+                                               options=posting)
 
 
 def _go_launch(args, *, observer=None) -> int:
@@ -4995,6 +5118,54 @@ def _go_launch(args, *, observer=None) -> int:
     return _go_prepared_main(args, observer=observer)
 
 
+def _prepare_only_launch(args, *, config, payload, observer=None):
+    """Run the source's ordinary live producer without starting a forecast."""
+    import hashlib
+    from gpuwm import runplan
+    from gpuwm.experiment import load_experiment
+    from gpuwm.ensemble.runtime_context import current_session
+    if any(getattr(args, key, None) is not None for key in
+           ("restart", "prepared_root", "restart_roster")) or current_session() is not None:
+        raise GoRefusal("--prepare-only requires one source trajectory without a restart")
+    fetch = payload.get("fetch") or {}
+    chain = runplan.prepared_chain_for_source(str(fetch.get("source")),
+                                            source_root=fetch.get("source_root"))
+    if chain == "prepared:go":
+        return _go_prepared_main(args, observer=observer)
+    if chain not in ("prepared:hrrr", "prepared:staged"):
+        raise GoRefusal("--prepare-only requires a native prepared source route")
+    output = Path(args.outdir or config.parent / (config.stem + "-prepare"))
+    options = {key: str(Path(getattr(args, key)).resolve()) for key in
+               ("data_dir", "geog_root") if getattr(args, key, None) is not None}
+    if getattr(args, "transport", None) is not None:
+        options["transport"] = args.transport
+    if getattr(args, "whole_cycle", False):
+        options["as_posted"] = False
+    if getattr(args, "late_after_minutes", None) is not None:
+        options["late_after_minutes"] = args.late_after_minutes
+    if getattr(args, "supplement", None):
+        from gpuwm.launch_supplements import bindings
+        options["supplement"] = bindings(args.supplement, base=Path.cwd())
+    raw = {"schema": runplan.PLAN_SCHEMA, "name": config.stem, "route": "prepared",
+           "config": {"path": str(config.resolve())}, "output_root": str(output.resolve()),
+           "run_options": options}
+    plan = runplan.build_plan(raw, source="gpuwm go --prepare-only", base_dir=config.parent,
+                             sha256=hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest())
+    events = None
+    if observer is None:
+        events = runplan.EventStream(output / "preparation-events.jsonl")
+        observer = runplan.RunObserver(events)
+    operation = runplan._hrrr_chain if chain == "prepared:hrrr" else runplan._staged_chain
+    try:
+        result = operation(plan, config_path=config, exp=load_experiment(config),
+                           observer=observer, run_dir=output, prepare_only=True)
+    finally:
+        if events is not None:
+            events.close()
+    print(json.dumps({"status": "PREPARED", "prepared_root": result["prepared_root"]}, sort_keys=True))
+    return 0
+
+
 def _disk_admission(plan: dict, args) -> None:
     """Refuse, before the run folder is claimed or a byte is fetched, a run its disks cannot hold.
 
@@ -5020,6 +5191,7 @@ def _disk_admission(plan: dict, args) -> None:
     config = Path(plan["config"]).resolve()
     keep = getattr(args, "keep_checkpoints", None)
     options = {"keep_checkpoints": DEFAULT_KEEP_CHECKPOINTS if keep is None else keep,
+               "verify_visuals": os.environ.get("GPUWM_VERIFY_VISUALS", "1").lower() not in ("0", "false", "off"),
                "render_products": plan.get("render_products") or None,
                # The line its sections are cut along: a plan naming an
                # xsec: product and no line is refused when it is built.
@@ -5289,6 +5461,8 @@ def _go_prepared_main(args, *, observer=None) -> int:
                       "OOM this run.")
             if gate.get("preparation_warning"):
                 print(f"go: WARNING -- {gate['preparation_warning']}.")
+            if gate.get("decode_warning"):
+                print(f"go: WARNING -- {gate['decode_warning']}.")
 
         _require_forecast_device()
         # Same rule as the memory gate, same side of the download.
@@ -5433,6 +5607,8 @@ def _go_prepared_main(args, *, observer=None) -> int:
             keep = DEFAULT_KEEP_CHECKPOINTS
 
         def forecast(head_sha256):
+            if getattr(args, "prepare_only", False):
+                return
             # A hierarchy proof carries no single prepared-cache identity,
             # and proof_digests says so by refusing.  The tree arm reads its
             # own one digest instead, so it is not asked for here.  A
@@ -5544,6 +5720,11 @@ def _go_prepared_main(args, *, observer=None) -> int:
         if hosted_relay is not None:
             hosted_relay.stop()
             hosted_relay = None
+        if getattr(args, "prepare_only", False):
+            if chain is not None:
+                chain.finish(status="PREPARED", exit_code=0)
+            print(json.dumps({"status": "PREPARED", "prepared_root": str(plan["prepared"])}, sort_keys=True))
+            return 0
         rendered = _render_stage(plan, explain=explain,
                                  observer=observer)
     except GoRefusal:
@@ -5726,6 +5907,8 @@ def register_cli(subparsers) -> None:
     parser.add_argument("--restart", type=Path, default=None, metavar="CHECKPOINT",
                         help="continue an existing checkpoint; prepared-cache runs "
                              "also need --prepared-root, and use fresh output")
+    parser.add_argument("--prepare-only", action="store_true",
+                        help="fetch and stream prepared inputs without starting a forecast")
     parser.add_argument("--prepared-root", type=Path, default=None, metavar="DIR",
                         help="run this existing prepared bundle without fetch or "
                              "preparation; add --restart to continue its checkpoint")
@@ -5790,6 +5973,8 @@ def register_cli(subparsers) -> None:
                              "catalog), or 'none' to stop after the "
                              "forecast.  The same spelling `gpuwm render "
                              "--products` takes")
+    parser.add_argument("--no-verify-visuals", action="store_false", dest="verify_visuals", default=None,
+                        help="skip postforecast observation verification; the physical run is unchanged")
     # `gpuwm render --section`, carried to every render this chain runs:
     # the frames drawn as they land, the early first frame and the
     # end-of-run batch.  Without it an `xsec:` term in --products passed

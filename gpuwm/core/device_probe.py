@@ -31,6 +31,9 @@ def cuda_device_identity(device: int) -> dict | None:
     hosts; container hostnames cannot establish that two cards differ.
     Callers use this beside their existing device reading.
     """
+    from gpuwm.local_gpu import no_local_gpu
+    if no_local_gpu():
+        return None
     identity = {}
     try:
         import cupy as cp

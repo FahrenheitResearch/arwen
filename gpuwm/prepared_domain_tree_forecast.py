@@ -477,6 +477,11 @@ def claim_output_directory(output: Path, *, protected_roots: tuple[Path, ...]) -
             # the one direction that loses data.
             occupied = True
         if occupied:
+            from gpuwm.ensemble.runtime_context import current_session
+            session = current_session()
+            if (session is not None and session.restart_roster is not None
+                    and result.resolve() == session.output_directory.resolve()):
+                return result
             raise FileExistsError(
                 f"refusing output directory that already holds a run: "
                 f"{result}") from None
@@ -2672,6 +2677,8 @@ def _write_failed_run_receipt(outdir, error) -> None:
     """The receipt a run that STARTED and died owes its caller."""
     evidence = outdir / "evidence"
     evidence.mkdir(exist_ok=True)
+    from gpuwm.stability_recovery import RECOVERY_RECEIPT
+    recovery_path = evidence / RECOVERY_RECEIPT
     _atomic_json(
         evidence / "failed-run-receipt.json",
         {
@@ -2680,6 +2687,8 @@ def _write_failed_run_receipt(outdir, error) -> None:
             "error_type": type(error).__name__,
             "error": str(error),
             "traceback": traceback.format_exc(),
+            "stability_recovery_receipt": (
+                str(recovery_path.resolve()) if recovery_path.is_file() else None),
         },
     )
 
@@ -2969,6 +2978,8 @@ def run_prepared_tree(
     initialization: TreeInitialization | None = None,
     first_products=None,
     ensemble_bootstrap=None,
+    health_retry_products=None,
+    schedule_dispatch=None,
 ) -> dict[str, object]:
     """Restore the prepared domains and execute the existing tree engine.
 
@@ -2996,7 +3007,9 @@ def run_prepared_tree(
             restart=restart, health_debug=health_debug,
             sealed_forcing_extension=sealed_forcing_extension, observer=observer,
             progress_options=progress_options, initialization=initialization,
-            first_products=first_products, ensemble_bootstrap=ensemble_bootstrap)
+            first_products=first_products, ensemble_bootstrap=ensemble_bootstrap,
+            health_retry_products=health_retry_products,
+            **({} if schedule_dispatch is None else {"schedule_dispatch": schedule_dispatch}))
 
     if io_mode not in {"history", "none"}:
         raise ValueError("io_mode must be 'history' or 'none'")
@@ -4093,7 +4106,8 @@ def run_prepared_tree(
     landing = progress_log.LandingFanout(
         getattr(observer, "output_committed", None),
         step_log.output_committed if step_log.enabled else None,
-        None if first_products is None else first_products.frame_committed)
+        None if first_products is None else
+        lambda **event: first_products.frame_committed(**event))
     if landing and writers is not None:
         writers.attach_progress_callback(landing)
     if writers is not None:
@@ -4172,6 +4186,34 @@ def run_prepared_tree(
     # whole point: `progress_callback` fires once per ROOT step, so a
     # d04 taking 36 substeps inside one of them reported nothing.
     step_observer = step_log.step_observer if step_log.enabled else None
+    from gpuwm.stability_recovery import NestedHealthRecovery, RecoveryRefused
+
+    def rearm_products(checkpoint):
+        nonlocal first_products
+        if first_products is not None:
+            if health_retry_products is None:
+                raise RecoveryRefused(
+                    "the caller supplied standalone render consumers without "
+                    "a retry rearm hook; history cannot be removed while read")
+            first_products = health_retry_products(checkpoint)
+
+    recovery = NestedHealthRecovery(
+        model=model, experiment=exp, output_directory=outdir,
+        writers=writers, history=history, observer=observer,
+        before_rewind=rearm_products,
+        sealed_forcing_extension=sealed_forcing_extension)
+
+    def execute_leg(active_experiment):
+        return execute_experiment(
+            model, history_handler=None if writers is None else history_handler,
+            restart_handler=restart_handler, progress_callback=progress_callback,
+            validate_state=True, health_debug=health_debug,
+            skip_feedback_path=(int(exp.feedback) == 0),
+            relocation_runner=relocation_runner, steppers=steppers,
+            step_observer=step_observer, experiment=active_experiment,
+            delayed_child_initializer=initialize_delayed_child,
+            **({} if schedule_dispatch is None else {"schedule_dispatch": schedule_dispatch}))
+
     try:
         memory_watch.start()
         if already_complete:
@@ -4184,41 +4226,17 @@ def run_prepared_tree(
         if writers is None:
             execution = (
                 _completed_execution_report(model) if already_complete
-                else execute_experiment(
-                    model,
-                    history_handler=None,
-                    restart_handler=restart_handler,
-                    progress_callback=progress_callback,
-                    validate_state=True,
-                    health_debug=health_debug,
-                    skip_feedback_path=(int(exp.feedback) == 0),
-                    relocation_runner=relocation_runner,
-                    steppers=steppers,
-                    step_observer=step_observer,
-                    experiment=exp,
-                    delayed_child_initializer=initialize_delayed_child,
-                ))
+                else recovery.run(execute_leg))
             wrfout_paths = ()
         else:
             with writers:
                 execution = (
                     _completed_execution_report(model) if already_complete
-                    else execute_experiment(
-                        model,
-                        history_handler=history_handler,
-                        restart_handler=restart_handler,
-                        progress_callback=progress_callback,
-                        validate_state=True,
-                        health_debug=health_debug,
-                        skip_feedback_path=(int(exp.feedback) == 0),
-                        relocation_runner=relocation_runner,
-                        steppers=steppers,
-                        step_observer=step_observer,
-                        experiment=exp,
-                        delayed_child_initializer=initialize_delayed_child,
-                    ))
+                    else recovery.run(execute_leg))
                 writers.drain(before_domain=runtime._drain_progress(observer))
                 wrfout_paths = writers.paths
+        exp = recovery.experiment
+        inputs = replace(inputs, experiment=exp)
         runtime._finalizing_progress(observer, "close-relocation-receipt")
         if relocation_runner is not None:
             relocation_runner.close_receipt(model)
@@ -4264,7 +4282,7 @@ def run_prepared_tree(
     runtime._finalizing_progress(observer, "microphysics-transition-receipt")
     transition_path, transition_sha, transitions = (
         runtime._write_microphysics_transition_receipt(
-            evidence, model, exp, resumed=restart is not None
+            evidence, model, exp, resumed=bool(model._resumed)
         )
     )
     final_health = {}
@@ -4403,6 +4421,7 @@ def run_prepared_tree(
             "relocation_crossed": getattr(
                 model, "_restart_crossed_relocation", None),
         },
+        "stability_recovery": recovery.receipt,
         # The [relocation] echo (None when the config never opted in).
         # A follow source reaches execution only over a verified statics
         # corridor (the preflight refuses corridor-less bundles), so a
@@ -4489,7 +4508,8 @@ def run_prepared_tree(
         "output": {
             "io_mode": io_mode,
             "frame_count": len(outputs),
-            "total_bytes": sum(item["bytes"] for item in outputs),
+            "total_bytes": (sum(item["bytes"] for item in outputs)
+                if all(item["bytes"] is not None for item in outputs) else None),
             "files": outputs,
             "last_checkpoint": (
                 None
@@ -5034,6 +5054,17 @@ def main(argv=None, *, observer=None) -> int:
     from gpuwm.core.resident_admission import memory_gate_override
 
     def run(bound, products, restart):
+        def rearm(checkpoint):
+            nonlocal first_products
+            from gpuwm.first_products import halt_renders_and_wait
+            if not halt_renders_and_wait(first_products):
+                raise RuntimeError("a failed-leg render is still reading "
+                                   "history; refusing health recovery rewind")
+            retry_args = argparse.Namespace(**{**vars(args), "restart": checkpoint})
+            first_products = prepared_single._route_owned_first_products(
+                retry_args, outdir=outdir, observer=observer, started=started)
+            return first_products
+
         with memory_gate_override(args.no_memory_gate):
             return run_prepared_tree(
                 bound,
@@ -5044,6 +5075,7 @@ def main(argv=None, *, observer=None) -> int:
                 observer=observer,
                 sealed_forcing_extension=args.sealed_forcing_extension,
                 progress_options=ProgressOptions.from_args(args),
+                health_retry_products=rearm,
                 **({} if products is None else {"first_products": products}),
             )
 

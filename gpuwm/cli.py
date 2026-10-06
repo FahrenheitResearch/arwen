@@ -112,6 +112,7 @@ multi_run_register_cli = _lazy_register("gpuwm.multi_run")
 obs_register_cli = _lazy_register("gpuwm.obs.cli")
 render_register_cli = _lazy_register("gpuwm.render")
 simulated_radar_register_cli = _lazy_register("gpuwm.simulated_radar")
+verification_visuals_register_cli = _lazy_register("gpuwm.verification_visuals")
 remote_register_cli = _lazy_register("gpuwm.remote_cli")
 report_register_cli = _lazy_register("gpuwm.report_bundle")
 run_plan_register_cli = _lazy_register("gpuwm.runplan")
@@ -439,6 +440,7 @@ def build_parser(*, render_only: bool = False) -> argparse.ArgumentParser:
     # product.
     ml_export_register_cli(sub)
     simulated_radar_register_cli(sub)
+    verification_visuals_register_cli(sub)
     enprod_register_cli(sub)
     downscale_register_cli(sub)
     doctor_register_cli(sub)
@@ -626,14 +628,24 @@ def build_parser(*, render_only: bool = False) -> argparse.ArgumentParser:
                      help="[experiment].name for the resolved TOML "
                           "(default derived from start time and domain "
                           "count)")
-    imp.add_argument("--rrtmg-variant", default="rte-rrtmgp",
+    imp.add_argument("--rrtmg-variant", default=None,
                      choices=("rte-rrtmgp", "rrtmg_legacy"),
                      dest="rrtmg_variant",
                      help="implementation for a WRF RRTMG 4/4 request: "
-                          "the established RTE+RRTMGP substitution "
-                          "(default, unchanged output) or the exact "
-                          "legacy-RRTMG port (fails closed at physics "
-                          "setup until its compute kernels land)")
+                          "RTE+RRTMGP by default, or legacy RRTMG when "
+                          "the namelist selects GSD MYNN or aer_opt=3; "
+                          "an explicit choice retains its implementation")
+    # No argparse default: the report records WHAT chose the line, and
+    # "nobody did, the importer's default applied" is one of the answers.
+    imp.add_argument("--wrf-version", default=None, choices=("3", "4"),
+                     dest="wrf_version",
+                     help="the WRF line the namelist was written for; "
+                          "selects only the Registry default an omitted "
+                          "&dynamics/use_theta_m takes (3: 0, dry theta, "
+                          "the line operational HRRR v4 runs; 4, the "
+                          "default: 1, moist theta, booked as a "
+                          "substitution). The report names the line and "
+                          "what chose it")
     imp.add_argument("--ack", action="append", default=[], metavar="ID",
                      help="declared-experiment acknowledgement id to "
                           "write into [experiment].acknowledgements of "
@@ -679,6 +691,12 @@ def main(argv: list[str] | None = None) -> int:
     this call's, on every exit path including a raised exception.
     """
 
+    if argv is None:
+        # A command line on a free-threaded build keeps the interpreter
+        # lock off for good (the ranks would otherwise take turns again
+        # after netCDF4's import); see gpuwm.free_threading.
+        from gpuwm.free_threading import keep_gil_disabled
+        keep_gil_disabled()
     from gpuwm.explain import explain_scope
     from gpuwm.progress import line_buffer_stdout
 
@@ -1172,9 +1190,14 @@ def _dispatch(args) -> int:
                 args.wps, args.input, name=args.name,
                 static_cache_root=(None if args.static_cache_root is None
                                    else args.static_cache_root.resolve()),
-                rrtmg_variant=args.rrtmg_variant,
+                **({} if args.rrtmg_variant is None else
+                   {"rrtmg_variant": args.rrtmg_variant}),
                 acknowledgements=tuple(args.ack), geogrid_tbl=args.geogrid_tbl,
-                terrain_smoothing_precision=args.terrain_smoothing_precision)
+                terrain_smoothing_precision=args.terrain_smoothing_precision,
+                **({} if args.wrf_version is None else {
+                    "wrf_version": args.wrf_version,
+                    "wrf_version_source":
+                        f"--wrf-version {args.wrf_version}"}))
         except NotImplementedError as error:
             # validate_run_config raises its "not executable yet" refusals
             # (e.g. ra_lw_physics=1, WRF RRTM longwave) as
@@ -1401,7 +1424,9 @@ def _dispatch(args) -> int:
             request = request_for_payload(config_authority.payload,
                 members=getattr(args, "members", None),
                 keep_member_files=getattr(args, "keep_member_files", None))
-            with production_run_scope(request, output_directory=args.outdir):
+            with production_run_scope(request, output_directory=args.outdir,
+                                      **({"restart_roster": args.restart_roster}
+                                         if getattr(args, "restart_roster", None) is not None else {})):
                 summary = runtime.run_experiment(exp, data, args.outdir,
                                                  restart=args.restart,
                                                  health_debug=args.health_debug)

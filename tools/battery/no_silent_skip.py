@@ -73,6 +73,20 @@ LIMITS, STATED
   it deselected to the controller through ``workeroutput``.
 * A leg that already has a failing test is already red; this guard exists to
   stop a GREEN leg hiding a skip, so it says nothing when ``testsfailed``.
+
+DECLARED TEST EXCEPTIONS (one test, not a file)
+-----------------------------------------------
+A DECLARED-SKIPPING entry written ``tests/test_x.py::test_name  reason`` names
+ONE test.  This plugin skips exactly that test, every parametrization of it
+(or exactly one, when the id carries its ``[...]``), with the reason as the
+skip text, and every other test in the file keeps running and gating.  It is
+for a reproduced defect whose fix is in progress under a named ruling, where
+skipping the whole file would take the passing gates beside it down too.  It
+applies on every route, ``-k`` and ``-m`` included, because it is a property
+of the tree, not of the leg.  A declared id that matches nothing in a file the
+leg collected stops the session: an exception that outlived its test (a
+rename, a split) would otherwise skip nothing and still read as declared.
+Declared-exception skips do not count against a must-run file's ceiling.
 """
 
 from __future__ import annotations
@@ -170,6 +184,27 @@ def parse_declared_skipping(text: str) -> dict[str, str]:
     return declared
 
 
+def declared_test_exceptions(declared: dict[str, str]) -> dict[str, str]:
+    """``{node id: reason}``: the declared entries that name one test."""
+    return {entry: reason for entry, reason in declared.items()
+            if "::" in entry}
+
+
+def _exception_matches(nodeid: str, declared_id: str) -> bool:
+    """An id without ``[...]`` covers every parametrization of its test."""
+    return nodeid == declared_id or (
+        "[" not in declared_id and nodeid.split("[", 1)[0] == declared_id)
+
+
+_DECLARED_SKIP_PREFIX = "declared exception, "
+
+
+def _declared_skip(report) -> bool:
+    longrepr = getattr(report, "longrepr", None)
+    text = longrepr[2] if isinstance(longrepr, tuple) and len(longrepr) == 3 else ""
+    return str(text).startswith("Skipped: " + _DECLARED_SKIP_PREFIX)
+
+
 def _gates(root: pathlib.Path) -> dict[str, int | None]:
     """Load the required inventory; missing or invalid policy is a refusal."""
     path = root / MANIFEST_RELATIVE
@@ -194,6 +229,7 @@ class _Guard:
         self.deselected: set[str] = set()
         self.root = pathlib.Path(os.getcwd()).resolve()
         self.inactive = False
+        self.exceptions: dict[str, str] = {}
 
     def pytest_cmdline_main(self, config) -> None:
         self.root = pathlib.Path(str(config.rootpath)).resolve()
@@ -205,6 +241,37 @@ class _Guard:
                              or getattr(config.option, "deselect", None)
                              or getattr(config.option, "collectonly", False))
         self.gates = {} if self.inactive else _gates(self.root)
+        manifest = self.root / MANIFEST_RELATIVE
+        if manifest.is_file():
+            self.exceptions = declared_test_exceptions(
+                parse_declared_skipping(manifest.read_text(encoding="utf-8")))
+
+    @pytest.hookimpl(tryfirst=True)
+    def pytest_collection_modifyitems(self, session, config, items) -> None:
+        """Skip exactly the declared test ids, before any marker selection.
+
+        ``tryfirst`` so a ``-m`` expression has not yet removed the items a
+        stale-id check needs to see.
+        """
+        if not self.exceptions:
+            return
+        matched: set[str] = set()
+        files = {item.nodeid.split("::")[0] for item in items}
+        for item in items:
+            for declared_id, reason in self.exceptions.items():
+                if _exception_matches(item.nodeid, declared_id):
+                    item.add_marker(pytest.mark.skip(
+                        reason=(_DECLARED_SKIP_PREFIX
+                                + f"{MANIFEST_RELATIVE}: {reason}")))
+                    matched.add(declared_id)
+        stale = sorted(declared_id for declared_id in self.exceptions
+                       if declared_id.split("::")[0] in files
+                       and declared_id not in matched)
+        if stale:
+            raise pytest.UsageError(
+                f"{MANIFEST_RELATIVE} declares test exceptions that match no "
+                f"collected test: {stale}.  Delete or correct each entry in the "
+                "commit that renamed, split or fixed the test.")
 
     def pytest_runtest_logreport(self, report) -> None:
         """Outcomes, not collection.
@@ -221,7 +288,12 @@ class _Guard:
 
         rel = report.nodeid.split("::")[0]
         self.seen.add(rel)
-        if report.skipped:
+        if report.skipped and _declared_skip(report):
+            # Declared, with its reason, in the manifest: not a silence.  Read
+            # off the report so a pytest-xdist controller, which collected
+            # nothing, sees it too.
+            pass
+        elif report.skipped:
             self.skipped[rel] += 1
         elif report.passed and report.when == "call":
             self.passed[rel] += 1

@@ -1,0 +1,9 @@
+{
+  "source": "NOAA-EMC/HRRR, the WRF fork operational HRRR v4 runs (sorc/hrrr_wrfarw.fd/WRFV3.9)",
+  "commit": "40ee6058c2fc6624cbfbbe8cf1c20c59e6a45827",
+  "raw_base": "https://raw.githubusercontent.com/NOAA-EMC/HRRR/40ee6058c2fc6624cbfbbe8cf1c20c59e6a45827/sorc/hrrr_wrfarw.fd/WRFV3.9/",
+  "source_hashes": "SOURCES.sha256",
+  "reference": "complete module after the hybrid-mass macro expansion of expand_hybrid.py, binary32, gfortran -O0 -ffp-contract=off",
+  "driver": "../advect_wrf471_oracle/run_advect.F90 (the fork's explicit routines take the same argument lists as WRF 4.7.1)",
+  "protocol_version": 1
+}

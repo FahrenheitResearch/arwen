@@ -1425,7 +1425,12 @@ def preprocess_noah_soil(fields: Mapping[str, object], *, soil_type,
     xice[terrestrial] = 0.0
     if not isinstance(fractional_seaice, (bool, np.bool_)):
         raise TypeError("fractional_seaice must be boolean")
-    sea_ice = (~terrestrial) & (xice >= (0.02 if fractional_seaice else 0.5))
+    # module_soil_pre.F uses REAL fractions and a REAL 0.02 threshold.
+    # A float32 0.02 promoted to float64 is below the double literal 0.02;
+    # comparing it there drops a cell the surface driver classifies as ice.
+    sea_ice = (~terrestrial) & (
+        xice.astype(np.float32) >= np.float32(0.02)
+        if fractional_seaice else xice >= 0.5)
     # WRF adjust_for_seaice_post preserves fractions in its fractional arm;
     # the historical/default binary arm snaps retained ice to one.
     if not fractional_seaice:

@@ -19,9 +19,20 @@
 //! P_TOP (hex frames, global tapes) has its lid at the top mass level; a
 //! later frame whose column falls a little short of a kept level holds the
 //! top values and extends geopotential hydrostatically.
+//!
+//! Geopotential is the exception to reading mass levels: a WRF-family model
+//! knows it on the interfaces of its layers (PH + PHB), and a layer-mean
+//! geopotential paired with the mass-level pressure reads 4 to 6 m high at
+//! 500 hPa on an eta grid.  Where the history file states its eta levels
+//! (ZNW), geopotential inside the model column is read between interfaces
+//! instead ([`Plan::apply_geopotential_between_interfaces`]); below ground
+//! the ECMWF rule is unchanged.
 
 use rayon::prelude::*;
-use rw_isobaric::{bracket, ecmwf_geopotential, ecmwf_temperature, lerp, ColumnBase, ECMWF_RULE};
+use rw_isobaric::{
+    bracket, ecmwf_geopotential, ecmwf_temperature, interface_bracket, lerp, ColumnBase,
+    InterfaceStencil, ECMWF_RULE,
+};
 
 use crate::error::{refuse, Result};
 
@@ -180,52 +191,134 @@ impl Plan {
     /// Put one mass-level field (`[nz, cells]`) on the plan's levels, filling
     /// with `rule` below ground.  Returns `[levels, cells]` as f32.
     pub fn apply(&self, field: &[f64], rule: Rule, cols: &Columns<'_>) -> Vec<f32> {
-        let (nz, cells) = (cols.nz, cols.cells);
-        let nl = self.levels_pa.len();
-        let mut out = vec![f32::NAN; nl * cells];
+        let cells = cols.cells;
+        let mut out = vec![f32::NAN; self.levels_pa.len() * cells];
         out.par_chunks_mut(cells).enumerate().for_each(|(l, plane)| {
-            let target = self.levels_pa[l];
-            for c in 0..cells {
-                let i = l * cells + c;
-                let value = match self.kind[i] {
-                    INTERIOR => {
-                        let k = self.lower[i] as usize;
-                        lerp(field[k * cells + c], field[(k + 1) * cells + c], self.weight[i])
-                            .unwrap_or(f64::NAN)
-                    }
-                    BELOW => {
-                        let base = ColumnBase {
-                            t_bot: cols.t_bot[c],
-                            p_bot: cols.p[c],
-                            p_sfc: cols.psfc[c],
-                            phi_sfc: cols.phi_sfc[c],
-                        };
-                        match rule {
-                            Rule::Temperature => ecmwf_temperature(&base, target, &ECMWF_RULE),
-                            Rule::Geopotential => ecmwf_geopotential(&base, target, &ECMWF_RULE),
-                            Rule::Lowest => field[c],
-                        }
-                    }
-                    ABOVE => {
-                        let top = field[(nz - 1) * cells + c];
-                        let p_top = cols.p[(nz - 1) * cells + c];
-                        match rule {
-                            Rule::Geopotential => match cols.lid {
-                                Lid::PTop(lid) if lid < p_top => {
-                                    let w = (target.ln() - p_top.ln()) / (lid.ln() - p_top.ln());
-                                    top + w * (cols.phi_lid[c] - top)
-                                }
-                                _ => top - RD * cols.t_top[c] * (target / p_top).ln(),
-                            },
-                            _ => top,
-                        }
-                    }
-                    _ => f64::NAN,
-                };
-                plane[c] = value as f32;
+            for (c, slot) in plane.iter_mut().enumerate() {
+                *slot = self.mass_level_value(field, rule, cols, l, c) as f32;
             }
         });
         out
+    }
+
+    /// Put geopotential on the plan's levels, reading it between the layer
+    /// interfaces inside the model column.
+    ///
+    /// `phi_stag` is PH + PHB on the `nz + 1` interfaces, `phi_mass` its
+    /// layer means (what [`Plan::apply`] reads), `stencil` where each
+    /// interface sits between the mass levels.  Inside the column (the
+    /// plan's interior and the layer under the lid) a level is interpolated
+    /// in ln p between the two interfaces that straddle it, each
+    /// interface's pressure linear in eta between the mass-level pressures
+    /// and the top one at P_TOP when the file states it.  Below ground, and
+    /// in a column whose interfaces cannot place the level, the value is
+    /// the one [`Plan::apply`] gives.
+    pub fn apply_geopotential_between_interfaces(
+        &self,
+        phi_stag: &[f64],
+        phi_mass: &[f64],
+        stencil: &InterfaceStencil,
+        rule: Rule,
+        cols: &Columns<'_>,
+    ) -> Vec<f32> {
+        let (nz, cells) = (cols.nz, cols.cells);
+        let nl = self.levels_pa.len();
+        let targets: Vec<f64> = self.levels_pa.iter().map(|p| rw_isobaric::ln(*p)).collect();
+        let lid_ln = match cols.lid {
+            Lid::PTop(lid) if lid.is_finite() && lid > 0.0 => Some(rw_isobaric::ln(lid)),
+            _ => None,
+        };
+        let mut out = vec![f32::NAN; nl * cells];
+        // Blocks of columns in parallel, each column's interface pressures
+        // found once for every level; scattered into level-major storage.
+        const BLOCK: usize = 4096;
+        let starts: Vec<usize> = (0..cells).step_by(BLOCK).collect();
+        let blocks: Vec<(usize, usize, Vec<f32>)> = starts
+            .into_par_iter()
+            .map(|start| {
+                let end = (start + BLOCK).min(cells);
+                let n = end - start;
+                let mut block = vec![f32::NAN; nl * n];
+                let mut ln_p = vec![0.0f64; nz + 1];
+                for c in start..end {
+                    let usable =
+                        stencil.interface_ln_pressures(|k| cols.p[k * cells + c], &mut ln_p);
+                    // The model lid is exactly P_TOP when the file says so.
+                    if let (true, Some(lid)) = (usable, lid_ln) {
+                        if lid < ln_p[nz - 1] {
+                            ln_p[nz] = lid;
+                        }
+                    }
+                    for (l, &target) in targets.iter().enumerate() {
+                        let inside = matches!(self.kind[l * cells + c], INTERIOR | ABOVE);
+                        let between = if usable && inside {
+                            interface_bracket(&ln_p, target).and_then(|(below, fraction)| {
+                                let lower = phi_stag[below * cells + c];
+                                let upper = phi_stag[(below + 1) * cells + c];
+                                (lower.is_finite() && upper.is_finite())
+                                    .then(|| lower + (upper - lower) * fraction)
+                            })
+                        } else {
+                            None
+                        };
+                        let value = match between {
+                            Some(value) => value,
+                            None => self.mass_level_value(phi_mass, rule, cols, l, c),
+                        };
+                        block[l * n + (c - start)] = value as f32;
+                    }
+                }
+                (start, n, block)
+            })
+            .collect();
+        for (start, n, block) in blocks {
+            for l in 0..nl {
+                let to = l * cells + start;
+                out[to..to + n].copy_from_slice(&block[l * n..(l + 1) * n]);
+            }
+        }
+        out
+    }
+
+    /// One level of one column from the mass levels, by the plan.
+    fn mass_level_value(&self, field: &[f64], rule: Rule, cols: &Columns<'_>, l: usize, c: usize) -> f64 {
+        let (nz, cells) = (cols.nz, cols.cells);
+        let target = self.levels_pa[l];
+        let i = l * cells + c;
+        match self.kind[i] {
+            INTERIOR => {
+                let k = self.lower[i] as usize;
+                lerp(field[k * cells + c], field[(k + 1) * cells + c], self.weight[i]).unwrap_or(f64::NAN)
+            }
+            BELOW => {
+                let base = ColumnBase {
+                    t_bot: cols.t_bot[c],
+                    p_bot: cols.p[c],
+                    p_sfc: cols.psfc[c],
+                    phi_sfc: cols.phi_sfc[c],
+                };
+                match rule {
+                    Rule::Temperature => ecmwf_temperature(&base, target, &ECMWF_RULE),
+                    Rule::Geopotential => ecmwf_geopotential(&base, target, &ECMWF_RULE),
+                    Rule::Lowest => field[c],
+                }
+            }
+            ABOVE => {
+                let top = field[(nz - 1) * cells + c];
+                let p_top = cols.p[(nz - 1) * cells + c];
+                match rule {
+                    Rule::Geopotential => match cols.lid {
+                        Lid::PTop(lid) if lid < p_top => {
+                            let w = (target.ln() - p_top.ln()) / (lid.ln() - p_top.ln());
+                            top + w * (cols.phi_lid[c] - top)
+                        }
+                        _ => top - RD * cols.t_top[c] * (target / p_top).ln(),
+                    },
+                    _ => top,
+                }
+            }
+            _ => f64::NAN,
+        }
     }
 }
 

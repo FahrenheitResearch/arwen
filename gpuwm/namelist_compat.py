@@ -20,12 +20,15 @@ from gpuwm.namelist_import import (
     MIX_FULL_FIELDS_SUBSTITUTION,
     NUDGING_NOT_IMPLEMENTED,
     THETA_M_ADMITTED,
+    WRF_VERSION_DEFAULT,
+    omitted_use_theta_m,
     WPS_AUXILIARY_SECTIONS,
     _apply_namelist_defaults,
     _run_length_seconds,
     _WPS_DATE_TEMPLATE,
     active_nudging_selectors,
     fine_input_stream_decision,
+    ignored_time_control_reason,
     read_namelist_role,
     theta_m_decision,
 )
@@ -161,10 +164,7 @@ _RUNTIME_OUTPUT_KEYS = {
         # prepare.  io_form_auxinput2 only names the on-disk format of
         # the auxinput2 stream that fine_input_stream = 2 selects; the
         # stream itself is classified above and reported below.
-        "io_form_auxinput2", "override_restart_timers",
-        "iofields_filename", "ignore_iofields_warning",
-        "write_input", "input_outname", "inputout_begin_h",
-        "inputout_end_h", "inputout_interval",
+        "override_restart_timers",
     },
     "physics": {
         "radt", "bldt", "cudt", "isfflx", "ifsnow", "do_radar_ref",
@@ -176,7 +176,7 @@ _RUNTIME_OUTPUT_KEYS = {
         "zdamp", "dampcoef", "khdif", "kvdif", "non_hydrostatic",
         "use_theta_m", "moist_adv_opt", "scalar_adv_opt", "time_step_sound",
         "smdiv", "emdiv", "h_sca_adv_order", "top_lid", "zadvect_implicit",
-        "w_crit_cfl",
+        "w_crit_cfl", "v_sca_adv_order", "v_mom_adv_order",
     },
     "fdda": set(),
     "grib2": set(),
@@ -483,15 +483,24 @@ def analyze_namelists(
     input_path: str | Path,
     *,
     source_top_pressure_pa: float | None = None,
+    wrf_version: str = WRF_VERSION_DEFAULT,
+    wrf_version_source: str | None = None,
 ) -> dict[str, object]:
     """Return a deterministic machine-readable compatibility report.
 
     The function always returns a report for syntactically readable
     namelists.  Unsupported science produces ``verdict=FAIL`` and actionable
     issue objects; caller code decides whether to print or raise.
+
+    ``wrf_version`` names the WRF line the namelist was written for ("3"
+    or "4") and selects the Registry default an omitted
+    ``&dynamics/use_theta_m`` takes (0 on the V3 line operational HRRR
+    runs, 1 on V4).  ``wrf_version_source`` says what chose the line; the
+    ``NAMELIST_DEFAULT_APPLIED`` row an omitted key books names both.
     """
 
     wps_path, input_path = Path(wps_path), Path(input_path)
+    theta_default = omitted_use_theta_m(wrf_version)
     # "Syntactically readable" above is a promise about CONTENT; a file
     # that is not there is a usage mistake, and it reaches the caller as
     # the same one-sentence ValueError `gpuwm import-namelist` raises
@@ -499,6 +508,8 @@ def analyze_namelists(
     wps = read_namelist_role(wps_path, "namelist.wps")
     inp = read_namelist_role(input_path, "namelist.input")
     mix_full_fields_given = "mix_full_fields" in inp.get("dynamics", {})
+    from gpuwm.physics_source_defaults import namelist_physics_defaults
+    named_mix_default = namelist_physics_defaults(input_path).get("mix_full_fields")
     issues: list[CompatibilityIssue] = []
     projection: dict[str, object] | None = None
     # Resolved once: the classification loop and the gate below must
@@ -529,7 +540,9 @@ def analyze_namelists(
                     target = "legacy_stage_only"
                 elif section in {"fdda", "grib2", "namelist_quilt"}:
                     target = "runtime_output_only"
-                elif key in _RUNTIME_OUTPUT_KEYS.get(section, set()):
+                elif (key in _RUNTIME_OUTPUT_KEYS.get(section, set())
+                      or section == "time_control"
+                      and ignored_time_control_reason(key) is not None):
                     target = "runtime_output_only"
                 if target is None:
                     issues.append(_issue(
@@ -615,13 +628,23 @@ def analyze_namelists(
         ))
 
     if 1 <= max_dom <= MAX_DOMAINS:
-        for entry in _apply_namelist_defaults(wps, inp):
+        for entry in _apply_namelist_defaults(
+                wps, inp, wrf_version=wrf_version,
+                wrf_version_source=wrf_version_source):
             issues.append(_issue(
                 "NAMELIST_DEFAULT_APPLIED", f"&{entry.section}/{entry.key}",
                 f"The omitted {entry.role} key takes {entry.value!r}: "
                 + entry.reason + ".",
-                "Nothing to change: the effective value still undergoes "
-                "the geometry and clock cross-checks.",
+                # The one default that differs between the WRF lines: a
+                # namelist read on the wrong line silently gains or loses
+                # the moist-theta substitution, so the row says how to
+                # settle it rather than that nothing is at stake.
+                ("Nothing to change if the namelist was written for that "
+                 "WRF line. Otherwise name its line with --wrf-version, "
+                 "or state use_theta_m in &dynamics."
+                 if (entry.section, entry.key) == ("dynamics", "use_theta_m")
+                 else "Nothing to change: the effective value still "
+                 "undergoes the geometry and clock cross-checks."),
                 severity=SEVERITY_ADVISORY,
             ))
         for key in ("s_we", "s_sn", "s_vert"):
@@ -736,11 +759,12 @@ def analyze_namelists(
     dynamics = inp.get("dynamics", {})
     try:
         theta_values = _integers(
-            _column(dynamics, "use_theta_m", max_dom, default=1),
+            _column(dynamics, "use_theta_m", max_dom, default=theta_default),
             "&dynamics/use_theta_m",
         )
         declaration = (
-            "is omitted, so WRF Registry default 1 applies"
+            f"is omitted, so WRF Registry default {theta_default} applies "
+            f"(the WRF {str(wrf_version).split('.')[0]}.x line)"
             if "use_theta_m" not in dynamics
             else f"resolves to {theta_values!r}"
         )
@@ -794,7 +818,8 @@ def analyze_namelists(
         diff_values = _column(dynamics, "diff_opt", max_dom, default=2)
         perturbation_mix = [
             index + 1 for index, value in enumerate(mix_values)
-            if value is not True and diff_values[index] == 2
+            if named_mix_default is None
+            and value is not True and diff_values[index] == 2
         ]
         if perturbation_mix:
             declaration = (
@@ -807,18 +832,18 @@ def analyze_namelists(
                 f"&dynamics/mix_full_fields {declaration}; domains "
                 f"{perturbation_mix} select WRF's perturbation-field mixing. "
                 + MIX_FULL_FIELDS_SUBSTITUTION,
-                "Nothing to change: the import books this as a declared "
-                "divergence and announces it. Set explicit "
-                "mix_full_fields = .true. on every domain to select the "
-                "same full-field mixing in WRF.",
+                "The import retains the established generic full-field "
+                "resolution. A named source request may preserve a different "
+                "declared logical value; explicit runtime TOML values remain "
+                "independent of generic namelist import.",
                 severity=SEVERITY_ADVISORY,
             ))
     except (KeyError, ValueError) as error:
         gpuwm_reasons.append(
             "gpuwm forecast runtime cannot classify "
             f"&dynamics/mix_full_fields: {error}. Declare "
-            "mix_full_fields = .true. explicitly on every domain. Stock-WRF "
-            "input export remains independent and supported."
+            "mix_full_fields with Fortran logicals on every domain. "
+            "Stock-WRF input export remains independent and supported."
         )
     try:
         smooth_values = _integers(

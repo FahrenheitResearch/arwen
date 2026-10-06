@@ -1,0 +1,23 @@
+# The JEDI build toolchain: JCSDA's public development image (spack-stack 1.9,
+# jedi-mpas-env, gcc 13.3.0, Open MPI 5.0.5), pinned by digest, with one
+# change to its environment and none to any source.
+#
+# The image installs every spack package into one shared view, so
+# /opt/views/view/include carries ESMF 8.8.0's Fortran module files, and that
+# folder is on every bundle target's include path. MPAS carries its own
+# ESMF time manager (src/external/esmf_time_f90) whose modules have the same
+# names; gfortran found the view's esmf_basemod.mod first and MPAS's
+# MeatMod.F90 failed with "Symbol 'esmf_kind_i8' has no IMPLICIT type"
+# (MEASURED 2026-10-03). On NOAA's machines each spack-stack package has its
+# own prefix, so the two never meet. Here the view's links to ESMF's .mod
+# files move to a side folder; ESMF's own prefix is untouched, and nothing in
+# the MPAS-only bundle links ESMF.
+#
+#   podman build -f Containerfile.toolchain -t rdasapp-toolchain:jedi-1.9 .
+FROM docker.io/jcsda/docker-gnu-openmpi-dev@sha256:69d7552277b2205903e8f3b784b8b93a11f576dd56f76209291809ab820541e9
+RUN set -e; esmf=$(ls -d /opt/software/linux-ubuntu24.04-x86_64/gcc-13.3.0/esmf-*); \
+    mkdir -p /opt/views/view/include-esmf-hidden; n=0; \
+    for f in "$esmf"/include/*.mod; do b=$(basename "$f"); \
+      if [ -L "/opt/views/view/include/$b" ]; then mv "/opt/views/view/include/$b" /opt/views/view/include-esmf-hidden/; n=$((n+1)); fi; \
+    done; echo "moved $n ESMF module links out of the shared include folder"; \
+    test ! -e /opt/views/view/include/esmf_basemod.mod

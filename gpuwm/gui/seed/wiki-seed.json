@@ -10980,9 +10980,9 @@
     "dataset-ibtracs"
    ],
    "kind": "rule",
-   "method": "Storms of IBTrACS since 1980 picked one by one when the wiki was built, one or more from each basin. Rarity counts storms of the same basin whose highest wind is at least as high, peaking within a month of the same time of year.",
+   "method": "Storms of IBTrACS since 1980 picked one by one when the Weather Library was built, one or more from each basin. Rarity counts storms of the same basin whose highest wind is at least as high, peaking within a month of the same time of year.",
    "retrieved": "2026-09-25",
-   "title": "How tropical cyclones are chosen for the wiki"
+   "title": "How tropical cyclones are chosen for the Weather Library"
   },
   "rule-select-tornado": {
    "code": "tools/wiki_seed/build_seed.py: tornadoes",
@@ -10991,9 +10991,9 @@
     "dataset-spc"
    ],
    "kind": "rule",
-   "method": "Rows of the SPC tornado table picked one by one when the wiki was built. Rarity counts tornadoes that start in the same state, in the same three-month season, rated at least as high.",
+   "method": "Rows of the SPC tornado table picked one by one when the Weather Library was built. Rarity counts tornadoes that start in the same state, in the same three-month season, rated at least as high.",
    "retrieved": "2026-09-25",
-   "title": "How tornadoes are chosen for the wiki"
+   "title": "How tornadoes are chosen for the Weather Library"
   },
   "spc-1972-114": {
    "dataset": "dataset-spc",

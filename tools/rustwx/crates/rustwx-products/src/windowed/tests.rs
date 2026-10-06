@@ -224,6 +224,95 @@ fn windowed_render_request_uses_modern_map_chrome() {
     );
     assert!(render_request.domain_frame.is_some());
     assert!(render_request.projected_domain.is_some());
+    // A Lambert grid has no inverse raster, and the request carries none.
+    assert!(render_request.inverse_raster_projection.is_none());
+}
+
+/// A regular lat/lon grid's map carries an inverse-raster projection, and
+/// the windowed panel must draw through it exactly as the direct lane does:
+/// without it the field was drawn as forward-projected contour polygons,
+/// which closed rain bands across the whole map at the date line and framed
+/// a regional crop to the strip inscribed in its curved footprint.
+#[test]
+fn windowed_render_request_carries_the_maps_inverse_raster_projection() {
+    let shape = rustwx_core::GridShape::new(2, 2).unwrap();
+    let grid = rustwx_core::LatLonGrid::new(
+        shape,
+        vec![10.0, 10.0, 11.0, 11.0],
+        vec![-100.0, -99.0, -100.0, -99.0],
+    )
+    .unwrap();
+    let field = rustwx_core::Field2D::new(
+        rustwx_core::ProductKey::named("qpf_6h"),
+        "in",
+        grid,
+        vec![0.1, 0.2, 0.3, 0.4],
+    )
+    .unwrap();
+    let computed = crate::windowed_decoder::ComputedWindowedField {
+        field,
+        title: "6-h QPF".to_string(),
+        metadata: HrrrWindowedProductMetadata {
+            strategy: "test window".to_string(),
+            contributing_forecast_hours: vec![0, 6],
+            window_hours: Some(6),
+        },
+        scale: rustwx_render::ColorScale::Discrete(crate::windowed_decoder::qpf_scale()),
+    };
+    let request = HrrrWindowedBatchRequest {
+        model: ModelId::Gfs,
+        date_yyyymmdd: "20260920".to_string(),
+        cycle_override_utc: Some(0),
+        forecast_hour: 6,
+        source: SourceId::Nomads,
+        domain: DomainSpec::new("global", (-180.0, 180.0, -90.0, 90.0)),
+        out_dir: PathBuf::new(),
+        cache_root: PathBuf::new(),
+        use_cache: false,
+        products: vec![HrrrWindowedProduct::Qpf6h],
+        output_width: 1200,
+        output_height: 700,
+        png_compression: PngCompressionMode::Default,
+        place_label_overlay: None,
+        subtitle_left_suffix: None,
+        subtitle_right_override: None,
+        title_provenance: TitleProvenance::default(),
+    };
+    let inverse = rustwx_render::InverseRasterProjection {
+        projection: rustwx_render::ProjectionSpec::Robinson {
+            central_meridian_deg: 0.0,
+        },
+        reference_latitude_deg: None,
+        reference_longitude_deg: None,
+        clip_bounds: None,
+    };
+    let projected = ProjectedMap {
+        projected_x: vec![0.0, 1.0, 0.0, 1.0],
+        projected_y: vec![0.0, 0.0, 1.0, 1.0],
+        extent: rustwx_render::ProjectedExtent {
+            x_min: 0.0,
+            x_max: 1.0,
+            y_min: 0.0,
+            y_max: 1.0,
+        },
+        lines: Vec::new(),
+        polygons: Vec::new(),
+        inverse_raster_projection: Some(inverse.clone()),
+    };
+
+    let render_request = build_windowed_render_request(
+        HrrrWindowedProduct::Qpf6h,
+        &computed,
+        &request,
+        &projected,
+        "20260920",
+        0,
+        6,
+        ModelId::Gfs,
+        SourceId::Nomads,
+    );
+
+    assert_eq!(render_request.inverse_raster_projection, Some(inverse));
 }
 
 #[test]

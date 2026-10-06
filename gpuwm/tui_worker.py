@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import sys
 import time
 import traceback
@@ -124,6 +125,11 @@ def main(argv: list[str] | None = None) -> int:
     stderr = _StderrTail(sys.stderr)
     sys.stderr = stderr
     try:
+        if os.name != "nt":
+            # A detached launcher can pass an ignored SIGINT to its child.
+            # Restore graceful stop before publishing readiness; CLI children
+            # inherit the default interrupt disposition when they exec.
+            signal.signal(signal.SIGINT, signal.default_int_handler)
         if args.windows_job:
             _join_windows_job(args.windows_job)
         with (directory / "process.json").open("x", encoding="utf-8") as process:

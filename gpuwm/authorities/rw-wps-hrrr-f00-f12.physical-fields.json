@@ -208,6 +208,14 @@
         0
       ],
       "1"
+    ],
+    "VEGFRA": [
+      [
+        2,
+        0,
+        4
+      ],
+      "percent"
     ]
   },
   "vertical": {
@@ -610,6 +618,18 @@
         "water_temperature_receipt"
       ],
       "operation": "Dimensionless provider IDs from gpuwm.ingest.water_temperature.SOURCE_NAMES; categorical, not a temperature."
+    },
+    "field__VEGFRA": {
+      "units": "percent",
+      "dimensions": [
+        "y",
+        "x"
+      ],
+      "basis": "scalar",
+      "source_fields": [
+        "VEGFRA"
+      ],
+      "operation": "Bilinear interpolation of analyzed vegetation fraction in the source projection; percent units unchanged."
     }
   },
   "evidence": {

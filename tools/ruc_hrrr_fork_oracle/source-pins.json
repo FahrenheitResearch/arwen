@@ -1,0 +1,36 @@
+{
+  "schema": "gpuwm-ruc-cpu-column-oracle-v1",
+  "repository": "https://github.com/NOAA-EMC/HRRR",
+  "tag": "v4.1.21",
+  "source_is_unmodified": true,
+  "interface": ["EM_CORE=1", "wrf_chem=0", "NMM_CORE=0"],
+  "sources": [
+    {
+      "path": "phys/module_sf_ruclsm.F",
+      "url": "https://raw.githubusercontent.com/NOAA-EMC/HRRR/v4.1.21/sorc/hrrr_wrfarw.fd/WRFV3.9/phys/module_sf_ruclsm.F",
+      "sha256": "cb2b54114afc247e16ea03d547a510b19842e2ee012da1202eba19105bef6aab"
+    },
+    {
+      "path": "share/module_model_constants.F",
+      "url": "https://raw.githubusercontent.com/NOAA-EMC/HRRR/v4.1.21/sorc/hrrr_wrfarw.fd/WRFV3.9/share/module_model_constants.F",
+      "sha256": "0d0ee7d243fe673288efafcdcdc470ee028ad8d083648f12225ce2d168f8e87c"
+    }
+  ],
+  "operational_tables": [
+    {"path": "run/VEGPARM.TBL", "url": "https://raw.githubusercontent.com/NOAA-EMC/HRRR/v4.1.21/parm/conus/hrrr_run_VEGPARM.TBL", "sha256": "1a13be6f04332dd31dcd1d90a54d00f1ed7c7537722d30fdf2d1081ae66dcd76"},
+    {"path": "run/SOILPARM.TBL", "url": "https://raw.githubusercontent.com/NOAA-EMC/HRRR/v4.1.21/parm/conus/hrrr_run_SOILPARM.TBL", "sha256": "b143d644c1ce118634270a25d08fea7e32490268142c22a151631fd76f69f920"},
+    {"path": "run/GENPARM.TBL", "url": "https://raw.githubusercontent.com/NOAA-EMC/HRRR/v4.1.21/parm/conus/hrrr_run_GENPARM.TBL", "sha256": "9c02832a0e4a2ecaf47fcee485539aad95cd732c379c5c258161a88eb3d25ea2"}
+  ],
+  "ifort_build_commands": [
+    "ifort -c -O0 -fp-model precise -free -fpp -extend-source -DNMM_CORE=0 <source>/share/module_model_constants.F",
+    "ifort -c -O0 -fp-model precise -free -fpp -extend-source <tool>/column_stubs.F90",
+    "ifort -c -O0 -fp-model precise -free -fpp -extend-source -DEM_CORE=1 -Dwrf_chem=0 <source>/phys/module_sf_ruclsm.F",
+    "ifort -c -O0 -fp-model precise -free -extend-source run_real.F90",
+    "ifort -o run_real_ifort module_model_constants.o column_stubs.o module_sf_ruclsm.o run_real.o",
+    "./run_real_ifort oracle-real-intel.csv"
+  ],
+  "measured_compilers": {"ifort": "2021.1 Beta 20201112", "gfortran": "15.2.0"},
+  "stubs": "Only messaging, debugging, and single-process communication. The model constants and RUC arithmetic are compiled unchanged.",
+  "column_restore": "ruclsminit loads module parameter tables, then every captured argument is restored before LSMRUC.",
+  "sampling": "Snow-free land columns at wetness quantiles per land class. Sampled means are not population-weighted grid means."
+}

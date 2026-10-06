@@ -39,6 +39,7 @@ def _profile(
     provenance_role: str | None = None,
     composition_state: str = "composed",
     contributing_mappings: Mapping[str, Mapping[str, str]] | None = None,
+    contributing_provenances: Mapping[str, Mapping[str, str]] | None = None,
     input_normalizer: str | None = None,
     normalization: str | None = None,
 ) -> Mapping[str, object]:
@@ -120,6 +121,15 @@ def _profile(
         contributing[str(role)] = MappingProxyType({
             "file": str(pin["file"]), "sha256": str(pin["sha256"]),
         })
+    provenance_pins: dict[str, Mapping[str, str]] = {}
+    for role, pin in (contributing_provenances or {}).items():
+        if composition_state != "composed" or set(pin) != {"file", "sha256"}:
+            raise ValueError(
+                f"profile {stem} contributing provenance {role!r} needs a "
+                "composed profile and exactly a file name and its sha256")
+        provenance_pins[str(role)] = MappingProxyType({
+            "file": str(pin["file"]), "sha256": str(pin["sha256"]),
+        })
     return MappingProxyType({
         "source_format": source_format,
         "files": MappingProxyType({
@@ -139,6 +149,8 @@ def _profile(
         "provenance_role": provenance_role,
         "composition_state": composition_state,
         "contributing_mappings": MappingProxyType(contributing),
+        **({"contributing_provenances": MappingProxyType(provenance_pins)}
+           if provenance_pins else {}),
         # Absent for a profile whose source publishes bytes the mapped engine
         # already reads: their public declarations remain unchanged.
         **({"input_normalizer": input_normalizer} if input_normalizer else {}),
@@ -204,9 +216,9 @@ _PACKAGED_PROFILES = MappingProxyType({
     "20crv3-netcdf-v1": _profile(
         "rw-wps-20crv3-netcdf",
         source_format="netcdf",
-        mapping="76520d6a6181c71135c350233c4266ce5ae756c258feb98883f5aa129caaa6e1",
+        mapping="6d7e33c944e36a1d23f621cd8ba08bb3ac46f7b5ce5ea94584ca5490c6de74ec",
         composition="2c243fe4c4dba1c8f47178f2be583f3a20148d54d77101ee3421d1824d10b1c5",
-        provenance="8daeb53502d28483a049936262910004cfda17aa5030cc3066d3bd01413d3066",
+        provenance="28f6dfbb13b866ec336d0532fd731ffb2d49b4990c2f8a7204a70058339a99af",
         data_role="twentycrv3_netcdf_recovered_invariant",
         provenance_role="twentycrv3_netcdf_recovered_invariant_provenance",
     ),
@@ -222,11 +234,23 @@ _PACKAGED_PROFILES = MappingProxyType({
     "hrrr-prs-grib2-v1": _profile(
         "rw-wps-hrrr-prs-grib2",
         source_format="grib2",
-        mapping="1bb2dd3f91bb0c645d4256cc23d7827bd7f6ba17eaf8da4d4fa4caa590ac8d61",
-        composition="2a2bb75714428cdb9b051303e53d91c88f3c1b48a798339bb9244a6b412e392e",
-        provenance="f2aade12671166959e42cacd357bc54359af4d3034eedff81630b26646eb4b8c",
+        mapping="770b747a0a8eb62b281fe51a5853a4fa82a43512079615a60f1c385f9713ee0c",
+        composition="7e1739721286ed0c2bf0c44ef480bc80cf3a6c0f5fb032e46ae5c2a423544eb4",
+        provenance="c7f2ea4142fe09c687f2b1ac0f4d4c462cb55398bfe5149fe9008d9d03ff2cc0",
         data_role="hrrr_prs_in_band_surface",
         provenance_role="hrrr_prs_in_band_surface_provenance",
+        contributing_provenances={
+            "vegetation_surface_provenance": {
+                "file": "rw-wps-hrrr-surface-vegetation-grib2.provenance.json",
+                "sha256": "af36e1c31cc24813294a9af015b894529f5b9f3beb6103b3ae593b677763f566",
+            },
+        },
+        contributing_mappings={
+            "vegetation_surface_mapping": {
+                "file": "rw-wps-hrrr-surface-vegetation-grib2.mapping.json",
+                "sha256": "adefc1d166ab4932616d91e206542e527b9c38e9a7e4e72ba8e04a9404049f8a",
+            },
+        },
     ),
     # RAP's awp130bgrb product (13 km CONUS Lambert, 50 native hybrid
     # levels): the complete state, in-band terrain and the nine-node RUC
@@ -243,15 +267,25 @@ _PACKAGED_PROFILES = MappingProxyType({
     # nine-node soil column come from the same cycle's wrfprs analysis.
     "hrrr-native-grib2-v1": _profile(
         "rw-wps-hrrr-native-grib2", source_format="grib2",
-        mapping="8b6a51db0ef885b23287013f2d6beafd64c738bad46629584195fc384e9ff569",
-        composition="e0b85e8e41c7281ddfbfed42d5b5144411063ad2d76d2970e1df57d914ba2ef8",
-        provenance="4af5ef7fa316955c00115294518850010d097d8a0ecef5884aeb613fcd477b52",
+        mapping="648778426cbaf852b95ae8945f8152c2915bc5bdf15ba28d05c9af925420e05f",
+        composition="503852a8bfe955be9a844bc63de6d11bc6896a3817c15689bc30a5dc97ef427b",
+        provenance="99c6f704b6c783bbd70672bcf2ecc23752a82a6d902a03f05b16c774d3ca4c77",
         data_role="soil_surface_data",
         provenance_role="soil_surface_provenance",
+        contributing_provenances={
+            "vegetation_surface_provenance": {
+                "file": "rw-wps-hrrr-surface-vegetation-grib2.provenance.json",
+                "sha256": "af36e1c31cc24813294a9af015b894529f5b9f3beb6103b3ae593b677763f566",
+            },
+        },
         contributing_mappings={
             "soil_surface_mapping": {
                 "file": "rw-wps-hrrr-prs-grib2.mapping.json",
-                "sha256": "1bb2dd3f91bb0c645d4256cc23d7827bd7f6ba17eaf8da4d4fa4caa590ac8d61",
+                "sha256": "770b747a0a8eb62b281fe51a5853a4fa82a43512079615a60f1c385f9713ee0c",
+            },
+            "vegetation_surface_mapping": {
+                "file": "rw-wps-hrrr-surface-vegetation-grib2.mapping.json",
+                "sha256": "adefc1d166ab4932616d91e206542e527b9c38e9a7e4e72ba8e04a9404049f8a",
             },
         },
     ),
@@ -666,7 +700,7 @@ _PACKAGED_PHYSICAL_CONTRACTS = MappingProxyType({
     }),
     "hrrr-f00-f12-physical-fields-v1": MappingProxyType({
         "file": "rw-wps-hrrr-f00-f12.physical-fields.json",
-        "sha256": "18813958f53f9028198c434bfb26d240d83811df097d80c3a393852f564a608a",
+        "sha256": "80358e88924cbf4920a4a7f85cd7ce7b852be8749e77218c4a9c26c3eb4be8e9",
     }),
 })
 
@@ -848,6 +882,36 @@ def packaged_contributing_mappings(profile_id: str) -> Mapping[str, Path]:
     return MappingProxyType(resolved)
 
 
+def packaged_provenance_files(profile_id: str) -> Mapping[str, Path]:
+    """The pinned provenance document of every composition role.
+
+    A contributor can carry its own evidence without aliasing another
+    authority file. Undeclared contributors retain the primary evidence.
+    """
+    profile = packaged_profile(profile_id)
+    primary = packaged_authorities(profile_id)["provenance"]
+    composition = packaged_composition(profile_id)
+    roles = {str(profile["provenance_role"]), *(
+        str(binding["provenance_role"])
+        for binding in composition.get("field_sources", {}).values())}
+    declared = profile.get("contributing_provenances", {})
+    if set(declared) - roles:
+        raise ValueError("packaged contributing provenance names a role the composition does not use")
+    result = {}
+    for role in sorted(roles):
+        pin = declared.get(role)
+        if pin is None:
+            result[role] = primary
+            continue
+        path = (_AUTHORITY_ROOT / pin["file"]).resolve()
+        if hashlib.sha256(path.read_bytes()).hexdigest() != pin["sha256"]:
+            raise RuntimeError(
+                f"packaged {profile_id} provenance {role!r} hash differs; "
+                "other evidence must not be attributed to the contributor")
+        result[role] = path
+    return MappingProxyType(result)
+
+
 def packaged_authority_sha256(profile_id: str) -> Mapping[str, str]:
     """One profile's immutable SHA-256 contract, without touching disk."""
 
@@ -862,6 +926,25 @@ def packaged_contributing_sha256(profile_id: str) -> Mapping[str, str]:
         profile["contributing_mappings"])       # type: ignore[assignment]
     return MappingProxyType({
         role: str(row["sha256"]) for role, row in declared.items()
+    })
+
+
+def packaged_contributing_provenance_sha256(profile_id: str) -> Mapping[str, str]:
+    """The contributor provenance pin table, without touching the filesystem.
+
+    Keyed by composition provenance role: exactly the roles whose own
+    document :func:`gpuwm.initial_source.decode_initial_analysis` retains as
+    ``<role>.json`` evidence beside the primary provenance.  Empty for a
+    profile whose contributors all carry the primary provenance document.
+    """
+
+    profile = packaged_profile(profile_id)
+    primary = profile["files"]["provenance"]            # type: ignore[index]
+    declared: Mapping[str, Mapping[str, str]] = profile.get(
+        "contributing_provenances", {})                 # type: ignore[assignment]
+    return MappingProxyType({
+        role: str(row["sha256"]) for role, row in declared.items()
+        if row["file"] != primary
     })
 
 

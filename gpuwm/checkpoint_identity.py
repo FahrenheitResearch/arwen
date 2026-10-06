@@ -242,7 +242,23 @@ LAND_SURFACE_ALGORITHM_IDENTITIES = {
     # which moves 2.5 to 8 times more water up into a dry top soil level.
     # That changes the soil water and surface fluxes of every RUC run, so
     # a v2 checkpoint may not continue under v3.
-    3: "ruc-lsm-wrf-v4.6.1-v3-soilprop-by-lineage",
+    # v4: the post-SFCTMP irrigation takes the WRF v4.0-4.5 crop-fraction-
+    # scaled floor by default (ruc_irrigation = "wrf_45",
+    # gpuwm/core/ruc_mosaic.py), whatever mosaic_lu says; v3 ran the v4.6.1
+    # relaxation under mosaic_lu = 1 and nothing without it.  That changes
+    # the root-zone soil water of every RUC run with cropland, so a v3
+    # checkpoint may not continue under v4.
+    # v5: the snow scheme takes the WRF v4.0-4.5 form the operational
+    # RAP/HRRR branch carries by default (ruc_snow = "wrf_45",
+    # gpuwm/core/ruc_tier.py); v4 ran the v4.6.1 snow conductivity, cover,
+    # melt and albedo.  That changes the snow pack and the surface over it
+    # in every RUC run with snow, so a v4 checkpoint may not continue under
+    # v5.
+    # v6 restores generic irrigation and snow to wrf_461. Unpublished v4/v5
+    # headers omitted wrf_45, so interpreting those missing selectors as the
+    # restored defaults would change their continuing trajectory. The new
+    # identity refuses those checkpoints before restoring live forecast arrays.
+    3: "ruc-lsm-wrf-v4.6.1-v6-default-selection",
     4: "noahmp-lsm-wrf-v4.6.1-v1",
 }
 PBL_ALGORITHM_IDENTITIES = {

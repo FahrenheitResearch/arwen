@@ -874,12 +874,29 @@ def preprocess_ruc_soil(
             surface.deep_soil_temperature)[:, rebuilt_columns].astype(
                 soil_temperature.dtype)
 
+    soil_moisture = columns.soil_moisture
+    liquid_moisture = np.array(columns.soil_moisture, copy=True)
+    tsk = surface.tsk
+    if fractional_seaice:
+        sea_water = None
+        if water_temperature is not None:
+            sea_water = water_temperature
+        elif fields.get("SST") is not None:
+            sea_water = fields["SST"]
+        tsk, soil_temperature, soil_moisture, liquid_moisture = (
+            fractional_sea_ice_post(
+                xice=surface.xice, tsk=tsk, sst=sea_water,
+                deep_soil_temperature=surface.deep_soil_temperature,
+                soil_temperature=soil_temperature,
+                soil_moisture=soil_moisture,
+                liquid_moisture=liquid_moisture))
+
     return RucSoilState(
         soil_temperature=soil_temperature,
-        soil_moisture=columns.soil_moisture,
-        liquid_moisture=np.array(columns.soil_moisture, copy=True),
+        soil_moisture=soil_moisture,
+        liquid_moisture=liquid_moisture,
         deep_soil_temperature=surface.deep_soil_temperature,
-        tsk=surface.tsk,
+        tsk=tsk,
         landmask=surface.landmask,
         xland=surface.xland,
         xice=surface.xice,
@@ -890,6 +907,64 @@ def preprocess_ruc_soil(
         soil_texture_downscale=downscale_receipt,
         soil_temperature_repair=temperature_repair,
     )
+
+
+def fractional_sea_ice_post(*, xice, tsk, sst, deep_soil_temperature,
+                            soil_temperature, soil_moisture, liquid_moisture):
+    """real.exe's RUC sea-ice column under ``fractional_seaice = 1``.
+
+    ``share/module_soil_pre.F`` adjust_for_seaice_post, the RUCLSMSCHEME arm
+    of the HRRR v4.1.21 fork (:337-391): every cell left holding ice (the
+    Noah surface call above keeps the fraction at ``xice >= 0.02`` and
+    zeroes the rest, :392-393) takes
+
+    * the blended skin temperature (:357-363)
+      ``TSK = XICE*min(271.4, TSK) + (1 - XICE)*SST``, with ``SST`` where the
+      input has one (``flag_sst = 1``) and ``TSK`` itself where it has none;
+    * the ice column (:375-385): ``TSLB(1) = TSK``, ``TSLB(n) = TMN`` and,
+      for the levels between, the quarter-layer midpoints of a 3 m column,
+      ``mid = (3/n)/4 + (k-2)*(3/n)``, ``TSLB(k) = ((3 - mid)*TSK +
+      mid*TMN)/3``;
+    * ``SMOIS = 1`` and ``SH2O = 0`` on every level (:387-390).
+
+    float32 throughout, as real.exe's REAL arithmetic.  A cell whose SST is
+    missing or outside 170..400 K blends with its own TSK, which is the
+    ``flag_sst = 0`` arm for that cell.  Only called under
+    ``fractional_seaice = 1``: at the default the binary arm is unchanged.
+    """
+    f32 = np.float32
+    xice = np.asarray(xice, dtype=f32)
+    ice = xice > f32(0.0)
+    tsk = np.array(tsk, dtype=f32, copy=True)
+    if sst is None:
+        water = tsk
+    else:
+        candidate = np.asarray(sst, dtype=f32)
+        valid = (np.isfinite(candidate) & (candidate >= f32(170.0))
+                 & (candidate <= f32(400.0)))
+        water = np.where(valid, candidate, tsk).astype(f32)
+    blended = (xice * np.minimum(f32(271.4), tsk)
+               + (f32(1.0) - xice) * water).astype(f32)
+    tsk = np.where(ice, blended, tsk).astype(f32)
+    soil_temperature = np.array(soil_temperature, copy=True)
+    soil_moisture = np.array(soil_moisture, copy=True)
+    liquid_moisture = np.array(liquid_moisture, copy=True)
+    if not np.any(ice):
+        return tsk, soil_temperature, soil_moisture, liquid_moisture
+    n = soil_temperature.shape[0]
+    tmn = np.asarray(deep_soil_temperature, dtype=f32)
+    total = f32(3.0)
+    layer = total / f32(n)
+    column = np.empty((n,) + tsk.shape, dtype=f32)
+    column[0] = tsk
+    column[n - 1] = tmn
+    for k in range(2, n):
+        mid = layer / f32(4.0) + f32(k - 2) * layer
+        column[k - 1] = ((total - mid) * tsk + mid * tmn) / total
+    soil_temperature[:, ice] = column[:, ice].astype(soil_temperature.dtype)
+    soil_moisture[:, ice] = 1.0
+    liquid_moisture[:, ice] = 0.0
+    return tsk, soil_temperature, soil_moisture, liquid_moisture
 
 
 def preprocess_land_surface_soil(

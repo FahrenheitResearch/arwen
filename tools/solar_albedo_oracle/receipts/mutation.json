@@ -1,0 +1,11 @@
+{
+  "source_sha256": "3d6378f2e1fe4e7aa487cf4e05ad47a68714cadd3dd79c9394a12897840fb433",
+  "mutation_sha256": "8df387ac747c54c740f49bffb1858779e12a49684daedc6d11071282688dc538",
+  "restored_sha256": "3d6378f2e1fe4e7aa487cf4e05ad47a68714cadd3dd79c9394a12897840fb433",
+  "fixture_sha256": "b3f3248163895ac5be784787b2a4eaae87f888608c0c92ca4fe87d82784ca4bb",
+  "mutation": "normalization numerator 1.0 changed to 0.9",
+  "mutation_detected": true,
+  "changed_words": 1220,
+  "restored_changed_words": 0,
+  "production_source_unchanged": true
+}

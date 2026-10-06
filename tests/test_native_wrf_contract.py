@@ -645,6 +645,7 @@ def test_native_static_contract_is_exact_modis_noah_and_preserves_geometry():
     [
         ("SOILTEMP", np.ones((7, 3, 4)), "SOILTEMP has shape"),
         ("GREENFRAC", np.ones((13, 3, 4)), "GREENFRAC has shape"),
+        ("SLOPECAT", np.ones((7, 3, 4)), "SLOPECAT has shape"),
         ("LANDMASK", np.full((3, 4), 0.5), "LANDMASK must be exactly binary"),
     ],
 )
@@ -667,7 +668,8 @@ def test_native_static_contract_rejects_persisted_geometry_drift():
         validate_native_static_fields(fields, grid, 3, 4)
 
 
-def test_native_static_cache_reuse_cycle_is_byte_identical(tmp_path):
+@pytest.mark.parametrize("include_slope", [False, True])
+def test_native_static_cache_reuse_cycle_is_byte_identical(tmp_path, include_slope):
     """A reused cache must republish the same NPZ bytes it was loaded from.
 
     This is what makes cross-cycle static reuse a scheduling change rather
@@ -680,6 +682,8 @@ def test_native_static_cache_reuse_cycle_is_byte_identical(tmp_path):
     grid = _grid()
     cfg = SimpleNamespace(nx=4, ny=3, nz=2, dx=12_000.0, dy=12_000.0)
     built = _complete_native_static(grid)
+    if include_slope:
+        built["SLOPECAT"] = 1.0 + (np.arange(12).reshape(3, 4) % 9)
 
     # Cycle 1: build geography, publish the cache and its receipt.
     first_path = tmp_path / "native-static.npz"

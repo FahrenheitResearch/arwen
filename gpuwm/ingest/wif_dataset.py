@@ -57,6 +57,10 @@ from gpuwm.core.thompson_contract import TableAsset
 #: ``constants_name`` names it and as every WRF tree carries it.
 WIF_DATASET_FILE = "QNWFA_QNIFA_SIGMA_MONTHLY.dat"
 
+# The fixed input archive published by the source's aerosol documentation.
+# The decompressed file is checked against WIF_DATASET_ASSET before install.
+WIF_DATASET_DOWNLOAD_BASE = "https://www2.mmm.ucar.edu/wrf/src/wps_files"
+
 #: The pin.  Measured 2026-08-27 on the reference host from two
 #: independently staged copies (``~/.gpuwm/wif`` and the lane's own
 #: staged ``wif-data`` tree), which agree byte for byte; it is the same
@@ -176,8 +180,8 @@ def _missing_dataset_message(candidates, *, explicit: bool) -> str:
         "  how to supply it: `gpuwm fetch-tables --wif --from DIR` stages "
         "it from the WRF/WPS tree that already has it into "
         f"{user_wif_data_root()} (exact size + SHA-256 verified BEFORE "
-        "install), `gpuwm fetch-tables --wif` downloads it from the "
-        "release asset base, or set "
+        "install), `gpuwm fetch-tables --wif` downloads and verifies the "
+        "fixed source archive, or set "
         f"{WIF_DATASET_PATH_ENV} to its full path, or set "
         f"{WIF_DATASET_ROOT_ENV} to a directory containing it, or set "
         "wif_climatology_path in the config.\n"
@@ -288,6 +292,7 @@ __all__ = [
     "MissingWifClimatologyDataset",
     "WIF_DATASET_ASSET",
     "WIF_DATASET_BYTES",
+    "WIF_DATASET_DOWNLOAD_BASE",
     "WIF_DATASET_FILE",
     "WIF_DATASET_PATH_ENV",
     "WIF_DATASET_REDISTRIBUTED",

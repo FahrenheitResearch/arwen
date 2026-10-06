@@ -8,9 +8,10 @@
 //                    time-t scalar q0 (WRF field_old) and the correction
 //                    F_corr = F_high - F_upwind1, where F_high is bitwise
 //                    the unlimited flux of advection.cu (5th-order upwind
-//                    horizontal / 3rd-order vertical with 2nd-order faces
-//                    one cell in from the eta boundaries) evaluated on the
-//                    RK stage estimate q.  Upwind Courant numbers divide by
+//                    horizontal; vertical WRF vert_order ladder selected
+//                    by the trailing vorder argument, 3 or 5, with
+//                    2nd-order faces one cell in from the eta boundaries)
+//                    evaluated on the RK stage estimate q.  Upwind Courant numbers divide by
 //                    the hybrid face mass c1h*<mu>_face + c2h (mut = WRF
 //                    muts, the post-acoustic stage mass); the eta face
 //                    spacing dz = 2/(rdnw[kf]+rdnw[kf-1]) is negative, so
@@ -109,6 +110,27 @@ real pd_flux3(real qm2, real qm1, real q0, real qp1, real vel)
 #endif
 }
 
+// Vertical 5th-order face flux: WRF advect_scalar_pd's flux5 with -vel
+// (HRRR fork module_advect_em.F F:8412-8413, the vert_order == 5 arm), the
+// Omega-signed dissipation of pd_flux3 above; mirrors advection.cu flux5v.
+__device__ __forceinline__
+real pd_flux5v(real qm3, real qm2, real qm1, real q0, real qp1, real qp2,
+               real vel)
+{
+#if GPUWM_WRF_EXACT_C_ADVECTION
+    real center = 0.6166666746139526f * (q0 + qm1)
+                - 0.13333334028720856f * (qp1 + qm2)
+                + 0.01666666753590107f * (qp2 + qm3);
+    real dissipation = copysignf(1.0f, vel) * 0.01666666753590107f
+        * ((qp2 - qm3) - 5.0f * (qp1 - qm2) + 10.0f * (q0 - qm1));
+    return vel * (center + dissipation);
+#else
+    return __fdiv_rn((vel * (37.0f * (q0 + qm1) - 8.0f * (qp1 + qm2) + (qp2 + qm3))
+            + fabsf(vel) * (10.0f * (q0 - qm1) - 5.0f * (qp1 - qm2)
+                            + (qp2 - qm3))), 60.0f);
+#endif
+}
+
 // Horizontal 3rd-order face flux (WRF flux3 with the flux5 upwinding
 // sign) -- used two faces in from a specified/open lateral boundary.
 __device__ __forceinline__
@@ -129,16 +151,26 @@ real pd_flux3h(real qm2, real qm1, real q0, real qp1, real vel)
 // WRF's stretched-grid fnm/fnp weights at the 2nd-order eta faces
 // (advect_scalar_pd fqz = rom*(fzm(k)*field(k)+fzp(k)*field(k-1)) at
 // k=kts+1 and k=ktf, module_advect_em.F:7631/:7641); 0.5/0.5 on a uniform
-// grid, bitwise.
+// grid, bitwise.  Then the vorder ladder of advection.cu zface_half:
+// 3 is pd_flux3 between; 5 is WRF's vert_order == 5 arm of advect_scalar_pd
+// (HRRR fork F:8378-8501): pd_flux3 at faces 2 and nz-2 (k = kts+2, ktf-1),
+// pd_flux5v at faces 3 .. nz-3 (k = kts+3 .. ktf-2).
 __device__ __forceinline__
 real pd_zface_half(const real* q, real vel, int kf, int j, int i,
                    int nz, int ny, int nxs,
-                   const real* fnm, const real* fnp)
+                   const real* fnm, const real* fnp, int vorder)
 {
     if (kf == 0 || kf == nz) return 0.0f;
     if (kf == 1 || kf == nz - 1)
         return vel * (fnm[kf] * q[I3S(kf, j, i, ny, nxs)]
                       + fnp[kf] * q[I3S(kf - 1, j, i, ny, nxs)]);
+    if (vorder == 5 && kf >= 3 && kf <= nz - 3)
+        return pd_flux5v(q[I3S(kf - 3, j, i, ny, nxs)],
+                         q[I3S(kf - 2, j, i, ny, nxs)],
+                         q[I3S(kf - 1, j, i, ny, nxs)],
+                         q[I3S(kf,     j, i, ny, nxs)],
+                         q[I3S(kf + 1, j, i, ny, nxs)],
+                         q[I3S(kf + 2, j, i, ny, nxs)], vel);
     return pd_flux3(q[I3S(kf - 2, j, i, ny, nxs)],
                     q[I3S(kf - 1, j, i, ny, nxs)],
                     q[I3S(kf,     j, i, ny, nxs)],
@@ -180,7 +212,7 @@ void pd_fluxes(const real* __restrict__ q,      // (nz, ny, nx) stage estimate
                real* __restrict__ fzl,          // (nz+1, ny, nx)
                real* __restrict__ fzc,          // (nz+1, ny, nx)
                int nz, int ny, int nx, int has_msf,
-               int open_x, int open_y)
+               int open_x, int open_y, int vorder)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y;
@@ -347,7 +379,7 @@ dyp = dy * 2.0f / (msft[(size_t)pd_periodic(j, ny) * nx + i]
 #endif
             fl = muf * (dz / dt)
                * flux_upwind(q0[IDX3(k - 1, j, i)], q0[IDX3(k, j, i)], cr);
-            fc = pd_zface_half(q, vel, k, j, i, nz, ny, nx, fnm, fnp) - fl;
+            fc = pd_zface_half(q, vel, k, j, i, nz, ny, nx, fnm, fnp, vorder) - fl;
         }
         fzl[IDX3(k, j, i)] = fl;
         fzc[IDX3(k, j, i)] = fc;

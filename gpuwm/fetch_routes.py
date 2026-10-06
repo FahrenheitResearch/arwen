@@ -89,7 +89,7 @@ ROUTE_TABLE_SHA256 = (
     # breakage), and cadence_note states the grammar that replaces it.
     # Native-level atmosphere and analysis-soil routes are table entries,
     # merged with the ecmwf-ens and rrfs-ens input-ensemble rows.
-    "cce7886d37985e2557ddb67bf779b79e8bea7e2b3da9775d8d187a7dc18f2f61"
+    "e29085717ec57872f12dcbea255fda7068e4f567bd96f26b4d8136b947cdcd56"
 )
 
 #: Sources whose acquisition predates the route table and keeps its own
@@ -765,8 +765,10 @@ def _build_routes() -> Mapping[str, Route]:
                 raise ValueError(
                     f"{ROUTE_TABLE_NAME}: route {route.source_id} file "
                     f"{row.role} spells unknown token(s) {list(bad)}")
-        supplement = route.prep.get("supplement")
-        if supplement:
+        supplement_specs = tuple(route.prep.get("extra_supplements") or ())
+        if route.prep.get("supplement"):
+            supplement_specs = (route.prep["supplement"], *supplement_specs)
+        for supplement in supplement_specs:
             origin = str(supplement.get("from", ""))
             roles = {row.role for row in files}
             if not (origin in SUPPLEMENT_ORIGINS
@@ -987,6 +989,10 @@ def source_root_layout(source: str) -> Mapping[str, object] | None:
     rows state for the folder a download writes.
     """
 
+    from gpuwm.cf_archive_fetch import sources, row
+    canonical = _canonical(source)
+    if canonical in sources() and row(canonical).get("source_root") is not None:
+        return _source_root_row(canonical,row(canonical)["source_root"])
     return (acquisition_refusal(source) or {}).get("source_root")
 
 
@@ -1071,8 +1077,8 @@ def sniff_format(path: Path) -> str | None:
 
 def all_fetchable_sources() -> tuple[str, ...]:
     """Every ``--source`` the fetch front door accepts, sorted."""
-
-    return tuple(sorted(set(LEGACY_ROUTE_SOURCES) | set(_ROUTES)))
+    from gpuwm.cf_archive_fetch import sources
+    return tuple(sorted(set(LEGACY_ROUTE_SOURCES) | set(_ROUTES) | set(sources())))
 
 
 def _canonical(source: str) -> str:
@@ -1657,6 +1663,18 @@ class FetchPlan:
     @property
     def source_id(self) -> str:
         return self.route.source_id
+
+    @property
+    def extra_supplement_files(self):
+        bindings = []
+        for spec in self.route.prep.get("extra_supplements") or ():
+            origin = str(spec["from"])
+            if not origin.startswith("role:"):
+                raise ValueError("additional supplements must name a declared file role")
+            file_role = origin.split(":", 1)[1]
+            bindings.extend((str(spec["role"]), Path(obj.relpath))
+                            for obj in self.objects if obj.role == file_role)
+        return tuple(bindings)
 
 
 def _cycle_context(cycle: datetime) -> dict[str, str]:
@@ -2833,6 +2851,8 @@ def write_handoff(plan: FetchPlan, out: Path, *,
         binding = (f"{plan.supplement_role}={(out / path).resolve()}"
                    if plan.supplement_role else str((out / path).resolve()))
         tokens += ["--supplement", binding]
+    for role, path in plan.extra_supplement_files:
+        tokens += ["--supplement", f"{role}={(out / path).resolve()}"]
     unfetched: list[DonorRequest] = []
     for donor in plan.donors:
         supplied = (donor_files or {}).get(donor.role)
@@ -2998,6 +3018,9 @@ def prepares_through_packaged_composition(source: str) -> bool:
 def publishes_prep_handoff(source: str) -> bool:
     """Whether the implemented acquisition path publishes bound prep arguments."""
     source = canonical_source(source)
+    from gpuwm.cf_archive_fetch import sources
+    if source in sources():
+        return True
     if source in route_ids():
         return True
     # The container writer emits a mapped handoff when its composition

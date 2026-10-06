@@ -110,7 +110,14 @@ def materialize_source_controls(recipe, trajectory, template, *, root):
         from gpuwm.case_data import resolved_case_data_paths
         changed["case_data"] = resolved_case_data_paths(changed["case_data"],
             base_dir=original_path.resolve().parent, source=str(original_path))
-    if "static" in changed:
+    static = changed.get("static")
+    if isinstance(static, dict) and isinstance(static.get("highres"), dict):
+        # Only a declared [static.highres] has a cache_root to pin: a
+        # [static] that names only a source parses to a disabled carrier
+        # holding the default root, and writing that root alone made a
+        # [static.highres] with no `enabled`, which refused every member
+        # of a base that names a static source (what `gpuwm domain`
+        # emits for a source whose metadata declares one).
         from gpuwm.static.highres_production import parse_static_table
         carrier = parse_static_table(changed["static"], source=str(original_path),
                                      base_dir=original_path.resolve().parent)

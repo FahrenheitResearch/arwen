@@ -447,7 +447,7 @@ def _inputs(source, *, preserve_bound=False, extra_wps=None):
     if "static" in raw and not preserve_bound:
         from gpuwm.static.highres_production import parse_static_table
         highres = parse_static_table(raw["static"], source=str(source), base_dir=source.parent)
-        if highres is not None:
+        if highres is not None and "highres" in raw["static"]:
             raw["static"]["highres"]["cache_root"] = str(highres.cache_root.resolve())
     sources = {str(source): payload}
     snapshots = {}

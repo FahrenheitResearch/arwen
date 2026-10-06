@@ -4,7 +4,7 @@ The fixture is written by ``tools/urban_wrf471_oracle/ucm_column_oracle.F90`` (d
 by ``build_ucm.sh``), which calls ``urban`` in the byte-unmodified
 ``phys/module_sf_urban.F`` after WRF's own ``urban_param_init`` has read
 ``URBPARM.TBL`` or ``URBPARM_LCZ.TBL``.  Per variant there are three files in
-``gpuwm/data/urban/oracle/ucm/``:
+``tests/data/oracles/urban/ucm/``:
 
 * ``ucm-<table>-<variant>.csv.gz`` -- one row per column step: the inputs,
   the state before (``*_in``), the outputs, the state after;
@@ -26,6 +26,7 @@ from pathlib import Path
 import numpy as np
 
 from gpuwm.core.fp32_ulp import fp32_ulp_distance
+from gpuwm.verify.wrf471_fixtures import require_fixture_dir
 
 __all__ = [
     "UCM_ORACLE_DIR",
@@ -43,8 +44,9 @@ __all__ = [
     "ulp_table",
 ]
 
-UCM_ORACLE_DIR = (Path(__file__).resolve().parents[1]
-                  / "data" / "urban" / "oracle" / "ucm")
+# Test data in a source checkout, not package data (gpuwm.verify.wrf471_fixtures).
+UCM_ORACLE_DIR = (Path(__file__).resolve().parents[2] / "tests" / "data"
+                  / "oracles" / "urban" / "ucm")
 
 #: Every variant ``build_ucm.sh`` writes.  The ``gr`` ones are the
 #: ``-finit-real=zero`` build (the ETR defined read, see its header).
@@ -110,7 +112,8 @@ def load_variant(name: str, root: Path | None = None):
     ``read_param`` name to a per-UTYPE float32 array; ``switches`` maps the
     switch ints and the module arrays.
     """
-    d = Path(root) if root is not None else UCM_ORACLE_DIR
+    d = require_fixture_dir(root if root is not None else UCM_ORACLE_DIR,
+                            "urban UCM")
     raw = _read_csv(d / f"{name}.csv.gz")
     rows: dict[str, np.ndarray] = {}
     for key in raw[0]:
@@ -270,7 +273,8 @@ NOAH_FIXTURE_DT = 60.0
 
 
 def load_noah(root: Path | None = None) -> dict[str, np.ndarray]:
-    d = Path(root) if root is not None else UCM_ORACLE_DIR
+    d = require_fixture_dir(root if root is not None else UCM_ORACLE_DIR,
+                            "urban UCM")
     raw = _read_csv(d / "ucm-noah.csv.gz")
     ints = ("step", "case", "ivgtyp", "utype", "tapped")
     return {key: (np.asarray([int(r[key]) for r in raw], np.int32) if key in ints
@@ -392,7 +396,8 @@ NOAHMP_T2FIX_FIXTURE = "ucm-noahmp-t2fix.csv.gz"
 
 def load_noahmp(root: Path | None = None, *,
                 fixture: str = NOAHMP_FIXTURE) -> dict[str, np.ndarray]:
-    d = Path(root) if root is not None else UCM_ORACLE_DIR
+    d = require_fixture_dir(root if root is not None else UCM_ORACLE_DIR,
+                            "urban UCM")
     raw = _read_csv(d / fixture)
     ints = ("step", "case", "ivgtyp", "utype")
     return {key: (np.asarray([int(r[key]) for r in raw], np.int32) if key in ints

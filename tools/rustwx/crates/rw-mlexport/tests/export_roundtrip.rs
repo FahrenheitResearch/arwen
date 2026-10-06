@@ -903,3 +903,80 @@ fn every_table_row_names_an_operator_the_binary_has() {
         }
     }
 }
+
+#[test]
+fn on_an_eta_ladder_pressure_level_geopotential_is_read_between_interfaces() {
+    // A WRF eta core's mass level sits at the arithmetic mean of its faces'
+    // pressures, and the mean of two face geopotentials belongs to their
+    // GEOMETRIC mean: the layer mean paired with the mass-level pressure is
+    // too high.  The file states its eta levels, so geopotential inside the
+    // column is read between the faces, where the analytic column is exact.
+    let dir = scratch("eta-pressure");
+    let path = dir.join("wrfout_d01_2026-09-29_00_00_00");
+    write_wrfout_ladder(&path, &D01, &[0], true, true);
+    let out = dir.join("p");
+    let kept = [850u32, 700, 500, 300];
+    run(request(vec![path], &out, rows(&["geopotential", "temperature"]), kept.to_vec()));
+    let store = out.join("d01.zarr");
+    let z = read_f32(&store, "geopotential", "0.0.0.0");
+    let (nx, ny, nz) = (D01.nx, D01.ny, D01.nz);
+    let cells = nx * ny;
+    let mut checked = 0;
+    for (l, &hpa) in kept.iter().enumerate() {
+        let target = f64::from(hpa) * 100.0;
+        for j in 0..ny {
+            let ps = surface_pressure(j);
+            // Under the lowest mass level the ECMWF rule holds, as for
+            // every field; this checks the column above it.
+            if target > eta_mass_pressure(ps, 0, nz) {
+                continue;
+            }
+            for i in [0usize, 7, nx - 1] {
+                let truth = phi(ps, terrain(i), target);
+                let got = f64::from(z[l * cells + j * nx + i]);
+                assert!((got - truth).abs() < 0.2, "z at {hpa} hPa, row {j}: {got} vs {truth}");
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 100);
+
+    // The pairing this replaces, at 500 hPa in the first row: the layer
+    // means read at the mass-level pressures, in ln p.
+    let ps = surface_pressure(0);
+    let layer = |k: usize| 0.5 * (phi(ps, 0.0, face_pressure(ps, k, nz)) + phi(ps, 0.0, face_pressure(ps, k + 1, nz)));
+    let target = 50_000.0f64;
+    let k = (0..nz - 1)
+        .find(|&k| eta_mass_pressure(ps, k, nz) >= target && eta_mass_pressure(ps, k + 1, nz) < target)
+        .unwrap();
+    let w = (target.ln() - eta_mass_pressure(ps, k, nz).ln())
+        / (eta_mass_pressure(ps, k + 1, nz).ln() - eta_mass_pressure(ps, k, nz).ln());
+    let paired = layer(k) + w * (layer(k + 1) - layer(k));
+    assert!(paired - phi(ps, 0.0, target) > 20.0, "the layer-mean pairing is {} m2 s-2 high", paired - phi(ps, 0.0, target));
+
+    // The metadata says which arithmetic each array holds.
+    let geopotential = json(&store.join("geopotential/.zattrs"));
+    assert!(geopotential["vertical_interpolation"].as_str().unwrap().contains("layer interfaces (PH + PHB)"));
+    let temperature = json(&store.join("temperature/.zattrs"));
+    assert!(temperature["vertical_interpolation"].as_str().unwrap().contains("mass levels"));
+    let group = json(&store.join(".zattrs"));
+    assert!(group["geopotential_vertical_interpolation"].is_string());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_file_without_eta_levels_keeps_the_mass_level_geopotential_and_says_so() {
+    // No ZNW (the default ladder here, a height-coordinate frame elsewhere):
+    // the mass level is the middle of its layer in ln p, the layer mean
+    // already belongs to the mass-level pressure, and nothing changes.
+    let dir = scratch("no-eta");
+    let path = dir.join("wrfout_d01_2026-09-29_00_00_00");
+    write_wrfout(&path, &D01, &[0], true);
+    let out = dir.join("q");
+    run(request(vec![path], &out, rows(&["geopotential"]), vec![500]));
+    let store = out.join("d01.zarr");
+    let geopotential = json(&store.join("geopotential/.zattrs"));
+    assert!(geopotential["vertical_interpolation"].as_str().unwrap().contains("mass levels"));
+    assert!(json(&store.join(".zattrs")).get("geopotential_vertical_interpolation").is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}

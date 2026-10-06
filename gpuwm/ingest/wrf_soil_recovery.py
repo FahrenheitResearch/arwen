@@ -13,6 +13,19 @@ from gpuwm.filesystem_paths import canonical_path, io_path
 
 AUTHORITY_SCHEMA = "gpuwm-wrf-soil-authority-v1"
 
+#: The largest land soil moisture still read as a volume fraction. Layer
+#: water mislabeled as a fraction (kg m-2 or metres of water) lands one to
+#: three orders of magnitude above 1, which is the breakage the recovery
+#: below exists for. A fraction itself can sit a little above 1: WRF writes
+#: 1.0 into land-ice columns (share/module_soil_pre.F) and metgrid's
+#: interpolation next to them overshoots it. MEASURED 2026-10-03: real.exe of
+#: NOAA-EMC/HRRR v4.1.21 on a public RAP analysis wrote land soil moisture up
+#: to 1.000479 in 2,597 cells of 651 columns, and a strict bound of 1 refused
+#: that file as mislabeled. 1.005 is WRF's own bound for a soil moisture too
+#: large to be data (the "bad soil moisture" branch of
+#: dyn_em/module_initialize_real.F in WRF 3.9).
+SOIL_FRACTION_CEILING = 1.005
+
 
 def _sha(path: Path) -> str:
     with io_path(path).open("rb") as stream:
@@ -161,7 +174,7 @@ def recover_supplied_soil(path, raw, attributes, *, source_directory=None):
     land = np.asarray(raw["LANDMASK"]) > .5
     if moisture.ndim != 3 or land.shape != moisture.shape[-2:]:
         return {}, None  # The main reader owns malformed domain geometry.
-    if not np.any(moisture[:, land] > 1.0):
+    if not np.any(moisture[:, land] > SOIL_FRACTION_CEILING):
         return {}, None
 
     supplied_path = Path(path)

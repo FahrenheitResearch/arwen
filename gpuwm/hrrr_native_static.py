@@ -39,6 +39,15 @@ _STATIC_ARRAY_FIELDS = (
     | {"MAPFAC_U", "MAPFAC_V"}
 )
 
+_SOURCE_OUTPUTS = {
+    "terrain": {"HGT_M"}, "landuse": {"LANDMASK", "LU_INDEX", "LANDUSEF"},
+    "soil_top": {"SCT_DOM", "SOILCTOP"},
+    "soil_bottom": {"SCB_DOM", "SOILCBOT"},
+    "greenfrac": {"GREENFRAC"}, "lai": {"LAI12M"},
+    "albedo": {"ALBEDO12M"}, "snow_albedo": {"SNOALB"},
+    "soil_temperature": {"SOILTEMP"}, "lake_depth": {"LAKE_DEPTH"},
+}
+
 
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
@@ -75,9 +84,48 @@ def verify_geog_source_evidence(receipt: dict[str, object]) -> None:
         raise ValueError(
             "root static receipt must bind GEOG source coverage and tile "
             "hashes together")
-    geog_fields = (*_GEOG_FIELDS, *(
+    applied = coverage.get("static_source")
+    taken = set()
+    if applied is not None:
+        from gpuwm.static.external_source import static_source_row, sampling_window
+        if not isinstance(applied, dict) or applied.get("status") != "APPLIED":
+            raise ValueError("root static source evidence is not an applied source")
+        row = static_source_row(applied.get("id"))
+        if applied.get("sha256") != row.sha256 or applied.get("bytes") != row.bytes:
+            raise ValueError("root static source evidence does not match its pinned file")
+        source_path = Path(str(applied.get("path", "")))
+        if (not source_path.is_file() or source_path.stat().st_size != row.bytes
+                or sha256_file(source_path) != row.sha256):
+            raise ValueError("root static source file changed after preparation")
+        target = _target_from_payload(receipt.get("target_domain"))
+        window = sampling_window(row, target.grid())
+        if window is None or applied.get("window") != {
+                "i0": window[0], "j0": window[1], "ni": target.nx, "nj": target.ny}:
+            raise ValueError("root static source crop differs from its target grid")
+        fields = applied.get("fields")
+        if (not isinstance(fields, dict) or not fields
+                or any(row.served().get(name) != value for name, value in fields.items())):
+            raise ValueError("root static source field map differs from its table row")
+        sampled = not isinstance(window[0], int) or not isinstance(window[1], int)
+        if sampled:
+            import math
+            ci0, cj0 = math.floor(window[0]), math.floor(window[1])
+            cni = math.ceil(window[0] + target.nx - 1) - ci0 + 1
+            cnj = math.ceil(window[1] + target.ny - 1) - cj0 + 1
+            expected_sampling = {
+                "mode": "fractional-same-spacing",
+                "methods": {name: row.sampling_map[value] for name, value in fields.items()},
+                "source_coordinate_window": {"i0": ci0, "j0": cj0, "ni": cni, "nj": cnj},
+            }
+            if applied.get("sampling") != expected_sampling:
+                raise ValueError("root static sampling methods or coordinate window differ from the source row")
+        elif "sampling" in applied:
+            raise ValueError("aligned static source receipt unexpectedly declares resampling")
+        taken = set(fields)
+    geog_fields = tuple(name for name in (*_GEOG_FIELDS, *(
         ("lake_depth",) if "LAKE_DEPTH" in receipt.get("array_sha256", {}) else ()))
-    if set(coverage) != set(geog_fields):
+        if not _SOURCE_OUTPUTS[name] <= taken)
+    if set(coverage) - {"static_source"} != set(geog_fields):
         raise ValueError(
             "root static GEOG source-coverage fields mismatch: expected "
             f"{sorted(geog_fields)}, got {sorted(coverage)}")
@@ -168,6 +216,31 @@ def verify_geog_source_evidence(receipt: dict[str, object]) -> None:
             "root static GEOG tile hashes differ from required coverage")
 
 
+def require_static_coverage(receipt: dict[str, object],
+                            target: HrrrTargetDomain, *,
+                            prefix: str) -> None:
+    """Refuse a v2 static receipt whose recorded coverage is not its own.
+
+    A receipt whose GEOG evidence says a pinned static source was APPLIED
+    (``tools/hrrr_build_native_static.py`` since 6a69b356f) records that
+    source's exact grid window (scope ``static-source-grid``); any other
+    receipt records the HRRR crop :func:`required_hrrr_source_window`
+    names.  Every consumer of the receipt checks it here, so the builder
+    and its readers cannot disagree about which record is the right one.
+    The breakage this prevents: a static cache built for one window (or one
+    source) loaded under a domain that needs another.
+    """
+    applied = receipt.get("geog_source_coverage", {}).get("static_source")
+    if isinstance(applied, dict) and applied.get("status") == "APPLIED":
+        expected_coverage = {"scope": "static-source-grid", "id": applied["id"],
+                             "window": applied["window"]}
+        if receipt.get("hrrr_source_coverage") != expected_coverage:
+            raise ValueError(f"{prefix} static-source coverage mismatch")
+    elif not required_hrrr_source_window(target).matches_record(
+            receipt.get("hrrr_source_coverage")):
+        raise ValueError(f"{prefix} source-coverage mismatch")
+
+
 def _target_from_payload(payload) -> HrrrTargetDomain:
     if not isinstance(payload, dict):
         raise ValueError("HRRR static receipt lacks a target-domain document")
@@ -216,9 +289,7 @@ def verify_hrrr_native_static(
         raise ValueError("root static receipt target differs from domain spec")
     if receipt.get("target_domain_sha256") != target.identity_sha256():
         raise ValueError("root static receipt target identity mismatch")
-    if not required_hrrr_source_window(target).matches_record(
-            receipt.get("hrrr_source_coverage")):
-        raise ValueError("root static receipt source-coverage mismatch")
+    require_static_coverage(receipt, target, prefix="root static receipt")
 
     cache = receipt.get("cache")
     if not isinstance(cache, dict):
@@ -234,7 +305,9 @@ def verify_hrrr_native_static(
         raise ValueError("root static receipt cache name mismatch")
 
     with np.load(cache_path, allow_pickle=False) as stored:
-        optional = {"LAKE_DEPTH"} & set(receipt.get("array_sha256", {}))
+        from gpuwm.static.orographic import OROGRAPHIC_ROWS
+        optional = ({"LAKE_DEPTH", "SLOPECAT"} | set(OROGRAPHIC_ROWS)) & set(
+            receipt.get("array_sha256", {}))
         expected_fields = _STATIC_ARRAY_FIELDS | optional
         if set(stored.files) != expected_fields:
             raise ValueError(
@@ -280,7 +353,8 @@ def verify_hrrr_native_static(
         raise ValueError("root static array inventory differs from receipt")
 
     geog_hashes = receipt.get("geog_index_sha256")
-    if not isinstance(geog_hashes, dict) or not geog_hashes:
+    if not isinstance(geog_hashes, dict) or (
+            not geog_hashes and "static_source" not in receipt.get("geog_source_coverage", {})):
         raise ValueError("root static receipt lacks GEOG index evidence")
     for raw_path, expected in geog_hashes.items():
         path = Path(raw_path)
@@ -340,6 +414,10 @@ def verified_static_catalog(
     }
     if carrier is not None:
         catalog.static_highres = carrier
+    from gpuwm.static.external_source import static_source_receipt
+    static_source = static_source_receipt(carrier)
+    if static_source:
+        receipt["static_source"] = static_source
     if smoothing:
         receipt["terrain_smoothing"] = smoothing
     return catalog, receipt

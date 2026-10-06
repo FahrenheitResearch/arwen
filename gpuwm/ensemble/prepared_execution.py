@@ -144,10 +144,15 @@ def sample_initialized_card_evidence(inputs, *, array_module=None):
         import cupy as array_module
     from gpuwm.core.preflight import (
         FORECAST_POOL_HEADROOM, EXTERNAL_MARGIN_BYTES, local_memory_profile_from_device,
-        non_pool_device_bytes,
+        non_pool_device_bytes, release_unreachable_device_memory,
     )
     device = int(array_module.cuda.runtime.getDevice())
     array_module.cuda.get_current_stream().synchronize()
+    # The pack is sized from this reading, so garbage and cached blocks
+    # left by earlier work in the process must not count as used: the
+    # native decline gate's four-member pack was admitted as two packs
+    # after other ensembles had run in the same process.
+    release_unreachable_device_memory(array_module)
     free, total = array_module.cuda.runtime.memGetInfo()
     profile = local_memory_profile_from_device(array_module, device_id=device)
     props = array_module.cuda.runtime.getDeviceProperties(device)
@@ -211,7 +216,8 @@ def _fallback_reasons(inputs, node, request, *, roster, input_provider, stochast
     """
     reasons = list(native_prepared_eligibility(inputs, node, members=request.members,
         keep_member_files=request.keep_member_files).reasons)
-    if request.perturbation is not None:
+    from gpuwm.ensemble.surface_recipe import is_surface_recipe
+    if request.perturbation is not None and not is_surface_recipe(request.perturbation):
         reasons.append("member perturbation preparation remains on its original bound initializer path")
     binding = getattr(node.state, "_ensemble_stochastic", None)
     if stochastic_enabled or bool(getattr(binding, "enabled", False)):
@@ -229,7 +235,7 @@ def _fallback_reasons(inputs, node, request, *, roster, input_provider, stochast
 
 
 def _bootstrap_member_sources(runner, *, node, ids, first_id, member_inputs_for, out, options,
-                              array_module=None):
+                              array_module=None, initialize_callback_factory=None, member_seeds=None):
     """Bootstrap every non-root member through the ordinary runner and snapshot it.
 
     Each member's own runner initializes on this card exactly as it would
@@ -238,7 +244,7 @@ def _bootstrap_member_sources(runner, *, node, ids, first_id, member_inputs_for,
     member stays live. Returns the bound roster and one receipt per member
     with the pool bytes before the bootstrap and after its release.
     """
-    from gpuwm.ensemble.runtime_context import member_output_scope
+    from gpuwm.ensemble.runtime_context import member_output_scope, MemberOutputCapture
     from gpuwm.ensemble.prepared_batch import NativeMemberSources, snapshot_member_source
     if array_module is None:
         import cupy as array_module
@@ -266,7 +272,12 @@ def _bootstrap_member_sources(runner, *, node, ids, first_id, member_inputs_for,
 
         started = time.perf_counter()
         live_before = int(pool.used_bytes())
-        with member_output_scope(None):
+        initialize = (None if initialize_callback_factory is None else initialize_callback_factory(
+            member_id=member_id, seed=(None if member_seeds is None else member_seeds[member_id]),
+            prepared_member=None))
+        output = (None if initialize is None else MemberOutputCapture(
+            lambda **unused: None, member_id, initialize_callback=initialize))
+        with member_output_scope(output):
             report = runner(member_inputs, output_directory=path, ensemble_bootstrap=capture, **options)
         report = asdict(report) if is_dataclass(report) else report
         if ("source" not in holder or not isinstance(report, dict) or report.get("status") != "PASS"
@@ -395,6 +406,7 @@ def plan_initialized_member_execution(inputs, node, request, collector, *, evide
         admissions.append(dict(sample.receipt(), native_sampling=sampling, host_output_bound=host))
         cards.append(sample.card)
     packing = pack_members(request.members, tuple(cards), models, batched=True,
+        max_ordinary_members_per_device=request.max_ordinary_members_per_device,
         reason="qualified common-input fixed-clock native graph; all allocations and warm source priced")
     # A zero-fit card selects the ordinary streamed door. It never receives
     # a native allocation, and its selected tiling/physics are not changed.
@@ -734,7 +746,9 @@ def make_automatic_prepared_executor(runner, *, request, collector, output_direc
                 from gpuwm.ensemble.prepared_batch import bind_member_sources
                 sources, bootstrap_receipts = _bootstrap_member_sources(runner, node=node, ids=ids,
                     first_id=first_id, member_inputs_for=lambda member: selected_inputs(shared_inputs, member)[0],
-                    out=out, options=options, array_module=array_module)
+                    out=out, options=options, array_module=array_module,
+                    initialize_callback_factory=initialize_callback_factory,
+                    member_seeds=dict(zip(ids, seeds)))
                 reasons = sources.compatibility_reasons(node)
                 if reasons:
                     admission = {"contract": CONTRACT, "native_admitted": False,

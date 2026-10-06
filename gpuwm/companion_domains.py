@@ -1313,7 +1313,7 @@ def edit_configuration(request):
     if "static" in raw:
         from gpuwm.static.highres_production import parse_static_table
         config = parse_static_table(raw["static"], source=str(authority.source), base_dir=authority.base_dir)
-        if config is not None:
+        if config is not None and "highres" in raw["static"]:
             raw["static"]["highres"]["cache_root"] = str(config.cache_root.resolve())
     targets = _apply(raw, request["action"], output)
     exp = _build(raw, output)

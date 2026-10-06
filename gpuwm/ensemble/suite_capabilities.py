@@ -140,21 +140,32 @@ def plan_suite(cfg, *, members=1, registry=None):
         "mp_physics": 8, "sf_surface_physics": 2, "bl_pbl_physics": 1,
         "cu_physics": 0, "sf_urban_physics": 0, "sf_surface_mosaic": 0,
         "topo_wind": 0, "gwd_opt": 0, "slope_rad": 0, "topo_shading": 0,
+        # WRF's swint_opt = 1 rewrites the surface shortwave from a carrier
+        # the packed driver does not bank per member, and aer_opt = 3 needs
+        # the aerosol-aware Thompson scheme the packed binding does not
+        # run; both run on the original member driver.
+        "swint_opt": 0, "aer_opt": 0,
     }
     for key, required in selections.items():
         value = _value(cfg, key, 0)
         if value != required:
-            reasons.append(f"{key}={value!r} uses its original member driver")
+            if key == "sf_surface_physics" and value == 3:
+                reasons.append("sf_surface_physics=3 lacks a qualified packed RUC state and fused land driver graph")
+            elif key == "bl_pbl_physics" and value == 5:
+                reasons.append("bl_pbl_physics=5 lacks a qualified packed MYNN turbulence, diffusion and TKE transport driver graph")
+            else:
+                reasons.append(f"{key}={value!r} has no qualified packed producer and driver composition")
     if _value(cfg, "sf_sfclay_physics", 0) not in (1, 91):
-        reasons.append("the selected surface layer has no qualified packed driver binding")
+        surface = _value(cfg, "sf_sfclay_physics", 0)
+        reasons.append(f"sf_sfclay_physics={surface!r} has no qualified packed surface flux and carrier driver binding")
     lw, sw = (dict(next(row for row in components if row.component == "radiation").selectors)[key]
               for key in ("ra_lw_physics", "ra_sw_physics"))
     if (lw, sw) != (4, 4) or rrtmg_variant(cfg) != RRTMG_VARIANT_LEGACY:
-        reasons.append("the selected radiation has no qualified packed initializer binding")
+        reasons.append(f"radiation ({lw}, {sw}, {rrtmg_variant(cfg)!r}) has no qualified packed column, optics, flux and carrier driver binding")
     if not _value(cfg, "moist", False):
         reasons.append("the packed column initializer requires moist state")
     if _value(cfg, "use_adaptive_time_step", False):
-        reasons.append("adaptive members retain their independent original clocks")
+        reasons.append("adaptive members lack a qualified packed scheduler with independent CFL reductions and integer clocks")
     if _value(cfg, "bldt", 0.0) != 0.0:
         reasons.append("positive PBL cadence retains its original held composition target")
     mode = "ordinary_single" if members == 1 else "member_local" if reasons else "native_batch"

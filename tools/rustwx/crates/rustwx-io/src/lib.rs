@@ -1089,7 +1089,7 @@ pub fn extract_fields_from_grib2(
         out.push(build_selected_field(
             message,
             prepared_selector.selector,
-            prepared_selector.selector.native_units(),
+            prepared_selector.native_units(),
             &mut grid_memo,
         )?);
     }
@@ -1149,7 +1149,7 @@ fn extract_fields_from_grib2_partial_inner(
             Some((message, _)) => extracted.push(build_selected_field(
                 message,
                 prepared_selector.selector,
-                prepared_selector.selector.native_units(),
+                prepared_selector.native_units(),
                 &mut grid_memo,
             )?),
             None => missing.push(prepared_selector.selector),
@@ -1308,7 +1308,7 @@ pub fn extract_field_values_partial_from_model_bytes_at_forecast_hour(
                             let needs_rotation = is_wind && message.grid.template == 30 && message.grid.resolution_flags & 0x08 != 0;
                             if needs_rotation { validate_regional_lambert_wind_grid(model, &message.grid)?; }
                             let field = build_field_values(message, prepared_selector.selector,
-                                prepared_selector.selector.native_units(), &mut grid_memo)?;
+                                prepared_selector.native_units(), &mut grid_memo)?;
                             if needs_rotation { wind_rotation_grids.insert(field.grid_index); }
                             extracted.push(field);
                         },
@@ -1886,11 +1886,12 @@ const PARAMETER_PWAT: &[ParameterCode] = &[ParameterCode {
     category: 1,
     number: 3,
 }];
-const PARAMETER_TOTAL_PRECIPITATION: &[ParameterCode] = &[ParameterCode {
-    discipline: 0,
-    category: 1,
-    number: 8,
-}];
+const PARAMETER_TOTAL_PRECIPITATION: &[ParameterCode] = &[
+    ParameterCode { discipline: 0, category: 1, number: 8 },
+    // Published one-hour multi-sensor accumulation parameter rows.
+    ParameterCode { discipline: 209, category: 6, number: 30 },
+    ParameterCode { discipline: 209, category: 6, number: 37 },
+];
 const PARAMETER_PROBABILITY_OF_PRECIPITATION: &[ParameterCode] = PARAMETER_TOTAL_PRECIPITATION;
 const PARAMETER_CATEGORICAL_RAIN: &[ParameterCode] = &[
     ParameterCode {
@@ -2093,6 +2094,12 @@ const PARAMETER_COLUMN_INTEGRATED_SMOKE: &[ParameterCode] = &[ParameterCode {
     number: 1,
 }];
 
+const PARAMETER_DOWNWARD_SHORTWAVE: &[ParameterCode] = &[
+    ParameterCode { discipline: 0, category: 4, number: 7 },
+    // NCEP's local alias of the same surface-flux parameter.
+    ParameterCode { discipline: 0, category: 4, number: 192 },
+];
+
 impl StructuredMessageSelector {
     fn matches(self, message: &Grib2Message) -> bool {
         self.parameters.iter().any(|parameter| {
@@ -2109,6 +2116,18 @@ impl PreparedSelector {
             selector,
             message: StructuredMessageSelector::try_from(selector)?,
         })
+    }
+
+    fn native_units(self) -> &'static str {
+        // Probability products override the underlying variable's units.
+        // Otherwise the selector row names the decoded source units.
+        if matches!(self.selector.product, FieldProduct::Probability(_))
+            || self.message.units.is_empty()
+        {
+            self.selector.native_units()
+        } else {
+            self.message.units
+        }
     }
 
     fn match_score(self, message: &Grib2Message, forecast_hour: Option<u16>) -> Option<u8> {
@@ -2170,6 +2189,13 @@ fn default_product_template_match_score(
     selector: FieldSelector,
     message: &Grib2Message,
 ) -> Option<u8> {
+    // A valid-time surface flux is instantaneous. An interval average with
+    // the same parameter and ending at the same lead is another quantity.
+    if selector.field == CanonicalField::DownwardShortwaveRadiationFlux {
+        return (message.product.statistical_process_type.is_none()
+            && message.product.template == 0)
+            .then_some(0);
+    }
     if selector.field == CanonicalField::ProbabilityOfPrecipitation {
         return if is_probability_product_template(message.product.template) {
             Some(0)
@@ -2324,6 +2350,15 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
 
     fn try_from(selector: FieldSelector) -> Result<Self, Self::Error> {
         match selector {
+            FieldSelector {
+                field: CanonicalField::DownwardShortwaveRadiationFlux,
+                vertical: VerticalSelector::Surface,
+                ..
+            } => Ok(Self {
+                parameters: PARAMETER_DOWNWARD_SHORTWAVE,
+                level: LevelMatch::Surface,
+                units: "W/m^2",
+            }),
             FieldSelector {
                 field: CanonicalField::Pressure,
                 vertical: VerticalSelector::Surface,
@@ -2533,6 +2568,15 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
                 parameters: PARAMETER_TOTAL_PRECIPITATION,
                 level: LevelMatch::Surface,
                 units: "kg/m^2",
+            }),
+            FieldSelector {
+                field: CanonicalField::TotalPrecipitation,
+                vertical: VerticalSelector::AltitudeMeters(0),
+                ..
+            } => Ok(Self {
+                parameters: PARAMETER_TOTAL_PRECIPITATION,
+                level: LevelMatch::AltitudeMeters(0),
+                units: "mm",
             }),
             FieldSelector {
                 field: CanonicalField::ProbabilityOfPrecipitation,

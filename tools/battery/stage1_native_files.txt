@@ -59,3 +59,4 @@ tests/test_ensemble_physical_boundary.py # gpuwm_preprocess_cpu, named by GPUWM_
 tests/test_ensemble_posted_physical.py # gpuwm_preprocess_cpu, named by GPUWM_ENSEMBLE_PREPARATION_BRIDGE, and netcdf-writer build the posted physical frames in 29 of its 33 tests.
 tests/test_ensemble_source_preparation.py # gpuwm_preprocess_cpu, named by GPUWM_ENSEMBLE_PREPARATION_BRIDGE, and netcdf-writer prepare posted member sources in 6 of its 16 tests.
 tests/test_ensemble_native_review.py # gpuwm_preprocess_cpu supplies the portable libm its one humidity reference test pins.
+tests/test_flagship_tools.py # rw-isobaric (the tools/rustwx cdylib) reads the 500 hPa height between layer interfaces; 1 of its 27 tests refuses by name without it.

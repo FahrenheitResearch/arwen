@@ -12,5 +12,7 @@ categories = ["science", "parser-implementations"]
 [dependencies]
 hdf5-reader = { path = "vendor/hdf5-reader" }
 ndarray = "0.17"
-netcdf-reader = "0.3"
+# Keep the NetCDF metadata reader on the same HDF5 implementation even when
+# this facade is built outside the renderer workspace.
+netcdf-reader = { version = "0.3.0", path = "vendor/netcdf-reader" }
 thiserror = "2"

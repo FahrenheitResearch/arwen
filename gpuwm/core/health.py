@@ -15,6 +15,7 @@ or nest-table construction checks before those tables are uploaded.
 from __future__ import annotations
 
 import dataclasses
+import ctypes
 import math
 import time
 from collections.abc import Mapping, Sequence
@@ -681,9 +682,9 @@ def _reason(value: float, rule: FieldRule) -> str:
     return "unknown invariant failure"
 
 
-def validate_fields_cpu(fields: Mapping[str, Any] | Sequence[HealthField],
-                        *, phase: str | None = None) -> ValidationReport:
-    """Validate host arrays with the exact production rule descriptors."""
+def _validate_fields_numpy(fields: Mapping[str, Any] | Sequence[HealthField],
+                           *, phase: str | None = None) -> ValidationReport:
+    """Compatibility scan for older bridges and uncommon host array formats."""
     if isinstance(fields, Mapping):
         descriptors = tuple(field_from_array(name, value)
                             for name, value in fields.items())
@@ -707,6 +708,151 @@ def validate_fields_cpu(fields: Mapping[str, Any] | Sequence[HealthField],
         False, status, field.name,
         tuple(int(i) for i in np.unravel_index(flat, values.shape)),
         flat, value, _reason(value, field.rule), phase)
+
+
+class _HostHealthDescriptor(ctypes.Structure):
+    _fields_ = [("values", ctypes.c_void_p), ("auxiliary", ctypes.c_void_p),
+                ("size", ctypes.c_size_t), ("plane", ctypes.c_size_t),
+                ("value_type", ctypes.c_uint32), ("auxiliary_type", ctypes.c_uint32),
+                ("result_type", ctypes.c_uint32), ("auxiliary_mode", ctypes.c_uint32),
+                ("flags", ctypes.c_uint32), ("status_bit", ctypes.c_uint32),
+                ("lower", ctypes.c_double), ("upper", ctypes.c_double)]
+
+
+class _HostHealthResult(ctypes.Structure):
+    _fields_ = [("status_bits", ctypes.c_uint32), ("first_field", ctypes.c_size_t),
+                ("first_index", ctypes.c_size_t), ("first_value", ctypes.c_double)]
+
+
+def _native_health_entry():
+    from gpuwm.core import portable_math
+    try:
+        entry = getattr(portable_math._load(), "gpuwm_validate_health_fields", None)
+    except (OSError, RuntimeError, FileNotFoundError):
+        return None
+    if entry is not None:
+        entry.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t,
+                          ctypes.POINTER(_HostHealthResult)]
+        entry.restype = ctypes.c_int32
+    return entry
+
+
+def _native_health_descriptor(field):
+    # Metadata only. Unusual arrays keep their original conversion and scan.
+    host_types = (np.ndarray, np.generic, float, int)
+    if not isinstance(field.values, host_types):
+        return None
+    values = np.asarray(field.values)
+    types = {np.dtype(np.float32): 1, np.dtype(np.float64): 2}
+    if (values.dtype not in types or not values.flags.c_contiguous
+            or values.size >= 1 << 48 or field.rule.status_class not in STATUS_BITS
+            or any(bound is not None and type(bound) not in (float, int)
+                   for bound in (field.rule.lower, field.rule.upper))):
+        return None
+    auxiliary = None
+    mode, plane, auxiliary_type = 0, 0, 0
+    result_type = types[values.dtype]
+    if field.auxiliary is not None:
+        if not isinstance(field.auxiliary, host_types):
+            return None
+        auxiliary = np.asarray(field.auxiliary)
+        if auxiliary.dtype not in types or not auxiliary.flags.c_contiguous:
+            return None
+        if field.aux_mode == "direct" and auxiliary.shape == values.shape:
+            mode = 1
+        elif (field.aux_mode == "level" and values.ndim > 0 and auxiliary.ndim == 1
+              and values.shape[0] == auxiliary.size):
+            mode, plane = 2, math.prod(values.shape[1:])
+            if plane == 0:
+                return None
+        else:
+            return None
+        auxiliary_type = types[auxiliary.dtype]
+        result_type = types.get(np.result_type(values, auxiliary))
+        if result_type is None:
+            return None
+    flags = ((_LOWER if field.rule.lower is not None else 0)
+             | (_UPPER if field.rule.upper is not None else 0)
+             | (_STRICT_LOWER if field.rule.strict_lower else 0))
+    try:
+        lower = 0.0 if field.rule.lower is None else float(field.rule.lower)
+        upper = 0.0 if field.rule.upper is None else float(field.rule.upper)
+    except (ValueError, OverflowError):
+        return None
+    if result_type == 1 and any(math.isfinite(bound) and abs(bound) > float(np.finfo(np.float32).max)
+                                for bound in (lower, upper)):
+        # NumPy reports casts of finite out-of-range comparison scalars.
+        # Keep that warning/exception behavior rather than silently using Inf.
+        return None
+    descriptor = _HostHealthDescriptor(values.ctypes.data,
+        None if auxiliary is None else auxiliary.ctypes.data, values.size, plane,
+        types[values.dtype], auxiliary_type, result_type, mode, flags,
+        field.rule.status_bit, lower, upper)
+    return descriptor, values, auxiliary
+
+
+def validate_fields_cpu(fields: Mapping[str, Any] | Sequence[HealthField],
+                        *, phase: str | None = None) -> ValidationReport:
+    """Run the same host health rules through a bounded read-only Rust scan."""
+    # NumPy's custom exception/callback/log policies are observable behavior
+    # of the legacy auxiliary addition and comparisons. A native report must
+    # not replace those exceptions or suppress a requested callback.
+    if any(mode not in ("ignore", "warn") for mode in np.geterr().values()):
+        return _validate_fields_numpy(fields, phase=phase)
+    entry = _native_health_entry()
+    if entry is None:
+        return _validate_fields_numpy(fields, phase=phase)
+    descriptors = (tuple(field_from_array(name, value) for name, value in fields.items())
+                   if isinstance(fields, Mapping) else tuple(fields))
+    native, indices, keepalive, fallback = [], [], [], []
+    for index, field in enumerate(descriptors):
+        prepared = _native_health_descriptor(field)
+        if prepared is None:
+            # Preserve uncommon conversion/comparison exception ordering.
+            # Integer, boolean and other real numeric arrays can coexist
+            # with the native batch without sending dense floats back to it.
+            if (not isinstance(field.values, (np.ndarray, np.generic, float, int))
+                    or np.asarray(field.values).dtype.kind not in "biuf"):
+                return _validate_fields_numpy(descriptors, phase=phase)
+            fallback.append((index, field))
+        else:
+            descriptor, values, auxiliary = prepared
+            native.append(descriptor)
+            indices.append(index)
+            keepalive.append((values, auxiliary))
+    status, first = 0, None
+    if native:
+        from gpuwm.core import portable_math
+        jobs = (_HostHealthDescriptor * len(native))(*native)
+        result = _HostHealthResult()
+        code = int(entry(jobs, len(native), portable_math._workers(None), ctypes.byref(result)))
+        if code:
+            # An additive ABI cannot weaken the existing checked interface.
+            return _validate_fields_numpy(descriptors, phase=phase)
+        status = int(result.status_bits)
+        if status:
+            # Failure is rare and must retain NumPy's observable auxiliary
+            # overflow/invalid warnings, exceptions, and exact diagnostic.
+            return _validate_fields_numpy(descriptors, phase=phase)
+        if result.first_field < len(native):
+            index = indices[result.first_field]
+            first = (index, int(result.first_index), float(result.first_value),
+                     keepalive[result.first_field][0].shape)
+    for index, field in fallback:
+        values = _cpu_values(field)
+        bad = _bad_mask(values, field.rule)
+        if bool(np.any(bad)):
+            status |= field.rule.status_bit
+            flat = int(np.flatnonzero(np.ravel(bad, order="C"))[0])
+            if first is None or index < first[0]:
+                first = (index, flat, float(np.ravel(values, order="C")[flat]), values.shape)
+    if first is None:
+        return ValidationReport(True, status, phase=phase)
+    index, flat, value, shape = first
+    field = descriptors[index]
+    return ValidationReport(False, status, field.name,
+        tuple(int(i) for i in np.unravel_index(flat, shape)), flat, value,
+        _reason(value, field.rule), phase)
 
 
 def validate_state_cpu(state: Any, *, phase: str | None = None,

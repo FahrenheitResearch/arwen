@@ -445,7 +445,7 @@ def test_native_companion_tables_survive_resolution_and_publication(tmp_path, do
     from gpuwm.case_data import resolved_case_data_paths
     expected_companions["case_data"] = resolved_case_data_paths(
         companions["case_data"], base_dir=tmp_path, source=str(config))
-    expected_companions["static"] = {"highres": {
+    expected_companions["static"] = {"source": "hrrr-conus-v4", "highres": {
         **companions["static"]["highres"], "cache_root": str(tmp_path / "static-cache")}}
     assert {name: raw[name] for name in companions} == expected_companions
     published = publish_experiment_document(tmp_path / "prepared.toml", raw, actual)

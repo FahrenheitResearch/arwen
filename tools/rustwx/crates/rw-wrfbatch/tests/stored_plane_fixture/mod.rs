@@ -99,11 +99,104 @@ fn write_frame_with(
     rain_total: Option<f32>,
     extras: &[(&str, &str, f32)],
 ) -> PathBuf {
+    write_frame_with_grid(dir, valid_time, rain_total, extras, false)
+}
+
+/// The same analytic surface fixture on its regular geographic lattice.
+#[allow(dead_code)]
+pub fn write_regular_rain_frame(dir: &Path, lead_seconds: i64, rain_total: f32) -> PathBuf {
+    let init = chrono::NaiveDate::from_ymd_opt(2026, 8, 19)
+        .unwrap()
+        .and_hms_opt(0, 0, 0)
+        .unwrap();
+    let valid = init + chrono::Duration::seconds(lead_seconds);
+    write_frame_with_grid(
+        dir,
+        &valid.format("%Y-%m-%d_%H:%M:%S").to_string(),
+        Some(rain_total),
+        &[],
+        true,
+    )
+}
+
+#[allow(dead_code)]
+pub fn write_regular_no_rain_frame(dir: &Path) -> PathBuf {
+    write_frame_with_grid(dir, "2026-08-19_00:00:00", None, &[], true)
+}
+
+#[allow(dead_code)]
+pub fn write_regular_shortwave_frame(dir: &Path, lead_seconds: i64, flux: f32) -> PathBuf {
+    let init = chrono::NaiveDate::from_ymd_opt(2026, 8, 19)
+        .unwrap().and_hms_opt(0, 0, 0).unwrap();
+    let valid = init + chrono::Duration::seconds(lead_seconds);
+    write_frame_with_grid(dir, &valid.format("%Y-%m-%d_%H:%M:%S").to_string(),
+        None, &[("SWDOWN", "W m-2", flux)], true)
+}
+
+#[allow(dead_code)]
+pub fn write_regular_fill_wind_frame(dir: &Path) -> PathBuf {
+    write_frame_with_fill(dir, "2026-08-19_00:00:00", None, &[], true, true)
+}
+
+#[allow(dead_code)]
+pub fn write_regular_extrema_frame(dir:&Path,lead_seconds:i64,rain_total:f32,
+    maximum:f32,minimum:f32,attrs:&[(&str,AttrValue)])->PathBuf {
+    let init=chrono::NaiveDate::from_ymd_opt(2026,8,19).unwrap().and_hms_opt(0,0,0).unwrap();
+    let valid=init+chrono::Duration::seconds(lead_seconds);
+    write_frame_with_attrs(dir,&valid.format("%Y-%m-%d_%H:%M:%S").to_string(),Some(rain_total),
+        &[("UP_HELI_MAX","m2 s-2",maximum),("UP_HELI_MIN","m2 s-2",minimum)],true,false,attrs)
+}
+
+#[allow(dead_code)]
+pub fn write_regular_extrema_fill_frame(dir:&Path,lead_seconds:i64,rain_total:f32,
+    maximum:f32,minimum:f32)->PathBuf {
+    let init=chrono::NaiveDate::from_ymd_opt(2026,8,19).unwrap().and_hms_opt(0,0,0).unwrap();
+    let valid=init+chrono::Duration::seconds(lead_seconds);
+    write_frame_with_attrs(dir,&valid.format("%Y-%m-%d_%H:%M:%S").to_string(),Some(rain_total),
+        &[("UP_HELI_MAX","m2 s-2",maximum),("UP_HELI_MIN","m2 s-2",minimum)],true,true,
+        &[("GPUWM_EXTREME_INTERVAL_SECONDS",AttrValue::Ints(vec![3600]))])
+}
+
+#[allow(dead_code)]
+pub fn write_regular_downward_frame(dir:&Path,lead_seconds:i64,rain_total:f32,downward:f32)->PathBuf {
+    let init=chrono::NaiveDate::from_ymd_opt(2026,8,19).unwrap().and_hms_opt(0,0,0).unwrap();
+    let valid=init+chrono::Duration::seconds(lead_seconds);
+    write_frame_with_attrs(dir,&valid.format("%Y-%m-%d_%H:%M:%S").to_string(),Some(rain_total),
+        &[("W_DN_MAX","m s-1",downward)],true,false,
+        &[("GPUWM_EXTREME_INTERVAL_SECONDS",AttrValue::Ints(vec![1800]))])
+}
+
+fn write_frame_with_grid(
+    dir: &Path,
+    valid_time: &str,
+    rain_total: Option<f32>,
+    extras: &[(&str, &str, f32)],
+    regular: bool,
+) -> PathBuf {
+    write_frame_with_fill(dir, valid_time, rain_total, extras, regular, false)
+}
+
+fn write_frame_with_fill(
+    dir: &Path,
+    valid_time: &str,
+    rain_total: Option<f32>,
+    extras: &[(&str, &str, f32)],
+    regular: bool,
+    finite_fill: bool,
+) -> PathBuf {
+    write_frame_with_attrs(dir,valid_time,rain_total,extras,regular,finite_fill,&[])
+}
+
+fn write_frame_with_attrs(
+    dir:&Path,valid_time:&str,rain_total:Option<f32>,extras:&[(&str,&str,f32)],
+    regular:bool,finite_fill:bool,attrs:&[(&str,AttrValue)],
+)->PathBuf {
     let path = dir.join(format!("wrfout_d01_{}", valid_time.replace(':', "_")));
     let cells = NX * NY;
     let volume = cells * NZ;
 
     let mut schema = Schema::new(NcFormat::Offset64);
+    for (name,value) in attrs {schema.put_global_attr(*name,value.clone()).unwrap();}
     let time = schema.def_dim("Time", 0, true).unwrap();
     let strlen = schema.def_dim("DateStrLen", 19, false).unwrap();
     let bottom_top = schema.def_dim("bottom_top", NZ, false).unwrap();
@@ -123,7 +216,11 @@ fn write_frame_with(
             .put_global_attr(name, AttrValue::Text(value.into()))
             .unwrap();
     }
-    for (name, value) in [("MAP_PROJ", 1i32), ("GRID_ID", 1), ("PARENT_ID", 0)] {
+    for (name, value) in [
+        ("MAP_PROJ", if regular { 6i32 } else { 1i32 }),
+        ("GRID_ID", 1),
+        ("PARENT_ID", 0),
+    ] {
         schema
             .put_global_attr(name, AttrValue::Ints(vec![value]))
             .unwrap();
@@ -163,6 +260,7 @@ fn write_frame_with(
     let xlat = surface(&mut schema, "XLAT", "degree_north");
     let xlong = surface(&mut schema, "XLONG", "degree_east");
     let t2 = surface(&mut schema, "T2", "K");
+    let th2 = surface(&mut schema, "TH2", "K");
     let q2 = surface(&mut schema, "Q2", "kg kg-1");
     let psfc = surface(&mut schema, "PSFC", "Pa");
     let hgt = surface(&mut schema, "HGT", "m");
@@ -197,6 +295,13 @@ fn write_frame_with(
             .unwrap();
         id
     };
+    let p_top = volume_var(&mut schema, "P_TOP", &[time], "Pa");
+    let p_hyd = volume_var(
+        &mut schema,
+        "P_HYD",
+        &[time, bottom_top, south_north, west_east],
+        "Pa",
+    );
     let t = volume_var(
         &mut schema,
         "T",
@@ -296,6 +401,29 @@ fn write_frame_with(
             pressure_perturbation.push(0.0);
         }
     }
+    // The hydrostatic carrier follows the dry eta column and total water,
+    // independently of the fixture's nonhydrostatic P + PB planes.
+    let model_top_pressure = 4_000.0f32;
+    let total_water = 0.008f32 + CLOUD_WATER_KG_PER_KG;
+    let interface_pressure: Vec<f32> = ETA_FULL_LEVELS.iter()
+        .map(|eta| model_top_pressure + (1.0 + total_water) * DRY_COLUMN_MASS_PA * eta)
+        .collect();
+    let hydrostatic_levels: Vec<f32> = interface_pressure.windows(2)
+        .map(|p| 0.5 * (p[0] + p[1])).collect();
+    let hydrostatic_pressure: Vec<f32> = hydrostatic_levels.iter()
+        .flat_map(|p| std::iter::repeat_n(*p, cells)).collect();
+    let specific_humidity = 0.008f32 / 1.008f32;
+    let layer_temperatures: Vec<f32> = hydrostatic_levels.iter()
+        .map(|p| THETA_K as f32 * (p * 1.0e-5).powf(0.28589641)).collect();
+    let mut vapor_pressure = 0.0f32;
+    for k in (0..NZ).rev() {
+        vapor_pressure += 9.81 * (hydrostatic_levels[k] / (287.04 * layer_temperatures[k]))
+            * 1_000.0 * specific_humidity;
+    }
+    let shelter_pressure = (DRY_COLUMN_MASS_PA + model_top_pressure + vapor_pressure)
+        * (-0.068283 / layer_temperatures[0]).exp();
+    let theta2_values: Vec<f32> = t2_values.iter()
+        .map(|t| t / (shelter_pressure * 1.0e-5).powf(0.28589641)).collect();
     let mut base_geopotential = Vec::with_capacity(cells * (NZ + 1));
     for level in 0..=NZ {
         let value = 9.81 * (TERRAIN_M as f32 + 1_000.0 * level as f32);
@@ -304,13 +432,18 @@ fn write_frame_with(
         }
     }
     let geopotential_perturbation = vec![0.0f32; cells * (NZ + 1)];
-    let u_values = vec![7.0f32; (NX + 1) * NY * NZ];
+    let mut u_values = vec![7.0f32; (NX + 1) * NY * NZ];
+    if finite_fill {
+        u_values[0] = 9.96921e36;
+    }
     let v_values = vec![-3.0f32; NX * (NY + 1) * NZ];
 
     let mut writer = NcWriter::create(&path, schema).unwrap();
     for (id, value) in extra_planes {
+        let mut values=vec![value;cells];
+        if finite_fill {values[0]=9.96921e36;}
         writer
-            .write_record(0, id, VarData::F32(&vec![value; cells]))
+            .write_record(0, id, VarData::F32(&values))
             .unwrap();
     }
     writer
@@ -320,14 +453,17 @@ fn write_frame_with(
         writer
             .write_record(0, rainc, VarData::F32(&vec![0.0; cells]))
             .unwrap();
+        let mut values=vec![total;cells];
+        if finite_fill {values[0]=9.96921e36;}
         writer
-            .write_record(0, rainnc, VarData::F32(&vec![total; cells]))
+            .write_record(0, rainnc, VarData::F32(&values))
             .unwrap();
     }
     for (id, values) in [
         (xlat, &lat),
         (xlong, &lon),
         (t2, &t2_values),
+        (th2, &theta2_values),
         (q2, &q2_values),
         (psfc, &psfc_values),
         (hgt, &hgt_values),
@@ -347,6 +483,8 @@ fn write_frame_with(
     writer
         .write_record(0, znw, VarData::F32(&ETA_FULL_LEVELS))
         .unwrap();
+    writer.write_record(0, p_top, VarData::F32(&[model_top_pressure])).unwrap();
+    writer.write_record(0, p_hyd, VarData::F32(&hydrostatic_pressure)).unwrap();
     for (id, values) in [
         (t, &theta_perturbation),
         (p, &pressure_perturbation),

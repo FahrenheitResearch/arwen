@@ -69,10 +69,53 @@ def _without_local_length_option(source):
     return source
 
 
+def _without_gsd41(source):
+    """The source the default build compiles: MYNN_GSD41 undefined.
+
+    The GSD MYNN v4.1 rows (bl_mynn_version = "gsd_41") sit behind
+    ``#if defined(MYNN_GSD41)`` / ``#if !defined(MYNN_GSD41)`` and reach a
+    run only through the integer-define loader; this evaluates those
+    conditionals with the define absent, then undoes the remaining spellings the
+    gsd_41 rows needed outside them (the length macros, the kernel argument
+    lists' closing parenthesis).
+    """
+    out, stack = [], []
+    for line in source.splitlines(True):
+        text = line.strip()
+        if text in ("#if defined(MYNN_GSD41)", "#if !defined(MYNN_GSD41)"):
+            stack.append(text == "#if !defined(MYNN_GSD41)")
+            continue
+        if stack and text == "#else":
+            stack[-1] = not stack[-1]
+            continue
+        if stack and text == "#endif":
+            stack.pop()
+            continue
+        if all(stack):
+            out.append(line)
+    assert not stack
+    source = "".join(out)
+    edits = (
+        ("#define MYNN_GSD41_LENGTH_PARAMS\n"
+         "#define MYNN_GSD41_LENGTH_ARGS(flt_, unsq_)\n", ""),
+        ("int mixlength MYNN_GSD41_LENGTH_PARAMS)", "int mixlength)"),
+        ("\n                               MYNN_GSD41_LENGTH_ARGS("
+         "0.0f, unsquared_qtke));", ");"),
+        ("\n        MYNN_GSD41_LENGTH_ARGS(flt_c, unsquared_qtke));", ");"),
+    )
+    for current, historical in edits:
+        assert source.count(current) == 1, current
+        source = source.replace(current, historical)
+    # Kernels that take a gsd_41 argument close their parameter list on a
+    # line of its own; the historical source never does.
+    assert source.count("\n    )\n{") >= 1
+    return source.replace("\n    )\n{", ")\n{")
+
+
 def test_only_mixing_length_entries_differ_from_the_sibling():
     # Do not let the new length option silently alter DMP scalar fluxes.
     assert _without_local_length_option(_without_length_entry(
-        _read("mynn_pbl.cu"))) == _without_length_entry(
+        _without_gsd41(_read("mynn_pbl.cu")))) == _without_length_entry(
         _historical_source())
 
 
@@ -88,9 +131,26 @@ def test_the_marker_is_actually_exercised():
         assert needle in text, f"no tagged line exports {needle}"
 
 
-def test_default_dmp_still_launches_the_original_module():
+def test_default_dmp_still_launches_the_original_module(monkeypatch):
     """The DMP dispatch uses the sibling only for scalar-mixing exports."""
+    from gpuwm.core import mynn_pbl_gpu
+
+    calls, original = [], object()
+
+    def capture(module, function):
+        calls.append((module, function))
+        return original
+
+    def refuse_defines(*args, **kwargs):
+        raise AssertionError("generic MYNN must use the original module without defines")
+
+    monkeypatch.setattr(mynn_pbl_gpu, "get_kernel", capture)
+    monkeypatch.setattr(mynn_pbl_gpu, "get_kernel_int_defines", refuse_defines)
+    for args in (("mynn_dmp_mf_columns",), ("mynn_dmp_mf_columns", "wrf_461")):
+        assert mynn_pbl_gpu.mynn_pbl_kernel(*args) is original
+    assert calls == [("mynn_pbl", "mynn_dmp_mf_columns")] * 2
+
     core = (Path(__file__).resolve().parents[1] / "gpuwm" / "core"
             / "mynn_pbl_gpu.py").read_text(encoding="utf-8")
-    assert 'get_kernel("mynn_pbl", "mynn_dmp_mf_columns")' in core
+    assert 'mynn_pbl_kernel("mynn_dmp_mf_columns", bl_mynn_version)' in core
     assert 'get_kernel("mynn_dmp_sibling", "mynn_dmp_mf_columns")' in core

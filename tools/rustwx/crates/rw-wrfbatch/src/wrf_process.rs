@@ -1110,7 +1110,8 @@ fn process_paths_with_target(
                         let _ = tx.send(WrfProcessMessage::Progress(message));
                     },
                 ) {
-                    Ok(Some((canonical, severe, volumes, raw_2d))) => {
+                    Ok(Some((canonical, severe, volumes, raw_2d, hour_notes))) => {
+                        all_notes.extend(hour_notes);
                         let _ = tx.send(WrfProcessMessage::Progress(format!(
                             "Reading post-processed WRF {} time {} ({}) -> {}",
                             display_name(path),
@@ -1901,13 +1902,18 @@ fn read_wrf_products(
                 progress,
             )
         }) {
-            Ok(planes) => push_isobaric_recipe_planes(
-                &mut fields,
-                &grid,
-                projection.clone(),
-                planes.iter(),
-                options,
-            ),
+            Ok((planes, height_note)) => {
+                push_isobaric_recipe_planes(
+                    &mut fields,
+                    &grid,
+                    projection.clone(),
+                    planes.iter(),
+                    options,
+                );
+                // The heights took the named mass-level fallback: the
+                // run's notes say which heights its charts are.
+                fields.notes.extend(height_note);
+            }
             Err(error) => fields.notes.push(format!(
                 "Selected isobaric chart planes unavailable: {error}"
             )),
@@ -1926,7 +1932,8 @@ fn read_wrf_products(
             Err(err) => Err(err),
         };
         match volumes_result {
-            Ok((volumes, chart_volumes, surface)) => {
+            Ok((volumes, chart_volumes, surface, height_note)) => {
+                fields.notes.extend(height_note);
                 // The production isobaric chart recipes (500mb heights,
                 // 700/850mb temperature/dewpoint, upper-level winds, RH,
                 // absolute vorticity, ...) resolve per-level canonical
@@ -2864,7 +2871,7 @@ fn checked_horizontal_cells(ny: usize, nx: usize) -> Result<usize, String> {
     })
 }
 
-fn compute_var(
+pub fn compute_var(
     file: &WrfFile,
     name: &str,
     timeidx: usize,
@@ -3035,7 +3042,7 @@ pub(crate) fn wrf_product_slug(base: &str) -> Option<&'static str> {
     }
 }
 
-fn wrf_projection(file: &WrfFile) -> Option<GridProjection> {
+pub(crate) fn wrf_projection(file: &WrfFile) -> Option<GridProjection> {
     let map_proj = file.global_attr_i32("MAP_PROJ").ok()?;
     match map_proj {
         1 => {

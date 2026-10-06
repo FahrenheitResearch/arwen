@@ -35,6 +35,7 @@ use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use serde::Serialize;
 mod water_layer;
 mod soil_recovery;
+mod invariant_binding;
 
 /// The contract marker. Printed by `--abi`, and -- because it is a
 /// literal in the binary -- readable straight out of the bytes by the
@@ -43,6 +44,9 @@ const ABI: &str = concat!(
     "gpuwm-rw-netcdf-inventory-v1\tformat\tdimensions\tglobal_attributes\tvariables",
     "\tgpuwm-rw-netcdf-dump-v1\tvariables\tfilename\tshape\ttimes",
     "\tdtype\t<f8\t|S1\twater_layer_conversion\tsource_soil_recovery",
+    "\tdump_window_v1",
+    "\tdump_sample_window_v1",
+    "\tbind_published_invariants_v1",
 );
 
 const INVENTORY_SCHEMA: &str = "gpuwm-rw-netcdf-inventory-v1";
@@ -58,8 +62,9 @@ pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
 
 const USAGE: &str = "\
 usage: rw_netcdf inventory FILE
-       rw_netcdf dump [--raw|--no-mask] [--unit-scale=N] [--unit-offset=N] [--water-layer-thickness=VARIABLE] FILE OUTPUT_DIR VARIABLE [VARIABLE...]
+       rw_netcdf dump [--raw|--no-mask] [--unit-scale=N] [--unit-offset=N] [--water-layer-thickness=VARIABLE] [--window=I0:NI,J0:NJ] [--sample-window=X0:NI,Y0:NJ --sample-method=nearest|bilinear] FILE OUTPUT_DIR VARIABLE [VARIABLE...]
        rw_netcdf recover-wrf-soil WRFINPUT MET_EM AUTHORITY_JSON OUTPUT_DIR
+       rw_netcdf bind-invariants HEIGHT_FILE HEIGHT_VAR LAND_FILE LAND_VAR OUTPUT_FILE TIME_FILE [TIME_FILE...]
        rw_netcdf --abi | --help
 
   inventory  print a JSON description of FILE; a classic file that ends
@@ -68,7 +73,11 @@ usage: rw_netcdf inventory FILE
              files plus metadata.json
   --unit-scale=N / --unit-offset=N  explicit quantity conversion after CF unpacking
   --water-layer-thickness=VARIABLE  convert declared layer water mass/depth to volume fraction
-  --raw      skip CF decoding: no _FillValue/missing_value masking and no
+  --window=I0:NI,J0:NJ  keep NI columns from I0 and NJ rows from J0 of the
+             last two dimensions (x last, 0-based), after CF decoding; a
+             window that leaves the variable, or a variable with fewer
+             than two dimensions, is refused
+  --raw     skip CF decoding: no _FillValue/missing_value masking and no
              scale_factor/add_offset, so stored sentinels survive.  This
              is what netCDF4's set_auto_mask(False) asks for, and some
              products (gridded radar/satellite) read their own fill
@@ -158,6 +167,185 @@ struct DumpRecord {
     unit_transform: Option<[f64; 2]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     water_layer_conversion: Option<water_layer::Conversion>,
+    /// `[i0, ni, j0, nj]` when `--window` cut the last two dimensions,
+    /// so a caller can prove the reader applied the window it asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    window: Option<[usize; 4]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sample_window: Option<SampleWindow>,
+}
+
+/// Same-spacing rectangular sampling in the last two axes. Origins are
+/// zero-based source mass points and output points advance one source cell.
+#[derive(Clone, Copy, Debug, Serialize)]
+struct SampleWindow {
+    i0: f64,
+    ni: usize,
+    j0: f64,
+    nj: usize,
+    method: SampleMethod,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum SampleMethod { Nearest, Bilinear }
+
+impl SampleWindow {
+    fn parse(text: &str, method: &str) -> Result<Self, String> {
+        let bad = || format!("--sample-window needs finite X0:NI,Y0:NJ with positive whole counts, got {text:?}");
+        let (x, y) = text.split_once(',').ok_or_else(bad)?;
+        let (i0, ni) = x.split_once(':').ok_or_else(bad)?;
+        let (j0, nj) = y.split_once(':').ok_or_else(bad)?;
+        let parsed = Self {
+            i0: i0.parse().map_err(|_| bad())?, ni: ni.parse().map_err(|_| bad())?,
+            j0: j0.parse().map_err(|_| bad())?, nj: nj.parse().map_err(|_| bad())?,
+            method: match method { "nearest" => SampleMethod::Nearest,
+                "bilinear" => SampleMethod::Bilinear,
+                _ => return Err(format!("--sample-method must be nearest or bilinear, got {method:?}")), },
+        };
+        if !parsed.i0.is_finite() || !parsed.j0.is_finite()
+            || parsed.i0 < 0.0 || parsed.j0 < 0.0 || parsed.ni == 0 || parsed.nj == 0 {
+            return Err(bad());
+        }
+        Ok(parsed)
+    }
+
+    fn apply(&self, name: &str, values: &[f64], shape: &[usize])
+             -> Result<(Vec<f64>, Vec<usize>), String> {
+        if shape.len() < 2 {
+            return Err(format!("{name}: sampling needs at least two dimensions, got {shape:?}"));
+        }
+        let nx = shape[shape.len() - 1];
+        let ny = shape[shape.len() - 2];
+        let exact_count_limit = 1_u64 << 53;
+        if self.ni as u64 > exact_count_limit || self.nj as u64 > exact_count_limit {
+            return Err(format!("{name}: sampling counts overflow exact source-index arithmetic"));
+        }
+        let end_x = self.i0 + (self.ni - 1) as f64;
+        let end_y = self.j0 + (self.nj - 1) as f64;
+        if nx == 0 || ny == 0 || !end_x.is_finite() || !end_y.is_finite()
+            || self.i0 < 0.0 || self.j0 < 0.0
+            || end_x > (nx - 1) as f64 || end_y > (ny - 1) as f64 {
+            return Err(format!("{name}: sampled points {}..{} and {}..{} leave the variable's {ny} x {nx} plane",
+                               self.i0, end_x, self.j0, end_y));
+        }
+        let checked_product = |dims: &[usize]| dims.iter().try_fold(1_usize,
+            |a, b| a.checked_mul(*b)).ok_or_else(|| format!("{name}: sampling shape overflows the index range"));
+        if checked_product(shape)? != values.len() {
+            return Err(format!("{name}: sampling input shape differs from decoded value count"));
+        }
+        let lead = checked_product(&shape[..shape.len() - 2])?;
+        let count = checked_product(&[lead, self.ni, self.nj])?;
+        let mut out = Vec::new();
+        out.try_reserve_exact(count).map_err(|_| format!("{name}: sampled output allocation is too large"))?;
+        for plane in 0..lead {
+            let base = plane * ny * nx;
+            for j in 0..self.nj {
+                let y = self.j0 + j as f64;
+                for i in 0..self.ni {
+                    let x = self.i0 + i as f64;
+                    let get = |xx: usize, yy: usize| -> Result<f64, String> {
+                        let value = values[base + yy * nx + xx];
+                        if !value.is_finite() {
+                            Err(format!("{name}: non-finite source value needed for sampling at ({xx}, {yy})"))
+                        } else { Ok(value) }
+                    };
+                    let value = match self.method {
+                        SampleMethod::Nearest => get((x + 0.5).floor() as usize, (y + 0.5).floor() as usize)?,
+                        SampleMethod::Bilinear => {
+                            let xx = x.floor() as usize;
+                            let yy = y.floor() as usize;
+                            let fx = x - xx as f64;
+                            let fy = y - yy as f64;
+                            let a = get(xx, yy)?;
+                            // Exact integer origins keep their original f64 bits and
+                            // do not read zero-weight neighbors at the source edge.
+                            let top = if fx == 0.0 { a } else {
+                                a * (1.0 - fx) + get(xx + 1, yy)? * fx };
+                            if fy == 0.0 { top } else {
+                                let c = get(xx, yy + 1)?;
+                                let bottom = if fx == 0.0 { c } else {
+                                    c * (1.0 - fx) + get(xx + 1, yy + 1)? * fx };
+                                top * (1.0 - fy) + bottom * fy
+                            }
+                        },
+                    };
+                    if !value.is_finite() { return Err(format!("{name}: sampling produced a non-finite result")); }
+                    out.push(value);
+                }
+            }
+        }
+        let mut sampled_shape = shape[..shape.len() - 2].to_vec();
+        sampled_shape.extend_from_slice(&[self.nj, self.ni]);
+        Ok((out, sampled_shape))
+    }
+}
+
+/// A rectangle of the last two dimensions of a variable: `ni` columns
+/// from `i0` along the last (x) dimension and `nj` rows from `j0` along
+/// the one before it, both 0-based.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Window {
+    i0: usize,
+    ni: usize,
+    j0: usize,
+    nj: usize,
+}
+
+impl Window {
+    fn parse(text: &str) -> Result<Self, String> {
+        let bad = || format!("--window must be I0:NI,J0:NJ with whole numbers, got {text:?}");
+        let (x, y) = text.split_once(',').ok_or_else(bad)?;
+        let pair = |part: &str| -> Result<(usize, usize), String> {
+            let (start, count) = part.split_once(':').ok_or_else(bad)?;
+            Ok((start.trim().parse().map_err(|_| bad())?,
+                count.trim().parse().map_err(|_| bad())?))
+        };
+        let (i0, ni) = pair(x)?;
+        let (j0, nj) = pair(y)?;
+        if ni == 0 || nj == 0 {
+            return Err(format!("--window {text:?} selects no cells"));
+        }
+        Ok(Window { i0, ni, j0, nj })
+    }
+
+    /// The window of `values` (row-major, `shape`), and its shape.
+    ///
+    /// Refused, by name, for a variable with fewer than two dimensions
+    /// or a window that is not wholly inside the last two: a window cut
+    /// short at the edge would hand back a smaller field than the grid
+    /// it was asked for, under that grid's name.
+    fn apply(&self, name: &str, values: &[f64], shape: &[usize])
+             -> Result<(Vec<f64>, Vec<usize>), String> {
+        if shape.len() < 2 {
+            return Err(format!("{name}: --window needs at least two dimensions, got shape {shape:?}"));
+        }
+        let nx = shape[shape.len() - 1];
+        let ny = shape[shape.len() - 2];
+        let i_end = self.i0.checked_add(self.ni).ok_or_else(|| format!(
+            "{name}: --window column start {} plus count {} overflows the index range",
+            self.i0, self.ni))?;
+        let j_end = self.j0.checked_add(self.nj).ok_or_else(|| format!(
+            "{name}: --window row start {} plus count {} overflows the index range",
+            self.j0, self.nj))?;
+        if i_end > nx || j_end > ny {
+            return Err(format!(
+                "{name}: --window columns {}..{} rows {}..{} leave the variable's {ny} x {nx} plane",
+                self.i0, i_end, self.j0, j_end));
+        }
+        let lead: usize = shape[..shape.len() - 2].iter().product();
+        let mut out = Vec::with_capacity(lead * self.ni * self.nj);
+        for plane in 0..lead {
+            for row in 0..self.nj {
+                let start = plane * ny * nx + (self.j0 + row) * nx + self.i0;
+                out.extend_from_slice(&values[start..start + self.ni]);
+            }
+        }
+        let mut cut = shape[..shape.len() - 2].to_vec();
+        cut.push(self.nj);
+        cut.push(self.ni);
+        Ok((out, cut))
+    }
 }
 
 #[derive(Serialize, Default)]
@@ -198,6 +386,11 @@ fn main() {
         std::process::exit(2);
     }
     match args[0].as_str() {
+        "bind-invariants" => {
+            if args.len() < 7 { fail("bind-invariants takes HEIGHT_FILE HEIGHT_VAR LAND_FILE LAND_VAR OUTPUT_FILE TIME_FILE [TIME_FILE...]"); }
+            let time_files: Vec<PathBuf> = args[6..].iter().map(PathBuf::from).collect();
+            if let Err(error) = invariant_binding::bind(Path::new(&args[1]), &args[2], Path::new(&args[3]), &args[4], Path::new(&args[5]), &time_files) { fail(&error); }
+        }
         "recover-wrf-soil" => {
             if args.len() != 5 { fail("recover-wrf-soil takes WRFINPUT MET_EM AUTHORITY_JSON OUTPUT_DIR"); }
             if let Err(error) = soil_recovery::recover(Path::new(&args[1]),Path::new(&args[2]),Path::new(&args[3]),Path::new(&args[4])) { fail(&error); }
@@ -227,6 +420,18 @@ fn main() {
             let no_mask = raw || args.iter().any(|a| a == "--no-mask");
             let apply_scale = !raw;
             let water_layer = args.iter().find_map(|a| a.strip_prefix("--water-layer-thickness="));
+            let window = match args.iter().find_map(|a| a.strip_prefix("--window=")) {
+                Some(text) => Some(Window::parse(text).unwrap_or_else(|error| fail(&error))),
+                None => None,
+            };
+            let sample_text = args.iter().find_map(|a| a.strip_prefix("--sample-window="));
+            let sample_method = args.iter().find_map(|a| a.strip_prefix("--sample-method="));
+            let sample_window = match (sample_text, sample_method) {
+                (Some(text), Some(method)) => Some(SampleWindow::parse(text, method).unwrap_or_else(|error| fail(&error))),
+                (None, None) => None,
+                _ => fail("--sample-window and --sample-method must be specified together"),
+            };
+            if window.is_some() && sample_window.is_some() { fail("--window and --sample-window cannot be combined"); }
             if water_layer.is_some() && (raw || no_mask) {
                 fail("layer water conversion requires CF masking and unpacking");
             }
@@ -246,14 +451,16 @@ fn main() {
                 .iter()
                 .filter(|a| a.as_str() != "--raw" && a.as_str() != "--no-mask"
                     && !a.starts_with("--unit-scale=") && !a.starts_with("--unit-offset=")
-                    && !a.starts_with("--water-layer-thickness="))
+                    && !a.starts_with("--water-layer-thickness=")
+                    && !a.starts_with("--window=") && !a.starts_with("--sample-window=")
+                    && !a.starts_with("--sample-method="))
                 .collect();
             if positional.len() < 3 {
                 fail("dump takes FILE, OUTPUT_DIR and at least one VARIABLE");
             }
             let names: Vec<String> =
                 positional[2..].iter().map(|s| (*s).clone()).collect();
-            if let Err(error) = dump_with_water_layer(
+            if let Err(error) = dump_sampled(
                 Path::new(positional[0]),
                 Path::new(positional[1]),
                 &names,
@@ -261,6 +468,8 @@ fn main() {
                 apply_scale,
                 unit_transform,
                 water_layer,
+                window,
+                sample_window,
             ) {
                 fail(&error);
             }
@@ -648,9 +857,6 @@ fn character_bytes(file: &netcrust::File, variable: &netcrust::Variable) -> Resu
     let shape = variable.shape();
     let total = shape.iter().try_fold(1usize, |n, &size| n.checked_mul(size))
         .ok_or_else(|| format!("{name}: character shape overflows"))?;
-    if total as u64 > netcrust::MAX_ARRAY_ELEMENTS {
-        return Err(format!("{name}: character array exceeds the reader element limit"));
-    }
     let width = shape.last().copied().unwrap_or(1);
     let strings = file.read_strings(name).map_err(|error| format!("cannot decode {name}: {error}"))?;
     if total == 0 && strings.is_empty() { return Ok(Vec::new()); }
@@ -659,7 +865,9 @@ fn character_bytes(file: &netcrust::File, variable: &netcrust::Variable) -> Resu
     } else if strings.len() == total { 1 } else {
         return Err(format!("{name}: decoded {} strings do not match character shape {shape:?}", strings.len()));
     };
-    let mut bytes = Vec::with_capacity(total);
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(total)
+        .map_err(|error| format!("{name}: cannot allocate {total} character bytes: {error}"))?;
     for text in strings {
         if !text.is_ascii() || text.len() > chunk {
             return Err(format!("{name}: expected fixed-width ASCII characters; decoded text does not fit its {chunk}-byte slot"));
@@ -702,6 +910,24 @@ fn nc_default_fill(dtype: &netcrust::DataType) -> Option<f64> {
 
 fn dump_with_water_layer(path: &Path, out_dir: &Path, names: &[String], apply_mask: bool,
                     apply_scale: bool, unit_transform: [f64; 2], water_layer: Option<&str>) -> Result<(), String> {
+    dump_windowed(path, out_dir, names, apply_mask, apply_scale, unit_transform, water_layer, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dump_windowed(path: &Path, out_dir: &Path, names: &[String], apply_mask: bool,
+                 apply_scale: bool, unit_transform: [f64; 2], water_layer: Option<&str>,
+                 window: Option<Window>) -> Result<(), String> {
+    dump_sampled(path, out_dir, names, apply_mask, apply_scale, unit_transform,
+                 water_layer, window, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dump_sampled(path: &Path, out_dir: &Path, names: &[String], apply_mask: bool,
+                 apply_scale: bool, unit_transform: [f64; 2], water_layer: Option<&str>,
+                 window: Option<Window>, sample_window: Option<SampleWindow>) -> Result<(), String> {
+    if window.is_some() && sample_window.is_some() {
+        return Err("exact and sampled windows cannot be combined".into());
+    }
     let transformed = unit_transform != [1.0, 0.0];
     if !unit_transform.iter().all(|v| v.is_finite()) || unit_transform[0] == 0.0 {
         return Err("unit transform must have a finite nonzero scale and finite offset".into());
@@ -724,6 +950,9 @@ fn dump_with_water_layer(path: &Path, out_dir: &Path, names: &[String], apply_ma
                 if transformed || water_layer.is_some() {
                     return Err(format!("{name}: unit conversion requires a numeric variable"));
                 }
+                if window.is_some() || sample_window.is_some() {
+                    return Err(format!("{name}: --window requires a numeric variable"));
+                }
                 let shape = variable.shape();
                 let values = character_bytes(&file, variable)?;
                 let filename = format!("{index:04}.chars");
@@ -735,6 +964,8 @@ fn dump_with_water_layer(path: &Path, out_dir: &Path, names: &[String], apply_ma
                     dtype: "|S1", units: None, times: None, cf: CfApplied::default(),
                     unit_transform: None,
                     water_layer_conversion: None,
+                    window: None,
+                    sample_window: None,
                 });
                 continue;
             }
@@ -744,7 +975,7 @@ fn dump_with_water_layer(path: &Path, out_dir: &Path, names: &[String], apply_ma
         let array = file
             .read_array_f64(name)
             .map_err(|error| format!("cannot decode {name}: {error}"))?;
-        let shape = array.shape().to_vec();
+        let mut shape = array.shape().to_vec();
         let mut values = array.into_values();
 
         // CF unpacking, applied HERE so Python receives decoded numbers.
@@ -832,6 +1063,23 @@ fn dump_with_water_layer(path: &Path, out_dir: &Path, names: &[String], apply_ma
             missing_count,
             ..cf
         };
+        // The window is cut from the decoded values, so masking, unpacking
+        // and unit conversion are the same arithmetic with or without it;
+        // `missing_count` above still counts the whole variable.
+        let applied_window = match window {
+            Some(window) => {
+                let (cut, cut_shape) = window.apply(name, &values, &shape)?;
+                values = cut;
+                shape = cut_shape;
+                Some([window.i0, window.ni, window.j0, window.nj])
+            }
+            None => None,
+        };
+        if let Some(sample) = sample_window {
+            let (sampled, sampled_shape) = sample.apply(name, &values, &shape)?;
+            values = sampled;
+            shape = sampled_shape;
+        }
 
         // The index prefix keeps the filename unique and filesystem-safe
         // whatever the variable is called: NetCDF names may differ only
@@ -881,6 +1129,8 @@ fn dump_with_water_layer(path: &Path, out_dir: &Path, names: &[String], apply_ma
             cf,
             unit_transform: transformed.then_some(unit_transform),
             water_layer_conversion,
+            window: applied_window,
+            sample_window,
         });
     }
 
@@ -1777,6 +2027,100 @@ mod tests {
         assert!(missing.contains("variable not found"), "{missing}");
         assert!(missing.contains("absent"), "{missing}");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `--window` cuts the last two dimensions of a (time, category, y, x)
+    /// variable to exactly the rectangle asked for, keeps every leading
+    /// plane, echoes the window, and refuses a rectangle that leaves the
+    /// plane or a variable with one dimension.
+    #[test]
+    fn a_window_cuts_the_last_two_dimensions_exactly() {
+        use netcdf_writer::{NcFormat, NcType, NcWriter, Schema, VarData};
+        let dir = scratch("dump-window");
+        let source = dir.join("window.nc");
+        let mut schema = Schema::new(NcFormat::Classic);
+        let t = schema.def_dim("Time", 1, false).expect("dim");
+        let c = schema.def_dim("cat", 2, false).expect("dim");
+        let y = schema.def_dim("south_north", 3, false).expect("dim");
+        let x = schema.def_dim("west_east", 4, false).expect("dim");
+        let field = schema.def_var("FIELD", NcType::Float, &[t, c, y, x]).expect("var");
+        let line = schema.def_var("LINE", NcType::Float, &[x]).expect("var");
+        let mut writer = NcWriter::create(&source, schema).expect("create");
+        // value = 100 * cat + 10 * y + x
+        let values: Vec<f32> = (0..2)
+            .flat_map(|c| (0..3).flat_map(move |y| (0..4).map(move |x| (100 * c + 10 * y + x) as f32)))
+            .collect();
+        writer.write_var(field, VarData::F32(&values)).expect("write");
+        writer.write_var(line, VarData::F32(&[0.0, 1.0, 2.0, 3.0])).expect("write");
+        writer.finish().expect("finish");
+
+        let out = dir.join("out");
+        let window = Window::parse("1:2,1:2").expect("parse");
+        dump_windowed(&source, &out, &["FIELD".into()], true, true, [1.0, 0.0], None,
+                      Some(window)).expect("windowed dump");
+        let metadata = read_metadata(&out);
+        let rec = record(&metadata, "FIELD");
+        assert_eq!(rec["shape"], serde_json::json!([1, 2, 2, 2]));
+        assert_eq!(rec["window"], serde_json::json!([1, 2, 1, 2]));
+        assert_eq!(read_f64_plane(&out.join("0000.f64")),
+                   vec![11.0, 12.0, 21.0, 22.0, 111.0, 112.0, 121.0, 122.0]);
+        let exact_bytes = fs::read(out.join("0000.f64")).unwrap();
+        for method in ["nearest", "bilinear"] {
+            let sample = SampleWindow::parse("1:2,1:2", method).unwrap();
+            dump_sampled(&source, &out, &["FIELD".into()], true, true,
+                         [1.0, 0.0], None, None, Some(sample)).unwrap();
+            assert_eq!(fs::read(out.join("0000.f64")).unwrap(), exact_bytes);
+            let sampled_metadata = read_metadata(&out);
+            assert_eq!(record(&sampled_metadata, "FIELD")["sample_window"]["method"], method);
+        }
+        dump_sampled(&source, &out, &["FIELD".into()], true, true,
+                     [1.0, 0.0], None, None,
+                     Some(SampleWindow::parse("0.25:2,0.5:2", "bilinear").unwrap())).unwrap();
+        assert_eq!(read_f64_plane(&out.join("0000.f64")),
+                   vec![5.25, 6.25, 15.25, 16.25, 105.25, 106.25, 115.25, 116.25]);
+        dump_sampled(&source, &out, &["FIELD".into()], true, true,
+                     [1.0, 0.0], None, None,
+                     Some(SampleWindow::parse("0.25:2,0.5:2", "nearest").unwrap())).unwrap();
+        assert_eq!(read_f64_plane(&out.join("0000.f64")),
+                   vec![10.0, 11.0, 20.0, 21.0, 110.0, 111.0, 120.0, 121.0]);
+
+        let outside = dump_windowed(&source, &out, &["FIELD".into()], true, true, [1.0, 0.0],
+                                    None, Some(Window::parse("3:2,0:1").unwrap()))
+            .expect_err("a window past the edge is refused");
+        assert!(outside.contains("leave the variable"), "{outside}");
+        let flat = dump_windowed(&source, &out, &["LINE".into()], true, true, [1.0, 0.0],
+                                 None, Some(window))
+            .expect_err("a one-dimensional variable has no window");
+        assert!(flat.contains("at least two dimensions"), "{flat}");
+        assert!(Window::parse("1:0,0:1").is_err());
+        assert!(Window::parse("1-2,0:1").is_err());
+        for overflow in [format!("{}:2,0:1", usize::MAX),
+                         format!("0:1,{}:2", usize::MAX)] {
+            let error = Window::parse(&overflow).expect("whole numbers")
+                .apply("FIELD", &[0.0; 12], &[3, 4])
+                .expect_err("an overflowing window is refused before slicing");
+            assert!(error.contains("overflows the index range"), "{error}");
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sampled_windows_refuse_missing_neighbors_outside_and_overflow() {
+        let sample = SampleWindow::parse("0.25:2,0.5:1", "bilinear").unwrap();
+        let values = vec![1.0, 2.0, 3.0, 4.0, f64::NAN, 6.0];
+        assert!(sample.apply("FIELD", &values, &[2, 3]).unwrap_err().contains("non-finite source"));
+        let outside = SampleWindow::parse("2.25:1,0:1", "nearest").unwrap();
+        assert!(outside.apply("FIELD", &[0.0; 6], &[2, 3]).unwrap_err().contains("leave the variable"));
+        assert!(SampleWindow::parse("NaN:1,0:1", "nearest").is_err());
+        assert!(SampleWindow::parse("-0.1:1,0:1", "bilinear").is_err());
+        assert!(SampleWindow::parse("0:0,0:1", "bilinear").is_err());
+        assert!(SampleWindow::parse("0:1,0:1", "cubic").is_err());
+        let overflow = SampleWindow::parse(&format!("0:{},0:1", usize::MAX), "bilinear").unwrap();
+        assert!(overflow.apply("FIELD", &[0.0; 6], &[2, 3]).unwrap_err().contains("overflow"));
+        let one = SampleWindow::parse("2:1,1:1", "bilinear").unwrap();
+        let mut edge = vec![0.0; 6];
+        edge[5] = -0.0;
+        assert_eq!(one.apply("FIELD", &edge, &[2, 3]).unwrap().0[0].to_bits(), (-0.0_f64).to_bits());
     }
 
     /// A recovered dimension scale has no entry in the variable table,

@@ -27,6 +27,34 @@ from dataclasses import asdict, dataclass
 
 
 SCHEMA = "rw-wps.stock-wrf-physics-inventory.v1"
+
+#: The thermodynamic representation every stock-WRF export declares and
+#: holds: dry potential temperature, WRF's ``use_theta_m = 0``.  The engine
+#: integrates dry theta, so the prepared cache the exporter reads holds dry
+#: theta in its state and mass-coupled dry theta in its lateral-boundary
+#: tables (gpuwm/ingest/lateral_bc.py, ``_coupled_device_fields``).  The
+#: export (gpuwm/wrf_direct.py) writes exactly that: ``USE_THETA_M = 0`` on
+#: both files, ``THM`` equal to ``T`` (what real.exe writes under
+#: ``use_theta_m = 0``, tests/data/real_em_461_theta_seam_west_strip.
+#: README.md), and ``T_B*`` straight from the tables.
+#:
+#: Until this constant existed the pair was mixed: the header said
+#: ``USE_THETA_M = 1`` and ``THM`` held moist theta, while ``T_B*`` held
+#: the same dry-coupled tables.  WRF couples its prognostic into ``T_B*``
+#: (main/real_em.F:872), so a ``use_theta_m = 1`` wrf.exe read those rows
+#: as moist theta and its specified boundary came out colder than the
+#: analysis by theta * Rv/Rd * qv / (1 + Rv/Rd * qv) from the first step
+#: (measured with stock WRF V4.6.1: 2.887 K at qv = 4 g/kg, the prediction
+#: to 4e-5 K; the same pair written dry holds the boundary to 3e-5 K).
+#:
+#: It lives here, beside the other facts a stock wrfinput must satisfy,
+#: because this module imports nothing: every stock-WRF namelist the tree
+#: renders for an export reads its ``use_theta_m`` from this name, and the
+#: routes refuse a stock namelist that says otherwise.  WRF's input gate
+#: (share/input_wrf.F) stops with "use_theta_m values must be consistent"
+#: when the namelist and the file disagree.
+EXPORT_USE_THETA_M = 0
+
 WRFINPUT_3D_DIMS = (
     "Time",
     "bottom_top",
@@ -500,6 +528,7 @@ def stock_wrf_physics_inventory(mp_physics: int) -> StockWrfPhysicsInventory:
 
 
 __all__ = [
+    "EXPORT_USE_THETA_M",
     "SCHEMA",
     "StockWrfPhysicsInventory",
     "RuntimeStateField",

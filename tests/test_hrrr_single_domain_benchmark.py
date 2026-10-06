@@ -90,6 +90,9 @@ def test_hrrr_runner_capability_query_is_side_effect_free_without_run_args(
         MYNN_RUC_PROFILE_ID, THOMPSON_MYNN_RUC_DUDHIA_PROFILE_ID,
         MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
         THOMPSON_MYNN_RUC_RTE_RRTMGP_PROFILE_ID,
+        hrrr_runner.THOMPSON_MYNN_RUC_MONTHLY_LEGACY_RRTMG_PROFILE_ID,
+        hrrr_runner.THOMPSON_MYNN_RUC_MONTHLY_SOLAR_LEGACY_RRTMG_PROFILE_ID,
+        hrrr_runner.THOMPSON_MYNN_GSD41_PROFILE_ID,
         NOAHMP_PROFILE_ID, MYNN_NOAHMP_PROFILE_ID,
         MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID]
     assert payload["report_schema"] == "gpuwm-native-hrrr-benchmark-v2"
@@ -585,6 +588,7 @@ def test_prepare_only_cadence_is_bound_into_cache_identity_without_output():
         HrrrTargetDomain.legacy_500x500(), nz=4)
     exp = _experiment(
         vertical, run_seconds=3600.0, target=target,
+        physics_profile=THOMPSON_RTE_RRTMGP_PROFILE_ID,
         history_interval_seconds=args.history_interval_seconds)
 
     def identity(domain):
@@ -601,9 +605,11 @@ def test_prepare_only_cadence_is_bound_into_cache_identity_without_output():
     prepared_identity = identity(exp.root)
     forecast_exp = _experiment(
         vertical, run_seconds=3600.0, target=target,
+        physics_profile=THOMPSON_RTE_RRTMGP_PROFILE_ID,
         history_interval_seconds=3600.0)
     legacy_default_exp = _experiment(
         vertical, run_seconds=3600.0, target=target,
+        physics_profile=THOMPSON_RTE_RRTMGP_PROFILE_ID,
         history_interval_seconds=300.0)
 
     assert args.prepare_only is True
@@ -798,8 +804,9 @@ def test_f00_and_boundary_mapping_forward_explicit_target_radius(monkeypatch):
 
 @pytest.mark.parametrize("nz", [4, 17, 49, 80])
 def test_native_hrrr_experiment_threads_admitted_explicit_vertical_grid(nz):
-    # Every depth here runs the ROUTE DEFAULT, because no depth here
-    # meets a radiation bound.  At p_top = 12_345 Pa each 4/4 arm builds
+    # Every depth here runs the explicit YSU modern-radiation suite, so
+    # the four-level geometry control remains independent of the MYNN
+    # route default's five-level minimum. At p_top = 12_345 Pa each 4/4 arm builds
     # 31 cap layers above the model top, so the deepest case is
     # 80 + 31 = 111 radiation layers against a bound of 128 on either
     # engine (MAX_LEGACY_LONGWAVE_LAYERS and MAX_RRTMGP_LAYERS,
@@ -808,7 +815,7 @@ def test_native_hrrr_experiment_threads_admitted_explicit_vertical_grid(nz):
     # that no engine holds: 64 is the layer count a 51-level ladder
     # reaches at p_top = 5000 Pa, not a cap.  The bound that does exist
     # is asserted in both directions, on both arms, by the test below.
-    profile = ROUTE_DEFAULT_PHYSICS_PROFILE
+    profile = THOMPSON_RTE_RRTMGP_PROFILE_ID
     target = dataclasses.replace(HrrrTargetDomain.legacy_500x500(), nz=nz)
     vertical = VerticalConfig(
         eta_levels=tuple(float(value)
@@ -873,10 +880,85 @@ def test_either_radiation_arm_bounds_a_longwave_column_at_the_same_number(
             "got 98+31=129") in str(caught.value)
 
 
-def test_the_route_default_is_the_modern_arm_of_that_pair():
-    """The pair above covers the default because this equality holds."""
+def test_the_route_default_activates_the_explicit_fork_composition():
+    assert ROUTE_DEFAULT_PHYSICS_PROFILE == hrrr_runner.THOMPSON_MYNN_GSD41_PROFILE_ID
+    run = _deep_column_experiment(49, ROUTE_DEFAULT_PHYSICS_PROFILE).root.run
+    assert run.sf_sfclay_physics == run.bl_pbl_physics == 5
+    assert run.mynn_sfclay_variant == "gsl_wrf39"
+    assert run.sf_surface_physics == 3
+    assert run.num_soil_layers == 9
+    assert (run.ra_lw_physics, run.ra_sw_physics) == (4, 4)
+    assert run.ra_rrtmg_variant == "rrtmg_legacy"
+    assert run.bl_mynn_version == "gsd_41"
+    assert run.bl_mynn_mixlength == 2
+    assert run.mp_physics == 28
+    assert (run.aer_init_opt, run.wif_input_opt) == (1, 1)
 
-    assert ROUTE_DEFAULT_PHYSICS_PROFILE == THOMPSON_RTE_RRTMGP_PROFILE_ID
+
+def test_source_version_namelist_contract_round_trips_and_refuses_drift(tmp_path, monkeypatch):
+    from gpuwm.hrrr_route_inputs import render_namelist_input
+    from gpuwm import thompson_fork_assets
+    fork_root = tmp_path / "unacquired-fork-cache"
+    monkeypatch.setenv("GPUWM_THOMPSON_FORK_TABLE_ROOT", str(fork_root))
+    monkeypatch.setattr(thompson_fork_assets, "ensure_thompson_fork_tables",
+                        lambda *a, **k: pytest.fail("configuration preview acquired tables"))
+    exp = _deep_column_experiment(49, hrrr_runner.THOMPSON_MYNN_GSD41_PROFILE_ID)
+    text = render_namelist_input(exp)
+    path = tmp_path / "namelist.input"
+    path.write_text(text)
+    receipt = _validate_native_hrrr_physics_profile(
+        path, hrrr_runner.THOMPSON_MYNN_GSD41_PROFILE_ID)
+    assert receipt["readiness"] == "IMPLEMENTED_UNVERIFIED"
+    assert receipt["microphysics_table_authority"]["mp_physics"] == 28
+    assert receipt["microphysics_table_authority"]["asset_validation"] == "deferred_to_runtime_before_first_use"
+    assert not fork_root.exists()
+    assert receipt["validated_namelist"]["physics"]["bl_mynn_tkebudget"] == 0
+    import re
+    changed = re.sub(r"(bl_mynn_tkebudget\s*=\s*)0", r"\g<1>1", text)
+    assert changed != text
+    path.write_text(changed)
+    with pytest.raises(ValueError, match="bl_mynn_tkebudget"):
+          _validate_native_hrrr_physics_profile(
+              path, hrrr_runner.THOMPSON_MYNN_GSD41_PROFILE_ID)
+
+
+@pytest.mark.parametrize("profile", [
+    hrrr_runner.MYNN_NOAHMP_PROFILE_ID,
+    hrrr_runner.MYNN_NOAHMP_RTE_RRTMGP_PROFILE_ID,
+    hrrr_runner.MYNN_RUC_PROFILE_ID,
+    hrrr_runner.MYNN_PROFILE_ID,
+])
+def test_ruc_prescribed_monthly_defaults_follow_the_selected_lsm(profile):
+    exp = _deep_column_experiment(49, profile)
+    expected = exp.root.run.sf_surface_physics in (2, 3)
+    assert exp.root.run.usemonalb is expected
+    assert exp.root.run.rdlai2d is expected
+
+
+@pytest.mark.parametrize("profile", [
+    hrrr_runner.MYNN_RUC_PROFILE_ID, hrrr_runner.MYNN_PROFILE_ID,
+])
+def test_ruc_source_monthly_defaults_preserve_explicit_false(monkeypatch, profile):
+    original = hrrr_runner._native_hrrr_runtime_switches
+    def switches(profile):
+        result = dict(original(profile))
+        result.update(usemonalb=False, rdlai2d=False)
+        return result
+    monkeypatch.setattr(hrrr_runner, "_native_hrrr_runtime_switches", switches)
+    exp = _deep_column_experiment(49, profile)
+    assert exp.root.run.usemonalb is False
+    assert exp.root.run.rdlai2d is False
+
+
+def test_benchmark_can_state_historical_monthly_false_controls():
+    vertical = VerticalConfig(
+        eta_levels=tuple(float(value) for value in np.linspace(1.0, 0.0, 50)),
+        p_top=5000.0, hybrid_opt=2, etac=0.2)
+    exp = _experiment(vertical, run_seconds=300.0,
+                      physics_profile=THOMPSON_RTE_RRTMGP_PROFILE_ID,
+                      usemonalb=False, rdlai2d=False)
+    assert exp.root.run.usemonalb is False
+    assert exp.root.run.rdlai2d is False
 
 
 @pytest.mark.parametrize(
@@ -899,6 +981,7 @@ def test_native_hrrr_history_uses_floor_schedule_for_any_due_output(
         HrrrTargetDomain.legacy_500x500(), nz=4)
     exp = _experiment(
         vertical, run_seconds=run_seconds, target=target,
+        physics_profile=THOMPSON_RTE_RRTMGP_PROFILE_ID,
         history_interval_seconds=cadence_seconds)
 
     receipt = hrrr_runner._validate_history_output_cadence(
@@ -926,6 +1009,7 @@ def test_native_hrrr_history_rejects_mismatch_and_nonstep_cadence():
         HrrrTargetDomain.legacy_500x500(), nz=4)
     exp = _experiment(
         vertical, run_seconds=10800.0, target=target,
+        physics_profile=THOMPSON_RTE_RRTMGP_PROFILE_ID,
         history_interval_seconds=7200.0)
 
     with pytest.raises(ValueError, match="exactly match the generated"):
@@ -1110,6 +1194,42 @@ def test_native_hrrr_new_front_door_families_prepare_exact_profile(
     assert receipt["resolved"]["bl_pbl_physics"] == pbl
     assert receipt["resolved"]["num_soil_layers"] == soil_layers
     assert receipt["front_door_selection"]["profile"] == profile
+
+
+@pytest.mark.parametrize("solar", [False, True], ids=["monthly", "monthly-solar"])
+def test_native_hrrr_monthly_ruc_contract_reads_logicals_and_rejects_drift(
+        tmp_path, pinned_thompson_tables, solar):
+    profile = (hrrr_runner.THOMPSON_MYNN_RUC_MONTHLY_SOLAR_LEGACY_RRTMG_PROFILE_ID
+               if solar else hrrr_runner.THOMPSON_MYNN_RUC_MONTHLY_LEGACY_RRTMG_PROFILE_ID)
+    path = tmp_path / "monthly.input"
+    _write_native_physics_namelist(
+        path, mp_physics=8, sf_sfclay_physics=5,
+        sf_surface_physics=3, bl_pbl_physics=5, num_soil_layers=9)
+    text = path.read_text().replace(
+        " ra_lw_physics = 0, 0,", " ra_lw_physics = 4, 4,").replace(
+        " ra_sw_physics = 1, 1,", " ra_sw_physics = 4, 4,").replace(
+        " radt = 1, 3,", " radt = 12, 12,").replace(
+        "&physics\n", "&physics\n usemonalb = .true., .false.,\n"
+        " rdlai2d = .true., .false.,\n fractional_seaice = 1, 0,\n")
+    if solar:
+        text = text.replace("&physics\n", "&physics\n alb_sol = 1, 0,\n")
+    path.write_text(text, encoding="ascii")
+    receipt = _validate_native_hrrr_physics_profile(path, profile)
+    assert receipt["readiness"] == "IMPLEMENTED_UNVERIFIED"
+    physics = receipt["validated_namelist"]["physics"]
+    assert physics["usemonalb"] is physics["rdlai2d"] is True
+    assert physics["fractional_seaice"] == 1
+    assert receipt["resolved"]["ra_rrtmg_variant"] == "rrtmg_legacy"
+    if solar:
+        assert physics["alb_sol"] == receipt["resolved"]["alb_sol"] == 1
+        path.write_text(text.replace("alb_sol = 1, 0,", "alb_sol = 0, 1,"), encoding="ascii")
+        with pytest.raises(ValueError, match="alb_sol.*must be 1"):
+            _validate_native_hrrr_physics_profile(path, profile)
+    path.write_text(text.replace(
+        "usemonalb = .true., .false.,", "usemonalb = .false., .true.,"),
+        encoding="ascii")
+    with pytest.raises(ValueError, match="usemonalb.*must be True"):
+        _validate_native_hrrr_physics_profile(path, profile)
 
 
 def test_native_hrrr_noahmp_warns_without_registry_acknowledgement(tmp_path, capsys):
@@ -1459,6 +1579,35 @@ def test_the_hrrr_experiment_forwards_every_switch_its_profile_declares(
     assert observed == switches
 
 
+
+@pytest.mark.parametrize("profile", sorted(_ROUTE_PHYSICS_PROFILES))
+def test_monthly_surface_rows_follow_every_route_templates_land_scheme(profile):
+    from gpuwm.hrrr_route_inputs import render_namelist_input
+    from gpuwm.namelist_import import parse_namelist_text
+
+    switches = single_domain_runtime_switches(profile)
+    supported = switches["sf_surface_physics"] in (2, 3)
+    exp = _profile_experiment(profile)
+    target = dataclasses.replace(HrrrTargetDomain.legacy_500x500(),
+                                 nz=exp.root.run.nz)
+    raw, _ = hrrr_runner._experiment_tables(
+        exp.vertical, run_seconds=3600.0, target=target,
+        physics_profile=profile)
+    physics = parse_namelist_text(render_namelist_input(exp))["physics"]
+    for key in ("rdlai2d", "usemonalb"):
+        assert (key in raw["shared"]) is supported, (profile, key)
+        assert getattr(exp.root.run, key) is supported, (profile, key)
+        assert (key in physics) is supported, (profile, key)
+        if supported:
+            assert raw["shared"][key] is True
+            assert physics[key] == [True]
+    if profile == ROUTE_DEFAULT_PHYSICS_PROFILE:
+        domains = parse_namelist_text(render_namelist_input(exp))["domains"]
+        assert (exp.root.run.aer_init_opt, exp.root.run.wif_input_opt) == (1, 1)
+        assert physics["use_aero_icbc"] == [True]
+        assert domains["wif_input_opt"] == [1]
+
+
 def test_the_hrrr_switch_forward_refuses_a_profile_switch_it_has_no_home_for(
 ):
     """A profile that grows a switch fails loudly, not silently."""
@@ -1631,7 +1780,8 @@ class _ReferencePreprocessBackend:
 
 def _decoded_native_hrrr_initialization(
         mp_physics, *, analyzed_species=None,
-        analyzed_source_levels=None):
+        analyzed_source_levels=None, landmask=None,
+        mp28_aerosol_source=None):
     """Drive decoded native fields through real initialization, never a fake state.
 
     ``analyzed_species`` selects which of QC/QR/QI/QS/QG carry mass in the
@@ -1701,11 +1851,14 @@ def _decoded_native_hrrr_initialization(
         levels_hpa=levels,
         fields=fields,
     )
+    extra = {} if mp28_aerosol_source is None else {
+        "mp28_aerosol_source": mp28_aerosol_source}
     cfg = RunConfig(
         nx=nx, ny=ny, nz=nz, dx=12000.0, dy=12000.0,
         ztop=18000.0, dt=30.0, run_seconds=60.0,
         hybrid_opt=2, etac=0.2, moist=True, terrain_opt=1,
         mp_physics=mp_physics,
+        **extra,
     )
     eta = np.linspace(1.0, 0.0, nz + 1)
     terrain = np.zeros((ny, nx), dtype=np.float64)
@@ -1715,6 +1868,7 @@ def _decoded_native_hrrr_initialization(
             nz, hybrid_opt=2, etac=0.2, eta_levels=eta),
         terrain,
         source_orography=terrain,
+        landmask=landmask,
         p_top=10000.0,
         use_sh_qv=True,
         preprocess_backend=_ReferencePreprocessBackend(),

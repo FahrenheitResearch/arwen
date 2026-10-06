@@ -382,12 +382,15 @@ def flux_trial_source(source, spec, members, *, layout="outermost", zero_tendenc
 
 def prepare_flux_div_trial(field, ru, rv, rw, tend, spacing, fnm, fnp, msf, *,
                            dx, dy, stagger="", open_x=False, open_y=False,
-                           has_msf=False, spec=False, layout="outermost", zero_tendency=False):
+                           has_msf=False, spec=False, layout="outermost", zero_tendency=False,
+                           vorder=3):
     """Bind the closed stencil layout and optional adjacent RK-zero fusion.
 
     With fusion, omit this field's row from the external RK tendency zero. The
     trial overwrites its prior tendency with exactly the zero-plus-advection
     value. Other slow RHS contributions must remain after this launch.
+    ``vorder`` is the field's WRF vertical order (3 or 5), the trailing
+    argument of the audited entry, as ``prepare_flux_div`` passes it.
     """
     from gpuwm.core.kernels import module_source
     from gpuwm.ensemble import batch_operators as operators
@@ -395,6 +398,8 @@ def prepare_flux_div_trial(field, ru, rv, rw, tend, spacing, fnm, fnp, msf, *,
     _layout(layout)
     if stagger not in operators._FLUX_SPECS:
         raise ValueError("advection staggering must be '', 'x', 'y' or 'z'")
+    if vorder not in (3, 5):
+        raise ValueError("advection vorder must be 3 or 5 (the WRF vert_order ladders the kernel carries)")
     for name, array in (("field", field), ("ru", ru), ("rv", rv), ("rw", rw), ("tend", tend)):
         _cuda_array(array, name, 4)
     dims = field.shape if layout == "outermost" else (field.shape[-1],) + field.shape[:-1]
@@ -428,7 +433,7 @@ def prepare_flux_div_trial(field, ru, rv, rw, tend, spacing, fnm, fnp, msf, *,
         original = operators.prepare_flux_div(
             *(_outer_view(value, layout) for value in (field, ru, rv, rw, tend)),
             spacing, fnm, fnp, msf, dx=dx, dy=dy, stagger=stagger,
-            open_x=open_x, open_y=open_y, has_msf=has_msf, spec=spec)
+            open_x=open_x, open_y=open_y, has_msf=has_msf, spec=spec, vorder=vorder)
         def scalar():
             if zero_tendency:
                 tend.fill(0)
@@ -444,7 +449,7 @@ def prepare_flux_div_trial(field, ru, rv, rw, tend, spacing, fnm, fnp, msf, *,
             operators._kernel_scalar(1.0 / dx, "inverse dx"),
             operators._kernel_scalar(1.0 / dy, "inverse dy"),
             np.int32(nz), np.int32(ny), np.int32(nx), np.int32(open_x),
-            np.int32(open_y), np.int32(has_msf), np.int32(spec))
+            np.int32(open_y), np.int32(has_msf), np.int32(spec), np.int32(vorder))
     inner = layout == "innermost"
     grid = (((nxs * (members if inner else 1)) + _TPB - 1) // _TPB, nys, nlev)
     strides = {name: array.strides[0] for name, array in
@@ -520,16 +525,24 @@ def advection_family_source(source, members, *, layout="outermost", zero_tendenc
     outputs = frozenset(("theta_t", "u_t", "v_t", "w_t"))
     parameters = [f"{'real' if name in outputs else 'const real'}* __restrict__ {name}"
                   for name in fields + shared]
+    # The entries' trailing vorder: scalars and w take WRF's
+    # v_sca_adv_order (advect_w keys its vertical order on the scalar
+    # order), u and v take v_mom_adv_order.
     parameters += ["real dx_inv", "real dy_inv", "int nz", "int ny", "int nx",
-                   "int open_x", "int open_y", "int has_msf", "int boundary_spec"]
+                   "int open_x", "int open_y", "int has_msf", "int boundary_spec",
+                   "int vorder_scalar", "int vorder_momentum"]
     multiplier = members if layout == "innermost" else 1
-    tail = ("dx_inv, dy_inv, nz, ny, nx, open_x, open_y, has_msf, boundary_spec, "
-            "__trial_family_x, blockIdx.y, blockIdx.z")
+    common = "dx_inv, dy_inv, nz, ny, nx, open_x, open_y, has_msf, boundary_spec, "
+    coordinates = ", __trial_family_x, blockIdx.y, blockIdx.z"
     calls = (
-        "__trial_flux_div_scalar(theta, ru, rv, rw, theta_t, rdnw, fnm, fnp, msft, ",
-        "__trial_flux_div_u(u, ru, rv, rw, u_t, rdnw, fnm, fnp, msfu, ",
-        "__trial_flux_div_v(v, ru, rv, rw, v_t, rdnw, fnm, fnp, msfv, ",
-        "__trial_flux_div_w(w, ru, rv, rw, w_t, rdn, fnm, fnp, msft, ",
+        "__trial_flux_div_scalar(theta, ru, rv, rw, theta_t, rdnw, fnm, fnp, msft, "
+        + common + "vorder_scalar" + coordinates,
+        "__trial_flux_div_u(u, ru, rv, rw, u_t, rdnw, fnm, fnp, msfu, "
+        + common + "vorder_momentum" + coordinates,
+        "__trial_flux_div_v(v, ru, rv, rw, v_t, rdnw, fnm, fnp, msfv, "
+        + common + "vorder_momentum" + coordinates,
+        "__trial_flux_div_w(w, ru, rv, rw, w_t, rdn, fnm, fnp, msft, "
+        + common + "vorder_scalar" + coordinates,
     )
     dispatch = (
         "extern \"C\" __global__ void flux_div_family(" + ", ".join(parameters) + ") {\n"
@@ -538,21 +551,25 @@ def advection_family_source(source, members, *, layout="outermost", zero_tendenc
         f"const unsigned int __trial_u_blocks = "
         f"((static_cast<unsigned long long>(nx) + 1u) * {multiplier}u + {_TPB - 1}u) / {_TPB}u;\n"
         "unsigned int __trial_family_x = blockIdx.x;\n"
-        "if (__trial_family_x < __trial_scalar_blocks) {\n" + calls[0] + tail + "); return; }\n"
+        "if (__trial_family_x < __trial_scalar_blocks) {\n" + calls[0] + "); return; }\n"
         "__trial_family_x -= __trial_scalar_blocks;\n"
-        "if (__trial_family_x < __trial_u_blocks) {\n" + calls[1] + tail + "); return; }\n"
+        "if (__trial_family_x < __trial_u_blocks) {\n" + calls[1] + "); return; }\n"
         "__trial_family_x -= __trial_u_blocks;\n"
-        "if (__trial_family_x < __trial_scalar_blocks) {\n" + calls[2] + tail + "); return; }\n"
+        "if (__trial_family_x < __trial_scalar_blocks) {\n" + calls[2] + "); return; }\n"
         "__trial_family_x -= __trial_scalar_blocks;\n"
-        "if (__trial_family_x < __trial_scalar_blocks) {\n" + calls[3] + tail + "); }\n}\n")
+        "if (__trial_family_x < __trial_scalar_blocks) {\n" + calls[3] + "); }\n}\n")
     spec = KernelSpec("ensemble_layout_trials", "flux_div_family", pointers)
     return prefix + "\n".join(functions) + dispatch, spec
 
 
 def prepare_advection_family_trial(rows, ru, rv, rw, fnm, fnp, *, dx, dy,
                                     open_x=False, open_y=False, has_msf=False,
-                                    specified=False, layout="outermost", zero_tendency=True):
-    """Bind the four-stagger family with disjoint output and shared-field audits."""
+                                    specified=False, layout="outermost", zero_tendency=True,
+                                    vorder_scalar=3, vorder_momentum=3):
+    """Bind the four-stagger family with disjoint output and shared-field audits.
+
+    ``vorder_scalar`` (WRF v_sca_adv_order) reaches the scalar and w rows,
+    ``vorder_momentum`` (v_mom_adv_order) the u and v rows."""
     from gpuwm.core.kernels import module_source
     from gpuwm.ensemble import batch_operators as operators
     from gpuwm.ensemble.batch_fluxes import _cuda_array, _separate, _scalar_index_limit
@@ -599,11 +616,17 @@ def prepare_advection_family_trial(rows, ru, rv, rw, fnm, fnp, *, dx, dy,
     dx, dy = operators._finite(dx, "dx"), operators._finite(dy, "dy")
     if dx <= 0 or dy <= 0:
         raise ValueError("family advection spacing must be positive")
+    if vorder_scalar not in (3, 5) or vorder_momentum not in (3, 5):
+        raise ValueError("family advection vorder must be 3 or 5 (the WRF vert_order "
+                         "ladders the kernel carries)")
+    row_orders = {"": vorder_scalar, "x": vorder_momentum, "y": vorder_momentum,
+                  "z": vorder_scalar}
     if members == 1:
         originals = tuple(prepare_flux_div_trial(
             row[0], ru, rv, rw, row[1], row[2], fnm, fnp, row[3], dx=dx, dy=dy,
             stagger=row[4], open_x=open_x, open_y=open_y, has_msf=has_msf,
-            spec=specified, layout=layout, zero_tendency=False) for row in rows)
+            spec=specified, layout=layout, zero_tendency=False,
+            vorder=row_orders[row[4]]) for row in rows)
         scalar_zero = None
         if zero_tendency:
             from gpuwm.ensemble.batch_bookkeeping import prepare_bookkeeping
@@ -629,7 +652,8 @@ def prepare_advection_family_trial(rows, ru, rv, rw, fnm, fnp, *, dx, dy,
     args = values + (operators._kernel_scalar(1.0 / dx, "inverse dx"),
                      operators._kernel_scalar(1.0 / dy, "inverse dy"),
                      np.int32(nz), np.int32(ny), np.int32(nx), np.int32(open_x),
-                     np.int32(open_y), np.int32(has_msf), np.int32(specified))
+                     np.int32(open_y), np.int32(has_msf), np.int32(specified),
+                     np.int32(vorder_scalar), np.int32(vorder_momentum))
     inner = layout == "innermost"
     multiplier = members if inner else 1
     scalar_blocks = (nx * multiplier + _TPB - 1) // _TPB
@@ -699,6 +723,11 @@ def prepare_stage_trials(state, ru, rv, ww, rows, *, layout, family=False):
     if len(rows) != 4 or tuple(row[-1] for row in rows) != ("", "x", "y", "z"):
         raise ValueError("stage trial needs the scalar/u/v/w advection family in original order")
     options = dict(dx=cfg.dx, dy=cfg.dy, has_msf=state.has_msf)
+    from gpuwm.core.advection import vertical_orders
+    vorder_scalar, vorder_momentum = vertical_orders(cfg)
+    family_orders = dict(vorder_scalar=vorder_scalar, vorder_momentum=vorder_momentum)
+    row_orders = {"": vorder_scalar, "x": vorder_momentum, "y": vorder_momentum,
+                  "z": vorder_scalar}
     requested_layout = layout
     layout = "outermost" if state.members == 1 else layout
     additional = layout_trial_workspace_bytes(
@@ -716,11 +745,12 @@ def prepare_stage_trials(state, ru, rv, ww, rows, *, layout, family=False):
         if family:
             advection = (prepare_advection_family_trial(
                 rows, ru, rv, ww, state.fnm, state.fnp, layout=layout,
-                zero_tendency=True, **options),)
+                zero_tendency=True, **family_orders, **options),)
         else:
             advection = tuple(prepare_flux_div_trial(
                 field, ru, rv, ww, tendency, spacing, state.fnm, state.fnp, msf,
-                stagger=stagger, layout=layout, zero_tendency=True, **options)
+                stagger=stagger, layout=layout, zero_tendency=True,
+                vorder=row_orders[stagger], **options)
                 for field, tendency, spacing, msf, stagger in rows)
     else:
         import cupy as cp
@@ -758,7 +788,7 @@ def prepare_stage_trials(state, ru, rv, ww, rows, *, layout, family=False):
                                for row, packed, output in zip(rows, inner_fields, inner_tendencies))
             inner_family = prepare_advection_family_trial(
                 inner_rows, inner_ru, inner_rv, inner_ww, state.fnm, state.fnp,
-                layout=layout, zero_tendency=True, **options)
+                layout=layout, zero_tendency=True, **family_orders, **options)
             def transported_family():
                 for row, packed in zip(rows, inner_fields):
                     cp.copyto(packed, cp.moveaxis(row[0], 0, -1))
@@ -774,7 +804,8 @@ def prepare_stage_trials(state, ru, rv, ww, rows, *, layout, family=False):
                 inner_launch = prepare_flux_div_trial(
                     field_inner, inner_ru, inner_rv, inner_ww, tendency_inner,
                     spacing, state.fnm, state.fnp, msf, stagger=stagger,
-                    layout=layout, zero_tendency=True, **options)
+                    layout=layout, zero_tendency=True,
+                    vorder=row_orders[stagger], **options)
                 def transported(operation=inner_launch, source=field, packed=field_inner,
                                 packed_output=tendency_inner, destination=tendency):
                     cp.copyto(packed, cp.moveaxis(source, 0, -1))

@@ -719,6 +719,11 @@ tests/test_doctor_cuda_headers.py
 tests/test_obs_model_source.py
 tests/test_flagship_tools.py
 tests/test_obs_cross_reader.py
+# Isobaric height read between layer interfaces through the Rust rw-isobaric
+# seam the storm tracker, the GNSS-RO operator, the verification diagnostics
+# and the flagship products share (the 2.8.6 height fix); it pins the crate
+# against an isothermal eta column, where the layer-mean pairing is not exact.
+tests/test_isobaric_bridge.py
 # The GPU shard list's own gate: it checks every path on
 # tools/battery/gpu_shard_files.txt resolves and every entry is real.  It is
 # named in that file's comments as "the gate" and was an entry on no list,
@@ -755,6 +760,12 @@ tests/test_dependency_declaration_parity.py
 tests/test_verification_recipe_flags.py
 tests/test_doctor_extras.py
 tests/test_doctor_route_accuracy.py
+# 2.8.6, lane/cut286-fu-doctor-probe (45d840b1a): doctor judges rw_compare
+# and rw_verify by the probe each door refuses by.  Off this list, a doctor
+# line that again restates a door's contract instead of importing it (a
+# build reported verified that render --compare or the reference panels
+# then refuse, or the reverse) would pass every leg of the battery.
+tests/test_doctor_door_probes.py
 tests/test_cli_capability_refusals.py
 tests/test_obs_front_doors_are_shipped.py
 tests/test_render_pyshp_front_door.py
@@ -1907,6 +1918,29 @@ tests/test_smallstep_horizontal_wrf471_parity.py
 tests/test_smallstep_vertical_wrf471_parity.py
 tests/test_smallstep_oracle_contract.py
 
+# WRF vert_order 5 (lane 286-vadv5, v_sca_adv_order / v_mom_adv_order).  Its
+# CPU rows: the orders are refused by name outside 3 and 5, bind restarts
+# and leave prepared bundles alone; the route namelist writes a moved order;
+# the float64 mirror equals the Fortran loops on short columns and on the 51
+# operational eta levels; every forecast launch names its order.  Losing
+# this entry lets a launch left on order 3 ship under an order 5
+# configuration.  The fork fixture's pins, the fork-versus-4.7.1 reference
+# identity and the declared positive-definite low-order divergence run here
+# too; kernel words against the mirror and the compiled fork run on
+# gpu_shard_files.txt.
+tests/test_advect_vertical_order.py
+tests/test_advect_wrf_legacy_parity.py
+# The RK advection attribution's spliced kernel text against the helper
+# signatures it calls (rk_advection_diagnostic.py).  Losing this entry lets
+# a helper signature change strand the splice again: the tool runs only by
+# hand on a GPU, so its NVRTC failure surfaces when someone next needs it.
+tests/test_rk_advection_diagnostic_sources.py
+# The advection receipt recapture rules (recapture_receipt.py settle) on
+# synthetic captures, and the committed gpu-receipts.json indexes the device
+# tests select through.  Losing this entry lets a receipt move on a rented
+# card without its production words reproducing.
+tests/test_advect_recapture_receipt.py
+
 # Compiled WRF diffusion fixture integrity runs on the CPU cut leg. Device
 # word comparisons run in the release GPU pin stage; losing these entries
 # would leave changed Fortran sources or stale receipts unchecked on CPU.
@@ -2120,6 +2154,17 @@ tests/test_devices_memory_pools.py
 # device or host admission while the full-column solve still allocates them.
 tests/test_ruc_memory.py
 
+# A free-threaded command line must re-execute once with PYTHON_GIL=0, never on
+# a GIL build, on Windows, under an explicit PYTHON_GIL or as its own child, and
+# doctor must name a locked interpreter without blocking. Prevents netCDF4's
+# import putting every [devices] slab thread back on one interpreter lock.
+tests/test_free_threading.py
+# Slab threads bind to card-local CPUs only on multi-node hosts and never
+# outside the allowed set; auto stages every seam when cards span NUMA nodes.
+# Prevents threads floating across sockets, the mixed peer-copy collapse
+# (245 ms against 15 ms per exchange) and a silent locked-interpreter run.
+tests/test_rank_placements.py
+
 # Prevents a native mass-level top being confused with its model-top interface,
 # pressure rounding refusing the source's own eta ladder, aerosol numbers
 # silently replaced by climatology, and a separate analysis replacing RAP f00
@@ -2297,3 +2342,92 @@ tests/test_ensemble_table_law.py
 tests/test_ensemble_member_inputs.py
 tests/test_namelist_stochastic.py
 tests/test_ruc_soilprop.py
+
+# Registered parameter binding, source isolation and default identity.
+tests/test_physics_params.py
+tests/test_physics_params_kernel_isolation.py
+tests/test_physics_params_restart.py
+tests/test_physics_params_gpu.py
+tests/test_physics_params_checkpoint_echo.py
+tests/test_physics_params_preparation_identity.py
+tests/test_physics_params_python_api.py
+
+# WRF radiation-driver options as operational HRRR runs them (lane
+# 286-aer-swint): swint_opt = 1 (the surface shortwave between radiation
+# calls) and aer_opt = 3 (Thompson aerosol optics into the legacy RRTMG
+# shortwave).  The NumPy float32 twins are held word for word to stored
+# NOAA-EMC/HRRR v4.1.21 fork oracles (tests/data/swint_oracle,
+# tests/data/aer3_oracle); a twin that drifts by one ULP from the fork, an
+# option value the engine does not implement reaching a run, or a fixture
+# swapped without its SHA256 fails here.  The device halves are on
+# gpu_shard_files.txt.
+tests/test_radiation_driver_options.py
+tests/test_swint_interpolation.py
+tests/test_rrtmg_aerosol_optics.py
+
+# Named source radiation generation, recipe planning and scalar/batch cloud
+# wrapper forms. Prevents the operational aerosol selection from being
+# rejected by an unintended modern default or silently using old cloud radii.
+tests/test_shortwave_source_doors.py
+tests/test_rrtmg_source_cloud_form.py
+
+# Coupled source cloud generation and prescribed smoke metadata. Prevents
+# incompatible cloud conventions, unbound source files and inert prep refusal.
+tests/test_mynn_gsd41_selection.py
+tests/test_mynn_massflux_gsd41.py
+tests/test_mynn_water_gsd41.py
+tests/test_rrtmg_smoke_source_doors.py
+tests/test_rrtmg_smoke_manifest.py
+tests/test_rrtmg_smoke_input.py
+
+# Solar albedo and source selection on the current staged prefix. These CPU
+# gates retain disabled-option bytes, preparation reuse, active restart
+# identity, parsed-namelist defaults and the prescribed source controls.
+# Device-only solar execution remains on the GPU test tier.
+tests/test_solar_albedo.py
+tests/test_solar_albedo_integration.py
+tests/test_albsol_config.py
+tests/test_albsol_historical_bytes.py
+tests/test_albsol_source_doors.py
+tests/test_checkpoint_radiation_defaults.py
+tests/test_radiation_driver_identity.py
+tests/test_namelist_parsed_carrier.py
+tests/test_physics_source_defaults.py
+
+# Local CPU preparation policy. CUDA imports and probes are replaced with
+# failing sentinels while the local-device prohibition remains enabled.
+tests/test_preprocess_no_local_gpu.py
+
+# Current RUC and MYNN selectors: measured CPU contracts and numerical checks.
+tests/test_ruc_2m_diagnostic.py
+tests/test_ruc_default_selection.py
+tests/test_ruc_fork_configuration_doors.py
+tests/test_ruc_fork_oracle.py
+tests/test_ruc_irrigation.py
+tests/test_ruc_public_identity.py
+tests/test_ruc_qvg_cold_start.py
+tests/test_ruc_selector_comment.py
+tests/test_ruc_snow.py
+tests/test_thompson_mynn_ruc_profiles.py
+tests/test_mynn_dmp_sibling.py
+
+# c9f4efeee, lane/286-staging-repair: execute the CPU source/hash receipt
+# guard for the two measured b0556bd76, lane/286-fork-thompson, powf sites.
+# The device bodies remain GPU work; dynamic loading needs ALWAYS coverage.
+tests/test_thompson_fork_plain_powf_receipt.py
+
+# 75daa3892, lane/286-staging-repair: keep canonical fork table acquisition,
+# wrong-byte refusal, atomic cache publication and standalone harness shipping
+# in the CPU cut. These 13 cases use fixtures and local loopback transport.
+tests/test_thompson_fork_assets.py
+
+# 2.8.6: the plan-time advisory for an adaptive nest whose step may grow
+# faster than 5 percent (d146bd14d).  Breakage it prevents: a 51 percent
+# nest that went non-finite hours into a nested forecast with nothing in
+# `gpuwm check` naming the setting.  Five CPU cases, no fixtures.
+tests/test_nest_step_growth_advisory.py
+
+# lane/kernel-levers bc0e38cdc: the 32-bit index dispatch of the 2-D
+# Smagorinsky kernel.  Fourteen CPU cases with both compilers stubbed; a cut
+# that does not run them would not see the dispatch choose the wrong arm.
+tests/test_smag2d_index32_dispatch.py

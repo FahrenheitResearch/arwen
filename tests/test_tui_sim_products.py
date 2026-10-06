@@ -109,7 +109,11 @@ def test_sim_dispatch_forwards_selection_in_process_without_starting_a_plotter(
         "--outdir", str(tmp_path / "out"), "--render-products", "none"])
     assert stage_cli.sim_main(args) == 0
     assert tree.build_parser().parse_args(calls[0]).render_products == "none"
-    assert "no fetch and no render" in capsys.readouterr().out
+    # 419ad7efb reworded the line when observation verification began to
+    # draw at finish: "no render" stopped being true, the frame maps are
+    # what --render-products none turns off.
+    assert ("no fetch; frame maps disabled (--render-products none)"
+            in capsys.readouterr().out)
 
 
 @pytest.mark.parametrize("failure_type", [RuntimeError, KeyboardInterrupt])

@@ -419,6 +419,72 @@ def test_windows_installer_and_launcher_are_fail_closed():
     assert launcher.count("& $python -B -P -m") == 2
 
 
+def test_standalone_parser_resolves_a_named_parameter_set_without_forecast_runtime(tmp_path):
+    """The staged parser carries its registry and fixed-clock dependencies."""
+    import tomllib
+    from test_physics_params import _EXPERIMENT
+
+    staged = tmp_path / "rw-wps-python"
+    receipt = _stage_or_skip(staged)
+    assert "gpuwm/physics_params.py" in receipt["files"]
+    assert "gpuwm/physics_params_registry_v1.json" in receipt["files"]
+    assert "gpuwm/core/adaptive_clock.py" in receipt["files"]
+    assert "gpuwm/core/adaptive_timestep.py" in receipt["files"]
+    assert "gpuwm/render_compare.py" not in receipt["files"]
+    metadata = tomllib.loads((staged / "pyproject.toml").read_text(encoding="utf-8"))
+    assert "physics_params_registry_v1.json" in metadata["tool"]["setuptools"]["package-data"]["gpuwm"]
+    version = metadata["project"]["version"]
+    info = staged / f"rw_wps-{version}.dist-info"
+    info.mkdir()
+    (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: rw-wps\nVersion: {version}\n",
+                                   encoding="utf-8")
+    (info / "RECORD").write_text("gpuwm/__init__.py,,\n", encoding="utf-8")
+    set_path = tmp_path / "member.toml"
+    set_path.write_text('[physics_params]\nname = "member"\nvalues = {"mynn.prandtl" = 0.8}\n',
+                        encoding="utf-8")
+    script = r"""
+import os
+from pathlib import Path
+import sys
+import tomllib
+from gpuwm.experiment import build_experiment, experiment_config_document
+from gpuwm import physics_params
+from gpuwm.core import adaptive_clock, adaptive_timestep
+
+root = Path(os.environ["RW_WPS_STAGED_ROOT"]).resolve()
+assert Path(physics_params.__file__).resolve().is_relative_to(root)
+assert Path(adaptive_clock.__file__).resolve().is_relative_to(root)
+assert Path(adaptive_timestep.__file__).resolve().is_relative_to(root)
+assert adaptive_clock.wrf_num_sound_steps(20.0, 3000.0, 3000.0, 1.0443) == 6
+exp = build_experiment(tomllib.loads(os.environ["RW_WPS_EXPERIMENT"]), "staged-parameter-test")
+assert exp.physics_params.name == "member"
+assert exp.physics_params.changed() == ("mynn.prandtl",)
+assert experiment_config_document(exp)["physics_params"] == physics_params.document(exp.physics_params)
+for module in ("gpuwm.core.physics", "gpuwm.core.ruc", "gpuwm.core.ruc_gpu", "gpuwm.core.model"):
+    assert module not in sys.modules, module
+"""
+    environment = os.environ.copy()
+    environment["GPUWM_NO_LOCAL_GPU"] = "1"
+    environment["CUDA_VISIBLE_DEVICES"] = "-1"
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["PYTHONPATH"] = str(staged)
+    environment["RW_WPS_STAGED_ROOT"] = str(staged)
+    # A prescribed surface with radiation off needs no forecast-only
+    # LSM or radiation modules. The selected coefficient belongs to MYNN.
+    environment["RW_WPS_EXPERIMENT"] = _EXPERIMENT.replace(
+        "sf_surface_physics = 3", "sf_surface_physics = 0").replace(
+        "num_soil_layers = 6", "num_soil_layers = 4").replace(
+        "ra_lw_physics = 4", "ra_lw_physics = 0").replace(
+        "ra_sw_physics = 4", "ra_sw_physics = 0").replace(
+        'ra_rrtmg_variant = "rrtmg_legacy"', 'ra_rrtmg_variant = "rte-rrtmgp"').replace(
+        'wrf_rrtmg_compatibility = "wrf-rrtmg-4-4-legacy-v1"',
+        'wrf_rrtmg_compatibility = "none"')
+    environment["GPUWM_PHYSICS_PARAMS"] = str(set_path)
+    completed = subprocess.run([sys.executable, "-P", "-c", script], cwd=tmp_path,
+                               env=environment, capture_output=True, text=True, check=False)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
 def test_standalone_python_project_excludes_forecast_executor(tmp_path):
     staged = tmp_path / "rw-wps-python"
     receipt = _stage_or_skip(staged)
@@ -534,13 +600,16 @@ def test_standalone_python_project_excludes_forecast_executor(tmp_path):
     assert {(item["path"], item["module"]) for item in receipt["optional_internal_imports"]} >= {
         ("gpuwm/static/corridor.py", "gpuwm.core.nest_relocation"),
         ("gpuwm/static/corridor.py", "gpuwm.ingest.relocation_init")}
-    # The steep-terrain clock sets the time step a forecast starts with;
-    # its importers are the excluded runners and it reaches
-    # gpuwm.core.adaptive_clock, which does not ship.  Staged, it made
-    # this staging refuse outright.
+    # Terrain adaptation belongs to the excluded forecast runners. The
+    # namelist importer needs the shared acoustic count, which ships with
+    # its adaptive-timestep dependency. Its live physics cadence stays out.
     assert "gpuwm/acoustic_adaptation.py" not in files
     assert "gpuwm/terrain_clock.py" not in files
-    assert "gpuwm/core/adaptive_clock.py" not in files
+    assert "gpuwm/core/adaptive_clock.py" in files
+    assert "gpuwm/core/adaptive_timestep.py" in files
+    assert "gpuwm/core/physics.py" not in files
+    assert {(item["path"], item["module"]) for item in receipt["optional_internal_imports"]} >= {
+        ("gpuwm/core/adaptive_clock.py", "gpuwm.core.physics")}
     # The chained writer ships with the era5, gfs and mapped routes; the
     # forecast admission it reaches only when it chains does not, and a
     # preparation-only install never chains, so that import is optional.
@@ -1330,7 +1399,7 @@ def test_standalone_preparation_ignores_a_runner_another_tree_provides(
     package first on the path, ``importlib.util.find_spec`` found the
     checkout's tree runner through the editable finder, so the handoff
     resolved the bundle and importing that runner against the staged
-    gpuwm.core failed ("No module named 'gpuwm.core.adaptive_clock'").
+    gpuwm.core failed on its forecast-only dependencies.
     The finder here is setuptools' shape; the handoff must end on the
     preparation-only line and import neither runner.
     """

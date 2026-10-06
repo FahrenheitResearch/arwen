@@ -148,7 +148,8 @@ def library_candidates() -> tuple[Path, ...]:
     package, the wheel-bundled directory, the user-level default.
     """
 
-    from gpuwm.bridges import default_bridge_dir, packaged_bridge_dir
+    from gpuwm.bridges import (default_bridge_dir, legacy_bridge_candidates,
+                               packaged_bridge_dir)
     from gpuwm.rustwx import crate_dir
 
     filename = library_names()[0]
@@ -163,6 +164,7 @@ def library_candidates() -> tuple[Path, ...]:
         root / "libexec" / "bridges" / filename,
         packaged_bridge_dir() / filename,
         default_bridge_dir() / filename,
+        *legacy_bridge_candidates(filename),
     ))
     return tuple(candidates)
 
@@ -551,14 +553,245 @@ class ClassicSchema:
                 pass
 
 
+#: Whether :func:`_bind_patch` has bound the patch entry points of the
+#: one library :func:`load` holds.
+_PATCH_BOUND = False
+
+
+def _bind_patch(library: ctypes.CDLL) -> None:
+    """Bind the patch entry points, once, on first use.
+
+    They are newer than :data:`ABI_MARKER` and no default path depends on
+    them, so :func:`load` does not require them: an install whose library
+    predates them still writes every wrfout and every wrfinput.  The
+    caller that DOES need them is told which build to make.
+    """
+
+    global _PATCH_BOUND
+    if _PATCH_BOUND:
+        return
+    void = ctypes.c_void_p
+    size = ctypes.c_size_t
+    try:
+        library.gpuwm_ncwrite_patch_open.argtypes = [
+            ctypes.c_char_p, size, ctypes.c_char_p, size]
+        library.gpuwm_ncwrite_patch_open.restype = void
+        library.gpuwm_ncwrite_patch_describe.argtypes = [void]
+        library.gpuwm_ncwrite_patch_describe.restype = ctypes.c_int32
+        library.gpuwm_ncwrite_patch_put.argtypes = [
+            void, ctypes.c_char_p, size, ctypes.c_int64, ctypes.c_uint32,
+            ctypes.c_char_p, size]
+        library.gpuwm_ncwrite_patch_put.restype = ctypes.c_int32
+        library.gpuwm_ncwrite_patch_finish.argtypes = [void]
+        library.gpuwm_ncwrite_patch_finish.restype = ctypes.c_int32
+        library.gpuwm_ncwrite_patch_abort.argtypes = [void]
+        library.gpuwm_ncwrite_patch_abort.restype = None
+    except AttributeError:
+        raise NcWriteError(
+            "the loaded netcdf-writer library exports no "
+            "gpuwm_ncwrite_patch_open, so it predates the in-place patch "
+            "of an existing classic file: it can write a new file but "
+            "cannot hand an analysis file back with its layout intact.  "
+            "Rebuild tools/rustwx (cargo build --release --locked "
+            "--offline -p netcdf-writer), or run `gpuwm fetch-bridges` on "
+            "an installed wheel") from None
+    _PATCH_BOUND = True
+
+
+class PatchVariable:
+    """One variable of a patch template, as its header declares it."""
+
+    __slots__ = ("name", "nc_type", "is_record", "elements")
+
+    def __init__(self, name: str, nc_type: int, is_record: bool,
+                 elements: int) -> None:
+        self.name = name
+        self.nc_type = nc_type
+        self.is_record = is_record
+        #: Elements in the whole variable (fixed) or in one record slab.
+        self.elements = elements
+
+    @property
+    def dtype(self) -> np.dtype:
+        """The numpy dtype the stored type corresponds to."""
+
+        return np.dtype(_NC_TO_NUMPY[self.nc_type])
+
+    def __repr__(self) -> str:
+        return (f"PatchVariable({self.name!r}, {self.dtype.str}, "
+                f"record={self.is_record}, elements={self.elements})")
+
+
+class ClassicPatch:
+    """A copy of an existing classic file, open for rewriting variables.
+
+    The copy is written beside ``target`` under a partial name and appears
+    at ``target`` only when :meth:`finish` succeeds.  Every byte a
+    :meth:`put` does not rewrite is the template's own, so the header, the
+    data-section alignment the producing library chose and every variable
+    the caller never names come back unchanged.  A variable put back with
+    the values it was read with leaves the file byte-identical.
+
+    A patch changes values only.  It cannot add, remove or retype a
+    variable or add a record; the Rust side refuses each by name.
+    """
+
+    def __init__(self, template, target) -> None:
+        self._library = load()
+        _bind_patch(self._library)
+        self._template = Path(os.fspath(template))
+        self._target = Path(os.fspath(target))
+        raw_template = os.fspath(self._template).encode("utf-8")
+        raw_target = os.fspath(self._target).encode("utf-8")
+        handle = self._library.gpuwm_ncwrite_patch_open(
+            raw_template, len(raw_template), raw_target, len(raw_target))
+        if not handle:
+            raise NcWriteError(_last_error(self._library))
+        self._handle = handle
+        try:
+            self._num_records, self._variables = self._describe()
+        except BaseException:
+            self.abort()
+            raise
+
+    def _describe(self) -> tuple[int, dict[str, PatchVariable]]:
+        if self._library.gpuwm_ncwrite_patch_describe(self._handle) != 0:
+            raise NcWriteError(_last_error(self._library))
+        needed = int(self._library.gpuwm_ncwrite_last_scan(None, 0))
+        buffer = (ctypes.c_uint8 * max(needed, 1))()
+        self._library.gpuwm_ncwrite_last_scan(
+            ctypes.cast(buffer, ctypes.POINTER(ctypes.c_uint8)), needed)
+        lines = bytes(buffer)[:needed].decode("utf-8").split("\n")
+        head = lines[0].split("\t")
+        if len(head) != 2 or head[0] != "numrecs":
+            raise NcWriteError(
+                f"the patch description does not start with the record "
+                f"count: {lines[0]!r}")
+        variables: dict[str, PatchVariable] = {}
+        for line in lines[1:]:
+            name, code, record, elements = line.rsplit("\t", 3)
+            variables[name] = PatchVariable(
+                name, int(code), record == "1", int(elements))
+        return int(head[1]), variables
+
+    @property
+    def target(self) -> Path:
+        return self._target
+
+    @property
+    def num_records(self) -> int:
+        """Records the template holds; a patch cannot change this."""
+
+        return self._num_records
+
+    @property
+    def variables(self) -> dict[str, PatchVariable]:
+        """Every template variable, by name, in definition order."""
+
+        return dict(self._variables)
+
+    def _live(self):
+        if self._handle is None:
+            raise NcWriteError(f"the patch of {self._target} is already closed")
+        return self._handle
+
+    def put(self, name: str, values, *, record: int | None = None) -> None:
+        """Rewrite one variable, or one record's slab of a record variable.
+
+        ``values`` in the variable's stored type are written as they are.
+        Any other numeric dtype crosses as float64 and the Rust side
+        narrows it to the stored type only when every value survives the
+        narrowing exactly; a value that would be rounded is refused by
+        name.  That is the shape a reader that widens everything to
+        float64 hands back, and it is why a round trip through such a
+        reader is still byte-identical.
+        """
+
+        variable = self._variables.get(name)
+        if variable is None:
+            raise NcWriteError(
+                f"'{name}' is not a variable of {self._template}; a patch "
+                "rewrites existing variables and cannot add one")
+        if variable.is_record and record is None:
+            raise NcWriteError(
+                f"'{name}' is a record variable; say which record to rewrite")
+        if not variable.is_record and record is not None:
+            raise NcWriteError(
+                f"'{name}' is a fixed variable, so record {record} names "
+                "nothing")
+        stored = variable.dtype
+        if variable.nc_type == NC_CHAR:
+            payload = _payload(values, NC_CHAR, f"variable {name}")
+            nc_type = NC_CHAR
+        else:
+            array = np.asarray(values)
+            if array.dtype.kind not in "iuf":
+                raise NcWriteError(
+                    f"'{name}' is stored as {stored.str}; a {array.dtype.str} "
+                    "payload is not numeric")
+            if (array.dtype.kind == stored.kind
+                    and array.dtype.itemsize == stored.itemsize):
+                nc_type = variable.nc_type
+            else:
+                widened = np.asarray(array, dtype=np.float64)
+                if array.dtype.kind in "iu" and not np.array_equal(
+                        widened.astype(array.dtype), array):
+                    raise NcWriteError(
+                        f"'{name}': a {array.dtype.str} payload holds values "
+                        "float64 cannot carry exactly, so it cannot cross "
+                        f"to the stored {stored.str} without rounding")
+                array, nc_type = widened, NC_DOUBLE
+            payload = _payload(array, nc_type, f"variable {name}")
+        raw = name.encode("utf-8")
+        status = self._library.gpuwm_ncwrite_patch_put(
+            self._live(), raw, len(raw), -1 if record is None else int(record),
+            nc_type, payload, len(payload))
+        if status != 0:
+            raise NcWriteError(_last_error(self._library))
+
+    def finish(self) -> Path:
+        """Flush, fsync and rename the patched copy onto the target."""
+
+        handle = self._live()
+        self._handle = None
+        if int(self._library.gpuwm_ncwrite_patch_finish(handle)) != 0:
+            raise NcWriteError(_last_error(self._library))
+        return self._target
+
+    def abort(self) -> None:
+        """Drop the patched copy. Nothing appears at the target path."""
+
+        if self._handle is not None:
+            handle, self._handle = self._handle, None
+            self._library.gpuwm_ncwrite_patch_abort(handle)
+
+    def __enter__(self) -> "ClassicPatch":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        if exc_type is not None:
+            self.abort()
+            return False
+        self.finish()
+        return False
+
+    def __del__(self) -> None:  # pragma: no cover - interpreter teardown
+        try:
+            self.abort()
+        except Exception:
+            pass
+
+
 __all__ = [
     "ABI_MARKER",
+    "ClassicPatch",
     "ClassicSchema",
     "ClassicWriter",
     "FORMATS",
     "NCWRITE_ABI",
     "NCWRITE_BRIDGE_ENV",
     "NcWriteError",
+    "PatchVariable",
     "checkout_build_command",
     "library_candidates",
     "load",

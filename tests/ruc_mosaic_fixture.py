@@ -79,8 +79,9 @@ def driver_calls():
                         isltyp=field["isltyp"][0, take].astype(np.int32),
                         ilnb=1, ilnb_chain=False,
                         # The oracle is the byte-unmodified WRF v4.6.1 module,
-                        # so its SOILPROP is that lineage's by name.
-                        soilprop="wrf_461")
+                        # so its irrigation and SOILPROP are that lineage's
+                        # by name.
+                        irrigation="wrf_461", soilprop="wrf_461")
         keywords["landusef"], keywords["soilctop"] = driver_fractions(groups[begin][0])
         expected = {name: _result(field, name)[:, take].copy() for name in RUC_DRIVER_PROFILE_STATE}
         expected.update({name: _result(field, name)[0, take].copy() for name in RUC_DRIVER_COLUMN_STATE})

@@ -21,6 +21,12 @@
 //! Memory: variables are read whole. A wrfout history frame is one record
 //! and a few tens of megabytes per variable, so this is bounded by the
 //! largest single variable, not by the file.
+//!
+//! `--fields-from TEMPLATE.nc NAME[,NAME]` adds named records that the
+//! input lacks, with the template values and attributes unchanged. Every
+//! dimension must match. It cannot replace an existing input field. This
+//! lets a history file retain the static records required by an external
+//! analysis while keeping its forecast fields and valid time.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -28,7 +34,7 @@ use std::process::ExitCode;
 
 use netcdf_writer::{AttrValue, NcFormat, NcType, NcWriter, Schema, VarData};
 
-const USAGE: &str = "usage: nc_rewrite IN.nc OUT.nc [--format cdf2|cdf5|auto]";
+const USAGE: &str = "usage: nc_rewrite IN.nc OUT.nc [--format cdf2|cdf5|auto] [--fields-from TEMPLATE.nc NAME[,NAME]]";
 
 fn main() -> ExitCode {
     match run() {
@@ -55,8 +61,19 @@ fn run() -> Result<String, String> {
     let input = PathBuf::from(args.next().ok_or(USAGE)?);
     let output = PathBuf::from(args.next().ok_or(USAGE)?);
     let mut choice = FormatChoice::Auto;
+    let mut extra = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--fields-from" => {
+                let template = PathBuf::from(args.next().ok_or(USAGE)?);
+                let names = args.next().ok_or(USAGE)?;
+                if extra.is_some() || names.split(',').any(str::is_empty) {
+                    return Err(format!(
+                        "one nonempty --fields-from list is required; {USAGE}"
+                    ));
+                }
+                extra = Some((template, names));
+            }
             "--format" => {
                 choice = match args.next().as_deref() {
                     Some("cdf2") => FormatChoice::Cdf2,
@@ -84,6 +101,50 @@ fn run() -> Result<String, String> {
     let gattrs = structure
         .attributes()
         .map_err(|err| format!("global attributes: {err}"))?;
+    let extra_structure = extra
+        .as_ref()
+        .map(|(path, _)| netcrust::open(path))
+        .transpose()
+        .map_err(|err| format!("open field template: {err}"))?;
+    let extra_values = extra
+        .as_ref()
+        .map(|(path, _)| netcdf_reader::NcFile::open(path))
+        .transpose()
+        .map_err(|err| format!("open field template for typed reads: {err}"))?;
+    let mut extra_vars = Vec::new();
+    if let (Some(template), Some((_, names))) = (&extra_structure, &extra) {
+        let candidates = template
+            .variables()
+            .map_err(|err| format!("template variables: {err}"))?;
+        for name in names.split(',') {
+            if vars.iter().any(|var| var.name() == name) {
+                return Err(format!("'{name}' already exists; copying template fields must not overwrite history values"));
+            }
+            if extra_vars
+                .iter()
+                .any(|var: &netcrust::Variable| var.name() == name)
+            {
+                return Err(format!("duplicate template field '{name}'"));
+            }
+            let var = candidates
+                .iter()
+                .find(|var| var.name() == name)
+                .ok_or_else(|| format!("template has no field '{name}'"))?;
+            for dim in var.dimensions() {
+                if !dims.iter().any(|own| {
+                    own.name() == dim.name()
+                        && own.len() == dim.len()
+                        && own.is_unlimited() == dim.is_unlimited()
+                }) {
+                    return Err(format!(
+                        "template field '{name}' has incompatible dimension '{}'",
+                        dim.name()
+                    ));
+                }
+            }
+            extra_vars.push(var.clone());
+        }
+    }
 
     // How many records the source carries: netcrust reports the record
     // dimension's length as the record count.
@@ -95,6 +156,7 @@ fn run() -> Result<String, String> {
 
     let needs_cdf5 = vars
         .iter()
+        .chain(extra_vars.iter())
         .any(|var| map_dtype(var.dtype()).is_some_and(is_cdf5_only));
     let formats: Vec<NcFormat> = match choice {
         FormatChoice::Cdf2 => vec![NcFormat::Offset64],
@@ -123,19 +185,30 @@ fn run() -> Result<String, String> {
                 .map_err(|err| format!("global attribute '{}': {err}", attr.name()))?;
         }
         let mut varids = Vec::with_capacity(vars.len());
-        for var in &vars {
-            let ty = map_dtype(var.dtype())
-                .ok_or_else(|| format!("variable '{}': {:?} has no classic external type; \
-                                        classic NetCDF cannot represent it", var.name(), var.dtype()))?;
+        for (var, from_template) in vars
+            .iter()
+            .map(|var| (var, false))
+            .chain(extra_vars.iter().map(|var| (var, true)))
+        {
+            let ty = map_dtype(var.dtype()).ok_or_else(|| {
+                format!(
+                    "variable '{}': {:?} has no classic external type; \
+                                        classic NetCDF cannot represent it",
+                    var.name(),
+                    var.dtype()
+                )
+            })?;
             let ids: Vec<usize> = var
                 .dimensions()
                 .iter()
                 .map(|dim| {
-                    dimid_of
-                        .get(dim.name())
-                        .copied()
-                        .ok_or_else(|| format!("variable '{}' uses unknown dimension '{}'",
-                                               var.name(), dim.name()))
+                    dimid_of.get(dim.name()).copied().ok_or_else(|| {
+                        format!(
+                            "variable '{}' uses unknown dimension '{}'",
+                            var.name(),
+                            dim.name()
+                        )
+                    })
                 })
                 .collect::<Result<_, _>>()?;
             let varid = schema
@@ -145,11 +218,13 @@ fn run() -> Result<String, String> {
                 let value = map_attr(attr.value()).map_err(|err| {
                     format!("attribute '{}' of '{}': {err}", attr.name(), var.name())
                 })?;
-                schema.put_var_attr(varid, attr.name(), value).map_err(|err| {
-                    format!("attribute '{}' of '{}': {err}", attr.name(), var.name())
-                })?;
+                schema
+                    .put_var_attr(varid, attr.name(), value)
+                    .map_err(|err| {
+                        format!("attribute '{}' of '{}': {err}", attr.name(), var.name())
+                    })?;
             }
-            varids.push((varid, var));
+            varids.push((varid, var, from_template));
         }
 
         let mut writer = match NcWriter::create(&output, schema) {
@@ -161,8 +236,13 @@ fn run() -> Result<String, String> {
             Err(err) => return Err(format!("create {output:?}: {err}")),
         };
 
-        for (varid, var) in &varids {
-            copy_variable(&values, &mut writer, *varid, var, numrecs)?;
+        for (varid, var, from_template) in &varids {
+            let reader = if *from_template {
+                extra_values.as_ref().unwrap()
+            } else {
+                &values
+            };
+            copy_variable(reader, &mut writer, *varid, var, numrecs)?;
         }
         writer
             .finish()
@@ -185,7 +265,7 @@ fn run() -> Result<String, String> {
             input.display(),
             output.display(),
             dims.len(),
-            vars.len(),
+            vars.len() + extra_vars.len(),
             gattrs.len(),
         ));
     }
@@ -278,9 +358,16 @@ fn copy_variable(
                 .read_variable::<$t>(name)
                 .map_err(|err| format!("read '{name}': {err}"))?;
             let flat = array.into_raw_vec_and_offset().0;
-            push(writer, varid, name, is_record, numrecs, slab_elems, &flat, |slice| {
-                $variant(slice)
-            })?;
+            push(
+                writer,
+                varid,
+                name,
+                is_record,
+                numrecs,
+                slab_elems,
+                &flat,
+                |slice| $variant(slice),
+            )?;
         }};
     }
 
@@ -297,7 +384,16 @@ fn copy_variable(
         netcrust::DataType::U64 => copy!(u64, VarData::U64),
         netcrust::DataType::Char | netcrust::DataType::String => {
             let flat = char_bytes(values, var)?;
-            push(writer, varid, name, is_record, numrecs, slab_elems, &flat, VarData::Char)?;
+            push(
+                writer,
+                varid,
+                name,
+                is_record,
+                numrecs,
+                slab_elems,
+                &flat,
+                VarData::Char,
+            )?;
         }
         other => {
             return Err(format!(
@@ -322,10 +418,7 @@ fn copy_variable(
 ///
 /// Both are accepted, told apart by the count, and anything that is
 /// neither is refused by name rather than guessed at.
-fn char_bytes(
-    values: &netcdf_reader::NcFile,
-    var: &netcrust::Variable,
-) -> Result<Vec<u8>, String> {
+fn char_bytes(values: &netcdf_reader::NcFile, var: &netcrust::Variable) -> Result<Vec<u8>, String> {
     let name = var.name();
     let width = var
         .dimensions()

@@ -925,3 +925,21 @@ fn category_colormap_fill_is_its_legend_under_every_plot_style() {
         }
     }
 }
+
+#[test]
+fn a_large_frame_draws_place_labels_at_twice_the_size() {
+    assert_eq!(planned_label_text_scale(1, 1), 1);
+    assert_eq!(planned_label_text_scale(2, 1), 2);
+    // 12 px doubled is 24 px: the text table's fourth step.
+    assert_eq!(planned_label_text_scale(1, 2), 4);
+    assert_eq!(planned_label_text_scale(2, 2), 6);
+}
+
+#[test]
+fn a_dark_theme_turns_a_near_black_label_to_its_ink_and_a_light_theme_keeps_it() {
+    let dark = RenderTheme::builtin("dark").expect("built in").presentation;
+    let label = Rgba::new(24, 31, 39);
+    let inked = themed_label_ink(dark, label);
+    assert!(inked.r.min(inked.g).min(inked.b) > 150, "{inked:?}");
+    assert_eq!(themed_label_ink(PresentationTheme::default(), label), label);
+}

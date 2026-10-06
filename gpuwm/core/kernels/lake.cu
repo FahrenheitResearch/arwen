@@ -1,5 +1,5 @@
 // Generated complete WRF driver column entry points.
-extern "C" __global__ void lake_init_columns(int n,const float* seed,float* columns,float* statics,int use_depth,int depth_flag,float default_depth,int* errors) {
+extern "C" __global__ void lake_init_columns(int n,const float* seed,float* columns,float* statics,int use_depth,int depth_flag,float default_depth,float xice_threshold_run,int* errors) {
 #ifdef __CUDACC__
 int col = blockDim.x*blockIdx.x+threadIdx.x; if(col>=n)return;
 #else
@@ -116,7 +116,7 @@ iswater=17;
 xland.fill(2);
 ht.fill(100);
 lake_min_elev=5;
-xice_threshold=0.5;
+xice_threshold=xice_threshold_run;
 lakeflag=1;
 use_lakedepth=use_depth;
 lake_depth_flag=depth_flag;
@@ -335,7 +335,7 @@ statics[70*n+col]=tksatu3d.data[9];
 }
 #endif
 }
-extern "C" __global__ void lake_step_columns(int n,const float* forcing,float* columns,const float* statics,float* output,float dt,int* errors) {
+extern "C" __global__ void lake_step_columns(int n,const float* forcing,float* columns,const float* statics,float* output,float dt,float xice_threshold_run,int* errors) {
 #ifdef __CUDACC__
 int col = blockDim.x*blockIdx.x+threadIdx.x; if(col>=n)return;
 #else
@@ -504,7 +504,7 @@ iswater=17;
 xland.fill(2);
 ht.fill(100);
 lake_min_elev=5;
-xice_threshold=0.5;
+xice_threshold=xice_threshold_run;
 dtbl=dt;
 savedtke12d.data[0]=columns[0*n+col];
 snowdp2d.data[0]=columns[1*n+col];

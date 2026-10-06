@@ -129,6 +129,8 @@ def resolve_root_experiment(*, target, vertical, namelist_input, start_time,
                 acknowledgements=imported_acknowledgements)
         raw = tomllib.loads(text)
         authority = str(namelist_input)
+    from gpuwm.static.source_defaults import with_source_static_defaults
+    raw = with_source_static_defaults(raw, "hrrr")
     full = build_experiment_from_config_tables(
         raw, source=authority, base_dir=Path(authority).parent)
     from gpuwm.hrrr_route_inputs import target_domain
@@ -149,7 +151,9 @@ def resolve_root_experiment(*, target, vertical, namelist_input, start_time,
         if getattr(full.vertical, name) != getattr(vertical, name):
             raise ValueError(f"configured d01 vertical {name} differs from namelist.input")
     raw = copy.deepcopy(raw)
-    if raw.get("static") is None:
+    if raw.get("static") is None or "highres" not in raw["static"]:
+        # (A [static] table naming only a static source keeps its source
+        # and takes this default beside it.)
         # The root's own configuration keeps only d01, so the grid-spacing
         # default is settled on the whole tree here and written into the
         # table the preparation binds: a 2 km root over a 667 m child
@@ -160,7 +164,8 @@ def resolve_root_experiment(*, target, vertical, namelist_input, start_time,
         default = default_static_highres(
             [float(dc.run.dx) for dc in full.domains])
         if default is not None:
-            raw["static"] = {"highres": static_highres_identity(default)}
+            raw["static"] = {**(raw.get("static") or {}),
+                             "highres": static_highres_identity(default)}
     raw["domain"] = raw["domain"][:1]
     from gpuwm.experiment import (drop_unreached_grell_selectors,
                                   drop_unreached_relocation,
@@ -190,7 +195,7 @@ def resolve_root_experiment(*, target, vertical, namelist_input, start_time,
         raw["case_data"] = resolved_case_data_paths(
             raw["case_data"], base_dir=base_dir, source=authority)
     highres = parse_static_table(raw.get("static"), source=authority, base_dir=base_dir)
-    if highres is not None:
+    if highres is not None and "highres" in raw["static"]:
         raw["static"]["highres"]["cache_root"] = str(highres.cache_root.resolve())
     return exp, raw
 

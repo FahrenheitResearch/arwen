@@ -67,6 +67,24 @@ pub const MEAS_ANEMOMETER_WIND_5M_TO_10M: &str = "anemometer_wind_5m_reduced_to_
 pub const MEAS_SONDE_LEVEL: &str = "sonde_level";
 pub const MEAS_AMV_ASSIGNED_PRESSURE: &str = "amv_assigned_pressure";
 pub const MEAS_RO_REFRACTIVITY_TANGENT: &str = "ro_refractivity_tangent_point";
+/// Added with the prepbufr door (`rw_prepbufr`).  The Python reader's
+/// `MEASUREMENT_TABLE` needs these rows; until it has them it counts the
+/// rows as unknown measurements and does not coerce them.
+/// An aircraft report at its flight level (AIREP, PIREP, AMDAR, ACARS).
+pub const MEAS_AIRCRAFT_LEVEL: &str = "aircraft_level";
+/// A wind profiler range gate.
+pub const MEAS_PROFILER_LEVEL: &str = "profiler_level";
+/// A radar velocity-azimuth-display wind level.
+pub const MEAS_VAD_LEVEL: &str = "vad_level";
+/// GSI's VAD superob: the mean of up to six consecutive VAD levels within
+/// 301 m, at the first level's pressure and the levels' mean height.
+pub const MEAS_VAD_SUPEROB: &str = "vad_superob";
+/// A ship, buoy or coastal platform wind at the platform's own height
+/// (prepbufr does not reduce marine winds to 10 m).
+pub const MEAS_PLATFORM_WIND: &str = "platform_wind";
+/// Station pressure computed by NCEP from the reported sea-level pressure
+/// and the station elevation through the standard atmosphere.
+pub const MEAS_STATION_PRESSURE_FROM_SEA_LEVEL: &str = "station_pressure_from_sea_level";
 
 /// The first twelve hex digits of a source object's SHA-256: the
 /// `revision` a row carries.

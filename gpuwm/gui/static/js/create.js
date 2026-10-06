@@ -143,7 +143,7 @@ function eventFinder(w) {
     const mine = ++asked;
     let rows = [];
     try {
-      const data = await api.get(`/api/wiki/search?q=${encodeURIComponent(q)}&sort=score`);
+      const data = await api.get(`/api/library/search?q=${encodeURIComponent(q)}&sort=score`);
       rows = (data.results || []).filter((r) => r.kind === "event").slice(0, 7);
     } catch (err) {
       rows = [];
@@ -247,7 +247,7 @@ async function render(body, args, page) {
   let recipe = null;
   if (route.event) {
     try {
-      recipe = await api.get(`/api/wiki/recipe/${encodeURIComponent(route.event)}${route.card ? `?card=${route.card}` : ""}`);
+      recipe = await api.get(`/api/library/recipe/${encodeURIComponent(route.event)}${route.card ? `?card=${route.card}` : ""}`);
     } catch (err) {
       notice(errorText(err), "warn");
     }

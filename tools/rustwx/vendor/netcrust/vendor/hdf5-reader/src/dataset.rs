@@ -635,7 +635,7 @@ impl Dataset {
             } => {
                 let raw = self.read_raw_bytes()?;
                 let elem_size = *len as usize;
-                let count = checked_usize(self.num_elements(), "dataset string element count")?;
+                let count = checked_usize(self.checked_num_elements()?, "dataset string element count")?;
                 let expected_bytes =
                     checked_mul_usize(count, elem_size, "dataset string byte size")?;
                 if raw.len() < expected_bytes {
@@ -661,7 +661,7 @@ impl Dataset {
                 padding,
             } => {
                 let raw = self.read_raw_bytes()?;
-                let count = checked_usize(self.num_elements(), "dataset string element count")?;
+                let count = checked_usize(self.checked_num_elements()?, "dataset string element count")?;
                 let ref_size = 4 + self.offset_size() as usize + 4;
                 let expected_bytes =
                     checked_mul_usize(count, ref_size, "dataset string reference byte size")?;
@@ -698,7 +698,7 @@ impl Dataset {
                 }
 
                 let raw = self.read_raw_bytes()?;
-                let count = checked_usize(self.num_elements(), "dataset string element count")?;
+                let count = checked_usize(self.checked_num_elements()?, "dataset string element count")?;
                 let ref_size = 4 + self.offset_size() as usize + 4;
                 let expected_bytes =
                     checked_mul_usize(count, ref_size, "dataset string reference byte size")?;
@@ -733,16 +733,25 @@ impl Dataset {
         }
     }
 
-    /// Total number of elements in the dataset.
+    /// Total number of elements in the dataset, saturated on metadata overflow.
+    /// Reads use the checked form and reject an overflowing shape.
     pub fn num_elements(&self) -> u64 {
+        self.checked_num_elements().unwrap_or(u64::MAX)
+    }
+
+    fn checked_num_elements(&self) -> Result<u64> {
         if self.dataspace.dims.is_empty() {
-            match self.dataspace.dataspace_type {
+            Ok(match self.dataspace.dataspace_type {
                 DataspaceType::Scalar => 1,
                 DataspaceType::Null => 0,
                 DataspaceType::Simple => 0,
-            }
+            })
         } else {
-            self.dataspace.dims.iter().product()
+            self.dataspace.dims.iter().try_fold(1u64, |count, &extent| {
+                count.checked_mul(extent).ok_or_else(|| {
+                    Error::InvalidData("dataset element count exceeds u64 capacity".to_string())
+                })
+            })
         }
     }
 
@@ -862,7 +871,7 @@ impl Dataset {
 
     fn read_raw_bytes(&self) -> Result<Vec<u8>> {
         let elem_size = dtype_element_size(&self.datatype);
-        let total_elements = checked_usize(self.num_elements(), "dataset element count")?;
+        let total_elements = checked_usize(self.checked_num_elements()?, "dataset element count")?;
         let total_bytes = checked_mul_usize(total_elements, elem_size, "dataset size in bytes")?;
 
         let result = match &self.layout {
@@ -926,7 +935,7 @@ impl Dataset {
         let chunk_strides = row_major_strides(&chunk_shape, "chunk stride")?;
 
         // Allocate output initialized from the dataset's fill value.
-        let total_elements = checked_usize(self.num_elements(), "dataset element count")?;
+        let total_elements = checked_usize(self.checked_num_elements()?, "dataset element count")?;
         let total_bytes = checked_mul_usize(total_elements, elem_size, "dataset size in bytes")?;
 
         let entries = self.collect_chunk_entries(
@@ -1138,7 +1147,7 @@ impl Dataset {
         let chunk_shape: Vec<u64> = chunk_dims.iter().map(|&d| d as u64).collect();
         let dataset_strides = row_major_strides(shape, "dataset stride")?;
         let chunk_strides = row_major_strides(&chunk_shape, "chunk stride")?;
-        let total_elements = checked_usize(self.num_elements(), "dataset element count")?;
+        let total_elements = checked_usize(self.checked_num_elements()?, "dataset element count")?;
         let total_bytes = checked_mul_usize(total_elements, elem_size, "dataset size in bytes")?;
 
         let mut entries = self.collect_chunk_entries(
@@ -2153,7 +2162,7 @@ impl Dataset {
     }
 
     fn decode_raw_data<T: H5Type>(&self, raw: &[u8]) -> Result<ArrayD<T>> {
-        let n = checked_usize(self.num_elements(), "dataset element count")?;
+        let n = checked_usize(self.checked_num_elements()?, "dataset element count")?;
         let mut shape = Vec::with_capacity(self.dataspace.dims.len());
         for &dim in &self.dataspace.dims {
             shape.push(checked_usize(dim, "dataset dimension")?);
@@ -2162,7 +2171,7 @@ impl Dataset {
     }
 
     fn make_fill_array<T: H5Type>(&self) -> Result<ArrayD<T>> {
-        let n = checked_usize(self.num_elements(), "dataset element count")?;
+        let n = checked_usize(self.checked_num_elements()?, "dataset element count")?;
         let mut shape = Vec::with_capacity(self.dataspace.dims.len());
         for &dim in &self.dataspace.dims {
             shape.push(checked_usize(dim, "dataset dimension")?);

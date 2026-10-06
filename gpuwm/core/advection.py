@@ -1,7 +1,11 @@
 """Launchers for the flux-form advection kernels (kernels/advection.cu).
 
-5th-order upwind horizontal / 3rd-order upwind vertical fluxes on the C-grid,
-periodic in x/y, zero flux through the domain top/bottom.  Each launcher ADDS
+5th-order upwind horizontal fluxes on the C-grid, periodic in x/y, zero flux
+through the domain top/bottom; the vertical faces take WRF's ``vert_order``
+ladder selected by ``vorder`` (3, the ladder every earlier run took, or 5,
+WRF's vert_order == 5: 2nd order one face in, flux3 two in, flux5 between).
+``dycore`` passes ``cfg.v_sca_adv_order`` for scalars and w and
+``cfg.v_mom_adv_order`` for u and v, as WRF's advect_* routines read them.  Each launcher ADDS
 the flux divergence into its tendency array.  ``add_advection_tendencies``
 assembles the coupled mass fluxes ((c1h*mu+c2h)*u etc.) for the Phase-1
 advection-only path, which requires w == 0 (checked): its historical
@@ -21,7 +25,7 @@ from __future__ import annotations
 import cupy as cp
 import numpy as np
 
-from gpuwm.config import RunConfig
+from gpuwm.config import RunConfig, VERTICAL_ADV_ORDERS
 from gpuwm.grid_requirements import FIFTH_ORDER_STENCIL_AXIS
 from gpuwm.core.kernels import get_kernel
 from gpuwm.core.state import (DTYPE, DomainState, mu_at_u_faces,
@@ -30,12 +34,23 @@ from gpuwm.core.state import (DTYPE, DomainState, mu_at_u_faces,
 _TPB = 128  # threads per block along i (i fastest)
 
 
+def vertical_orders(cfg) -> tuple[int, int]:
+    """``(v_sca_adv_order, v_mom_adv_order)`` of ``cfg``, 3 when absent.
+
+    Scalars, theta and w take the first (WRF advect_w keys its vertical
+    order on ``v_sca_adv_order``); u and v take the second.  A test
+    namespace without the fields runs the ladder every earlier run took.
+    """
+    return (int(getattr(cfg, "v_sca_adv_order", 3) or 3),
+            int(getattr(cfg, "v_mom_adv_order", 3) or 3))
+
+
 def _launch(func: str, q, ru, rv, rw, tend, rdnw, fnm, fnp,
             dx: float, dy: float,
             nz: int, ny: int, nx: int, n_i: int, n_j: int, n_k: int,
             open_x: bool = False, open_y: bool = False,
             msf=None, has_msf=None, msf_shape=None,
-            spec: bool = False) -> None:
+            spec: bool = False, vorder: int = 3) -> None:
     """Common launch path: 3D grid over the target points, i fastest.
 
     ``open_x``/``open_y`` select the kernels' WRF open-lateral-boundary
@@ -55,8 +70,12 @@ def _launch(func: str, q, ru, rv, rw, tend, rdnw, fnm, fnp,
     advect_w's horizontal advecting velocities (WRF fzm/fzp).  ``spec``
     is WRF's `specified` logical: no non-cb open terms, and the
     upstream-normal-wind substitution in the boundary-adjacent u/v
-    fluxes.
+    fluxes.  ``vorder`` is WRF's vertical advection order, 3 or 5.
     """
+    if vorder not in VERTICAL_ADV_ORDERS:
+        raise ValueError(
+            f"vorder must be one of {VERTICAL_ADV_ORDERS} (WRF vert_order "
+            f"ladders the kernels carry), got {vorder!r}")
     if open_x and nx < FIFTH_ORDER_STENCIL_AXIS:
         raise ValueError(f"open_x advection needs nx >= 7, got {nx}")
     if open_y and ny < FIFTH_ORDER_STENCIL_AXIS:
@@ -73,63 +92,72 @@ def _launch(func: str, q, ru, rv, rw, tend, rdnw, fnm, fnp,
           DTYPE(1.0 / dx), DTYPE(1.0 / dy),
           np.int32(nz), np.int32(ny), np.int32(nx),
           np.int32(open_x), np.int32(open_y), np.int32(has_msf),
-          np.int32(spec)))
+          np.int32(spec), np.int32(vorder)))
 
 
 def launch_flux_div_scalar(q, ru, rv, rw, tend, coord, dx, dy,
                            open_x=False, open_y=False,
-                           msf=None, has_msf=None, spec=False) -> None:
+                           msf=None, has_msf=None, spec=False,
+                           vorder=3) -> None:
     """Add the flux divergence of scalar ``q`` (mass points) into ``tend``.
 
-    ``msf`` (optional) is the mass-point map factor ``msft (ny, nx)``."""
+    ``msf`` (optional) is the mass-point map factor ``msft (ny, nx)``;
+    ``vorder`` is ``cfg.v_sca_adv_order`` (3 or 5)."""
     nz, ny, nx = q.shape
     _launch("flux_div_scalar", q, ru, rv, rw, tend, coord.rdnw,
             coord.fnm, coord.fnp, dx, dy,
             nz, ny, nx, nx, ny, nz, open_x, open_y,
-            msf, has_msf, (ny, nx), spec)
+            msf, has_msf, (ny, nx), spec, vorder)
 
 
 def launch_flux_div_u(u, ru, rv, rw, tend, coord, dx, dy,
                       open_x=False, open_y=False,
-                      msf=None, has_msf=None, spec=False) -> None:
+                      msf=None, has_msf=None, spec=False,
+                      vorder=3) -> None:
     """Add the flux divergence of ``u`` (u-points) into ``tend``.
 
-    ``msf`` (optional) is the u-point map factor ``msfu (ny, nx+1)``."""
+    ``msf`` (optional) is the u-point map factor ``msfu (ny, nx+1)``;
+    ``vorder`` is ``cfg.v_mom_adv_order`` (3 or 5)."""
     nz, ny, nxp1 = u.shape
     nx = nxp1 - 1
     _launch("flux_div_u", u, ru, rv, rw, tend, coord.rdnw,
             coord.fnm, coord.fnp, dx, dy,
             nz, ny, nx, nx + 1, ny, nz, open_x, open_y,
-            msf, has_msf, (ny, nx + 1), spec)
+            msf, has_msf, (ny, nx + 1), spec, vorder)
 
 
 def launch_flux_div_v(v, ru, rv, rw, tend, coord, dx, dy,
                       open_x=False, open_y=False,
-                      msf=None, has_msf=None, spec=False) -> None:
+                      msf=None, has_msf=None, spec=False,
+                      vorder=3) -> None:
     """Add the flux divergence of ``v`` (v-points) into ``tend``.
 
-    ``msf`` (optional) is the v-point map factor ``msfv (ny+1, nx)``."""
+    ``msf`` (optional) is the v-point map factor ``msfv (ny+1, nx)``;
+    ``vorder`` is ``cfg.v_mom_adv_order`` (3 or 5)."""
     nz, nyp1, nx = v.shape
     ny = nyp1 - 1
     _launch("flux_div_v", v, ru, rv, rw, tend, coord.rdnw,
             coord.fnm, coord.fnp, dx, dy,
             nz, ny, nx, nx, ny + 1, nz, open_x, open_y,
-            msf, has_msf, (ny + 1, nx), spec)
+            msf, has_msf, (ny + 1, nx), spec, vorder)
 
 
 def launch_flux_div_w(w, ru, rv, rw, tend, coord, dx, dy,
                       open_x=False, open_y=False,
-                      msf=None, has_msf=None, spec=False) -> None:
+                      msf=None, has_msf=None, spec=False,
+                      vorder=3) -> None:
     """Add the flux divergence of ``w`` (interior and top w-points)
     into ``tend``.  Uses ``coord.rdn`` (w-level spacing), not ``rdnw``.
 
-    ``msf`` (optional) is the mass-point map factor ``msft (ny, nx)``."""
+    ``msf`` (optional) is the mass-point map factor ``msft (ny, nx)``;
+    ``vorder`` is ``cfg.v_sca_adv_order`` (WRF advect_w keys its vertical
+    order on the scalar order), 3 or 5."""
     nzp1, ny, nx = w.shape
     nz = nzp1 - 1
     _launch("flux_div_w", w, ru, rv, rw, tend, coord.rdn,
             coord.fnm, coord.fnp, dx, dy,
             nz, ny, nx, nx, ny, nz + 1, open_x, open_y,
-            msf, has_msf, (ny, nx), spec)
+            msf, has_msf, (ny, nx), spec, vorder)
 
 
 def add_advection_tendencies(state: DomainState, cfg: RunConfig) -> None:
@@ -170,15 +198,16 @@ def add_advection_tendencies(state: DomainState, cfg: RunConfig) -> None:
         rv /= state.msfv[None]
     rw[...] = 0.0                                    # Omega == 0 when w == 0
 
+    vsca, vmom = vertical_orders(cfg)
     launch_flux_div_scalar(state.total_theta(), ru, rv, rw, state.rth_t,
                            state, cfg.dx, cfg.dy,
-                           msf=state.msft, has_msf=state.has_msf)
+                           msf=state.msft, has_msf=state.has_msf, vorder=vsca)
     launch_flux_div_u(state.u, ru, rv, rw, state.ru_t, state, cfg.dx, cfg.dy,
-                      msf=state.msfu, has_msf=state.has_msf)
+                      msf=state.msfu, has_msf=state.has_msf, vorder=vmom)
     launch_flux_div_v(state.v, ru, rv, rw, state.rv_t, state, cfg.dx, cfg.dy,
-                      msf=state.msfv, has_msf=state.has_msf)
+                      msf=state.msfv, has_msf=state.has_msf, vorder=vmom)
     launch_flux_div_w(state.w, ru, rv, rw, state.rw_t, state, cfg.dx, cfg.dy,
-                      msf=state.msft, has_msf=state.has_msf)
+                      msf=state.msft, has_msf=state.has_msf, vorder=vsca)
 
 
 def advect_scalar_rk3_periodic_test(q0, u0: float, dx: float,
@@ -206,7 +235,8 @@ def advect_scalar_rk3_periodic_test(q0, u0: float, dx: float,
                  DTYPE(1.0 / dx),
                  DTYPE(1.0 / dx), np.int32(1), np.int32(1), np.int32(nx),
                  np.int32(0), np.int32(0), np.int32(0),  # periodic path
-                 np.int32(0))
+                 np.int32(0),
+                 np.int32(3))                             # vorder: inert at nz=1
 
     def rhs(qs):
         tend[...] = 0

@@ -241,13 +241,16 @@ def _frame(seed: int) -> dict:
     }
 
 
-def _write_wrfout(path, stamps, *, grid_id=2, dx=1000.0, seed_offset=0):
+def _write_wrfout(path, stamps, *, grid_id=2, dx=1000.0, seed_offset=0,
+                  model_label=None):
     grid = SimpleNamespace(truelat1=38.5, truelat2=39.5, stand_lon=-96.5,
                            ref_lat=39.0, ref_lon=-96.5)
     attrs = wrf_global_attrs(
         grid, datetime.datetime(1974, 4, 3, 18), grid_id=grid_id,
         parent_id=max(grid_id - 1, 1), i_parent_start=5, j_parent_start=5,
         parent_grid_ratio=3, dt=6.0)
+    if model_label is not None:
+        attrs["GPUWM_MODEL_LABEL"] = model_label
     with WrfoutWriter(path, nx=_NX, ny=_NY, nz=_NZ, dx=dx, dy=dx,
                       global_attrs=attrs) as writer:
         for index, stamp in enumerate(stamps):
@@ -357,7 +360,10 @@ def test_rust_engine_renders_every_frame_including_half_hourly(
         assert Path(render_layout.fs_path(png)).stat().st_size > 5_000, (
             png.name)
         width, height = _png_size(png)
-        assert (width, height) == (1200, 900), png.name
+        # The default is the fixture's projected domain shape, with one
+        # canvas shared by its products. The old landscape size fitted
+        # the map into padding; an explicit --size still pins fixed pixels.
+        assert (width, height) == (954, 806), png.name
 
 
 @needs_renderer
@@ -1959,6 +1965,115 @@ def test_list_products_matplotlib_engine(tmp_path, monkeypatch, capsys):
 # --pair: compose two runs' rendered PNGs into comparison sheets
 # ---------------------------------------------------------------------------
 
+@needs_renderer
+@pytest.mark.parametrize("sheet", [False, True])
+def test_native_run_difference_reaches_the_cli_and_publishes_its_pictures(
+        tmp_path, capsys, sheet):
+    import os
+    import shutil
+    from gpuwm.render_receipts import read_summary
+
+    a_dir, b_dir = tmp_path / "a", tmp_path / "b"
+    a_dir.mkdir()
+    b_dir.mkdir()
+    name = "wrfout_d02_1974-04-03_18_00_00.nc"
+    _write_wrfout(a_dir / name, _STAMPS[:1], model_label="Model A")
+    _write_wrfout(b_dir / name, _STAMPS[:1], seed_offset=1, model_label="Model B")
+    case = tmp_path / "difference"
+    command = ["render", "--diff", str(a_dir), str(b_dir),
+               "--products", "t2", "--diff-labels", "Forecast A", "Forecast B",
+               "--out", str(case)]
+    if sheet:
+        command.append("--diff-sheet")
+    assert cli.main(command) == 0
+    transcript = capsys.readouterr()
+    assert "difference d02-1km_2m_temperature" in transcript.out
+    assert "cells=192" in transcript.out
+    max_abs = re.search(r"max_abs=([0-9.]+)", transcript.out)
+    assert max_abs and float(max_abs[1]) > 1.0, transcript.out
+    assert "failed" not in transcript.err.lower(), transcript.err
+    out = run_stamp.latest(case)
+    assert out is not None
+    pictures = sorted(out.rglob("*.png"))
+    assert len(pictures) == (2 if sheet else 1), pictures
+    difference = next(path for path in pictures if "sheet" not in str(path.relative_to(out)))
+    assert _png_size(difference) == (954, 806)
+    if sheet:
+        comparison = next(path for path in pictures if "sheet" in str(path.relative_to(out)))
+        # Three intact 954x806 panels, two 12-pixel gutters and 16-pixel
+        # side margins. The 120-pixel band adds only the header and labels.
+        assert _png_size(comparison) == (2918, 926)
+    summary = read_summary(out)
+    assert summary and summary["rendered_png_count"] == len(pictures)
+    assert summary["failure_count"] == 0
+    assert summary["skipped_count"] == 0
+    gallery = os.environ.get("RUSTWX_RECOVERY_GALLERY")
+    if gallery:
+        folder = Path(gallery) / ("difference-sheet" if sheet else "difference")
+        folder.mkdir(parents=True, exist_ok=True)
+        for picture in pictures:
+            shutil.copyfile(render_layout.fs_path(picture), folder / picture.name)
+        (folder / "command.txt").write_text("gpuwm " + " ".join(command) + "\n",
+                                          encoding="utf-8")
+        (folder / "stdout.log").write_text(transcript.out, encoding="utf-8")
+        (folder / "stderr.log").write_text(transcript.err, encoding="utf-8")
+
+
+@needs_renderer
+@pytest.mark.parametrize("selector", ["radar_colors", "wind", "overlays", "annotations"])
+def test_native_difference_sheets_honor_the_existing_presentation_selectors(
+        tmp_path, monkeypatch, capsys, selector):
+    import hashlib
+    import json
+    import os
+
+    monkeypatch.setenv(rustwx.RADAR_COLORS_ENV, "standard")
+    a_dir, b_dir = tmp_path / "a", tmp_path / "b"
+    a_dir.mkdir()
+    b_dir.mkdir()
+    name = "wrfout_d02_1974-04-03_18_00_00.nc"
+    _write_wrfout(a_dir / name, _STAMPS[:1])
+    _write_wrfout(b_dir / name, _STAMPS[:1], seed_offset=1)
+    if selector == "radar_colors":
+        product, choices = "refl", [["--radar-colors", "standard"], ["--radar-colors", "classic"]]
+    elif selector == "wind":
+        product, choices = "wind10", [["--barbs"], ["--streamlines"]]
+    else:
+        product = "t2"
+        config = tmp_path / (selector + ".json")
+        if selector == "overlays":
+            config.write_text(json.dumps({"points": [{"lat": 39.0, "lon": -96.5,
+                "shape": "plus", "color": "#ff00ff", "radius_px": 12, "width": 4}]}),
+                encoding="utf-8")
+            choices = [[], ["--overlays", str(config)]]
+        else:
+            config.write_text('{"title_suffix": "CHECK", "subtitle_center": "CHECK"}',
+                              encoding="utf-8")
+            choices = [[], ["--annotate", str(config)]]
+    rows = []
+    for index, choice in enumerate(choices):
+        case = tmp_path / ("pictures-" + str(index))
+        command = ["render", "--diff", str(a_dir), str(b_dir), "--diff-sheet",
+                   "--products", product, "--size", "640x480", "--out", str(case), *choice]
+        assert cli.main(command) == 0
+        transcript = capsys.readouterr()
+        magnitude = re.search(r"max_abs=([0-9.]+)", transcript.out)
+        assert magnitude, transcript.out
+        out = run_stamp.latest(case)
+        picture = next(path for path in out.rglob("*.png")
+                       if "sheet" in str(path.relative_to(out)))
+        row = {"command": command, "sha256": hashlib.sha256(picture.read_bytes()).hexdigest(),
+               "max_abs": magnitude[1]}
+        rows.append(row)
+    assert rows[0]["sha256"] != rows[1]["sha256"], selector + " was discarded at the difference door"
+    assert rows[0]["max_abs"] == rows[1]["max_abs"], selector + " changed the numerical difference"
+    if os.environ.get("RUSTWX_RECOVERY_GALLERY"):
+        folder = Path(os.environ["RUSTWX_RECOVERY_GALLERY"]) / "selector-receipts"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / (selector + ".json")).write_text(json.dumps(rows, indent=2) + "\n",
+                                                  encoding="utf-8")
+
+
 def _tiny_png(path, *, width=32, height=24) -> None:
     PIL = pytest.importorskip(
         "PIL", reason="--pair needs Pillow (arrives with matplotlib; no "
@@ -2005,7 +2120,21 @@ def test_pair_composes_common_products(tmp_path, capsys):
     for sheet in out.glob("*.png"):
         assert sheet.stat().st_size > 500
         width, height = _png_size(sheet)
-        assert width > 1_000 and height > 100, sheet.name
+        renderer = rustwx.find_renderer()
+        if renderer is not None and rustwx.probe_renderer(renderer)[0]:
+            # Native composition preserves the two 32x24 fixtures. The
+            # former compositor enlarged each to 900 pixels, so its
+            # thousand-pixel floor would demand resampling here.
+            assert (width, height) == (108, 120), sheet.name
+            from PIL import Image
+
+            with Image.open(sheet) as image:
+                for x0 in (16, 60):
+                    for y in range(80, 104):
+                        for x in range(x0, x0 + 32):
+                            assert image.getpixel((x, y))[:3] == (51, 102, 153)
+        else:
+            assert width > 1_000 and height > 100, sheet.name
 
 
 def test_pair_keys_keep_the_domain_so_nests_do_not_cross_pair(tmp_path):
@@ -2537,3 +2666,273 @@ def test_the_abi_marker_matches_the_rust_source_without_a_build():
         f"{source.name} have drifted apart:\n"
         f"  rust  : {literal!r}\n"
         f"  python: {rustwx.RENDERER_ABI_MARKER!r}")
+
+
+@needs_renderer
+def test_native_difference_selects_inner_record_by_actual_valid_time(tmp_path, capsys):
+    a = _write_wrfout(tmp_path / "wrfout_d02_1974-04-03_18_00_00.nc",
+                      ("1974-04-03_18:00:00", "1974-04-03_19:00:00",
+                       "1974-04-03_20:00:00"))
+    b_dir = tmp_path / "b"
+    b_dir.mkdir()
+    b = _write_wrfout(b_dir / "wrfout_d02_1974-04-03_19_00_00.nc",
+                      ("1974-04-03_19:00:00", "1974-04-03_20:00:00"), seed_offset=4)
+    out = tmp_path / "pictures"
+    assert cli.main(["render", "--diff", str(a), str(b), "--timeidx", "2",
+                     "--products", "t2", "--size", "400x300", "--out", str(out),
+                     "--run-stamp", "off"]) == 0
+    transcript = capsys.readouterr()
+    assert "difference d02-1km_2m_temperature 1974-04-03 20:00Z" in transcript.out
+    pictures = list(out.rglob("*.png"))
+    assert len(pictures) == 1
+    assert "f002" in pictures[0].name
+
+
+@needs_renderer
+def test_native_difference_folder_timeidx_selects_each_domain(tmp_path, capsys):
+    a_dir, b_dir = tmp_path / "a", tmp_path / "b"
+    a_dir.mkdir()
+    b_dir.mkdir()
+    for grid in (1, 2):
+        for index, stamp in enumerate(("1974-04-03_18:00:00", "1974-04-03_19:00:00")):
+            name = f"wrfout_d{grid:02d}_{stamp.replace(':', '_')}.nc"
+            _write_wrfout(a_dir / name, (stamp,), grid_id=grid, seed_offset=index)
+            _write_wrfout(b_dir / name, (stamp,), grid_id=grid, seed_offset=index + 2)
+    out = tmp_path / "pictures"
+    assert cli.main(["render", "--diff", str(a_dir), str(b_dir), "--timeidx", "1",
+                     "--products", "t2", "--size", "400x300", "--out", str(out),
+                     "--run-stamp", "off"]) == 0
+    transcript = capsys.readouterr()
+    assert "difference d01-1km_2m_temperature 1974-04-03 19:00Z" in transcript.out
+    assert "difference d02-1km_2m_temperature 1974-04-03 19:00Z" in transcript.out
+    assert len(list(out.rglob("*.png"))) == 2
+    assert all("f001" in path.name for path in out.rglob("*.png"))
+
+
+@needs_renderer
+def test_native_difference_split_qpf_keeps_both_runs_window_context(tmp_path, capsys):
+    import hashlib
+    import json
+    import os
+    from gpuwm.render_receipts import read_summary
+
+    stamps = ("1974-04-03_18:00:00", "1974-04-03_19:00:00")
+    a_dir, b_dir = tmp_path / "a", tmp_path / "b"
+    a_dir.mkdir()
+    b_dir.mkdir()
+    for index, stamp in enumerate(stamps):
+        name = f"wrfout_d02_{stamp.replace(':', '_')}.nc"
+        _write_wrfout(a_dir / name, (stamp,), seed_offset=index)
+        _write_wrfout(b_dir / name, (stamp,), seed_offset=index + 2)
+    a_combined = _write_wrfout(tmp_path / "a-combined.nc", stamps)
+    b_combined = _write_wrfout(tmp_path / "b-combined.nc", stamps, seed_offset=2)
+    rows, images = [], []
+    for label, a, b in (("split", a_dir, b_dir),
+                        ("combined", a_combined, b_combined)):
+        out = tmp_path / (label + "-pictures")
+        command = ["render", "--diff", str(a), str(b), "--timeidx", "1",
+                   "--products", "qpf_1h", "--diff-labels", "A", "B",
+                   "--size", "400x300", "--out", str(out), "--run-stamp", "off"]
+        assert cli.main(command) == 0
+        transcript = capsys.readouterr()
+        assert "difference d02-1km_qpf_1h 1974-04-03 19:00Z" in transcript.out
+        pictures = list(out.rglob("*.png"))
+        assert len(pictures) == 1, transcript.out + transcript.err
+        payload = pictures[0].read_bytes()
+        images.append(payload)
+        summary = read_summary(out)
+        assert summary["failure_count"] == summary["skipped_count"] == 0
+        rows.append({"command": command, "sha256": hashlib.sha256(payload).hexdigest(),
+                     "stdout": transcript.out, "stderr": transcript.err})
+    assert images[0] == images[1]
+    if os.environ.get("RUSTWX_RECOVERY_GALLERY"):
+        folder = Path(os.environ["RUSTWX_RECOVERY_GALLERY"]) / "difference-window"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "qpf_1h-difference.png").write_bytes(images[0])
+        (folder / "receipt.json").write_text(json.dumps(rows, indent=2) + "\n",
+                                            encoding="utf-8")
+
+
+@needs_renderer
+@pytest.mark.parametrize("first_only", [False, True])
+def test_native_difference_registered_window_absence_is_a_skip_not_a_failure(
+        tmp_path, capsys, first_only):
+    from gpuwm.render_receipts import read_summary
+
+    stamps = ("1974-04-03_18:00:00", "1974-04-03_19:00:00")
+    a_dir, b_dir = tmp_path / "a", tmp_path / "b"
+    a_dir.mkdir()
+    b_dir.mkdir()
+    for index, stamp in enumerate(stamps):
+        name = f"wrfout_d02_{stamp.replace(':', '_')}.nc"
+        _write_wrfout(a_dir / name, (stamp,), seed_offset=index)
+        _write_wrfout(b_dir / name, (stamp,), seed_offset=index + 2)
+    out = tmp_path / "pictures"
+    command = ["render", "--diff", str(a_dir), str(b_dir), "--products", "qpf_1h",
+               "--size", "400x300", "--out", str(out), "--run-stamp", "off"]
+    if first_only:
+        command += ["--timeidx", "0"]
+    assert cli.main(command) == (1 if first_only else 0)
+    transcript = capsys.readouterr()
+    assert "F000" in transcript.err and "skipped qpf_1h" in transcript.err
+    assert "failed" not in transcript.err.lower(), transcript.err
+    summary = read_summary(out)
+    assert summary["failure_count"] == 0
+    assert summary["skipped_count"] >= 1
+    assert summary["rendered_png_count"] == (0 if first_only else 1)
+    assert summary["undrawn_family_count"] == (1 if first_only else 0)
+
+
+@needs_renderer
+@pytest.mark.parametrize("theme_name", ["woof-light", "woof-dark"])
+def test_native_750m_nest_inherits_the_woof_theme_without_changing_generic_pixels(
+        tmp_path, theme_name):
+    """The site's extends file reaches Rust and keeps public WOOF labels.
+
+    An inherited theme and its equivalent built-in draw identical bytes.
+    The generic no-theme and default-theme controls remain identical.
+    """
+    import hashlib
+    import json
+    import os
+
+    wrfout = _write_wrfout(
+        tmp_path / "wrfout_d02_1974-04-03_18-00-00.nc", (_STAMPS[0],),
+        grid_id=2, dx=750.0)
+    inherited = tmp_path / "site-theme.json"
+    inherited.write_text(json.dumps({"extends": theme_name, "name": "site"}),
+                         encoding="utf-8")
+
+    def render(name, *extra):
+        out = tmp_path / name
+        assert cli.main([
+            "render", str(wrfout), "--engine", "rust", "--products", "t2",
+            "--timeidx", "0", "--size", "640x480", "--out", str(out),
+            "--source-label", "ArWen 2.8.6", *extra]) == 0
+        pictures = list(out.rglob("*.png"))
+        assert len(pictures) == 1, pictures
+        assert "d02-750m" in pictures[0].as_posix(), pictures[0]
+        return Path(render_layout.fs_path(pictures[0])).read_bytes()
+
+    generic = render("generic")
+    default = render("default", "--theme", "default")
+    builtin = render("builtin", "--theme", theme_name)
+    inherited_png = render("inherited", "--theme", str(inherited))
+    assert generic == default
+    assert builtin == inherited_png
+    assert inherited_png != generic
+    # The theme's labels are tested directly in Rust; these actual pixels
+    # prove that the same inherited theme reaches the public render door.
+    evidence = os.environ.get("GPUWM_RENDERER_EXTRAS_EVIDENCE")
+    if evidence:
+        root = Path(evidence)
+        root.mkdir(parents=True, exist_ok=True)
+        for label, png in (("generic", generic), ("inherited", inherited_png)):
+            (root / f"750m-{theme_name}-{label}.png").write_bytes(png)
+        (root / f"750m-{theme_name}-receipt.json").write_text(json.dumps({
+            "schema": "renderer-extras.woof-theme-proof.v1",
+            "fixture": "WrfoutWriter single-frame d02 750m",
+            "theme": {"extends": theme_name, "name": "site"},
+            "generic_default_byte_identical": generic == default,
+            "inherited_builtin_byte_identical": inherited_png == builtin,
+            "generic_sha256": hashlib.sha256(generic).hexdigest(),
+            "inherited_sha256": hashlib.sha256(inherited_png).hexdigest(),
+        }, indent=2) + "\n", encoding="utf-8")
+
+
+
+@needs_renderer
+def test_native_pair_sheet_inherits_its_requested_theme_and_keeps_panel_pixels(tmp_path):
+    from PIL import Image
+
+    left, right = _pair_dirs(tmp_path)
+    theme = tmp_path / "site-dark.json"
+    theme.write_text('{"extends":"woof-dark"}', encoding="utf-8")
+
+    def pair(name, *extra):
+        out = tmp_path / name
+        assert cli.main(["render", "--pair", str(left), str(right),
+                         "--out", str(out), *extra]) == 0
+        pictures = sorted(run_stamp.latest(out).glob("*.png"))
+        assert len(pictures) == 2
+        for picture in pictures:
+            with Image.open(picture) as image:
+                for x0 in (16, 60):
+                    for y in range(80, 104):
+                        for x in range(x0, x0 + 32):
+                            assert image.getpixel((x, y))[:3] == (51, 102, 153)
+        return [picture.read_bytes() for picture in pictures]
+
+    generic = pair("pair-generic")
+    assert pair("pair-default", "--theme", "default") == generic
+    dark = pair("pair-dark", "--theme", "woof-dark")
+    assert pair("pair-inherited", "--theme", str(theme)) == dark
+    assert dark != generic
+
+
+@needs_renderer
+def test_native_compact_750m_store_accepts_inherited_woof_theme_and_explicit_auto(tmp_path):
+    import hashlib
+    import json
+    import os
+    import subprocess
+
+    source = _write_wrfout(
+        tmp_path / "wrfout_d02_1974-04-03_18-00-00.nc", (_STAMPS[0],), dx=750.0)
+    process_request, process_result = tmp_path / "process-request.json", tmp_path / "process-result.json"
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    process_request.write_text(json.dumps({
+        "schema": "arwen.wrf-process-request.v2", "path": str(source),
+        "source_sha256": digest, "case_id": "renderer-extras-theme", "domain": "d02",
+        "valid_utc": "1974-04-03T18:00:00Z", "store_root": str(tmp_path / "native"),
+        "lead_seconds": 0, "profile": "viewer-2d-v1", "products": ["2m_temperature"]}),
+        encoding="utf-8")
+    done = subprocess.run([
+        str(RENDERER), "--process-request", str(process_request), "--process-result", str(process_result)],
+        env=rustwx.renderer_env(), capture_output=True, text=True)
+    assert done.returncode == 0, done.stdout + done.stderr
+    processed = json.loads(process_result.read_text(encoding="utf-8"))
+    theme = tmp_path / "site-light.json"
+    theme.write_text('{"extends":"woof-light"}', encoding="utf-8")
+
+    def render(name, **presentation):
+        request, receipt = tmp_path / f"{name}-request.json", tmp_path / f"{name}-result.json"
+        request.write_text(json.dumps({
+            "schema": "arwen.native-store-render-request.v1", "process_result": str(process_result),
+            "expected_frame_id": processed["frame"]["id"], "expected_source_sha256": digest,
+            "out_dir": str(tmp_path / name), "products": ["2m_temperature"], "spacing_m": 750.0,
+            "width": 640, "height": 480, **presentation}), encoding="utf-8")
+        done = subprocess.run([
+            str(RENDERER), "--render-store-request", str(request), "--render-store-result", str(receipt)],
+            env=rustwx.renderer_env(), capture_output=True, text=True)
+        assert done.returncode == 0, done.stdout + done.stderr
+        result = json.loads(receipt.read_text(encoding="utf-8"))
+        assert result["wrf_imported"] is False and result["volume_store_created"] is False
+        assert len(result["panels"]) == 1
+        picture = Path(result["panels"][0]["path"])
+        return picture.read_bytes(), result
+
+    generic, _ = render("compact-generic")
+    default, _ = render("compact-default", theme="default")
+    builtin, _ = render("compact-builtin", theme="woof-light")
+    inherited, fixed = render("compact-inherited", theme=str(theme))
+    auto, automatic = render("compact-auto", theme=str(theme), width=None, height=None)
+    assert generic == default
+    assert inherited == builtin and inherited != generic
+    assert fixed["layout"] == "fixed" and (fixed["width"], fixed["height"]) == (640, 480)
+    assert automatic["layout"] == "auto"
+    assert (automatic["width"], automatic["height"]) != (640, 480)
+    evidence = os.environ.get("GPUWM_RENDERER_EXTRAS_EVIDENCE")
+    if evidence:
+        root = Path(evidence)
+        root.mkdir(parents=True, exist_ok=True)
+        for name, png in (("generic", generic), ("inherited", inherited), ("auto", auto)):
+            (root / f"compact-750m-{name}.png").write_bytes(png)
+        (root / "compact-750m-receipt.json").write_text(json.dumps({
+            "schema": "renderer-extras.compact-theme-proof.v1", "fixture": "WrfoutWriter d02 750m",
+            "generic_default_byte_identical": generic == default,
+            "inherited_builtin_byte_identical": inherited == builtin,
+            "wrf_imported_during_render": automatic["wrf_imported"],
+            "fixed_dimensions": [fixed["width"], fixed["height"]],
+            "auto_dimensions": [automatic["width"], automatic["height"]],
+        }, indent=2) + "\n", encoding="utf-8")

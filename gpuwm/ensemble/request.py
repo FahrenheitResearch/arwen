@@ -18,11 +18,12 @@ class EnsembleRequest:
     member_device_ids: tuple[int, ...] | None = None
     retain_member_diagnostics: bool = False
     stochastic: dict | None = None
-    #: Member source recipe this request runs: ``time-lagged`` (earlier
-    #: cycles of the config's own source) or ``multi-model`` (the listed
-    #: trajectories).  Real source trajectories, never random amplitudes.
+    #: Source trajectories or explicitly declared surface/land member arms.
     recipe: str | None = None
     trajectories: tuple = ()
+    #: Named existing-land and fixed surface-state arms on one source.
+    member_variants: tuple = ()
+    max_ordinary_members_per_device: int | None = None
 
     def __post_init__(self):
         if self.perturbation == "none":
@@ -30,6 +31,9 @@ class EnsembleRequest:
             object.__setattr__(self, "perturbation", None)
         from gpuwm.ensemble.calibration_admission import refuse_uncalibrated_random
         refuse_uncalibrated_random(perturbation=self.perturbation, stochastic=self.stochastic)
+        from gpuwm.ensemble.surface_controls import is_surface_recipe, validate_surface_recipe
+        if is_surface_recipe(self.perturbation):
+            object.__setattr__(self, "perturbation", validate_surface_recipe(self.perturbation))
         if isinstance(self.members, bool):
             raise ValueError("ensemble members must be a positive integer")
         members = index(self.members)
@@ -54,13 +58,30 @@ class EnsembleRequest:
             raise ValueError("ensemble sources must supply one descriptor per member")
         object.__setattr__(self, "sources", sources)
         trajectories = tuple(self.trajectories)
+        if not isinstance(self.member_variants, (tuple, list)):
+            raise ValueError("member_variants must be a list of named member records")
+        variants = tuple(self.member_variants)
+        if variants and self.recipe is None:
+            object.__setattr__(self, "recipe", "member-roster")
+        if variants or self.recipe == "member-roster":
+            if self.recipe != "member-roster":
+                raise ValueError('ensemble member_variants belong to recipe = "member-roster"')
+            if self.perturbation is not None:
+                raise ValueError("member-roster records each member's fixed surface controls; "
+                                 "remove the shared ensemble perturbation to prevent two competing surface states")
+            from gpuwm.ensemble.member_variants import normalize_member_variants
+            variants = normalize_member_variants(variants, members)
+        object.__setattr__(self, "member_variants", variants)
         if self.recipe is not None:
             from gpuwm.ensemble.recipe_door import RECIPES
             if self.recipe not in RECIPES:
                 raise ValueError(f"ensemble recipe must be one of {list(RECIPES)}, got {self.recipe!r}")
-            if sources or self.perturbation is not None:
+            if sources or (self.perturbation is not None and not is_surface_recipe(self.perturbation)):
                 raise ValueError("an ensemble recipe selects every member's source; "
                                  "remove [ensemble] sources and perturbation")
+            if self.recipe == "surface-state":
+                from gpuwm.ensemble.surface_controls import shared_surface_options
+                shared_surface_options(self.perturbation, members)
         if trajectories:
             if self.recipe != "multi-model":
                 raise ValueError('ensemble trajectories belong to recipe = "multi-model"')
@@ -93,12 +114,20 @@ class EnsembleRequest:
                     or len(set(ids)) != len(ids)):
                 raise ValueError("member_device_ids must name distinct nonnegative cards")
             object.__setattr__(self, "member_device_ids", ids)
+        if self.max_ordinary_members_per_device is not None:
+            from gpuwm.ensemble.admission import _integer
+            object.__setattr__(self, "max_ordinary_members_per_device", _integer(
+                self.max_ordinary_members_per_device, "max_ordinary_members_per_device", positive=True))
 
     @classmethod
     def from_mapping(cls, value):
         if isinstance(value, cls):
             from gpuwm.ensemble.calibration_admission import refuse_uncalibrated_random
             refuse_uncalibrated_random(perturbation=value.perturbation, stochastic=value.stochastic)
+            if value.member_variants:
+                # Roster records contain mutable mappings. Revalidate and
+                # detach them at the run door, as the initial reader does.
+                return cls(**value.receipt())
             return value
         if isinstance(value, int) and not isinstance(value, bool):
             return cls(value)
@@ -117,10 +146,16 @@ class EnsembleRequest:
         if value.get("trajectories") and value.get("recipe") is None:
             # A trajectory list is the multi-model recipe.
             value = {**value, "recipe": "multi-model"}
+        if value.get("member_variants") and value.get("recipe") is None:
+            value = {**value, "recipe": "member-roster"}
+        if "member_variants" in value and not isinstance(value["member_variants"], (tuple, list)):
+            raise ValueError("member_variants must be a list of named member records")
         if "members" not in value:
             if value.get("recipe") == "multi-model" and value.get("trajectories"):
                 # Every listed trajectory is one member.
                 value = {**value, "members": len(value["trajectories"])}
+            elif value.get("recipe") == "member-roster" and value.get("member_variants"):
+                value = {**value, "members": len(value["member_variants"])}
             else:
                 raise ValueError("ensemble requires members")
         return cls(**value)
@@ -133,7 +168,12 @@ class EnsembleRequest:
                 "perturbation": self.perturbation, "base_seed": self.base_seed,
                 "member_device_ids": (None if self.member_device_ids is None
                                       else list(self.member_device_ids)),
+                **({} if self.max_ordinary_members_per_device is None else
+                   {"max_ordinary_members_per_device": self.max_ordinary_members_per_device}),
                 # Stated only when a recipe is selected, so a request without
                 # one keeps the receipt every earlier manifest recorded.
                 **({} if self.recipe is None else {"recipe": self.recipe,
-                    "trajectories": [dict(item) for item in self.trajectories]})}
+                    "trajectories": [dict(item) for item in self.trajectories]}),
+                **({} if not self.member_variants else {"member_variants": [
+                    {"name": item["name"], "physics": dict(item["physics"]),
+                     "surface": dict(item["surface"])} for item in self.member_variants]})}

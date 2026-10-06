@@ -53,11 +53,12 @@ at every lead, ring theta/moisture keep their boundary-installed values,
 and ring h_diabatic stays 0 (allocator zero init,
 frame/module_domain.F:770-777 / tools/gen_allocs.c:411-415;
 set_physical_bc3d writes halo indices only, module_bc.F:867-885).
-Scope qualifications (explicit non-goals): WRF's optional
-``mp_zero_out`` path zeroes moisture over WHOLE-field mass bounds before
-the clipped finish (solve_em.F:4002-4038) -- gpuwm has no mp_zero_out,
-so the never-touched statement holds for every supported configuration;
-and a specified+periodic_x channel clips j only
+Scope qualifications: WRF's optional ``mp_zero_out`` path floors the
+outermost ring at zero over WHOLE-field mass bounds before the clipped
+finish (solve_em.F:4002-4038); :func:`microphysics_zero_out` runs it
+after the ring restore when ``mp_zero_out > 0``, so the never-touched
+statement holds for ring values only while ``mp_zero_out = 0`` (the
+default); and a specified+periodic_x channel clips j only
 (module_microphysics_driver.F:871-873) -- gpuwm has no channel mode and
 always excludes the four-sided ring.  An earlier
 in-tree justification argued the whole-field call was inert because the
@@ -990,7 +991,50 @@ def apply(state: DomainState, cfg: RunConfig, dt: float, *,
 
     A due diagnostic with ``mp_physics = 0`` is an invalid schedule and
     raises instead of silently producing an output frame without radar data.
+
+    Radar latent heating (WRF ``mp_tend_radar = 1``,
+    module_big_step_utilities_em.F:5913-5938/:5991-6005) is one optional
+    read: a forcing attached to the state as ``radar_tten_forcing``
+    (:mod:`gpuwm.da.radar_tten`).  With none attached the call is
+    :func:`_apply_scheme` and nothing else.  With one, theta as it stood
+    before the scheme is kept, the scheme runs unchanged, and each covered
+    interior point below the top level then takes ``tendency * dt`` in
+    place of the microphysics increment; ``h_diabatic`` keeps the
+    microphysics rate everywhere (:6014).  The replacement is made here
+    rather than inside :func:`moist_physics_finish` because classic
+    Thompson finishes in its own fused kernel and never calls that
+    function, and a forcing that one scheme silently ignored would be a
+    refusal nobody raised.  The scheme runs under the forcing's
+    ``mp_tend_lim`` (HRRR pairs 0.07 K/s with ``mp_tend_radar = 1``,
+    parm/conus/hrrr_wrfpre.nl:108-109), which WRF applies to the
+    microphysics increment before the radar select (:5968-5969).
     """
+    forcing = getattr(state, "radar_tten_forcing", None)
+    if forcing is None:
+        return _apply_scheme(state, cfg, dt, refl_10cm_due=refl_10cm_due)
+    forcing.before_microphysics(state, cfg, dt)
+    scheme_cfg = forcing.scheme_config(cfg)
+    result = _apply_scheme(state, scheme_cfg, dt,
+                           refl_10cm_due=refl_10cm_due)
+    forcing.after_microphysics(state, scheme_cfg, dt,
+                               ring_width=_ring_guard_width(cfg))
+    return result
+
+
+def _ring_guard_width(cfg: RunConfig) -> int:
+    """The width :func:`_ring_guard_slices` excludes, 0 for periodic/open
+    configs (WRF solve_em.F:3618-3622)."""
+    if not (getattr(cfg, "specified", False)
+            or getattr(cfg, "nested", False)):
+        return 0
+    return max(int(cfg.spec_zone), 0)
+
+
+def _apply_scheme(state: DomainState, cfg: RunConfig, dt: float, *,
+                  refl_10cm_due: bool = False
+                  ) -> MicrophysicsDiagnostics | None:
+    """:func:`apply` without the optional radar forcing: the validation,
+    the specified-zone ring guard and the scheme dispatch."""
     if cfg.mp_physics == 0:
         if refl_10cm_due:
             raise ValueError("REFL_10CM is due without active microphysics")
@@ -1020,13 +1064,121 @@ def apply(state: DomainState, cfg: RunConfig, dt: float, *,
         pin_absent_nssl2_fields(state, resolve_nssl2_mode_for_config(cfg))
     slices = _ring_guard_slices(state, cfg)
     if slices is None:
-        return _dispatch_scheme(state, cfg, dt, refl_10cm_due=refl_10cm_due)
-    saved, captured_slots = _capture_spec_zone_ring(state, slices)
-    try:
-        # The restore must run on EVERY exit path: a post-mutation raise
-        # (e.g. the reflectivity handoff refusing a missing driver or an
-        # unconsumed stash, refl.py stash_refl_10cm) would otherwise leave
-        # ring columns mutated that WRF never dispatches at all.
-        return _dispatch_scheme(state, cfg, dt, refl_10cm_due=refl_10cm_due)
-    finally:
-        _restore_spec_zone_ring(state, slices, saved, captured_slots)
+        result = _dispatch_scheme(state, cfg, dt, refl_10cm_due=refl_10cm_due)
+    else:
+        saved, captured_slots = _capture_spec_zone_ring(state, slices)
+        try:
+            # The restore must run on EVERY exit path: a post-mutation
+            # raise (e.g. the reflectivity handoff refusing a missing
+            # driver or an unconsumed stash, refl.py stash_refl_10cm) would
+            # otherwise leave ring columns mutated that WRF never
+            # dispatches at all.
+            result = _dispatch_scheme(state, cfg, dt,
+                                      refl_10cm_due=refl_10cm_due)
+        finally:
+            _restore_spec_zone_ring(state, slices, saved, captured_slots)
+    if getattr(cfg, "mp_zero_out", 0):
+        microphysics_zero_out(state, cfg)
+    return result
+
+
+#: The species WRF's Registry places first in each scheme's ``scalar``
+#: array (v4.6.1 Registry.EM_COMMON packages; the fork's thompson and
+#: thompsonaero packages put qni first too, :2791/:2804), in gpuwm's
+#: spelling.  module_microphysics_zero_out tests ``n .NE. P_QV`` on the
+#: array INDEX, and P_QV is PARAM_FIRST_SCALAR, so the first scalar takes
+#: vapour's rule (floored at zero under 2, untouched under 1) and every
+#: other scalar takes the threshold.  A scheme with no scalar array has no
+#: entry.
+WRF_FIRST_SCALAR_SPECIES: dict[int, str] = {
+    8: "ni", 10: "ni", 28: "ni", 50: "ni",   # qni
+    9: "nc",                                 # qnc (milbrandt2mom)
+    16: "nn",                                # qnn (wdm6scheme)
+    18: "qndrop",                            # qndrop (v4.6.1 nssl2mconc)
+}
+
+_MP_ZERO_OUT_KERNELS: dict[str, object] = {}
+
+
+def _mp_zero_out_kernel(name: str):
+    """The two mp_zero_out kernels, built on first use, not at import:
+    tools/health_field_census.py imports this module under a host-only
+    array backend that refuses kernel construction, and an import-time
+    ElementwiseKernel failed all 14 census checks."""
+
+    kernel = _MP_ZERO_OUT_KERNELS.get(name)
+    if kernel is None:
+        if name == "floor_zero":
+            kernel = cp.ElementwiseKernel(
+                "", "float32 x", "if (x < 0.0f) x = 0.0f;",
+                "gpuwm_mp_floor_zero")
+        else:
+            kernel = cp.ElementwiseKernel(
+                "float32 t", "float32 x", "if (x < t) x = 0.0f;",
+                "gpuwm_mp_zero_below")
+        _MP_ZERO_OUT_KERNELS[name] = kernel
+    return kernel
+
+
+def microphysics_zero_out(state: DomainState, cfg: RunConfig) -> None:
+    """WRF ``microphysics_zero_outb`` then ``_outa`` after the scheme.
+
+    phys/module_microphysics_zero_out.F (the same file in WRF v4.6.1 and
+    the NOAA-EMC WRFV3.9 fork), called from solve_em right after the
+    microphysics driver (v4.6.1 :4009-4080, fork :4078-4141):
+
+    - ``_outb`` floors every species at zero on the outermost ring
+      (j = jds, jde-1 and i = ids, ide-1, whatever the boundary type);
+    - ``_outa`` then, over the interior that excludes the ``spec_zone``
+      ring on a specified or nested domain (the whole domain otherwise),
+      sets every species but the first of its array to zero where it is
+      below ``mp_zero_out_thresh``, and under ``mp_zero_out = 2`` floors
+      the first (vapour in the moist array) at zero.
+
+    v4.6.1 runs both on the moist array, and on the scalar array as well
+    when ``mp_zero_out_all = 1``; the fork always runs them on every array
+    (v4.6.1's 1).  gpuwm carries no chem or tracer arrays, so the moist
+    and scalar arrays are the whole call set here.  Applied after the
+    fused moist_physics_finish, which reads theta only, so the order
+    against it does not change a prognostic value.
+    """
+    mode = int(cfg.mp_zero_out)
+    if mode == 0 or state.qv is None:
+        return
+    from gpuwm.core.moist import WRF_MOIST_ARRAY_SPECIES, moist_species
+    from gpuwm.core.dycore import _boundary_forced
+    names = moist_species(state)
+    moist = [name for name in names if name in WRF_MOIST_ARRAY_SPECIES]
+    arrays = [(moist, "qv")]
+    if int(cfg.mp_zero_out_all):
+        scalars = [name for name in names
+                   if name not in WRF_MOIST_ARRAY_SPECIES]
+        if scalars:
+            first = WRF_FIRST_SCALAR_SPECIES.get(int(cfg.mp_physics))
+            if first not in scalars:
+                raise ValueError(
+                    f"mp_zero_out_all = 1 under mp_physics = "
+                    f"{cfg.mp_physics}: no WRF Registry scalar order is "
+                    "recorded for this scheme, so the species that takes "
+                    "vapour's rule cannot be named (WRF_FIRST_SCALAR_"
+                    "SPECIES)")
+            arrays.append((scalars, first))
+    thresh = np.float32(cfg.mp_zero_out_thresh)
+    sz = int(cfg.spec_zone) if _boundary_forced(cfg) else 0
+    for species, first in arrays:
+        for name in species:
+            field = getattr(state, name, None)
+            if field is None:
+                continue
+            _, ny, nx = field.shape
+            # microphysics_zero_outb: the outermost ring.
+            for ring in (field[:, 0, :], field[:, ny - 1, :],
+                         field[:, :, 0], field[:, :, nx - 1]):
+                _mp_zero_out_kernel("floor_zero")(ring)
+            # microphysics_zero_outa: the interior inside spec_zone.
+            inner = field[:, sz:ny - sz, sz:nx - sz]
+            if name == first:
+                if mode == 2:
+                    _mp_zero_out_kernel("floor_zero")(inner)
+            else:
+                _mp_zero_out_kernel("zero_below")(thresh, inner)

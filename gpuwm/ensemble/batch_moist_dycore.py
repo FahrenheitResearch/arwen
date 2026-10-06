@@ -89,6 +89,8 @@ def prepare_moist_step(state, *, physics_adapter=None, tables=None, boundary_clo
         raise BatchStateUnsupported('this graph binds metric km4/diff6; constant second-order or other closures need their scalar graph')
     if cfg.diff_6th_opt == 1:
         raise BatchStateUnsupported('original moist dynamics refuses unimplemented non-monotonic sixth-order diffusion')
+    if getattr(cfg, 'mp_zero_out', 0):
+        raise BatchStateUnsupported('mp_zero_out runs after the ordinary microphysics call; the batched physics adapter has no zero-out pass')
     if getattr(state,'rthften',None) is not None or getattr(state,'rqvften',None) is not None:
         raise BatchStateUnsupported('advective cumulus forcing needs its held member export before this full graph advances')
     if cfg.open_x or cfg.open_y or cfg.nested:
@@ -159,9 +161,13 @@ def prepare_moist_step(state, *, physics_adapter=None, tables=None, boundary_clo
     omega = prepare_omega_columns(ru, rv, ww, state.dnw, state.c1h, dx=cfg.dx, dy=cfg.dy,
                                  has_msf=state.has_msf, msft=state.msft)
     damping = batch_bigstep.prepare_w_damping(state)
+    from gpuwm.core.advection import vertical_orders
+    vsca, vmom = vertical_orders(cfg)
+    row_orders = {'': vsca, 'x': vmom, 'y': vmom, 'z': vsca}
     advection = tuple(prepare_flux_div(field, ru, rv, ww, tendency, spacing, state.fnm, state.fnp,
         msf, dx=cfg.dx, dy=cfg.dy, stagger=stagger, has_msf=state.has_msf,
-        open_x=dycore._boundary_x(cfg),open_y=dycore._boundary_y(cfg),spec=dycore._boundary_forced(cfg))
+        open_x=dycore._boundary_x(cfg),open_y=dycore._boundary_y(cfg),spec=dycore._boundary_forced(cfg),
+        vorder=row_orders[stagger])
         for field, tendency, spacing, msf, stagger in (
             (state.batch_theta, state.rth_t, state.rdnw, state.msft, ''),
             (state.u, state.ru_t, state.rdnw, state.msfu, 'x'),

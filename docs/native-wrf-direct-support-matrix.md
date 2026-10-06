@@ -25,7 +25,7 @@ dependencies.
 | WSM6 + YSU + classic-MM5 + Noah | yes | yes | none |
 | Other microphysics/PBL/surface/LSM state | no | no | scheme-specific state and metadata exporters |
 | Radiation namelist choice | native hierarchy proof has LW off plus Dudhia SW | stock gate used RRTM LW plus Dudhia SW | exact stock-only runtime deltas are receipt-bound; broaden scheme matrix |
-| Native-to-stock namelist deltas | fail-closed to `ra_lw_physics 0 -> 1`, `use_theta_m 0 -> 1`, and stock-only `ghg_input=0` | yes | remove a delta only when stock WRF supports the native representation directly |
+| Native-to-stock namelist deltas | fail-closed to `ra_lw_physics 0 -> 1` and stock-only `ghg_input=0`; `use_theta_m = 0` on both (the export is dry theta, which stock WRF integrates directly, so that delta was removed) | yes | remove a delta only when stock WRF supports the native representation directly |
 | Non-hourly or gapped forcing | no | no | explicit time-axis generalization |
 | Downloaded f00..f12 one-command input | yes, exact filenames and SHA manifest required | yes | generalize series discovery without weakening the manifest gate |
 | GFS `pgrb2.0p25` pressure-level series | yes, uniform manifest-bound series beginning at f000 | yes, f000/f003 advanced 5 seconds | extend horizon/geography matrix |

@@ -397,11 +397,11 @@ _TWO_FIFTY_METRE_CHILD = dict(
     h_sca_adv_order=5, nwp_diagnostics=1,
 )
 
-#: The card that child ran on, as its own probe and ``Machine.detect``
-#: read it.
+#: The card's workspace profile, with an explicit fixture memory budget.
+#: The budget lies between the profile's price and the reference-card price.
 _CARD_PROFILE_FIELDS = ("NVIDIA GeForce RTX 5070 Ti", 70, 1536, 1024)
-_CARD_FREE_BYTES = 16_368_795_648
-_CARD_TOTAL_GIB = 15.470458984375
+_CARD_BUDGET_GIB = 14.0
+_CARD_FREE_BYTES = int(_CARD_BUDGET_GIB * GIB)
 
 
 def _drive_the_runner_to_its_decision(run_dir: Path, *, tiles_mode) -> None:
@@ -437,13 +437,11 @@ def test_the_runner_prices_the_child_on_the_card_whatever_the_tiles_setting(
         tmp_path, monkeypatch):
     """One child, one card, one price, with ``[tiles]`` off or auto.
 
-    The failure this pins: with no ``[tiles]`` block the runner priced the
-    child on NO card, so the estimator fell back to the 170-SM reference
-    profile.  The 250 m child's run with no ``--tiles`` recorded
-    17,033,346,128 B in its child_streaming_decision event and report.json,
-    more than the 15.47 GiB card it then ran on, while the review and a
-    ``--tiles=auto`` run both said 14,922,267,728 B.  The pool peaked at
-    12,428,445,696 B.
+    Without a measured card, the estimator falls back to the 170-SM
+    reference profile.  The fixture's explicit 14 GiB budget admits the
+    measured profile and refuses the reference profile, so this checks
+    admission as well as the price without depending on a host card's
+    current capacity.
 
     Both settings are driven through the runner itself; the price the
     runner took is then applied to the 250 m child, and it must be the
@@ -491,15 +489,15 @@ def test_the_runner_prices_the_child_on_the_card_whatever_the_tiles_setting(
     off, auto = (real_price(child, options, **kwargs).peak_envelope_bytes
                  for options, kwargs, _ in decisions)
     assert off == auto
-    # The review's call for the same child on the same card: the probe's
-    # measured capacity and its profile (the probe also reads the compile
+    # The review's call for the same child on the same fixture budget and
+    # profile (the probe also reads the compile
     # platform, which a non-Noah-MP child is not priced on).
     review = real_price(
         child, streaming.OFF, machine=None,
-        basis=downscale_pricing.MEASURED_BASIS, vram_gib=_CARD_TOTAL_GIB,
+        basis=downscale_pricing.MEASURED_BASIS, vram_gib=_CARD_BUDGET_GIB,
         profile=replace(profile, compile_platform=("120", "13.4.92")))
     assert off == review.peak_envelope_bytes
-    assert review.peak_envelope_bytes < _CARD_TOTAL_GIB * GIB
+    assert review.peak_envelope_bytes < _CARD_BUDGET_GIB * GIB
 
     # The card was read on both settings, before the decision, and the
     # runner's record names it, off included: this block is what
@@ -513,7 +511,7 @@ def test_the_runner_prices_the_child_on_the_card_whatever_the_tiles_setting(
     # And the old runner's price, on no card, is the one that disagreed.
     unpriced = real_price(child, streaming.OFF, machine=None,
                           basis=downscale_pricing.MEASURED_BASIS)
-    assert unpriced.peak_envelope_bytes > _CARD_TOTAL_GIB * GIB
+    assert unpriced.peak_envelope_bytes > _CARD_BUDGET_GIB * GIB
 
 
 def test_a_host_that_cannot_be_read_refuses_only_the_settings_that_decide_on_it(

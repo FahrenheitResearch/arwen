@@ -393,6 +393,30 @@ SLOT_PLUME_WORK = _faces("mynn_pbl_plume_work",
 SLOT_PLUME_SCRATCH = _layers("mynn_pbl_plume_scratch",
                              tuple(f"w{k}" for k in range(11)))
 
+# --- GSD MYNN v4.1 (bl_mynn_version = "gsd_41") only ----------------------
+#: Layer groups that exist only under the GSD generation.  They are NOT in
+#: ``_LAYER_GROUPS``, so the default (wrf_461) workspace, its price and its
+#: arena shapes are unchanged; :func:`mynn_pbl_scratch_shapes` adds them when
+#: the generation asks.  The breakage they close: 2ea33cea9 and 32b58a2af
+#: drew these two working sets with raw ``cp.empty`` calls inside the
+#: converted solver, which the run's preflight never priced (only the
+#: ensemble plan reserved them, as transients), so a gsd_41 nest could pass
+#: its memory check and still allocate six float32 values (24 bytes) per
+#: column level of every chunk on top.
+_GSD41_LAYER_GROUPS: dict[str, tuple[int, tuple[str, ...]]] = {}
+
+
+def _gsd41_layers(slot: str, names: Sequence[str]) -> str:
+    _GSD41_LAYER_GROUPS[slot] = (len(names), tuple(names))
+    return slot
+
+
+#: mym_condensation CASE(2)'s five work columns (q1, rh, a, b, cld).
+SLOT_GSD41_CONDENSATION_WORK = _gsd41_layers(
+    "mynn_pbl_gsd41_condensation_work", ("q1", "rh", "a", "b", "cld"))
+#: GET_PBLH's theta-v of the liquid-water theta (thvl).
+SLOT_GSD41_THVL = _gsd41_layers("mynn_pbl_gsd41_thvl", ("thvl",))
+
 # --- mynn_tendencies ------------------------------------------------------
 SLOT_TENDENCY = _layers("mynn_pbl_tendency",
                         ("du", "dv", "dth", "dqv", "dqc", "dqi", "dqs",
@@ -466,7 +490,8 @@ MYNN_PBL_FLAG_SLOTS = ("mynn_pbl_validity_flags",)
 _FLAG_WORDS = 64
 
 
-def mynn_pbl_scratch_shapes(chunk: int, nz: int) -> dict[str, tuple[int, ...]]:
+def mynn_pbl_scratch_shapes(chunk: int, nz: int, *,
+                            bl_mynn_version: str = "wrf_461") -> dict[str, tuple[int, ...]]:
     """Flat float32 slot shapes for one MYNN call of ``chunk`` columns.
 
     Flat because the holder hands out reshaped contiguous prefixes, exactly
@@ -487,6 +512,12 @@ def mynn_pbl_scratch_shapes(chunk: int, nz: int) -> dict[str, tuple[int, ...]]:
         shapes[slot] = (count * chunk * (nz + 1),)
     for slot, (count, _names) in _COLUMN_GROUPS.items():
         shapes[slot] = (count * chunk,)
+    if bl_mynn_version == "gsd_41":
+        # Ten plume classes, eight state vectors and three work vectors.
+        shapes[SLOT_PLUME_WORK] = (80 * chunk * (nz + 1),)
+        shapes[SLOT_PLUME_SCRATCH] = (13 * chunk * nz,)
+        for slot, (count, _names) in _GSD41_LAYER_GROUPS.items():
+            shapes[slot] = (count * chunk * nz,)
     return shapes
 
 
@@ -502,25 +533,25 @@ def mynn_pbl_flag_shapes() -> dict[str, tuple[int, ...]]:
     return {slot: (_FLAG_WORDS,) for slot in MYNN_PBL_FLAG_SLOTS}
 
 
-def mynn_pbl_scratch_bytes(chunk: int, nz: int) -> int:
+def mynn_pbl_scratch_bytes(chunk: int, nz: int, *, bl_mynn_version: str = "wrf_461") -> int:
     """Total device bytes one MYNN workspace occupies."""
     total = sum(shape[0] for shape in
-                mynn_pbl_scratch_shapes(chunk, nz).values()) * 4
+                mynn_pbl_scratch_shapes(chunk, nz, bl_mynn_version=bl_mynn_version).values()) * 4
     total += sum(shape[0] for shape in
                  mynn_pbl_index_shapes(chunk, nz).values()) * 4
     total += sum(shape[0] for shape in mynn_pbl_flag_shapes().values()) * 4
     return int(total)
 
 
-def mynn_pbl_column_bytes(nz: int) -> int:
+def mynn_pbl_column_bytes(nz: int, *, bl_mynn_version: str = "wrf_461") -> int:
     """Device bytes one more column of MYNN workspace costs at ``nz``.
 
     The difference of two widths rather than a division, so the flag words
     (which do not scale with the chunk) are not smeared across the columns.
     62,952 bytes at nz = 59; 52,352 at nz = 49.
     """
-    return (mynn_pbl_scratch_bytes(2, nz)
-            - mynn_pbl_scratch_bytes(1, nz))
+    return (mynn_pbl_scratch_bytes(2, nz, bl_mynn_version=bl_mynn_version)
+            - mynn_pbl_scratch_bytes(1, nz, bl_mynn_version=bl_mynn_version))
 
 
 def mynn_pbl_card_chunk_ceiling(
@@ -1059,7 +1090,8 @@ def bind_mynn_rank_chunk(state, cfg, chunk: int) -> int:
             "changing it after admission would invalidate scratch storage")
     # A constructor may already own scratch, so check it before publishing
     # the binding rather than wait for a differently shaped first request.
-    shapes = {**mynn_pbl_scratch_shapes(width, int(cfg.nz)),
+    shapes = {**mynn_pbl_scratch_shapes(width, int(cfg.nz),
+                                      bl_mynn_version=cfg.bl_mynn_version),
               **mynn_pbl_index_shapes(width, int(cfg.nz))}
     for slot, shape in shapes.items():
         held = getattr(state, "_scratch", {}).get(slot)
@@ -1158,7 +1190,8 @@ def mynn_pbl_tendency_field_shapes(nz: int, ny: int, nx: int
 
 def mynn_pbl_slot_names() -> tuple[str, ...]:
     """Every slot name this module declares, float32 then int32 then flags."""
-    return (*sorted(_LAYER_GROUPS), *sorted(_FACE_GROUPS),
+    return (*sorted(_LAYER_GROUPS), *sorted(_GSD41_LAYER_GROUPS),
+            *sorted(_FACE_GROUPS),
             *sorted(_COLUMN_GROUPS), *sorted(MYNN_PBL_INDEX_SLOTS),
             *MYNN_PBL_FLAG_SLOTS)
 
@@ -1183,12 +1216,14 @@ class MynnPblScratch:
     # -- construction ------------------------------------------------------
 
     @classmethod
-    def from_state(cls, state, chunk: int, nz: int) -> "MynnPblScratch":
+    def from_state(cls, state, chunk: int, nz: int, *,
+                   bl_mynn_version: str = "wrf_461") -> "MynnPblScratch":
         """Draw every declared slot from ``DomainState.scratch``."""
         import cupy as cp
 
         buffers = {}
-        for slot, shape in mynn_pbl_scratch_shapes(chunk, nz).items():
+        for slot, shape in mynn_pbl_scratch_shapes(
+                chunk, nz, bl_mynn_version=bl_mynn_version).items():
             buffers[slot] = state.scratch(shape, slot)
         for slot, shape in mynn_pbl_index_shapes(chunk, nz).items():
             buffers[slot] = state.scratch(shape, slot, dtype=cp.int32)
@@ -1329,6 +1364,8 @@ __all__ = [
     "SLOT_DELT",
     "SLOT_DISS_HEAT",
     "SLOT_EXCHANGE",
+    "SLOT_GSD41_CONDENSATION_WORK",
+    "SLOT_GSD41_THVL",
     "SLOT_INITIALIZE",
     "SLOT_INITIALIZE_WORK",
     "SLOT_LEVEL2_FULL",

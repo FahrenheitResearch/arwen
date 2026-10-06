@@ -2,8 +2,8 @@
 # End-to-end 20CRv3 demo: fetch a real window, prepare it, run it, plot it.
 #
 # 20CRv3 is the reanalysis that reaches back to 1836, so it is the only
-# source in this product that can initialise a case from before the
-# satellite era.  This runs the whole path on the smallest accurate window:
+# source in this product that can initialise a case from before 1940.
+# This runs the whole path on a small historical window:
 # two three-hourly analyses over a 25x20 degree box, about 0.7 MB of real
 # NOAA data (MEASURED 2026-08-16: 737,620 bytes for the 1974-04-03 18Z
 # window below, fourteen files plus the recovered invariant supplement).
@@ -18,9 +18,9 @@
 #   * NOAA PSL's 20CRv3 NetCDF distribution is the ENSEMBLE MEAN
 #     analysis, not a member.  For a member state use `--source 20crv3`
 #     over the every-member GRIB2 archive.
-#   * PSL publishes no orography and no land mask for 20CRv3, so both are
-#     recovered from 20CRv3's own published fields; the supplement's
-#     provenance receipt states the method and the divergence.
+#   * The source's published invariant height and land fraction are
+#     bound to the fetched grid and times through Rust. Soil uses the
+#     four published Noah layers; ocean initialization uses source skt.
 #
 # Usage:
 #   tools/demo_20crv3_netcdf.sh WORKDIR GEOG_ROOT
@@ -40,18 +40,12 @@ RUN="$WORK/run"
 PLOTS="$WORK/plots"
 
 echo "== 1/4 fetch a real 20CRv3 window (NOAA PSL THREDDS subset) =="
-python "$REPO/tools/download_20crv3_native_subset.py" \
-    --start "$START" --frames 2 \
-    --north 50 --south 30 --west -105 --east -80 \
-    --output "$SUBSET" > "$WORK/subset-receipt.json"
+gpuwm fetch --source 20crv3-cf \
+    --cycle "${START%:00:00}" --hours 3 --cadence 3 \
+    --area 30,-105,50,-80 --out "$SUBSET" > "$WORK/subset-receipt.json"
 
 echo "== 2/4 prepare, through the packaged 20CRv3 NetCDF profile =="
-set -- gpuwm prep --source 20crv3-cf
-for FILE in air hgt shum uwnd vwnd pres.sfc skt air.2m shum.2m \
-            uwnd.10m vwnd.10m tsoil soilw invariant; do
-    set -- "$@" --input "$SUBSET/$FILE.nc"
-done
-"$@" \
+gpuwm prep --source 20crv3-cf --input-list "$SUBSET/inputs.txt" \
     --supplement "$SUBSET/invariant.nc" \
     --author-input-manifest "$SUBSET/inputs.json" \
     --wps-namelist "$NAMELIST" \

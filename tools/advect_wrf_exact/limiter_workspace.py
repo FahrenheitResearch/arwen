@@ -101,7 +101,7 @@ def observe(case):
     fluxes=[cp.zeros(shape,cp.float32) for shape in shapes]
     moist.launch_pd_fluxes(a['scalar_pd'],a['q0'],a['ru'],a['rv'],a['rw'],a['muts'],coord,
         m['dx'],m['dy'],m['dt'],*fluxes,msft=a['msftx'],has_msf=True,
-        open_x=m['open_x'],open_y=m['open_y'])
+        open_x=m['open_x'],open_y=m['open_y'],vorder=int(m.get('v_sca_adv_order',3)))
     actual,cloned,low,out=(cp.zeros(case.shape,cp.float32) for _ in range(4))
     captured=[]
     with patch.object(moist,'get_kernel',lambda module,name:lambda grid,block,args:captured.append((grid,block,args))):

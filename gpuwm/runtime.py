@@ -48,6 +48,8 @@ from dataclasses import dataclass, replace as dataclass_replace
 from pathlib import Path
 from typing import Mapping
 
+from gpuwm.core.restart_request import RESTART_REQUEST_ENV, RestartRequest
+
 import numpy as np
 
 from gpuwm.case_data import CaseDataConfig
@@ -290,7 +292,7 @@ class _SingleDomainDigestClock:
 
 def _frame_records(paths, *, progress_callback=None, completed_records=()
                    ) -> list[dict[str, object]]:
-    """Verify completed writer identities, hashing legacy files as needed.
+    """Retain completed writer identities, hashing legacy files as needed.
 
     The shared owner checks each fresh record's file revision before reuse.
     Files without a current writer proof still receive a complete stable
@@ -298,6 +300,8 @@ def _frame_records(paths, *, progress_callback=None, completed_records=()
     Each beat declares the file's size, the most this record can read, so
     the supervisor bounds a multi-GiB frame by its bytes and not by the
     model step.
+    Missing history is named and recorded without failing a completed
+    forecast. The final-state digest comes from live state independently.
     """
     from gpuwm.output_identity import file_records
 
@@ -311,7 +315,8 @@ def _frame_records(paths, *, progress_callback=None, completed_records=()
         _finalizing_progress(
             progress_callback, f"hash-output-frames-{index}-of-{total}",
             work_bytes=size)
-    return file_records(paths, completed=completed_records, before_record=beginning)
+    return file_records(paths, completed=completed_records,
+                        before_record=beginning, allow_missing=True)
 
 
 #: What the run route says for a domain whose prepared case holds no
@@ -949,17 +954,22 @@ def _initialize_real_case_physics(
     radiation composition, or configured column chunk.
     """
     from gpuwm.core.diagnostics import update_diagnostics
-    from gpuwm.core.landuse import initialize_landuse
+    from gpuwm.core.landuse import (initialize_landuse,
+                                    ruc_fractional_seaice,
+                                    usemonalb_landuse_inputs)
     from gpuwm.core.physics import initialize_physics
     from gpuwm.ingest.ruc_mosaic import ruc_mosaic_physics_inputs
     from gpuwm.ingest.lake_physics import lake_physics_inputs
 
     # WRF interpolates GREENFRAC/LAI to the run date
     # (module_initialize_real.F:1322-1335, mid-month anchors); shdmin/
-    # shdmax stay the monthly extrema (:1348-1351).  With the supported
-    # usemonalb=false path, landuse_init overwrites ALBEDO12M from the table.
-    vegfra = 100.0 * monthly_interp_to_date(static["GREENFRAC"], start_time)
-    lai = monthly_interp_to_date(static["LAI12M"], start_time)
+    # shdmax stay the monthly extrema (:1348-1351).  With usemonalb=false,
+    # landuse_init overwrites ALBEDO12M from the table; with it true the
+    # monthly field stays (usemonalb_landuse_inputs).
+    from gpuwm.ingest.vegetation import initial_vegetation_fraction
+    vegfra = initial_vegetation_fraction(initial_met, static, start_time)
+    from gpuwm.core.landuse import surface_leaf_area
+    lai = surface_leaf_area(cfg, static["LAI12M"], start_time)
     state = initial_result.state
     # initialize_real loads prognostics but does not launch the EOS kernel.
     # Diagnose the time-zero atmosphere before the first RRTMGP call.
@@ -983,7 +993,9 @@ def _initialize_real_case_physics(
         isice=int(landuse_attrs["ISICE"]),
         # real.exe's landmask/soil-category reconciliation decides a
         # disagreeing column from its soil temperature, then its SST.
-        soil_temperature=soil.soil_temperature)
+        soil_temperature=soil.soil_temperature,
+        fractional_seaice=ruc_fractional_seaice(cfg),
+        **usemonalb_landuse_inputs(cfg, static, start_time))
     driver = initialize_physics(
         state, cfg, landuse=landuse, tsk=soil.tsk,
         soil_temperature=soil.soil_temperature,
@@ -1000,13 +1012,13 @@ def _initialize_real_case_physics(
         terrain_drag_static=static,
         **lake_physics_inputs(cfg, static),
         **ruc_mosaic_physics_inputs(
-            cfg, static, landuse_attrs=landuse_attrs, xice=soil.xice),
+            cfg, static, landuse_attrs=landuse_attrs, xice=soil.xice,
+            fractional_seaice=ruc_fractional_seaice(cfg)),
         **({"cam_ozone": cam_ozone} if cam_ozone is not None else {}))
     import cupy as cp
+    from gpuwm.core.landuse import surface_snow_albedo
     driver.fields["snoalb"][...] = cp.asarray(
-        noah_initial_snow_albedo(
-            static["SNOALB"], static["LU_INDEX"], driver.noah_params,
-            rdmaxalb=cfg.rdmaxalb),
+        surface_snow_albedo(cfg, static, driver.noah_params),
         dtype=cp.float32)
     driver.fields["lai"][...] = cp.asarray(lai, dtype=cp.float32)
     driver.fields["shdmin"][...] = cp.asarray(
@@ -1332,9 +1344,16 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
     soil_orography = soil_source_orography(source_orography, soil_fields)
     reconciled_soil_type = door_reconciled_soil_category(
         static, soil_fields, landuse_attrs)
+    from gpuwm.core.landuse import (
+        ruc_fractional_seaice as _ruc_fractional_seaice)
     soil = preprocess_land_surface_soil(
         soil_fields, sf_surface_physics=int(cfg.sf_surface_physics),
         num_soil_layers=soil_layer_count(cfg),
+        # real.exe's adjust_for_seaice_pre/post keep the fraction under
+        # fractional_seaice = 1 (threshold 0.02) and snap to 0/1 at 0.5
+        # otherwise (module_soil_pre.F:216-219, :337-343, :392-393 of the HRRR
+        # v4.1.21 fork).
+        fractional_seaice=_ruc_fractional_seaice(cfg),
         soil_type=reconciled_soil_type,
         deep_soil_temperature=static["TMN"],
         landmask=static["LANDMASK"],
@@ -1645,9 +1664,11 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
 
     update_diagnostics(state, cfg.hypsometric_opt)
     domain_start_time = exp.domain_start_time(dc.grid_id)
-    vegfra = 100.0 * monthly_interp_to_date(static["GREENFRAC"],
-                                             domain_start_time)
-    lai = monthly_interp_to_date(static["LAI12M"], domain_start_time)
+    from gpuwm.ingest.vegetation import initial_vegetation_fraction
+    vegfra = initial_vegetation_fraction(
+        initialized.horizontal, static, domain_start_time)
+    from gpuwm.core.landuse import surface_leaf_area
+    lai = surface_leaf_area(cfg, static["LAI12M"], domain_start_time)
     lat, lon = initialized.grid.latlon_mass()
     radiation = _child_radiation_adapter(
         exp, data, dc, state, lat, lon,
@@ -1656,6 +1677,8 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
     geog_selection = GeogSelection.from_case_data(
         data, domain_id=dc.grid_id)
     landuse_attrs = geog_selection.landuse_global_attrs()
+    from gpuwm.core.landuse import (ruc_fractional_seaice,
+                                    usemonalb_landuse_inputs)
     landuse = initialize_landuse(
         static["LU_INDEX"], urban_legend=int(getattr(cfg, "sf_urban_physics", 0)) > 0,
         soil_type=static["SCT_DOM"],
@@ -1668,7 +1691,9 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
         isice=int(landuse_attrs["ISICE"]),
         # real.exe's landmask/soil-category reconciliation decides a
         # disagreeing column from its soil temperature, then its SST.
-        soil_temperature=soil.soil_temperature)
+        soil_temperature=soil.soil_temperature,
+        fractional_seaice=ruc_fractional_seaice(cfg),
+        **usemonalb_landuse_inputs(cfg, static, domain_start_time))
     from gpuwm.core.cam_ozone import cam_ozone_setup
     from gpuwm.ingest.ruc_mosaic import ruc_mosaic_physics_inputs
     cam = cam_ozone_setup(exp=exp, dc=dc, grid=initialized.grid)
@@ -1686,11 +1711,11 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
         radiation_latitude=lat, radiation_longitude=lon,
         **lake_physics_inputs(cfg, static),
         **ruc_mosaic_physics_inputs(
-            cfg, static, landuse_attrs=landuse_attrs, xice=soil.xice))
+            cfg, static, landuse_attrs=landuse_attrs, xice=soil.xice,
+            fractional_seaice=ruc_fractional_seaice(cfg)))
+    from gpuwm.core.landuse import surface_snow_albedo
     driver.fields["snoalb"][...] = cp.asarray(
-        noah_initial_snow_albedo(
-            static["SNOALB"], static["LU_INDEX"], driver.noah_params,
-            rdmaxalb=cfg.rdmaxalb),
+        surface_snow_albedo(cfg, static, driver.noah_params),
         dtype=cp.float32)
     driver.fields["lai"][...] = cp.asarray(lai, dtype=cp.float32)
     driver.fields["shdmin"][...] = cp.asarray(
@@ -1792,7 +1817,8 @@ def rebuild_child_driver_from_land_state(*, exp: ExperimentConfig,
     # Climatology fields interpolate to the EVENT time: a child rebuilt
     # (or born) in May must not wear its January vegetation.
     vegfra = 100.0 * monthly_interp_to_date(static["GREENFRAC"], now)
-    lai = monthly_interp_to_date(static["LAI12M"], now)
+    from gpuwm.core.landuse import surface_leaf_area
+    lai = surface_leaf_area(cfg, static["LAI12M"], now)
     lat, lon = grid.latlon_mass()
     if radiation_factory is None:
         parent_physics = getattr(parent_node.state, "physics", None)
@@ -1810,6 +1836,8 @@ def rebuild_child_driver_from_land_state(*, exp: ExperimentConfig,
         attrs = geog_selection.landuse_global_attrs()
     else:
         attrs = dict(landuse_attrs)
+    from gpuwm.core.landuse import (ruc_fractional_seaice,
+                                    usemonalb_landuse_inputs)
     landuse = initialize_landuse(
         static["LU_INDEX"], urban_legend=int(getattr(cfg, "sf_urban_physics", 0)) > 0,
         soil_type=static["SCT_DOM"],
@@ -1822,7 +1850,9 @@ def rebuild_child_driver_from_land_state(*, exp: ExperimentConfig,
         iswater=int(attrs["ISWATER"]),
         islake=int(attrs["ISLAKE"]),
         isice=int(attrs["ISICE"]),
-        soil_temperature=land.get("tslb"))
+        soil_temperature=land.get("tslb"),
+        fractional_seaice=ruc_fractional_seaice(cfg),
+        **usemonalb_landuse_inputs(cfg, static, now))
     from gpuwm.core.cam_ozone import cam_ozone_setup
     from gpuwm.ingest.ruc_mosaic import ruc_mosaic_physics_inputs
     cam = cam_ozone_setup(exp=exp, dc=child_dc, grid=grid)
@@ -1843,13 +1873,13 @@ def rebuild_child_driver_from_land_state(*, exp: ExperimentConfig,
         radiation_latitude=lat, radiation_longitude=lon,
         **lake_physics_inputs(cfg, static),
         **ruc_mosaic_physics_inputs(
-            cfg, static, landuse_attrs=attrs, xice=land.get("xice", 0.0)))
+            cfg, static, landuse_attrs=attrs, xice=land.get("xice", 0.0),
+            fractional_seaice=ruc_fractional_seaice(cfg)))
     from gpuwm.core.cam_ozone import configure_cam_ozone
     configure_cam_ozone(state, cfg, exp=exp, dc=child_dc, grid=grid)
+    from gpuwm.core.landuse import surface_snow_albedo
     driver.fields["snoalb"][...] = cp.asarray(
-        noah_initial_snow_albedo(
-            static["SNOALB"], static["LU_INDEX"], driver.noah_params,
-            rdmaxalb=cfg.rdmaxalb),
+        surface_snow_albedo(cfg, static, driver.noah_params),
         dtype=cp.float32)
     driver.fields["lai"][...] = cp.asarray(lai, dtype=cp.float32)
     driver.fields["shdmin"][...] = cp.asarray(
@@ -4078,7 +4108,8 @@ def _global_wrf_attrs(
 def write_case_output(prepared, output_dir: Path, valid_time: datetime, *,
                       start_time: datetime, title: str, domain_id: int = 1,
                       expect_refl_10cm: bool = True,
-                      feedback=None, history_selection=None) -> Path | None:
+                      feedback=None, history_selection=None,
+                      completed_records=None) -> Path | None:
     from gpuwm.io.wrfout import (WrfoutWriter, state_frame,
                                  wrfout_filename)
 
@@ -4147,8 +4178,14 @@ def write_case_output(prepared, output_dir: Path, valid_time: datetime, *,
             # took WrfoutWriter's old literal-4 default, so a nine-layer
             # scheme would have declared soil_layers_stag=4 here.
             soil_layers=soil_layer_count(prepared.cfg),
+            _retain_identity_handle=True,
             ) as writer:
         writer.write_frame(valid_time.strftime("%Y-%m-%d_%H:%M:%S"), frame)
+    proof = writer.complete_output_identity()
+    if capture is not None:
+        capture.history_committed(proof, grid_id=domain_id, valid_time=valid_time)
+    if completed_records is not None:
+        completed_records.append(proof)
     return path
 
 
@@ -4511,6 +4548,7 @@ def integrate_prepared_case(
         grid_id=domain_id)
     restart_write_steps = restart_outer_steps(
         cfg, restart_interval_s=restart_interval_s)
+    restart_request = RestartRequest()
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     integration_cfg = cfg if integration_cfg is None else integration_cfg
@@ -4578,6 +4616,7 @@ def integrate_prepared_case(
 
         ask_checkpoint_physics_identity(state, integration_cfg)
     outputs = []
+    completed_records = []
     nan_free = True
     w_max = 0.0
     w_max_boundary_row = None
@@ -4604,7 +4643,8 @@ def integrate_prepared_case(
             prepared, output_dir, start_time, start_time=start_time,
             title=output_title, domain_id=domain_id,
             expect_refl_10cm=False, feedback=feedback,
-            history_selection=history_selection)
+            history_selection=history_selection,
+            completed_records=completed_records)
         if output_path is not None:
             outputs.append(output_path)
             _output_committed(progress_callback, domain_id=domain_id,
@@ -4813,7 +4853,8 @@ def integrate_prepared_case(
             output_path = write_case_output(
                 prepared, output_dir, valid, start_time=start_time,
                 title=output_title, domain_id=domain_id,
-                feedback=feedback, history_selection=history_selection)
+                feedback=feedback, history_selection=history_selection,
+                completed_records=completed_records)
             if output_path is not None:
                 outputs.append(output_path)
                 _output_committed(progress_callback, domain_id=domain_id,
@@ -4825,8 +4866,9 @@ def integrate_prepared_case(
             _reset_streamed_up_heli_max(stepper if streamed else None)
             if counters is not None:
                 counters.history_consumed(valid)
-        if (restart_write_steps is not None
-                and (outer_step + 1) % restart_write_steps == 0):
+        requested_restart = restart_request.pending()
+        if (requested_restart or (restart_write_steps is not None
+                and (outer_step + 1) % restart_write_steps == 0)):
             valid = start_time + timedelta(seconds=(outer_step + 1) * cfg.dt)
             checkpoint_path = (
                 output_dir / restart_filename(valid, f"d{domain_id:02d}"))
@@ -4855,6 +4897,8 @@ def integrate_prepared_case(
                     **({'preserved_forcing_prefix': True} if preserved_forcing_prefix else {}))
             from gpuwm.resume import retire_superseded_checkpoints
             retire_superseded_checkpoints(output_dir)
+            if requested_restart:
+                restart_request.acknowledge()
         # The state gate completed after the final internal step.  Publish
         # progress only after any due wrfout/checkpoint is durable, so a
         # heartbeat can never advertise unguarded or unpublished work.
@@ -4910,6 +4954,9 @@ def integrate_prepared_case(
             RuntimeWarning, stacklevel=2)
     return RealCaseRunSummary(
         trajectory_digest=trajectory_digest,
+        frame_records=tuple(_frame_records(
+            outputs, completed_records=completed_records,
+            progress_callback=progress_callback)),
         wrfout_paths=tuple(outputs), nan_free=nan_free,
         w_max_ms=w_max, boundary_w_max_ms=boundary_w_max,
         interior_w_max_ms=interior_w_max,
@@ -5296,6 +5343,8 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
     runs the extracted prepare/integrate pipeline with every input and
     policy drawn from the config pair.
     """
+    from gpuwm.experiment import _bind_physics_params
+    exp = _bind_physics_params(exp, "gpuwm.runtime.run_experiment")
     from gpuwm.ensemble.runtime_context import current_session
     ensemble = current_session()
     if ensemble is not None:
@@ -5577,11 +5626,10 @@ def run_experiment(exp: ExperimentConfig, data: CaseDataConfig, outdir, *,
         _finalizing_progress(progress_callback, "provenance-receipts")
         _write_feedback_provenance_receipt(
             outdir, exp, resumed=restart is not None)
-        # Hashed once, here, and carried on the summary: same reason as
-        # the tree route below -- the supervisor's success capsule used
-        # to re-read every emitted frame a second time.
-        frame_records = _frame_records(
-            summary.wrfout_paths, progress_callback=progress_callback)
+        # The fixed loop carries hashes captured before frame publication.
+        frame_records = (list(summary.frame_records) if summary.frame_records else
+                         _frame_records(summary.wrfout_paths,
+                                        progress_callback=progress_callback))
         _finalizing_progress(progress_callback, "run-capsule")
         _, floor_receipts = _emit_front_door_capsule(
             outdir, emission_site="runtime.run_experiment:single-domain",

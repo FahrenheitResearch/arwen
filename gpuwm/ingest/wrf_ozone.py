@@ -58,6 +58,7 @@ UNITS AND THE O33D BOUNDARY (frozen contract for the wrapper lanes)
 from __future__ import annotations
 
 from functools import lru_cache
+import ctypes
 import hashlib
 from pathlib import Path
 from typing import NamedTuple
@@ -182,6 +183,63 @@ def load_ozone_climatology(data_dir: str | Path | None = None
         None if data_dir is None else str(Path(data_dir)))
 
 
+def _native_ozone_entries():
+    """Optional additive ABI; older bridges retain the original host path."""
+    # Exception/callback/log/print policies and requested underflow warnings
+    # are observable behavior of the original array arithmetic.
+    policy = np.geterr()
+    if policy["under"] != "ignore" or any(mode not in ("ignore", "warn") for mode in policy.values()):
+        return None
+    from gpuwm.core import portable_math
+    try:
+        library = portable_math._load()
+    except (OSError, RuntimeError, FileNotFoundError):
+        return None
+    names = ("gpuwm_ozone_validate_latitudes_f32", "gpuwm_ozone_latitude_f32",
+             "gpuwm_ozone_latitude_time_f32")
+    if library is None or not all(hasattr(library, name) for name in names):
+        return None
+    entries = tuple(getattr(library, name) for name in names)
+    pointer, size, f32 = ctypes.c_void_p, ctypes.c_size_t, ctypes.c_float
+    entries[0].argtypes = [pointer, size]
+    common = [pointer, size, pointer, size, pointer, size, size]
+    entries[1].argtypes = common + [size, pointer]
+    entries[2].argtypes = common + [size, size, f32, f32, size, pointer]
+    for entry in entries:
+        entry.restype = ctypes.c_int32
+    return entries
+
+
+def _native_xlat(entries, values):
+    values = np.ascontiguousarray(values.reshape(-1))
+    status = entries[0](values.ctypes.data, values.size)
+    if status == 3:
+        raise ValueError("XLAT contains non-finite values")
+    if status != 0:
+        raise RuntimeError(f"native ozone latitude validation failed ({status})")
+    return values
+
+
+def _native_climatology(climo):
+    # Metadata and transport only. Unusual external climatologies keep their
+    # original NumPy conversions, shape errors and arithmetic.
+    latitude, ozone = climo.lat, climo.ozmix
+    if (not isinstance(latitude, np.ndarray) or latitude.dtype != np.float32
+            or latitude.ndim != 1 or latitude.size < 2
+            or not isinstance(ozone, np.ndarray) or ozone.dtype != np.float32
+            or ozone.shape != (LEVSIZ, latitude.size, 12)):
+        return None
+    return np.ascontiguousarray(latitude), np.ascontiguousarray(ozone)
+
+
+def _native_ozone_status(status):
+    if status == 3:
+        raise ValueError("XLAT contains non-finite values")
+    if status not in (0, 126):
+        raise RuntimeError(f"native ozone interpolation failed ({status})")
+    return status == 0
+
+
 def interp_ozone_to_latitudes(xlat, climo: OzoneClimatology | None = None
                               ) -> np.ndarray:
     """oznini's latitude interpolation onto arbitrary XLAT points.
@@ -201,6 +259,20 @@ def interp_ozone_to_latitudes(xlat, climo: OzoneClimatology | None = None
     if climo is None:
         climo = load_ozone_climatology()
     y = np.asarray(xlat, dtype=np.float32)
+    entries = _native_ozone_entries()
+    if entries is not None:
+        values = _native_xlat(entries, y)
+        inputs = _native_climatology(climo)
+        if inputs is not None:
+            from gpuwm.core import portable_math
+            latitude, ozone = inputs
+            out = np.empty(y.shape + (LEVSIZ, 12), dtype=np.float32)
+            status = entries[1](values.ctypes.data, values.size,
+                                latitude.ctypes.data, latitude.size,
+                                ozone.ctypes.data, LEVSIZ, 12,
+                                portable_math._workers(None), out.ctypes.data)
+            if _native_ozone_status(status):
+                return out
     if not np.isfinite(y).all():
         raise ValueError("XLAT contains non-finite values")
     shape = y.shape
@@ -236,6 +308,12 @@ def ozn_time_int(julday, julian, ozmixm) -> np.ndarray:
     if ozmixm.dtype != np.float32 or ozmixm.shape[-1] != 12:
         raise ValueError("ozmixm must be float32 with a trailing "
                          "12-month axis")
+    nm, np_, fact1, fact2 = _ozone_time_weights(julian)
+    return ozmixm[..., nm] * fact1 + ozmixm[..., np_] * fact2
+
+
+def _ozone_time_weights(julian):
+    """Calendar scalars in the original WRF float32 statement order."""
     intjulian = _F32(_F32(julian) + _F32(1.0))
     ijul = int(intjulian)                       # Fortran INT(): truncation
     intjulian = _F32(intjulian - _F32(ijul))    # FLOAT(IJUL) then subtract
@@ -275,7 +353,37 @@ def ozn_time_int(julday, julian, ozmixm) -> np.ndarray:
         fact2 = _F32(_F32(intjulian - cdayozm) / deltat)
     # WRF: ozmixt = ozmixm(:,:,:,nm+1)*fact1 + ozmixm(:,:,:,np+1)*fact2;
     # slots nm+1/np+1 (2..13) are months nm/np (1..12) -> 0-based nm-1/np-1.
-    return (ozmixm[..., nm - 1] * fact1 + ozmixm[..., np_ - 1] * fact2)
+    return nm - 1, np_ - 1, fact1, fact2
+
+
+def ozn_latitude_time_int(julday, julian, xlat,
+                         climo: OzoneClimatology | None = None) -> np.ndarray:
+    """The exact latitude then time chain, computing only its two months.
+
+    Return float32 ``xlat.shape + (59,)``. The native route rounds each
+    latitude statement before the two separate products and monthly sum.
+    An older bridge or unusual external climatology takes the original chain.
+    """
+    del julday  # WRF accepts and ignores it.
+    if climo is None:
+        climo = load_ozone_climatology()
+    y = np.asarray(xlat, dtype=np.float32)
+    entries = _native_ozone_entries()
+    if entries is not None:
+        values = _native_xlat(entries, y)
+        inputs = _native_climatology(climo)
+        if inputs is not None:
+            from gpuwm.core import portable_math
+            latitude, ozone = inputs
+            nm, np_, fact1, fact2 = _ozone_time_weights(julian)
+            out = np.empty(y.shape + (LEVSIZ,), dtype=np.float32)
+            status = entries[2](values.ctypes.data, values.size,
+                                latitude.ctypes.data, latitude.size,
+                                ozone.ctypes.data, LEVSIZ, 12, nm, np_, fact1, fact2,
+                                portable_math._workers(None), out.ctypes.data)
+            if _native_ozone_status(status):
+                return out
+    return ozn_time_int(None, julian, interp_ozone_to_latitudes(y, climo))
 
 
 def ozn_p_int(p, pin, ozmixt) -> np.ndarray:

@@ -1,4 +1,7 @@
 // WRF v4.6.1 MYNN surface layer (sf_sfclay_physics=5).
+// With MYNN_SFCLAY_GSL_WRF39 defined (mynn_sfclay_variant = "gsl_wrf39") the
+// same kernel compiles the GSL WRF 3.9 fork's form instead: its z/L search,
+// caps, Richardson clamp, heat log terms and psih lower limit.
 //
 // This is the CUDA transcription of module_sf_mynn.F:SFCLAY1D_mynn for the
 // pinned option identities: every defined isftcflx over water, with
@@ -46,8 +49,16 @@ __device__ __forceinline__ real mynn_psih_unstable_full(real z)
 __device__ __forceinline__ real mynn_table(real z, int which)
 {
     // which: 0 psim stable, 1 psih stable, 2 psim unstable, 3 psih unstable.
+    // Cross-architecture identity (xnode-identity, 2026-10-04): every
+    // rounding in the table lookup is pinned. With fp-contract left to the
+    // compiler, NVRTC/ptxas for sm_89 fused `z * 100 - index` into one FMA at
+    // the inlined psim_stable(zol3) site of mynn_zolrib while sm_120 rounded
+    // the product first, a 1-ulp psim difference on 7,954 of 38,400 columns
+    // at step 1 that grew into a different forecast. The pinned order below is
+    // the sm_120 (Blackwell) answer: rounded product, rounded fraction,
+    // rounded table difference, one fused interpolation.
     bool unstable = which >= 2;
-    real scaled = (unstable ? -z : z) * 100.0f;
+    real scaled = __fmul_rn(unstable ? -z : z, 100.0f);
     int index = (int)scaled;
     if (index + 1 > 1000) {
         if (which == 0) return mynn_psim_stable_full(z);
@@ -55,7 +66,7 @@ __device__ __forceinline__ real mynn_table(real z, int which)
         if (which == 2) return mynn_psim_unstable_full(z);
         return mynn_psih_unstable_full(z);
     }
-    real fraction = scaled - (real)index;
+    real fraction = __fsub_rn(scaled, (real)index);
     real sign = unstable ? -1.0f : 1.0f;
     real z0 = sign * 0.01f * (real)index;
     real z1 = sign * 0.01f * (real)(index + 1);
@@ -69,7 +80,7 @@ __device__ __forceinline__ real mynn_table(real z, int which)
     } else {
         f0 = mynn_psih_unstable_full(z0); f1 = mynn_psih_unstable_full(z1);
     }
-    return f0 + fraction * (f1 - f0);
+    return __fmaf_rn(fraction, __fsub_rn(f1, f0), f0);
 }
 
 __device__ __forceinline__ real mynn_psim_stable(real z)
@@ -137,6 +148,89 @@ __device__ __forceinline__ real mynn_zolrib(
         result = mynn_li_etal_2010(ri, za / z0, z0 / zt);
     return result;
 }
+
+#ifdef MYNN_SFCLAY_GSL_WRF39
+// mynn_sfclay_variant = "gsl_wrf39": the MYNN surface layer of the GSL WRF
+// 3.9 fork (NOAA-EMC/HRRR v4.1.21 sorc/hrrr_wrfarw.fd/WRFV3.9/phys/
+// module_sf_mynn.F).  The loader defines MYNN_SFCLAY_GSL_WRF39 only for that
+// variant, so the default ("wrf_461") translation unit is the WRF v4.6.1
+// transcription above, unchanged.
+//
+// fork :1954-1993 zolri2.  ZOL2 is INTENT(INOUT): an iterate of the wrong
+// sign is reset to zero here and the caller sees the reset value.  No floors
+// on either log term, and the heat term's lower argument is z0/L.  The
+// operations are pinned unfused so the 0.01 bracket test in zolri sees the
+// rounding gfortran gives the fork source.
+__device__ __forceinline__ real mynn_zolri2(
+    real &zol2, real ri2, real za, real z0, real zt)
+{
+    if (zol2 * ri2 < 0.0f) zol2 = 0.0f;
+    // A non-finite secant iterate must not reach the table's integer index.
+    if (!isfinite(zol2)) return __int_as_float(0x7fc00000);
+    real zol20 = __fmul_rn(zol2, z0) / za;
+    real zol3 = __fadd_rn(zol2, zol20);
+    if (!isfinite(zol20) || !isfinite(zol3)) return __int_as_float(0x7fc00000);
+    real psix2, psit2;
+    if (ri2 < 0.0f) {
+        psix2 = __fsub_rn(logf((za + z0) / z0),
+            __fsub_rn(mynn_psim_unstable(zol3), mynn_psim_unstable(zol20)));
+        psit2 = __fsub_rn(logf((za + zt) / zt),
+            __fsub_rn(mynn_psih_unstable(zol3), mynn_psih_unstable(zol20)));
+    } else {
+        psix2 = __fsub_rn(logf((za + z0) / z0),
+            __fsub_rn(mynn_psim_stable(zol3), mynn_psim_stable(zol20)));
+        psit2 = __fsub_rn(logf((za + zt) / zt),
+            __fsub_rn(mynn_psih_stable(zol3), mynn_psih_stable(zol20)));
+    }
+    return __fsub_rn(__fmul_rn(zol2, psit2) / __fmul_rn(psix2, psix2), ri2);
+}
+
+// fork :1899-1952 zolri.  A secant search over a bracket that starts at
+// [first guess - 0.02, 0] (unstable) or [0, first guess + 0.02] (stable): at
+// most 5 passes, each replacing the end point with the larger residual, and
+// stopping when the end points are 0.01 apart or less.  After 5 passes with
+// the end points still 0.01 or more apart it gives up and returns 5*Ri
+// (unstable) or 8*Ri (stable), the fork's own values (:1938-1946).
+//
+// Undefined in the fork, defined here: a secant step whose denominator
+// fx2 - fx1 is exactly zero divides by zero, and a residual that is not
+// finite feeds Inf or NaN into the next table lookup (an out-of-range
+// integer conversion).  Both take the give-up value at once.  The fork's
+// result variable is unset when the loop body never runs; with a finite
+// first guess the bracket starts at least 0.02 wide, so the body always
+// runs, and the give-up value is the defined initial value regardless.
+__device__ __forceinline__ real mynn_zolri(
+    real ri, real za, real z0, real zt, real zol1)
+{
+    real giveup = ri < 0.0f ? __fmul_rn(ri, 5.0f) : __fmul_rn(ri, 8.0f);
+    real x1, x2;
+    if (ri < 0.0f) { x1 = __fsub_rn(zol1, 0.02f); x2 = 0.0f; }
+    else           { x1 = 0.0f; x2 = __fadd_rn(zol1, 0.02f); }
+    real result = giveup;
+    real fx1 = mynn_zolri2(x1, ri, za, z0, zt);
+    real fx2 = mynn_zolri2(x2, ri, za, z0, zt);
+    if (!isfinite(fx1) || !isfinite(fx2)) return giveup;
+    int n = 0;
+    while (fabsf(__fsub_rn(x1, x2)) > 0.01f && n < 5) {
+        real denom = __fsub_rn(fx2, fx1);
+        if (denom == 0.0f) return giveup;
+        if (fabsf(fx2) < fabsf(fx1)) {
+            x1 = __fsub_rn(x1, __fmul_rn(fx1 / denom, __fsub_rn(x2, x1)));
+            fx1 = mynn_zolri2(x1, ri, za, z0, zt);
+            result = x1;
+            if (!isfinite(fx1)) return giveup;
+        } else {
+            x2 = __fsub_rn(x2, __fmul_rn(fx2 / denom, __fsub_rn(x2, x1)));
+            fx2 = mynn_zolri2(x2, ri, za, z0, zt);
+            result = x2;
+            if (!isfinite(fx2)) return giveup;
+        }
+        ++n;
+    }
+    if (n == 5 && fabsf(__fsub_rn(x1, x2)) >= 0.01f) result = giveup;
+    return result;
+}
+#endif
 
 __device__ __forceinline__ void mynn_zilitinkevich_land(
     real z0, real restar, real &zt, real &zq)
@@ -366,7 +460,11 @@ void mynn_surface_column(
     real vsgd = 0.32f * powf(fmaxf(__fdiv_rn(dx, 5000.0f) - 1.0f, 0.0f), 0.33f);
     wsp = fmaxf(sqrtf(wsp * wsp + wstar * wstar + vsgd * vsgd), wmin);
     real br = govrth * za * dthvdz / (wsp * wsp);
+#ifdef MYNN_SFCLAY_GSL_WRF39
+    real limit = itimestep == 1 ? 2.0f : 50.0f;   // fork :613-614
+#else
     real limit = itimestep == 1 ? 2.0f : 4.0f;
+#endif
     br = fminf(fmaxf(br, -limit), limit);
 
     real visc = 1.326e-5f * (1.0f + 6.542e-3f * tc1
@@ -383,10 +481,21 @@ void mynn_surface_column(
 
     real zratio = z0 / zt;
     real gz1oz0 = logf((za + z0) / z0);
+#ifdef MYNN_SFCLAY_GSL_WRF39
+    // fork :771-775: zt, not z0, in the numerator of the heat log terms.
+    real gz1ozt = logf((za + zt) / zt);
+    real gz2ozt = logf((2.0f + zt) / zt);
+    real gz10oz0 = logf((10.0f + z0) / z0);
+    real gz10ozt = logf((10.0f + zt) / zt);
+    // fork :813-819, :894-900: z/L capped at 50, not 20.
+    const real zol_cap = 50.0f;
+#else
     real gz1ozt = logf((za + z0) / zt);
     real gz2ozt = logf((2.0f + z0) / zt);
     real gz10oz0 = logf((10.0f + z0) / z0);
     real gz10ozt = logf((10.0f + z0) / zt);
+    const real zol_cap = 20.0f;
+#endif
 
     real regime, zol, psim, psih, psim10, psih10, psih2;
     if (br > 0.0f) {
@@ -394,14 +503,21 @@ void mynn_surface_column(
         if (itimestep <= 1) zol = mynn_li_etal_2010(br, za / z0, zratio);
         else {
             zol = za * karman * grav * mol / (th1 * fmaxf(ust * ust, 0.0001f));
-            zol = fminf(fmaxf(zol, 0.0f), 20.0f);
+            zol = fminf(fmaxf(zol, 0.0f), zol_cap);
         }
+#ifdef MYNN_SFCLAY_GSL_WRF39
+        zol = fminf(fmaxf(mynn_zolri(br, za, z0, zt, zol), 0.0f), zol_cap);
+#else
         zol = fminf(fmaxf(mynn_zolrib(br, za, z0, zt, gz1oz0, gz1ozt, zol),
-                           0.0f), 20.0f);
+                           0.0f), zol_cap);
+#endif
         real zolzt = zol * zt / za, zolz0 = zol * z0 / za;
         real zolza = zol * (za + z0) / za;
         real zol10 = zol * (10.0f + z0) / za;
         real zol2 = zol * (2.0f + z0) / za;
+#ifdef MYNN_SFCLAY_GSL_WRF39
+        zolzt = zolz0;   // fork :836, :849: psih's lower limit is z0/L
+#endif
         psim = mynn_psim_stable(zolza) - mynn_psim_stable(zolz0);
         psih = mynn_psih_stable(zolza) - mynn_psih_stable(zolzt);
         psim10 = mynn_psim_stable(zol10) - mynn_psim_stable(zolz0);
@@ -409,20 +525,32 @@ void mynn_surface_column(
         psih2 = mynn_psih_stable(zol2) - mynn_psih_stable(zolz0);
     } else if (br == 0.0f) {
         regime = 3.0f; zol = 0.0f;
+#ifdef MYNN_SFCLAY_GSL_WRF39
+        // fork :875-880, from the incoming u* and MOL.
+        if (ust < 0.01f) zol = br * gz1oz0;
+        else zol = karman * govrth * za * mol / fmaxf(ust * ust, 0.001f);
+#endif
         psim = 0.0f; psih = 0.0f; psim10 = 0.0f; psih10 = 0.0f; psih2 = 0.0f;
     } else {
         regime = 4.0f;
         if (itimestep <= 1) zol = mynn_li_etal_2010(br, za / z0, zratio);
         else {
             zol = za * karman * grav * mol / (th1 * fmaxf(ust * ust, 0.001f));
-            zol = fminf(fmaxf(zol, -20.0f), 0.0f);
+            zol = fminf(fmaxf(zol, -zol_cap), 0.0f);
         }
+#ifdef MYNN_SFCLAY_GSL_WRF39
+        zol = fminf(fmaxf(mynn_zolri(br, za, z0, zt, zol), -zol_cap), 0.0f);
+#else
         zol = fminf(fmaxf(mynn_zolrib(br, za, z0, zt, gz1oz0, gz1ozt, zol),
-                           -20.0f), 0.0f);
+                           -zol_cap), 0.0f);
+#endif
         real zolzt = zol * zt / za, zolz0 = zol * z0 / za;
         real zolza = zol * (za + z0) / za;
         real zol10 = zol * (10.0f + z0) / za;
         real zol2 = zol * (2.0f + z0) / za;
+#ifdef MYNN_SFCLAY_GSL_WRF39
+        zolzt = zolz0;   // fork :917, :928
+#endif
         psim = mynn_psim_unstable(zolza) - mynn_psim_unstable(zolz0);
         psih = mynn_psih_unstable(zolza) - mynn_psih_unstable(zolzt);
         psim10 = mynn_psim_unstable(zol10) - mynn_psim_unstable(zolz0);
@@ -447,6 +575,16 @@ void mynn_surface_column(
         ustm = ust;
     }
 
+#ifdef MYNN_SFCLAY_GSL_WRF39
+    // fork :978-986: zt and zq in the numerators, also for the qstar copy.
+    gz1ozt = logf((za + zt) / zt);
+    gz2ozt = logf((2.0f + zt) / zt);
+    real psit = fmaxf(gz1ozt - psih, 1.0f);
+    real psit2 = fmaxf(gz2ozt - psih2, 1.0f);
+    real psiq = fmaxf(logf((za + zq) / zq) - psih, 1.0f);
+    real psiq2 = fmaxf(logf((2.0f + zq) / zq) - psih2, 1.0f);
+    real psiq10 = fmaxf(logf((10.0f + zq) / zq) - psih10, 1.0f);
+#else
     gz1ozt = logf((za + z0) / zt);
     gz2ozt = logf((2.0f + z0) / zt);
     real psit = fmaxf(gz1ozt - psih, 1.0f);
@@ -454,6 +592,7 @@ void mynn_surface_column(
     real psiq = fmaxf(logf((za + z0) / zq) - psih, 1.0f);
     real psiq2 = fmaxf(logf((2.0f + z0) / zq) - psih2, 1.0f);
     real psiq10 = fmaxf(logf((10.0f + z0) / zq) - psih10, 1.0f);
+#endif
     mol = karman * (thv1 - thvgb) / psit / prt;
     real qstar = karman * (qvsh - qsfc) * 1000.0f / psiq / prt;
 

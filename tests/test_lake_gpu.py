@@ -53,12 +53,12 @@ extern "C" __global__ void lake_abs_probe(const unsigned int* a,
         errors = cp.zeros(n, cp.int32)
         init = get_kernel("lake", "lake_init_columns")
         step = get_kernel("lake", "lake_step_columns")
-        init((1,), (32,), (n, seed, columns, static, 1, 1, np.float32(50), errors))
+        init((1,), (32,), (n, seed, columns, static, 1, 1, np.float32(50), np.float32(0.5), errors))
         assert not cp.asnumpy(errors).any()
         _assert_words(cp.asnumpy(columns), reference["initial_state"])
         _assert_words(cp.asnumpy(static), reference["reference_static"])
         for i in range(300):
-            step((1,), (32,), (n, forcing, columns, static, output, np.float32(30), errors))
+            step((1,), (32,), (n, forcing, columns, static, output, np.float32(30), np.float32(0.5), errors))
             assert not cp.asnumpy(errors).any()
             _assert_words(cp.asnumpy(columns), reference["trace_state"][i], err_msg=f"step {i+1} state")
             _assert_words(cp.asnumpy(output), reference["trace_output"][i], err_msg=f"step {i+1} output")
@@ -75,7 +75,7 @@ def test_complete_lake_cuda_default_depth_controls_match_wrf():
         columns=cp.zeros((131,n),cp.float32);static=cp.zeros((71,n),cp.float32);errors=cp.zeros(n,cp.int32)
         for i,default in enumerate(reference["defaults"]):
             get_kernel("lake","lake_init_columns")((1,),(32,),
-                (n,seed,columns,static,0,0,np.float32(default),errors))
+                (n,seed,columns,static,0,0,np.float32(default),np.float32(0.5),errors))
             assert not cp.asnumpy(errors).any()
             _assert_words(cp.asnumpy(columns),reference["reference_state"][i])
             _assert_words(cp.asnumpy(static),reference["reference_static"][i])

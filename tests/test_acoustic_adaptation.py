@@ -602,3 +602,61 @@ def test_auto_under_a_named_profile_is_the_profiles_to_supply():
 
     assert epssm_rows('"auto"') == []
     assert [row["config_value"] for row in epssm_rows("0.1")] == [0.1]
+
+
+# ---------------------------------------------------------------------------
+# The pinned clock (RunConfig.terrain_clock = "pinned"): the configured
+# count runs and the measured raise is advice in the receipt.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _PinnedRun(_Run):
+    terrain_clock: str = "pinned"
+
+
+def test_a_pinned_domain_keeps_its_configured_count_over_steep_ground():
+    measured = derive_acoustics(1, _Run(), _reading(0.734))
+    assert measured.time_step_sound == 6
+    pinned = derive_acoustics(1, _PinnedRun(), _reading(0.734))
+    assert pinned.pinned and pinned.status == "PINNED"
+    assert pinned.time_step_sound == 4 and not pinned.adapted
+    assert pinned.advice == 6 and pinned.advice_differs
+    line = pinned.pinned_sentence()
+    assert line.startswith("acoustic substeps: d01's clock is pinned")
+    assert "would have run 6" in line and "not applied" in line
+    row = pinned.receipt()
+    assert row["status"] == "PINNED"
+    assert row["time_step_sound"] == 4
+    assert row["clock"] == "pinned"
+    assert row["advice"] == {"applied": False, "time_step_sound": 6,
+                             "differs": True}
+    # A measured receipt is byte-for-byte what it was.
+    assert "clock" not in measured.receipt()
+
+
+def test_a_pinned_domain_on_gentle_ground_carries_no_differing_advice():
+    pinned = derive_acoustics(1, _PinnedRun(), _reading(0.357))
+    assert pinned.time_step_sound == 4 and not pinned.advice_differs
+    assert pinned.receipt()["advice"] == {
+        "applied": False, "time_step_sound": 4, "differs": False}
+
+
+def test_the_pinned_experiment_door_keeps_the_run_and_cautions():
+    exp = _Experiment((_Domain(1, _PinnedRun()),))
+    said = []
+    adapted, adaptations = adapt_experiment_acoustics(
+        exp, {1: _reading(0.734)},
+        announce=lambda line: said.append(("announce", line)),
+        caution=lambda line: said.append(("caution", line)))
+    assert adapted is exp
+    assert adaptations[0].time_step_sound == 4
+    assert said == [("caution", adaptations[0].pinned_sentence())]
+
+
+def test_the_pinned_clock_does_not_lift_the_offcentering_refusal():
+    """The floor is not a clock rule: a chosen epssm the map holds no count
+    at is refused pinned or measured, because WRF stops on it too."""
+    exp = _Experiment((_Domain(1, _PinnedRun(epssm=0.1)),))
+    with pytest.raises(ValueError, match="epssm 0.1 is set explicitly"):
+        adapt_experiment_acoustics(exp, {1: _reading(0.87)})

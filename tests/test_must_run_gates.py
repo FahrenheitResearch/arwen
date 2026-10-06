@@ -49,7 +49,7 @@ import sys
 import pytest
 
 from tools.battery.no_silent_skip import (
-    parse_declared_skipping, parse_manifest,
+    declared_test_exceptions, parse_declared_skipping, parse_manifest,
 )
 
 REPOSITORY_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -178,7 +178,8 @@ def test_every_unbounded_entry_says_why(entry: str) -> None:
 @pytest.mark.parametrize("entry", sorted(DECLARED), ids=lambda value: value)
 def test_every_declared_skipping_entry_is_a_file_with_a_reason(
         entry: str) -> None:
-    assert (REPOSITORY_ROOT / entry).is_file(), (
+    path, _, test = entry.partition("::")
+    assert (REPOSITORY_ROOT / path).is_file(), (
         f"{entry} is declared as skipping and is not in this tree; delete "
         "the entry in the commit that deleted the file.")
     assert len(DECLARED[entry].split()) >= 4, (
@@ -186,6 +187,15 @@ def test_every_declared_skipping_entry_is_a_file_with_a_reason(
         f"{DECLARED[entry]!r}.  The reason is the entire value of the "
         "declaration -- it is what turns a silent skip into a stated one -- "
         "so it has to name what is absent and what would restore it.")
+    if test:
+        name = test.split("[", 1)[0]
+        tree = ast.parse((REPOSITORY_ROOT / path).read_text(encoding="utf-8"))
+        defined = {node.name for node in tree.body
+                   if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        assert name in defined, (
+            f"{entry} declares an exception for a test {path} does not define "
+            "at module level; delete or correct the entry in the commit that "
+            "renamed, split or fixed the test.")
 
 
 def test_no_entry_is_in_both_halves() -> None:
@@ -418,3 +428,92 @@ def test_missing_manifest_is_a_configuration_failure(tmp_path):
     from tools.battery.no_silent_skip import _gates
     with pytest.raises(pytest.UsageError, match="required must-run manifest"):
         _gates(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# DECLARED TEST EXCEPTIONS: one test id, not a file.
+# ---------------------------------------------------------------------------
+
+_EXCEPTION_BODY = ("import pytest\n"
+                   "def test_one():\n"
+                   "    assert True\n"
+                   "def test_broken():\n"
+                   "    assert False, 'the defect the ruling names'\n"
+                   "@pytest.mark.parametrize('x', [1, 2])\n"
+                   "def test_param(x):\n"
+                   "    assert x == 1\n")
+
+
+def _declared(entry: str) -> str:
+    return ("tests/test_other.py\n"
+            "# --- DECLARED-SKIPPING-BEGIN ---\n"
+            f"{entry}  a reason of at least four words\n")
+
+
+@pytest.mark.parametrize("workers", [[], ["-n", "2"]],
+                         ids=["in-process", "xdist"])
+def test_a_declared_test_id_skips_exactly_that_test(
+        tmp_path: pathlib.Path, workers: list[str]) -> None:
+    """The named test skips with the declared reason; its neighbours run.
+
+    Without the entry this leg is red on test_broken.  With it, exactly one
+    test skips and the other two still pass, so the file keeps gating.
+    """
+    files = {"tests/test_other.py": "def test_ok():\n    assert True\n"}
+    args = ["-rs", "tests/test_gate.py", "tests/test_other.py"] + workers
+    red = _synthetic_leg(tmp_path / "red", _declared("tests/test_absent.py::test_x"),
+                         _EXCEPTION_BODY, files=files, args=args)
+    assert red.returncode != 0, red.stdout
+
+    done = _synthetic_leg(tmp_path / "declared",
+                          _declared("tests/test_gate.py::test_broken"),
+                          _EXCEPTION_BODY.replace("assert x == 1", "assert x"),
+                          files=files, args=args)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "1 skipped" in done.stdout and "4 passed" in done.stdout, done.stdout
+    assert "declared exception, tools/battery/must_run_gates.txt: " \
+        "a reason of at least four words" in done.stdout, done.stdout
+
+
+def test_a_declared_id_without_brackets_covers_every_parametrization(
+        tmp_path: pathlib.Path) -> None:
+    done = _synthetic_leg(tmp_path, _declared("tests/test_gate.py::test_param"),
+                          _EXCEPTION_BODY.replace("assert False", "assert True"),
+                          args=["tests/test_gate.py"])
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "2 skipped" in done.stdout and "2 passed" in done.stdout, done.stdout
+
+    one = _synthetic_leg(tmp_path / "one",
+                         _declared("tests/test_gate.py::test_param[2]"),
+                         _EXCEPTION_BODY.replace("assert False", "assert True"),
+                         args=["tests/test_gate.py"])
+    assert one.returncode == 0, one.stdout + one.stderr
+    assert "1 skipped" in one.stdout and "3 passed" in one.stdout, one.stdout
+
+
+def test_a_declared_id_that_matches_nothing_stops_the_session(
+        tmp_path: pathlib.Path) -> None:
+    """An exception that outlived its test must not read as declared."""
+    done = _synthetic_leg(tmp_path, _declared("tests/test_gate.py::test_renamed"),
+                          _EXCEPTION_BODY, args=["tests/test_gate.py"])
+    assert done.returncode != 0
+    assert "match no collected test" in done.stdout + done.stderr
+
+
+def test_a_declared_exception_does_not_count_against_a_must_run_ceiling(
+        tmp_path: pathlib.Path) -> None:
+    manifest = ("tests/test_gate.py\n"
+                "# --- DECLARED-SKIPPING-BEGIN ---\n"
+                "tests/test_gate.py::test_broken  a reason of at least four words\n")
+    done = _synthetic_leg(tmp_path, manifest,
+                          _EXCEPTION_BODY.replace("assert x == 1", "assert x"),
+                          args=["tests/test_gate.py"])
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "MUST-RUN GATE" not in done.stdout, done.stdout
+
+
+def test_the_tree_declares_exactly_the_g3_gate() -> None:
+    """The 2.8.6 ruling names one test.  A second exception is a new ruling."""
+    assert sorted(declared_test_exceptions(DECLARED)) == [
+        "tests/test_thompson_aerosol_adapter.py::"
+        "test_g3_end_to_end_against_all_nineteen_oracle_fixtures"]

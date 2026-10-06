@@ -287,6 +287,8 @@ def test_dudhia_adapter_enters_production_driver_radiation_seam(
     # real driver leaves the OLR slot empty.  Stated explicitly because a
     # hand-built driver has to declare every slot the seam reads.
     driver.olr = None
+    # The fixture leaves swint_opt disabled, as the real driver's optional slot.
+    driver.swint = None
     driver.fields = {
         "albedo": np.full((1, 2), 0.2, np.float32),
         "glw": np.full((1, 2), 300.0, np.float32),

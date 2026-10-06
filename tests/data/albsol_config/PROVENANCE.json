@@ -1,0 +1,5 @@
+{
+  "source": "https://raw.githubusercontent.com/NOAA-EMC/HRRR/v4.1.21/parm/conus/hrrr_wrf.nl",
+  "sha256": "50ac01dbeaca863dfc313eae7dd53865458b2bffdfcc1e402d350d860bef5694",
+  "scope": "The actual alb_sol value is imported using a compatible test namelist shape. This fixture does not qualify importing every fork option."
+}

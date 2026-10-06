@@ -753,17 +753,64 @@ void mynn_pblh_scale_columns(
     real weight = 0.5f * tanhf(__fdiv_rn((zi - 200.0f), 400.0f)) + 0.5f;
     if (maxqke > 0.05f) zi = pblh_tke * (1.0f - weight) + zi * weight;
 
+#if !defined(MYNN_GSD41)
     int kzi = 2;
     for (k = 1; k < nz - 1; ++k) {
         if (zw[zbase + k] >= zi) { kzi = k; break; }
     }
+#else
+    // GSD MYNN v4.1 GET_PBLH (NOAA-EMC WRF 3.9 module_bl_mynn.F:4948,
+    // :4980, :5006): KPBL blends the level of the theta-v height and the
+    // level of the TKE height with the same weight as the heights, each
+    // the interface below plus NINT of the fraction of that layer.
+    int kzi = 2, kzi2 = 2;
+    real zi_th = 0.0f;
+    for (k = 1; k < nz - 1; ++k) {
+        real current = thetav[base + k];
+        if (current >= minthv + delta) {
+            real fraction = (current - (minthv + delta))
+                / fmaxf(current - thetav[base + k - 1], 1.0e-6f);
+            zi_th = zw[zbase + k] - dz[base + k - 1] * fminf(fraction, 1.0f);
+            kzi = max(k, 1) + (int)roundf(
+                __fdiv_rn(zi_th - zw[zbase + k - 1], dz[base + k - 1]));
+        }
+        if (k == nz - 2) zi_th = zw[zbase + 1];
+        if (zi_th != 0.0f) break;
+    }
+    real tke_h = 0.0f;
+    for (k = 1; k < nz - 1; ++k) {
+        real qtke = fmaxf(__fdiv_rn(qke[base + k], 2.0f), 0.0f);
+        real qtkem1 = fmaxf(__fdiv_rn(qke[base + k - 1], 2.0f), 0.0f);
+        if (qtke <= tkeeps) {
+            real fraction = (tkeeps - qtke)
+                / fmaxf(qtkem1 - qtke, 1.0e-6f);
+            tke_h = zw[zbase + k] - dz[base + k - 1] * fminf(fraction, 1.0f);
+            tke_h = fmaxf(tke_h, zw[zbase + 1]);
+            kzi2 = max(k, 1) + (int)roundf(
+                __fdiv_rn(tke_h - zw[zbase + k - 1], dz[base + k - 1]));
+        }
+        if (k == nz - 2) tke_h = zw[zbase + 1];
+        if (tke_h != 0.0f) break;
+    }
+    // weight is the theta-v height's blend weight computed above (:5003).
+    kzi = max((int)((real)kzi2 * (1.0f - weight) + (real)kzi * weight), 1);
+#endif
 
+#if defined(MYNN_GSD41)
+    // Fork scale awareness, module_bl_mynn.F:6011-6049.
+    real dxdh = __fdiv_rn(fmaxf(dx[column], 10.0f), fminf(zi, 3000.0f));
+#else
     real dxdh = fmaxf(2.5f * dx[column], 10.0f) / fminf(zi, 3000.0f);
+#endif
     real power = powf(dxdh, 0.667f), square = dxdh * dxdh;
     real psig_bl = (square + 0.106f * power)
         / (square + 0.066f * power + 0.071f);
+#if defined(MYNN_GSD41)
+    dxdh = __fdiv_rn(fmaxf(dx[column], 10.0f), fminf(zi + 500.0f, 3500.0f));
+#else
     dxdh = fmaxf(2.5f * dx[column], 10.0f)
         / fminf(zi + 500.0f, 3500.0f);
+#endif
     power = powf(dxdh, 0.667f); square = dxdh * dxdh;
     real psig_shcu = (square + 0.145f * power)
         / (square + 0.172f * power + 0.170f);
@@ -838,7 +885,12 @@ void mynn_turbulence_default_interfaces(
     // module_bl_mynn.F:2734.  sh is floored after q2sq has been formed from
     // the unfloored value, and it survives only down the Helfand-Labraga
     // path, where sh is scaled rather than recomputed.
+#if !defined(MYNN_GSD41)
     sh[idx] = fmaxf(sh[idx], 1.0e-5f);
+#else
+    // GSD MYNN v4.1 mym_turbulence (NOAA-EMC WRF 3.9 module_bl_mynn.F
+    // :1599-1635) has no floor here, no clip of sh and no cap of sm.
+#endif
 
     real du = u[idx] - u[idx - ld];
     real dv = v[idx] - v[idx - ld];
@@ -887,13 +939,20 @@ void mynn_turbulence_default_interfaces(
             * (e2 + (double)three_c1_e5c * gmel) / eden);
     }
 
+#if !defined(MYNN_GSD41)
     sh[idx] = fminf(fmaxf(sh[idx], 0.0f), 4.0f);
     sm[idx] = fminf(sm[idx], 5.0f * fmaxf(sh[idx], 0.02f));
+#endif
     real cldavg = 0.5f * (cldfra[idx - ld] + cldfra[idx]);
     if (edmf_a[idx] > 0.001f || cldavg > 0.02f) {
         real plume_floor = 0.03f
             * fminf(10.0f * edmf_a[idx] * edmf_w[idx], 1.0f);
+#if !defined(MYNN_GSD41)
         real cloud_floor = 0.05f * fminf(cldavg, 1.0f);
+#else
+        // GSD MYNN v4.1 :1820-1821: the cloud floor is 0.03 cldavg.
+        real cloud_floor = 0.03f * fminf(cldavg, 1.0f);
+#endif
         sm[idx] = fmaxf(sm[idx], fmaxf(plume_floor, cloud_floor));
         sh[idx] = fmaxf(sh[idx], fmaxf(plume_floor, cloud_floor));
     }
@@ -964,6 +1023,19 @@ void mynn_predict_default_columns(
     int zbase = 0;
     real step = delt[column];
 
+#if defined(MYNN_GSD41)
+    // Fork mym_predict :2044-2114: diffusion is not density weighted and
+    // has no EDMF minimum diffusivity.
+    for (int k = 0; k < nz; ++k) {
+        int idx = base + k;
+        qkw[idx] = sqrtf(fmaxf(qke_in[idx], 0.0f));
+        rhoinv[idx] = 1.0f;
+        kqdz[idx] = 3.0f * dfq[idx];
+        kmdz[idx] = dfq[idx];
+    }
+    real kqdz_top = 3.0f * dfq[base + nz - 1];
+    real kmdz_top = dfq[base + nz - 1];
+#else
     for (int k = 0; k < nz; ++k) {
         int idx = base + k;
         qkw[idx] = sqrtf(fmaxf(qke_in[idx], 0.0f));
@@ -995,6 +1067,49 @@ void mynn_predict_default_columns(
             kmdz[idx], -0.5f * (s_aw[zbase + k] - s_aw[zbase + k + 1]));
     }
 
+#endif
+#if defined(MYNN_GSD41)
+    // Fork mym_predict :2030-2094. The upper row is x(top)-x(top-1)=0,
+    // the floor is 1e-4, and there is no upper TKE limit. Use the same
+    // rounded operator sequence as the unmodified Fortran CPU oracle.
+    real vkz = MYNN_MUL(MYNN_MUL(0.4f, 0.5f), dz[base]);
+    real ustar3 = MYNN_MUL(MYNN_MUL(ust[column], ust[column]), ust[column]);
+    real pdk1 = MYNN_DIV(MYNN_MUL(MYNN_MUL(2.0f, ustar3), pmz[column]), vkz);
+    real pdk_bottom = MYNN_SUB(pdk1, pdk[base + 1]);
+    for (int k = 0; k < nz - 1; ++k) {
+        int idx = base + k;
+        real next_kqdz = k == nz - 2 ? kqdz_top : kqdz[idx + 1];
+        real b1l = MYNN_MUL(MYNN_MUL(24.0f, 0.5f), MYNN_ADD(el[idx + 1], el[idx]));
+        real bp = MYNN_DIV(MYNN_MUL(2.0f, qkw[idx]), b1l);
+        real pdk_here = k == 0 ? pdk_bottom : pdk[idx];
+        real rp = MYNN_ADD(pdk[idx + 1], pdk_here);
+        real dtz = MYNN_DIV(step, dz[idx]);
+        a[idx] = -MYNN_MUL(dtz, kqdz[idx]);
+        b[idx] = MYNN_ADD(MYNN_ADD(1.0f,
+            MYNN_MUL(dtz, MYNN_ADD(kqdz[idx], next_kqdz))), MYNN_MUL(bp, step));
+        c[idx] = -MYNN_MUL(dtz, next_kqdz);
+        d[idx] = MYNN_ADD(MYNN_MUL(rp, step), qke_in[idx]);
+    }
+    int top = base + nz - 1;
+    a[top] = -1.0f; b[top] = 1.0f; c[top] = 0.0f; d[top] = 0.0f;
+    cp[base] = MYNN_DIV(c[base], b[base]);
+    dp[base] = MYNN_DIV(d[base], b[base]);
+    for (int k = 1; k < nz; ++k) {
+        int idx = base + k;
+        real m = MYNN_SUB(b[idx], MYNN_MUL(cp[idx - 1], a[idx]));
+        cp[idx] = MYNN_DIV(c[idx], m);
+        dp[idx] = MYNN_DIV(MYNN_SUB(d[idx], MYNN_MUL(dp[idx - 1], a[idx])), m);
+    }
+    d[top] = dp[top];
+    for (int k = nz - 2; k >= 0; --k) {
+        int idx = base + k;
+        d[idx] = MYNN_SUB(dp[idx], MYNN_MUL(cp[idx], d[idx + 1]));
+    }
+    for (int k = 0; k < nz; ++k) {
+        int idx = base + k;
+        qke_out[idx] = mynn_max2(d[idx], 1.0e-4f);
+    }
+#else
     real vkz = 0.4f * 0.5f * dz[base];
     real pdk1 = 2.0f * (ust[column] * ust[column] * ust[column])
         * pmz[column] / vkz;
@@ -1034,6 +1149,7 @@ void mynn_predict_default_columns(
         qke_out[idx] = fminf(fmaxf(d[idx], 1.0e-3f), 150.0f);
     }
 
+#endif
     for (int k = 0; k < nz - 1; ++k) {
         int idx = base + k;
         real next_kmdz = k == nz - 2 ? kmdz_top : kmdz[idx + 1];
@@ -1515,7 +1631,12 @@ void mynn_tendencies_columns(
     real* __restrict__ c_raw, real* __restrict__ d_raw, real* __restrict__ cpw_raw,
     real* __restrict__ dpw_raw, real* __restrict__ sqv2_raw,
     real* __restrict__ sqc2_raw, real* __restrict__ sqi2_raw,
-    real* __restrict__ sqs2_raw, real onoff, int nz, int ncol)
+    real* __restrict__ sqs2_raw, real onoff, int nz, int ncol
+#if defined(MYNN_GSD41)
+    , const real* __restrict__ qc_original_raw,
+    const real* __restrict__ qi_original_raw, int old_cloud_tendencies
+#endif
+    )
 {
     int column = blockIdx.x * blockDim.x + threadIdx.x;
     if (column >= ncol) return;
@@ -1584,6 +1705,10 @@ void mynn_tendencies_columns(
     MynnColumn<real> sqc2 = {sqc2_raw + column, (size_t)ncol};
     MynnColumn<real> sqi2 = {sqi2_raw + column, (size_t)ncol};
     MynnColumn<real> sqs2 = {sqs2_raw + column, (size_t)ncol};
+#if defined(MYNN_GSD41)
+    MynnColumn<const real> qc_original = {qc_original_raw + column, (size_t)ncol};
+    MynnColumn<const real> qi_original = {qi_original_raw + column, (size_t)ncol};
+#endif
     const int base = 0;
     const int zbase = 0;
     const int top = base + nz - 1;
@@ -1603,6 +1728,17 @@ void mynn_tendencies_columns(
     const real flqc = flqc_col[column];
 
     // ---- module_bl_mynn.F:4136-4163 diffusion "constants" ----------------
+#if defined(MYNN_GSD41)
+    // Fork mynn_tendencies :2835-3108 uses DFm/DFh directly, including
+    // surface forcing. Density still enters the separate moisture repair.
+    real rhosfc = 1.0f;
+    dtz[base] = MYNN_DIV(delt, dz[base]);
+    real rhoz = rho[base];
+    rhoinv[base] = 1.0f;
+    // The fork's bottom row uses only the upper interface (:2968, :3112).
+    khdz[zbase] = 0.0f;
+    kmdz[zbase] = 0.0f;
+#else
     real rhosfc = MYNN_DIV(
         psfc,
         MYNN_MUL(RD, MYNN_ADD(tk[base], MYNN_MUL(p608, qv[base]))));
@@ -1611,6 +1747,7 @@ void mynn_tendencies_columns(
     rhoinv[base] = MYNN_DIV(1.0f, rho[base]);
     khdz[zbase] = MYNN_MUL(rhoz, dfh[base]);
     kmdz[zbase] = MYNN_MUL(rhoz, dfm[base]);
+#endif
     delp[base] = MYNN_SUB(
         psfc,
         MYNN_DIV(MYNN_ADD(MYNN_MUL(p[base + 1], dz[base]),
@@ -1619,6 +1756,11 @@ void mynn_tendencies_columns(
     for (int k = 1; k < nz; ++k) {
         int idx = base + k;
         dtz[idx] = MYNN_DIV(delt, dz[idx]);
+#if defined(MYNN_GSD41)
+        rhoinv[idx] = 1.0f;
+        khdz[zbase + k] = dfh[idx];
+        kmdz[zbase + k] = dfm[idx];
+#else
         rhoz = MYNN_DIV(
             MYNN_ADD(MYNN_MUL(rho[idx], dz[idx - 1]),
                      MYNN_MUL(rho[idx - 1], dz[idx])),
@@ -1627,6 +1769,7 @@ void mynn_tendencies_columns(
         rhoinv[idx] = MYNN_DIV(1.0f, mynn_max2(rho[idx], 1.0e-4f));
         khdz[zbase + k] = MYNN_MUL(rhoz, dfh[idx]);
         kmdz[zbase + k] = MYNN_MUL(rhoz, dfm[idx]);
+#endif
     }
     for (int k = 1; k < nz - 1; ++k) {
         int idx = base + k;
@@ -1640,12 +1783,18 @@ void mynn_tendencies_columns(
     }
     delp[top] = delp[top - 1];
     // rhoz(kte+1)=rhoz(kte): rhoz still holds the top mass-level value.
+#if defined(MYNN_GSD41)
+    khdz[zbase + nz] = dfh[top];
+    kmdz[zbase + nz] = dfm[top];
+#else
     khdz[zbase + nz] = MYNN_MUL(rhoz, dfh[top]);
     kmdz[zbase + nz] = MYNN_MUL(rhoz, dfm[top]);
+#endif
 
     // module_bl_mynn.F:4165-4171 mass-flux stability floors.  Inert while
     // s_aw is zero, but they are why khdz/kmdz cannot simply be reused from
     // mym_predict once DMP_mf is live.
+#if !defined(MYNN_GSD41)
     for (int k = 1; k < nz - 1; ++k) {
         int zk = zbase + k;
         khdz[zk] = mynn_max2(khdz[zk], MYNN_MUL(0.5f, s_aw[zk]));
@@ -1655,6 +1804,7 @@ void mynn_tendencies_columns(
         kmdz[zk] = mynn_max2(
             kmdz[zk], -MYNN_MUL(0.5f, MYNN_SUB(s_aw[zk], s_aw[zk + 1])));
     }
+#endif
 
     // 0.5*dtz(k)*rhoinv(k) and dtz(k)*rhoinv(k) are the shared prefactors of
     // every mass-flux term; the surface pair is reused by all six systems.
@@ -1863,6 +2013,7 @@ void mynn_tendencies_columns(
     // surface moisture flux.  For any positive sqv(kts) the MIN collapses to
     // 0.0, so a downward flux is not limited but deleted.
     real qvflux = flqv;
+#if !defined(MYNN_GSD41)
     if (qvflux < 0.0f) {
         qvflux = mynn_max2(
             qvflux,
@@ -1870,6 +2021,13 @@ void mynn_tendencies_columns(
                 mynn_min2(MYNN_SUB(MYNN_MUL(0.9f, sqv[base]), 1.0e-8f), 0.0f),
                 dtz[base]));
     }
+#else
+    // MYNN_GSD41 (bl_mynn_version = "gsd_41"): the GSD MYNN v4.1 vapour
+    // equation adds dtz*flqv with whatever sign it has (NOAA-EMC WRF 3.9
+    // module_bl_mynn.F:4408 flqv = qfx/rho, :3114), so dew and frost take
+    // their water from the lowest layer, as the land model's negative QFX
+    // says they do.
+#endif
     d[base] = MYNN_ADD(
         MYNN_ADD(sqv[base],
                  MYNN_MUL(MYNN_MUL(MYNN_MUL(dtz[base], rhosfc), qvflux),
@@ -1935,10 +2093,39 @@ void mynn_tendencies_columns(
         // asymmetry is WRF's, not a transcription slip.
         dth[idx] = 0.0f;
     }
+#if defined(MYNN_GSD41)
+    if (!old_cloud_tendencies) {
+#endif
     mynn_moisture_check_column(
         delt, delp + base, exner + base, sqv2 + base, sqc2 + base,
         sqi2 + base, sqs2 + base, thl + base, dqv + base, dqc + base,
         dqi + base, dqs + base, dth + base, nz);
+#if defined(MYNN_GSD41)
+    }
+    // Fork :3404, :3417 and :3449: convert the updated specific humidity
+    // with updated vapour, then subtract the actual original mixing ratio.
+    for (int k = 0; k < nz; ++k) {
+        int idx = base + k;
+        real denominator = MYNN_SUB(1.0f, sqv2[idx]);
+        if (denominator == 0.0f) {
+            // The source divides by zero at all-vapour specific humidity.
+            // Defined fallback: keep the original three mixing ratios.
+            dqv[idx] = 0.0f; dqc[idx] = 0.0f; dqi[idx] = 0.0f;
+        } else {
+            dqv[idx] = MYNN_DIV(MYNN_SUB(MYNN_DIV(sqv2[idx], denominator), qv[idx]), delt);
+            dqc[idx] = MYNN_DIV(MYNN_SUB(MYNN_DIV(sqc2[idx], denominator), qc_original[idx]), delt);
+            dqi[idx] = MYNN_DIV(MYNN_SUB(MYNN_DIV(sqi2[idx], denominator), qi_original[idx]), delt);
+            if (old_cloud_tendencies) {
+                // Fork :3418-3421 and :3450-3453, a defined water-creating
+                // clip. Only the explicit source-defect option takes it.
+                if (MYNN_ADD(MYNN_MUL(dqc[idx], delt), qc_original[idx]) < 0.0f)
+                    dqc[idx] = MYNN_DIV(-qc_original[idx], delt);
+                if (MYNN_ADD(MYNN_MUL(dqi[idx], delt), qi_original[idx]) < 0.0f)
+                    dqi[idx] = MYNN_DIV(-qi_original[idx], delt);
+            }
+        }
+    }
+#endif
 
     // ---- module_bl_mynn.F:5024-5031 ozone --------------------------------
     for (int k = 0; k < nz; ++k) {
@@ -1948,6 +2135,22 @@ void mynn_tendencies_columns(
             dozone[idx] = MYNN_DIV(-MYNN_MUL(ozone[idx], 0.99f), delt);
     }
 
+#if defined(MYNN_GSD41)
+    // Fork :3487-3497 under the explicit defect form; conserving heat otherwise.
+    for (int k = 0; k < nz; ++k) {
+        int idx = base + k;
+        dth[idx] = MYNN_DIV(
+            MYNN_SUB(
+                MYNN_ADD(
+                    MYNN_ADD(thl[idx],
+                             MYNN_MUL(MYNN_DIV(xlvcp, exner[idx]),
+                                      old_cloud_tendencies ? sqc[idx] : sqc2[idx])),
+                    MYNN_MUL(MYNN_DIV(xlscp, exner[idx]),
+                             old_cloud_tendencies ? sqi[idx] : sqi2[idx])),
+                th[idx]),
+            delt);
+    }
+#else
     // ---- module_bl_mynn.F:5033-5046 theta --------------------------------
     for (int k = 0; k < nz; ++k) {
         int idx = base + k;
@@ -1961,6 +2164,7 @@ void mynn_tendencies_columns(
                 th[idx]),
             delt);
     }
+#endif
 }
 
 // ===========================================================================
@@ -2291,6 +2495,120 @@ __device__ void mynn_mym_length_local_column(
     }
 }
 
+#if defined(MYNN_GSD41)
+// GSD MYNN v4.1, NOAA-EMC WRF 3.9 branch (tag v4.1.21)
+// phys/module_bl_mynn.F:940-1085 mym_length CASE(2).  Public domain (WRF).
+// flt is the surface kinematic heat flux and vflx the buoyancy flux the
+// caller built from it, (vt(kts)+1)*flt + (vq(kts)+tv0)*flq (:1015); the
+// cold start passes both as the zeros mym_initialize holds (:448).
+// cldavg (:1003) is a source temporary that never reaches an output.  The
+// height integral stops at the top interface below the model lid, where the
+// Fortran DO WHILE would read dz(kte+1); a PBL that deep does not occur.
+__device__ void mynn_mym_length_gsd41_column(
+    MynnColumn<const real> dz, MynnColumn<const real> zw,
+    MynnColumn<const real> qke, MynnColumn<const real> dtv,
+    MynnColumn<const real> edmf_w, MynnColumn<const real> edmf_a,
+    real rmo, real flt, real vflx, real zi, real psig_bl,
+    MynnColumn<real> el, MynnColumn<real> qkw, MynnColumn<real> qtke,
+    int nz, int unsquared_qtke)
+{
+    const real gtr = MYNN_DIV(9.81f, 300.0f);
+    const real vk = 0.4f, cns = 3.5f, alp2 = 0.3f, alp3 = 2.0f;
+    const real alp4 = 20.0f, alp5 = 0.3f, alp6 = 50.0f;
+    // :974 alp1 = 0.25 + 0.02*MIN(MAX(zi-200.,0.),1000.)/1000.
+    real alp1 = MYNN_ADD(0.25f, MYNN_DIV(MYNN_MUL(0.02f, mynn_min2(
+        mynn_max2(MYNN_SUB(zi, 200.0f), 0.0f), 1000.0f)), 1000.0f));
+    // :983-986 zi2 floor 100 m; minzi/maxdz/mindz = 300/750/300.
+    real zi2 = mynn_max2(zi, 100.0f);
+    real h1 = mynn_min2(mynn_max2(MYNN_MUL(0.3f, zi2), 300.0f), 750.0f);
+    real h2 = MYNN_MUL(h1, 0.5f);
+    // :988-996.  :995 converts with 0.5*qkw (no square); its option 1 (:880)
+    // and every later generation use 0.5*qkw**2.  The squared form is the
+    // default; bl_mynn_gsd41_unsquared_qtke takes the line as written.
+    qtke[0] = mynn_max2(MYNN_MUL(0.5f, qke[0]), 0.01f);
+    qkw[0] = sqrtf(mynn_max2(qke[0], 1.0e-10f));
+    for (int k = 1; k < nz; ++k) {
+        real afk = MYNN_DIV(dz[k], MYNN_ADD(dz[k], dz[k - 1]));
+        real abk = MYNN_SUB(1.0f, afk);
+        qkw[k] = sqrtf(mynn_max2(MYNN_ADD(
+            MYNN_MUL(qke[k], abk), MYNN_MUL(qke[k - 1], afk)), 1.0e-3f));
+        qtke[k] = unsquared_qtke ? MYNN_MUL(0.5f, qkw[k])
+                                 : MYNN_MUL(0.5f, MYNN_MUL(qkw[k], qkw[k]));
+    }
+    // :998-1015.  qmin = 0 (:197), so MAX(qkw-qmin, 0.03) is MAX(qkw, 0.03).
+    real elt = 1.0e-5f, vsc = 1.0e-5f;
+    real pblh_plus_ent = mynn_max2(MYNN_ADD(zi, h1), 100.0f);
+    for (int k = 1; k < nz && zw[k] <= pblh_plus_ent; ++k) {
+        real dzk = MYNN_MUL(0.5f, MYNN_ADD(dz[k], dz[k - 1]));
+        real qdz = MYNN_MUL(mynn_max2(MYNN_SUB(qkw[k], 0.0f), 0.03f), dzk);
+        elt = MYNN_ADD(elt, MYNN_MUL(qdz, zw[k]));
+        vsc = MYNN_ADD(vsc, qdz);
+    }
+    elt = mynn_max2(MYNN_DIV(MYNN_MUL(alp1, elt), vsc), 10.0f);
+    vsc = mynn_powf(MYNN_MUL(MYNN_MUL(gtr, elt), mynn_max2(vflx, 0.0f)),
+                    0.33333f);
+    el[0] = 0.0f;
+    for (int k = 1; k < nz; ++k) {
+        real zwk = zw[k];
+        real elb, elf, elb_mf;
+        if (dtv[k] > 0.0f) {
+            // :1026-1036
+            real bv = sqrtf(MYNN_MUL(gtr, dtv[k]));
+            elb_mf = MYNN_MUL(
+                MYNN_DIV(mynn_max2(MYNN_MUL(alp2, qkw[k]),
+                    MYNN_MUL(MYNN_MUL(alp6, edmf_a[k]), edmf_w[k])), bv),
+                MYNN_ADD(1.0f, MYNN_MUL(alp3,
+                    sqrtf(MYNN_DIV(vsc, MYNN_MUL(bv, elt))))));
+            elb = mynn_min2(MYNN_DIV(MYNN_MUL(alp5, qkw[k]), bv), zwk);
+            elf = MYNN_DIV(elb, MYNN_ADD(1.0f, MYNN_DIV(elb, 600.0f)));
+        } else {
+            // :1054-1061
+            real tau_cloud = mynn_min2(mynn_max2(MYNN_DIV(
+                MYNN_MUL(0.5f, zi), mynn_powf(MYNN_MUL(MYNN_MUL(gtr, zi),
+                    mynn_max2(flt, 1.0e-4f)), 0.3333f)), 50.0f), 150.0f);
+            real wt = MYNN_ADD(MYNN_MUL(0.5f, mynn_tanhf(
+                MYNN_DIV(MYNN_SUB(zwk, MYNN_ADD(zi2, h1)), h2))), 0.5f);
+            tau_cloud = MYNN_ADD(MYNN_MUL(tau_cloud, MYNN_SUB(1.0f, wt)),
+                                 MYNN_MUL(50.0f, wt));
+            elb = mynn_min2(MYNN_MUL(tau_cloud,
+                sqrtf(mynn_min2(qtke[k], 30.0f))), zwk);
+            elf = elb;
+            elb_mf = elb;
+        }
+        // :1064-1073 surface lengths at z and at z - 4 m.
+        real z_m = mynn_max2(0.0f, MYNN_SUB(zwk, 4.0f));
+        real els, els1;
+        if (rmo > 0.0f) {
+            real den = MYNN_ADD(1.0f, MYNN_MUL(cns,
+                mynn_min2(MYNN_MUL(zwk, rmo), 1.0f)));
+            els = MYNN_DIV(MYNN_MUL(vk, zwk), den);
+            els1 = MYNN_DIV(MYNN_MUL(vk, z_m), den);
+        } else {
+            real fac = mynn_powf(MYNN_SUB(1.0f,
+                MYNN_MUL(MYNN_MUL(alp4, zwk), rmo)), 0.2f);
+            els = MYNN_MUL(MYNN_MUL(vk, zwk), fac);
+            els1 = MYNN_MUL(MYNN_MUL(vk, z_m), fac);
+        }
+        // :1076-1085
+        real wt = MYNN_ADD(MYNN_MUL(0.5f, mynn_tanhf(
+            MYNN_DIV(MYNN_SUB(zwk, MYNN_ADD(zi2, h1)), h2))), 0.5f);
+        real el_unstab = MYNN_DIV(els, MYNN_ADD(1.0f, MYNN_DIV(els1, elt)));
+        real value = mynn_min2(el_unstab, elb_mf);
+        value = MYNN_ADD(MYNN_MUL(value, MYNN_SUB(1.0f, wt)),
+                         MYNN_MUL(elf, wt));
+        real el_les = mynn_min2(MYNN_DIV(els,
+            MYNN_ADD(1.0f, MYNN_DIV(els1, 12.0f))), elb_mf);
+        el[k] = MYNN_ADD(MYNN_MUL(value, psig_bl),
+                         MYNN_MUL(MYNN_SUB(1.0f, psig_bl), el_les));
+    }
+}
+#define MYNN_GSD41_LENGTH_PARAMS , real flt, int unsquared_qtke
+#define MYNN_GSD41_LENGTH_ARGS(flt_, unsq_) , (flt_), (unsq_)
+#else
+#define MYNN_GSD41_LENGTH_PARAMS
+#define MYNN_GSD41_LENGTH_ARGS(flt_, unsq_)
+#endif
+
 // module_bl_mynn.F:1999-2098 mym_length CASE(1) for one column.  xland, dx,
 // flt, flq, vt, vq, cldfra_bl1D and rstoch_col reach the Fortran but CASE(1)
 // never reads them; dtv(kts) is likewise never read.
@@ -2303,11 +2621,17 @@ __device__ void mynn_mym_length_column(
     real psig_bl, MynnColumn<real> el, MynnColumn<real> qkw,
     MynnColumn<real> qtke, MynnColumn<real> thetaw,
     MynnColumn<real> elblavg, MynnColumn<real> dlu,
-    MynnColumn<real> dld, int nz, int mixlength)
+    MynnColumn<real> dld, int nz, int mixlength MYNN_GSD41_LENGTH_PARAMS)
 {
     if (mixlength == 2) {
+#if defined(MYNN_GSD41)
+        // Under gsd_41 the caller hands the buoyancy flux vflx in fltv.
+        mynn_mym_length_gsd41_column(dz, zw, qke, dtv, edmf_w, edmf_a,
+            rmo, flt, fltv, zi, psig_bl, el, qkw, qtke, nz, unsquared_qtke);
+#else
         mynn_mym_length_local_column(dz, zw, qke, dtv, edmf_w, edmf_a,
             rmo, fltv, zi, psig_bl, el, qkw, qtke, nz);
+#endif
         return;
     }
     const real gtr = MYNN_DIV(9.81f, 300.0f);
@@ -2397,7 +2721,13 @@ void mynn_mixlength_default_columns(
     real* __restrict__ qkw_raw, real* __restrict__ qtke_raw,
     real* __restrict__ thetaw_raw, real* __restrict__ elblavg_raw,
     real* __restrict__ dlu_raw, real* __restrict__ dld_raw,
-    int mixlength, int nz, int ncol)
+    int mixlength, int nz, int ncol
+#if defined(MYNN_GSD41)
+    , const real* __restrict__ flt, const real* __restrict__ flq,
+    const real* __restrict__ vt_raw, const real* __restrict__ vq_raw,
+    int unsquared_qtke
+#endif
+    )
 {
     int column = blockIdx.x * blockDim.x + threadIdx.x;
     if (column >= ncol) return;
@@ -2418,11 +2748,32 @@ void mynn_mixlength_default_columns(
     MynnColumn<real> dlu = {dlu_raw + column, (size_t)ncol};
     MynnColumn<real> dld = {dld_raw + column, (size_t)ncol};
     int base = 0, zbase = 0;
+#if defined(MYNN_GSD41)
+    real flux = fltv[column];
+    // GSD MYNN v4.1 module_bl_mynn.F:1015: the option-2 length takes its
+    // buoyancy flux from the lowest level's vt and vq (mass-level column
+    // element 0 of the (ncol, nz) Fortran-order arrays).
+    real flt_c = flt[column];
+    if (mixlength == 2) {
+        const real tv0 = MYNN_MUL(
+            MYNN_SUB(MYNN_DIV(461.6f, 287.0f), 1.0f), 300.0f);
+        real vt0 = vt_raw[column], vq0 = vq_raw[column];
+        flux = MYNN_ADD(MYNN_MUL(MYNN_ADD(vt0, 1.0f), flt_c),
+                        MYNN_MUL(MYNN_ADD(vq0, tv0), flq[column]));
+    }
+#endif
     mynn_mym_length_column(dz + base, zw + zbase, u + base, v + base,
         qke + base, dtv + base, theta + base, edmf_w + base, edmf_a + base,
-        rmo[column], fltv[column], zi[column], psig_bl[column], el + base,
+        rmo[column],
+#if defined(MYNN_GSD41)
+        flux,
+#else
+        fltv[column],
+#endif
+        zi[column], psig_bl[column], el + base,
         qkw + base, qtke + base, thetaw + base, elblavg + base,
-        dlu + base, dld + base, nz, mixlength);
+        dlu + base, dld + base, nz, mixlength
+        MYNN_GSD41_LENGTH_ARGS(flt_c, unsquared_qtke));
 }
 
 // module_bl_mynn.F:1766-1820 mym_level2 for one column.  The Fortran loop runs
@@ -2538,7 +2889,11 @@ void mynn_initialize_default_columns(
     real* __restrict__ tsq_o_raw, real* __restrict__ qsq_o_raw,
     real* __restrict__ cov_o_raw, real* __restrict__ sm_o_raw,
     real* __restrict__ sh_o_raw, real* __restrict__ scratch_raw,
-    int initialize_qke, int mixlength, int nz, int ncol)
+    int initialize_qke, int mixlength, int nz, int ncol
+#if defined(MYNN_GSD41)
+    , int unsquared_qtke
+#endif
+    )
 {
     int column = blockIdx.x * blockDim.x + threadIdx.x;
     if (column >= ncol) return;
@@ -2582,7 +2937,12 @@ void mynn_initialize_default_columns(
     MynnColumn<real> pdc = work + 14 * nz;
 
     // module_bl_mynn.F:279-280, :306 and module_bl_mynn_common.F:68-69.
+#if defined(MYNN_GSD41)
+    // Fork module_bl_mynn.F:203 and :546 initialization production floor.
+    const real b1 = 24.0f, b2 = 15.0f, karman = 0.4f, qkemin = 1.0e-12f;
+#else
     const real b1 = 24.0f, b2 = 15.0f, karman = 0.4f, qkemin = 1.0e-3f;
+#endif
     const real onethird = MYNN_DIV(1.0f, 3.0f);
     const real twothirds = MYNN_DIV(2.0f, 3.0f);
     // pmz and phh are mym_initialize locals initialised to 1 at :1545.
@@ -2648,7 +3008,8 @@ void mynn_initialize_default_columns(
                                qke, dtv, theta + base, edmf_w + base,
                                edmf_a + base, rmoc, 0.0f, zic, psig,
                                el, qkw, qtke, thetaw, elblavg, dlu, dld, nz,
-                               mixlength);
+                               mixlength
+                               MYNN_GSD41_LENGTH_ARGS(0.0f, unsquared_qtke));
         for (int k = 1; k < nz; ++k) {
             real elq = MYNN_MUL(el[k], qkw[k]);
             pdk[k] = MYNN_MUL(elq, MYNN_ADD(MYNN_MUL(sm[k], gm[k]),
@@ -2715,7 +3076,11 @@ void mynn_initialize_default_columns(
 // what glibc agrees with on every argument these expressions reach; tanhf
 // cannot be approximated that way and uses the fdlibm transcription above.
 // ===========================================================================
+#if defined(MYNN_GSD41)
+#define MYNN_DMP_NUP 10
+#else
 #define MYNN_DMP_NUP 8
+#endif
 
 // Contraction-pinned forms of the phase-blend helpers.  The plain-operator
 // versions above are Horner polynomials, which is the textbook a*b+c pattern:
@@ -2800,6 +3165,280 @@ __device__ __forceinline__ real mynn_expf_rn(real x)
     return (real)exp((double)x);
 }
 
+#if defined(MYNN_GSD41)
+// ===========================================================================
+// GSD MYNN v4.1 (NOAA-EMC WRF 3.9 branch, tag v4.1.21, public domain WRF)
+// phys/module_bl_mynn.F.  Phase-blended saturation and latent heat
+// (:6064-6162): liquid at and above 273.16 K, ice at and below 253 K,
+// linear between over 20.16 K, polynomial argument T - 273.16, no ceiling
+// on the vapour pressure.  Every operator is one rounded instruction.
+// ===========================================================================
+__device__ __forceinline__ real mynn_gsd41_poly(real xc, const real* c)
+{
+    real v = MYNN_ADD(c[7], MYNN_MUL(xc, c[8]));
+    for (int i = 6; i >= 0; --i) v = MYNN_ADD(c[i], MYNN_MUL(xc, v));
+    return v;
+}
+
+__device__ __forceinline__ real mynn_gsd41_esl(real xc)
+{
+    const real j[9] = {.611583699E03f, .444606896E02f, .143177157E01f,
+        .264224321E-1f, .299291081E-3f, .203154182E-5f, .702620698E-8f,
+        .379534310E-11f, -.321582393E-13f};
+    return mynn_gsd41_poly(xc, j);
+}
+
+__device__ __forceinline__ real mynn_gsd41_esi(real xc)
+{
+    const real kk[9] = {.609868993E03f, .499320233E02f, .184672631E01f,
+        .402737184E-1f, .565392987E-3f, .521693933E-5f, .307839583E-7f,
+        .105785160E-9f, .161444444E-12f};
+    return mynn_gsd41_poly(xc, kk);
+}
+
+// :6064-6083 esat_blend
+__device__ real mynn_gsd41_esat_blend(real t)
+{
+    real xc = mynn_max2(-80.0f, MYNN_SUB(t, 273.16f));
+    if (t >= 273.16f) return mynn_gsd41_esl(xc);
+    if (t <= 253.0f) return mynn_gsd41_esi(xc);
+    real chi = MYNN_DIV(MYNN_SUB(273.16f, t), 20.16f);
+    return MYNN_ADD(MYNN_MUL(MYNN_SUB(1.0f, chi), mynn_gsd41_esl(xc)),
+                    MYNN_MUL(chi, mynn_gsd41_esi(xc)));
+}
+
+// :6086-6118 qsat_blend (the blended branch; waterice is never passed)
+__device__ real mynn_gsd41_qsat_blend(real t, real pr)
+{
+    real xc = mynn_max2(-80.0f, MYNN_SUB(t, 273.16f));
+    if (t >= 273.16f) {
+        real esl = mynn_gsd41_esl(xc);
+        return MYNN_DIV(MYNN_MUL(0.622f, esl), MYNN_SUB(pr, esl));
+    }
+    if (t <= 253.0f) {
+        real esi = mynn_gsd41_esi(xc);
+        return MYNN_DIV(MYNN_MUL(0.622f, esi), MYNN_SUB(pr, esi));
+    }
+    real esl = mynn_gsd41_esl(xc);
+    real esi = mynn_gsd41_esi(xc);
+    real rslf = MYNN_DIV(MYNN_MUL(0.622f, esl), MYNN_SUB(pr, esl));
+    real rsif = MYNN_DIV(MYNN_MUL(0.622f, esi), MYNN_SUB(pr, esi));
+    real chi = MYNN_DIV(MYNN_SUB(273.16f, t), 20.16f);
+    return MYNN_ADD(MYNN_MUL(MYNN_SUB(1.0f, chi), rslf), MYNN_MUL(chi, rsif));
+}
+
+// :6121-6141 xl_blend.  cpv = 4*r_v, cliq 4190, cice 2106, xlv 2.5e6,
+// xls 2.85e6 (share/module_model_constants.F of the same branch).
+__device__ real mynn_gsd41_xl_blend(real t)
+{
+    const real cpv = MYNN_MUL(4.0f, 461.6f);
+    const real cpv_cliq = MYNN_SUB(cpv, 4190.0f);
+    const real cpv_cice = MYNN_SUB(cpv, 2106.0f);
+    real dt = MYNN_SUB(t, 273.16f);
+    if (t >= 273.16f) return MYNN_ADD(2.5e6f, MYNN_MUL(cpv_cliq, dt));
+    if (t <= 253.0f) return MYNN_ADD(2.85e6f, MYNN_MUL(cpv_cice, dt));
+    real xlvt = MYNN_ADD(2.5e6f, MYNN_MUL(cpv_cliq, dt));
+    real xlst = MYNN_ADD(2.85e6f, MYNN_MUL(cpv_cice, dt));
+    real chi = MYNN_DIV(MYNN_SUB(273.16f, t), 20.16f);
+    return MYNN_ADD(MYNN_MUL(MYNN_SUB(1.0f, chi), xlvt), MYNN_MUL(chi, xlst));
+}
+
+// :2293-2737 mym_condensation, bl_mynn_cloudpdf = 2 (Chaboureau and
+// Bechtold 2002) with spp_pbl = 0.  qc_bl is the in-cloud condensate (the
+// radiation merge multiplies it by cldfra_bl, module_radiation_driver.F of
+// the same branch :1289-1299); the generation has no qi_bl, written zero.
+// tsq, qsq, cov, rmo and zw below k_tropo never reach a CASE(2) output.
+extern "C" __global__
+void mynn_condensation_gsd41_columns(
+    const real* __restrict__ dz_raw, const real* __restrict__ zw_raw,
+    const real* __restrict__ th_raw, const real* __restrict__ thl_raw,
+    const real* __restrict__ qw_raw, const real* __restrict__ p_raw,
+    const real* __restrict__ exner_raw, const real* __restrict__ el_raw,
+    const real* __restrict__ dx, const real* __restrict__ pblh,
+    const real* __restrict__ hfx, const real* __restrict__ sgm_in_raw,
+    real* __restrict__ qc_bl_raw, real* __restrict__ qi_bl_raw,
+    real* __restrict__ cldfra_raw, real* __restrict__ vt_raw,
+    real* __restrict__ vq_raw, real* __restrict__ sgm_raw,
+    real* __restrict__ work_raw, int nz, int ncol)
+{
+    int column = blockIdx.x * blockDim.x + threadIdx.x;
+    if (column >= ncol) return;
+    MynnColumn<const real> dz = {dz_raw + column, (size_t)ncol};
+    MynnColumn<const real> zw = {zw_raw + column, (size_t)ncol};
+    MynnColumn<const real> th = {th_raw + column, (size_t)ncol};
+    MynnColumn<const real> thl = {thl_raw + column, (size_t)ncol};
+    MynnColumn<const real> qw = {qw_raw + column, (size_t)ncol};
+    MynnColumn<const real> p = {p_raw + column, (size_t)ncol};
+    MynnColumn<const real> exner = {exner_raw + column, (size_t)ncol};
+    MynnColumn<const real> el = {el_raw + column, (size_t)ncol};
+    MynnColumn<const real> sgm_in = {sgm_in_raw + column, (size_t)ncol};
+    MynnColumn<real> qc_bl = {qc_bl_raw + column, (size_t)ncol};
+    MynnColumn<real> qi_bl = {qi_bl_raw + column, (size_t)ncol};
+    MynnColumn<real> cldfra = {cldfra_raw + column, (size_t)ncol};
+    MynnColumn<real> vt = {vt_raw + column, (size_t)ncol};
+    MynnColumn<real> vq = {vq_raw + column, (size_t)ncol};
+    MynnColumn<real> sgm = {sgm_raw + column, (size_t)ncol};
+    // Five column work vectors: q1, rh, a, b, cld.
+    MynnColumn<real> work = {work_raw + column, (size_t)ncol};
+    MynnColumn<real> q1 = work, rh = work + nz, aa = work + 2 * nz;
+    MynnColumn<real> bv = work + 3 * nz, cld = work + 4 * nz;
+
+    const real r_d = 287.0f, r_v = 461.6f, g = 9.81f;
+    const real cp = MYNN_DIV(MYNN_MUL(7.0f, r_d), 2.0f);
+    const real cpv = MYNN_MUL(4.0f, r_v);
+    const real rcp = MYNN_DIV(r_d, cp);
+    const real ep_2 = MYNN_DIV(r_d, r_v);
+    const real ep_3 = MYNN_SUB(1.0f, ep_2);
+    const real p608 = MYNN_SUB(MYNN_DIV(r_v, r_d), 1.0f);
+    const real tv0 = MYNN_MUL(p608, 300.0f);
+    const real xlvcp = MYNN_DIV(2.5e6f, cp);
+    (void)xlvcp;
+
+    // :2353-2365 tropopause estimate; falling through gives kts+2.
+    int found = 0;
+    for (int level = nz - 3; level >= 1; --level) {
+        real theta1 = th[level - 1], theta2 = th[level + 1];
+        real ht1 = MYNN_MUL(44307.692f, MYNN_SUB(1.0f, mynn_powf(
+            MYNN_DIV(p[level - 1], 101325.0f), 0.190f)));
+        real ht2 = MYNN_MUL(44307.692f, MYNN_SUB(1.0f, mynn_powf(
+            MYNN_DIV(p[level + 1], 101325.0f), 0.190f)));
+        if (MYNN_DIV(MYNN_SUB(theta2, theta1), MYNN_SUB(ht2, ht1))
+                < MYNN_DIV(10.0f, 1500.0f)
+            && ht1 < 19000.0f && ht1 > 4000.0f) {
+            found = level;
+            break;
+        }
+    }
+    int k_tropo = max(3, found + 2);  // one-based
+
+    // :2455-2545 first CASE(2) loop.
+    real zagl = 0.0f;
+    real lfac = mynn_min2(MYNN_ADD(4.25f, MYNN_DIV(dx[column], 4000.0f)),
+                          6.0f);
+    real hfx1 = hfx[column], pblh1 = pblh[column];
+    for (int k = 0; k < nz - 1; ++k) {
+        int km = k > 0 ? k - 1 : 0;
+        real t = MYNN_MUL(th[k], exner[k]);
+        real esat = mynn_gsd41_esat_blend(t);
+        real qsl = MYNN_DIV(MYNN_MUL(ep_2, esat), mynn_max2(1.0e-4f,
+            MYNN_SUB(p[k], MYNN_MUL(ep_3, esat))));
+        rh[k] = mynn_max2(mynn_min2(1.0f, MYNN_DIV(qw[k],
+            mynn_max2(1.0e-8f, qsl))), 0.001f);
+        real xl = mynn_gsd41_xl_blend(t);
+        real exn_k = mynn_powf(MYNN_DIV(p[k], 100000.0f), rcp);
+        real tlk = MYNN_MUL(thl[k], exn_k);
+        real qsat_tl = mynn_gsd41_qsat_blend(tlk, p[k]);
+        real rsl = MYNN_DIV(MYNN_MUL(xl, qsat_tl),
+                            MYNN_MUL(r_v, MYNN_MUL(tlk, tlk)));
+        real cpm = MYNN_ADD(cp, MYNN_MUL(qw[k], cpv));
+        real a = MYNN_DIV(1.0f, MYNN_ADD(1.0f,
+                                         MYNN_DIV(MYNN_MUL(xl, rsl), cpm)));
+        aa[k] = a;
+        real qmq = MYNN_MUL(a, MYNN_SUB(qw[k], qsat_tl));
+        real b = MYNN_MUL(a, rsl);
+        bv[k] = b;
+        real tl_up = MYNN_MUL(thl[k + 1], mynn_powf(
+            MYNN_DIV(p[k + 1], 100000.0f), rcp));
+        real tl_dn = MYNN_MUL(thl[km], mynn_powf(
+            MYNN_DIV(p[km], 100000.0f), rcp));
+        real dtl = MYNN_SUB(MYNN_MUL(0.5f, MYNN_ADD(tl_up, tlk)),
+                            MYNN_MUL(0.5f, MYNN_ADD(tlk, tl_dn)));
+        real dqw = MYNN_SUB(MYNN_MUL(0.5f, MYNN_ADD(qw[k + 1], qw[k])),
+                            MYNN_MUL(0.5f, MYNN_ADD(qw[k], qw[km])));
+        real dzk = k == 0 ? MYNN_MUL(0.5f, dz[k])
+                          : MYNN_MUL(0.5f, MYNN_ADD(dz[k], dz[k - 1]));
+        real cdhdz = MYNN_ADD(MYNN_DIV(dtl, dzk), MYNN_MUL(MYNN_DIV(g, cpm),
+                                                   MYNN_ADD(1.0f, qw[k])));
+        zagl = MYNN_ADD(zagl, dz[k]);
+        real els = zagl;
+        real ls_min = MYNN_ADD(300.0f, mynn_min2(MYNN_MUL(3.0f,
+            mynn_max2(hfx1, 0.0f)), 300.0f));
+        ls_min = mynn_min2(mynn_max2(els, 25.0f), ls_min);
+        if (zagl > MYNN_ADD(pblh1, 2000.0f))
+            ls_min = mynn_max2(MYNN_ADD(ls_min, MYNN_MUL(0.5f,
+                MYNN_SUB(MYNN_ADD(pblh1, 2000.0f), zagl))), 300.0f);
+        real ls = mynn_max2(mynn_min2(MYNN_MUL(lfac, el[k]), 600.0f), ls_min);
+        real t1 = MYNN_DIV(MYNN_MUL(a, dqw), dzk);
+        real term = MYNN_ADD(MYNN_SUB(MYNN_MUL(t1, t1),
+            MYNN_DIV(MYNN_MUL(MYNN_MUL(MYNN_MUL(MYNN_MUL(2.0f, a), b), cdhdz),
+                              dqw), dzk)),
+            MYNN_MUL(MYNN_MUL(b, b), MYNN_MUL(cdhdz, cdhdz)));
+        real sg = mynn_max2(1.0e-10f, MYNN_MUL(MYNN_MUL(0.225f, ls),
+                                               sqrtf(mynn_max2(0.0f, term))));
+        sgm[k] = sg;
+        q1[k] = MYNN_DIV(qmq, sg);
+        cld[k] = mynn_max2(0.0f, mynn_min2(1.0f, MYNN_ADD(0.5f,
+            MYNN_MUL(0.36f, mynn_atanf(MYNN_MUL(1.55f, q1[k]))))));
+    }
+
+    // :2547-2552, :2620-2713 second CASE(2) loop.
+    zagl = 0.0f;
+    real pblh2 = mynn_max2(10.0f, pblh1);
+    const real exp_m1 = 0.36787944117144233f;
+    for (int k = 0; k < nz - 1; ++k) {
+        real t = MYNN_MUL(th[k], exner[k]);
+        real q1k = q1[k];
+        zagl = MYNN_ADD(zagl, dz[k]);
+        real ql;
+        if (q1k < 0.0f)
+            ql = MYNN_MUL(sgm[k], mynn_expf_rn(MYNN_SUB(MYNN_MUL(1.2f, q1k),
+                                                        1.0f)));
+        else if (q1k > 2.0f)
+            ql = MYNN_MUL(sgm[k], q1k);
+        else
+            ql = MYNN_MUL(sgm[k], MYNN_ADD(MYNN_ADD(exp_m1,
+                MYNN_MUL(0.66f, q1k)), MYNN_MUL(0.086f, MYNN_MUL(q1k, q1k))));
+        real cldk = cld[k];
+        if (k + 1 >= k_tropo - 1) {
+            cldk = 0.0f;
+            ql = 0.0f;
+        }
+        real q1c = mynn_max2(q1[k], -5.0f);
+        real fng;
+        if (q1c >= 1.0f) fng = 1.0f;
+        else if (q1c >= -1.7f)
+            fng = mynn_expf_rn(MYNN_MUL(-0.4f, MYNN_SUB(q1c, 1.0f)));
+        else if (q1c >= -2.5f)
+            fng = MYNN_ADD(3.0f, mynn_expf_rn(MYNN_MUL(-3.8f,
+                                                       MYNN_ADD(q1c, 1.7f))));
+        else
+            fng = mynn_min2(MYNN_ADD(23.9f, mynn_expf_rn(MYNN_MUL(-1.6f,
+                MYNN_ADD(q1c, 2.5f)))), 60.0f);
+        fng = mynn_min2(fng, 20.0f);
+        real xl = mynn_gsd41_xl_blend(t);
+        real bb = MYNN_DIV(MYNN_MUL(bv[k], t), th[k]);
+        real qww = MYNN_ADD(1.0f, MYNN_MUL(0.61f, qw[k]));
+        real alpha = MYNN_MUL(0.61f, th[k]);
+        real beta = MYNN_SUB(MYNN_MUL(MYNN_DIV(th[k], t), MYNN_DIV(xl, cp)),
+                             MYNN_MUL(1.61f, th[k]));
+        real cw = mynn_min2(cldk, 0.99f);
+        vt[k] = MYNN_SUB(MYNN_SUB(qww, MYNN_MUL(MYNN_MUL(MYNN_MUL(cw, beta),
+                                                         bb), fng)), 1.0f);
+        vq[k] = MYNN_SUB(MYNN_ADD(alpha, MYNN_MUL(MYNN_MUL(MYNN_MUL(cw, beta),
+                                                           aa[k]), fng)), tv0);
+        // :2703-2707.  zw(k_tropo) is the one-based interface k_tropo.
+        real base_h = MYNN_ADD(pblh2, 1000.0f);
+        real fac_damp = MYNN_SUB(1.0f, mynn_min2(MYNN_DIV(
+            mynn_max2(MYNN_SUB(zagl, base_h), 0.0f),
+            mynn_max2(MYNN_SUB(zw[k_tropo - 1], base_h), 500.0f)), 1.0f));
+        real cld_factor = MYNN_ADD(1.0f, MYNN_MUL(fac_damp, mynn_powf(
+            mynn_max2(0.0f, MYNN_DIV(MYNN_SUB(rh[k], 0.75f), 0.26f)), 1.9f)));
+        cldk = mynn_min2(1.0f, MYNN_MUL(cld_factor, cldk));
+        cldfra[k] = cldk;
+        qc_bl[k] = ql;
+        qi_bl[k] = 0.0f;
+    }
+    // :2723-2728
+    int top = nz - 1;
+    vt[top] = vt[top - 1];
+    vq[top] = vq[top - 1];
+    sgm[top] = sgm_in[top];
+    qc_bl[top] = 0.0f;
+    qi_bl[top] = 0.0f;
+    cldfra[top] = 0.0f;
+}
+
+#endif
 // WRF's layer-to-interface interpolation (a_k*dz_k1 + a_k1*dz_k)/(dz_k1+dz_k).
 __device__ __forceinline__ real mynn_up(real a_k, real a_k1,
                                         real dz_k, real dz_k1)
@@ -2820,14 +3459,27 @@ __device__ void mynn_condensation_edmf(
     real exn = mynn_powf(MYNN_DIV(p, 100000.0f), rcp);
     for (int it = 0; it < 50; ++it) {
         real t = MYNN_ADD(MYNN_MUL(exn, thl), MYNN_MUL(xlvcp, qc));
+#if defined(MYNN_GSD41)
+        real qs = mynn_gsd41_qsat_blend(t, p);
+#else
         real qs = mynn_qsat_blend_rn(t, p);
+#endif
         real qcold = qc;
         qc = MYNN_ADD(MYNN_MUL(0.5f, qc),
                       MYNN_MUL(0.5f, mynn_max2(MYNN_SUB(qt, qs), 0.0f)));
+#if defined(MYNN_GSD41)
+        // NOAA-EMC WRF 3.9 module_bl_mynn.F:5954, :5960-5968.
+        if (fabsf(MYNN_SUB(qc, qcold)) < 2.0e-5f) break;
+#else
         if (fabsf(MYNN_SUB(qc, qcold)) < 1.0e-6f) break;
+#endif
     }
     real t = MYNN_ADD(MYNN_MUL(exn, thl), MYNN_MUL(xlvcp, qc));
+#if defined(MYNN_GSD41)
+    real qs = mynn_gsd41_qsat_blend(t, p);
+#else
     real qs = mynn_qsat_blend_rn(t, p);
+#endif
     qc = mynn_max2(MYNN_SUB(qt, qs), 0.0f);
     if (zagl < 100.0f) qc = 0.0f;
     *qc_io = qc;
@@ -2836,6 +3488,21 @@ __device__ void mynn_condensation_edmf(
         MYNN_SUB(MYNN_ADD(1.0f, MYNN_MUL(qt, MYNN_SUB(rvovrd, 1.0f))),
                  MYNN_MUL(rvovrd, qc)));
 }
+#if defined(MYNN_GSD41)
+// Leaf probe for the fork's condensation_edmf (:5933-5981).  The plume
+// ascent calls this same helper, including its saturation blend and stop.
+extern "C" __global__
+void mynn_gsd41_condensation_edmf_columns(
+    const real* __restrict__ qt, const real* __restrict__ thl,
+    const real* __restrict__ p, const real* __restrict__ zagl,
+    real* __restrict__ qc, real* __restrict__ thv, int count)
+{
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= count) return;
+    mynn_condensation_edmf(qt[index], thl[index], p[index], zagl[index],
+                           qc + index, thv + index);
+}
+#endif
 
 // Per-column scratch: eight plume vectors of nz+1 plus ENT of nz, then the
 // rhoz / dzi / edmf_th work vectors.
@@ -2869,10 +3536,17 @@ void mynn_dmp_mf_columns(
     real* __restrict__ s_awv_o_raw, real* __restrict__ maxwidth_o,
     int* __restrict__ ktop_o, real* __restrict__ ztop_o,
     real* __restrict__ maxmf_o, real* __restrict__ plume_scratch_raw,
-    real* __restrict__ work_scratch_raw, int nz, int ncol)
+    real* __restrict__ work_scratch_raw, int nz, int ncol
+#if defined(MYNN_GSD41)
+    , const real* __restrict__ sgm_gsd41_raw
+#endif
+    )
 {
     int column = blockIdx.x * blockDim.x + threadIdx.x;
     if (column >= ncol) return;
+#if defined(MYNN_GSD41)
+    MynnColumn<const real> sgm_gsd41 = {sgm_gsd41_raw + column, (size_t)ncol};
+#endif
     MynnColumn<const real> dz = {dz_raw + column, (size_t)ncol};
     MynnColumn<const real> p = {p_raw + column, (size_t)ncol};
     MynnColumn<const real> rho = {rho_raw + column, (size_t)ncol};
@@ -2992,31 +3666,58 @@ void mynn_dmp_mf_columns(
         if (w[base + k] < 0.0f) wpbl = MYNN_MUL(2.0f, w[base + k]);
         maxw = mynn_max2(maxw, fabsf(wpbl));
         if (zw[zbase + k] <= 50.0f) k50 = k + 1;
+#if defined(MYNN_GSD41)
+        if (qc[base + k] > 1.0e-5f && cloud_base == 9000.0f)
+            cloud_base = MYNN_MUL(0.5f, MYNN_ADD(zw[zbase + k],
+                                                 zw[zbase + k + 1]));
+#else
         real qc_sgs = mynn_max2(qc[base + k], qc_bl_o[base + k]);
         if (qc_sgs > 1.0e-5f && cldfra_bl_o[base + k] >= 0.5f
             && cloud_base == 9000.0f)
             cloud_base = MYNN_MUL(0.5f, MYNN_ADD(zw[zbase + k],
                                                  zw[zbase + k + 1]));
+#endif
     }
+#if defined(MYNN_GSD41)
+    // Fork :5284-5293 uses svp1, not the full surface virtual heat flux.
+    maxw = mynn_max2(0.0f, MYNN_SUB(maxw, 0.5f));
+    real psig_w = mynn_max2(0.0f, MYNN_SUB(1.0f, MYNN_DIV(maxw, 0.5f)));
+    fltv = MYNN_ADD(flt, MYNN_MUL(0.6112f, flq));
+#else
     maxw = mynn_max2(0.0f, MYNN_SUB(maxw, 1.0f));
     real psig_w = mynn_max2(0.0f, MYNN_SUB(1.0f, maxw));
+#endif
     psig_w = mynn_min2(psig_w, psig_shcu);
     real fltv2 = fltv;
     if (psig_w == 0.0f && fltv > 0.0f) fltv2 = MYNN_MUL(-1.0f, fltv);
 
     // ---- module_bl_mynn.F:5969-5992 superadiabatic surface layer ----------
     int superadiabatic = 0;
+#if defined(MYNN_GSD41)
+    real hux = MYNN_SUB(landsea, 1.5f) >= 0.0f ? -0.002f : -0.005f;
+    real tvs = ts;
+#else
     real hux = MYNN_SUB(landsea, 1.5f) >= 0.0f ? -0.001f : -0.005f;
     real tvs = MYNN_MUL(ts, MYNN_ADD(1.0f, MYNN_MUL(p608, qv[base])));
+#endif
     int nsuper = k50 - 1 > 1 ? k50 - 1 : 1;
     for (int k = 0; k < nsuper; ++k) {
         real gradient;
         if (k == 0)
+#if defined(MYNN_GSD41)
+            gradient = MYNN_DIV(MYNN_SUB(th[base], tvs),
+                                MYNN_MUL(0.5f, dz[base]));
+#else
             gradient = MYNN_DIV(MYNN_SUB(thv[base], tvs),
                                 MYNN_MUL(0.5f, dz[base]));
+#endif
         else
             gradient = MYNN_DIV(
+#if defined(MYNN_GSD41)
+                MYNN_SUB(th[base + k], th[base + k - 1]),
+#else
                 MYNN_SUB(thv[base + k], thv[base + k - 1]),
+#endif
                 MYNN_MUL(0.5f, MYNN_ADD(dz[base + k], dz[base + k - 1])));
         if (gradient < hux) {
             superadiabatic = 1;
@@ -3027,6 +3728,21 @@ void mynn_dmp_mf_columns(
     }
 
     // ---- module_bl_mynn.F:6003-6035 plume-size criteria -------------------
+#if defined(MYNN_GSD41)
+    // Fork :5320-5336 counts fixed 100 m diameter classes.
+    nup2 = (real)max(1, min(nup, (int)MYNN_DIV(MYNN_MUL(dx, dcut), 100.0f)));
+    real maxwidth = mynn_min2(MYNN_MUL(1.2f, pblh), cloud_base);
+    if (MYNN_SUB(landsea, 1.5f) < 0.0f) {
+        real width_flx = mynn_max2(mynn_min2(MYNN_MUL(1000.0f, MYNN_ADD(
+            MYNN_MUL(0.6f, mynn_tanhf(MYNN_DIV(MYNN_SUB(flt, 0.050f),
+                                               0.03f))), 0.5f)),
+            1000.0f), 0.0f);
+        maxwidth = mynn_min2(maxwidth, width_flx);
+    }
+    nup2 = mynn_min2((real)max((int)MYNN_DIV(
+        MYNN_SUB(maxwidth, fmodf(maxwidth, 100.0f)), 100.0f), 0), nup2);
+    real minwidth = 100.0f;
+#else
     real maxwidth = mynn_min2(MYNN_MUL(dx, dcut), lmax);
     maxwidth = mynn_min2(maxwidth, MYNN_MUL(1.1f, pblh));
     if (MYNN_SUB(landsea, 1.5f) < 0.0f)
@@ -3056,20 +3772,37 @@ void mynn_dmp_mf_columns(
         nup2 = 0.0f;
         maxwidth = 0.0f;
     }
+#endif
     int ktop = 0;
     real ztop = 0.0f, maxmf = 0.0f;
 
+#if defined(MYNN_GSD41)
+    if (fltv2 > 0.002f && nup2 >= 1.0f && superadiabatic) {
+#else
     if (fltv2 > 0.002f && maxwidth > minwidth && superadiabatic) {
+#endif
         // ---- module_bl_mynn.F:6041-6066 number density ----------------
         real cn = 0.0f;
+#if defined(MYNN_GSD41)
+        real dl = 100.0f;
+#else
         real dl = MYNN_DIV(MYNN_SUB(maxwidth, minwidth), (real)(nup - 1));
+#endif
         for (int i = 0; i < nup; ++i) {
+#if defined(MYNN_GSD41)
+            if (i >= (int)nup2) break;
+#endif
             real len = MYNN_ADD(minwidth, MYNN_MUL(dl, (real)i));
             cn = MYNN_ADD(cn, MYNN_MUL(MYNN_DIV(
                 MYNN_MUL(mynn_powf(len, dpow), MYNN_MUL(len, len)),
                 MYNN_MUL(dx, dx)), dl));
         }
         real c_norm = MYNN_DIV(atot, cn);
+#if defined(MYNN_GSD41)
+        real acfac = MYNN_ADD(MYNN_MUL(0.5f, mynn_tanhf(
+            MYNN_DIV(MYNN_SUB(fltv2, 0.02f), 0.09f))), 0.5f);
+        real ac_wsp = 1.0f;
+#else
         real acfac = MYNN_ADD(MYNN_MUL(0.5f, mynn_tanhf(
             MYNN_DIV(MYNN_SUB(fltv2, 0.02f), 0.05f))), 0.5f);
         real ac_wsp;
@@ -3077,7 +3810,11 @@ void mynn_dmp_mf_columns(
         else ac_wsp = MYNN_SUB(1.0f, mynn_min2(
             MYNN_DIV(MYNN_SUB(wspd_pbl, 10.0f), 15.0f), 1.0f));
         acfac = MYNN_MUL(acfac, ac_wsp);
+#endif
         for (int i = 0; i < nup; ++i) {
+#if defined(MYNN_GSD41)
+            if (i >= (int)nup2) break;
+#endif
             real len = MYNN_ADD(minwidth, MYNN_MUL(dl, (real)i));
             real number = MYNN_MUL(c_norm, mynn_powf(len, dpow));
             real area = MYNN_MUL(MYNN_DIV(
@@ -3087,22 +3824,44 @@ void mynn_dmp_mf_columns(
 
         // ---- module_bl_mynn.F:6079-6144 surface plume properties ------
         const real z0 = 50.0f, pwmin = 0.1f, pwmax = 0.4f;
+#if defined(MYNN_GSD41)
+        real wstar = mynn_max2(1.0e-2f, mynn_powf(
+            MYNN_MUL(MYNN_MUL(MYNN_DIV(grav, thv[base]), fltv2), pblh), onethird));
+#else
         real wstar = mynn_max2(1.0e-2f, mynn_powf(
             MYNN_MUL(MYNN_MUL(gtr, fltv2), pblh), onethird));
+#endif
         real qstar = MYNN_DIV(mynn_max2(flq, 1.0e-5f), wstar);
         real thstar = MYNN_DIV(flt, wstar);
         const real csigma = 1.34f;
+#if defined(MYNN_GSD41)
+        real exc_fac = 0.58f;
+#else
         real exc_fac = MYNN_SUB(landsea, 1.5f) >= 0.0f
             ? MYNN_MUL(0.58f, 4.0f) : 0.58f;
         exc_fac = MYNN_MUL(exc_fac, ac_wsp);
+#endif
         real zratio = mynn_powf(MYNN_DIV(z0, pblh), onethird);
         real sigma_w = MYNN_MUL(MYNN_MUL(MYNN_MUL(csigma, wstar), zratio),
             MYNN_SUB(1.0f, MYNN_DIV(MYNN_MUL(0.8f, z0), pblh)));
+#if defined(MYNN_GSD41)
+        real scalar_zratio = mynn_powf(MYNN_DIV(z0, pblh), -onethird);
+        real sigma_qt = MYNN_MUL(MYNN_MUL(csigma, qstar), scalar_zratio);
+        real sigma_th = MYNN_MUL(MYNN_MUL(csigma, thstar), scalar_zratio);
+#else
         real sigma_qt = MYNN_MUL(MYNN_MUL(csigma, qstar), zratio);
         real sigma_th = MYNN_MUL(MYNN_MUL(csigma, thstar), zratio);
+#endif
         real wmin = mynn_min2(MYNN_MUL(sigma_w, pwmin), 0.1f);
+#if defined(MYNN_GSD41)
+        real wmax = mynn_min2(MYNN_MUL(sigma_w, pwmax), 0.3f);
+#else
         real wmax = mynn_min2(MYNN_MUL(sigma_w, pwmax), 0.5f);
+#endif
         for (int i = 0; i < nup; ++i) {
+#if defined(MYNN_GSD41)
+            if (i >= (int)nup2) break;
+#endif
             size_t s = (size_t)i * (nz + 1);
             up_w[s] = MYNN_ADD(wmin, MYNN_MUL(
                 MYNN_DIV((real)(i + 1), (real)nup), MYNN_SUB(wmax, wmin)));
@@ -3131,16 +3890,29 @@ void mynn_dmp_mf_columns(
 
         // ---- module_bl_mynn.F:6170-6366 plume integration -------------
         for (int i = 0; i < nup; ++i) {
+#if defined(MYNN_GSD41)
+            if (i >= (int)nup2) break;
+            int overshoot = 0;
+#endif
             real plume_qc = 0.0f;
             real len = MYNN_ADD(minwidth, MYNN_MUL(dl, (real)i));
             size_t pbase = (size_t)i * (nz + 1);
             size_t ebase = (size_t)i * nz;
             for (int k = 1; k < nz - 1; ++k) {
+#if defined(MYNN_GSD41)
+                real e = MYNN_DIV(0.35f, MYNN_MUL(mynn_min2(mynn_max2(
+                    up_w[pbase + k - 1], 0.75f), 1.9f), len));
+#else
                 real ent_wmin = MYNN_ADD(0.3f, MYNN_MUL(len, 0.0005f));
                 real e = MYNN_DIV(0.33f, MYNN_MUL(mynn_min2(mynn_max2(
                     up_w[pbase + k - 1], ent_wmin), 0.9f), len));
+#endif
                 e = mynn_max2(e, 0.0003f);
+#if defined(MYNN_GSD41)
+                real ramp = mynn_min2(MYNN_ADD(pblh, 1500.0f), 3500.0f);
+#else
                 real ramp = mynn_min2(MYNN_ADD(pblh, 1500.0f), 4000.0f);
+#endif
                 if (zw[zbase + k] >= ramp)
                     e = MYNN_ADD(e, MYNN_MUL(
                         MYNN_SUB(zw[zbase + k], ramp), 5.0e-6f));
@@ -3161,7 +3933,11 @@ void mynn_dmp_mf_columns(
                                     dz[base + k - 1], dz[base + k]);
                 real ent_exp = MYNN_MUL(e, MYNN_SUB(zw[zbase + k + 1],
                                                     zw[zbase + k]));
+#if defined(MYNN_GSD41)
+                real ent_exm = ent_exp;
+#else
                 real ent_exm = MYNN_MUL(ent_exp, 0.3333f);
+#endif
                 real qtn = MYNN_ADD(
                     MYNN_MUL(up_qt[pbase + k - 1], MYNN_SUB(1.0f, ent_exp)),
                     MYNN_MUL(qt[base + k], ent_exp));
@@ -3202,10 +3978,32 @@ void mynn_dmp_mf_columns(
                 if (wn < MYNN_SUB(previous, limit))
                     wn = MYNN_SUB(previous, limit);
                 wn = mynn_min2(mynn_max2(wn, 0.0f), 3.0f);
+#if defined(MYNN_GSD41)
+                // Fork :5547-5565 permits one layer of energetic overshoot.
+                if (fltv2 > 0.05f && wn <= 0.0f && overshoot == 0) {
+                    overshoot = 1;
+                    real thvkm1 = mynn_up(thv[base + k - 1], thv[base + k],
+                                         dz[base + k - 1], dz[base + k]);
+                    if (MYNN_SUB(thvk, thvkm1) > 0.0f) {
+                        real bvf = sqrtf(MYNN_DIV(
+                            MYNN_MUL(gtr, MYNN_SUB(thvk, thvkm1)), dz[base + k]));
+                        real frz = MYNN_DIV(previous, MYNN_MUL(bvf, dz[base + k]));
+                        if (frz >= 0.5f) wn = MYNN_MUL(mynn_min2(frz, 1.0f), previous);
+                    }
+                } else if (fltv2 > 0.05f && overshoot == 1) {
+                    wn = 0.0f;
+                }
+                wn = MYNN_MUL(wn, mynn_expf_rn(-MYNN_DIV(mynn_max2(MYNN_SUB(
+                    zw[zbase + k + 1], mynn_min2(MYNN_ADD(pblh, 2000.0f),
+                    3000.0f)), 0.0f), 1000.0f)));
+                if (zw[zbase + k + 1] >= mynn_min2(MYNN_ADD(pblh, 3000.0f),
+                                                   4500.0f)) wn = 0.0f;
+#else
                 if (k == 1 && wn == 0.0f) {
                     nup2 = 0.0f;
                     break;
                 }
+#endif
                 if (wn > 0.0f) {
                     up_w[pbase + k] = wn;
                     up_thv[pbase + k] = thvn;
@@ -3233,7 +4031,14 @@ void mynn_dmp_mf_columns(
         for (int i = 0; i < nup; ++i) {
             size_t pbase = (size_t)i * (nz + 1);
             for (int k = 0; k < nz - 1; ++k) {
+#if defined(MYNN_GSD41)
+                if (k >= ktop) break;
+#endif
+#if defined(MYNN_GSD41)
+                real raw = up_a[pbase + k];
+#else
                 real raw = MYNN_MUL(rhoz[k], up_a[pbase + k]);
+#endif
                 real aw = MYNN_MUL(raw, up_w[pbase + k]);
                 s_aw_o[ibase + k + 1] = MYNN_ADD(
                     s_aw_o[ibase + k + 1], MYNN_MUL(aw, psig_w));
@@ -3254,8 +4059,15 @@ void mynn_dmp_mf_columns(
         for (int i = 0; i < nup; ++i) {
             size_t pbase = (size_t)i * (nz + 1);
             for (int k = 0; k < nz - 1; ++k) {
+#if defined(MYNN_GSD41)
+                if (k >= ktop) break;
+#endif
+#if defined(MYNN_GSD41)
+                real aw = MYNN_MUL(up_a[pbase + k], up_w[pbase + k]);
+#else
                 real aw = MYNN_MUL(MYNN_MUL(rhoz[k], up_a[pbase + k]),
                                    up_w[pbase + k]);
+#endif
                 s_awu_o[ibase + k + 1] = MYNN_ADD(
                     s_awu_o[ibase + k + 1],
                     MYNN_MUL(MYNN_MUL(aw, up_u[pbase + k]), psig_w));
@@ -3275,7 +4087,11 @@ void mynn_dmp_mf_columns(
             flx1 = 0.0f;
         }
         real adjustment = 1.0f;
+#if defined(MYNN_GSD41)
+        real flt2 = flt;
+#else
         real flt2 = mynn_max2(flt, 0.0f);
+#endif
         real threshold = MYNN_DIV(MYNN_MUL(fluxportion, flt2), dz[base]);
         if (flx1 > threshold && flx1 > 0.0f) {
             adjustment = MYNN_DIV(threshold, flx1);
@@ -3301,6 +4117,9 @@ void mynn_dmp_mf_columns(
 
         // ---- module_bl_mynn.F:6504-6524 plume means -------------------
         for (int k = 0; k < nz - 1; ++k) {
+#if defined(MYNN_GSD41)
+            if (k >= ktop) break;
+#endif
             for (int i = 0; i < nup; ++i) {
                 size_t s = (size_t)i * (nz + 1) + k;
                 real a = up_a[s];
@@ -3318,6 +4137,9 @@ void mynn_dmp_mf_columns(
             }
         }
         for (int k = 0; k < nz - 1; ++k) {
+#if defined(MYNN_GSD41)
+            if (k >= ktop) break;
+#endif
             if (edmf_a_o[base + k] > 0.0f) {
                 edmf_w_o[base + k] = MYNN_DIV(edmf_w_o[base + k],
                                               edmf_a_o[base + k]);
@@ -3349,6 +4171,104 @@ void mynn_dmp_mf_columns(
         // ---- module_bl_mynn.F:6633-6764 shallow-cumulus cloud fraction -
         for (int k = 1; k < nz - 2; ++k) {
             if (k + 1 > ktop) break;
+#if defined(MYNN_GSD41)
+            // GSD MYNN v4.1 (NOAA-EMC WRF 3.9 module_bl_mynn.F:5767-5870):
+            // wherever the plume holds condensate, a Chaboureau-Bechtold
+            // fraction from the plume's convective sigma combined with the
+            // stratus sigma, clipped to 0.01..0.6; it replaces the stratus
+            // cloud only where that is under 0.5, with in-cloud water; the
+            // buoyancy functions are rebuilt with MIN(0.4, cldfra) wherever
+            // the plume holds condensate.
+            if (MYNN_MUL(0.5f, MYNN_ADD(edmf_qc_o[base + k],
+                                        edmf_qc_o[base + k - 1])) > 0.0f) {
+                const real r_v = 461.6f, cp = MYNN_DIV(MYNN_MUL(7.0f, 287.0f),
+                                                       2.0f);
+                const real rcp = MYNN_DIV(287.0f, cp);
+                const real ep_2 = MYNN_DIV(287.0f, r_v);
+                const real ep_3 = MYNN_SUB(1.0f, ep_2);
+                const real cpv_g = MYNN_MUL(4.0f, r_v);
+                const real xlvcp_g = MYNN_DIV(2.5e6f, cp);
+                const real tv0_g = MYNN_MUL(MYNN_SUB(MYNN_DIV(r_v, 287.0f),
+                                                     1.0f), 300.0f);
+                real thp = mynn_up(edmf_th[k], edmf_th[k - 1],
+                                   dzi[k], dzi[k - 1]);
+                real qtp = mynn_up(edmf_qt_o[base + k],
+                                   edmf_qt_o[base + k - 1],
+                                   dzi[k], dzi[k - 1]);
+                real tp = MYNN_MUL(thp, exner[base + k]);
+                real esat = mynn_gsd41_esat_blend(tp);
+                real qsl = MYNN_DIV(MYNN_MUL(ep_2, esat), mynn_max2(1.0e-4f,
+                    MYNN_SUB(p[base + k], MYNN_MUL(ep_3, esat))));
+                real qcp;
+                if (edmf_qc_o[base + k] > 0.0f
+                        && edmf_qc_o[base + k - 1] > 0.0f)
+                    qcp = MYNN_MUL(0.5f, MYNN_ADD(edmf_qc_o[base + k],
+                                                  edmf_qc_o[base + k - 1]));
+                else
+                    qcp = mynn_max2(0.0f, MYNN_SUB(qtp, qsl));
+                real xl = mynn_gsd41_xl_blend(tk[base + k]);
+                real tlk = MYNN_MUL(thl[base + k], mynn_powf(
+                    MYNN_DIV(p[base + k], 100000.0f), rcp));
+                real qsat_tl = mynn_gsd41_qsat_blend(tlk, p[base + k]);
+                real rsl = MYNN_DIV(MYNN_MUL(xl, qsat_tl),
+                                    MYNN_MUL(r_v, MYNN_MUL(tlk, tlk)));
+                real cpm = MYNN_ADD(cp, MYNN_MUL(qt[base + k], cpv_g));
+                real a_cb = MYNN_DIV(1.0f, MYNN_ADD(1.0f,
+                    MYNN_DIV(MYNN_MUL(xl, rsl), cpm)));
+                real b9 = MYNN_MUL(a_cb, rsl);
+                real asum = MYNN_ADD(edmf_a_o[base + k],
+                                     edmf_a_o[base + k - 1]);
+                real q2p = MYNN_DIV(xlvcp_g, exner[base + k]);
+                real pt = MYNN_ADD(thl[base + k], MYNN_MUL(MYNN_MUL(
+                    MYNN_MUL(q2p, qcp), 0.5f), asum));
+                real bb = MYNN_DIV(MYNN_MUL(b9, tk[base + k]), pt);
+                real qww = MYNN_ADD(1.0f, MYNN_MUL(0.61f, qt[base + k]));
+                real alpha = MYNN_MUL(0.61f, pt);
+                real tt = MYNN_MUL(th[base + k], exner[base + k]);
+                real beta = MYNN_SUB(MYNN_DIV(MYNN_MUL(pt, xl),
+                    MYNN_MUL(tt, cp)), MYNN_MUL(1.61f, pt));
+                real f = a_cb > 0.0f
+                    ? mynn_min2(MYNN_DIV(1.0f, a_cb), 4.0f) : 1.0f;
+                real sigq = MYNN_MUL(MYNN_MUL(MYNN_MUL(MYNN_MUL(
+                    MYNN_MUL(9.0e-3f, 0.5f), asum), 0.5f),
+                    MYNN_ADD(edmf_w_o[base + k], edmf_w_o[base + k - 1])), f);
+                sigq = sqrtf(MYNN_ADD(MYNN_MUL(sigq, sigq),
+                    MYNN_MUL(sgm_gsd41[base + k], sgm_gsd41[base + k])));
+                real qmq = MYNN_MUL(a_cb, MYNN_SUB(qt[base + k], qsat_tl));
+                real mf_cf = mynn_min2(mynn_max2(MYNN_ADD(0.5f, MYNN_MUL(
+                    0.36f, mynn_atanf(MYNN_MUL(1.55f, MYNN_DIV(qmq, sigq))))),
+                    0.01f), 0.6f);
+                if (cldfra_bl_o[base + k] < 0.5f) {
+                    real ahalf = MYNN_MUL(0.5f, asum);
+                    if (mf_cf > ahalf) {
+                        cldfra_bl_o[base + k] = mf_cf;
+                        qc_bl_o[base + k] = MYNN_DIV(MYNN_MUL(MYNN_MUL(
+                            qcp, 0.5f), asum), mf_cf);
+                    } else {
+                        cldfra_bl_o[base + k] = ahalf;
+                        qc_bl_o[base + k] = qcp;
+                    }
+                }
+                real q1 = mynn_max2(MYNN_DIV(qmq, mynn_max2(sigq, 1.0e-10f)),
+                                    -5.0f);
+                real fng;
+                if (q1 >= 1.0f) fng = 1.0f;
+                else if (q1 >= -1.7f)
+                    fng = mynn_expf_rn(MYNN_MUL(-0.4f, MYNN_SUB(q1, 1.0f)));
+                else if (q1 >= -2.5f)
+                    fng = MYNN_ADD(3.0f, mynn_expf_rn(
+                        MYNN_MUL(-3.8f, MYNN_ADD(q1, 1.7f))));
+                else
+                    fng = mynn_min2(MYNN_ADD(23.9f, mynn_expf_rn(
+                        MYNN_MUL(-1.6f, MYNN_ADD(q1, 2.5f)))), 60.0f);
+                real cw = mynn_min2(0.4f, cldfra_bl_o[base + k]);
+                vt_o[base + k] = MYNN_SUB(MYNN_SUB(qww, MYNN_MUL(MYNN_MUL(
+                    MYNN_MUL(cw, beta), bb), fng)), 1.0f);
+                vq_o[base + k] = MYNN_SUB(MYNN_ADD(alpha, MYNN_MUL(MYNN_MUL(
+                    MYNN_MUL(cw, beta), a_cb), fng)), tv0_g);
+            }
+            continue;
+#endif
             if (!(MYNN_MUL(0.5f, MYNN_ADD(edmf_qc_o[base + k],
                                           edmf_qc_o[base + k - 1])) > 0.0f
                   && cldfra_bl_o[base + k] < cf_thresh))
@@ -3420,10 +4340,16 @@ void mynn_dmp_mf_columns(
 
     // ---- module_bl_mynn.F:6771-6773 dry-plume sign convention ------------
     if (ktop > 0) {
+#if defined(MYNN_GSD41)
+        if (ktop > 0) {
+#endif
         real maxqc = edmf_qc_o[base];
         for (int k = 1; k < ktop; ++k)
             if (edmf_qc_o[base + k] > maxqc) maxqc = edmf_qc_o[base + k];
         if (maxqc < 1.0e-8f) maxmf = MYNN_MUL(-1.0f, maxmf);
+#if defined(MYNN_GSD41)
+        }
+#endif
     }
 
     maxwidth_o[column] = maxwidth;
@@ -3527,7 +4453,11 @@ void mynn_driver_surface_columns(
     real* __restrict__ flqc, real* __restrict__ th_sfc,
     real* __restrict__ rmol, real* __restrict__ zet,
     real* __restrict__ pmz, real* __restrict__ phh,
-    int nz, int ncol)
+    int nz, int ncol
+#if defined(MYNN_GSD41)
+    , const real* __restrict__ rmol_in
+#endif
+    )
 {
     int column = blockIdx.x * blockDim.x + threadIdx.x;
     if (column >= ncol) return;
@@ -3562,11 +4492,33 @@ void mynn_driver_surface_columns(
     fltv[column] = MYNN_ADD(tflux,
         MYNN_MUL(MYNN_MUL(qflux, p608), surface_theta));
     th_sfc[column] = surface_theta;
+#if !defined(MYNN_GSD41)
     rmol[column] = inverse_l;
     real clamped = mynn_min2(mynn_max2(stability, -20.0f), 20.0f);
     zet[column] = clamped;
     pmz[column] = MYNN_SUB(mynn_phim(clamped), clamped);
     phh[column] = mynn_phih(clamped);
+#else
+    // GSD MYNN v4.1 (NOAA-EMC WRF 3.9 module_bl_mynn.F:4412-4419): 1/L is
+    // the surface layer's, as handed in and handed back; z/L is not
+    // clipped; the Kansas-type forms with cphm_st = cphh_st = 5 and
+    // cphm_unst = cphh_unst = 16.
+    (void)inverse_l;
+    (void)stability;
+    real rm = rmol_in[column];
+    rmol[column] = rm;
+    real z = MYNN_MUL(MYNN_MUL(0.5f, dz[base]), rm);
+    zet[column] = z;
+    if (z >= 0.0f) {
+        pmz[column] = MYNN_ADD(1.0f, MYNN_MUL(MYNN_SUB(5.0f, 1.0f), z));
+        phh[column] = MYNN_ADD(1.0f, MYNN_MUL(5.0f, z));
+    } else {
+        pmz[column] = MYNN_SUB(MYNN_DIV(1.0f, mynn_powf(
+            MYNN_SUB(1.0f, MYNN_MUL(16.0f, z)), 0.25f)), z);
+        phh[column] = MYNN_DIV(1.0f, sqrtf(
+            MYNN_SUB(1.0f, MYNN_MUL(16.0f, z))));
+    }
+#endif
 }
 
 // module_bl_mynn.F:1223-1233, dheat_opt=1.  qke**1.5 and EXP go through the
@@ -3594,9 +4546,18 @@ void mynn_driver_diss_heat_columns(
         real value = MYNN_DIV(
             MYNN_DIV(MYNN_MUL(1.0f, mynn_powf(qke[base + k], 1.5f)),
                      MYNN_MUL(b1, blend)), CP);
+#if !defined(MYNN_GSD41)
         value = mynn_min2(mynn_max2(value, 0.0f), 0.002f);
         diss_heat[base + k] = MYNN_MUL(value, mynn_expf_rn(
             -MYNN_DIV(10000.0f, mynn_max2(p[base + k], 1.0f))));
+#else
+        // GSD MYNN v4.1 module_bl_mynn.F:4600-4604: factor 0.5, held to
+        // 0..2e-5 K/s, no pressure taper.
+        (void)value;
+        real heat = MYNN_DIV(MYNN_DIV(MYNN_MUL(0.5f,
+            mynn_powf(qke[base + k], 1.5f)), MYNN_MUL(b1, blend)), CP);
+        diss_heat[base + k] = mynn_min2(mynn_max2(heat, 0.0f), 0.00002f);
+#endif
     }
     diss_heat[base + nz - 1] = 0.0f;
 }
@@ -3661,9 +4622,89 @@ void mynn_wrapper_from_specific(
     int index = blockIdx.x * blockDim.x + threadIdx.x;
     if (index >= count) return;
     real denominator = MYNN_SUB(1.0f, sqv[index]);
+#if !defined(MYNN_GSD41)
     rqvblten[index] = MYNN_DIV(rqvblten[index], denominator);
     rqcblten[index] = MYNN_DIV(rqcblten[index], denominator);
     rqiblten[index] = MYNN_DIV(rqiblten[index], denominator);
+#endif
+#if !defined(MYNN_GSD41)
     qc_bl[index] = MYNN_DIV(qc_bl[index], denominator);
     qi_bl[index] = MYNN_DIV(qi_bl[index], denominator);
+#else
+    // GSD MYNN v4.1 writes its in-cloud QC_BL as computed
+    // (module_bl_mynn.F:4692); the generation has no QI_BL.
+    (void)qc_bl;
+    (void)qi_bl;
+#endif
 }
+#if defined(MYNN_GSD41)
+
+// GSD MYNN v4.1 module_bl_mynn.F:4690-4713, at the write-back: subgrid cloud
+// fraction may fall by at most 0.25*delt/ts_decay per call, ts_decay =
+// MIN(1800 s, 3*dx/MAX(|V|, 1 m/s)) with the layer's wind; a decayed
+// fraction under 0.005 clears both fields; QC_BL is floored at 1e-8 where
+// the fraction exceeds 0.005.  cldfra_old is the field carried into the
+// call (:4221).  Every element of the (ncol, nz) Fortran-order arrays.
+extern "C" __global__
+void mynn_gsd41_cloud_decay(
+    real* __restrict__ cldfra_bl, real* __restrict__ qc_bl,
+    const real* __restrict__ cldfra_old, const real* __restrict__ u,
+    const real* __restrict__ v, const real* __restrict__ dx,
+    const real* __restrict__ delt, int nz, int ncol)
+{
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= ncol * nz) return;
+    int column = index % ncol;
+    real cf = cldfra_bl[index];
+    real old = cldfra_old[index];
+    if (cf < old) {
+        real speed = sqrtf(MYNN_ADD(MYNN_MUL(u[index], u[index]),
+                                    MYNN_MUL(v[index], v[index])));
+        real ts_decay = mynn_min2(1800.0f, MYNN_DIV(MYNN_MUL(3.0f, dx[column]),
+                                                    mynn_max2(speed, 1.0f)));
+        cf = mynn_max2(cf, MYNN_SUB(old, MYNN_DIV(MYNN_MUL(0.25f,
+                                                           delt[column]),
+                                                  ts_decay)));
+        cldfra_bl[index] = cf;
+        if (cf < 0.005f) {
+            cldfra_bl[index] = 0.0f;
+            qc_bl[index] = 0.0f;
+        }
+    }
+    if (qc_bl[index] < 1.0e-8f && cldfra_bl[index] > 0.005f)
+        qc_bl[index] = 1.0e-8f;
+}
+
+// GSD MYNN v4.1 module_bl_mynn.F:4084-4096, :4236-4264: the PBL height
+// reads theta-v of the liquid-water potential temperature, with the
+// carried subgrid cloud (in-cloud QC_BL times CLDFRA_BL, split by
+// (T-254)/15) standing in for resolved cloud only where none is present.
+extern "C" __global__
+void mynn_gsd41_thvl_columns(
+    const real* __restrict__ th, const real* __restrict__ exner,
+    const real* __restrict__ sqv, const real* __restrict__ sqc,
+    const real* __restrict__ sqi, const real* __restrict__ tk,
+    const real* __restrict__ qc_bl, const real* __restrict__ cldfra_bl,
+    real* __restrict__ thvl, int flag_qi, int count)
+{
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= count) return;
+    const real xlvcp = MYNN_DIV(XLV, CP);
+    const real xlscp = MYNN_DIV(MYNN_ADD(XLV, 3.50e5f), CP);
+    real c = sqc[index];
+    real i = flag_qi ? sqi[index] : 0.0f;
+    real sqc9 = c, sqi9 = i;
+    bool clear = flag_qi ? (c < 1.0e-6f && i < 1.0e-8f) : (c < 1.0e-6f);
+    if (clear && cldfra_bl[index] > 0.001f) {
+        real liq = MYNN_DIV(MYNN_SUB(tk[index], 254.0f), 15.0f);
+        liq = mynn_min2(1.0f, mynn_max2(0.0f, liq));
+        sqc9 = MYNN_MUL(MYNN_MUL(qc_bl[index], liq), cldfra_bl[index]);
+        sqi9 = MYNN_MUL(MYNN_MUL(qc_bl[index], MYNN_SUB(1.0f, liq)),
+                        cldfra_bl[index]);
+    }
+    real thlsg = MYNN_SUB(MYNN_SUB(th[index],
+        MYNN_MUL(MYNN_DIV(xlvcp, exner[index]), sqc9)),
+        MYNN_MUL(MYNN_DIV(xlscp, exner[index]), sqi9));
+    thvl[index] = MYNN_MUL(thlsg, MYNN_ADD(1.0f, MYNN_MUL(0.61f, sqv[index])));
+}
+#endif

@@ -74,7 +74,7 @@ def test_a_plan_round_trips_through_the_loader_with_paths_made_absolute(
     assert len(plan.sha256) == 64
     # Every run option the route declares is resolved, present or not.
     assert set(plan.run_options) == {
-        "device", "dry_run", "restart", "health_debug",
+        "device", "dry_run", "restart", "health_debug", "verify_visuals",
         "geog_root", "render_products", "render_section", "keep_checkpoints", "input_cycle",
         # The ensemble option every route carries; absent means one forecast.
         "ensemble"}
@@ -83,6 +83,19 @@ def test_a_plan_round_trips_through_the_loader_with_paths_made_absolute(
     assert plan.run_options["render_products"] is None
     assert plan.run_options["render_section"] is None
     assert plan.run_options["dry_run"] is False
+    assert plan.run_options["verify_visuals"] is True
+
+
+def test_observation_verification_is_outside_the_config_identity(tmp_path):
+    config = make_case_toml(tmp_path)
+    default = load_plan(_write_plan(tmp_path, config, tmp_path / "run"))
+    off = load_plan(_write_plan(tmp_path, config, tmp_path / "run", run_options={"verify_visuals": False}))
+    assert default.config_bytes() == off.config_bytes() == config.read_bytes()
+    assert default.run_options["verify_visuals"] is True
+    assert off.run_options["verify_visuals"] is False
+    from dataclasses import fields
+    from gpuwm.config import RunConfig
+    assert "verify_visuals" not in {field.name for field in fields(RunConfig)}
 
 
 def test_a_section_line_is_a_run_option_and_a_file_resolves_beside_the_plan(

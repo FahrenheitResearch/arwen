@@ -67,8 +67,10 @@ and the FP64 arm disagree must be zero), and the max-ULP-0 oracle and batched ga
 end to end. Two conversion helpers stay live because the compiler's own conversions
 flush on this route; division and sqrt stay on hardware `__fdiv_rn`/`__fsqrt_rn`
 under a named invariant that every operand reaching them is non-subnormal, with the
-two audited exposure sites listed and the aerosol route closed by refusing
-`aer_opt != 0` [gpuwm/core/kernels/rrtmg_sw.cu:93-133].
+two audited exposure sites listed [gpuwm/core/kernels/rrtmg_sw.cu:93-133]. The
+aerosol route is closed for `aer_opt` 1 and 2 by refusal; `aer_opt = 3` reaches
+the division with optics whose range is proven normal for any layer of nonzero
+mass [gpuwm/core/rrtmg_aerosol_optics.py, tests/test_rrtmg_aerosol_optics.py].
 
 Other schemes carry subnormal-class records in the registry rather than silent
 behavior: YSU records two FTZ-class subnormal branch disagreements; Shin-Hong

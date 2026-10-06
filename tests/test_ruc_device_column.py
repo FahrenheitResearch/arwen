@@ -259,30 +259,69 @@ def test_an_unknown_stage_override_is_refused() -> None:
         _run(values, ivgtyp, isltyp, stages={"snowprep": object()})
 
 
-def test_the_device_snow_prep_stage_refuses_a_foreign_parameter_bundle():
-    """The kernel indexes tables built from the DEFAULT bundle.
-
-    A caller who supplies a different one must be refused rather than
-    silently given the default tables.
-    """
+@pytest.mark.parametrize("column,output", [
+    ("z0", "zntsn"), ("lemi", "emiss_snowfree"), ("URBAN", "snowfrac"),
+])
+@pytest.mark.parametrize("resident", [False, True])
+def test_the_device_snow_prep_stage_reads_the_supplied_parameter_bundle(
+        column, output, resident):
+    """The stage consumes each supplied column and preserves default bytes."""
     import dataclasses
+    from types import MappingProxyType
+    from gpuwm.core.ruc import (RUC_SNOW_PREP_COLUMN_INPUTS,
+                                RucSnowPreparation, ruc_snow_preparation)
+    from test_ruc_gpu import _snow_prep_case, _snow_prep_oracle
 
-    stage = RUC_SFCTMP_DEVICE_STAGES["snow_prep"]
+    stages = (RUC_SFCTMP_DEVICE_STAGES_RESIDENT if resident
+              else RUC_SFCTMP_DEVICE_STAGES)
+    stage = stages["snow_prep"]
     table = _PARAMS.bundle.vegetation_for(_PARAMS.dataset_identifier)
     rows = list(table.rows)
-    rows[0] = dataclasses.replace(rows[0], z0=np.float32(9.0))
+    scalars = dict(table.scalars)
+    if column == "URBAN":
+        scalars[column] = 10
+    else:
+        # Snow roughness comes from the snow/ice category. Snow-free
+        # emissivity comes from the actual vegetation category.
+        index = 14 if column == "z0" else 9
+        value = np.float32(0.0123 if column == "z0" else 0.75)
+        rows[index] = dataclasses.replace(rows[index], **{column: value})
     mapping = dict(_PARAMS.bundle.vegetation)
     for key, value in mapping.items():
         if value is table:
-            mapping[key] = dataclasses.replace(table, rows=tuple(rows))
+            mapping[key] = dataclasses.replace(
+                table, rows=tuple(rows), scalars=MappingProxyType(scalars))
             break
     else:  # pragma: no cover - the bundle always holds the table it hands out
         pytest.fail("the parameter bundle did not contain its own table")
     bundle = dataclasses.replace(_PARAMS.bundle, vegetation=mapping)
 
-    with pytest.raises(ValueError, match="differs in z0tbl"):
-        stage({}, delt=12.0, ivgtyp=None, iland=None,
-              mminlu=_PARAMS.dataset_identifier, bundle=bundle)
+    device, keywords = _snow_prep_case(
+        cp, _snow_prep_oracle(), 0, RUC_SNOW_PREP_COLUMN_INPUTS)
+    keywords.update(mminlu=_PARAMS.dataset_identifier, isice=15,
+                    ivgtyp=cp.asarray([10], dtype=cp.int32),
+                    iland=cp.asarray([10], dtype=cp.int32))
+    # Deep existing snow triggers the URBAN clamp without fresh-snow
+    # interception changing which branch the stage reaches.
+    for name, value in (("snhei", 0.5), ("snwe", 0.1),
+                        ("rhosn", 200.0), ("prcpms", 0.0),
+                        ("newsnms", 0.0), ("znt", 0.05)):
+        device[name] = cp.asarray([value], dtype=cp.float32)
+    host = {name: cp.asnumpy(value) for name, value in device.items()}
+    host_keywords = dict(keywords, ivgtyp=cp.asnumpy(keywords["ivgtyp"]),
+                         iland=cp.asnumpy(keywords["iland"]))
+    expected = ruc_snow_preparation(host, **host_keywords, bundle=bundle)
+    unchanged = stage(device, **keywords)
+    explicit_default = stage(device, **keywords, bundle=_PARAMS.bundle)
+    supplied = stage(device, **keywords, bundle=bundle)
+    for name in RucSnowPreparation.__dataclass_fields__:
+        default_bytes = cp.asnumpy(cp.asarray(getattr(unchanged, name))).tobytes()
+        assert cp.asnumpy(cp.asarray(
+            getattr(explicit_default, name))).tobytes() == default_bytes
+        assert cp.asnumpy(cp.asarray(getattr(supplied, name))).tobytes() == (
+            np.asarray(getattr(expected, name)).tobytes()), name
+    assert cp.asnumpy(cp.asarray(getattr(supplied, output))).tobytes() != (
+        cp.asnumpy(cp.asarray(getattr(unchanged, output))).tobytes())
 
 
 def test_a_six_step_snow_free_trajectory_is_bitwise_on_the_device() -> None:

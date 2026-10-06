@@ -282,7 +282,7 @@ class OrdinaryRecipeExecution:
                  member_sources=None):
         if not isinstance(recipe, SourceRecipe) or recipe.kind == "recentered":
             raise ValueError("changed recentered fields require their physical provider execution owner")
-        if recipe.kind not in ("control", "input-ensemble", "time-lagged", "multi-model"):
+        if recipe.kind not in ("control", "input-ensemble", "time-lagged", "multi-model", "surface-state"):
             raise ValueError("ordinary recipes require unchanged native source trajectories")
         self.recipe, self.specifications = recipe, MappingProxyType(dict(specifications))
         self.sources = MappingProxyType(dict(source_inputs))
@@ -315,7 +315,12 @@ class OrdinaryRecipeExecution:
             raise ValueError("ordinary member specification must keep its exact original source trajectory")
         if recipe.kind == "control" and any(item != recipe.base for item in acquisitions.values()):
             raise ValueError("ordinary control members must keep the unchanged base trajectory")
-        if recipe.kind != "control" and len(acquisitions) != len(self._members):
+        if recipe.kind == "surface-state":
+            from gpuwm.ensemble.surface_controls import shared_surface_options
+            shared_surface_options(recipe.perturbation, len(self._members))
+            if any(item != recipe.base for item in acquisitions.values()):
+                raise ValueError("surface-state members must retain the unchanged base trajectory")
+        if recipe.kind not in ("control", "surface-state") and len(acquisitions) != len(self._members):
             raise ValueError("unchanged noncontrol recipes cannot duplicate a source trajectory")
         if _utc(recipe.end) <= _utc(recipe.start):
             raise ValueError("ordinary recipe needs a positive original forecast window")

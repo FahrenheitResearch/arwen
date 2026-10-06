@@ -199,7 +199,7 @@ def prepare_rayleigh_damp(f, rdamp):
 
 def prepare_flux_div(field, ru, rv, rw, tend, spacing, fnm, fnp, msf, *,
                      dx, dy, stagger="", open_x=False, open_y=False,
-                     has_msf=False, spec=False):
+                     has_msf=False, spec=False, vorder=3):
     """Bind existing flux-form advection arithmetic over a member batch.
 
     Field, mass-flux and tendency arrays expose complete four-dimensional
@@ -212,8 +212,12 @@ def prepare_flux_div(field, ru, rv, rw, tend, spacing, fnm, fnp, msf, *,
 
     This primitive adds to ``tend``. It neither constructs the mass fluxes
     nor couples the resulting tendencies or advances RK/acoustic state.
+    ``vorder`` is WRF's vertical order for this field (3 or 5), the same
+    value the single-member launcher takes.
     """
     members, nlev, nys, nxs, stride = _member_field(field, "field")
+    if vorder not in (3, 5):
+        raise ValueError("advection vorder must be 3 or 5 (the WRF vert_order ladders the kernel carries)")
     if stagger not in _FLUX_SPECS:
         raise ValueError("advection staggering must be '', 'x', 'y' or 'z'")
     nz = nlev - int(stagger == "z")
@@ -252,7 +256,8 @@ def prepare_flux_div(field, ru, rv, rw, tend, spacing, fnm, fnp, msf, *,
     strides.update({field_name: stride, spacing_name: 0, "fnm": 0, "fnp": 0, "msf": 0})
     args = (field, ru, rv, rw, tend, spacing, fnm, fnp, msf, dx_inv, dy_inv,
             np.int32(nz), np.int32(ny), np.int32(nx),
-            np.int32(open_x), np.int32(open_y), np.int32(has_msf), np.int32(spec))
+            np.int32(open_x), np.int32(open_y), np.int32(has_msf), np.int32(spec),
+            np.int32(vorder))
     grid = ((nxs + _TPB - 1) // _TPB, nys, nlev)
     return prepare_batch_kernel_launch(kernel_spec, members, grid, (_TPB, 1, 1),
                                       args, pointer_strides=strides)

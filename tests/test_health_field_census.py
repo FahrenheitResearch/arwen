@@ -585,9 +585,39 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
     surface fields, nor Milbrandt-Yau's twelve transported moments, nor
     P3's rime pair and previous-step carriers, nor WDM6's three
     transported numbers produce the widest configuration.
+
+    9d8055e26, lane/europe-uw-pbl, adds WRF v4.7.1's UW PBL selector 9
+    to the routed PBL axis. It must join this census because the census
+    measures every routed state inventory, including newer WRF component
+    ports. The axis grows from six to seven values, not by a Thompson or
+    MYNN generation choice. UW adds 480 measured rows and 320 refusals;
+    its Noah-MP slice adds 120 measured rows and 80 WRF-scheme refusals.
+    The original non-UW slices retain every historical count below.
     """
     report = four_domain_census
-    assert len(report["rows"]) == 1800
+    # 9d8055e26, lane/europe-uw-pbl: the routed UW selector adds its own
+    # measured slice. Preserve the old non-UW pins beside the combined pins
+    # so this update cannot absorb an unrelated admission change.
+    uw_rows = [row for row in report["rows"]
+               if row["bl_pbl_physics"] == 9]
+    uw_refused = [entry for entry in report["rejected"]
+                  if "-pbl9-" in entry["selection"]]
+    assert len(uw_rows) == 480
+    assert len(uw_refused) == 320
+    assert {row["sf_sfclay_physics"] for row in uw_rows} == {1, 5, 91}
+    assert all("-sfclay0-" in entry["selection"]
+               or "-sfclay2-" in entry["selection"] for entry in uw_refused)
+    assert all("requires a surface-layer" in entry["reason"]
+               for entry in uw_refused if "-sfclay0-" in entry["selection"])
+    assert all("Eta similarity" in entry["reason"]
+               for entry in uw_refused if "-sfclay2-" in entry["selection"])
+    assert len(report["rows"]) - len(uw_rows) == 1800
+    assert len(report["rejected"]) - len(uw_refused) == 3000
+    for mp in report["selectable_axes"]["mp_physics"]:
+        assert sum(row["mp_physics"] == mp for row in uw_rows) == 48
+        assert sum(entry["selection"].startswith(f"mp{mp}-")
+                   for entry in uw_refused) == 32
+    assert len(report["rows"]) == 2280
     # Re-pinned when the SASE closure joined the dispatch table.  The
     # census derives its sweep from PHYSICS_SLOT_DISPATCH on purpose --
     # "an admitted scheme joins the census the moment it is routed" --
@@ -599,7 +629,7 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
     # Gray-zone lane, 2026-08-03: the routed Shin-Hong selector adds its
     # own 336 measured rows and 336 refusals, the second scheme to prove
     # this sentence by moving these numbers.)
-    assert len(report["rejected"]) == 3000
+    assert len(report["rejected"]) == 3320
     sase = [row for row in report["rejected"] if "pbl900" in row["selection"]]
     assert len(sase) == 800, len(sase)  # 80 per mp value x 10 mp values
     # Every one of them is the same refusal, and it is a real one: the
@@ -625,12 +655,15 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
     assert not [row for row in report["rows"] if "pbl900" in row["selection"]]
     lsm4_rows = [row for row in report["rows"]
                  if row["sf_surface_physics"] == 4]
-    assert len(lsm4_rows) == 440, (
-        f"the measured lsm4 slice is {len(lsm4_rows)} rows, not the 440 the "
-        "1.9 census recorded (44 per microphysics value across 10 values: "
-        "the MYJ line's 44 per value, unchanged, because Milbrandt-Yau, P3 "
-        "and WDM6 each add a microphysics value and none adds a PBL or "
-        "surface-layer one); re-run and re-pin")
+    # 9d8055e26, lane/europe-uw-pbl: UW contributes 12 admitted Noah-MP
+    # rows per microphysics value. The earlier 440 non-UW rows remain.
+    uw_lsm4_rows = [row for row in lsm4_rows if row["bl_pbl_physics"] == 9]
+    assert len(uw_lsm4_rows) == 120
+    assert len(lsm4_rows) - len(uw_lsm4_rows) == 440
+    assert len(lsm4_rows) == 560, (
+        f"the measured lsm4 slice is {len(lsm4_rows)} rows, not the 560 "
+        "recorded after UW joined the routed axis (440 non-UW and 120 UW); "
+        "re-run and account for the changed slice")
     budget_refusals = [entry["selection"] for entry in report["rejected"]
                        if "Noah-MP column budget" in entry["reason"]]
     assert not budget_refusals, (
@@ -647,17 +680,16 @@ def test_noahmp_slice_matches_the_current_wrf_authority(
     # mode this whole census exists to prevent.
     wrf_refused = [entry for entry in refused
                    if "pbl900" not in entry["selection"]]
-    assert len(wrf_refused) == 560, (
-        f"{len(wrf_refused)} WRF-scheme lsm4 refusals against the 560 "
-        "recorded on the 1.9 line -- Lane C's 96 (72 WRF-fatal "
-        "PBL/surface-layer rows and 24 active-LSM rows without an ArWen "
-        "surface-exchange writer) carried across the two km_opt values, "
-        "giving the 1.5 line's 112, plus Shin-Hong's own 56, plus MYJ's "
-        "224 -- lsm4 cells that ask for the MYJ PBL with a surface layer it "
-        "refuses and the Eta surface layer with a PBL it refuses, the same "
-        "law counted from both sides -- all of it per microphysics value at "
-        "56 per value, so Milbrandt-Yau, P3 and WDM6 each multiply it up by "
-        "one more value, 7 to 8 to 9 to 10")
+    # 9d8055e26, lane/europe-uw-pbl: UW refuses the no-surface-layer and
+    # Eta-layer cells, eight Noah-MP cells per microphysics value. Preserve
+    # the earlier 560 non-UW refusals as a separate authority guard.
+    uw_lsm4_refused = [entry for entry in wrf_refused
+                       if "-pbl9-" in entry["selection"]]
+    assert len(uw_lsm4_refused) == 80
+    assert len(wrf_refused) - len(uw_lsm4_refused) == 560
+    assert len(wrf_refused) == 640, (
+        f"{len(wrf_refused)} WRF-scheme lsm4 refusals against the 640 "
+        "recorded after UW joined the routed axis (560 non-UW and 80 UW)")
     sase_refused = [entry for entry in refused
                     if "pbl900" in entry["selection"]]
     assert len(sase_refused) == 200, len(sase_refused)

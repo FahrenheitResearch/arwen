@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import partial
 import fnmatch
+import json
 import os
 from pathlib import Path
 import queue
@@ -1119,6 +1120,13 @@ class WrfoutWriter:
         })
         if global_attrs:
             ds.setncatts(dict(global_attrs))
+        # The physics parameter set this process runs, when it runs one
+        # (gpuwm.physics_params).  A default run writes nothing here, so
+        # its file is the file it always was.
+        from gpuwm.physics_params import wrfout_global_attrs
+        parameter_set = wrfout_global_attrs()
+        if parameter_set:
+            ds.setncatts(parameter_set)
         ds.createVariable("Times", "S1", ("Time", "DateStrLen"))
         self._n = 0
         self._times = []
@@ -1417,30 +1425,17 @@ class WrfoutWriter:
                 self._temp_path, inventory=inventory, shapes=shapes,
                 times=times)
             self._publication_file.check_validated()
-            # Sharing violations receive the same capped 0.50 s retry as the
-            # heartbeat, but a durable wrfout publication remains fail-loud.
-            replace_file_with_retry(self._temp_path, self._final_path)
-            # The DATA was made durable above; the NAME is durable only
-            # once the containing directory is synced.  Without this a
-            # machine that loses power seconds after a frame is published
-            # can come back with the file's bytes intact and its directory
-            # entry still naming the hidden temporary -- which the next
-            # run's ``quarantine_orphan_wrfouts`` sweeps into
-            # ``.quarantine`` on the ``.wrfout*.tmp*`` glob.  The frame's
-            # own ready marker is published through
-            # ``supervisor.atomic_write_json``, which DOES fsync its
-            # directory, so the documented invariant "a marker that exists
-            # names a frame that is complete and readable" can invert.
-            # This is the last step of ``supervisor.atomic_publish_file``,
-            # the helper whose docstring says the wrfout handoff uses it.
-            _fsync_directory(self._final_path.parent)
-            self.publication_revision = self._publication_file.published(self._final_path)
-            if not getattr(self, "_retain_identity_handle", False):
-                self.release_identity_handle()
+            if getattr(self, "_retain_identity_handle", False):
+                # Finish identity outside the NetCDF lock, after releasing
+                # host staging and before exposing the final history name.
+                self.publication_revision = self._publication_file.written
+                return
+            self._publish_output()
+            self.release_identity_handle()
         except BaseException:
             self.release_identity_handle(preserve=True)
             if not self._closed:
-                # A half-closed netCDF handle can fail repeatedly.  Preserve
+                # A half-closed netCDF handle can fail repeatedly. Preserve
                 # the original publication error and still reach quarantine.
                 with suppress(BaseException):
                     self._abandon_ds()
@@ -1451,6 +1446,16 @@ class WrfoutWriter:
                         self._temp_path,
                         reason="failed-wrfout-publication")
             raise
+
+    def _publish_output(self, *, allow_missing=False):
+        # Sharing violations receive the same capped 0.50 s retry as the
+        # heartbeat, but a durable wrfout publication remains fail-loud.
+        replace_file_with_retry(self._temp_path, self._final_path)
+        # Sync the name before emitting a ready marker. A durable payload
+        # alone could otherwise recover under its hidden temporary name.
+        _fsync_directory(self._final_path.parent)
+        self.publication_revision = self._publication_file.published(
+            self._final_path, allow_missing=allow_missing)
 
     def release_identity_handle(self, *, preserve=False):
         retained, self._publication_file = self._publication_file, None
@@ -1481,13 +1486,23 @@ class WrfoutWriter:
             retained.close()
 
     def complete_output_identity(self, *, cancel_event=None):
-        from gpuwm.output_identity import completed_file_record
+        from gpuwm.output_identity import CompletedFileRecord, completed_file_record
         try:
-            return completed_file_record(
-                self._final_path, published=self.publication_revision,
+            proof = completed_file_record(
+                self._temp_path, published=self.publication_revision,
                 cancel_event=cancel_event, handle=self._publication_file.handle)
+            self._publication_file.check_validated()
+            if cancel_event is not None and cancel_event.is_set():
+                raise InterruptedError("Output publication was cancelled before completion.")
+            self._publish_output(allow_missing=True)
+            return CompletedFileRecord(
+                str(self._final_path.resolve()), proof.size, proof.sha256,
+                self.publication_revision, str(self._final_path))
         except BaseException:
             self.release_identity_handle(preserve=True)
+            if self._temp_path.exists():
+                with suppress(BaseException):
+                    quarantine_file(self._temp_path, reason="failed-wrfout-identity")
             raise
         finally:
             self.release_identity_handle()
@@ -1585,6 +1600,9 @@ class _AsyncFrame:
     #: assembles it, after its download lands.  ``None`` for every other
     #: frame, whose ``fields`` are complete at admission.
     deferred: object = None
+    #: Required producer identity handoff. Unlike telemetry, failure prevents
+    #: publication being treated as a safely consumable ensemble history.
+    completed_observer: object = None
 
 
 def _compose_host_frame(frame_items, refl, extra) -> dict:
@@ -1850,7 +1868,7 @@ class AsyncDomainWrfoutWriter:
         return {**base, **history_attrs}
 
     def submit(self, path, valid_time, state, *, extra_fields=None,
-               refl_field=None, frame=None, global_attrs=None) -> None:
+               refl_field=None, frame=None, global_attrs=None, completed_observer=None) -> None:
         """Queue a nonblocking, stream-ordered snapshot of one domain.
 
         ``frame`` is a COMPLETE host frame, already assembled, and it is the
@@ -1910,7 +1928,8 @@ class AsyncDomainWrfoutWriter:
                     self._admit_host_frame(path, valid_time, frame,
                                            extra_fields=extra_fields,
                                            refl_field=refl_field, producer=producer,
-                                           global_attrs=global_attrs)
+                                           global_attrs=global_attrs,
+                                           completed_observer=completed_observer)
                     return
                 device_fields = _device_state_frame(
                     state, include_diagnostic_pressure=True)
@@ -1964,6 +1983,7 @@ class AsyncDomainWrfoutWriter:
                     path=Path(path),
                     time_str=valid_time.strftime("%Y-%m-%d_%H:%M:%S"),
                     fields=host_fields, event=done,
+                    completed_observer=completed_observer,
                     device_refs=tuple(device_refs),
                     pinned_refs=tuple(pinned_refs),
                     valid_time=valid_time,
@@ -1977,7 +1997,7 @@ class AsyncDomainWrfoutWriter:
 
 
     def _admit_host_frame(self, path, valid_time, frame, *, extra_fields,
-                          refl_field, producer, global_attrs=None) -> None:
+                          refl_field, producer, global_attrs=None, completed_observer=None) -> None:
         """Publish a frame that is already on the host.
 
         The whole of ``submit``'s device machinery collapses here and it is
@@ -2041,6 +2061,7 @@ class AsyncDomainWrfoutWriter:
             path=Path(path),
             time_str=valid_time.strftime("%Y-%m-%d_%H:%M:%S"),
             fields=host_fields, event=done,
+            completed_observer=completed_observer,
             device_refs=tuple(device_refs),
             pinned_refs=tuple(pinned_refs),
             valid_time=valid_time,
@@ -2126,8 +2147,9 @@ class AsyncDomainWrfoutWriter:
                         self._abort_event.set()
                         raise
                 # The native writer has consumed every host view and made
-                # the file durable. Release staging before its separate
-                # payload hash, so a streamed next step can reuse its store.
+                # the temporary file durable. Release staging before its
+                # payload hash and final-name publication, so a streamed
+                # next step can reuse its store.
                 # Identity work stays on this worker and outside the NetCDF
                 # lock; the existing queue still holds at most one ticket.
                 ticket.fields = {}
@@ -2142,6 +2164,8 @@ class AsyncDomainWrfoutWriter:
                 published = getattr(writer, "publication_revision", None)
                 if published is not None:
                     proof = writer.complete_output_identity(cancel_event=self._abort_event)
+                    if ticket.completed_observer is not None:
+                        ticket.completed_observer(proof, ticket.valid_time)
                     with self._condition:
                         self._completed_records.append(proof)
                 self.paths.append(ticket.path)
@@ -2705,6 +2729,8 @@ class PerDomainWrfoutWriters:
             if not capture.keep_member_files:
                 return
         writer = self._writers[node.cfg.grid_id]
+        committed = (None if capture is None else capture.history_committer(
+            grid_id=node.cfg.grid_id, episode=episode))
         # CARRIER PROVENANCE, snapshotted per frame.  Each valid time is
         # its own file, and the snapshot rides the ticket rather than the
         # writer's standing attribute set, so the provenance the driver
@@ -2751,7 +2777,8 @@ class PerDomainWrfoutWriters:
                         extra_fields=self._metadata_by_grid_id[
                             node.cfg.grid_id],
                         refl_field=refl_field,
-                        global_attrs=frame_attrs)
+                        global_attrs=frame_attrs,
+                        completed_observer=committed)
                     # The next sweep may reuse these pinned views once the
                     # native write releases them. Identity hashing can
                     # continue on the worker; final drain/close still wait
@@ -2774,7 +2801,8 @@ class PerDomainWrfoutWriters:
                 path, valid_time, node.state,
                 extra_fields=self._metadata_by_grid_id[node.cfg.grid_id],
                 refl_field=refl_field,
-                global_attrs=frame_attrs)
+                global_attrs=frame_attrs,
+                completed_observer=committed)
 
     def drain(self, *, before_domain=None) -> None:
         """Wait for every domain's durable files and output identities.
@@ -2801,6 +2829,84 @@ class PerDomainWrfoutWriters:
                 self.last_durable_wrfout = self._writers[gid].paths[-1]
         if getattr(self, "_simulated_radar", None) is not None:
             self._simulated_radar.drain()
+
+    def rewind_to_checkpoint(self, valid_time, *, marker_directory=None,
+                             before_delete=None):
+        """Discard only this writer's unchanged frames after a retry seam.
+
+        Drains every asynchronous publication before inspecting output paths.
+        Every victim must still match its writer-completion proof. The whole
+        deletion plan is checked before removing a frame or its ready marker.
+        Earlier frames and unrelated files are preserved. Return path/size
+        receipts so failed-leg simulation data need not be retained.
+        """
+        from gpuwm.output_identity import file_record
+        from gpuwm.restart_render import _frame_valid
+
+        if getattr(self, "_simulated_radar", None) is not None:
+            raise ValueError("automatic history rewind cannot roll back "
+                             "simulated-radar volumes")
+        self.drain()
+        root = self.output_dir.resolve()
+        proofs = {Path(proof.address): proof for proof in self.completed_records}
+        victims = set()
+        removals = []
+        for path in sorted(self._published_paths):
+            instant = _frame_valid(path)
+            if instant is None:
+                raise ValueError(f"history rewind cannot date owned frame {path}")
+            if instant <= valid_time:
+                continue
+            resolved = path.resolve(strict=True)
+            if path.is_symlink() or not resolved.is_relative_to(root):
+                raise ValueError(f"history rewind refuses a linked or outside "
+                                 f"frame {path}")
+            proof = proofs.get(path.absolute())
+            if proof is None:
+                raise ValueError(f"history rewind lacks writer-completion "
+                                 f"proof for {path}")
+            record = file_record(path, completed=proof)
+            removals.append((path, record))
+            victims.add(path)
+            if marker_directory is not None:
+                marker_root = Path(marker_directory)
+                marker = marker_root / f"{path.name}.json"
+                if marker.exists() or marker.is_symlink():
+                    if (marker.is_symlink() or not marker.resolve().is_relative_to(
+                            marker_root.resolve())):
+                        raise ValueError(f"history rewind refuses linked marker {marker}")
+                    data = json.loads(marker.read_text(encoding="utf-8"))
+                    if (data.get("schema") != "gpuwm.frame-ready/v1"
+                            or data.get("path") != str(resolved)):
+                        raise ValueError(f"history rewind marker names another "
+                                         f"publication: {marker}")
+                    removals.append((marker, {"path": str(marker.resolve()),
+                                              "bytes": marker.stat().st_size}))
+        if before_delete is not None:
+            before_delete([record for _path, record in removals])
+        receipts = []
+        for path, record in removals:
+            path.unlink()
+            receipts.append(record)
+        absolute_victims = {str(path.absolute()) for path in victims}
+        for writer in self._writers.values():
+            with writer._condition:
+                writer.paths[:] = [path for path in writer.paths
+                                   if path not in victims]
+                writer._completed_records[:] = [proof for proof in
+                    writer._completed_records
+                    if proof.address not in absolute_victims]
+        self._archived_paths[:] = [path for path in self._archived_paths
+                                   if path not in victims]
+        self._archived_records[:] = [proof for proof in self._archived_records
+                                    if proof.address not in absolute_victims]
+        self._captured_paths[:] = [path for path in self._captured_paths
+                                   if path not in victims]
+        self._published_paths.difference_update(victims)
+        retained = self.paths
+        self.last_durable_wrfout = (None if not retained else
+                                   max(retained, key=_frame_valid))
+        return receipts
 
     def close(self) -> None:
         saved: BaseException | None = None

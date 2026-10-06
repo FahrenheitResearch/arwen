@@ -592,10 +592,22 @@ def test_the_shipped_mynn_presets_are_inside_the_measured_space() -> None:
     # radiation on, which is the claim the walk is cited for.
     radiating = [profile for rows in by_land_surface.values()
                  for profile in rows[True]]
-    assert len(radiating) == len(dark), (
-        f"expected one radiation-bearing MYNN row per microphysics and "
-        f"land surface that has a shortwave-only row; got {radiating} "
-        f"against {sorted(dark)}")
+    # How many radiation-bearing MYNN rows each (mp_physics,
+    # sf_surface_physics) pair ships, keyed by switches, not names.  It was
+    # one per shortwave-only pair until 2026-10-03, when three HRRR-shaped
+    # legacy-RRTMG suites joined the menu on purpose: Thompson mp8 over RUC
+    # with prescribed monthly surface seeds (322308291, cc881f530) and its
+    # solar-angle albedo sibling (67d633a15, 32f258956), and the
+    # aerosol-aware Thompson mp28 with the GSD MYNN form (4193eb0da,
+    # be69b1235).  A dropped or an unannounced row still turns this red.
+    shipped = {land_surface: len(rows[True])
+               for land_surface, rows in by_land_surface.items()
+               if rows[True]}
+    assert shipped == {(6, 2): 1, (6, 3): 1, (6, 4): 1, (8, 3): 3,
+                       (28, 3): 1}, (
+        f"radiation-bearing MYNN rows per (mp_physics, sf_surface_physics) "
+        f"moved: got {shipped} from {radiating} against shortwave-only "
+        f"pairs {sorted(dark)}")
     for profile in radiating:
         switches = single_domain_runtime_switches(profile)
         combination = {

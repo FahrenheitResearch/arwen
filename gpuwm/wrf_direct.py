@@ -63,7 +63,7 @@ from gpuwm.vertical_contract import (
     validate_explicit_eta_grid,
 )
 from gpuwm.wrf_physics_inventory import (
-    WRFINPUT_2D_DIMS, stock_wrf_physics_inventory)
+    EXPORT_USE_THETA_M, WRFINPUT_2D_DIMS, stock_wrf_physics_inventory)
 
 
 _CONTRACT_PATH = Path(__file__).with_name("wrf_direct_v461_contract.json")
@@ -106,6 +106,7 @@ def domain_artifacts_manifest_temporary(
 # (the only 1.608 in the tree is CAM-ZM's own virtual temperature, which is not
 # in any gpuwm template).
 _RVOVRD = _model_constants.RVOVRD
+
 _RD = 287.0
 _RCP = 2.0 / 7.0
 _P0 = 100000.0
@@ -1064,6 +1065,9 @@ def _global_updates(*, valid_time: datetime, nx: int, ny: int, nz: int,
         # token itself.  Preserve an accurate producer label while retaining
         # the required V4.x-compatible marker.
         "TITLE": " OUTPUT FROM GPUWM NATIVE WRF V4.6.1-COMPAT DIRECT EXPORTER",
+        # The representation the fields below are written in; WRF's input
+        # gate compares it with the namelist (EXPORT_USE_THETA_M).
+        "USE_THETA_M": EXPORT_USE_THETA_M,
         "START_DATE": stamp,
         "SIMULATION_START_DATE": stamp,
         "WEST-EAST_GRID_DIMENSION": nx + 1,
@@ -1512,6 +1516,14 @@ def _wrfinput_fields(cache: PreparedCache, static: Mapping[str, np.ndarray],
     qv = np.asarray(cache.array("state/qv"), dtype=np.float64)
     theta = (np.asarray(cache.array("base/thb"), dtype=np.float64)
              + np.asarray(cache.array("state/thp"), dtype=np.float64))
+    # Boundary tables couple the model's float32 total_theta, rounded
+    # before subtracting 300 K.  Preserve that order in the prognostic
+    # records too; a float64 sum leaves extra bits in T that make this
+    # export fail the reader's initial-boundary consistency check.
+    dry_theta_perturbation = (
+        np.asarray(cache.array("base/thb"), dtype=np.float32)
+        + np.asarray(cache.array("state/thp"), dtype=np.float32)
+    ) - np.float32(_THETA_OFFSET_K)
     theta_m = theta * (1.0 + _RVOVRD * qv)
     pressure_perturbation, total_pressure = _moist_pressure(cache)
     alpha = (_RD * theta_m * (total_pressure / _P0) ** _RCP
@@ -1574,12 +1586,15 @@ def _wrfinput_fields(cache: PreparedCache, static: Mapping[str, np.ndarray],
         "W": cache.array("state/w"),
         "PH": cache.array("state/php"),
         "PHB": cache.array("base/phb"),
-        "T": theta - _THETA_OFFSET_K,
-        "THM": theta_m - _THETA_OFFSET_K,
+        "T": dry_theta_perturbation,
+        # WRF's prognostic record.  Under use_theta_m = 0 it is the dry
+        # perturbation itself, equal to T (EXPORT_USE_THETA_M); theta_m
+        # above still enters the equation of state, as it does in WRF.
+        "THM": dry_theta_perturbation,
         # T_INIT is not trajectory-active after input.  The prepared cache
         # retains the final dry-theta state but not real.exe's pre-adjustment
         # diagnostic, so bind it to the final dry theta explicitly.
-        "T_INIT": theta - _THETA_OFFSET_K,
+        "T_INIT": dry_theta_perturbation,
         "MU": cache.array("state/mup"),
         "MUB": cache.array("base/mub"),
         "P": pressure_perturbation,
@@ -1837,6 +1852,9 @@ def _domain_global_attributes(updates: Mapping[str, object]) \
         "SOUTH-NORTH_GRID_DIMENSION", "BOTTOM-TOP_GRID_DIMENSION",
         "DX", "DY", "DT", "CEN_LAT", "CEN_LON", "MOAD_CEN_LAT",
         "TRUELAT1", "TRUELAT2", "STAND_LON",
+        # Read back from both files: a pair whose header and fields name
+        # two representations is the defect EXPORT_USE_THETA_M closed.
+        "USE_THETA_M",
     ]
     names.extend(
         name for name in (
@@ -2354,6 +2372,9 @@ def export_prepared_wrf_hierarchy(
             "schema": HIERARCHY_EXPORT_SCHEMA,
             "status": "READY",
             "valid_time": _date_text(valid_time),
+            # What a stock namelist must say to run these files, for a
+            # consumer that reads only the manifest (EXPORT_USE_THETA_M).
+            "use_theta_m": EXPORT_USE_THETA_M,
             "boundary_interval_seconds": boundary_interval_seconds,
             "boundary_record_count": root_manifest["boundary_record_count"],
             "boundary_times": root_manifest["boundary_times"],
@@ -2627,6 +2648,9 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
             ),
             "status": "READY",
             "valid_time": stamp,
+            # What a stock namelist must say to run these files, for a
+            # consumer that reads only the manifest (EXPORT_USE_THETA_M).
+            "use_theta_m": EXPORT_USE_THETA_M,
             "next_boundary_time": next_boundary_stamps[0],
             "boundary_interval_seconds": boundary_interval_seconds,
             "boundary_record_count": len(boundary_times),

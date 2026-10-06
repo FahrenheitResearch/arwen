@@ -73,6 +73,13 @@ path = "src/bin/gnssro.rs"
 name = "rw_wis2"
 path = "src/bin/wis2.rs"
 
+# NCEP's prepbufr: the file's own dictionary decoded in Rust
+# (`rw_obs::ncep_bufr`), GSI's use rule on NCEP's quality marks applied in
+# the door (`rw_obs::prepbufr`), rows in `gpuwm-obs.table.v2`.
+[[bin]]
+name = "rw_prepbufr"
+path = "src/bin/prepbufr.rs"
+
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # `rust_backend` rather than the zlib C shim, matching rustwx-io and

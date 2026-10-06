@@ -494,6 +494,16 @@ class AdaptiveClockDriver:
                 min_dt = Fraction(wrf_min)
             if max_dt is None:
                 max_dt = Fraction(wrf_max)
+            # A resume may deliberately lower its adaptive ceiling after a
+            # failed health check.  Checkpoint memory belongs to the old
+            # proposal, so bound the resumed baseline before the first step
+            # and rescale its saved CFL to the same interval.  An unchanged
+            # ceiling leaves ordinary continuation bit-for-bit unchanged.
+            saved_baseline = (Fraction(int(resumed["last_dt_num"]),
+                                       int(resumed["last_dt_den"]))
+                              if resumed else None)
+            if resumed:
+                start = min(start, max_dt)
             ctl = AdaptiveTimestepController(
                 target_cfl=run.target_cfl, target_hcfl=run.target_hcfl,
                 max_step_increase_pct=run.max_step_increase_pct,
@@ -521,8 +531,11 @@ class AdaptiveClockDriver:
                 # tree patches by reusing last_dtInterval for one step.
                 # Carrying it makes that patch unnecessary here: the
                 # controller simply continues.
-                ctl.last_max_vert_cfl = float(resumed["last_max_vert_cfl"])
-                ctl.last_max_horiz_cfl = float(resumed["last_max_horiz_cfl"])
+                cfl_scale = float(start / saved_baseline)
+                ctl.last_max_vert_cfl = (
+                    float(resumed["last_max_vert_cfl"]) * cfl_scale)
+                ctl.last_max_horiz_cfl = (
+                    float(resumed["last_max_horiz_cfl"]) * cfl_scale)
                 ctl.stepping_to_time = bool(resumed["stepping_to_time"])
                 ctl.started = bool(resumed["started"])
                 # The step the checkpoint's last period actually took, so
@@ -551,8 +564,12 @@ class AdaptiveClockDriver:
         # WRF has the same ratchet -- its nest takes parent_dt/n and
         # stores it -- and does not notice, because its stepra is frozen
         # at init and it has no freshness contract.  gpuwm has both, so
-        # the parent's flag is propagated.
+        # protection is propagated only to steps actually shortened by
+        # that alarm. An exact full-step landing has the root's WRF flag
+        # too, but must not hide a nest's newly measured CFL.
         root_stepping = False
+        root_time_shortened = False
+        unshortened_ticks = {}
         lattice_proposals = {}
         lattice_cfls = {}
         optimize_lattice = bool(getattr(
@@ -644,6 +661,10 @@ class AdaptiveClockDriver:
                       ctl.next_dt(max_vert_cfl=vert, max_horiz_cfl=horiz))
                 stepping = False
             if node.parent is None:
+                # Retain the normal applied interval, including the same
+                # lattice constraints, to separate alarm clipping from
+                # ordinary root/nest quantisation below.
+                unshortened_root_dt = dt
                 # The starting step must honor alarms too: a configured
                 # starting_time_step can exceed the first output interval
                 # or the entire run. Skipping this on first_step silently
@@ -695,17 +716,40 @@ class AdaptiveClockDriver:
                     dt = self._bounded_nest_step(dt, lattice_proposals)
                 if optimize_lattice and lattice_proposals and not root_stepping:
                     dt = self._nest_lattice_step(dt, lattice_proposals)
+                if root_stepping:
+                    unshortened_root_dt = min(
+                        unshortened_root_dt,
+                        self._quantise_root(unshortened_root_dt))
+                    if lattice_proposals:
+                        unshortened_root_dt = self._bounded_nest_step(
+                            unshortened_root_dt, lattice_proposals)
+                    # Alarm/end landings bypass the optional optimizer,
+                    # including this projection; keep its existing policy.
+                else:
+                    unshortened_root_dt = dt
+                unshortened_ticks[gid] = ticks_of(
+                    unshortened_root_dt, self.tick_den)
+                root_time_shortened = (root_stepping and
+                    ticks_of(dt, self.tick_den) < unshortened_ticks[gid])
 
+            child_time_shortened = False
             if node.parent is not None:
+                parent_gid = int(node.parent.cfg.grid_id)
                 parent_ticks = clocks[
-                    int(node.parent.cfg.grid_id)].step_ticks
+                    parent_gid].step_ticks
                 own_gid = int(node.cfg.grid_id)
-                ticks = nest_ticks_from_parent(
-                    parent_ticks, ticks_of(dt, self.tick_den),
+                own_ticks = ticks_of(dt, self.tick_den)
+                divide = dict(
                     subtree_lattice=self.subtree_lattice.get(own_gid, 1),
                     max_substeps=MAX_NEST_SUBSTEP_FACTOR * max(1, int(
                         getattr(node.cfg, "parent_time_step_ratio", 1) or 1)),
                     grid_id=own_gid)
+                ticks = nest_ticks_from_parent(
+                    parent_ticks, own_ticks, **divide)
+                unshortened_ticks[gid] = nest_ticks_from_parent(
+                    unshortened_ticks[parent_gid], own_ticks, **divide)
+                child_time_shortened = (root_time_shortened and
+                    ticks < unshortened_ticks[gid])
                 dt = Fraction(ticks, self.tick_den)
 
             self._apply(node, clock, dt, baseline=ctl.last_dt)
@@ -719,8 +763,7 @@ class AdaptiveClockDriver:
             # `dt`.  See the rescale at the top of this loop for why the
             # two are kept apart.
             ctl.accept(proposed, max_vert_cfl=vert, max_horiz_cfl=horiz,
-                       stepping_to_time=(stepping or (
-                           root_stepping and node.parent is not None)))
+                       stepping_to_time=(stepping or child_time_shortened))
             # PUBLISH the controller's memory where the checkpoint writer
             # can see it.  WRF stores last_dtInterval and NOT the CFL
             # memory, which is why its MOVING tree needs a special first

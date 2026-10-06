@@ -1891,12 +1891,13 @@ def _snowtemp_regimes():
             yield fixture, case, cases[case], fields
 
 
-def _snowtemp_run(fields, case, name=None, replacement=None):
+def _snowtemp_run(fields, case, name=None, replacement=None, **lineage):
     values = _snowtemp_inputs(fields, [case])
     if name is not None:
         values[name] = np.full_like(values[name], replacement)
     return ruc_snow_temperature_step(
         values,
+        **lineage,
         delt=float(fields["delt"][0, case]),
         conflx=float(fields["conflx"][0, case]),
         nroot=int(fields["nroot"][0, case]),
@@ -1990,7 +1991,9 @@ def test_snow_temperature_step_executes_every_reachable_branch():
     A branch no regime executes is arithmetic no fixture can pin, so the
     set of unexecuted arms has to stay exactly the documented unreachable
     set.  ``tools/ruc_wrf461_oracle/mutation_study_snowtemp.py`` reports the
-    same thing alongside the per-read-site mutation survivors.
+    same thing alongside the per-read-site mutation survivors.  The regimes
+    run under both snow lineages (``ruc_snow``), so each lineage's own arms
+    count; ``tests/test_ruc_fork_oracle.py`` pins the ``wrf_45`` arithmetic.
     """
 
     import ast
@@ -2027,12 +2030,13 @@ def test_snow_temperature_step_executes_every_reachable_branch():
     )
     previous = sys.gettrace()
     try:
-        for _, case, _, fields in regimes:
-            sys.settrace(tracer)
-            try:
-                _snowtemp_run(fields, case)
-            finally:
-                sys.settrace(previous)
+        for snow in ("wrf_461", "wrf_45"):
+            for _, case, _, fields in regimes:
+                sys.settrace(tracer)
+                try:
+                    _snowtemp_run(fields, case, snow=snow)
+                finally:
+                    sys.settrace(previous)
     finally:
         sys.settrace(previous)
 

@@ -187,20 +187,22 @@ fn push_codes(text: &str, list: &mut Vec<u32>) {
 
 // ------------------------------------------------------------------ bits
 
-struct BitReader<'a> {
+/// The bit reader both BUFR dialects of this crate share: the WMO walk
+/// below and the NCEP dictionary walk in `ncep_bufr`.
+pub(crate) struct BitReader<'a> {
     bytes: &'a [u8],
     /// The absolute bit position.
-    pos: usize,
+    pub(crate) pos: usize,
     /// One past the last bit this reader may touch.
-    end: usize,
+    pub(crate) end: usize,
 }
 
 impl<'a> BitReader<'a> {
-    fn new(bytes: &'a [u8], start_bit: usize, end_bit: usize) -> Self {
+    pub(crate) fn new(bytes: &'a [u8], start_bit: usize, end_bit: usize) -> Self {
         Self { bytes, pos: start_bit, end: end_bit }
     }
 
-    fn read(&mut self, width: u32, what: &str) -> Result<u64, Box<dyn Error>> {
+    pub(crate) fn read(&mut self, width: u32, what: &str) -> Result<u64, Box<dyn Error>> {
         if width == 0 {
             return Ok(0);
         }
@@ -223,7 +225,7 @@ impl<'a> BitReader<'a> {
         Ok(value)
     }
 
-    fn read_bytes(&mut self, count: usize, what: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    pub(crate) fn read_bytes(&mut self, count: usize, what: &str) -> Result<Vec<u8>, Box<dyn Error>> {
         let mut out = Vec::with_capacity(count);
         for _ in 0..count {
             out.push(self.read(8, what)? as u8);
@@ -688,7 +690,7 @@ fn scalar_value(element: &Element, raw: u64, width: u32, scale: i32, reference: 
 
 type Header = (u8, u16, u16, u8, bool, u8, Option<u8>, u8, u8, u8, u16, u8, u8, u8, u8, u8);
 
-fn be24(bytes: &[u8], at: usize) -> Option<usize> {
+pub(crate) fn be24(bytes: &[u8], at: usize) -> Option<usize> {
     bytes.get(at..at + 3).map(|b| ((b[0] as usize) << 16) | ((b[1] as usize) << 8) | b[2] as usize)
 }
 

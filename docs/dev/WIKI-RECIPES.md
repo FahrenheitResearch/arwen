@@ -25,7 +25,7 @@ The card list is a table, one row per card size. The seed rows are 8, 12,
 page picks the row with the largest `card_gb` that does not exceed the
 memory of the card in this computer (`GET /api/system`) and whose
 `disk_gib` fits the free disk that holds the runs, offers it as the first
-button (`POST /api/wiki/simulate` with the event and the card size), and
+button (`POST /api/library/simulate` with the event and the card size), and
 puts the other sizes one click away. A reader with no card the
 server can see picks a size by hand.
 

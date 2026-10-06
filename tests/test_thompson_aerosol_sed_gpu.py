@@ -1661,6 +1661,13 @@ def test_only_cloud_fallout_is_a_single_pass_in_the_frozen_kernel_too():
 
     aerosol = (_KERNEL_DIR / "thompson_aerosol_sed.cu").read_text(
         encoding="utf-8")
+    # The operational WRF 3.9 fork's ice, snow and graupel fallout live in
+    # this unit under THOMPSON_AA_WRF39 (thompson.cu stays frozen) and carry
+    # the substep loop those species have; the convention is the cloud
+    # fallout's, so the fork arms are set aside.
+    import re
+    aerosol = re.sub(r"^#if defined\(THOMPSON_AA_WRF39\)\n.*?^#endif[^\n]*\n",
+                     "", aerosol, flags=re.S | re.M)
     code = "\n".join(line for line in aerosol.splitlines()
                      if not line.lstrip().startswith("//"))
     assert "nstep" not in code and "onstep" not in code

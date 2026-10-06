@@ -18,6 +18,14 @@ Current implemented surface:
 - full numeric reads promoted to `f64`
 - WRF-style first-record reads for rank >= 3 variables
 
+Numeric reads have no grid-size or value-count ceiling. Shapes and selected
+coordinates use checked 64-bit arithmetic. Dense reads allocate the requested
+result fallibly and assemble it from hyperslabs of at most 1,048,576 values;
+record and slice reads allocate only their selected values. The platform's
+addressable allocation size and available memory remain the dense-result limits.
+Text-variable reads retain the backend's existing dense string decoder and do
+not use the numeric hyperslab path.
+
 The reader is intentionally narrower than the full NetCDF C API. It is aimed at
 WRF output and processed WRF rollups first: `wrfout_*` files, native WRF fields,
 and derived weather products that only need dense numeric reads.

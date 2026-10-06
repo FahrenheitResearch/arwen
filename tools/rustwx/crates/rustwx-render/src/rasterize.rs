@@ -638,6 +638,12 @@ fn squared_distance(a: (f64, f64), b: (f64, f64)) -> f64 {
 
 fn bilinear(v00: f64, v10: f64, v01: f64, v11: f64, fx: f64, fy: f64) -> f64 {
     if v00.is_finite() && v10.is_finite() && v01.is_finite() && v11.is_finite() {
+        // A uniform cell stays exactly at its source value. Weighted
+        // summation can put a constant display-floor value one ULP below
+        // its mask and punch transparent stripes into an opaque field.
+        if [v10, v01, v11].iter().all(|value| value.to_bits() == v00.to_bits()) {
+            return v00;
+        }
         let south = v00 * (1.0 - fx) + v10 * fx;
         let north = v01 * (1.0 - fx) + v11 * fx;
         south * (1.0 - fy) + north * fy
@@ -707,6 +713,7 @@ fn rasterize_triangle(
     }
 
     let inv_area = 1.0 / area;
+    let constant = v0.is_finite() && v0.to_bits() == v1.to_bits() && v0.to_bits() == v2.to_bits();
 
     for py in min_y..=max_y {
         for px in min_x..=max_x {
@@ -720,6 +727,7 @@ fn rasterize_triangle(
             }
 
             let value = match sample_mode {
+                RasterSampleMode::Linear if constant => v0,
                 RasterSampleMode::Linear => v0 * w0 + v1 * w1 + v2 * w2,
                 // The vertex nearest the pixel centre in pixel space. Each
                 // grid quad is split along its p00-p11 diagonal, which is
@@ -1061,5 +1069,49 @@ mod tests {
         assert!(axes.periodic_lon);
         let value = sample_regular_latlon_grid(&data, &axes, 0.5, -170.0).unwrap();
         assert!((value - 190.0).abs() < 1.0);
+    }
+}
+#[cfg(test)]
+mod uniform_sampling_tests {
+    use super::*;
+    use crate::colormap::Extend;
+
+    #[test]
+    fn bilinear_sampling_keeps_every_uniform_cell_value_exact() {
+        for value in [10.0f64, 9.999, 95.0, 0.0, -0.0] {
+            for x in 0..101 {
+                for y in 0..101 {
+                    let sampled = bilinear(value, value, value, value,
+                                           x as f64 / 100.0, y as f64 / 100.0);
+                    assert_eq!(sampled.to_bits(), value.to_bits(),
+                               "uniform value {value} changed at ({x}, {y})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_uniform_mask_floor_has_no_holes_in_rectilinear_or_projected_pixels() {
+        let masked = LeveledColormap::from_palette(
+            &[Rgba::WHITE, Rgba::new(120, 120, 120)],
+            &[10.0, 50.0, 100.0], Extend::Max, Some(10.0));
+        let unmasked = LeveledColormap::from_palette(
+            &[Rgba::WHITE, Rgba::new(120, 120, 120)],
+            &[10.0, 50.0, 100.0], Extend::Both, None);
+        let data = [10.0; 4];
+        let drawn = rasterize_grid(&data, 2, 2, &masked, RasterSampleMode::Linear, 257, 193);
+        let control = rasterize_grid(&data, 2, 2, &unmasked, RasterSampleMode::Linear, 257, 193);
+        assert_eq!(drawn, control, "the mask punched a hole into a uniform first level");
+        let points = [Some((1.2, 2.3)), Some((254.7, 1.5)),
+                      Some((2.5, 190.2)), Some((255.2, 191.0))];
+        let drawn = rasterize_projected_grid(&data, 2, 2, &points, &masked,
+                                             RasterSampleMode::Linear, 257, 193);
+        let control = rasterize_projected_grid(&data, 2, 2, &points, &unmasked,
+                                               RasterSampleMode::Linear, 257, 193);
+        assert_eq!(drawn, control, "the projected mask punched a hole into a uniform first level");
+        let below = rasterize_grid(&[9.999; 4], 2, 2, &masked,
+                                   RasterSampleMode::Linear, 257, 193);
+        assert!(below.pixels().all(|pixel| pixel[3] == 0),
+                "the uniform-cell fix must not widen the display floor");
     }
 }

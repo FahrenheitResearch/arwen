@@ -21,6 +21,53 @@ class _ArrayWrite(ctypes.Structure):
     ]
 
 
+class _ArrayHash(ctypes.Structure):
+    _fields_ = [
+        ("data", ctypes.c_void_p), ("data_length", ctypes.c_size_t),
+        ("hash_prefix", ctypes.c_void_p), ("hash_prefix_length", ctypes.c_size_t),
+    ]
+
+
+def native_hasher():
+    """Optional additive ABI for verification of immutable mapped payloads."""
+    from gpuwm.core import portable_math
+    entry = getattr(portable_math._load(), "gpuwm_hash_prepared_arrays", None)
+    if entry is not None:
+        pointer, size = ctypes.c_void_p, ctypes.c_size_t
+        entry.argtypes = [pointer, size, size, pointer]
+        entry.restype = ctypes.c_int32
+    return entry
+
+
+def hash_arrays(entry, arrays, *, workers):
+    """Hash immutable contiguous arrays through the bounded native pool.
+
+    Arrays remain mapped and unchanged until every native task finishes.
+    Prefixes preserve the prepared manifest's dtype, shape and byte digest.
+    """
+    keepalive = []
+    jobs = (_ArrayHash * len(arrays))()
+    for index, array in enumerate(arrays):
+        if array.dtype.hasobject or not array.flags.c_contiguous:
+            raise ValueError("native prepared hashing requires contiguous numeric arrays")
+        # The manifest digest's ascontiguousarray normalization promotes a
+        # scalar to shape (1,), while its NPY metadata remains shape ().
+        # Only the digest prefix changes; the mapped byte buffer is identical.
+        hash_shape = [1] if array.ndim == 0 else list(array.shape)
+        prefix = (array.dtype.str + ";" + json.dumps(
+            hash_shape, separators=(",", ":")) + ";").encode("ascii")
+        buffer = ctypes.create_string_buffer(prefix)
+        keepalive.append(buffer)
+        jobs[index] = _ArrayHash(array.ctypes.data, array.nbytes,
+                                 ctypes.addressof(buffer), len(prefix))
+    digests = (ctypes.c_ubyte * (len(arrays) * 32))()
+    code = int(entry(jobs, len(arrays), workers, digests))
+    if code:
+        raise RuntimeError(f"native prepared-array hashing failed with code {code}")
+    return [bytes(digests[index * 32:(index + 1) * 32]).hex()
+            for index in range(len(arrays))]
+
+
 def native_writer():
     """Optional additive ABI; older installed bridges keep serial writes."""
     from gpuwm.core import portable_math

@@ -101,16 +101,19 @@ def test_a_dry_top_level_gets_several_times_the_v45_diffusivity_under_v461():
 
 
 def test_the_translation_unit_carries_the_lineage_only_off_its_default():
-    assert ruc_module_defines(9) == ()
-    assert ruc_module_defines(9, "wrf_461") == (("GPUWM_SOILPROP_WRF461", 1),)
-    assert ruc_module_defines(6, "wrf_461") == (
+    # Isolate SOILPROP's defines from the independently selected snow form.
+    assert ruc_module_defines(9, snow="wrf_45") == ()
+    assert ruc_module_defines(9, "wrf_461", snow="wrf_45") == (
+        ("GPUWM_SOILPROP_WRF461", 1),)
+    assert ruc_module_defines(6, "wrf_461", snow="wrf_45") == (
         ("RUC_NZS", 6), ("GPUWM_SOILPROP_WRF461", 1))
-    source = ruc_kernel_source(9, "wrf_461")
+    source = ruc_kernel_source(9, "wrf_461", snow="wrf_45")
     assert "#define GPUWM_SOILPROP_WRF461 1" in source
-    assert "#define GPUWM_SOILPROP_WRF461" not in ruc_kernel_source(9)
+    assert "#define GPUWM_SOILPROP_WRF461" not in ruc_kernel_source(9, snow="wrf_45")
     from gpuwm.core.ruc_tier import ruc_fused_source
-    assert "#define GPUWM_SOILPROP_WRF461 1" in ruc_fused_source(9, soilprop="wrf_461")
-    assert "#define GPUWM_SOILPROP_WRF461" not in ruc_fused_source(9)
+    assert "#define GPUWM_SOILPROP_WRF461 1" in ruc_fused_source(
+        9, soilprop="wrf_461", snow="wrf_45")
+    assert "#define GPUWM_SOILPROP_WRF461" not in ruc_fused_source(9, snow="wrf_45")
 
 
 def _top_level_gain(steps, soilprop, case):

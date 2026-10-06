@@ -289,9 +289,9 @@ def _value_rules() -> dict[tuple[str, str], dict]:
          "1 selects model-coordinate diffusion for km_opt=2/4; "
          "2 selects the metric stress/scalar form.")
     rule("dynamics", "mix_full_fields", [False, True],
-         "must contain Fortran logicals; False imports with a declared "
-         "full-field mixing substitution under diff_opt=2: "
-         + ni.MIX_FULL_FIELDS_SUBSTITUTION)
+         "must contain Fortran logicals; the coordinate operator and named "
+         "source requests import supplied values as declared. Generic metric-operator "
+         "import retains its established full-field resolution.")
     for key, (allowed, why) in ni.PHYSICS_CHOICES.items():
         rule("physics", key, allowed, why, scalar=True)
     for key, (ok, why) in ni.NEST_GUARDS.items():
@@ -606,7 +606,9 @@ def build_namelist_contract() -> dict:
             keys = {}
             # A group read whole (&fdda) still refuses its value rules.
             ruled = {key for (section, key) in rules if section == group}
-            for key in sorted(asked.get(group, set()) | ruled):
+            ignored_keys = (set(ni.TIME_CONTROL_IGNORED_KEYS)
+                            if group == "time_control" else set())
+            for key in sorted(asked.get(group, set()) | ruled | ignored_keys):
                 row = {"values": None, "scalar": False, "why": None,
                        "required": (group, key) in required}
                 row.update(rules.get((group, key), {}))
@@ -617,7 +619,11 @@ def build_namelist_contract() -> dict:
                 entry["key_patterns"].append({
                     "regex": ni.AUX_STREAM_KEY.pattern,
                     "why": "WRF's numbered auxiliary stream keys are "
-                           "recorded and dropped"})
+                           "recorded and ignored after forcing selector checks"})
+                entry["key_patterns"].append({
+                    "regex": ni.AUX_STREAM_FORMAT_KEY.pattern,
+                    "why": "WRF's numbered auxiliary stream format and "
+                           "frame controls are recorded and ignored"})
             if group == "stoch":
                 # Registered parameters are inert when their consumer is off.
                 # Active parameter pairings remain the importer's authority.

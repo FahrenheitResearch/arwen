@@ -1,0 +1,107 @@
+{
+  "source": "netCDF C library and NCO ncks -h -4 -L 1",
+  "netcdf_library_version": "4.9.3",
+  "hdf5_library_version": "1.14.6",
+  "nco_version": "5.3.6",
+  "sha256": "5e46a8914de52f52e15c7b8ec8eee07c04878434ee7666544b99422f003db01e",
+  "size_bytes": 19460,
+  "fractal_heap_offsets": [
+    585,
+    3622
+  ],
+  "corruption_checksum_offset": 727,
+  "corruption_checksum_le_hex": "608c4d98",
+  "dimensions": [
+    {
+      "name": "Time",
+      "len": 2,
+      "unlimited": true
+    },
+    {
+      "name": "nCells",
+      "len": 2,
+      "unlimited": false
+    },
+    {
+      "name": "StrLen",
+      "len": 64,
+      "unlimited": false
+    }
+  ],
+  "variables": {
+    "Time": {
+      "dimensions": [
+        "Time"
+      ],
+      "shape": [
+        2
+      ],
+      "dtype": "int32",
+      "filters": {
+        "zlib": true,
+        "szip": false,
+        "zstd": false,
+        "bzip2": false,
+        "blosc": false,
+        "shuffle": true,
+        "complevel": 1,
+        "fletcher32": false
+      },
+      "values": [
+        0.0,
+        1.0
+      ],
+      "f64_le_hex": "0000000000000000000000000000f03f"
+    },
+    "t2m": {
+      "dimensions": [
+        "Time",
+        "nCells"
+      ],
+      "shape": [
+        2,
+        2
+      ],
+      "dtype": "float32",
+      "filters": {
+        "zlib": true,
+        "szip": false,
+        "zstd": false,
+        "bzip2": false,
+        "blosc": false,
+        "shuffle": true,
+        "complevel": 1,
+        "fletcher32": false
+      },
+      "values": [
+        289.906005859375,
+        290.25,
+        291.5,
+        288.0
+      ],
+      "f64_le_hex": "000000007f1e7240000000000024724000000000003872400000000000007240"
+    },
+    "xtime": {
+      "dimensions": [
+        "Time",
+        "StrLen"
+      ],
+      "shape": [
+        2,
+        64
+      ],
+      "dtype": "|S1",
+      "filters": {
+        "zlib": true,
+        "szip": false,
+        "zstd": false,
+        "bzip2": false,
+        "blosc": false,
+        "shuffle": true,
+        "complevel": 1,
+        "fletcher32": false
+      },
+      "bytes_hex": "323032342d30312d30315f30303a30303a3030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000323032342d30312d30315f30313a30303a3030000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    }
+  }
+}

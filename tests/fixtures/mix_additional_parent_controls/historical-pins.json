@@ -1,0 +1,1491 @@
+{
+  "audit_parent": "1077c6e8abe502aab59de103d7e6d70dbb8588a1",
+  "branch_or_index_writes": false,
+  "candidate_source_or_output_used": false,
+  "cases": {
+    "explicit_false": {
+      "bytes": 3219,
+      "file": "explicit_false.toml",
+      "sha256": "9e57a086e58bd64e5fd7bb02bcec3e3d78bd9d931f7acfb77d6a7b140c7ce67f"
+    },
+    "mixed_false_true": {
+      "bytes": 3218,
+      "file": "mixed_false_true.toml",
+      "sha256": "dc40f61bf21fe818c5eed6129c0262b6d35cc7e5520cacb3b75f6818a867e604"
+    },
+    "omitted_theta": {
+      "bytes": 3191,
+      "file": "omitted_theta.toml",
+      "sha256": "beeeb23dc06adde63c5f064d15d44430ea34d10738a227f01e9917aa04f9b561"
+    },
+    "short_false": {
+      "bytes": 3219,
+      "file": "short_false.toml",
+      "sha256": "9e57a086e58bd64e5fd7bb02bcec3e3d78bd9d931f7acfb77d6a7b140c7ce67f"
+    }
+  },
+  "current_public_baseline_captured": false,
+  "dependency_versions": {
+    "numpy": "2.3.5",
+    "pytest": "9.0.2",
+    "tomlkit": "not installed in isolated dependency path"
+  },
+  "elapsed_seconds": 0.6773013849742711,
+  "emitted_bytes": 12847,
+  "emitted_bytes_normalized": false,
+  "existing_three_controls_verified_unchanged": true,
+  "file_and_parsed_checks": {
+    "explicit_false": {
+      "bytes": 3219,
+      "file_and_parsed_bytes_equal": true,
+      "sha256": "9e57a086e58bd64e5fd7bb02bcec3e3d78bd9d931f7acfb77d6a7b140c7ce67f"
+    },
+    "mixed_false_true": {
+      "bytes": 3218,
+      "file_and_parsed_bytes_equal": true,
+      "sha256": "dc40f61bf21fe818c5eed6129c0262b6d35cc7e5520cacb3b75f6818a867e604"
+    },
+    "omitted_theta": {
+      "bytes": 3191,
+      "file_and_parsed_bytes_equal": true,
+      "sha256": "beeeb23dc06adde63c5f064d15d44430ea34d10738a227f01e9917aa04f9b561"
+    },
+    "short_false": {
+      "bytes": 3219,
+      "file_and_parsed_bytes_equal": true,
+      "sha256": "9e57a086e58bd64e5fd7bb02bcec3e3d78bd9d931f7acfb77d6a7b140c7ce67f"
+    }
+  },
+  "gpu_used": false,
+  "input_matrix_changed": false,
+  "isolated_dependency_paths": [
+    "venv-tree/lib/python3.14/site-packages",
+    "/usr/lib/python3/dist-packages"
+  ],
+  "loaded_engine_modules": {
+    "gpuwm": {
+      "bytes": 10966,
+      "git_blob": "a96249f1b4680e6371cae561c12583b3c83e38b8",
+      "git_mode": "100644",
+      "path": "gpuwm/__init__.py",
+      "sha256": "10e6ddcb88fbff5a0a64ff04d6ee560b53ae059cf4b461411fe33f5fb20c92d7"
+    },
+    "gpuwm.checkpoint_identity": {
+      "bytes": 31760,
+      "git_blob": "8a54a7a17f89233861098a2a77a7be266b4c13a1",
+      "git_mode": "100644",
+      "path": "gpuwm/checkpoint_identity.py",
+      "sha256": "ab6606d6b4e299320a8e1651ee0e2821ce41612f38108a7c1f2a6d84bb49cb7b"
+    },
+    "gpuwm.config": {
+      "bytes": 276912,
+      "git_blob": "0c3c9ea1d2f56328fc62ae62a1dc5563a5d8f120",
+      "git_mode": "100644",
+      "path": "gpuwm/config.py",
+      "sha256": "e2e7bfb55694c2ce7652a9dfa95a4ed7573029db421ba1c691c7e52117f0c9a9"
+    },
+    "gpuwm.config_keys": {
+      "bytes": 7482,
+      "git_blob": "5e9ac72fd2a05920700b6089e2b55d86aee2aabe",
+      "git_mode": "100644",
+      "path": "gpuwm/config_keys.py",
+      "sha256": "ae64cfb3f526b955c45f9c0eb6ef1dfc538a6b5695a154ae2f723f55ffc5cde2"
+    },
+    "gpuwm.core": {
+      "bytes": 0,
+      "git_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "git_mode": "100644",
+      "path": "gpuwm/core/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "gpuwm.core.attribute_tracking": {
+      "bytes": 8597,
+      "git_blob": "d8010f7aa3434139cdcfc6e93c338ded913e9e87",
+      "git_mode": "100644",
+      "path": "gpuwm/core/attribute_tracking.py",
+      "sha256": "b1dcba48fb4cf5848e9349e6f6145ff8110fed22633f3c23e674229303c81fb1"
+    },
+    "gpuwm.core.constants": {
+      "bytes": 2979,
+      "git_blob": "6184a83b562df1f82ebcb7c19359823ef6878765",
+      "git_mode": "100644",
+      "path": "gpuwm/core/constants.py",
+      "sha256": "76c8c11d1a75d17fd54d0a80646cec9dde04f649247ec2347d3d32e6c0500e9e"
+    },
+    "gpuwm.core.devices": {
+      "bytes": 22210,
+      "git_blob": "34ed17e2ae786b2aa45181fcf8554433c303f3f7",
+      "git_mode": "100644",
+      "path": "gpuwm/core/devices.py",
+      "sha256": "ad2a9a40ebf304a14095f87e271b08a350fdcfad4cd9f6f04208acebf421aaca"
+    },
+    "gpuwm.core.host_libm": {
+      "bytes": 7289,
+      "git_blob": "4717c57109df517cee8867aa32268d4e6ca74f67",
+      "git_mode": "100644",
+      "path": "gpuwm/core/host_libm.py",
+      "sha256": "a1bd118c95aea370fdf6b7cf775fcf528d3b1a66937612c2ffb1ee7ddc953447"
+    },
+    "gpuwm.core.inflow_perturbation": {
+      "bytes": 25095,
+      "git_blob": "65e68903c233858f5bc04a263fa16c883f4f6d34",
+      "git_mode": "100644",
+      "path": "gpuwm/core/inflow_perturbation.py",
+      "sha256": "7dc2e860f271a52daf66aefaba2502b8b692190a7f9652b6bf687ac6592cf8ba"
+    },
+    "gpuwm.core.microphysics_transition": {
+      "bytes": 71559,
+      "git_blob": "e3b5e591e48402adc78d3fb1e972188a0c3f863e",
+      "git_mode": "100644",
+      "path": "gpuwm/core/microphysics_transition.py",
+      "sha256": "396343bc943153504018ca8998f640fc95ee9555a05a722a45a7ddf2e1818cf6"
+    },
+    "gpuwm.core.nest_lifecycle": {
+      "bytes": 25071,
+      "git_blob": "1b1b555cb8336d46e9bdc98f69266a178536e84e",
+      "git_mode": "100644",
+      "path": "gpuwm/core/nest_lifecycle.py",
+      "sha256": "a66ad08ecef8942c7dbf151cab6006fedd09a2868f83923e3c32bdbc6b0cc721"
+    },
+    "gpuwm.core.noah": {
+      "bytes": 26410,
+      "git_blob": "97f6338ce6de4fd8824a4a5309d2fe15217b69f6",
+      "git_mode": "100644",
+      "path": "gpuwm/core/noah.py",
+      "sha256": "ebf9ec0c77e6c55cb604bf618815ed17cc44f993fbd183b31ad62e86874c74a2"
+    },
+    "gpuwm.core.nssl2_contract": {
+      "bytes": 16569,
+      "git_blob": "a576092af495df9292a02b4b972b5afe8262bfcc",
+      "git_mode": "100644",
+      "path": "gpuwm/core/nssl2_contract.py",
+      "sha256": "ad246e1008d6af2fc52bd4c7aaeab90149399525a2a9a6b40f8838817f10fe9f"
+    },
+    "gpuwm.core.ozone_contract": {
+      "bytes": 1052,
+      "git_blob": "a00ea072063c29564b02a2a7bed1111a52f847da",
+      "git_mode": "100644",
+      "path": "gpuwm/core/ozone_contract.py",
+      "sha256": "11e6f0452dbdaa834674e591a5d365143fe438e58888fe3914e63a209f87ed4a"
+    },
+    "gpuwm.core.sase_limits": {
+      "bytes": 1799,
+      "git_blob": "8470840e35b17b2d60c8d16717e97e1991333c34",
+      "git_mode": "100644",
+      "path": "gpuwm/core/sase_limits.py",
+      "sha256": "f53097a34ec031103c873c84792128586fd7f33fad7b51a2c1d2bd73ec72e1d3"
+    },
+    "gpuwm.core.storm_tracking": {
+      "bytes": 137294,
+      "git_blob": "1b92d757a6924ccc4de38c3340b37c99a8ee66f8",
+      "git_mode": "100644",
+      "path": "gpuwm/core/storm_tracking.py",
+      "sha256": "0e10b9467399a4fff71fff20be91934b3e718d7373c922c07b1d39fec8d301b7"
+    },
+    "gpuwm.core.streaming": {
+      "bytes": 453395,
+      "git_blob": "e31a784bc4a6cb32106d0a4d24bcb2fa20176d55",
+      "git_mode": "100644",
+      "path": "gpuwm/core/streaming.py",
+      "sha256": "befafcbbdaf1f817791a4dd0197b1fb78d23952f452da5c888c22e51516bcc20"
+    },
+    "gpuwm.core.thompson_aerosol_constants": {
+      "bytes": 1457,
+      "git_blob": "5e797da68eb2730dd7fd0b1cf1d2ac4179a11744",
+      "git_mode": "100644",
+      "path": "gpuwm/core/thompson_aerosol_constants.py",
+      "sha256": "b5dead4740569cc3f2e0622c0be8e81179200cc12f58acec13f6f106f8042488"
+    },
+    "gpuwm.core.uh_diag": {
+      "bytes": 27013,
+      "git_blob": "3bf9ce2be9f0355b0a9af44ddaf67665b523f529",
+      "git_mode": "100644",
+      "path": "gpuwm/core/uh_diag.py",
+      "sha256": "f6cfcc1ead031b567283d4fdc400a22be4a5a86db154f98a3fd9ad97405f3996"
+    },
+    "gpuwm.core.wdm6_constants": {
+      "bytes": 8858,
+      "git_blob": "c4d5fcb34c94c79af21c8d896c9f6afa31219874",
+      "git_mode": "100644",
+      "path": "gpuwm/core/wdm6_constants.py",
+      "sha256": "e8c55cdd7eba4e8123f685ae92c0dbe1156ca4448b4630aab14d147a2776a2ea"
+    },
+    "gpuwm.core.wsm6_constants": {
+      "bytes": 6074,
+      "git_blob": "ad103d4eff70caf8b75ec5082d235e752d1bff86",
+      "git_mode": "100644",
+      "path": "gpuwm/core/wsm6_constants.py",
+      "sha256": "4d110ed7f5a792f48d925fd0ff8e974305d870a11ebb31437ff4e6fce6d3c62d"
+    },
+    "gpuwm.cupy_windows_warning": {
+      "bytes": 4522,
+      "git_blob": "7ae4642ba58679ba40f2186dfd283856c5d5b96d",
+      "git_mode": "100644",
+      "path": "gpuwm/cupy_windows_warning.py",
+      "sha256": "8467ea2029df71476bdb8df6e89e5cb24b4f1a789a99117dadf4fe05ce7c4084"
+    },
+    "gpuwm.ensemble": {
+      "bytes": 1966,
+      "git_blob": "1a26b028cebf564e91fa76a9c534d21a0124fe4f",
+      "git_mode": "100644",
+      "path": "gpuwm/ensemble/__init__.py",
+      "sha256": "ba7d65c87861e31ebaac89a5c47a019ffca6d4acdcddf69f25525c064ec5ca30"
+    },
+    "gpuwm.ensemble.config": {
+      "bytes": 9121,
+      "git_blob": "10bd339df80a06edcdbf456c70ed6f4c07a65612",
+      "git_mode": "100644",
+      "path": "gpuwm/ensemble/config.py",
+      "sha256": "b57a81479e764fdfb7d4352bb64e45cd9261a934f9b25de34049c70a3c00b4f8"
+    },
+    "gpuwm.ensemble.cycle": {
+      "bytes": 52172,
+      "git_blob": "f17f3782a54d489cb0b8e76f3669649142acd4c9",
+      "git_mode": "100644",
+      "path": "gpuwm/ensemble/cycle.py",
+      "sha256": "1a1f7903df41e2c8108adfd1c87459782d85c5bbc1d24cd4a6e42d32de448602"
+    },
+    "gpuwm.ensemble.engine": {
+      "bytes": 17589,
+      "git_blob": "60e962ecd95ce63f65220131386cddfeb6f39108",
+      "git_mode": "100644",
+      "path": "gpuwm/ensemble/engine.py",
+      "sha256": "c38e9e2b91ab918d61d8383ce7990c992409cdbc0746c7745564e4204c7bd4d3"
+    },
+    "gpuwm.ensemble.increments": {
+      "bytes": 40389,
+      "git_blob": "31815a881a05bef8e67cf51a875d08890aa826c7",
+      "git_mode": "100644",
+      "path": "gpuwm/ensemble/increments.py",
+      "sha256": "a55a1c9a4c1540f464f5702e500b0c95ea5d11e16e94d8ebccc308bff77e24d3"
+    },
+    "gpuwm.ensemble.manifest": {
+      "bytes": 12827,
+      "git_blob": "1f1e289b2ba822e970de8d0b9289750d63db716f",
+      "git_mode": "100644",
+      "path": "gpuwm/ensemble/manifest.py",
+      "sha256": "5e4427afd1ed21cda1acc09aacb0a50357447278b59f899564ae041d8694ef48"
+    },
+    "gpuwm.ensemble.seeds": {
+      "bytes": 1886,
+      "git_blob": "8bcd2ca755bb15e5b3922335feffce9029c629cc",
+      "git_mode": "100644",
+      "path": "gpuwm/ensemble/seeds.py",
+      "sha256": "73da243d8b2091a110535382ca06a9fd87e3c3798d5a937433e0beb19afe10e0"
+    },
+    "gpuwm.ensemble.state_sha": {
+      "bytes": 8661,
+      "git_blob": "08159deab8ba96733307092662ef82a94ab9f763",
+      "git_mode": "100644",
+      "path": "gpuwm/ensemble/state_sha.py",
+      "sha256": "37e9e67ccf4aefe892da48a79d3b67bebe890552bbaf0532160db69d6d1c878b"
+    },
+    "gpuwm.ensemble.stochastic": {
+      "bytes": 36900,
+      "git_blob": "4139091aee0b7a2f2890aea5bdd027e44b3c74ab",
+      "git_mode": "100644",
+      "path": "gpuwm/ensemble/stochastic.py",
+      "sha256": "393a64fe0cbe5885f62690c246a927a53fa555802f65926bc88ea880d92be72f"
+    },
+    "gpuwm.ensemble.stochastic_seeds": {
+      "bytes": 2423,
+      "git_blob": "c072a24ea9ba53744a74d8187f945a378b2efa80",
+      "git_mode": "100644",
+      "path": "gpuwm/ensemble/stochastic_seeds.py",
+      "sha256": "19992c988f8d09ccf1958cbe3f0ffe805aa742202a5730975dfb5ff4530aab83"
+    },
+    "gpuwm.ensemble.wrfout_inventory": {
+      "bytes": 20218,
+      "git_blob": "e9135f8ae884b9f9df659c8a0811c03381ffefde",
+      "git_mode": "100644",
+      "path": "gpuwm/ensemble/wrfout_inventory.py",
+      "sha256": "3d4645293ae6dc57174dbbc3f45d7f464daed7b8a9ae6144b7c43db6ed5defe3"
+    },
+    "gpuwm.experiment": {
+      "bytes": 272276,
+      "git_blob": "223cd2370d88530089c8a4582eabac27ded30b84",
+      "git_mode": "100644",
+      "path": "gpuwm/experiment.py",
+      "sha256": "943b0c9f623294a12e830505ae032d57e42554708b5c1a6f0c193eab5895e2ef"
+    },
+    "gpuwm.explain": {
+      "bytes": 16758,
+      "git_blob": "11b2afb67918fdf37e78881d298af0c8582d604a",
+      "git_mode": "100644",
+      "path": "gpuwm/explain.py",
+      "sha256": "8771f60f95e5605aa52bca8af5226ab9cb5dd172be52dc9aa023fa0bef4920f2"
+    },
+    "gpuwm.fetch_endpoints": {
+      "bytes": 45746,
+      "git_blob": "85c0d64bb328c7a5ada10edc5c2380f56e406af2",
+      "git_mode": "100644",
+      "path": "gpuwm/fetch_endpoints.py",
+      "sha256": "886adbfcdce8a5b9ecc0bf1e4f00eecc81b3194a21acdd28362ee1083553677c"
+    },
+    "gpuwm.fetch_guard": {
+      "bytes": 27252,
+      "git_blob": "ef9caa59765fcf568c5f07b603033f6315c58289",
+      "git_mode": "100644",
+      "path": "gpuwm/fetch_guard.py",
+      "sha256": "f9a7b3f7251c7367e81caa662d23e589d24ab6981f003914e2ef7db843c2cbd8"
+    },
+    "gpuwm.first_products": {
+      "bytes": 81441,
+      "git_blob": "6668d685d727cc9c1dfa68dde1c89ec6fa5ba55d",
+      "git_mode": "100644",
+      "path": "gpuwm/first_products.py",
+      "sha256": "7d8d8dd59e7f27016df14ce79ee5b6aa89340a0a224a466c3cb4a0566fafedc7"
+    },
+    "gpuwm.fortran_namelist": {
+      "bytes": 21656,
+      "git_blob": "14ce251ae1145c86731ae632132b72aaa4e12fbf",
+      "git_mode": "100644",
+      "path": "gpuwm/fortran_namelist.py",
+      "sha256": "efb950f52c1df31428619f4155641309cc15c83ce22064d4e5b846654d408dfe"
+    },
+    "gpuwm.ingest": {
+      "bytes": 2801,
+      "git_blob": "2105be9e7d0bf5e19141b922876bd3eaef854755",
+      "git_mode": "100644",
+      "path": "gpuwm/ingest/__init__.py",
+      "sha256": "091e7c0903a811bcc6f09371aa09a305827d113c9d8b6f71ba35c619e3460161"
+    },
+    "gpuwm.ingest.source_coverage": {
+      "bytes": 25089,
+      "git_blob": "12b59df5e17d5ed7b0276c45408a46184d39c5d3",
+      "git_mode": "100644",
+      "path": "gpuwm/ingest/source_coverage.py",
+      "sha256": "4f8db4bf2748607b1ace3a15857884e06c4cff345e057b5c8f2c880cf5e2c2a3"
+    },
+    "gpuwm.io": {
+      "bytes": 0,
+      "git_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "git_mode": "100644",
+      "path": "gpuwm/io/__init__.py",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "gpuwm.io.history_selection": {
+      "bytes": 31270,
+      "git_blob": "4f62c42d042a488dcdc5fde3e2b72ecfb3f95de5",
+      "git_mode": "100644",
+      "path": "gpuwm/io/history_selection.py",
+      "sha256": "ee3176f28ac19dd92c220a325f4c4a1240d5ad499ddf52cb8425573c2f1088db"
+    },
+    "gpuwm.io.wrf_output_schema": {
+      "bytes": 48551,
+      "git_blob": "31c61818cda76532aa26a19ddf4c438b7d9f10af",
+      "git_mode": "100644",
+      "path": "gpuwm/io/wrf_output_schema.py",
+      "sha256": "c66729530da7ba3af9d5c7274af575f4fb17aad8bf810dbc6425245a89f5296d"
+    },
+    "gpuwm.namelist_import": {
+      "bytes": 267069,
+      "git_blob": "08f8449795caf68cfe375984da1593fa6a3076e9",
+      "git_mode": "100644",
+      "path": "gpuwm/namelist_import.py",
+      "sha256": "8a67cab5c9630f2865cec8e0e66372048f27673d703f78083f8d9130223c673c"
+    },
+    "gpuwm.namelist_stochastic": {
+      "bytes": 10516,
+      "git_blob": "55895a2e2cee074467fd332d4ba99cdb6a7b1cc0",
+      "git_mode": "100644",
+      "path": "gpuwm/namelist_stochastic.py",
+      "sha256": "a03c9ee04a29a68699d201761cfc88b7b58c864fe82e4f4955d8f48e4a4a29c2"
+    },
+    "gpuwm.native_wrf_contract": {
+      "bytes": 29755,
+      "git_blob": "738cba420fb385a8250fba4b5df7ed4527c6cfac",
+      "git_mode": "100644",
+      "path": "gpuwm/native_wrf_contract.py",
+      "sha256": "0c7b3a76dbe730656b68170c5e013efb893accc06d3a5e6ee02effa4c969844c"
+    },
+    "gpuwm.perf_timing": {
+      "bytes": 9271,
+      "git_blob": "e8ed5b3d227e69f1021b0d5359e30f32a0a78767",
+      "git_mode": "100644",
+      "path": "gpuwm/perf_timing.py",
+      "sha256": "3f00c3b4d7adc4a30b81bf360ff49ebf0e8ac7b84248f15026f494015cdab3dd"
+    },
+    "gpuwm.physics_compat": {
+      "bytes": 188928,
+      "git_blob": "f5cf0991f34365fd9dd3b85eb28a8f37419d4416",
+      "git_mode": "100644",
+      "path": "gpuwm/physics_compat.py",
+      "sha256": "5d1108d382e12ffc7a1e8d59c415159d335ac207e472d16090caf6a45c6892d4"
+    },
+    "gpuwm.physics_mode": {
+      "bytes": 16988,
+      "git_blob": "42283d8fc65c373c20161bfc5bc1e4d8b313aa62",
+      "git_mode": "100644",
+      "path": "gpuwm/physics_mode.py",
+      "sha256": "650cd0ca3a9a94164cfc08fedb4911a68cbb8babebf6c99656386e82eabd9781"
+    },
+    "gpuwm.physics_registry": {
+      "bytes": 191480,
+      "git_blob": "50f36565f47369e76aa2755a171e8782c6cbd834",
+      "git_mode": "100644",
+      "path": "gpuwm/physics_registry.py",
+      "sha256": "e699d0043e7d867329fc14c84eccdc431daa8b71116e26a96c600db987095e4e"
+    },
+    "gpuwm.physics_vertical_contract": {
+      "bytes": 9234,
+      "git_blob": "52a99d43039e155b69dea89cda3b580631688567",
+      "git_mode": "100644",
+      "path": "gpuwm/physics_vertical_contract.py",
+      "sha256": "270dae21dcb57e0d30ecf7e0669795b7ce5e336b68996ea5d80fe0f1240574c6"
+    },
+    "gpuwm.provenance": {
+      "bytes": 40214,
+      "git_blob": "3cb8a6d48d614a49ab4fd5eed88e824c3bad4bcc",
+      "git_mode": "100644",
+      "path": "gpuwm/provenance.py",
+      "sha256": "495172bc87824105ff457b9f9a6e80aba0819f689ad4622560bb6041d358681c"
+    },
+    "gpuwm.provenance_gate": {
+      "bytes": 32350,
+      "git_blob": "1d829719d2bf4f6a5271764a4ec675e1b0229b00",
+      "git_mode": "100644",
+      "path": "gpuwm/provenance_gate.py",
+      "sha256": "21457d674f5321b4ea2bd30711c0ab4ce38db5fd142e5302267530dbb9368b6f"
+    },
+    "gpuwm.render_layout": {
+      "bytes": 39613,
+      "git_blob": "fe8aee5f57a0b84c1d9105db5949002619a0f389",
+      "git_mode": "100644",
+      "path": "gpuwm/render_layout.py",
+      "sha256": "9b7afd406d1809cb3896e44b9ce85c6af3f2110eacf640b55557d873e84320fa"
+    },
+    "gpuwm.runtime_manifest": {
+      "bytes": 36617,
+      "git_blob": "c52a77bb905211a6fa4b8939eca878fd39007ed5",
+      "git_mode": "100644",
+      "path": "gpuwm/runtime_manifest.py",
+      "sha256": "5e6148c69d4e7452fecac687788fe811493f3e5717c0a4837e570e736a09b7fe"
+    },
+    "gpuwm.simulated_radar_config": {
+      "bytes": 16600,
+      "git_blob": "43a47c0b679b7f224e69c39ad4f7ef2295d10178",
+      "git_mode": "100644",
+      "path": "gpuwm/simulated_radar_config.py",
+      "sha256": "da47790ec448098e171e48eee0209aa311d20f0cc13e6207a2bdd02de5397f98"
+    },
+    "gpuwm.static": {
+      "bytes": 139,
+      "git_blob": "fc653de5c867473b11cbbe6c4bf6091ae94edde4",
+      "git_mode": "100644",
+      "path": "gpuwm/static/__init__.py",
+      "sha256": "a0a31e5a543f285fc4ecb662c0339197f4c29824f6534c6370527bec94cb8c5b"
+    },
+    "gpuwm.static.build": {
+      "bytes": 86460,
+      "git_blob": "c663c672505385c584a98ce2949c0ea8e10a4c4c",
+      "git_mode": "100644",
+      "path": "gpuwm/static/build.py",
+      "sha256": "0f13a556f6e266ad3fc43b1ca40adfa7a5567ba3c0d29fb2cc7606ffb84dcbd3"
+    },
+    "gpuwm.static.corridor": {
+      "bytes": 63858,
+      "git_blob": "008bde0a863c8dbbd2ac4de9887cfafc6cbb0133",
+      "git_mode": "100644",
+      "path": "gpuwm/static/corridor.py",
+      "sha256": "59195cbfb3e5f2e98d975a87d4c42a92e84486bbcf9356f33568d9d725f1931c"
+    },
+    "gpuwm.static.geog": {
+      "bytes": 24875,
+      "git_blob": "5f8d2e54056a9b99bbd105062bb2eb80b156d256",
+      "git_mode": "100644",
+      "path": "gpuwm/static/geog.py",
+      "sha256": "f761fec3ac56e2a77b0a141f31e223612bb5ac3cb5757414821b35505a5bc464"
+    },
+    "gpuwm.static.geog_stack": {
+      "bytes": 7655,
+      "git_blob": "a539b902aaccf123a523397124259fd4c03ac067",
+      "git_mode": "100644",
+      "path": "gpuwm/static/geog_stack.py",
+      "sha256": "14138b83ab0cbae547e8b82671350d3cfa7efe7acaab1ab6ba150475c48e1ed7"
+    },
+    "gpuwm.static.highres": {
+      "bytes": 73255,
+      "git_blob": "134c5370f4280d369d6c6e894f838fbee2c9f968",
+      "git_mode": "100644",
+      "path": "gpuwm/static/highres.py",
+      "sha256": "bff52825e125b67a729e5de780e503ea266a2f788ad653365418c3f686138b2c"
+    },
+    "gpuwm.static.highres_fetch": {
+      "bytes": 89516,
+      "git_blob": "c5e9e82a7e7a0b43bdc9873a671024235ed25c7e",
+      "git_mode": "100644",
+      "path": "gpuwm/static/highres_fetch.py",
+      "sha256": "28bfbbe1b53f2d1b26f5597c3b2be9ab106a002a6d2c37d8f9d0b38ace020be3"
+    },
+    "gpuwm.static.highres_refusal": {
+      "bytes": 886,
+      "git_blob": "13a6c2aae31f6889310b76eaa4844e8ff1917cdd",
+      "git_mode": "100644",
+      "path": "gpuwm/static/highres_refusal.py",
+      "sha256": "40ad3d52cb38a56529aa340892edfc04371079489fee2e148d81b7ae78d69ac9"
+    },
+    "gpuwm.static.lambert": {
+      "bytes": 9422,
+      "git_blob": "9b8c3daa5295316e423eae73b4ce6ced6c6f457a",
+      "git_mode": "100644",
+      "path": "gpuwm/static/lambert.py",
+      "sha256": "162eeaef0f6a5440260fed06ccd527c6c3588f448f862354d645a89e793ff53d"
+    },
+    "gpuwm.static.projection": {
+      "bytes": 48245,
+      "git_blob": "c501be040f720184c90031cc4989ec0962dafa7c",
+      "git_mode": "100644",
+      "path": "gpuwm/static/projection.py",
+      "sha256": "e1aafa640b2f0e4b0b38e26e2be84e79c2c7af316d7f9613fc4867261bfc456a"
+    },
+    "gpuwm.static.terrain_smoothing": {
+      "bytes": 29594,
+      "git_blob": "467e37569d92c033f0756a5fa21e43c76d0c7ab4",
+      "git_mode": "100644",
+      "path": "gpuwm/static/terrain_smoothing.py",
+      "sha256": "04efc6191b90d64e12cf696d2ddd0cd15efa401edd3f25279206cfa727758eda"
+    },
+    "gpuwm.vertical_contract": {
+      "bytes": 7812,
+      "git_blob": "8cfc07a78280b7d02967f1b94692220801fe9578",
+      "git_mode": "100644",
+      "path": "gpuwm/vertical_contract.py",
+      "sha256": "66f05040a1d97d03294b383f15e86a375187694c05a065328d179a3dbf37c2e3"
+    },
+    "gpuwm.wrf461_compatibility": {
+      "bytes": 18977,
+      "git_blob": "220f4d72c25b3b7102aa9aadc3ad0beb50c31294",
+      "git_mode": "100644",
+      "path": "gpuwm/wrf461_compatibility.py",
+      "sha256": "f9864a24ddcbc373fafe6784df54cf75e538536552eadce3726ce070cd9d33cf"
+    },
+    "gpuwm.wrf_namelist_registry": {
+      "bytes": 2313,
+      "git_blob": "8b161dd81ee87fad956cc0e61359d85699f85375",
+      "git_mode": "100644",
+      "path": "gpuwm/wrf_namelist_registry.py",
+      "sha256": "3039d3b060c0f5a273be13fbedc74a79e33b7799f8eafb4aebac74df94124c62"
+    }
+  },
+  "matrix_sha256": "47f581f453640588e8cf72a132780570761ca60b8ce8cf627fc730c4c66a2583",
+  "mode": "baseline",
+  "native_bridge_used": false,
+  "pid": 2674675,
+  "prior_attempt_outputs_preserved_byte_identical": false,
+  "prior_parent_comparison": {
+    "explicit_true": {
+      "bytes": 3077,
+      "file": "explicit_true.toml",
+      "sha256": "02fbdce85caf563ad2206f4dfe490d1d097ead9bada8c2d337a0794f75ae064e"
+    },
+    "omitted": {
+      "bytes": 3219,
+      "file": "omitted.toml",
+      "sha256": "9e57a086e58bd64e5fd7bb02bcec3e3d78bd9d931f7acfb77d6a7b140c7ce67f"
+    },
+    "short_true": {
+      "bytes": 3218,
+      "file": "short_true.toml",
+      "sha256": "795899e94d962bb2ae7ca0ef44c1ce045f03e598f18478e4ae502de8267120bd"
+    }
+  },
+  "python": "3.14.4 (main, Aug 20 2026, 10:41:58) [GCC 15.2.0]",
+  "runtime_source_and_resource_reads": {
+    "gpuwm/__init__.py": {
+      "bytes": 10966,
+      "git_blob": "a96249f1b4680e6371cae561c12583b3c83e38b8",
+      "git_mode": "100644",
+      "sha256": "10e6ddcb88fbff5a0a64ff04d6ee560b53ae059cf4b461411fe33f5fb20c92d7"
+    },
+    "gpuwm/checkpoint_identity.py": {
+      "bytes": 31760,
+      "git_blob": "8a54a7a17f89233861098a2a77a7be266b4c13a1",
+      "git_mode": "100644",
+      "sha256": "ab6606d6b4e299320a8e1651ee0e2821ce41612f38108a7c1f2a6d84bb49cb7b"
+    },
+    "gpuwm/config.py": {
+      "bytes": 276912,
+      "git_blob": "0c3c9ea1d2f56328fc62ae62a1dc5563a5d8f120",
+      "git_mode": "100644",
+      "sha256": "e2e7bfb55694c2ce7652a9dfa95a4ed7573029db421ba1c691c7e52117f0c9a9"
+    },
+    "gpuwm/config_keys.py": {
+      "bytes": 7482,
+      "git_blob": "5e9ac72fd2a05920700b6089e2b55d86aee2aabe",
+      "git_mode": "100644",
+      "sha256": "ae64cfb3f526b955c45f9c0eb6ef1dfc538a6b5695a154ae2f723f55ffc5cde2"
+    },
+    "gpuwm/core/__init__.py": {
+      "bytes": 0,
+      "git_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "git_mode": "100644",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "gpuwm/core/attribute_tracking.py": {
+      "bytes": 8597,
+      "git_blob": "d8010f7aa3434139cdcfc6e93c338ded913e9e87",
+      "git_mode": "100644",
+      "sha256": "b1dcba48fb4cf5848e9349e6f6145ff8110fed22633f3c23e674229303c81fb1"
+    },
+    "gpuwm/core/constants.py": {
+      "bytes": 2979,
+      "git_blob": "6184a83b562df1f82ebcb7c19359823ef6878765",
+      "git_mode": "100644",
+      "sha256": "76c8c11d1a75d17fd54d0a80646cec9dde04f649247ec2347d3d32e6c0500e9e"
+    },
+    "gpuwm/core/devices.py": {
+      "bytes": 22210,
+      "git_blob": "34ed17e2ae786b2aa45181fcf8554433c303f3f7",
+      "git_mode": "100644",
+      "sha256": "ad2a9a40ebf304a14095f87e271b08a350fdcfad4cd9f6f04208acebf421aaca"
+    },
+    "gpuwm/core/host_libm.py": {
+      "bytes": 7289,
+      "git_blob": "4717c57109df517cee8867aa32268d4e6ca74f67",
+      "git_mode": "100644",
+      "sha256": "a1bd118c95aea370fdf6b7cf775fcf528d3b1a66937612c2ffb1ee7ddc953447"
+    },
+    "gpuwm/core/inflow_perturbation.py": {
+      "bytes": 25095,
+      "git_blob": "65e68903c233858f5bc04a263fa16c883f4f6d34",
+      "git_mode": "100644",
+      "sha256": "7dc2e860f271a52daf66aefaba2502b8b692190a7f9652b6bf687ac6592cf8ba"
+    },
+    "gpuwm/core/microphysics_transition.py": {
+      "bytes": 71559,
+      "git_blob": "e3b5e591e48402adc78d3fb1e972188a0c3f863e",
+      "git_mode": "100644",
+      "sha256": "396343bc943153504018ca8998f640fc95ee9555a05a722a45a7ddf2e1818cf6"
+    },
+    "gpuwm/core/nest_lifecycle.py": {
+      "bytes": 25071,
+      "git_blob": "1b1b555cb8336d46e9bdc98f69266a178536e84e",
+      "git_mode": "100644",
+      "sha256": "a66ad08ecef8942c7dbf151cab6006fedd09a2868f83923e3c32bdbc6b0cc721"
+    },
+    "gpuwm/core/noah.py": {
+      "bytes": 26410,
+      "git_blob": "97f6338ce6de4fd8824a4a5309d2fe15217b69f6",
+      "git_mode": "100644",
+      "sha256": "ebf9ec0c77e6c55cb604bf618815ed17cc44f993fbd183b31ad62e86874c74a2"
+    },
+    "gpuwm/core/nssl2_contract.py": {
+      "bytes": 16569,
+      "git_blob": "a576092af495df9292a02b4b972b5afe8262bfcc",
+      "git_mode": "100644",
+      "sha256": "ad246e1008d6af2fc52bd4c7aaeab90149399525a2a9a6b40f8838817f10fe9f"
+    },
+    "gpuwm/core/ozone_contract.py": {
+      "bytes": 1052,
+      "git_blob": "a00ea072063c29564b02a2a7bed1111a52f847da",
+      "git_mode": "100644",
+      "sha256": "11e6f0452dbdaa834674e591a5d365143fe438e58888fe3914e63a209f87ed4a"
+    },
+    "gpuwm/core/sase_limits.py": {
+      "bytes": 1799,
+      "git_blob": "8470840e35b17b2d60c8d16717e97e1991333c34",
+      "git_mode": "100644",
+      "sha256": "f53097a34ec031103c873c84792128586fd7f33fad7b51a2c1d2bd73ec72e1d3"
+    },
+    "gpuwm/core/storm_tracking.py": {
+      "bytes": 137294,
+      "git_blob": "1b92d757a6924ccc4de38c3340b37c99a8ee66f8",
+      "git_mode": "100644",
+      "sha256": "0e10b9467399a4fff71fff20be91934b3e718d7373c922c07b1d39fec8d301b7"
+    },
+    "gpuwm/core/streaming.py": {
+      "bytes": 453395,
+      "git_blob": "e31a784bc4a6cb32106d0a4d24bcb2fa20176d55",
+      "git_mode": "100644",
+      "sha256": "befafcbbdaf1f817791a4dd0197b1fb78d23952f452da5c888c22e51516bcc20"
+    },
+    "gpuwm/core/thompson_aerosol_constants.py": {
+      "bytes": 1457,
+      "git_blob": "5e797da68eb2730dd7fd0b1cf1d2ac4179a11744",
+      "git_mode": "100644",
+      "sha256": "b5dead4740569cc3f2e0622c0be8e81179200cc12f58acec13f6f106f8042488"
+    },
+    "gpuwm/core/uh_diag.py": {
+      "bytes": 27013,
+      "git_blob": "3bf9ce2be9f0355b0a9af44ddaf67665b523f529",
+      "git_mode": "100644",
+      "sha256": "f6cfcc1ead031b567283d4fdc400a22be4a5a86db154f98a3fd9ad97405f3996"
+    },
+    "gpuwm/core/wdm6_constants.py": {
+      "bytes": 8858,
+      "git_blob": "c4d5fcb34c94c79af21c8d896c9f6afa31219874",
+      "git_mode": "100644",
+      "sha256": "e8c55cdd7eba4e8123f685ae92c0dbe1156ca4448b4630aab14d147a2776a2ea"
+    },
+    "gpuwm/core/wsm6_constants.py": {
+      "bytes": 6074,
+      "git_blob": "ad103d4eff70caf8b75ec5082d235e752d1bff86",
+      "git_mode": "100644",
+      "sha256": "4d110ed7f5a792f48d925fd0ff8e974305d870a11ebb31437ff4e6fce6d3c62d"
+    },
+    "gpuwm/cupy_windows_warning.py": {
+      "bytes": 4522,
+      "git_blob": "7ae4642ba58679ba40f2186dfd283856c5d5b96d",
+      "git_mode": "100644",
+      "sha256": "8467ea2029df71476bdb8df6e89e5cb24b4f1a789a99117dadf4fe05ce7c4084"
+    },
+    "gpuwm/data/wrf_namelist/registry_v4.7.1.json": {
+      "bytes": 145687,
+      "git_blob": "cecd379f1e951b9db6cee599539ea87347601196",
+      "git_mode": "100644",
+      "sha256": "4d8ecc02d6a264dd23f5c68570b6a9be8f8688c70dc9198e52e889f8b6ccd0c5"
+    },
+    "gpuwm/ensemble/__init__.py": {
+      "bytes": 1966,
+      "git_blob": "1a26b028cebf564e91fa76a9c534d21a0124fe4f",
+      "git_mode": "100644",
+      "sha256": "ba7d65c87861e31ebaac89a5c47a019ffca6d4acdcddf69f25525c064ec5ca30"
+    },
+    "gpuwm/ensemble/config.py": {
+      "bytes": 9121,
+      "git_blob": "10bd339df80a06edcdbf456c70ed6f4c07a65612",
+      "git_mode": "100644",
+      "sha256": "b57a81479e764fdfb7d4352bb64e45cd9261a934f9b25de34049c70a3c00b4f8"
+    },
+    "gpuwm/ensemble/cycle.py": {
+      "bytes": 52172,
+      "git_blob": "f17f3782a54d489cb0b8e76f3669649142acd4c9",
+      "git_mode": "100644",
+      "sha256": "1a1f7903df41e2c8108adfd1c87459782d85c5bbc1d24cd4a6e42d32de448602"
+    },
+    "gpuwm/ensemble/engine.py": {
+      "bytes": 17589,
+      "git_blob": "60e962ecd95ce63f65220131386cddfeb6f39108",
+      "git_mode": "100644",
+      "sha256": "c38e9e2b91ab918d61d8383ce7990c992409cdbc0746c7745564e4204c7bd4d3"
+    },
+    "gpuwm/ensemble/increments.py": {
+      "bytes": 40389,
+      "git_blob": "31815a881a05bef8e67cf51a875d08890aa826c7",
+      "git_mode": "100644",
+      "sha256": "a55a1c9a4c1540f464f5702e500b0c95ea5d11e16e94d8ebccc308bff77e24d3"
+    },
+    "gpuwm/ensemble/manifest.py": {
+      "bytes": 12827,
+      "git_blob": "1f1e289b2ba822e970de8d0b9289750d63db716f",
+      "git_mode": "100644",
+      "sha256": "5e4427afd1ed21cda1acc09aacb0a50357447278b59f899564ae041d8694ef48"
+    },
+    "gpuwm/ensemble/seeds.py": {
+      "bytes": 1886,
+      "git_blob": "8bcd2ca755bb15e5b3922335feffce9029c629cc",
+      "git_mode": "100644",
+      "sha256": "73da243d8b2091a110535382ca06a9fd87e3c3798d5a937433e0beb19afe10e0"
+    },
+    "gpuwm/ensemble/state_sha.py": {
+      "bytes": 8661,
+      "git_blob": "08159deab8ba96733307092662ef82a94ab9f763",
+      "git_mode": "100644",
+      "sha256": "37e9e67ccf4aefe892da48a79d3b67bebe890552bbaf0532160db69d6d1c878b"
+    },
+    "gpuwm/ensemble/stochastic.py": {
+      "bytes": 36900,
+      "git_blob": "4139091aee0b7a2f2890aea5bdd027e44b3c74ab",
+      "git_mode": "100644",
+      "sha256": "393a64fe0cbe5885f62690c246a927a53fa555802f65926bc88ea880d92be72f"
+    },
+    "gpuwm/ensemble/stochastic_seeds.py": {
+      "bytes": 2423,
+      "git_blob": "c072a24ea9ba53744a74d8187f945a378b2efa80",
+      "git_mode": "100644",
+      "sha256": "19992c988f8d09ccf1958cbe3f0ffe805aa742202a5730975dfb5ff4530aab83"
+    },
+    "gpuwm/ensemble/wrfout_inventory.py": {
+      "bytes": 20218,
+      "git_blob": "e9135f8ae884b9f9df659c8a0811c03381ffefde",
+      "git_mode": "100644",
+      "sha256": "3d4645293ae6dc57174dbbc3f45d7f464daed7b8a9ae6144b7c43db6ed5defe3"
+    },
+    "gpuwm/experiment.py": {
+      "bytes": 272276,
+      "git_blob": "223cd2370d88530089c8a4582eabac27ded30b84",
+      "git_mode": "100644",
+      "sha256": "943b0c9f623294a12e830505ae032d57e42554708b5c1a6f0c193eab5895e2ef"
+    },
+    "gpuwm/explain.py": {
+      "bytes": 16758,
+      "git_blob": "11b2afb67918fdf37e78881d298af0c8582d604a",
+      "git_mode": "100644",
+      "sha256": "8771f60f95e5605aa52bca8af5226ab9cb5dd172be52dc9aa023fa0bef4920f2"
+    },
+    "gpuwm/fetch_endpoints.py": {
+      "bytes": 45746,
+      "git_blob": "85c0d64bb328c7a5ada10edc5c2380f56e406af2",
+      "git_mode": "100644",
+      "sha256": "886adbfcdce8a5b9ecc0bf1e4f00eecc81b3194a21acdd28362ee1083553677c"
+    },
+    "gpuwm/fetch_guard.py": {
+      "bytes": 27252,
+      "git_blob": "ef9caa59765fcf568c5f07b603033f6315c58289",
+      "git_mode": "100644",
+      "sha256": "f9a7b3f7251c7367e81caa662d23e589d24ab6981f003914e2ef7db843c2cbd8"
+    },
+    "gpuwm/first_products.py": {
+      "bytes": 81441,
+      "git_blob": "6668d685d727cc9c1dfa68dde1c89ec6fa5ba55d",
+      "git_mode": "100644",
+      "sha256": "7d8d8dd59e7f27016df14ce79ee5b6aa89340a0a224a466c3cb4a0566fafedc7"
+    },
+    "gpuwm/fortran_namelist.py": {
+      "bytes": 21656,
+      "git_blob": "14ce251ae1145c86731ae632132b72aaa4e12fbf",
+      "git_mode": "100644",
+      "sha256": "efb950f52c1df31428619f4155641309cc15c83ce22064d4e5b846654d408dfe"
+    },
+    "gpuwm/ingest/__init__.py": {
+      "bytes": 2801,
+      "git_blob": "2105be9e7d0bf5e19141b922876bd3eaef854755",
+      "git_mode": "100644",
+      "sha256": "091e7c0903a811bcc6f09371aa09a305827d113c9d8b6f71ba35c619e3460161"
+    },
+    "gpuwm/ingest/source_coverage.py": {
+      "bytes": 25089,
+      "git_blob": "12b59df5e17d5ed7b0276c45408a46184d39c5d3",
+      "git_mode": "100644",
+      "sha256": "4f8db4bf2748607b1ace3a15857884e06c4cff345e057b5c8f2c880cf5e2c2a3"
+    },
+    "gpuwm/io/__init__.py": {
+      "bytes": 0,
+      "git_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "git_mode": "100644",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "gpuwm/io/history_selection.py": {
+      "bytes": 31270,
+      "git_blob": "4f62c42d042a488dcdc5fde3e2b72ecfb3f95de5",
+      "git_mode": "100644",
+      "sha256": "ee3176f28ac19dd92c220a325f4c4a1240d5ad499ddf52cb8425573c2f1088db"
+    },
+    "gpuwm/io/wrf_output_schema.py": {
+      "bytes": 48551,
+      "git_blob": "31c61818cda76532aa26a19ddf4c438b7d9f10af",
+      "git_mode": "100644",
+      "sha256": "c66729530da7ba3af9d5c7274af575f4fb17aad8bf810dbc6425245a89f5296d"
+    },
+    "gpuwm/namelist_import.py": {
+      "bytes": 267069,
+      "git_blob": "08f8449795caf68cfe375984da1593fa6a3076e9",
+      "git_mode": "100644",
+      "sha256": "8a67cab5c9630f2865cec8e0e66372048f27673d703f78083f8d9130223c673c"
+    },
+    "gpuwm/namelist_stochastic.py": {
+      "bytes": 10516,
+      "git_blob": "55895a2e2cee074467fd332d4ba99cdb6a7b1cc0",
+      "git_mode": "100644",
+      "sha256": "a03c9ee04a29a68699d201761cfc88b7b58c864fe82e4f4955d8f48e4a4a29c2"
+    },
+    "gpuwm/native_wrf_contract.py": {
+      "bytes": 29755,
+      "git_blob": "738cba420fb385a8250fba4b5df7ed4527c6cfac",
+      "git_mode": "100644",
+      "sha256": "0c7b3a76dbe730656b68170c5e013efb893accc06d3a5e6ee02effa4c969844c"
+    },
+    "gpuwm/perf_timing.py": {
+      "bytes": 9271,
+      "git_blob": "e8ed5b3d227e69f1021b0d5359e30f32a0a78767",
+      "git_mode": "100644",
+      "sha256": "3f00c3b4d7adc4a30b81bf360ff49ebf0e8ac7b84248f15026f494015cdab3dd"
+    },
+    "gpuwm/physics_compat.py": {
+      "bytes": 188928,
+      "git_blob": "f5cf0991f34365fd9dd3b85eb28a8f37419d4416",
+      "git_mode": "100644",
+      "sha256": "5d1108d382e12ffc7a1e8d59c415159d335ac207e472d16090caf6a45c6892d4"
+    },
+    "gpuwm/physics_mode.py": {
+      "bytes": 16988,
+      "git_blob": "42283d8fc65c373c20161bfc5bc1e4d8b313aa62",
+      "git_mode": "100644",
+      "sha256": "650cd0ca3a9a94164cfc08fedb4911a68cbb8babebf6c99656386e82eabd9781"
+    },
+    "gpuwm/physics_registry.py": {
+      "bytes": 191480,
+      "git_blob": "50f36565f47369e76aa2755a171e8782c6cbd834",
+      "git_mode": "100644",
+      "sha256": "e699d0043e7d867329fc14c84eccdc431daa8b71116e26a96c600db987095e4e"
+    },
+    "gpuwm/physics_registry_v2.json": {
+      "bytes": 401204,
+      "git_blob": "96ac371ec015b0ec06f585996ec96cb704e4bce0",
+      "git_mode": "100644",
+      "sha256": "f7f919dcf579a591370447a70bab6c130f5276aa8972015dcd3b455a8d327231"
+    },
+    "gpuwm/physics_vertical_contract.py": {
+      "bytes": 9234,
+      "git_blob": "52a99d43039e155b69dea89cda3b580631688567",
+      "git_mode": "100644",
+      "sha256": "270dae21dcb57e0d30ecf7e0669795b7ce5e336b68996ea5d80fe0f1240574c6"
+    },
+    "gpuwm/provenance.py": {
+      "bytes": 40214,
+      "git_blob": "3cb8a6d48d614a49ab4fd5eed88e824c3bad4bcc",
+      "git_mode": "100644",
+      "sha256": "495172bc87824105ff457b9f9a6e80aba0819f689ad4622560bb6041d358681c"
+    },
+    "gpuwm/provenance_gate.py": {
+      "bytes": 32350,
+      "git_blob": "1d829719d2bf4f6a5271764a4ec675e1b0229b00",
+      "git_mode": "100644",
+      "sha256": "21457d674f5321b4ea2bd30711c0ab4ce38db5fd142e5302267530dbb9368b6f"
+    },
+    "gpuwm/render_layout.py": {
+      "bytes": 39613,
+      "git_blob": "fe8aee5f57a0b84c1d9105db5949002619a0f389",
+      "git_mode": "100644",
+      "sha256": "9b7afd406d1809cb3896e44b9ce85c6af3f2110eacf640b55557d873e84320fa"
+    },
+    "gpuwm/runtime_manifest.py": {
+      "bytes": 36617,
+      "git_blob": "c52a77bb905211a6fa4b8939eca878fd39007ed5",
+      "git_mode": "100644",
+      "sha256": "5e6148c69d4e7452fecac687788fe811493f3e5717c0a4837e570e736a09b7fe"
+    },
+    "gpuwm/simulated_radar_config.py": {
+      "bytes": 16600,
+      "git_blob": "43a47c0b679b7f224e69c39ad4f7ef2295d10178",
+      "git_mode": "100644",
+      "sha256": "da47790ec448098e171e48eee0209aa311d20f0cc13e6207a2bdd02de5397f98"
+    },
+    "gpuwm/static/__init__.py": {
+      "bytes": 139,
+      "git_blob": "fc653de5c867473b11cbbe6c4bf6091ae94edde4",
+      "git_mode": "100644",
+      "sha256": "a0a31e5a543f285fc4ecb662c0339197f4c29824f6534c6370527bec94cb8c5b"
+    },
+    "gpuwm/static/build.py": {
+      "bytes": 86460,
+      "git_blob": "c663c672505385c584a98ce2949c0ea8e10a4c4c",
+      "git_mode": "100644",
+      "sha256": "0f13a556f6e266ad3fc43b1ca40adfa7a5567ba3c0d29fb2cc7606ffb84dcbd3"
+    },
+    "gpuwm/static/corridor.py": {
+      "bytes": 63858,
+      "git_blob": "008bde0a863c8dbbd2ac4de9887cfafc6cbb0133",
+      "git_mode": "100644",
+      "sha256": "59195cbfb3e5f2e98d975a87d4c42a92e84486bbcf9356f33568d9d725f1931c"
+    },
+    "gpuwm/static/geog.py": {
+      "bytes": 24875,
+      "git_blob": "5f8d2e54056a9b99bbd105062bb2eb80b156d256",
+      "git_mode": "100644",
+      "sha256": "f761fec3ac56e2a77b0a141f31e223612bb5ac3cb5757414821b35505a5bc464"
+    },
+    "gpuwm/static/geog_stack.py": {
+      "bytes": 7655,
+      "git_blob": "a539b902aaccf123a523397124259fd4c03ac067",
+      "git_mode": "100644",
+      "sha256": "14138b83ab0cbae547e8b82671350d3cfa7efe7acaab1ab6ba150475c48e1ed7"
+    },
+    "gpuwm/static/highres.py": {
+      "bytes": 73255,
+      "git_blob": "134c5370f4280d369d6c6e894f838fbee2c9f968",
+      "git_mode": "100644",
+      "sha256": "bff52825e125b67a729e5de780e503ea266a2f788ad653365418c3f686138b2c"
+    },
+    "gpuwm/static/highres_fetch.py": {
+      "bytes": 89516,
+      "git_blob": "c5e9e82a7e7a0b43bdc9873a671024235ed25c7e",
+      "git_mode": "100644",
+      "sha256": "28bfbbe1b53f2d1b26f5597c3b2be9ab106a002a6d2c37d8f9d0b38ace020be3"
+    },
+    "gpuwm/static/highres_refusal.py": {
+      "bytes": 886,
+      "git_blob": "13a6c2aae31f6889310b76eaa4844e8ff1917cdd",
+      "git_mode": "100644",
+      "sha256": "40ad3d52cb38a56529aa340892edfc04371079489fee2e148d81b7ae78d69ac9"
+    },
+    "gpuwm/static/lambert.py": {
+      "bytes": 9422,
+      "git_blob": "9b8c3daa5295316e423eae73b4ce6ced6c6f457a",
+      "git_mode": "100644",
+      "sha256": "162eeaef0f6a5440260fed06ccd527c6c3588f448f862354d645a89e793ff53d"
+    },
+    "gpuwm/static/projection.py": {
+      "bytes": 48245,
+      "git_blob": "c501be040f720184c90031cc4989ec0962dafa7c",
+      "git_mode": "100644",
+      "sha256": "e1aafa640b2f0e4b0b38e26e2be84e79c2c7af316d7f9613fc4867261bfc456a"
+    },
+    "gpuwm/static/terrain_smoothing.py": {
+      "bytes": 29594,
+      "git_blob": "467e37569d92c033f0756a5fa21e43c76d0c7ab4",
+      "git_mode": "100644",
+      "sha256": "04efc6191b90d64e12cf696d2ddd0cd15efa401edd3f25279206cfa727758eda"
+    },
+    "gpuwm/vertical_contract.py": {
+      "bytes": 7812,
+      "git_blob": "8cfc07a78280b7d02967f1b94692220801fe9578",
+      "git_mode": "100644",
+      "sha256": "66f05040a1d97d03294b383f15e86a375187694c05a065328d179a3dbf37c2e3"
+    },
+    "gpuwm/wrf461_compatibility.py": {
+      "bytes": 18977,
+      "git_blob": "220f4d72c25b3b7102aa9aadc3ad0beb50c31294",
+      "git_mode": "100644",
+      "sha256": "f9864a24ddcbc373fafe6784df54cf75e538536552eadce3726ce070cd9d33cf"
+    },
+    "gpuwm/wrf_namelist_registry.py": {
+      "bytes": 2313,
+      "git_blob": "8b161dd81ee87fad956cc0e61359d85699f85375",
+      "git_mode": "100644",
+      "sha256": "3039d3b060c0f5a273be13fbedc74a79e33b7799f8eafb4aebac74df94124c62"
+    }
+  },
+  "schema": "handover-da-parent-byte-pins-v1",
+  "site_startup_disabled": true,
+  "source_binding_metadata": {
+    "files": {
+      "METADATA": {
+        "bytes": 49,
+        "sha256": "3a065bc265e41312fda880a4dd1012ddbcea83161eb2bb5cf2ffa2c94ce93998"
+      },
+      "RECORD": {
+        "bytes": 75,
+        "sha256": "5aaefc5f71c0b71e9c0e301bdf620f04cc05d91564aa9b1bce4bf0f5a56514f7"
+      }
+    },
+    "pyproject_git_blob": "2ff3811627afd6ba289b3196cffbf47ca936a156",
+    "version": "2.8.4"
+  },
+  "source_manifest_sha256": "8863fb2edc9fa30c904af65d099a9bbdfe98df4164627deee87bba26909b1c0b",
+  "source_objects_verified": 1824,
+  "third_party_loaded_modules": {
+    "numpy": {
+      "bytes": 25919,
+      "path": "/usr/lib/python3/dist-packages/numpy/__init__.py",
+      "sha256": "93924ac4b793328947dfd9eb9355e54eccdfd26a92c8dd52188aed2e52c7eb38"
+    },
+    "numpy.__config__": {
+      "bytes": 6684,
+      "path": "/usr/lib/python3/dist-packages/numpy/__config__.py",
+      "sha256": "077fbc598a3ba9a221876e2cd0261ab2be0e8c1eb0d97cc844fb82c11dcb965a"
+    },
+    "numpy._array_api_info": {
+      "bytes": 10354,
+      "path": "/usr/lib/python3/dist-packages/numpy/_array_api_info.py",
+      "sha256": "373252b9ff2fbad8c64aa8aa6a1ab78d12374b1317e17d5cbdae09e9d16fe045"
+    },
+    "numpy._core": {
+      "bytes": 5542,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/__init__.py",
+      "sha256": "c89d22cb57d793da200859df9425b30412f094a492fb1950582a560a8cda4fa7"
+    },
+    "numpy._core._add_newdocs": {
+      "bytes": 208893,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/_add_newdocs.py",
+      "sha256": "c922ae3ffe2c54f34b1e9d688e04cc8524568b7775f02701147147903f177fe5"
+    },
+    "numpy._core._add_newdocs_scalars": {
+      "bytes": 12600,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/_add_newdocs_scalars.py",
+      "sha256": "67959c2005f2d95b3c9162c2ce0cafc56547d02025f8eeb86052b7b6d6d4ef27"
+    },
+    "numpy._core._asarray": {
+      "bytes": 3911,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/_asarray.py",
+      "sha256": "7c23472da6823fee486be451fdb22b1f1598df1925726be56621a12480e228b3"
+    },
+    "numpy._core._dtype": {
+      "bytes": 10547,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/_dtype.py",
+      "sha256": "70ce899e3a072d445608780df15990ca37a28838dcc210792ff7cf30e7b5bae3"
+    },
+    "numpy._core._dtype_ctypes": {
+      "bytes": 3726,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/_dtype_ctypes.py",
+      "sha256": "28f3e56a40ec3e4b938523abe6a1705b48c9f559e36ef5b811684e6c21d81881"
+    },
+    "numpy._core._exceptions": {
+      "bytes": 5159,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/_exceptions.py",
+      "sha256": "5fc120d61ab5b94f0bf7088ec05a368d1aba4b4be78c27606051e3de1016f42a"
+    },
+    "numpy._core._internal": {
+      "bytes": 28981,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/_internal.py",
+      "sha256": "619ea730654ebdf4c3d67ce4d97a91773f24d395959d81a29636f54e71ef32af"
+    },
+    "numpy._core._machar": {
+      "bytes": 11569,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/_machar.py",
+      "sha256": "6145f6e1761bc5727bf4aad66abdbb1650d829f7a876bfd10a413bc346c44eab"
+    },
+    "numpy._core._methods": {
+      "bytes": 9430,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/_methods.py",
+      "sha256": "e2a8945044b9c273857979cf6afb6aa8c561674f5965e48a970a9d3f0d9e2922"
+    },
+    "numpy._core._multiarray_umath": {
+      "bytes": 9270336,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/_multiarray_umath.cpython-314-x86_64-linux-gnu.so",
+      "sha256": "ed49278029e17db9fc349d4181a2ee5a064a86bbb1241141592b8653824fd102"
+    },
+    "numpy._core._string_helpers": {
+      "bytes": 2845,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/_string_helpers.py",
+      "sha256": "e929a0a22ea80f60ae9e3c014abf41676d079029ef5ba9d33db953394de95a78"
+    },
+    "numpy._core._type_aliases": {
+      "bytes": 3489,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/_type_aliases.py",
+      "sha256": "9ac147064676b35c0a432ba0b8afdc17a3414b4ff700ec30ee3de8876ea6a374"
+    },
+    "numpy._core._ufunc_config": {
+      "bytes": 15130,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/_ufunc_config.py",
+      "sha256": "f63e91d7662635b693e7ecb9ac200e3c16e01f86d81989670e016afaf6799c3b"
+    },
+    "numpy._core.arrayprint": {
+      "bytes": 65278,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/arrayprint.py",
+      "sha256": "00002f92b23453a3daff064e9e9b95641a5db020a3a58a5c585f2c03f48f61b8"
+    },
+    "numpy._core.einsumfunc": {
+      "bytes": 52820,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/einsumfunc.py",
+      "sha256": "85e15e0a210a8e2faa7d593ccc06756f96ca9be31430bcc2113310ef2c870617"
+    },
+    "numpy._core.fromnumeric": {
+      "bytes": 143882,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/fromnumeric.py",
+      "sha256": "b347fa59f908455c0564c943add61bdc48f217dbcc1abd1b9acd0f73e55c3803"
+    },
+    "numpy._core.function_base": {
+      "bytes": 19683,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/function_base.py",
+      "sha256": "413d696e597ff2b7ffdd9b06b4b42801e435392a82a9e006b4c4f33c013523fc"
+    },
+    "numpy._core.getlimits": {
+      "bytes": 26101,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/getlimits.py",
+      "sha256": "df641eeed94115dca20ef7528c6d5ca766b4349d2b48cc5e0d18a3dda8223eb8"
+    },
+    "numpy._core.memmap": {
+      "bytes": 12651,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/memmap.py",
+      "sha256": "c88b10ea7f64a59ba58204492459136e35709c1e257a8ca2cef529736894e27f"
+    },
+    "numpy._core.multiarray": {
+      "bytes": 58155,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/multiarray.py",
+      "sha256": "cf01c17723a8c6205170e846d9007fc410189bea7c0114a941bc9ef44cebac1a"
+    },
+    "numpy._core.numeric": {
+      "bytes": 82322,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/numeric.py",
+      "sha256": "fc3727bd7bbaa1a1d74a2f50f8157dc86cdfc7bb5cf620b1ebdafd3272439b98"
+    },
+    "numpy._core.numerictypes": {
+      "bytes": 15967,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/numerictypes.py",
+      "sha256": "d7924b057d26fcc4206a21ffc81048e6096fd2f5ee794d1aae74b9e915df5319"
+    },
+    "numpy._core.overrides": {
+      "bytes": 7241,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/overrides.py",
+      "sha256": "32d8333816af1bbc33418080eceec0add089555ef649321bfdcbe4581b832c91"
+    },
+    "numpy._core.printoptions": {
+      "bytes": 1056,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/printoptions.py",
+      "sha256": "345a6fcb96e78dbbea9ca7aa42dd2f784131a400180153688865c7de98255807"
+    },
+    "numpy._core.records": {
+      "bytes": 36767,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/records.py",
+      "sha256": "8685c20ecc0cea16f2b6219d6069214484b34239ea2265dc21d1a536e3940d7e"
+    },
+    "numpy._core.shape_base": {
+      "bytes": 32738,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/shape_base.py",
+      "sha256": "ef20cfac85d39a606764c512b475ecab58893621a623110071ea7143da3e2554"
+    },
+    "numpy._core.umath": {
+      "bytes": 2130,
+      "path": "/usr/lib/python3/dist-packages/numpy/_core/umath.py",
+      "sha256": "b7f49020747b764305f95469f1d2b2ae838477dd28a8d9739a01b0687dbca96f"
+    },
+    "numpy._distributor_init": {
+      "bytes": 421,
+      "path": "/usr/lib/python3/dist-packages/numpy/_distributor_init.py",
+      "sha256": "14148976054795071ae41ad011560fa059ba2924c98481675ad59b1241214d2a"
+    },
+    "numpy._expired_attrs_2_0": {
+      "bytes": 3826,
+      "path": "/usr/lib/python3/dist-packages/numpy/_expired_attrs_2_0.py",
+      "sha256": "ccfdf511799bc3281c384cf27ad0c4a7e4712fd7147db51486df79eb368e49ff"
+    },
+    "numpy._globals": {
+      "bytes": 3091,
+      "path": "/usr/lib/python3/dist-packages/numpy/_globals.py",
+      "sha256": "9396559f351b28d48b3e667451163024de42ffbc48cdf30d69a4ac052acf4ee2"
+    },
+    "numpy._pytesttester": {
+      "bytes": 6328,
+      "path": "/usr/lib/python3/dist-packages/numpy/_pytesttester.py",
+      "sha256": "0e39582fcb8834dd9759ade79e55fa80f1aea0b8dcc750627bf3d0cdba767290"
+    },
+    "numpy._typing": {
+      "bytes": 7188,
+      "path": "/usr/lib/python3/dist-packages/numpy/_typing/__init__.py",
+      "sha256": "306e56bfd75cdd9c8e9837e2747e5c16dca47b234cefb02b0b8477516ed39fe6"
+    },
+    "numpy._typing._array_like": {
+      "bytes": 4188,
+      "path": "/usr/lib/python3/dist-packages/numpy/_typing/_array_like.py",
+      "sha256": "10f6547c94a36a6bec589e91b39670c00ff916106961da227dc555b557163e7d"
+    },
+    "numpy._typing._char_codes": {
+      "bytes": 8764,
+      "path": "/usr/lib/python3/dist-packages/numpy/_typing/_char_codes.py",
+      "sha256": "8f4ee7a64f3635bec8adadb3ed94e553751c38fc2dda033ba992ab3cb7634f8f"
+    },
+    "numpy._typing._dtype_like": {
+      "bytes": 3762,
+      "path": "/usr/lib/python3/dist-packages/numpy/_typing/_dtype_like.py",
+      "sha256": "f0ce517a42ea7617848d63089f84676e4133b12ee309ab42893d03e6183ee777"
+    },
+    "numpy._typing._nbit": {
+      "bytes": 632,
+      "path": "/usr/lib/python3/dist-packages/numpy/_typing/_nbit.py",
+      "sha256": "2926cac0e2adb686fee72b53e6f095907ac3327d181efca9b534f28ffe8061cc"
+    },
+    "numpy._typing._nbit_base": {
+      "bytes": 3058,
+      "path": "/usr/lib/python3/dist-packages/numpy/_typing/_nbit_base.py",
+      "sha256": "9cf669b1096db91e41d22680605f6a0f685efe45e79acb2ffd185a50d16c5beb"
+    },
+    "numpy._typing._nested_sequence": {
+      "bytes": 2505,
+      "path": "/usr/lib/python3/dist-packages/numpy/_typing/_nested_sequence.py",
+      "sha256": "b28d5a818187779803a3f201bef1ea041e65b2a19b1ea37f8a6c82e541d4f872"
+    },
+    "numpy._typing._scalars": {
+      "bytes": 944,
+      "path": "/usr/lib/python3/dist-packages/numpy/_typing/_scalars.py",
+      "sha256": "2e15d8d814c799e60acde2197e98efb8c9fee5e38b8d4da7f73ef3d65e5b29ff"
+    },
+    "numpy._typing._shape": {
+      "bytes": 275,
+      "path": "/usr/lib/python3/dist-packages/numpy/_typing/_shape.py",
+      "sha256": "e9c16ff8b6d2c86f6695f4813861b2ba5f50fc652b95c1d00bd2596be9b6d1c0"
+    },
+    "numpy._typing._ufunc": {
+      "bytes": 156,
+      "path": "/usr/lib/python3/dist-packages/numpy/_typing/_ufunc.py",
+      "sha256": "1ce91a13eeb05747dddeb9876460b7f580072087fcb72be5cde903e32e064310"
+    },
+    "numpy._utils": {
+      "bytes": 3477,
+      "path": "/usr/lib/python3/dist-packages/numpy/_utils/__init__.py",
+      "sha256": "8559d9ec2d0c09235b330f99caaf8c282612b5a197e91cea14c9e787b79de1d1"
+    },
+    "numpy._utils._convertions": {
+      "bytes": 329,
+      "path": "/usr/lib/python3/dist-packages/numpy/_utils/_convertions.py",
+      "sha256": "d3133175e2cece20e61ec44cffc96e121e12fa441d328320e86c4d0c36acebd9"
+    },
+    "numpy._utils._inspect": {
+      "bytes": 7436,
+      "path": "/usr/lib/python3/dist-packages/numpy/_utils/_inspect.py",
+      "sha256": "cc5b890011f4f03d4a82afde79c6240f53a0834397a75b78a2a8d9c4cd2474b9"
+    },
+    "numpy.dtypes": {
+      "bytes": 1312,
+      "path": "/usr/lib/python3/dist-packages/numpy/dtypes.py",
+      "sha256": "cee3f0802d228c5da80d100e27a23d24a85a26e857140ca00722d06a856d4f9e"
+    },
+    "numpy.exceptions": {
+      "bytes": 7800,
+      "path": "/usr/lib/python3/dist-packages/numpy/exceptions.py",
+      "sha256": "c75cfb0b6463ac3156f2d2dec1b663c8c890a24d16066e642ae44f23154b5238"
+    },
+    "numpy.lib": {
+      "bytes": 3004,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/__init__.py",
+      "sha256": "cd81aea847cfaaaecb0db89da7162cf068023409a8278c50805bc5dd7289e518"
+    },
+    "numpy.lib._array_utils_impl": {
+      "bytes": 1697,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/_array_utils_impl.py",
+      "sha256": "1985a2c8da8b43b0c6512057cf46db47a000a994ad0c8c147bbb6c6d9fffd793"
+    },
+    "numpy.lib._arraypad_impl": {
+      "bytes": 32296,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/_arraypad_impl.py",
+      "sha256": "cf9fbe5d3f344dc9c365ecc756b7716ae252637c82e2f30375dec994efa1df3c"
+    },
+    "numpy.lib._arraysetops_impl": {
+      "bytes": 41275,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/_arraysetops_impl.py",
+      "sha256": "545760a456497322616053dc4e4fcb403fd2aea5faa68cbfb21b0b2af662832d"
+    },
+    "numpy.lib._arrayterator_impl": {
+      "bytes": 7218,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/_arrayterator_impl.py",
+      "sha256": "1ed3800c81ee1bd0036db3138268783ff9ae91ed55fbc13e14d10eddb54e18f0"
+    },
+    "numpy.lib._datasource": {
+      "bytes": 22731,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/_datasource.py",
+      "sha256": "ce4f956e7e099431c455adc37ba0373608e79e2cd2262f8717466fbc0e98228e"
+    },
+    "numpy.lib._format_impl": {
+      "bytes": 36865,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/_format_impl.py",
+      "sha256": "cdc437c57c4f7fb7a992db18adc7416c83ee38287d38f575837801ea085fe2b1"
+    },
+    "numpy.lib._function_base_impl": {
+      "bytes": 196425,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/_function_base_impl.py",
+      "sha256": "0191b2376f44730e0b46e5354cd51c3c2edc5473bdc9ee1b27d15023b9ff1b07"
+    },
+    "numpy.lib._histograms_impl": {
+      "bytes": 38432,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/_histograms_impl.py",
+      "sha256": "52dbbb68041ced9a6c1e7ff4e288149d9ab565c7477e2a5cabd791abcd7ba155"
+    },
+    "numpy.lib._index_tricks_impl": {
+      "bytes": 32186,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/_index_tricks_impl.py",
+      "sha256": "83b369e04f001bdb20ca2f474d482f38cd3ca489408ff72f5f0e1c73b36b5392"
+    },
+    "numpy.lib._iotools": {
+      "bytes": 30876,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/_iotools.py",
+      "sha256": "d23b69be99792feff5383236d45fb58b5f6dd5edcbfbac09c517750922dec0bd"
+    },
+    "numpy.lib._nanfunctions_impl": {
+      "bytes": 71949,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/_nanfunctions_impl.py",
+      "sha256": "71d393edd6308ef52923d8841d3af0cdb6ed2a13fd65980e08c8ab4c17983d49"
+    },
+    "numpy.lib._npyio_impl": {
+      "bytes": 99277,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/_npyio_impl.py",
+      "sha256": "92e71acf00ae7e1e26370102c99c447abc6ca9afc6c50333d6462e65444323cb"
+    },
+    "numpy.lib._polynomial_impl": {
+      "bytes": 44134,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/_polynomial_impl.py",
+      "sha256": "4d68aa946dd60daf7bb5acb1402125b590fd4cd854c85a6bccbfd499decbc6ca"
+    },
+    "numpy.lib._scimath_impl": {
+      "bytes": 15692,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/_scimath_impl.py",
+      "sha256": "400538b8cfc837356a093b3e013132cb526144497fc03267ff2814ef962d7e01"
+    },
+    "numpy.lib._shape_base_impl": {
+      "bytes": 39479,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/_shape_base_impl.py",
+      "sha256": "e6f914f6b3cec0abd273b4f3c5d7d6b4cd3cb95d26d798873d3c5ba9c638ece7"
+    },
+    "numpy.lib._stride_tricks_impl": {
+      "bytes": 18025,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/_stride_tricks_impl.py",
+      "sha256": "cb7531a778c5cc3c26210d77ecddb36a9efebd6fe338d5109979db7eaaeceb40"
+    },
+    "numpy.lib._twodim_base_impl": {
+      "bytes": 33925,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/_twodim_base_impl.py",
+      "sha256": "de738bbc20fa71f33a303de8dfcd45e3c181f29a2ab1418308339094e0505e66"
+    },
+    "numpy.lib._type_check_impl": {
+      "bytes": 19221,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/_type_check_impl.py",
+      "sha256": "59e55f5b3ff42a5bdbd8affa974c789c7c070703d881f7317998a757f769fe6c"
+    },
+    "numpy.lib._ufunclike_impl": {
+      "bytes": 6309,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/_ufunclike_impl.py",
+      "sha256": "d1e7a67ff11894b9926b88a736bde2b89d5ea1332a2f2211d27e9d4329a06b76"
+    },
+    "numpy.lib._utils_impl": {
+      "bytes": 23853,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/_utils_impl.py",
+      "sha256": "5ed678126f110e6b0858e79888daa434203ac6d484e2231a6b60235e54a2083d"
+    },
+    "numpy.lib._version": {
+      "bytes": 4851,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/_version.py",
+      "sha256": "e1d52b73d26cd0a3c443969da18291e5d9cfe1f7e3083b4950a3ea70c6aec18e"
+    },
+    "numpy.lib.array_utils": {
+      "bytes": 144,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/array_utils.py",
+      "sha256": "5db732849f52d0894d9cff4dcbacb280b30400259650f34e53cbdebe3d531292"
+    },
+    "numpy.lib.format": {
+      "bytes": 477,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/format.py",
+      "sha256": "9e9274789853eee28d2b96b49423067e226ff91e23c8d86220f7996c970d5c1b"
+    },
+    "numpy.lib.introspect": {
+      "bytes": 2749,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/introspect.py",
+      "sha256": "bbec207ccb98b7c188dc09d135d5ece23e30f5e353b1ace5aab6b34be3fb80a0"
+    },
+    "numpy.lib.mixins": {
+      "bytes": 7200,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/mixins.py",
+      "sha256": "29f7fbe9272981657772bba2708f40edae337c19c65665edc10cccceee710c4a"
+    },
+    "numpy.lib.npyio": {
+      "bytes": 68,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/npyio.py",
+      "sha256": "79a3ef7c7192cd413bd132471cb3823c85fd1b98a132e0447b1cbafcf36127d4"
+    },
+    "numpy.lib.scimath": {
+      "bytes": 169,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/scimath.py",
+      "sha256": "aa315a41eab4cc4225ee02aa3a16a3fef9820bf29a15dc9398774b514912a792"
+    },
+    "numpy.lib.stride_tricks": {
+      "bytes": 88,
+      "path": "/usr/lib/python3/dist-packages/numpy/lib/stride_tricks.py",
+      "sha256": "c74fc17f097270102547706fa714e775e3fde9d1c14ff7c049b9134d3cc16202"
+    },
+    "numpy.linalg": {
+      "bytes": 2124,
+      "path": "/usr/lib/python3/dist-packages/numpy/linalg/__init__.py",
+      "sha256": "ee956f17038914a380ac6794b3a30d8f730daaab31ef1c74beddbfedabcd020e"
+    },
+    "numpy.linalg._linalg": {
+      "bytes": 115106,
+      "path": "/usr/lib/python3/dist-packages/numpy/linalg/_linalg.py",
+      "sha256": "eab0bbee9c8758d387934dc32849f01deceb50261d02e22d41f03ad6ff2562cc"
+    },
+    "numpy.linalg._umath_linalg": {
+      "bytes": 126592,
+      "path": "/usr/lib/python3/dist-packages/numpy/linalg/_umath_linalg.cpython-314-x86_64-linux-gnu.so",
+      "sha256": "31f694e81c9c35a59979e5cf00cf52b5724830564761bcf535f48879e0ea9a98"
+    },
+    "numpy.linalg.linalg": {
+      "bytes": 585,
+      "path": "/usr/lib/python3/dist-packages/numpy/linalg/linalg.py",
+      "sha256": "e8d8a63faf2d61ad2a051825587f3bfed3a1dac72c86d0e97307ef06f99de8fa"
+    },
+    "numpy.matrixlib": {
+      "bytes": 243,
+      "path": "/usr/lib/python3/dist-packages/numpy/matrixlib/__init__.py",
+      "sha256": "52de88a9f8ee03e930c28e8704e6008058d75c2fe1ed857fdc7c83b0a33bd9d9"
+    },
+    "numpy.matrixlib.defmatrix": {
+      "bytes": 30875,
+      "path": "/usr/lib/python3/dist-packages/numpy/matrixlib/defmatrix.py",
+      "sha256": "c29c3a95953d5faaa9f30009a240d7b76441acbd5e5ea96606dfa88c8c18ce55"
+    },
+    "numpy.version": {
+      "bytes": 293,
+      "path": "/usr/lib/python3/dist-packages/numpy/version.py",
+      "sha256": "e5acbe1a666da629f581c40a2c09d54229c7aa918f3a1d567dbac0829c807472"
+    }
+  },
+  "utc": "2026-10-04T18:54:00.588041+00:00"
+}

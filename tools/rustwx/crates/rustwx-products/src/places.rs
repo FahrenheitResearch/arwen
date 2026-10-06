@@ -173,6 +173,19 @@ pub struct PlaceLabelOverlay {
     pub density: PlaceLabelDensityTier,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub included_place_slugs: Vec<String>,
+    /// How many places a frame that is not one of the named domains
+    /// carries, and how far apart: the layer table's row for the frame's
+    /// size.  Without it only the named domains (the continent, the named
+    /// regions, the city crops) get labels, and a model's own domain,
+    /// whatever its size, gets none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frame_plan: Option<PlaceFramePlan>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlaceFramePlan {
+    pub max_count: u32,
+    pub min_center_spacing_km: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -222,6 +235,7 @@ impl PlaceLabelOverlay {
         Self {
             density: PlaceLabelDensityTier::None,
             included_place_slugs: Vec::new(),
+            frame_plan: None,
         }
     }
 
@@ -229,6 +243,7 @@ impl PlaceLabelOverlay {
         Self {
             density: PlaceLabelDensityTier::Major,
             included_place_slugs: Vec::new(),
+            frame_plan: None,
         }
     }
 
@@ -267,10 +282,23 @@ impl PlaceLabelOverlay {
     }
 
     pub fn selected_places_for_domain(&self, domain: &DomainSpec) -> Vec<SelectedPlace> {
-        let Some(plan) = place_label_plan_for_domain(domain) else {
+        let Some(plan) = self.label_plan_for_domain(domain) else {
             return Vec::new();
         };
         select_places_for_label_plan(domain, plan, self)
+    }
+
+    /// The named domain's plan, or the frame plan for any other domain.
+    fn label_plan_for_domain(&self, domain: &DomainSpec) -> Option<PlaceLabelPlan> {
+        place_label_plan_for_domain(domain).or_else(|| {
+            self.frame_plan.map(|frame| PlaceLabelPlan {
+                kind: PlaceLabelDomainKind::Region,
+                max_count: frame.max_count as usize,
+                min_center_spacing_km: f64::from(frame.min_center_spacing_km),
+                max_crop_overlap_fraction: 0.35,
+                anchor_slug: None,
+            })
+        })
     }
 
     fn filtered_catalog(&self) -> Vec<PlacePreset> {
@@ -622,7 +650,7 @@ pub fn apply_place_label_overlay(
         return Ok(());
     }
 
-    let Some(plan) = place_label_plan_for_domain(domain) else {
+    let Some(plan) = overlay.label_plan_for_domain(domain) else {
         return Ok(());
     };
 
@@ -662,6 +690,7 @@ pub fn apply_place_label_overlay(
                         place.center_lon,
                         place.center_lat,
                     );
+                    orient_label_offsets(&mut style);
                     ProjectedPlaceLabel::new(x, y)
                         .with_label(display_label_for_domain(plan.kind, &place.label))
                         .with_style(style)
@@ -1192,6 +1221,30 @@ fn interior_label_placement(
         (false, true) => ProjectedLabelPlacement::BelowRight,
         (false, false) => ProjectedLabelPlacement::BelowLeft,
     }
+}
+
+/// Point a style's label offset the way its placement faces.
+///
+/// The styles carry their offset for an above-right label (`+x`, `-y`).
+/// An interior placement that turns the label to the left or below kept
+/// that offset, so a left label ended past its own marker and a label
+/// below started above it: the text was drawn over the dot it names.
+fn orient_label_offsets(style: &mut ProjectedPlaceLabelStyle) {
+    let dx = style.label_offset_x_px.abs();
+    let dy = style.label_offset_y_px.abs();
+    let (sign_x, sign_y) = match style.label_placement {
+        ProjectedLabelPlacement::AboveRight => (1, -1),
+        ProjectedLabelPlacement::AboveLeft => (-1, -1),
+        ProjectedLabelPlacement::BelowRight => (1, 1),
+        ProjectedLabelPlacement::BelowLeft => (-1, 1),
+        ProjectedLabelPlacement::Left => (-1, 0),
+        ProjectedLabelPlacement::Right => (1, 0),
+        ProjectedLabelPlacement::Above => (0, -1),
+        ProjectedLabelPlacement::Below => (0, 1),
+        ProjectedLabelPlacement::Center => (0, 0),
+    };
+    style.label_offset_x_px = sign_x * dx;
+    style.label_offset_y_px = sign_y * dy;
 }
 
 const fn place(

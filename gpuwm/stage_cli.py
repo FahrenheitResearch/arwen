@@ -62,6 +62,7 @@ import hashlib
 import importlib
 import importlib.machinery
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Mapping, NamedTuple
@@ -1195,10 +1196,12 @@ def sim_main(args) -> int:
         render_note = (f"no fetch; drawing {requested} from each output "
                        "frame as it lands")
     elif requested is None:
-        render_note = ("no fetch and no render: pass --render-products to "
-                       "draw each output frame as it lands")
+        render_note = ("no fetch; pass --render-products to draw each "
+                       "output frame as it lands")
     else:
-        render_note = f"no fetch and no render (--render-products {requested})"
+        render_note = f"no fetch; frame maps disabled (--render-products {requested})"
+    if os.environ.get("GPUWM_VERIFY_VISUALS", "1").lower() not in {"0", "false", "off"}:
+        render_note += "; observation verification at finish as reports are available"
     print(f"sim: {bundle.get('root', bundle['document'].parent)} -- "
           f"{bundle['schema']} "
           f"(source {bundle['source']}, "

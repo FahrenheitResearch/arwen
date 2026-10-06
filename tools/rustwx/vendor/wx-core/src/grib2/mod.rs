@@ -18,7 +18,7 @@ pub use search::search_messages;
 pub use streaming::StreamingParser;
 pub use tables::{level_name, parameter_name, parameter_units};
 pub use unpack::{flip_rows, unpack_message, unpack_message_normalized, BitReader};
-pub use writer::{Grib2Writer, MessageBuilder, PackingMethod};
+pub use writer::{Grib2Writer, MessageBuilder, PackingMethod, StatisticalInterval};
 
 #[cfg(test)]
 mod tests;

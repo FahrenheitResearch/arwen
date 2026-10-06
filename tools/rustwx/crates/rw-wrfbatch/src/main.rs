@@ -37,6 +37,9 @@ mod wrf_column_planes;
 mod mesh;
 #[path = "section.rs"]
 mod section;
+mod input_list;
+mod run_difference;
+mod sheet;
 mod store_render;
 mod viewer_profile;
 
@@ -134,7 +137,10 @@ gpuwm-rw-wrfbatch-requirements-v1\tNEEDS\tslug\tselector\tPLANNED\tstore_field\t
 gpuwm-rw-wrfbatch-wrfout-lane-v1\tWRFOUT\tslug\tkind\tverdict\tminimum_hour\tdetail\t\
 gpuwm-rw-wrfbatch-events-v2\tRENDERED\tSKIPPED\tFAILED\tframe-attributed\t\
 gpuwm-rw-wrfbatch-sections-v1\tSECTIONFILL\tslug\tlo\thi\tabsence\trule\t\
-gpuwm-rw-wrfbatch-vocabulary-v2\tgeneric\tvar:\tvariables\txsec:\tmesh:\tmeshdiff:\tselectable_slugs";
+gpuwm-rw-wrfbatch-inputs-json-v1\t\
+gpuwm-rw-wrfbatch-vocabulary-v2\tgeneric\tvar:\tvariables\txsec:\tmesh:\tmeshdiff:\tselectable_slugs\t\
+gpuwm-rw-wrfbatch-layout-v1\t--layout\tauto\tfixed\t--size-class\t--scale\t--pair-sheet\t\
+gpuwm-rw-wrfbatch-difference-v1\t--diff-against\t--diff-inputs-json\t--diff-label-a\t--diff-label-b\t--diff-labels\t--diff-sheet\tDIFFERENCE";
 
 #[derive(Debug)]
 struct Args {
@@ -142,8 +148,15 @@ struct Args {
     out_dir: PathBuf,
     products: String,
     frames: Option<usize>,
+    /// The fixed-canvas size, and the nominal size the batch limits and the
+    /// mesh lane read.  Under auto layout each domain's canvas comes from
+    /// the layout table instead.
     width: u32,
     height: u32,
+    /// `--layout auto|fixed`, `--size-class`, `--scale`: how each frame's
+    /// canvas is chosen.  Auto sizes it from the grid's own shape; fixed
+    /// keeps `--width x --height` for callers that tile at fixed pixels.
+    layout: rustwx_render::LayoutMode,
     heavy: bool,
     list_products: bool,
     /// `--streamlines` / `--barbs`: the wind layer this invocation asks
@@ -197,19 +210,25 @@ struct Args {
     /// Absent every one of them, no strip is drawn even under a theme that
     /// names one, so an existing render is unchanged.
     footer: rustwx_render::FooterFields,
+    /// `--diff-against WRFOUT` (repeatable), `--diff-labels A,B`,
+    /// `--diff-sheet`: draw every requested map product as this run minus
+    /// the named run, at the valid time both share (`run_difference.rs`).
+    difference: Option<run_difference::DifferenceArgs>,
     inputs: Vec<PathBuf>,
 }
 
 fn usage() -> &'static str {
     "usage: rw_wrfbatch --store-root DIR --out-dir DIR [--products all|SLUGS] \
-[--frames all|N] [--width N] [--height N] [--heavy] [--streamlines|--barbs] \
-[--source-label TEXT] [--theme NAME|FILE.json] [--radar-colors standard|classic] \
-[--section lat,lon,lat,lon|FILE.json] \
+[--frames all|N] [--layout auto|fixed] [--size-class standard|phone|large] [--scale S] \
+[--width N] [--height N] [--heavy] [--streamlines|--barbs] \
+[--source-label TEXT] [--theme NAME|FILE.json] [--radar-colors standard|classic] [--section lat,lon,lat,lon|FILE.json] \
 [--section-across KM] [--isotherms L,L,...[@H]] [--section-top-km N] \
 [--section-size WxH] [--section-reference-km N] \
 [--mesh-grid FILE.nc] [--mesh-reference DIR|FILE] [--mesh-labels A,B] [--mesh-bounds W,E,S,N] \
 [--footer-title TEXT] [--footer-valid TEXT] [--footer-mesh TEXT] [--footer-leg TEXT] \
-[--footer-note TEXT] [--list-products] wrfout...\n       \
+[--footer-note TEXT] [--diff-against WRFOUT]... [--diff-inputs-json FILE] \
+[--diff-labels A,B] [--diff-label-a TEXT] [--diff-label-b TEXT] [--diff-sheet] \
+[--list-products] [--inputs-json FILE] wrfout...\n       \
 rw_wrfbatch --help | --abi"
 }
 
@@ -648,8 +667,11 @@ fn parse_args() -> Result<Invocation, CliError> {
     let mut out_dir = None;
     let mut products = "all".to_string();
     let mut frames = None;
-    let mut width = 1_200u32;
-    let mut height = 900u32;
+    let mut width: Option<u32> = None;
+    let mut height: Option<u32> = None;
+    let mut layout_spec: Option<String> = None;
+    let mut size_class = rustwx_render::SizeClass::Standard;
+    let mut layout_scale = 1.0f64;
     let mut heavy = false;
     let mut list_products = false;
     let mut streamlines: Option<bool> = None;
@@ -669,11 +691,26 @@ fn parse_args() -> Result<Invocation, CliError> {
     let mut mesh_labels = ("TREATMENT".to_string(), "CONTROL".to_string());
     let mut mesh_bounds: Option<(f64, f64, f64, f64)> = None;
     let mut footer = rustwx_render::FooterFields::default();
+    let mut diff_against: Vec<PathBuf> = Vec::new();
+    let mut diff_labels: Option<rustwx_render::difference::DifferenceLabels> = None;
+    let mut diff_sheet = false;
     let mut inputs = Vec::new();
     let mut raw = std::env::args().skip(1);
 
     while let Some(arg) = raw.next() {
         match arg.as_str() {
+            "--inputs-json" => {
+                let path = PathBuf::from(raw.next().ok_or_else(|| {
+                    CliError::Usage("--inputs-json requires a JSON file".to_string())
+                })?);
+                inputs.extend(input_list::read(&path).map_err(CliError::Usage)?);
+            }
+            "--diff-inputs-json" => {
+                let path = PathBuf::from(raw.next().ok_or_else(|| {
+                    CliError::Usage("--diff-inputs-json requires a JSON file".to_string())
+                })?);
+                diff_against.extend(input_list::read(&path).map_err(CliError::Usage)?);
+            }
             "--store-root" => {
                 store_root = Some(PathBuf::from(
                     raw.next().ok_or("--store-root requires a directory")?,
@@ -698,18 +735,39 @@ fn parse_args() -> Result<Invocation, CliError> {
                 }
             }
             "--width" => {
-                width = raw
-                    .next()
-                    .ok_or("--width requires a value")?
-                    .parse()
-                    .map_err(|err| format!("invalid --width: {err}"))?;
+                width = Some(
+                    raw.next()
+                        .ok_or("--width requires a value")?
+                        .parse()
+                        .map_err(|err| format!("invalid --width: {err}"))?,
+                );
             }
             "--height" => {
-                height = raw
-                    .next()
-                    .ok_or("--height requires a value")?
-                    .parse()
-                    .map_err(|err| format!("invalid --height: {err}"))?;
+                height = Some(
+                    raw.next()
+                        .ok_or("--height requires a value")?
+                        .parse()
+                        .map_err(|err| format!("invalid --height: {err}"))?,
+                );
+            }
+            "--layout" => {
+                layout_spec = Some(raw.next().ok_or("--layout requires auto or fixed")?);
+            }
+            "--size-class" => {
+                let value = raw.next().ok_or("--size-class requires a value")?;
+                size_class = rustwx_render::SizeClass::parse(&value).ok_or_else(|| {
+                    format!("--size-class must be standard, phone or large, got {value:?}")
+                })?;
+            }
+            "--scale" => {
+                let value = raw.next().ok_or("--scale requires a value")?;
+                layout_scale = value
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|scale| scale.is_finite() && (0.25..=4.0).contains(scale))
+                    .ok_or_else(|| {
+                        format!("--scale must be a number from 0.25 to 4, got {value:?}")
+                    })?;
             }
             "--source-label" => {
                 let value = raw.next().ok_or("--source-label requires a value")?;
@@ -874,6 +932,41 @@ fn parse_args() -> Result<Invocation, CliError> {
             "--footer-note" => {
                 footer.note = Some(raw.next().ok_or("--footer-note requires text")?);
             }
+            // A run difference: the positional wrfouts are run A, these
+            // are run B.
+            "--diff-against" => {
+                diff_against.push(PathBuf::from(
+                    raw.next().ok_or("--diff-against requires run B's wrfout")?,
+                ));
+            }
+            "--diff-labels" => {
+                let value = raw.next().ok_or("--diff-labels requires A,B")?;
+                let mut parts = value.splitn(2, ',').map(str::trim);
+                let a = parts.next().unwrap_or("").to_string();
+                let b = parts.next().unwrap_or("").to_string();
+                if a.is_empty() || b.is_empty() {
+                    return Err(CliError::Usage(format!(
+                        "--diff-labels '{value}' is not two comma-separated run names"
+                    )));
+                }
+                diff_labels = Some(rustwx_render::difference::DifferenceLabels { a, b });
+            }
+            "--diff-label-a" | "--diff-label-b" => {
+                let value = raw.next().ok_or_else(|| {
+                    CliError::Usage(format!("{arg} requires a run name"))
+                })?;
+                let value = value.trim();
+                if value.is_empty() {
+                    return Err(CliError::Usage(format!("{arg} requires a nonempty run name")));
+                }
+                let labels = diff_labels.get_or_insert_with(Default::default);
+                if arg == "--diff-label-a" {
+                    labels.a = value.to_string();
+                } else {
+                    labels.b = value.to_string();
+                }
+            }
+            "--diff-sheet" => diff_sheet = true,
             "--heavy" => heavy = true,
             // The wind layer, at the front door.  Drawing streamlines was
             // reachable only through RUSTWX_WIND_STREAMLINES, a name in no
@@ -908,6 +1001,10 @@ fn parse_args() -> Result<Invocation, CliError> {
             "at least one wrfout input is required".to_string(),
         ));
     }
+    let layout = resolve_layout(layout_spec.as_deref(), width, height, size_class, layout_scale)
+        .map_err(CliError::Usage)?;
+    let width = width.unwrap_or(1_200);
+    let height = height.unwrap_or(900);
     let theme = theme_spec
         .or_else(|| {
             std::env::var(rustwx_render::THEME_ENV)
@@ -931,6 +1028,22 @@ fn parse_args() -> Result<Invocation, CliError> {
         Some(text) => section::Isotherms::parse(&text).map_err(CliError::Usage)?,
         None => section::Isotherms::default(),
     };
+    let difference = if diff_against.is_empty() {
+        if diff_labels.is_some() || diff_sheet {
+            return Err(CliError::Usage(
+                "--diff-labels and --diff-sheet belong to a difference: name run B with \
+                 --diff-against WRFOUT"
+                    .to_string(),
+            ));
+        }
+        None
+    } else {
+        Some(run_difference::DifferenceArgs {
+            against: diff_against,
+            labels: diff_labels.unwrap_or_default(),
+            sheet: diff_sheet,
+        })
+    };
     Ok(Invocation::Batch(Box::new(Args {
         store_root: store_root.ok_or("--store-root is required")?,
         out_dir: out_dir.ok_or("--out-dir is required")?,
@@ -938,6 +1051,7 @@ fn parse_args() -> Result<Invocation, CliError> {
         frames,
         width,
         height,
+        layout,
         heavy,
         list_products,
         streamlines,
@@ -965,8 +1079,38 @@ fn parse_args() -> Result<Invocation, CliError> {
         mesh_labels,
         mesh_bounds,
         footer,
+        difference,
         inputs,
     })))
+}
+
+/// How this invocation's canvases are chosen.
+///
+/// No flag: auto, the canvas sized from each domain's own shape.  A pixel
+/// size with no `--layout`: fixed at that size, so a caller that asks for
+/// pixels still gets them.  `--layout auto` WITH a pixel size is refused:
+/// the size would be silently dropped, and a caller tiling panels at
+/// fixed pixels would get misaligned tiles with no error.
+fn resolve_layout(
+    spec: Option<&str>,
+    width: Option<u32>,
+    height: Option<u32>,
+    class: rustwx_render::SizeClass,
+    scale: f64,
+) -> Result<rustwx_render::LayoutMode, String> {
+    let sized = width.is_some() || height.is_some();
+    match spec.map(|value| value.trim().to_ascii_lowercase()) {
+        None if sized => Ok(rustwx_render::LayoutMode::Fixed),
+        None => Ok(rustwx_render::LayoutMode::Auto { class, scale }),
+        Some(value) if value == "fixed" => Ok(rustwx_render::LayoutMode::Fixed),
+        Some(value) if value == "auto" && sized => Err(
+            "--layout auto sizes each canvas from its domain; --width/--height would be ignored. \
+             Drop them, or pass --layout fixed to draw at that size."
+                .to_string(),
+        ),
+        Some(value) if value == "auto" => Ok(rustwx_render::LayoutMode::Auto { class, scale }),
+        Some(value) => Err(format!("--layout must be auto or fixed, got {value:?}")),
+    }
 }
 
 /// Refuse a command line this build cannot serve, before any file is opened.
@@ -995,6 +1139,13 @@ fn validate_request(args: &Args) -> Result<(), CliError> {
     {
         rusty_weather::render_all::partition_products(&store_products)
             .map_err(|err| CliError::Usage(err.to_string()))?;
+    }
+    if let Some(difference) = &args.difference {
+        run_difference::validate(
+            args,
+            difference,
+            !mesh_products.is_empty() || !section_products.is_empty(),
+        )?;
     }
     if !mesh_products.is_empty() {
         // A mesh: input is an MPAS history frame, which is deliberately NOT
@@ -1177,7 +1328,7 @@ fn import_note_line(note: &str) -> String {
     format!("IMPORT_NOTE\t{note}")
 }
 
-fn run(args: Args) -> Result<(), String> {
+fn run(mut args: Args) -> Result<(), String> {
     // Recorded before any product lane builds a wind layer, and cleared to
     // `None` when neither flag was given so RUSTWX_WIND_STREAMLINES and the
     // automatic per-grid choice keep their existing meaning.
@@ -1186,7 +1337,7 @@ fn run(args: Args) -> Result<(), String> {
     // before the first glyph is drawn (its fonts load with it).  Absent, the
     // renderer's own look is installed by name so a later RUSTWX_THEME read
     // cannot restyle half a run.
-    let theme_name = match args.theme {
+    let theme_name = match args.theme.take() {
         Some(theme) => {
             let name = theme.name.clone();
             rustwx_render::install_theme(theme)?;
@@ -1197,6 +1348,14 @@ fn run(args: Args) -> Result<(), String> {
             "default".to_string()
         }
     };
+    rustwx_render::set_layout_mode(args.layout);
+    rustwx_render::theme::set_template_version(
+        args.source_label
+            .split_whitespace()
+            .last()
+            .filter(|token| token.starts_with(|ch: char| ch.is_ascii_digit()))
+            .map(str::to_string),
+    );
     println!("THEME {theme_name}");
     // Selected before the first product resolves its scale, so one run
     // draws one radar look.
@@ -1229,6 +1388,9 @@ fn run(args: Args) -> Result<(), String> {
             footer.mesh_or_grid = domain_title_label(&grid_identity(&args.inputs));
         }
         rustwx_render::set_footer_fields(footer);
+    }
+    if args.difference.is_some() {
+        return run_difference::run(args);
     }
     // Two families never touch the store.  `mesh:` reads an MPAS history
     // frame and its grid file; `xsec:` cuts the wrfout files directly.
@@ -1321,8 +1483,13 @@ fn run(args: Args) -> Result<(), String> {
     let section_out_dir = args.out_dir.clone();
     let section_source_label = args.source_label.clone();
     let section_domain_slug = native_domain_slug(&grid_identity(&args.inputs));
-    let (section_width, section_height) =
-        section_dimensions(args.section_size, args.width, args.height);
+    let (section_width, section_height) = match (args.layout, args.section_size) {
+        (rustwx_render::LayoutMode::Auto { class, scale }, None) => {
+            let plan = rustwx_render::LayoutTable::builtin().plan_section(class, scale);
+            (plan.canvas_w, plan.canvas_h)
+        }
+        _ => section_dimensions(args.section_size, args.width, args.height),
+    };
     let section_args = SectionArgs {
         line: args.section.clone(),
         across_km: args.section_across_km,
@@ -1354,24 +1521,6 @@ fn run(args: Args) -> Result<(), String> {
         }
         return Ok(());
     }
-    // A listing asked about NAMED products imports the frames exactly as the
-    // render of those products does, so the render that follows into the
-    // same store finds that run there and imports nothing
-    // (`wrf_process::published_import_record`).  A listing of group keywords
-    // alone, the default, still imports in full: it answers what the frames
-    // can draw at all.
-    let mut options = WrfProcessOptions {
-        heavy_ecape: args.heavy,
-        named_products_only: !args.heavy
-            && named_product_request(&store_products)
-            && (!args.list_products || names_a_product(&store_products)),
-        ..WrfProcessOptions::default()
-    };
-    if !args.heavy {
-        if let Some(rainfall) = rainfall_import_options(&store_products) {
-            options = rainfall;
-        }
-    }
     // Read before the import consumes the paths: the domain token and the
     // subtitle spacing come from the inputs' own global attributes, never
     // from the store (rw-store v1 retains no grid-spacing metadata).
@@ -1381,64 +1530,23 @@ fn run(args: Args) -> Result<(), String> {
     let title_provenance = TitleProvenance::LocalImport {
         grid_label: domain_title_label(&identity),
     };
-    let task = spawn_process_paths(args.inputs, args.store_root.clone(), options);
-    let import = loop {
-        match task
-            .rx
-            .recv()
-            .map_err(|err| format!("WRF processor exited without a result: {err}"))?
-        {
-            WrfProcessMessage::Progress(message) => println!("PROCESS {message}"),
-            WrfProcessMessage::Done(result) => break result?,
-        }
-    };
-    println!(
-        "IMPORTED model={} run={} files={} hours={} variables={} notes={}",
-        import.model,
-        import.run,
-        import.files_seen,
-        import.hours_written,
-        import.variables.len(),
-        import.notes.len()
-    );
-    // Every note verbatim, not just the count.  A `notes=7` tally hid real
-    // uvmet/uvmet10/interpolation failures -- named products degraded or
-    // vanished with nothing on the transcript saying why.
-    for note in &import.notes {
-        eprintln!("{}", import_note_line(note));
-    }
-    let frame_sources: std::collections::HashMap<u16, PathBuf> =
-        import.frame_sources.iter().cloned().collect();
-
-    let run_manifest = args
-        .store_root
-        .join(&import.model)
-        .join(&import.run)
-        .join("run.json");
-    let manifest: serde_json::Value = serde_json::from_slice(
-        &std::fs::read(&run_manifest)
-            .map_err(|err| format!("read {}: {err}", run_manifest.display()))?,
-    )
-    .map_err(|err| format!("parse {}: {err}", run_manifest.display()))?;
-    let stored_slots: Vec<u16> = {
-        let mut slots: Vec<u16> = manifest
-            .get("hours")
-            .and_then(serde_json::Value::as_object)
-            .ok_or_else(|| format!("{} has no hours object", run_manifest.display()))?
-            .keys()
-            .filter_map(|key| key.parse::<u16>().ok())
-            .collect();
-        slots.sort_unstable();
-        slots
-    };
-    if stored_slots.is_empty() {
-        return Err(format!("{} has no stored forecast slots", run_manifest.display()));
-    }
+    let ImportedRun {
+        model: import_model,
+        run: import_run_slug,
+        stored_slots,
+        frame_sources,
+    } = import_run(
+        args.inputs,
+        &args.store_root,
+        &store_products,
+        args.heavy,
+        args.list_products,
+    )?;
     if args.list_products {
         return list_products(
             &args.store_root,
-            &import.model,
-            &import.run,
+            &import_model,
+            &import_run_slug,
             &stored_slots,
             args.heavy,
         );
@@ -1471,8 +1579,8 @@ fn run(args: Args) -> Result<(), String> {
     };
     let catalog = inspect_renderable_products_over(
         &args.store_root,
-        &import.model,
-        &import.run,
+        &import_model,
+        &import_run_slug,
         &drawn_slots,
     )?;
     let product_spec = expand_catalog_keywords(&store_products, &catalog)?;
@@ -1482,49 +1590,26 @@ fn run(args: Args) -> Result<(), String> {
         catalog.stored_hours
     );
 
-    // Size the limits to the request: this is a command-line job whose
-    // work is exactly frames x products, not a GUI guarding against an
-    // accidental unbounded click.
-    let selected_frames = match hour_scope {
-        BatchHourScope::AllStored => stored_slots.len().max(1),
-        BatchHourScope::Current(_) => 1,
-    };
-    let per_frame_products = requested_product_count(&product_spec);
-    let mut limits = BatchRenderLimits::default();
-    limits.max_hours = limits.max_hours.max(selected_frames);
-    limits.max_products_per_hour = limits.max_products_per_hour.max(per_frame_products);
-    limits.max_work_items = limits.max_work_items.max(
-        selected_frames
-            .saturating_mul(per_frame_products)
-            .saturating_add(per_frame_products),
-    );
-    limits.max_output_width = args.width.max(limits.max_output_width);
-    limits.max_output_height = args.height.max(limits.max_output_height);
-    limits.max_output_pixels = u64::from(args.width) * u64::from(args.height);
     // The manifest destination survives `args.out_dir` moving into the
     // request below.
     let georef_out_dir = args.out_dir.clone();
-    let request = BatchRenderRequest {
+    let request = store_batch_request(StoreBatch {
         store_root: args.store_root,
-        model_slug: import.model,
-        run_slug: import.run,
+        model_slug: import_model,
+        run_slug: import_run_slug,
         hours: hour_scope,
+        stored_frames: stored_slots.len(),
         product_spec,
         out_dir: args.out_dir,
-        domain: BatchRenderDomain::NativeGrid,
         native_domain_slug: domain_slug,
         subtitle_spacing: spacing,
-        source_label: Some(args.source_label),
+        source_label: args.source_label,
         title_provenance,
-        date_yyyymmdd: None,
-        cycle_utc: None,
-        source: None,
         geographic_overlays: args.overlays,
         panel_annotations: args.annotations,
-        output_width: args.width,
-        output_height: args.height,
-        limits,
-    };
+        width: args.width,
+        height: args.height,
+    });
     let cancel = AtomicBool::new(false);
     // Every RENDERED panel's georeference (or the lane's reason it has
     // none), collected off the event stream so the run can publish its
@@ -1608,6 +1693,164 @@ fn run(args: Args) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// A run's inputs, imported into a store: what the render needs from it.
+struct ImportedRun {
+    model: String,
+    run: String,
+    /// The stored frame slots, ascending, which is ascending valid time.
+    stored_slots: Vec<u16>,
+    frame_sources: std::collections::HashMap<u16, PathBuf>,
+}
+
+/// Import `inputs` into `store_root` for the store products asked for.
+fn import_run(
+    inputs: Vec<PathBuf>,
+    store_root: &std::path::Path,
+    store_products: &str,
+    heavy: bool,
+    list_products: bool,
+) -> Result<ImportedRun, String> {
+    // A listing asked about NAMED products imports the frames exactly as the
+    // render of those products does, so the render that follows into the
+    // same store finds that run there and imports nothing
+    // (`wrf_process::published_import_record`).  A listing of group keywords
+    // alone, the default, still imports in full: it answers what the frames
+    // can draw at all.
+    let mut options = WrfProcessOptions {
+        heavy_ecape: heavy,
+        named_products_only: !heavy
+            && named_product_request(store_products)
+            && (!list_products || names_a_product(store_products)),
+        ..WrfProcessOptions::default()
+    };
+    if !heavy {
+        if let Some(rainfall) = rainfall_import_options(store_products) {
+            options = rainfall;
+        }
+    }
+    let task = spawn_process_paths(inputs, store_root.to_path_buf(), options);
+    let import = loop {
+        match task
+            .rx
+            .recv()
+            .map_err(|err| format!("WRF processor exited without a result: {err}"))?
+        {
+            WrfProcessMessage::Progress(message) => println!("PROCESS {message}"),
+            WrfProcessMessage::Done(result) => break result?,
+        }
+    };
+    println!(
+        "IMPORTED model={} run={} files={} hours={} variables={} notes={}",
+        import.model,
+        import.run,
+        import.files_seen,
+        import.hours_written,
+        import.variables.len(),
+        import.notes.len()
+    );
+    // Every note verbatim, not just the count.  A `notes=7` tally hid real
+    // uvmet/uvmet10/interpolation failures -- named products degraded or
+    // vanished with nothing on the transcript saying why.
+    for note in &import.notes {
+        eprintln!("{}", import_note_line(note));
+    }
+    let frame_sources: std::collections::HashMap<u16, PathBuf> =
+        import.frame_sources.iter().cloned().collect();
+
+    let run_manifest = store_root
+        .join(&import.model)
+        .join(&import.run)
+        .join("run.json");
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&run_manifest)
+            .map_err(|err| format!("read {}: {err}", run_manifest.display()))?,
+    )
+    .map_err(|err| format!("parse {}: {err}", run_manifest.display()))?;
+    let stored_slots: Vec<u16> = {
+        let mut slots: Vec<u16> = manifest
+            .get("hours")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| format!("{} has no hours object", run_manifest.display()))?
+            .keys()
+            .filter_map(|key| key.parse::<u16>().ok())
+            .collect();
+        slots.sort_unstable();
+        slots
+    };
+    if stored_slots.is_empty() {
+        return Err(format!("{} has no stored forecast slots", run_manifest.display()));
+    }
+    Ok(ImportedRun {
+        model: import.model,
+        run: import.run,
+        stored_slots,
+        frame_sources,
+    })
+}
+
+/// What one store render asks of the batch renderer.
+struct StoreBatch {
+    store_root: PathBuf,
+    model_slug: String,
+    run_slug: String,
+    hours: BatchHourScope,
+    stored_frames: usize,
+    product_spec: String,
+    out_dir: PathBuf,
+    native_domain_slug: Option<String>,
+    subtitle_spacing: Option<String>,
+    source_label: String,
+    title_provenance: TitleProvenance,
+    geographic_overlays: Option<rustwx_products::geographic_overlays::MapOverlays>,
+    panel_annotations: Option<rustwx_products::geographic_overlays::PanelAnnotations>,
+    width: u32,
+    height: u32,
+}
+
+/// The batch request for one store render, with its limits sized to it.
+fn store_batch_request(batch: StoreBatch) -> BatchRenderRequest {
+    // Size the limits to the request: this is a command-line job whose
+    // work is exactly frames x products, not a GUI guarding against an
+    // accidental unbounded click.
+    let selected_frames = match batch.hours {
+        BatchHourScope::AllStored => batch.stored_frames.max(1),
+        BatchHourScope::Current(_) => 1,
+    };
+    let per_frame_products = requested_product_count(&batch.product_spec);
+    let mut limits = BatchRenderLimits::default();
+    limits.max_hours = limits.max_hours.max(selected_frames);
+    limits.max_products_per_hour = limits.max_products_per_hour.max(per_frame_products);
+    limits.max_work_items = limits.max_work_items.max(
+        selected_frames
+            .saturating_mul(per_frame_products)
+            .saturating_add(per_frame_products),
+    );
+    limits.max_output_width = batch.width.max(limits.max_output_width);
+    limits.max_output_height = batch.height.max(limits.max_output_height);
+    limits.max_output_pixels = u64::from(batch.width) * u64::from(batch.height);
+    BatchRenderRequest {
+        store_root: batch.store_root,
+        model_slug: batch.model_slug,
+        run_slug: batch.run_slug,
+        hours: batch.hours,
+        product_spec: batch.product_spec,
+        out_dir: batch.out_dir,
+        domain: BatchRenderDomain::NativeGrid,
+        native_domain_slug: batch.native_domain_slug,
+        subtitle_spacing: batch.subtitle_spacing,
+        source_label: Some(batch.source_label),
+        title_provenance: batch.title_provenance,
+        date_yyyymmdd: None,
+        cycle_utc: None,
+        source: None,
+        geographic_overlays: batch.geographic_overlays,
+        panel_annotations: batch.panel_annotations,
+        output_width: batch.width,
+        output_height: batch.height,
+        limits,
+    }
 }
 
 /// What the section lane needs from the invocation, captured before the
@@ -2504,6 +2747,7 @@ mod tests {
             frames: None,
             width: 1_200,
             height: 900,
+            layout: rustwx_render::LayoutMode::Fixed,
             heavy: false,
             list_products: false,
             streamlines: None,
@@ -2523,6 +2767,7 @@ mod tests {
             mesh_labels: ("TREATMENT".to_string(), "CONTROL".to_string()),
             mesh_bounds: None,
             footer: rustwx_render::FooterFields::default(),
+            difference: None,
             inputs,
         }
     }
@@ -2980,6 +3225,9 @@ fn main() -> ExitCode {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
     if let Some(result) = rw_wrfbatch::ensemble_products::try_cli(&std::env::args().skip(1).collect::<Vec<_>>()) {
         return match result { Ok(()) => ExitCode::SUCCESS, Err(message) => { eprintln!("FAILED\t{message}"); ExitCode::FAILURE } };
+    }
+    if let Some(result) = sheet::try_cli(&std::env::args().skip(1).collect::<Vec<_>>()) {
+        return match result { Ok(()) => ExitCode::SUCCESS, Err(message) => { eprintln!("{message}"); ExitCode::FAILURE } };
     }
     if let Some(result) = store_render::try_cli(&std::env::args().skip(1).collect::<Vec<_>>()) {
         return match result { Ok(()) => ExitCode::SUCCESS, Err(message) => { eprintln!("{message}"); ExitCode::FAILURE } };

@@ -530,10 +530,27 @@ def test_no_existing_profile_changed_its_microphysics():
     for profile in thompson_mynn_ruc:
         assert single_domain_runtime_switches(profile)["mp_physics"] == 8
 
+    # And the three siblings of that Thompson MYNN + RUC row the 2.8.6
+    # lanes registered and the fixed-template routes now declare
+    # (gpuwm.physics_profile_siblings, 31436e8cb): the monthly-albedo
+    # legacy-RRTMG template (322308291), its alb_sol 1 twin (67d633a15)
+    # and the GSD MYNN 4.1 Thompson-aerosol suite (4193eb0da).  New rows,
+    # each with its own microphysics, named here so a further row still
+    # fails.
+    thompson_mynn_ruc_siblings = {
+        "thompson-mp8-mynn-mynn-ruc-monthly-rrtmg-legacy-v1": 8,
+        "thompson-mp8-mynn-mynn-ruc-monthly-solar-rrtmg-legacy-v1": 8,
+        "thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1": 28,
+    }
+    for profile, mp_physics in thompson_mynn_ruc_siblings.items():
+        assert single_domain_runtime_switches(
+            profile)["mp_physics"] == mp_physics, profile
+    assert not set(thompson_mynn_ruc_siblings) & set(before)
+
     assert (set(SINGLE_DOMAIN_PHYSICS_PROFILES)
             == set(before) | {P3_LEGACY_RRTMG_PROFILE_ID}
             | set(COMPOSITION_SUITE_PROFILE_IDS) | set(aggregate_kf)
-            | thompson_mynn_ruc)
+            | thompson_mynn_ruc | set(thompson_mynn_ruc_siblings))
     # ...and none of those six moved an EXISTING profile's microphysics,
     # which is what this test is named for: each is its own row.
     assert not set(COMPOSITION_SUITE_PROFILE_IDS) & set(before)

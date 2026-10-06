@@ -966,17 +966,26 @@ def test_a_failed_tree_is_never_bound(tmp_path):
         boundary_stream.bind_head(output, writer.head_sha256)
 
 
-def test_the_streamed_loop_writes_what_the_route_loop_wrote(tmp_path):
+def test_the_streamed_loop_writes_what_the_route_loop_wrote(tmp_path, request):
+    def stop_writer(writer):
+        heartbeat = writer._heartbeat
+        writer._stop_heartbeat(final="producing")
+        if heartbeat is not None:
+            heartbeat.join(timeout=5)
+            assert not heartbeat.is_alive()
+
     snapshots = _snapshots(4)
     times = _times(4)
     manual_writer, _ = _chained_tree(tmp_path, snapshots, stop_after=2,
                                      name="manual")
+    request.addfinalizer(lambda: stop_writer(manual_writer))
     manual = manual_writer.seal_cache()
     staging = tmp_path / ".tmp-loop"
     staging.mkdir()
     writer = PreparedTreeWriter(
         staging=staging, output_root=tmp_path / "loop",
         identity={"source": "boundary-stream-test"}, chained=True)
+    request.addfinalizer(lambda: stop_writer(writer))
     frames = StateBoundaryFrames(spec_bdy_width=5, spec_zone=1, relax_zone=4)
     frames.add_snapshot(snapshots[0], index=0)
     seconds = [(t - times[0]).total_seconds() for t in times]

@@ -83,3 +83,30 @@ the loader's and the RawModule options, with NVRTC 13.4 and 12.9
 (`tools/kernel_ptx_identity/receipts/oracle-diffusion-2.8.2-nvrtc{13.4,12.9}.json`).
 The diagnostic receipts (no-FMA, reference metrics and order, reference density,
 rounding) keep the source their transforms were applied to.
+
+The 2.8.6 Smagorinsky changes (225fc6a88, rounding pinned to native Blackwell
+arithmetic, and 1f625334f, bounded 32-bit addressing) moved `smag2d` from
+`b60a0290` to `400d89d0`. These did change the compiled code, so the ten
+production receipts were re-measured through the unmodified launchers with the
+compare functions of `deformation_compare.py`, `horizontal_compare.py`,
+`horizontal_driver.py`, `vertical_driver.py` and `deformation_mutations.py`. On the
+RTX 5090 every word of all 84 cases equals the 2.8.5 receipt, so no Blackwell
+output moved. On the RTX 4090 the deformation, vertical-driver and
+km-mutations words are unchanged; 10 of 14 horizontal cases and 24 of 28
+horizontal-driver cases moved, and every one of them now equals the Blackwell
+word, which is the intent of 225fc6a88. The horizontal and horizontal-driver
+receipts are therefore word-identical across the two cards; the deformation
+receipts still differ in 10 of 14 cases.
+
+Byte identity is certified on Blackwell and newer only (ruling 2026-10-04), so
+the driver word receipts (`horizontal-driver`, `vertical-driver`,
+`km-mutations`) follow the same rule as the advection receipts. Each card that
+measured a receipt is declared with its compute capability in
+`RECEIPT_CAPABILITY` in `tests/test_diffusion_drivers_wrf471_parity.py`; a
+receipt from an undeclared card fails. A Blackwell receipt must pin the
+`smag2d` source the loader compiles, and each folder needs at least one current
+Blackwell receipt. An RTX 4090 receipt that trails the source is reported
+(`UncertifiedReceiptStale`) and its words are not accepted until it is
+recaptured, instead of holding the test red as it did after 1f625334f. On an
+uncertified card with no current receipt of its own, the device word tests skip
+and say why.

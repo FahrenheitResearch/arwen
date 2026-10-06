@@ -342,13 +342,25 @@
   "soil_surface": {
    "source_id": "noaa-hrrr-conus-pressure-grib2-native",
    "mapping_role": "soil_surface_mapping",
-   "mapping_sha256": "1bb2dd3f91bb0c645d4256cc23d7827bd7f6ba17eaf8da4d4fa4caa590ac8d61",
+   "mapping_sha256": "770b747a0a8eb62b281fe51a5853a4fa82a43512079615a60f1c385f9713ee0c",
    "data_role": "soil_surface_data",
    "provenance_role": "soil_surface_provenance",
    "fields": [
     "terrain_height",
     "soil_temperature",
     "volumetric_soil_moisture"
+   ],
+   "grid_alignment": "exact_coordinate_subset",
+   "time_alignment": "source_cycle_analysis_broadcast"
+  },
+  "vegetation_surface": {
+   "source_id": "noaa-hrrr-conus-surface-vegetation-grib2",
+   "mapping_role": "vegetation_surface_mapping",
+   "mapping_sha256": "adefc1d166ab4932616d91e206542e527b9c38e9a7e4e72ba8e04a9404049f8a",
+   "data_role": "vegetation_surface_data",
+   "provenance_role": "vegetation_surface_provenance",
+   "fields": [
+    "vegetation_fraction"
    ],
    "grid_alignment": "exact_coordinate_subset",
    "time_alignment": "source_cycle_analysis_broadcast"

@@ -354,6 +354,14 @@ WARNING_CODES = {
         "process (a head-bound tree whose terrain clock moved runs again "
         "on its sealed preparation); `reason` says why, and the attempt's "
         "outputs are kept beside the new ones",
+    "stability_retry":
+        "a static nested forecast failed its full-state health check and "
+        "bounded checkpoint recovery acted on it: it rewinds to the last "
+        "proven checkpoint and runs again with half-sized adaptive step "
+        "caps, at most twice; `recovery` carries the retry number, its "
+        "phase (validating_restore, resumed, refused or interrupted), the "
+        "checkpoint, the cause, the per-domain clock_policy_changes and "
+        "the path of the stability-recovery.json receipt",
 }
 
 #: The one code family spelled by prefix rather than in full.
@@ -1179,6 +1187,7 @@ _RUN_OPTION_DEFAULTS: dict[str, Any] = {
     "prepared_root": None,
     "wps_namelist": None,
     "health_debug": False,
+    "verify_visuals": True,
     "data_dir": None,
     "geog_root": None,
     "physics_profile": None,
@@ -1245,7 +1254,7 @@ def _run_option(key: str, value: object, base: Path) -> Any:
             return bindings(value, base=base)
         except ValueError as error:
             raise PlanError(str(error)) from error
-    if key in ("dry_run", "health_debug"):
+    if key in ("dry_run", "health_debug", "verify_visuals"):
         if not isinstance(value, bool):
             raise PlanError(f"{label} must be true or false")
         return value
@@ -2407,19 +2416,28 @@ class RunObserver:
         start again with the new attempt.
         """
 
-        hook = getattr(self._heartbeat, "restarting", None)
-        if hook is not None:
-            hook(reason)
         live, first = self._live_products, self._first_products
         if live is not None or first is not None:
             from gpuwm.first_products import halt_renders_and_wait
 
             if live is not None:
                 live.halt(timeout=0)
-            if first is not None:
-                halt_renders_and_wait(first)
-            if live is not None:
-                halt_renders_and_wait(live)
+            # A bounded halt may return with a reader still alive.  Keep the
+            # old render handles and progress intact in that case: the runner
+            # is about to rewind history, so a new attempt cannot start until
+            # every reader of the old frames has ended.  Try both readers even
+            # when the first one fails to stop.
+            first_stopped = (first is None or halt_renders_and_wait(first))
+            live_stopped = (live is None or halt_renders_and_wait(live))
+            if not first_stopped or not live_stopped:
+                raise RuntimeError(
+                    "forecast restart refused: a render is still reading "
+                    "the previous attempt's history; refusing output rewind")
+
+        hook = getattr(self._heartbeat, "restarting", None)
+        if hook is not None:
+            hook(reason)
+        if live is not None or first is not None:
             self._first_products = None
             self._live_products = None
             if self._render_plan is not None:
@@ -2778,6 +2796,10 @@ def _schema_default_resolutions(raw: Mapping[str, Any]) -> list[dict[str, Any]]:
     for field in dataclasses.fields(ExperimentConfig):
         if field.name in {"devices", "simulated_radar"}:
             # OFF contributes no new schema row to an existing plan.
+            continue
+        if field.name == "physics_params" and field.default is None:
+            # Absent constants contribute no schema-default row. An active
+            # set is carried by the resolved configuration snapshot instead.
             continue
         if field.default is dataclasses.MISSING:
             continue
@@ -3173,7 +3195,8 @@ def resolve_plan(plan: RunPlan, *, generate_into: Path | None = None,
                     "value": {"id": member, "token": token},
                     "basis": "route_default" if requested is None else "declared"})
     local_verdict = drivability_for((raw.get("fetch") or {}).get("source"))
-    if chain == "prepared:staged" and local_verdict.get("requires_source_root"):
+    from gpuwm.source_drivability import local_input_requested
+    if chain == "prepared:staged" and local_input_requested(raw.get("fetch") or {}):
         from gpuwm.local_preparation import review_local_inputs
         hints = raw.get("fetch") or {}
         try:
@@ -3261,10 +3284,20 @@ def resolve_plan(plan: RunPlan, *, generate_into: Path | None = None,
     from gpuwm.config import validate_experiment_preparation
 
     if existing_bundle is None:
+        from gpuwm.preparation_assets import wif_fetch_domains, wif_fetch_resolution
+
+        # Only a chain that actually fetches may defer this dependency.
+        # Preparation and initialization still require the acquired dataset.
+        fetch_hints = raw.get("fetch") or {}
+        pending_wif = (wif_fetch_domains(exp, fetch_hints)
+                       if chain in ("prepared:hrrr", "prepared:staged")
+                       and not local_input_requested(fetch_hints) else ())
         try:
-            validate_experiment_preparation(exp)
+            validate_experiment_preparation(exp, pending_wif_domains=pending_wif)
         except ValueError as refusal:
             raise PlanError(str(refusal)) from None
+        if pending_wif:
+            resolutions.append(wif_fetch_resolution(pending_wif))
         # A root the [fetch] source's grid does not reach, on the same
         # terms: the source row declares its coverage, the config holds
         # the root, and the preparation otherwise refuses it only after
@@ -3417,6 +3450,8 @@ def _plan_recipe(plan: RunPlan, raw: Mapping[str, Any]) -> str | None:
         return None
     if table.get("recipe") is not None:
         return str(table["recipe"])
+    if table.get("member_variants"):
+        return "member-roster"
     return "multi-model" if table.get("trajectories") else None
 
 
@@ -4668,6 +4703,10 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
     # decodes each lead as its marker appears, publishes its head on the
     # first two leads and writes the source manifest at its seal.  The
     # fetch beside is ``None`` otherwise, and the window is fetched first.
+    from gpuwm.preparation_assets import wif_fetch_domains
+
+    if wif_fetch_domains(exp, hints):
+        hints = {**hints, "wif": True}
     beside = _native_fetch_beside(plan, hints, exp, data_dir=data_dir,
                                   run_dir=run_dir, observer=observer,
                                   prepare_only=prepare_only)
@@ -4807,7 +4846,7 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
         if chained is not None:
             return _chain_render(plan, forecast_dir=forecast_dir,
                                  run_dir=run_dir, observer=observer)
-    elif len(exp.domains) > 1 and not prepare_only:
+    elif len(exp.domains) > 1 and (not prepare_only or os.environ.get("GPUWM_CONTINUATION_PREFIX")):
         # A native tree chains on its root preparation's head (A136 L7c):
         # the hierarchy stage builds the children on the root's start state
         # and publishes the tree's head, relays the root's boundary
@@ -4821,10 +4860,13 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
                 preparation=preparation,
                 hierarchy=lambda: hierarchy(observe_stage=False),
                 config_path=config_path, forecast_dir=forecast_dir,
-                observer=observer, devices=plan.run_options.get("devices"))
+                observer=observer, devices=plan.run_options.get("devices"),
+                prepare_only=prepare_only)
             if beside is not None:
                 beside.result()
         if chained is not None:
+            if prepare_only:
+                return _prepared_chain_result(tree_root, config_path, None)
             return _chain_render(plan, forecast_dir=forecast_dir,
                                  run_dir=run_dir, observer=observer)
         observer.finish_stage(hierarchy_root=str(tree_root),
@@ -5082,7 +5124,7 @@ def _native_fetch_beside(plan: RunPlan, hints, exp, *, data_dir: Path,
     :func:`native_whole_window_reason`; a preparation-only door stays sealed.
     """
 
-    if hints.get("as_posted") is False or prepare_only:
+    if hints.get("as_posted") is False or (prepare_only and not os.environ.get("GPUWM_CONTINUATION_PREFIX")):
         return None
     reason = native_whole_window_reason(
         domains=len(exp.domains),
@@ -5235,7 +5277,8 @@ def _hrrr_single_chain(*, prep_root: Path, preparation, forecast_dir: Path,
 
 def _hrrr_tree_chain(*, prep_root: Path, tree_root: Path, preparation,
                      hierarchy, config_path: Path, forecast_dir: Path,
-                     observer: RunObserver, devices: int | None = None):
+                     observer: RunObserver, devices: int | None = None,
+                     prepare_only: bool = False):
     """Run the native HRRR root preparation and hierarchy beside a forecast.
 
     ``preparation`` runs the root preparation to its seal and
@@ -5329,6 +5372,8 @@ def _hrrr_tree_chain(*, prep_root: Path, tree_root: Path, preparation,
         with seal_lock:
             seal_state["head"] = True
             emit_sealed_once()
+        if prepare_only:
+            return head_sha256
         _hrrr_tree_forecast(tree_root=tree_root, config_path=config_path,
                             forecast_dir=forecast_dir, observer=observer,
                             head_sha256=head_sha256, devices=devices)
@@ -6026,7 +6071,8 @@ def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
     observer.enter_stage("fetch", phase="fetch")
     verdict = drivability_for(hints.get("source"))
     local_snapshot = None
-    if verdict.get("requires_source_root"):
+    from gpuwm.source_drivability import local_input_requested
+    if local_input_requested(hints):
         from gpuwm.local_preparation import (
             inspect_local_inputs, publish_local_handoff, resolve_source_root)
         from gpuwm.fetch import parse_cycle
@@ -6065,6 +6111,10 @@ def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
                         "network_used": False, "input_sha256": snapshot["sha256"],
                         "file_count": len(snapshot["files"])}
     else:
+        from gpuwm.preparation_assets import wif_fetch_domains
+
+        if wif_fetch_domains(exp, hints):
+            hints = {**hints, "wif": True}
         # Acquisition publishes complete extended paths on Windows. Keep the
         # same directory spelling when reading its handoff and writing the
         # verified member list, including cache roots beyond MAX_PATH.
@@ -7356,9 +7406,11 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
         # finalize is this front door's own, because the pipeline has no
         # word for it.
         from gpuwm.ensemble.door import request_for_config, production_run_scope
+        from gpuwm.verification_visuals import verification_scope
         ensemble_request = request_for_config(config_path,
             override=plan.run_options.get("ensemble"))
-        with _kernel_compile_relay(observer), production_run_scope(
+        with _kernel_compile_relay(observer), verification_scope(
+                plan.run_options.get("verify_visuals", True)), production_run_scope(
                 ensemble_request, output_directory=run_dir):
             summary = ROUTES[plan.route].execute(
                 plan, exp=exp, data=data, config_path=config_path,

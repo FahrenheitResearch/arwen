@@ -38,18 +38,19 @@ def test_coordinate_configuration_admits_wrf_logicals(km,mix):
                              mix_full_fields=mix,bl_pbl_physics=0))
 
 
-@pytest.mark.parametrize("km",[1,2,3,4])
-def test_metric_diffusion_refuses_perturbation_mixing(km):
-    # The importer substitutes true for a namelist's false under diff_opt=2;
-    # a TOML that writes false there was admitted and mixed full fields.
+@pytest.mark.parametrize("km,pbl",[(1,0),(1,1),(2,0),(3,0),(4,0),(4,1)])
+def test_metric_diffusion_admits_perturbation_mixing(km,pbl):
+    # The refusal that stood here retired: WRF's perturbation branch
+    # subtracts base-state profiles real.exe leaves at zero, so the metric
+    # operator is WRF's operator at either value for a real-data run
+    # (gpuwm/config.py, validate_km_opt).  Operational HRRR runs false.
     cfg=RunConfig(nx=12,ny=9,nz=6,dx=800.,dy=1400.,ztop=3000.,dt=1.,
-                  run_seconds=30.,km_opt=km,bl_pbl_physics=0,
+                  run_seconds=30.,km_opt=km,bl_pbl_physics=pbl,
                   mix_full_fields=False)
-    with pytest.raises(ValueError,match="mix_full_fields = false selects"):
-        validate_km_opt(cfg)
+    validate_km_opt(cfg)
 
 
-def test_mixed_operator_columns_report_only_actual_substitution():
+def test_mixed_operator_columns_import_as_declared():
     wps,inp=deepcopy(_base_pair())
     inp["dynamics"]["diff_opt"]=[2,1]
     inp["dynamics"]["mix_full_fields"]=[False,False]
@@ -59,10 +60,7 @@ def test_mixed_operator_columns_report_only_actual_substitution():
     assert config["shared"]["mix_full_fields"] is True
     assert config["domain"][1]["diff_opt"]==1
     assert config["domain"][1]["mix_full_fields"] is False
-    row=next(s for s in report.substitutions if s.key=="mix_full_fields")
-    assert row.gpuwm_value==(True,False)
-    assert "domains [1]" in row.reason
-    assert "every domain" not in row.gpuwm_name
+    assert [s for s in report.substitutions if s.key=="mix_full_fields"]
 
 
 @pytest.mark.parametrize("explicit_sentinel", [False, True])

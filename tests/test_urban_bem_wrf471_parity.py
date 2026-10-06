@@ -55,7 +55,7 @@ from conftest import requires_gpu
 from gpuwm.core.fp32_ulp import fp32_ulp_distance
 
 FIXTURE_DIR = (Path(__file__).resolve().parents[1]
-               / "gpuwm" / "data" / "urban" / "oracle" / "bem")
+               / "tests" / "data" / "oracles" / "urban" / "bem")
 VARIANTS = ("stock", "lcz", "gr1pv", "gr2", "long")
 
 #: BEP_BEM's per-call outputs on mass levels kts..kte (sf also kte+1).

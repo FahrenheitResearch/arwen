@@ -403,6 +403,8 @@ def test_hrrr_checkpoints_after_every_completed_hour(tmp_path, monkeypatch,
 
 def test_a_kill_after_a_complete_hour_leaves_a_usable_receipt(tmp_path,
                                                               monkeypatch):
+    from test_fetch import _install_runtime_surface_inputs
+    _install_runtime_surface_inputs(monkeypatch)
     out = tmp_path / "hrrr"
 
     def die_on_hour_one(request, *, workers, retries, expected_count=-1):
@@ -413,8 +415,10 @@ def test_a_kill_after_a_complete_hour_leaves_a_usable_receipt(tmp_path,
 
     monkeypatch.setattr(hrrr_transport, "_download_product", die_on_hour_one)
     with pytest.raises(RuntimeError, match="injected kill"):
+        # Serial input publication makes the injected hour-1 failure
+        # happen after hour 0's durable checkpoint, as the test requires.
         fetch.fetch_hrrr(cycle=_HRRR_CYCLE, hours=(0, 1), area=None,
-                         out=out, progress=lambda line: None)
+                         out=out, file_workers=1, progress=lambda line: None)
 
     manifest = _manifest(out)
     assert manifest["forecast_hours"] == [0]

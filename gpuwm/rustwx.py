@@ -40,11 +40,13 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 from gpuwm import bridges
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
-                           default_bridge_dir, lazy_build_hints,
+                           default_bridge_dir,
+                           legacy_bridge_candidates, lazy_build_hints,
                            rustwx_build_hint,
                            executable_name, packaged_bridge_dir)
 
@@ -67,6 +69,173 @@ CANONICAL_RADAR_ABI = (
     "native-atmosphere.columns/v1 temperature=temperature_k "
     "winds=earth-relative-mass-grid/v1"
 )
+
+VERIFICATION_ENV = "GPUWM_RW_VERIFY"
+VERIFICATION_ABI = "gpuwm.verify-visuals.request.v1"
+
+
+def find_verification_binary() -> Path | None:
+    """Use the native checkout rung and shared override/packaged resolver."""
+    filename = executable_name("rw_verify")
+    override = os.environ.get(VERIFICATION_ENV)
+    if override:
+        return bridges.find_artifact(VERIFICATION_ENV, filename)
+    for path in (crate_dir() / "target" / "release" / filename,
+                 crate_dir() / "target" / "debug" / filename):
+        if path.is_file():
+            return bridges.accept_resolved(path.resolve())
+    return bridges.find_artifact(VERIFICATION_ENV, filename)
+
+
+def probe_verification_binary(path: Path) -> tuple[bool, str]:
+    """Does ``path`` speak the request contract this gpuwm writes?
+
+    THE probe for ``rw_verify``: :func:`verification_binary` refuses by
+    it and ``gpuwm doctor`` reports by it, so the report and the door
+    cannot disagree about one build.  Judged statically out of the bytes
+    against :data:`gpuwm.bridges.BRIDGE_ABI_MARKERS`, the check
+    ``gpuwm fetch-bridges`` applies before it stages one.
+    """
+    return bridges.bridge_abi_matches("rw_verify", path)
+
+
+def verification_binary() -> Path:
+    """Require the native artifact selected by the shared resolution ladder.
+
+    Breakage the stale-build refusal prevents: a build predating the
+    request contract launched, answered ``--prepare`` with a request this
+    gpuwm does not read, and surfaced as "returned an incompatible
+    request" with no word that the build was stale or how to replace it,
+    while ``gpuwm doctor`` reported that same build stale.
+    """
+    filename = executable_name("rw_verify")
+    found = find_verification_binary()
+    if found is None:
+        raise RuntimeError(artifact_remedy(
+            env_var=VERIFICATION_ENV, filename=filename,
+            subject="the observation verification engine", crate_relative=RUSTWX_CRATE_RELATIVE,
+            one_liner=rustwx_build_hint(), artifact="rw_verify"))
+    usable, evidence = probe_verification_binary(found)
+    if not usable:
+        raise RuntimeError(f"{found}: {evidence}.  Rebuild it: {rustwx_build_hint()}")
+    return found
+
+
+def _verification_run(arguments: list[str], *, timeout: float) -> dict:
+    import json
+
+    env = renderer_env()
+    env["CUDA_VISIBLE_DEVICES"] = ""
+    result = subprocess.run([str(verification_binary()), *arguments], capture_output=True,
+                            text=True, errors="replace", env=env, timeout=timeout)
+    if result.returncode:
+        raise RuntimeError("native observation verification: " +
+                           (result.stderr.strip() or f"exit {result.returncode}"))
+    try:
+        record = json.loads(result.stdout)
+    except ValueError as error:
+        raise RuntimeError("native observation verification returned no JSON receipt") from error
+    return record
+
+
+def verification_inventory(request: dict, *, workdir: Path, timeout=120) -> dict:
+    """Ask Rust for grid and time metadata without Python field decoding."""
+    from gpuwm.verification_visuals import _atomic_json
+
+    workdir.mkdir(parents=True, exist_ok=True)
+    path = workdir / "inventory.request.json"
+    _atomic_json(path, request)
+    record = _verification_run(["--inventory", str(path)], timeout=timeout)
+    if record.get("schema") != "gpuwm.verify-visuals.inventory.v1":
+        raise RuntimeError("native verification inventory returned an incompatible schema")
+    return record
+
+
+def prepare_verification(request: dict, *, workdir: Path, timeout=120) -> dict:
+    """Retain native verification planes so later arrivals survive raw cleanup."""
+    import json
+    from gpuwm.verification_visuals import _atomic_json
+
+    workdir.mkdir(parents=True, exist_ok=True)
+    path = workdir / "prepare.request.json"
+    prepared_path = workdir / "prepared.request.json"
+    staged = workdir / ".prepared.request.json.partial"
+    _atomic_json(path, request)
+    try:
+        _verification_run(["--prepare", str(path), "--json", str(staged)], timeout=timeout)
+        if not staged.is_file():
+            raise RuntimeError("native verification did not commit its reusable input request")
+        prepared = json.loads(staged.read_text(encoding="utf-8"))
+        if prepared.get("schema") != "gpuwm.verify-visuals.request.v1":
+            raise RuntimeError("native verification preparation returned an incompatible request")
+        staged.replace(prepared_path)
+        return {**request, **prepared}
+    finally:
+        staged.unlink(missing_ok=True)
+
+
+def verify_observations(request: dict, *, receipt_path: Path, image_path: Path,
+                        timeout=900) -> dict:
+    """Submit paths and metadata; Rust samples, scores and renders the outputs."""
+    import hashlib
+    import json
+    from gpuwm.verification_visuals import _atomic_json, _outputs_present
+
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    path = receipt_path.with_name(receipt_path.stem + ".request.json")
+    staged = receipt_path.with_name("." + receipt_path.name + ".partial")
+    _atomic_json(path, request)
+    try:
+        _verification_run(["--request", str(path), "--json", str(staged),
+                           "--image", str(image_path)], timeout=timeout)
+        if not staged.is_file() or not image_path.is_file():
+            raise RuntimeError("native verification did not commit its score receipt and image")
+        record = json.loads(staged.read_text(encoding="utf-8"))
+        if record.get("schema") != "gpuwm.verify-visuals.receipt.v1":
+            raise RuntimeError("native verification returned an incompatible score receipt")
+        if (record.get("request_sha256") != hashlib.sha256(path.read_bytes()).hexdigest()
+                or record.get("domain") != request["domain"]
+                or record.get("valid_time") != request["valid_time"]):
+            raise RuntimeError("native verification receipt does not bind the submitted hour and request")
+        if not _outputs_present(record):
+            raise RuntimeError("native verification images are missing or do not match their receipt hashes")
+        staged.replace(receipt_path)
+    finally:
+        staged.unlink(missing_ok=True)
+    artifacts = record.setdefault("artifacts", [])
+    if not any(row.get("path") == str(image_path) for row in artifacts):
+        artifacts.append({"product": "verification", "path": str(image_path)})
+    return record
+
+
+def verification_reference(*, cache: Path, reference: str, cycle, hour: int,
+                           timeout=120, reference_dir=None, reference_file=None, offline=False) -> dict:
+    """Resolve a reference through the renderer's native metadata table."""
+    import json
+
+    from gpuwm import rustwx_lanes
+
+    # The comparison engine's own ladder and its reference-input probe,
+    # the pair `gpuwm doctor` reports for this door; never a second copy.
+    binary = rustwx_lanes.require_compare_reference_bin()
+    cache.mkdir(parents=True, exist_ok=True)
+    arguments = [str(binary),
+        "--fetch-reference", "--store-root", str(cache), "--reference", reference,
+        "--cycle", cycle.strftime("%Y%m%d%H"), "--forecast-hour", str(hour)]
+    if reference_dir:
+        arguments.extend(["--reference-dir", str(reference_dir)])
+    if reference_file:
+        arguments.extend(["--reference-file", str(reference_file)])
+    if offline:
+        arguments.append("--offline")
+    result = subprocess.run(arguments,
+        capture_output=True, text=True, errors="replace", env=renderer_env(), timeout=timeout)
+    if result.returncode:
+        raise RuntimeError("reference input: " + result.stderr.strip())
+    record = json.loads(result.stdout)
+    if record.get("schema") != "gpuwm.reference-input.v1" or not Path(record["path"]).is_file():
+        raise RuntimeError("reference input returned an incompatible or incomplete receipt")
+    return record
 
 #: The environment variable naming an explicit ``rw_simradar`` build.
 SIMULATED_RADAR_ENV = "GPUWM_RW_SIMRADAR"
@@ -108,6 +277,7 @@ def simulated_radar_binary() -> Path | None:
         root / "libexec" / "bridges" / filename,
         packaged_bridge_dir() / filename,
         default_bridge_dir() / filename,
+        *legacy_bridge_candidates(filename),
     ]
     for candidate in candidates:
         if candidate.is_file():
@@ -337,8 +507,14 @@ RENDERER_ABI_MARKER = (
     "frame-attributed\t"
     "gpuwm-rw-wrfbatch-sections-v1\tSECTIONFILL\tslug\tlo\thi\tabsence\t"
     "rule\t"
+    "gpuwm-rw-wrfbatch-inputs-json-v1\t"
     "gpuwm-rw-wrfbatch-vocabulary-v2\tgeneric\tvar:\tvariables\txsec:\t"
-    "mesh:\tmeshdiff:\tselectable_slugs")
+    "mesh:\tmeshdiff:\tselectable_slugs\t"
+    "gpuwm-rw-wrfbatch-layout-v1\t--layout\tauto\tfixed\t"
+    "--size-class\t--scale\t--pair-sheet\t"
+    "gpuwm-rw-wrfbatch-difference-v1\t--diff-against\t--diff-inputs-json\t"
+    "--diff-label-a\t--diff-label-b\t--diff-labels\t"
+    "--diff-sheet\tDIFFERENCE")
 
 #: The generic product families, read OUT of the pinned marker rather
 #: than listed again beside it.  The marker is the contract a built
@@ -605,7 +781,9 @@ def wrapper_basemap_candidates() -> tuple[Path, ...]:
        ``gpuwm`` at its exact version, so a bare ``pip install`` draws
        its maps with no further step;
     3. the ones ``gpuwm fetch-bridges`` staged, which outlive an upgrade
-       and so come last.
+       and so come last;
+    4. for a pinned install, the ones an older release staged into the
+       flat ``~/.gpuwm/bridges`` -- read only, never written.
     """
 
     candidates = [basemap_dir()]
@@ -613,6 +791,8 @@ def wrapper_basemap_candidates() -> tuple[Path, ...]:
     if companion is not None:
         candidates.append(companion)
     candidates.append(staged_basemap_dir())
+    candidates.extend(path / "basemap"
+                      for path in legacy_bridge_candidates("assets"))
     return tuple(candidates)
 
 
@@ -672,6 +852,7 @@ def renderer_candidates() -> tuple[Path, ...]:
         root / "libexec" / "bridges" / filename,
         packaged_bridge_dir() / filename,
         default_bridge_dir() / filename,
+        *legacy_bridge_candidates(filename),
     ))
     return tuple(candidates)
 
@@ -856,7 +1037,7 @@ def catalog_rows(renderer: Path, wrfouts, *, store_root: Path,
 
 
 #: The longest command line a renderer is started with.  Windows starts
-#: no process whose command line passes 32,767 characters, and a series
+#: no process whose command line passes 32,767 UTF-16 units, and a series
 #: names every frame of one grid: 48 hours of a 15 minute nest under an
 #: ordinary Documents folder is about 29,000 of them, and a few more
 #: hours or a longer folder name passes the limit.  Kept a little under
@@ -885,8 +1066,18 @@ def _names_a_file(value: str) -> bool:
         "/" in value or os.sep in value or value.lower().endswith(".json"))
 
 
+def _command_units(command) -> int:
+    """Windows command-line length, including UTF-16 surrogate pairs."""
+
+    return len(subprocess.list2cmdline(command).encode("utf-16-le")) // 2
+
+
+class _InputInventoryRequired(ValueError):
+    """Path shortening did not fit the complete native input series."""
+
+
 def fit_series_command(command: list[str], inputs: int,
-                       env: dict[str, str]
+                       env: dict[str, str], *, inventory: Path | None = None
                        ) -> tuple[list[str], str | None, dict[str, str]]:
     """``(command, cwd, env)`` for a renderer launch over a series.
 
@@ -897,20 +1088,21 @@ def fit_series_command(command: list[str], inputs: int,
     when they share one folder, about a fifth of the length); every other
     path the renderer is given, on the command line or in its
     environment, is made absolute first, so it still names the same file.
-    The renderer reads no other path relative to where it starts.
+    The reduced command is checked in UTF-16 units too. If it still does
+    not fit, or the frames share no drive, ``inventory`` receives the
+    complete ordered path list. The launch owns and removes that file.
+    A caller without an inventory must use :func:`_series_command` to
+    manage its lifetime. The renderer reads no other path relative to
+    where it starts.
     """
 
-    if len(subprocess.list2cmdline(command)) <= COMMAND_LINE_BUDGET:
+    if _command_units(command) <= COMMAND_LINE_BUDGET:
         return command, None, env
     frames = [os.path.abspath(item) for item in command[len(command) - inputs:]]
     try:
-        base = os.path.commonpath(frames)
+        base = os.path.commonpath([os.path.dirname(frame) for frame in frames])
     except ValueError:
-        # Frames on two drives share no folder; the launch fails as a
-        # command line too long, and says so.
-        return command, None, env
-    if os.path.isfile(base):
-        base = os.path.dirname(base)
+        base = None
     head = list(command[:len(command) - inputs])
     head[0] = os.path.abspath(head[0])
     for index in range(1, len(head) - 1):
@@ -924,8 +1116,42 @@ def fit_series_command(command: list[str], inputs: int,
         value = moved.get(name)
         if value and (os.path.isdir(value) or _names_a_file(value)):
             moved[name] = os.path.abspath(value)
-    return ([*head, *(os.path.relpath(frame, base) for frame in frames)],
-            base, moved)
+    if base is not None:
+        shortened = [*head, *(os.path.relpath(frame, base) for frame in frames)]
+        if _command_units(shortened) <= COMMAND_LINE_BUDGET:
+            return shortened, base, moved
+    if inventory is None:
+        raise _InputInventoryRequired(
+            "the complete renderer input series exceeds the Windows "
+            "command-line budget after path shortening; an input inventory "
+            "is required")
+    import json
+
+    inventory = inventory.resolve()
+    reduced = [*command[:-inputs], "--inputs-json", str(inventory)]
+    if _command_units(reduced) > COMMAND_LINE_BUDGET:
+        raise ValueError(
+            "renderer options and the input inventory path exceed the "
+            "Windows command-line budget")
+    inventory.write_text(json.dumps(frames, ensure_ascii=False) + "\n",
+                         encoding="utf-8")
+    return reduced, None, env
+
+
+@contextmanager
+def _series_command(command: list[str], inputs: int, env: dict[str, str]):
+    """Keep an ordered native input file only while its process is running."""
+
+    try:
+        fitted = fit_series_command(command, inputs, env)
+    except _InputInventoryRequired:
+        import tempfile
+
+        with tempfile.TemporaryDirectory(prefix="gpuwm-native-inputs-") as folder:
+            yield fit_series_command(command, inputs, env,
+                                     inventory=Path(folder) / "inputs.json")
+    else:
+        yield fitted
 
 
 def list_products_series(renderer: Path, wrfouts, *, store_root: Path,
@@ -957,13 +1183,13 @@ def _catalog_listing(renderer: Path, wrfouts, *, store_root: Path,
     if products is not None:
         command.extend(["--products", products])
     command.extend(str(path) for path in inputs)
-    command, cwd, env = fit_series_command(command, len(inputs),
-                                           renderer_env())
     try:
-        result = subprocess.run(
-            command, capture_output=True, text=True, errors="replace",
-            env=env, cwd=cwd)
-    except OSError as error:
+        with _series_command(command, len(inputs), renderer_env()) as fitted:
+            command, cwd, env = fitted
+            result = subprocess.run(
+                command, capture_output=True, text=True, errors="replace",
+                env=env, cwd=cwd)
+    except (OSError, ValueError) as error:
         raise RuntimeError(
             f"{wrfout}: renderer failed to launch: {error}") from error
     if result.returncode != 0:
@@ -1507,9 +1733,10 @@ def _frame_of(reason: str, inputs) -> tuple[str, str]:
     """
 
     for path in inputs:
-        prefix = f"{path}: "
-        if reason.startswith(prefix):
-            return str(path), reason[len(prefix):]
+        for spelling in dict.fromkeys((str(path), os.path.abspath(path))):
+            prefix = f"{spelling}: "
+            if reason.startswith(prefix):
+                return str(path), reason[len(prefix):]
     return str(inputs[-1]), reason
 
 
@@ -1575,7 +1802,8 @@ def import_note_skip(note: str, inputs) -> tuple[str, str] | None:
 
 def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
                  out_dir: Path, products: str, frames: str,
-                 width: int, height: int, heavy: bool = False,
+                 width: int | None = None, height: int | None = None,
+                 heavy: bool = False,
                  source_label: str | None = None,
                  overlays: Path | None = None,
                  annotate: Path | None = None,
@@ -1626,6 +1854,57 @@ def run_renderer(renderer: Path, wrfout: Path, *, store_root: Path,
 RESIDENT_ENSEMBLE_ABI = (
     "gpuwm-rw-wrfbatch-resident-ensemble-v2\tCDF5\tmean\tspread\tmin\tmax\tprobability\tpaintball\tpostage\tfraction\ttyped-diagnostic\tRENDERED\tFAILED")
 
+CPU_ENSEMBLE_REDUCTION_ABI = (
+    "gpuwm-ensemble-diagnostic-reduce.v1\tf32-words\tf64-two-pass\tmember-order\tsha256")
+
+
+def find_ensemble_product_renderer(renderer: Path | None = None) -> Path | None:
+    """Resolve the shared native product CLI through the ensemble executable.
+
+    Member maps keep the ordinary renderer resolver. Both binaries dispatch
+    this aggregate contract into the same Rust implementation, preserving
+    typed diagnostic words and rendered bytes.
+    """
+    override = os.environ.get("GPUWM_ENSEMBLE_RENDERER")
+    if override:
+        selected = Path(override)
+        if not selected.is_file():
+            raise FileNotFoundError(f"GPUWM_ENSEMBLE_RENDERER names a missing file: {selected}; "
+                "point it at the built rw_ensbatch binary or unset the override")
+        return bridges.accept_resolved(selected.resolve())
+    filename = executable_name("rw_ensbatch")
+    if renderer is not None:
+        renderer = Path(renderer)
+        if renderer.stem == "rw_ensbatch":
+            return renderer
+        sibling = renderer.with_name(filename)
+        if sibling.is_file():
+            return bridges.accept_resolved(sibling.resolve())
+    root = Path(__file__).resolve().parent.parent
+    for candidate in (crate_dir() / "target" / "release" / filename,
+            crate_dir() / "target" / "debug" / filename,
+            root / "libexec" / "bridges" / filename,
+            packaged_bridge_dir() / filename, default_bridge_dir() / filename,
+            *legacy_bridge_candidates(filename)):
+        if candidate.is_file():
+            return bridges.accept_resolved(candidate.resolve())
+    return renderer
+
+
+def require_ensemble_diagnostic_reducer(renderer: Path | None = None) -> Path:
+    """Refuse an older native artifact before any member forecasts begin."""
+    renderer = find_ensemble_product_renderer(renderer)
+    if renderer is None:
+        raise RuntimeError("the Rust CPU ensemble reducer is missing; build rw_ensbatch from this source tree")
+    environment = renderer_env()
+    environment["CUDA_VISIBLE_DEVICES"] = ""
+    result = subprocess.run([str(renderer), "--ensemble-diagnostic-reduce-abi"],
+        capture_output=True, text=True, timeout=_PROBE_TIMEOUT_S, env=environment)
+    if result.returncode or result.stdout.strip() != CPU_ENSEMBLE_REDUCTION_ABI:
+        raise RuntimeError("the native artifact lacks the Rust CPU ensemble reduction contract; "
+            "build rw_ensbatch from this source tree before starting the forecast")
+    return renderer
+
 
 def run_ensemble_product_renderer(renderer: Path, product_frame: Path, *,
                                   out_dir: Path, fields=(), domain="d01",
@@ -1636,11 +1915,12 @@ def run_ensemble_product_renderer(renderer: Path, product_frame: Path, *,
     The native mode reads the ensemble CDF5 contract directly. It never
     imports a fabricated WRF frame or recalculates ensemble reductions.
     """
+    renderer = find_ensemble_product_renderer(renderer)
     probe = subprocess.run([str(renderer), "--ensemble-products-abi"],
                            capture_output=True, text=True, timeout=_PROBE_TIMEOUT_S,
                            env=renderer_env())
     if probe.returncode or probe.stdout.strip() != RESIDENT_ENSEMBLE_ABI:
-        raise RuntimeError("the Rust renderer lacks the resident ensemble product contract; build rw_wrfbatch from this source tree")
+        raise RuntimeError("the Rust renderer lacks the resident ensemble product contract; build rw_ensbatch from this source tree")
     command = [str(renderer), "--ensemble-products", str(product_frame),
                "--out-dir", str(out_dir), "--domain", str(domain),
                "--width", str(width), "--height", str(height),
@@ -1684,6 +1964,7 @@ def read_ensemble_diagnostic_rows(renderer: Path, path: Path, field: str, *, row
     import json
     import tempfile
     import numpy as np
+    renderer = find_ensemble_product_renderer(renderer)
     with tempfile.TemporaryDirectory(prefix="gpuwm-ensemble-read-") as directory:
         output = Path(directory) / "words.bin"
         command = [str(renderer), "--ensemble-diagnostic-dump", str(path),
@@ -1706,9 +1987,86 @@ def read_ensemble_diagnostic_rows(renderer: Path, path: Path, field: str, *, row
         return np.fromfile(output, dtype="<f4").reshape(shape)
 
 
+def reduce_ensemble_diagnostics(renderer: Path, *, packs, member_order, shape,
+                                valid_time, requests, inventory, scratch_directory):
+    """Transport exact native CPU product words without Python field math."""
+    import json
+    import hashlib
+    import tempfile
+    import numpy as np
+    renderer = find_ensemble_product_renderer(renderer)
+    scratch = Path(scratch_directory).resolve()
+    expected = {row["name"]: row for row in inventory}
+    deleted = []
+    with tempfile.TemporaryDirectory(prefix="cpu-reduce-", dir=scratch) as directory:
+        directory = Path(directory)
+        request_path = directory / "request.json"
+        request = {"schema": "gpuwm-ensemble-diagnostic-reduce.request.v1",
+            "member_order": list(member_order), "shape": list(shape),
+            "valid_time": str(valid_time),
+            "packs": [{"path": str(Path(pack["path"]).resolve()),
+                "member_ids": list(pack["member_ids"])} for pack in packs],
+            "fields": [{"field": item.field,
+                "threshold_bits": np.asarray(item.thresholds, np.float32).view(np.uint32).tolist(),
+                "comparison": item.comparison, "paintball": item.paintball,
+                "spaghetti": item.spaghetti, "postage_stamp": item.postage_stamp} for item in requests]}
+        request_path.write_text(json.dumps(request, allow_nan=False) + "\n", encoding="utf-8")
+        buffers = directory / "buffers"
+        environment = renderer_env()
+        environment["CUDA_VISIBLE_DEVICES"] = ""
+        command = [str(renderer), "--ensemble-diagnostic-reduce", str(request_path),
+            "--out-dir", str(buffers)]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=900, env=environment)
+        if result.returncode:
+            raise RuntimeError(result.stderr.strip() or "Rust CPU ensemble diagnostic reduction failed")
+        receipt = json.loads(result.stdout)
+        if (receipt.get("schema") != "gpuwm-ensemble-diagnostic-reduce.v1"
+                or receipt.get("members") != len(member_order) or receipt.get("shape") != list(shape)):
+            raise RuntimeError("Rust CPU ensemble reduction returned an incompatible roster or grid")
+        outputs = {}
+        for row in receipt.get("buffers", ()):
+            name = row.get("name")
+            spec = expected.get(name)
+            if spec is None or name in outputs:
+                raise RuntimeError("Rust CPU ensemble reduction returned an unexpected or duplicate product")
+            path = Path(row["path"])
+            if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(buffers.resolve()):
+                raise RuntimeError("Rust CPU ensemble reduction buffer escapes its owned directory")
+            dtype = np.dtype(row["dtype"])
+            if (dtype != np.dtype(spec["dtype"]) or row.get("shape") != list(spec["shape"])
+                    or row.get("bytes") != spec["payload_bytes"] or path.stat().st_size != spec["payload_bytes"]):
+                raise RuntimeError("Rust CPU ensemble reduction returned an incompatible typed product buffer")
+            def revision(stat):
+                return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+            with path.open("rb") as source:
+                before = revision(os.fstat(source.fileno()))
+                values = np.fromfile(source, dtype=dtype).reshape(spec["shape"])
+                after = revision(os.fstat(source.fileno()))
+                if os.name == "nt":
+                    # Descriptor ctime is change time, while a Windows path
+                    # stat may expose creation time. Compare like owners.
+                    with path.open("rb") as addressed:
+                        address = revision(os.fstat(addressed.fileno()))
+                else:
+                    address = revision(path.stat())
+                if before != after or before != address or path.is_symlink():
+                    raise RuntimeError("Rust CPU ensemble reduction buffer changed while its words were loaded")
+            digest = hashlib.sha256(memoryview(values).cast("B")).hexdigest()
+            if digest != row.get("sha256"):
+                raise RuntimeError("Rust CPU ensemble reduction buffer differs from its committed SHA-256")
+            outputs[name] = values
+        if set(outputs) != set(expected):
+            raise RuntimeError("Rust CPU ensemble reduction omitted a requested product buffer")
+        for path in directory.rglob("*"):
+            if path.is_file():
+                deleted.append({"path": str(path), "bytes": path.stat().st_size})
+    return outputs, deleted
+
+
 def run_renderer_series(renderer: Path, wrfouts, *, store_root: Path,
                         out_dir: Path, products: str, frames: str,
-                        width: int, height: int, heavy: bool = False,
+                        width: int | None = None,
+                        height: int | None = None, heavy: bool = False,
                         source_label: str | None = None,
                         overlays: Path | None = None,
                         annotate: Path | None = None,
@@ -1767,9 +2125,16 @@ def run_renderer_series(renderer: Path, wrfouts, *, store_root: Path,
         "--out-dir", str(out_dir),
         "--products", products,
         "--frames", frames,
-        "--width", str(width),
-        "--height", str(height),
     ]
+    # The default canvas follows the domain's shape. Pixel dimensions
+    # explicitly request a fixed canvas for callers that tile panels.
+    if (width is None) != (height is None):
+        raise ValueError(
+            "a render size is a width AND a height, or neither for the "
+            "domain-shaped canvas; half a size would be filled with a guess")
+    if width is not None:
+        command.extend(("--layout", "fixed", "--width", str(width),
+                        "--height", str(height)))
     if heavy:
         command.append("--heavy")
     if source_label:
@@ -1822,13 +2187,13 @@ def run_renderer_series(renderer: Path, wrfouts, *, store_root: Path,
     if section_top_km is not None:
         command.extend(("--section-top-km", repr(float(section_top_km))))
     command.extend(str(path) for path in inputs)
-    command, cwd, env = fit_series_command(command, len(inputs),
-                                           renderer_env())
     try:
-        result = subprocess.run(
-            command, capture_output=True, text=True, errors="replace",
-            env=env, cwd=cwd)
-    except OSError as error:
+        with _series_command(command, len(inputs), renderer_env()) as fitted:
+            command, cwd, env = fitted
+            result = subprocess.run(
+                command, capture_output=True, text=True, errors="replace",
+                env=env, cwd=cwd)
+    except (OSError, ValueError) as error:
         return [], [f"{subject}: renderer failed to launch: {error}"], []
     # Started elsewhere, the renderer was handed an absolute output
     # folder and names its pictures under it; a caller that gave a
@@ -1875,8 +2240,160 @@ def run_renderer_series(renderer: Path, wrfouts, *, store_root: Path,
     return written, failures, skipped
 
 
+#: The native difference receipt: product, units, range and range rule.
+DIFFERENCE_EVENT = "DIFFERENCE"
+
+
+def parse_difference_line(line: str) -> dict | None:
+    """Read a drawn-product difference receipt, excluding run-level rows."""
+
+    if not line.startswith(DIFFERENCE_EVENT + " "):
+        return None
+    fields = line[len(DIFFERENCE_EVENT) + 1:].split(" ")
+    if not fields or "=" in fields[0]:
+        return None
+    row: dict = {"key": fields[0]}
+    for item in fields[1:]:
+        name, sep, value = item.partition("=")
+        if sep:
+            row[name] = value
+    return row
+
+
+@contextmanager
+def _difference_command(command: list[str], inputs_a: list[Path],
+                        inputs_b: list[Path], env: dict[str, str]):
+    """Bound both complete difference timelines with launch-owned files."""
+
+    direct = [*command,
+              *(part for path in inputs_b for part in ("--diff-against", str(path))),
+              *map(str, inputs_a)]
+    if _command_units(direct) <= COMMAND_LINE_BUDGET:
+        yield direct, env
+        return
+    import json
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="gpuwm-difference-inputs-") as folder:
+        inventory_a = Path(folder) / "run-a.json"
+        inventory_b = Path(folder) / "run-b.json"
+        reduced = [*command, "--diff-inputs-json", str(inventory_b),
+                   "--inputs-json", str(inventory_a)]
+        if _command_units(reduced) > COMMAND_LINE_BUDGET:
+            raise ValueError(
+                "renderer difference options and inventory paths exceed the "
+                "Windows command-line budget")
+        for inventory, paths in ((inventory_a, inputs_a), (inventory_b, inputs_b)):
+            inventory.write_text(
+                json.dumps([os.path.abspath(path) for path in paths],
+                           ensure_ascii=False) + "\n", encoding="utf-8")
+        yield reduced, env
+
+
+def run_renderer_difference(renderer: Path,
+                            wrfout_a: Path | list[Path],
+                            wrfout_b: Path | list[Path],
+                            *, store_root: Path, out_dir: Path,
+                            products: str, labels: tuple[str, str],
+                            timeidx: int = 0,
+                            sheet: bool = False,
+                            source_label: str | None = None,
+                            theme: str | None = None,
+                            overlays: Path | None = None,
+                            annotate: Path | None = None,
+                            streamlines: bool | None = None,
+                            width: int | None = None,
+                            height: int | None = None,
+                            ) -> tuple[list[Path], list[str],
+                                       list[tuple[str, str]], list[dict]]:
+    """Draw products as run A minus run B for one valid time.
+
+    Each side accepts one file or its complete ordered history context.
+    ``timeidx`` selects run A's ordinal in its full valid-time timeline;
+    the native renderer selects run B's matching valid time. Windowed
+    products retain earlier frames on both sides. Return pictures,
+    failures, skips and native difference range receipts.
+    """
+
+    inputs_a = ([Path(wrfout_a)] if isinstance(wrfout_a, (str, os.PathLike))
+                else [Path(path) for path in wrfout_a])
+    inputs_b = ([Path(wrfout_b)] if isinstance(wrfout_b, (str, os.PathLike))
+                else [Path(path) for path in wrfout_b])
+    if not inputs_a or not inputs_b:
+        raise ValueError("a run difference needs history files for both runs")
+    if isinstance(timeidx, bool) or not isinstance(timeidx, int) or timeidx < 0:
+        raise ValueError("a run difference frame index must be a nonnegative integer")
+    subject = inputs_a[-1]
+    command = [
+        str(renderer),
+        "--store-root", str(store_root),
+        "--out-dir", str(out_dir),
+        "--products", products,
+        "--diff-label-a", labels[0],
+        "--diff-label-b", labels[1],
+        "--frames", str(timeidx),
+    ]
+    if (width is None) != (height is None):
+        raise ValueError(
+            "a render size is a width AND a height, or neither for the "
+            "domain-shaped canvas")
+    if width is not None:
+        command.extend(("--layout", "fixed", "--width", str(width),
+                        "--height", str(height)))
+    if sheet:
+        command.append("--diff-sheet")
+    if source_label:
+        command.extend(("--source-label", source_label))
+    if theme is not None:
+        command.extend(("--theme", str(theme)))
+    if overlays is not None:
+        command.extend(("--overlays", str(overlays)))
+    if annotate is not None:
+        command.extend(("--annotate", str(annotate)))
+    if streamlines is not None:
+        command.append("--streamlines" if streamlines else "--barbs")
+    try:
+        with _difference_command(command, inputs_a, inputs_b,
+                                 renderer_env()) as fitted:
+            command, env = fitted
+            result = subprocess.run(
+                command, capture_output=True, text=True, errors="replace", env=env)
+    except (OSError, ValueError) as error:
+        return [], [f"{subject}: renderer failed to launch: {error}"], [], []
+    written: list[Path] = []
+    failures: list[str] = []
+    skipped: list[tuple[str, str]] = []
+    differences: list[dict] = []
+    for line in (result.stdout or "").splitlines():
+        if line.startswith("RENDERED "):
+            _, _, rest = line.partition(" ")
+            _, _, path = rest.partition(" ")
+            if path:
+                written.append(Path(path))
+        elif line.startswith("SKIPPED "):
+            slug, _, reason = line[len("SKIPPED "):].partition(" ")
+            skipped.append((slug, reason or "no reason given"))
+        else:
+            row = parse_difference_line(line)
+            if row is not None:
+                differences.append(row)
+    relay_native_warnings(result.stderr)
+    for line in (result.stderr or "").splitlines():
+        if line.startswith("FAILED "):
+            slug, _, error = line[len("FAILED "):].partition(" ")
+            path, detail = _frame_of(error, inputs_a)
+            failures.append(f"{path}: {slug} {detail}")
+    if result.returncode != 0 and not failures:
+        tail = [line for line in (result.stderr or "").splitlines()
+                if line.strip()]
+        failures.append(f"{subject}: "
+                        + (tail[-1] if tail else f"exit {result.returncode}"))
+    return written, failures, skipped, differences
+
+
 __all__ = [
     "CARGO_BUILD_HINT", "COMMAND_LINE_BUDGET", "RENDERER_ABI_MARKER",
+    "DIFFERENCE_EVENT", "parse_difference_line", "run_renderer_difference",
     "RENDERER_ENV", "fit_series_command",
     "NATIVE_WARNING_PREFIXES", "relay_native_warnings",
     "RENDERER_NAME", "basemap_dir",

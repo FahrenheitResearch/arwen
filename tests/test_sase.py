@@ -12164,7 +12164,7 @@ def test_the_tree_runner_emits_the_sentence_from_its_own_main(
     prepared = tmp_path / "prepared"
     prepared.mkdir()
     config = tmp_path / "exp.toml"
-    config.write_text("", encoding="utf-8")
+    config.write_text(_sase_tree_toml(_SASE_SELECTOR), encoding="utf-8")
     assert runner.main([
         "--prepared-root", str(prepared),
         "--preparation-receipt-sha256", "0" * 64,

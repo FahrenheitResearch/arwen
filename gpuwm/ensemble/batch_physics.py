@@ -1222,6 +1222,9 @@ def bind_owned_default_column_driver(driver, cfg, atmosphere, *, members, ny, nx
         raise ValueError("this native binding implements Thompson/Noah/YSU/MM5; the configured suite needs its own qualified binding")
     if cfg.cu_physics or cfg.sf_urban_physics or getattr(cfg, "sf_surface_mosaic", 0) or driver.terrain_drag is not None:
         raise ValueError("this default column binding has no cumulus, urban, mosaic or terrain-drag producer binding")
+    if getattr(driver, "swint", None) is not None:
+        raise ValueError("this default column binding has no swint_opt = 1 binding: the surface shortwave carrier "
+                         "holds one member's fields, and banked members would be interpolated with a shape it refuses")
     if driver.state is not atmosphere.state:
         raise ValueError("the initialized physics driver and atmosphere preparer own different states")
     if driver.tendencies is not driver.pbl_tendencies:

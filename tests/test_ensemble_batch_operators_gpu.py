@@ -234,9 +234,10 @@ def test_fixed_step_sanity_does_not_select_a_member_minimum():
 @pytest.mark.parametrize("field_kind,stagger,pointer_name,entry", ADVECTION_FIELDS)
 @pytest.mark.parametrize("core", ((5, 9, 137), (7, 11, 19)))
 @pytest.mark.parametrize("open_x,open_y,has_msf,specified", ADVECTION_FLAGS)
+@pytest.mark.parametrize("vorder", (3, 5))
 def test_advection_words_equal_independent_scalar_launches(
         members, field_kind, stagger, pointer_name, entry, core,
-        open_x, open_y, has_msf, specified):
+        open_x, open_y, has_msf, specified, vorder):
     import cupy as cp
     from gpuwm.core.kernels import get_kernel
     from gpuwm.ensemble import batch_operators as operators
@@ -273,14 +274,15 @@ def test_advection_words_equal_independent_scalar_launches(
         fields["field"], fields["ru"], fields["rv"], fields["rw"], tend,
         profiles["spacing"], profiles["fnm"], profiles["fnp"], profiles["msf"],
         dx=dx, dy=dy, open_x=open_x, open_y=open_y,
-        has_msf=has_msf, spec=specified)
+        has_msf=has_msf, spec=specified, vorder=vorder)
     nlev, nys, nxs = target_shape
     grid = ((nxs + 127) // 128, nys, nlev)
     tail = (reference_profiles["spacing"], reference_profiles["fnm"],
             reference_profiles["fnp"], reference_profiles["msf"],
             np.float32(1.0 / dx), np.float32(1.0 / dy),
             np.int32(nz), np.int32(ny), np.int32(nx), np.int32(open_x),
-            np.int32(open_y), np.int32(has_msf), np.int32(specified))
+            np.int32(open_y), np.int32(has_msf), np.int32(specified),
+            np.int32(vorder))
     scalar = get_kernel("advection", entry)
     for _ in range(2):
         batch()

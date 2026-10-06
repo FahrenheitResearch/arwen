@@ -408,12 +408,21 @@ def test_the_prepared_cache_identity_needs_no_scheme_entry():
     identity = prepared_cache.prepared_domain_config_identity
     compare = prepared_cache.compare_prepared_domain_config
     cached = identity(domain)
-    assert cached["run"] == asdict(run)
+    expected_run = asdict(run)
+    # Neutral source and radiation forms are omitted for older cache compatibility.
+    # Every other run field remains bound, including the cumulus switch.
+    for field in ("ruc_irrigation", "ruc_qvg_cold_start",
+                  "ruc_2m_diagnostic", "ruc_snow",
+                  "swint_opt", "aer_opt", "alb_sol",
+                  "thompson_version", "thompson_fork_snow_fall",
+                  "rrtmg_cloud_optics_form", "rrtmg_smoke_manifest"):
+        expected_run.pop(field)
+    assert cached["run"] == expected_run
     assert cached["start_time"] == start.isoformat()
     assert compare(cached, identity(domain)) == ([], [])
 
     new_scheme = identity(replace(domain, run=replace(run, cu_physics=16)))
-    assert new_scheme["run"] == {**asdict(run), "cu_physics": 16}
+    assert new_scheme["run"] == {**expected_run, "cu_physics": 16}
     assert compare(cached, new_scheme) == ([], ["run.cu_physics"])
     # A selected-field or per-scheme serializer cannot drop unrelated
     # trajectory controls or the newly serialized delayed-domain date.

@@ -1,0 +1,21 @@
+{
+ "_what": "Which committed receipt each card replays (cards, by device name) and which an unlisted card of a recorded architecture replays (architectures, \"major.minor\"). Read by this fixture's parity tests and by tools/advect_wrf471_oracle/recapture_receipt.py, which adds a card here when it installs that card's first capture. uncertified_stale records, per receipt of an architecture older than Blackwell, the commit that left its pins behind and those pins: byte identity is certified on Blackwell and newer only (ruling 2026-10-04), so such a receipt is reported, not gated, and recapture_receipt.py --install drops its record.",
+ "architectures": {
+  "12.0": "gpu-receipt-sm120.json"
+ },
+ "cards": {
+  "NVIDIA GeForce RTX 4090": "gpu-receipt.json",
+  "NVIDIA GeForce RTX 5090": "gpu-receipt-sm120.json",
+  "NVIDIA H100 80GB HBM3": "gpu-receipt-h100.json"
+ },
+ "schema_version": 1,
+ "uncertified_stale": {
+  "gpu-receipt-h100.json": {
+   "pins": {
+    "advection": "e3fa613578e3989e27678e1cce00f4465a941bd541567807a96da652f2b2c9ab",
+    "pd_advection": "b4832282be55c3658586478788e979e3595a66a9fae56e00378843c25f62b28f"
+   },
+   "staled_by": "b70a94a4869e1dcf65149c0701e83b54208a6a07"
+  }
+ }
+}

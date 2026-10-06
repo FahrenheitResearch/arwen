@@ -311,6 +311,20 @@ INACTIVE_MYNN_WRFINPUT = frozenset({"qke_adv"})
 ALLOWED_WRFINPUT = (MAPPED_WRFINPUT | frozenset(EXPLICIT_AUXILIARY_WRFINPUT)
                    | INACTIVE_AEROSOL_WRFINPUT | INACTIVE_MYNN_WRFINPUT)
 
+#: WRF's 1-D base-state profiles.  real.exe never assigns them
+#: (Registry.EM_COMMON:372 and :1247-1249 name them "BASE STATE ... IN
+#: IDEALIZED CASES"; only the module_initialize_<ideal>.F routines,
+#: module_force_scm.F and nest_init_utils.F's parent-to-nest copy write
+#: them) and WRF's allocation zero-fills them, so a real.exe wrfinput
+#: carries zeros and an ideal.exe wrfinput carries its sounding.  They are
+#: not restored (the engine's operators carry the zero profile), which is
+#: why they also sit in IGNORED_WRFINPUT; they are read only by
+#: :func:`require_zero_base_state_profiles`, and
+#: :func:`base_state_profiles_read` says, path by path with its WRF line,
+#: which selectors read which profile (diff_opt 2 and diff_opt 1 alike).
+BASE_WIND_PROFILE_WRFINPUT = ("U_BASE", "V_BASE")
+BASE_SCALAR_PROFILE_WRFINPUT = ("T_BASE", "QV_BASE")
+
 #: Standard real.exe wrfinput variables the restored model does not consume
 #: (F20 conformance defines exactly what is restored; everything else is
 #: skipped).  Enumerated explicitly â€” first contact with the production
@@ -338,6 +352,100 @@ IGNORED_WRFINPUT = frozenset({
     "UOCE", "U_BASE", "U_FRAME", "VAR", "VAR_SSO", "VOCE", "V_BASE",
     "V_FRAME", "WATER_DEPTH", "ZETATOP", "ZS", "Z_BASE",
 })
+
+#: Variables a WRF input file carries that this model has no state for and
+#: an in-place analysis may read or rewrite, each with the reason it is
+#: passed through.  They are named, not waved through: the reader accepts
+#: them, restores nothing from them, and
+#: :func:`gpuwm.io.analysis_exchange.write_back` hands them back with the
+#: bytes they arrived with, so the next analysis reads the file it wrote.  A
+#: name outside every inventory is still an error.  A row leaves this table
+#: when the model gains a consumer for it.
+#:
+#: Sources.  The two analysis rows come from the analysis program's own WRF
+#: mass-core netCDF interface, GSI as built into NOAA-EMC/HRRR tag v4.1.21
+#: (sorc/hrrr_gsi.fd/src/gsi/cplr_wrf_netcdf_interface.f90): every other
+#: variable that file reads (:179-:1179) or writes back (:2628-:3189) is
+#: already mapped above.  The grouped rows are every remaining variable of
+#: that tag's own real.exe output for its CONUS configuration (WRFV3.9 with
+#: its Registry; 363 variables, MEASURED 2026-10-03 on the 2026-10-03 12 UTC
+#: cold-start guess), sorted by what they are.
+_ANALYSIS_PASSTHROUGH_ROWS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("the forecast model's own radar reflectivity diagnostic, which the "
+     "analysis reads as its reflectivity background and writes back "
+     "(cplr_wrf_netcdf_interface.f90:1203, :3217); this model diagnoses "
+     "reflectivity from its hydrometeors and restores nothing from it",
+     ("REFL_10CM",)),
+    ("a radar-derived temperature tendency for the forecast's latent-heating "
+     "forcing, which the cloud analysis writes "
+     "(cplr_wrf_netcdf_interface.f90:1229, :3245) and a WRF input carries "
+     "as four 15-minute slots and their times; this model has no radar "
+     "tendency forcing, so the tendency is carried and not applied",
+     ("RAD_TTEN_DFI", "RAD_TTEN_DFI_1", "RAD_TTEN_DFI_2", "RAD_TTEN_DFI_3",
+      "RAD_TTEN_DFI_4", "TTEN_TIMES")),
+    ("a forecast diagnostic (an accumulation, a maximum or minimum since the "
+     "last output, a mean, a rate or a derived product); a forecast starts "
+     "it from its own state and nothing reads it as initial state",
+     ("WSPD10", "WSPD80", "SFROFF", "UDROFF", "ACSNOW", "ACGRAUP", "ACSNOM",
+      "ACFRAIN", "BR", "ZOL", "FLHC", "CUTOP", "CUBOT", "CUPPT", "MAX_MSTFX",
+      "MAX_MSTFY", "FRAIN", "PRATEC", "RAINCV", "RAINNCV", "SNOWNC",
+      "GRAUPELNC", "SNOWNCV", "GRAUPELNCV", "COMPOSITE_REFL_10CM",
+      "REFL_10CM_1KM", "REFL_10CM_4KM", "LWP", "IWP", "GSW", "SWDDNI",
+      "SWDDIF", "SWDDNIC", "SWDDIFC", "TAOD5502D", "SWRADMEAN", "SWNORMMEAN",
+      "U10MEAN", "V10MEAN", "SPDUV10MEAN", "OLR", "WSPD10MAX", "WSPD10UMAX",
+      "WSPD10VMAX", "WSPD80MAX", "WSPD80UMAX", "WSPD80VMAX", "W_UP_MAX",
+      "W_DN_MAX", "REFD_MAX", "REFDM10C_MAX", "UP_HELI_MAX", "UP_HELI_MAX16",
+      "UP_HELI_MAX02", "UP_HELI_MAX03", "UP_HELI_MIN", "UP_HELI_MIN16",
+      "UP_HELI_MIN02", "UP_HELI_MIN03", "REL_VORT", "REL_VORT_MAX",
+      "REL_VORT_MAX01", "W_MEAN", "GRPL_MAX", "LTG1_MAX", "LTG2_MAX",
+      "LTG3_MAX", "NCI_LTG", "NCA_LTG", "NCI_W", "NCA_W", "NCI_WQ",
+      "NCA_WQ", "NCI_REFD", "NCA_REFD", "QR_MAX_CI", "QG_MAX_CI", "UH",
+      "UH16", "UH02", "UH03", "HAIL_MAXK1", "HAIL_MAX2D", "MAXCLDFRA",
+      "PREC_ACC_C", "PREC_ACC_C1", "PREC_ACC_NC", "PREC_ACC_NC1",
+      "SNOW_ACC_NC", "SNOW_ACC_NC1", "GRAUP_ACC_NC", "GRAUP_ACC_NC1",
+      "NUPDRAFT", "KTOP_PLUME", "MAXMF", "MF_AT_BASE", "KBOT_SHALLOW")),
+    ("scheme state this reader does not restore (surface moisture, subgrid "
+     "cloud, soil albedo, lake column, boundary clock); this model "
+     "initializes it at the start of a run, so a value a cycled file "
+     "carries is not continued",
+     ("MU0", "DTBC", "QVG", "QCG", "MAVAIL", "QC_BL", "CLDFRA_BL", "ALBSOL",
+      "ALBBCKSOL", "LAKEDEPTH2D", "SAVEDTKE12D", "SNOWDP2D", "H2OSNO2D",
+      "SNL2D", "T_GRND2D", "T_LAKE3D", "LAKE_ICEFRAC3D", "Z_LAKE3D",
+      "DZ_LAKE3D", "T_SOISNO3D", "H2OSOI_ICE3D", "H2OSOI_LIQ3D",
+      "H2OSOI_VOL3D", "Z3D", "DZ3D", "ZI3D", "WATSAT3D", "CSOL3D", "TKMG3D",
+      "TKDRY3D", "TKSATU3D")),
+    ("a static sub-grid orography statistic of the gravity-wave drag "
+     "schemes; no analysis changes it and this reader does not restore it",
+     ("CON", "OA1", "OA2", "OA3", "OA4", "OL1", "OL2", "OL3", "OL4", "VARSS",
+      "CONSS", "OA1SS", "OA2SS", "OA3SS", "OA4SS", "OL1SS", "OL2SS", "OL3SS",
+      "OL4SS")),
+    ("a random-number seed of the stochastic perturbation schemes, which "
+     "this model does not run",
+     ("ISEEDARR_SPPT", "ISEEDARR_SKEBS", "ISEEDARR_RAND_PERTURB",
+      "ISEEDARRAY_SPP_CONV", "ISEEDARRAY_SPP_PBL", "ISEEDARRAY_SPP_LSM",
+      "ISEEDARRAY_SPP_MP")),
+    ("a smoke tracer or fire emission input of the coupled smoke scheme; "
+     "this reader does not restore it",
+     ("smoke", "EBB_SMOKE", "MEAN_FRP", "STD_FRP", "MEAN_FSIZE",
+      "STD_FSIZE")),
+    ("a vertical-coordinate weight of the older hybrid coordinate; the C1 "
+     "to C4 coefficients carry the same coordinate and are restored",
+     ("BF", "BH")),
+)
+
+
+def _analysis_passthrough(rows) -> Mapping[str, str]:
+    table: dict[str, str] = {}
+    for reason, names in rows:
+        for name in names:
+            if name in table:
+                raise ValueError(f"{name} appears twice in the pass-through rows")
+            table[name] = reason
+    return MappingProxyType(table)
+
+
+ANALYSIS_PASSTHROUGH_WRFINPUT: Mapping[str, str] = _analysis_passthrough(
+    _ANALYSIS_PASSTHROUGH_ROWS)
 
 
 # ==========================================================================
@@ -583,6 +691,108 @@ class RestoredDomain:
         }
 
 
+def base_state_profiles_read(cfg) -> tuple[str, ...]:
+    """The wrfinput base-state profiles WRF's arithmetic reads for ``cfg``.
+
+    Read on WRFV3.9 as operational HRRR v4.1.21 builds it; v4.7.1 has the
+    same call guards.  Every path below is one WRF takes:
+
+    * ``diff_opt = 2``, ``mix_full_fields = false``: ``cal_deform_and_div``
+      (called for diff_opt 1 OR 2, module_first_rk_step_part2.F:448 and
+      :537) forms du/dz and dv/dz from ``u - u_base`` and ``v - v_base``
+      (module_diffusion_em.F:842-860, :1017-1035), and under diff_opt 2
+      D13/D23 reach horizontal_diffusion_2 whatever the PBL (part2.F:968).
+      With no PBL scheme (part2.F:925-927) ``vertical_diffusion_2`` also
+      mixes ``thp - t_base`` and ``qv - qv_base``
+      (module_diffusion_em.F:3694-3712, :3778-3792) against xkhv, which
+      smag2d_km (km_opt 4) sets to 0 (:2044) and isotropic_km (km_opt 1)
+      sets from kvdif.
+    * ``diff_opt = 1``, ``mix_full_fields = false``: the same D13/D23 are
+      formed, but under diff_opt 1 only smag_km (km_opt 3) reads them
+      (module_diffusion_em.F:1313, :1869-1880).  tke_rhs, whose tke_shear
+      reads them under km_opt 2, runs only under diff_opt 2
+      (part2.F:888), as do sfs_driver (:674) and the diffusion_2 operators
+      (:925); smag2d_km reads only D11, D22 and D12.
+    * ``diff_opt = 1`` with no PBL scheme, at EITHER value of
+      ``mix_full_fields``: module_em.F:804 and :844-853 call
+      vertical_diffusion_u and _v with ``u_base``/``v_base``, and :1368
+      and :1381-1385 call
+      vertical_diffusion_mp with ``qv_base`` for moisture
+      (module_big_step_utilities_em.F:3554, :3752, :3853), each scaled by
+      the constant kvdif, so they are read only when kvdif is not 0.
+    """
+    if cfg is None:
+        return ()
+    diff_opt = getattr(cfg, "diff_opt", 2)
+    perturbation = not getattr(cfg, "mix_full_fields", True)
+    no_pbl = getattr(cfg, "bl_pbl_physics", 0) == 0
+    km_opt = getattr(cfg, "km_opt", 4)
+    kvdif = getattr(cfg, "kvdif", 0.0)
+    wind = theta = moisture = False
+    if diff_opt == 2 and perturbation:
+        wind = True
+        if no_pbl and km_opt != 4 and not (km_opt == 1 and kvdif == 0):
+            theta = moisture = True
+    elif diff_opt == 1:
+        if perturbation and km_opt == 3:
+            wind = True
+        if no_pbl and kvdif != 0:
+            wind = True
+            moisture = bool(getattr(cfg, "moist", True))
+    return tuple(
+        name for name, read in zip(
+            BASE_WIND_PROFILE_WRFINPUT + BASE_SCALAR_PROFILE_WRFINPUT,
+            (wind, wind, theta, moisture))
+        if read)
+
+
+def require_zero_base_state_profiles(dataset, path, cfg) -> None:
+    """Refuse the one input WRF's base-state subtraction would treat differently.
+
+    WRF subtracts the 1-D base-state profiles
+    :func:`base_state_profiles_read` names before it mixes.  The engine's
+    operators carry the zero profile real.exe leaves, so a file whose
+    profile is not zero would be mixed as the full field where WRF mixes
+    the departure from that profile.  Every real.exe wrfinput passes (its
+    profiles are zero by construction); an ideal.exe file carrying its
+    sounding is refused by name.  ``cfg=None`` and every selector set that
+    reads nothing pass.
+    """
+    nonzero = []
+    for name in base_state_profiles_read(cfg):
+        if name not in dataset.variables:
+            continue
+        values = _read_numeric(dataset.variables[name])
+        if np.any(values != 0):
+            peak = float(np.max(np.abs(values)))
+            nonzero.append(f"{name} (largest magnitude {peak:.6g})")
+    if nonzero:
+        diff_opt = getattr(cfg, "diff_opt", 2)
+        if diff_opt == 2:
+            where = ("under mix_full_fields = false with diff_opt = 2: WRF "
+                     "subtracts that profile before it mixes (the wind pair "
+                     "from the vertical shear in cal_deform_and_div, the "
+                     "theta/qv pair in vertical_diffusion_2 when no PBL "
+                     "scheme runs)")
+            remedy = "set mix_full_fields = true"
+        else:
+            where = ("under diff_opt = 1: WRF subtracts that profile before "
+                     "it mixes (the wind pair from the vertical shear that "
+                     "smag_km reads under km_opt = 3 with mix_full_fields = "
+                     "false, and the wind and qv profiles in the constant-"
+                     "kvdif vertical diffusion when no PBL scheme runs, at "
+                     "either mix_full_fields value)")
+            remedy = ("set mix_full_fields = true and kvdif = 0, or run a "
+                      "PBL scheme")
+        raise ValueError(
+            f"{path} carries a nonzero base-state profile "
+            f"({', '.join(nonzero)}) {where}, and the engine's operators "
+            "carry only the zero profile real.exe writes, so this run would "
+            "mix the full field where WRF mixes the departure from the "
+            "profile. A real.exe wrfinput carries zeros and passes; for this "
+            f"ideal.exe input {remedy}.")
+
+
 def _read_numeric(variable, *, decoded=None) -> np.ndarray:
     value = np.ma.asarray(variable[...] if decoded is None else decoded)
     if np.ma.isMaskedArray(value) and np.any(np.ma.getmaskarray(value)):
@@ -791,6 +1001,7 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
             check_supported_schemes(attrs, source=str(path))
         unknown = sorted(
             set(dataset.variables) - ALLOWED_WRFINPUT - IGNORED_WRFINPUT
+            - ANALYSIS_PASSTHROUGH_WRFINPUT.keys()
             - surface_dispositions.keys())
         if unknown:
             # Reached only when the scheme attributes said the package is
@@ -808,6 +1019,7 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
         soil_conversions = {}
         for name, variable in dataset.variables.items():
             if (name == "Times" or name in IGNORED_WRFINPUT
+                    or name in ANALYSIS_PASSTHROUGH_WRFINPUT
                     or name in surface_dispositions):
                 continue
             units = str(getattr(variable, "units", "")).strip().lower()
@@ -823,6 +1035,7 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
             _validate_wrfinput_geometry(
                 name, variable, expected_extents, value)
             raw[name] = value
+        require_zero_base_state_profiles(dataset, path, cfg)
     soil_recovery = {}
     if "SMOIS" not in soil_conversions:
         from gpuwm.ingest.wrf_soil_recovery import recover_supplied_soil
@@ -851,17 +1064,7 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
             f"{path} has inactive WRF moisture variable(s) for the active "
             f"physics: {extra_moisture}")
     if require_complete:
-        non_moisture_required = (
-            set(REQUIRED_WRFINPUT) - ALL_MOISTURE_WRFINPUT)
-        missing = sorted(name for name in non_moisture_required
-                         if name not in raw)
-        missing.extend(sorted(required_moisture - present_moisture))
-        if int(getattr(cfg, "mp_physics", 0)) == 28:
-            missing.extend(name for name in ("QNWFA2D", "QNIFA2D")
-                           if name not in raw)
-        missing.extend(sorted(
-            name for name, alternatives in ALIASES.items()
-            if not any(alias in raw for alias in alternatives)))
+        missing = missing_required_wrfinput(raw, cfg)
         if missing:
             raise ValueError(f"{path} is missing mapped WRF variable(s): {missing}")
     mapped = MAPPED_WRFINPUT & set(raw)
@@ -875,6 +1078,28 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
         surface_input_dispositions=MappingProxyType(recorded_surface_dispositions),
         soil_unit_conversions=MappingProxyType(soil_conversions),
         soil_recovery=MappingProxyType(soil_recovery))
+
+
+def missing_required_wrfinput(raw: Mapping[str, np.ndarray], cfg) -> list[str]:
+    """The names a forecast start needs that ``raw`` does not carry.
+
+    The completeness half of :func:`read_wrfinput`, on its own so a caller
+    that reads a file without starting from it (an analysis exchange, an
+    inventory) can still say what a start would lack.  ``cfg`` selects the
+    moisture inventory as it does for the reader.
+    """
+    required_moisture, _ = active_moisture_inventory(cfg)
+    present_moisture = set(raw) & ALL_MOISTURE_WRFINPUT
+    non_moisture_required = set(REQUIRED_WRFINPUT) - ALL_MOISTURE_WRFINPUT
+    missing = sorted(name for name in non_moisture_required if name not in raw)
+    missing.extend(sorted(required_moisture - present_moisture))
+    if int(getattr(cfg, "mp_physics", 0)) == 28:
+        missing.extend(name for name in ("QNWFA2D", "QNIFA2D")
+                       if name not in raw)
+    missing.extend(sorted(
+        name for name, alternatives in ALIASES.items()
+        if not any(alias in raw for alias in alternatives)))
+    return missing
 
 
 def _validate_supplied_physics_fields(raw, cfg, attributes):

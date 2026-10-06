@@ -51,9 +51,11 @@ def _preserved_asset_dirs() -> list[Path]:
 
     directories: list[Path] = []
     try:
-        from gpuwm.bridges import default_bridge_dir
+        from gpuwm.bridges import legacy_bridge_dir
 
-        directories.append(default_bridge_dir())
+        # The shared root: every release's versioned directory sits in
+        # it, and a pip upgrade touches none of them.
+        directories.append(legacy_bridge_dir())
     except (ImportError, RuntimeError, OSError):  # pragma: no cover
         pass
     try:

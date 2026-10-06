@@ -635,29 +635,47 @@ def test_tracker_receipts_open_with_the_echoed_config():
 # ---------------------------------------------------------------------------
 
 def _isobaric_state(*, ny=120, nx=140, nz=40, ic=45.0, jc=70.0,
-                    depth_pa=4000.0, scale_height=8000.0):
-    """A hydrostatic column with a Gaussian surface low at (ic, jc).
+                    depth_pa=4000.0, scale_height=8000.0, p_top=5000.0,
+                    eta_levels=True):
+    """An isothermal hydrostatic column on an eta grid, with a Gaussian
+    surface low at (ic, jc).
 
-    With a uniform height column and ``p = psfc * exp(-z/H)``, the height
-    of the ``P`` isobaric surface is ``H * ln(psfc/P)`` -- so the surface
-    low puts a height MINIMUM on every isobaric surface, at exactly the
-    cell the low is centred on, with an analytic answer to check against.
+    Built the way a WRF eta core lays its column out, so the layer-mean
+    pairing is NOT exact by construction: interface pressures are linear
+    in eta, ``p_w = p_top + eta (psfc - p_top)``; each mass level sits at
+    the ARITHMETIC mean of its two interfaces' pressures; the interface
+    geopotential is the isothermal ``g H ln(psfc / p_w)``.  The height of
+    the ``P`` surface is then exactly ``H ln(psfc / P)``, and the surface
+    low puts a height MINIMUM on every isobaric surface at the cell the
+    low is centred on.  Reading the surface off layer-mean heights at the
+    mass-level pressures lands about 1 m high at 850 hPa on this grid,
+    which the analytic check below catches.
+
+    ``eta_levels=False`` leaves ``znu``/``znw`` off the state.  With them
+    the surfaces are read by the Rust rw-isobaric library, so a box that
+    has not built it skips with the remedy rather than failing.
     """
     from gpuwm.core.storm_tracking import GRAVITY_M_S2
+    if eta_levels:
+        from gpuwm import isobaric_bridge
+        reason = isobaric_bridge.unavailable_reason()
+        if reason is not None:
+            pytest.skip(f"the rw-isobaric library is not built here ({reason}); "
+                        "cd tools/rustwx && cargo build --release -p rw-isobaric "
+                        "--offline")
 
-    z_half = np.linspace(20.0, 18000.0, nz)
+    znw = 1.0 - (np.arange(nz + 1) / nz) ** 1.3
+    znu = 0.5 * (znw[:-1] + znw[1:])
     jj, ii = np.mgrid[0:ny, 0:nx]
     psfc = 101000.0 - depth_pa * np.exp(
         -(((ii - ic) / 8.0) ** 2 + ((jj - jc) / 8.0) ** 2))
-    pressure = psfc[None, :, :] * np.exp(-z_half[:, None, None]
-                                         / scale_height)
-    z_full = np.empty(nz + 1)
-    z_full[1:-1] = 0.5 * (z_half[:-1] + z_half[1:])
-    z_full[0] = z_half[0] - (z_full[1] - z_half[0])
-    z_full[-1] = z_half[-1] + (z_half[-1] - z_full[-2])
-    phi = z_full[:, None, None] * GRAVITY_M_S2 * np.ones((nz + 1, ny, nx))
+    p_w = p_top + znw[:, None, None] * (psfc[None] - p_top)
+    pressure = 0.5 * (p_w[:-1] + p_w[1:])
+    phi = GRAVITY_M_S2 * scale_height * np.log(psfc[None] / p_w)
     state = SimpleNamespace(p=pressure, php=phi, phb=np.zeros_like(phi),
                             qv=np.zeros_like(pressure))
+    if eta_levels:
+        state.znu, state.znw = znu, znw
     state.total_theta = lambda: np.full_like(pressure, 300.0)
     return state, psfc
 
@@ -674,6 +692,23 @@ def test_isobaric_height_matches_the_analytic_surface():
     far = np.ones_like(plane, dtype=bool)
     far[40:100, 15:75] = False
     assert np.abs(plane[far] - analytic[far]).max() < 0.05
+
+
+def test_isobaric_height_is_read_between_interfaces_not_off_layer_means():
+    """THE 2.8.6 DEFECT, pinned.  Without the state's eta levels the
+    tracker falls back to layer-mean heights at the mass-level pressures,
+    and on an eta column that reads high: the fallback is kept only for a
+    height-coordinate column, where it is exact."""
+    state, psfc = _isobaric_state()
+    bare, _ = _isobaric_state(eta_levels=False)
+    analytic = 8000.0 * np.log(psfc / 50000.0)
+    far = np.ones_like(analytic, dtype=bool)
+    far[40:100, 15:75] = False
+    read = st.level_height_m_from_state(state, 500.0)
+    paired = st.level_height_m_from_state(bare, 500.0)
+    assert np.abs(read[far] - analytic[far]).max() < 0.05
+    offset = float(np.mean(paired[far] - analytic[far]))
+    assert offset > 1.0, f"the layer-mean pairing reads {offset:.2f} m high"
 
 
 def test_isobaric_threshold_is_relative_so_the_centre_is_threshold_free():

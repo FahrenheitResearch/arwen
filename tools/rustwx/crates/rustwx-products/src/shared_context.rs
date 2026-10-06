@@ -143,6 +143,33 @@ pub fn initial_condition_disclosure() -> Option<String> {
 /// before.
 pub const MODEL_LABEL_ATTRIBUTE: &str = "GPUWM_MODEL_LABEL";
 
+/// The global attribute every history file the WOOF engine writes carries
+/// (`gpuwm.io.wrfout.WrfoutWriter`, both of its writers, since 2.7): the
+/// release that wrote it.  Stock WRF never writes it, so its presence is
+/// the marker that a wrfout-shaped file is the engine's own output.
+pub const ENGINE_VERSION_ATTRIBUTE: &str = "GPUWM_VERSION";
+
+/// The model token of a file the engine wrote and that names no model of
+/// its own: the engine's public name.  Before this, such a file carried
+/// no [`MODEL_LABEL_ATTRIBUTE`] and every WOOF map said `WRF` unless a
+/// WOOF theme renamed it.
+pub const ENGINE_MODEL_LABEL: &str = "WOOF";
+
+/// The model label of one wrfout-shaped file: the label it names
+/// ([`MODEL_LABEL_ATTRIBUTE`]) when it names one, otherwise the engine's
+/// public name when the engine wrote it ([`ENGINE_VERSION_ATTRIBUTE`]),
+/// otherwise `None`, which keeps the store identity (`WRF`) for stock WRF
+/// output.  `Err` names a label the row cannot take.
+pub fn file_model_label(
+    named: Option<&str>,
+    engine_written: bool,
+) -> Result<Option<String>, String> {
+    if let Some(label) = named.map(checked_model_label).transpose()?.flatten() {
+        return Ok(Some(label));
+    }
+    Ok(engine_written.then(|| ENGINE_MODEL_LABEL.to_string()))
+}
+
 /// The longest model label the metadata row takes, in characters.  The
 /// row already carries the init time, lead, valid time and grid spacing,
 /// and a longer name would push those out of a narrow frame.
@@ -287,7 +314,9 @@ pub fn model_time_subtitle_with_lead_label<S: AsRef<str>>(
         disclosure,
         lead_label.as_ref(),
         valid,
-        model_token(model)
+        // A theme may name the model (`text.model_label`); unset keeps the
+        // run's model token, including a wrfout import's own label.
+        rustwx_render::theme::active_theme().model_name(&model_token(model))
     )
 }
 
@@ -689,11 +718,54 @@ mod tests {
         assert_eq!(model_token_with(ModelId::Gfs, None), "GFS");
     }
 
+    #[test]
+    fn the_worker_theme_keeps_source_branding_and_generic_model_identity() {
+        use rustwx_render::theme::{RenderTheme, RenderThemeFile};
+        let file = RenderThemeFile::from_json(
+            r#"{"extends":"woof-light","text":{"source_label":"Recast WOOF"}}"#,
+        ).expect("worker JSON parses");
+        let theme = RenderTheme::from_file_spec(&file, None).expect("worker theme resolves");
+        assert_eq!(theme.model_name(&model_token_with(ModelId::WrfGdex, Some("ArWen"))), "WOOF");
+        assert_eq!(theme.source_subtitle(Some("source: ArWen".into())), Some("Recast WOOF".into()));
+        for name in ["default", "light", "dark"] {
+            let bare = RenderTheme::builtin(name).expect("generic palette");
+            assert_eq!(bare.model_name(&model_token_with(ModelId::WrfGdex, Some("ArWen"))), "ArWen");
+            assert_eq!(bare.model_name(&model_token_with(ModelId::Hrrr, None)), "HRRR");
+        }
+    }
+
     /// `rw_mpas_convert` writes this exact name (rw-mpas pins the same
     /// literal), and so do the producers outside this workspace.
     #[test]
     fn the_model_label_attribute_name_is_pinned() {
         assert_eq!(MODEL_LABEL_ATTRIBUTE, "GPUWM_MODEL_LABEL");
+        // gpuwm.io.wrfout.WrfoutWriter stamps this on every history file.
+        assert_eq!(ENGINE_VERSION_ATTRIBUTE, "GPUWM_VERSION");
+        assert_eq!(ENGINE_MODEL_LABEL, "WOOF");
+    }
+
+    /// An engine history file says WOOF, a named model keeps its own name,
+    /// and stock WRF output (no engine marker) keeps the store identity.
+    #[test]
+    fn an_engine_written_file_is_woof_and_stock_wrf_stays_wrf() {
+        let token = |named: Option<&str>, engine: bool| {
+            model_token_with(
+                ModelId::WrfGdex,
+                file_model_label(named, engine).unwrap().as_deref(),
+            )
+        };
+        assert_eq!(token(None, true), "WOOF");
+        assert_eq!(token(None, false), "WRF");
+        assert_eq!(token(Some("WOOF Hex"), true), "WOOF Hex");
+        assert_eq!(token(Some("WOOF Hex"), false), "WOOF Hex");
+        assert_eq!(token(Some("   "), true), "WOOF");
+        assert_eq!(token(Some("   "), false), "WRF");
+        assert!(file_model_label(Some("a | b"), true).is_err());
+        // HRRR and other GRIB models never take a wrfout label.
+        assert_eq!(
+            model_token_with(ModelId::Hrrr, file_model_label(None, true).unwrap().as_deref()),
+            "HRRR"
+        );
     }
 
     #[test]

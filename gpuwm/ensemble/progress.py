@@ -6,6 +6,7 @@ from operator import index
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 
 
 def progress_host(observer):
@@ -95,7 +96,8 @@ class EnsembleProgressAdapter:
     ``terminal`` receives each member event for a run that has no progress
     host of its own.
     """
-    def __init__(self, callback, *, member_ids, run_seconds, control=None, terminal=None):
+    def __init__(self, callback, *, member_ids, run_seconds, control=None, terminal=None,
+                 check_products=None):
         ids = tuple(index(member) for member in member_ids)
         if not ids or len(set(ids)) != len(ids) or any(member < 0 for member in ids):
             raise ValueError("ensemble progress needs distinct nonnegative member IDs")
@@ -104,9 +106,11 @@ class EnsembleProgressAdapter:
             raise ValueError("ensemble progress needs a positive finite forecast duration")
         self.callback, self.member_ids, self.run_seconds = progress_host(callback), ids, duration
         self.control, self.terminal = control, terminal
+        self.check_products = check_products
         self._lock = threading.RLock()
         self._members = {member: {"elapsed_seconds": 0., "outer_step": 0,
-            "last_checkpoint": None, "last_durable_wrfout": None, "attempt": 1}
+            "last_checkpoint": None, "last_durable_wrfout": None, "attempt": 1,
+            "last_forecast_step_at": None, "forecast_finished_at": None}
             for member in ids}
 
     def callback_for_member(self, member_id):
@@ -115,10 +119,23 @@ class EnsembleProgressAdapter:
             raise ValueError("ensemble progress names a member outside the bound roster")
         return _MemberProgress(self, member_id)
 
+    def restore_member(self, member_id, *, elapsed_seconds, outer_step=0, checkpoint=None):
+        """Seed durable work before a resumed member reports its next step."""
+        member_id, outer_step = index(member_id), index(outer_step)
+        elapsed_seconds = float(elapsed_seconds)
+        if (member_id not in self._members or not math.isfinite(elapsed_seconds)
+                or not 0 <= elapsed_seconds <= self.run_seconds or outer_step < 0):
+            raise ValueError("restored ensemble progress has an invalid original member clock")
+        with self._lock:
+            self._members[member_id].update(elapsed_seconds=elapsed_seconds,
+                outer_step=outer_step, last_checkpoint=None if checkpoint is None else str(checkpoint))
+
     def check_stop(self):
         """Raise the member's stop at this boundary when the run was stopped."""
         if self.control is not None:
             self.control.check()
+        if self.check_products is not None:
+            self.check_products()
 
     def _submit(self, default_member, event):
         self.check_stop()
@@ -130,12 +147,18 @@ class EnsembleProgressAdapter:
         if not math.isfinite(elapsed) or not 0 <= elapsed <= self.run_seconds or step < 0:
             raise ValueError("member progress has invalid forecast time or step")
         with self._lock:
+            observed_at = datetime.now(timezone.utc).isoformat()
             for member in ids:
                 previous = self._members[member]
                 if elapsed < previous["elapsed_seconds"] or step < previous["outer_step"]:
                     raise ValueError("member progress moved backwards without a declared restart")
             for member in ids:
                 row = self._members[member]
+                if step > row["outer_step"] and (event.get("phase") == "post-d01-sync"
+                        or event.get("backend") == "native_member_batched"):
+                    row["last_forecast_step_at"] = observed_at
+                    if elapsed == self.run_seconds:
+                        row["forecast_finished_at"] = observed_at
                 row.update(elapsed_seconds=elapsed, outer_step=step)
                 for key in ("last_checkpoint", "last_durable_wrfout"):
                     if event.get(key) is not None:
@@ -158,6 +181,8 @@ class EnsembleProgressAdapter:
     def receipt(self):
         with self._lock:
             return {"schema": "gpuwm-ensemble-progress.v1", "member_order": list(self.member_ids),
+                "last_member_forecast_step_at": (max(row["forecast_finished_at"] for row in self._members.values())
+                    if all(row["forecast_finished_at"] for row in self._members.values()) else None),
                 "elapsed_policy": "mean of original member forecast times",
                 "step_policy": "sum of original reported member steps",
                 "checkpoint_policy": "member-owned; no partial ensemble checkpoint",
@@ -175,7 +200,8 @@ class _MemberProgress:
         with self.owner._lock:
             row = self.owner._members[self.member_id]
             row.update(elapsed_seconds=0., outer_step=0, last_checkpoint=None,
-                       last_durable_wrfout=None, attempt=row["attempt"] + 1)
+                       last_durable_wrfout=None, attempt=row["attempt"] + 1,
+                       last_forecast_step_at=None, forecast_finished_at=None)
             hook = getattr(self.owner.callback, "restarting", None)
             if hook is not None:
                 hook(f"ensemble member {self.member_id}: {reason}")

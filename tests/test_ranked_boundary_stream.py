@@ -313,6 +313,9 @@ def test_device_identity_normalizes_uuid_and_pci_without_ordinal(monkeypatch):
     monkeypatch.setitem(sys.modules, "cupy", SimpleNamespace(cuda=SimpleNamespace(
         runtime=SimpleNamespace(getDeviceProperties=lambda _dev: {"uuid": b"\x12" * 16},
                                 deviceGetPCIBusId=lambda _dev: b"0000:42:00.0"))))
+    # Both identity reads use the complete host-only runtime above. Keep
+    # CUDA visibility disabled while testing canonical identity formatting.
+    monkeypatch.setattr("gpuwm.local_gpu.no_local_gpu", lambda: False)
     assert cuda_device_identity(7) == {
         "uuid": "12" * 16, "pci_bus_id": "00000000:42:00.0"}
 

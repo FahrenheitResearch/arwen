@@ -7,9 +7,9 @@ including build-time packages. It is not a claim that every resolved
 package is linked into both binaries. The first-party reader uses the
 repository Apache-2.0 licence; dependencies retain the grants below.
 
-Cargo.lock sha256 574f7e854ccc64316f7fe003702d2324a9975816d44fb214d1522bafa5b26068
-x86_64-unknown-linux-gnu: 237 resolved packages
-x86_64-pc-windows-msvc: 238 resolved packages
+Cargo.lock sha256 ede24c77959987eb9df504486b5a593cd22b9c068f75a6c3bf1fed130f326729
+x86_64-unknown-linux-gnu: 236 resolved packages
+x86_64-pc-windows-msvc: 237 resolved packages
 
 Supplemental upstream notices omitted from Cargo package archives:
 https://raw.githubusercontent.com/Blosc/c-blosc/v1.21.6/LICENSE.txt sha256 22623131a9b9f6a86a4dc6b9bccbb1d2aeb390df86bca00fc727af24735c2fae
@@ -180,8 +180,6 @@ log 0.4.34 | MIT OR Apache-2.0 | [ZARR-008,ZARR-015]
   Authors as declared: The Rust Project Developers
 lru 0.16.4 | MIT | [ZARR-081]
   Authors as declared: Jerome Froelich <jeromefroelic@hotmail.com>
-lru 0.18.4 | MIT | [ZARR-081]
-  Authors as declared: Jerome Froelich <jeromefroelic@hotmail.com>
 lz4-sys 1.11.1+lz4-1.10.0 | MIT | [ZARR-082,ZARR-083,ZARR-084,ZARR-085,ZARR-086,ZARR-087]
   Authors as declared: Jens Heyens <jens.heyens@ewetel.net>; Artem V. Navrotskiy <bozaro@buzzsoft.ru>; Patrick Marks <pmarks@gmail.com>
 lz4_flex 0.11.6 | MIT | [ZARR-088]
@@ -208,7 +206,7 @@ native-tls 0.2.18 | MIT OR Apache-2.0 | [ZARR-029,ZARR-102]
   Authors as declared: Steven Fackler <sfackler@gmail.com>
 ndarray 0.17.2 | MIT OR Apache-2.0 | [ZARR-008,ZARR-103]
   Authors as declared: Ulrik Sverdrup "bluss"; Jim Turner
-netcdf-reader 0.3.0 | MIT OR Apache-2.0 | [ZARR-058]
+netcdf-reader 0.3.0 | MIT OR Apache-2.0 | [ZARR-104,ZARR-105,ZARR-058]
 netcdf-writer 0.1.0 | MIT | [ZARR-053]
 netcrust 0.1.0 | MIT OR Apache-2.0 | [ZARR-104,ZARR-105]
 num 0.4.3 | MIT OR Apache-2.0 | [ZARR-008,ZARR-015]
@@ -6143,7 +6141,6 @@ DEALINGS IN THE SOFTWARE.
 [ZARR-081] sha256 061dc50af2cd9340703daf61978af3200cf681b12ea67a323c33ba109a23a45e
 As carried by:
   tools/zarr_bridge/vendor/crates-io/lru-0.16.4/LICENSE
-  tools/zarr_bridge/vendor/crates-io/lru-0.18.4/LICENSE
 ------------------------------------------------------------------------------
 MIT License
 
@@ -6404,7 +6401,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------------
-[ZARR-089] sha256 87d062786ddf144f7dab1b32d97f3c4ff14fb981321f4a0adccbda0644c61f63
+[ZARR-089] sha256 943a10ba32b57cad22599c4c2daa558d57a52f7132af8b386306c8a2dccbc0d7
 As carried by:
   licenses/THIRD-PARTY-LICENSES-bridge-binaries.txt
 ------------------------------------------------------------------------------
@@ -6412,7 +6409,7 @@ THIRD-PARTY LICENCES FOR THE ARWEN BRIDGE BUNDLE
 ==============================================================================
 
 This file is the binary-form notice for the compiled artefacts distributed
-in this bundle and staged into ArWen platform wheels: 31 Rust executables and
+in this bundle and staged into ArWen platform wheels: 37 Rust executables and
 libraries, plus the map assets beside it and two embedded fonts.
 
 Those binaries are built from two kinds of source, and both carry third-party
@@ -23952,8 +23949,8 @@ All LICENSE, LICENCE, COPYING, COPYRIGHT and NOTICE files at each
 resolved vendored package root are reproduced, deduplicated by raw SHA-256.
 The TUI itself uses the repository Apache-2.0 licence.
 
-tools/arwen-tui/Cargo.toml sha256 c3139891e4652eebfa2265772f4fd3b29ad2c1c1fca7a9064e14df50002d67a4
-tools/arwen-tui/Cargo.lock sha256 bf8eb757e1c78f6da8b77adcb6f9552c2da1fe308d510058f11c6a3d4afcbe67
+tools/arwen-tui/Cargo.toml sha256 98bcc114b786f141a5b5b71cbed30c46e00636da1bcb8a092ace656c63da0a76
+tools/arwen-tui/Cargo.lock sha256 e6e05be12c7f669efcd57e89ab0b85b57ec767c7e502168a858f65ef2646a15f
 x86_64-unknown-linux-gnu: 70 external packages
 x86_64-pc-windows-msvc: 67 external packages
 
@@ -28883,7 +28880,8 @@ DEALINGS IN THE SOFTWARE.
 ------------------------------------------------------------------------------
 [ZARR-104] sha256 8e684fc8a89c34c7f7b8b5ffb386f6b5270b1116b6c258a450ba44d8c9025606
 As carried by:
-  tools/rw_wps/vendor/netcrust/LICENSE-APACHE
+  tools/rustwx/vendor/netcrust/vendor/netcdf-reader/LICENSE-APACHE
+  tools/rustwx/vendor/netcrust/LICENSE-APACHE
 ------------------------------------------------------------------------------
 Apache License
 Version 2.0, January 2004
@@ -29030,7 +29028,8 @@ END OF TERMS AND CONDITIONS
 ------------------------------------------------------------------------------
 [ZARR-105] sha256 200a8eb7ca809b2c1ef2476c7473159ef5924a23fc5f719739efccd463469cdc
 As carried by:
-  tools/rw_wps/vendor/netcrust/LICENSE-MIT
+  tools/rustwx/vendor/netcrust/vendor/netcdf-reader/LICENSE-MIT
+  tools/rustwx/vendor/netcrust/LICENSE-MIT
 ------------------------------------------------------------------------------
 MIT License
 

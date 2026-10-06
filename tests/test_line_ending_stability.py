@@ -25,6 +25,7 @@ it is the actual check, and Windows is where the failure lives.
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from pathlib import Path
 
@@ -164,10 +165,29 @@ def test_every_hashed_blob_is_lf_only():
 #: three `.gitattributes` names them individually for.
 _BYTE_PRESERVED_PREFIXES = (
     "gpuwm/data/",
+    # The GF, New Tiedtke, urban, UH and Noah mosaic oracle fixtures, moved
+    # out of gpuwm/data/ in 2.8.6 with their bytes unchanged: captured WRF
+    # output whose raw .bin words and receipts contain CR bytes as data.
+    "tests/data/oracles/",
     "tools/rustwx/vendor/",
     "tools/grib1_bridge/vendor/",
     "patches/",
 )
+
+# Only this exact captured receipt and digest retain original line endings.
+_BYTE_PRESERVED_FILES = {
+    "tests/fixtures/tolerance_parent_byte_controls/original-recipe-lineage.json":
+        "de1dc8d48077bacfa9cf5b591ef0a8b89ea33d4997519295ed27f9ad0b6c53c4",
+}
+
+
+def test_captured_lineage_receipt_retains_its_original_digest():
+    for relative, expected in _BYTE_PRESERVED_FILES.items():
+        assert hashlib.sha256((ROOT / relative).read_bytes()).hexdigest() == expected
+        if _is_checkout():
+            committed = subprocess.check_output(
+                ["git", "cat-file", "blob", f"HEAD:{relative}"], cwd=ROOT)
+            assert hashlib.sha256(committed).hexdigest() == expected
 
 #: The rustwx crates this repository authors, identified the same way
 #: `tests/test_bridge_source_rev_stamp.py` identifies them: a crate this
@@ -277,6 +297,16 @@ _CRLF_DEBT = frozenset({
 def _is_authored(relative: str) -> bool:
     """Is this path one this repository wrote, rather than received?"""
 
+    if relative in _BYTE_PRESERVED_FILES:
+        path = ROOT / relative
+        if (path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest()
+                == _BYTE_PRESERVED_FILES[relative]):
+            return False
+    # Raw IEEE float fixtures have no text line endings. Small captures can
+    # contain a CR byte without any NUL, so git's content heuristic is not
+    # sufficient to distinguish them from authored source text.
+    if relative.endswith(".f32"):
+        return False
     if any(relative.startswith(p) for p in _BYTE_PRESERVED_PREFIXES):
         return False
     if relative.startswith("docs/"):
@@ -624,6 +654,22 @@ def test_the_hook_and_the_gate_agree_on_what_binary_means():
     assert not hook._blob_is_binary(b"plain text\r\nwith crlf\r\n"), (
         "a text blob must stay inside the ratchet; only content git "
         "itself would call binary may pass")
+
+
+def test_raw_float_capture_without_nul_does_not_hide_a_text_crlf_flip(monkeypatch):
+    from types import SimpleNamespace
+    hook = _hook_module()
+    fixture = "tools/rustwx/crates/rw-wrfbatch/src/fixtures/visibility.f32"
+    source = "tools/rustwx/crates/rw-wrfbatch/src/visibility.rs"
+    # One valid IEEE float word has a CR byte and no NUL. This is numeric
+    # fixture content, not a Windows text-mode rewrite.
+    word = b"\x0d\x1a\x33\x42"
+    assert not hook._blob_is_binary(word)
+    monkeypatch.setattr(hook,"_authority",lambda: SimpleNamespace(_is_authored=_is_authored))
+    monkeypatch.setattr(hook,"_staged_paths",lambda: [fixture,source])
+    monkeypatch.setattr(hook,"normalizing",lambda paths: set())
+    monkeypatch.setattr(hook,"_blob",lambda rev,path: None if rev=="HEAD" else word if path==fixture else b"source\r\n")
+    assert hook.offenders() == [(source,1,"new file")]
 
 
 @pytest.mark.skipif(not _is_checkout(),

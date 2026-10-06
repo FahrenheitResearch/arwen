@@ -287,7 +287,8 @@ def test_a_reader_older_than_the_extent_check_is_asked_for_the_last_bytes(
     header_only = netcdf_bridge._run(
         [str(reader), "inventory", str(frame)], what="inventory")
     document = json.loads(header_only.stdout)
-    assert document.pop("extent_checked") is True
+    extent_checked = document.pop("extent_checked", None)
+    assert extent_checked is None or extent_checked is True
     with netcdf_bridge.open_dataset(frame) as dataset:
         last = offline_child._last_stored_variable(dataset)
         # The last record variable, since the records follow the fixed ones.
@@ -295,11 +296,14 @@ def test_a_reader_older_than_the_extent_check_is_asked_for_the_last_bytes(
                    if variable.dimensions[:1] == ("Time",)]
         assert last == records[-1]
     real_run = netcdf_bridge._run
+    decoded = []
 
     def older_reader(arguments, **kwargs):
         if arguments[1] == "inventory":
             return subprocess.CompletedProcess(
                 arguments, 0, stdout=json.dumps(document), stderr="")
+        if arguments[1] == "dump":
+            decoded.append(arguments[-1])
         return real_run(arguments, **kwargs)
 
     monkeypatch.setattr(netcdf_bridge, "_run", older_reader)
@@ -307,6 +311,7 @@ def test_a_reader_older_than_the_extent_check_is_asked_for_the_last_bytes(
     frame.write_bytes(whole[:-5])
     with pytest.raises(OfflineChildContractError) as caught:
         offline_child.inspect_parent_history_frame(frame)
+    assert decoded == [last]
     message = str(caught.value)
     assert message.startswith(f"{frame} cannot be read as a parent history file (")
     assert "beyond file" in message

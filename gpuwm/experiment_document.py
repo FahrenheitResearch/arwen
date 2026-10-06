@@ -48,7 +48,8 @@ _TABLE_ORDER = ("experiment", "projection", "shared")
 #: document that dropped the block would run that root unperturbed under
 #: the bubbles' name, and one that could not be written stopped the
 #: root preparation of every perturbed tree.
-_COMPANION_TABLES = ("case_data", "static", "ingest", "perturbation")
+_COMPANION_TABLES = ("case_data", "static", "ingest", "perturbation",
+                     "simulated_radar")
 
 #: Long numeric arrays (eta ladders) wrap at this many values per line.
 _ARRAY_WRAP = 5
@@ -203,6 +204,12 @@ def publish_experiment_document(
             raise ExperimentDocumentError(
                 "published experiment document does not reload to the "
                 "vertical grid it was rendered from")
+        # Product options are outside the prepared domain identity. A lost
+        # scan request would prepare successfully and then omit radar output.
+        if reloaded.simulated_radar != experiment.simulated_radar:
+            raise ExperimentDocumentError(
+                "published experiment document reloads to a different "
+                "simulated radar request")
     except BaseException:
         target.unlink(missing_ok=True)
         raise

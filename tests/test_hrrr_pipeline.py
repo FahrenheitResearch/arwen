@@ -41,7 +41,9 @@ def test_pipeline_series_rejects_short_gapped_or_overlong_horizons(
         _parse_series(_series(tmp_path / "bad.tsv", hours))
 
 
-def test_wait_hour_binds_stable_staging_across_canonical_publication(tmp_path):
+@pytest.mark.parametrize("include_vegetation", [False, True])
+def test_wait_hour_binds_stable_staging_across_canonical_publication(
+        tmp_path, include_vegetation):
     series = _series(tmp_path / "series.tsv", (0, 1))
     decoder = tmp_path / "decoder"
     decoder.write_bytes(b"decoder")
@@ -56,13 +58,20 @@ def test_wait_hour_binds_stable_staging_across_canonical_publication(tmp_path):
     soil.mkdir()
     (atmosphere / "TT.f32le").write_bytes(b"stable-staging")
     (soil / "SOILT.f32le").write_bytes(b"soil")
+    (staging / "gate.txt").write_text(
+        "status\tPASS\n" + (
+            "optional_soil_surface_fields\tVEGFRA\n"
+            "optional_soil_surface_units\tVEGFRA=percent\n"
+            if include_vegetation else ""), encoding="ascii")
+    if include_vegetation:
+        (soil / "VEGFRA.f32le").write_bytes(b"vegetation")
     # Canonical publication may complete between wait_hour and the caller's
     # first field open.  It is a distinct tree; staging must remain selected.
     (output / "atmosphere-f00").mkdir(parents=True)
     (output / "soil-f00").mkdir()
     (output / "atmosphere-f00" / "TT.f32le").write_bytes(b"canonical")
     (signals / "f00.ready").write_text(
-        "status\tPASS\nforecast_hour\t0\npayload_files\t24\n"
+        f"status\tPASS\nforecast_hour\t0\npayload_files\t{24 + int(include_vegetation)}\n"
         "producer_elapsed_seconds\t1.25\n",
         encoding="ascii",
     )
@@ -73,15 +82,23 @@ def test_wait_hour_binds_stable_staging_across_canonical_publication(tmp_path):
     )
     producer.started = 0.0
     producer.process = SimpleNamespace(poll=lambda: None, pid=os.getpid())
-    producer.preflight = {
-        "staging_root": str(staging),
-        "staging_retention": "until_consumer_finish",
-    }
+    (signals / "preflight.ready").write_text(
+        "status\tPASS\nseries_count\t2\nworkers\t1\n"
+        "staging_retention\tuntil_consumer_finish\n"
+        f"staging_root\t{staging}\ncanonical_output\t{output}\n"
+        "producer_elapsed_seconds\t1.0\n", encoding="ascii")
+    producer.wait_preflight()
+    producer.wait_preflight()
 
     selected = producer.wait_hour(0)
     assert selected == staging
     assert (selected / "atmosphere-f00" / "TT.f32le").read_bytes() \
         == b"stable-staging"
+    (signals / "f00.ready").write_text(
+        "status\tPASS\nforecast_hour\t0\npayload_files\t23\n"
+        "producer_elapsed_seconds\t1.25\n", encoding="ascii")
+    with pytest.raises(ValueError, match="invalid pipeline f00 receipt"):
+        producer.wait_hour(0)
 
 
 def test_finish_removes_only_retained_staging_after_canonical_publish(tmp_path):

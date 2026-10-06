@@ -85,8 +85,8 @@ def test_the_summary_and_the_first_repair_come_from_the_registry_table(
     not empty -- microphysics off is refused on an HRRR start, whose
     analyzed condensate it cannot keep, and the turbulence closures carry
     the diffusion-selector rules (the 1.5-order closure beside a PBL under
-    diff_opt = 2, diff_opt = 1 without coordinate coefficients,
-    mix_full_fields = false under diff_opt = 2) -- but the first is scoped
+    diff_opt = 2, diff_opt = 1 without coordinate coefficients) -- but the
+    first is scoped
     to its source and none of the others holds for this draft, which runs
     Milbrandt-Yau at the default diffusion.  So the door is measured
     both ways: against the tracked registry, where no rule fires and the

@@ -32,7 +32,7 @@ use std::path::Path;
 use crate::error::{Result, StaticError};
 use crate::projection::GridSpec;
 use crate::raster::warp::{self, Resampling};
-use crate::raster::{geotiff, Crs, Raster};
+use crate::raster::{Crs, Raster, geotiff};
 use crate::types::{Field, FieldSet, Grid2, Stack3};
 
 fn invalid(message: impl Into<String>) -> StaticError {
@@ -64,7 +64,11 @@ pub(crate) fn format_g6(x: f64) -> String {
         return if x > 0.0 { "inf".into() } else { "-inf".into() };
     }
     if x == 0.0 {
-        return if x.is_sign_negative() { "-0".into() } else { "0".into() };
+        return if x.is_sign_negative() {
+            "-0".into()
+        } else {
+            "0".into()
+        };
     }
     // Round to 6 significant digits via exponential formatting.
     let exp_text = format!("{:.5e}", x);
@@ -92,7 +96,11 @@ pub(crate) fn format_g6(x: f64) -> String {
                 m.pop();
             }
         }
-        format!("{m}e{}{:02}", if exponent < 0 { "-" } else { "+" }, exponent.abs())
+        format!(
+            "{m}e{}{:02}",
+            if exponent < 0 { "-" } else { "+" },
+            exponent.abs()
+        )
     }
 }
 
@@ -125,9 +133,7 @@ pub fn sha256_file(path: &Path) -> Result<String> {
     use sha2::{Digest, Sha256};
     let mut digest = Sha256::new();
     let mut file = std::fs::File::open(path).map_err(|err| {
-        StaticError::Missing(format!(
-            "high-resolution raster missing: {path:?} ({err})"
-        ))
+        StaticError::Missing(format!("high-resolution raster missing: {path:?} ({err})"))
     })?;
     let mut block = vec![0u8; 8 * 1024 * 1024];
     loop {
@@ -227,13 +233,138 @@ pub fn raster_geometry(spec: &GridSpec) -> Result<(Crs, [f64; 6], (usize, usize)
     ))
 }
 
-/// Reproject one continuous raster to mass points in south-north order
-/// (`resample_continuous`).
-pub fn resample_continuous(
-    source: &Raster,
+/// Open metadata after provenance validation, without decoding the full band.
+pub fn open_bound_reader(source: &BoundRasterSpec) -> Result<(geotiff::TiffReader, Raster)> {
+    source.verify()?;
+    let mut reader = geotiff::TiffReader::open(&source.path)?;
+    reader.set_cache_budget(8 * 1024 * 1024);
+    let crs = match (&reader.crs, source.crs_override_parsed()?) {
+        (Some(own), _) => own.clone(),
+        (None, Some(given)) => given,
+        (None, None) => {
+            return Err(invalid(format!(
+                "raster {:?} has no CRS and declares no crs_override",
+                source.path
+            )));
+        }
+    };
+    let carrier = Raster {
+        ny: reader.height,
+        nx: reader.width,
+        values: Vec::new(),
+        transform: reader.transform,
+        crs,
+    };
+    Ok((reader, carrier))
+}
+
+/// Production continuous raster path, with bounded source and corner windows.
+pub fn resample_continuous_bound(
+    source: &BoundRasterSpec,
     spec: &GridSpec,
     method: Resampling,
 ) -> Result<Grid2> {
+    let (reader, carrier) = open_bound_reader(source)?;
+    let nodata = source.nodata_override.or(reader.nodata);
+    // Verification above hashes the immutable source once. Worker readers
+    // open its metadata directly and keep private, fixed-size block caches.
+    drop(reader);
+    let (dst_crs, transform, (ny, nx)) = raster_geometry(spec)?;
+    warp::reproject_continuous_windowed_parallel(
+        &carrier,
+        &dst_crs,
+        transform,
+        ny,
+        nx,
+        method,
+        warp::continuous_worker_limit(),
+        || {
+            let mut reader = geotiff::TiffReader::open(&source.path)?;
+            reader.set_cache_budget(warp::CONTINUOUS_READER_CACHE_BYTES);
+            Ok(reader)
+        },
+        |reader, c, r, w, h| {
+            let mut values = reader.read_window_raw(c, r, w, h)?;
+            for value in &mut values {
+                if nodata == Some(*value) || value.is_nan() {
+                    *value = f64::NAN;
+                } else {
+                    *value *= source.scale_factor;
+                }
+            }
+            Ok(values)
+        },
+    )
+}
+
+/// Production categorical raster path. The full-source validation is streamed
+/// separately so categories outside the destination retain their refusal rule.
+pub fn resample_mapped_categories_bound(
+    source: &BoundRasterSpec,
+    spec: &GridSpec,
+    mapping: &BTreeMap<i64, i64>,
+    category_count: usize,
+) -> Result<Stack3> {
+    let (mut reader, carrier) = open_bound_reader(source)?;
+    let nodata = source.nodata_override.or(reader.nodata);
+    let mut seen = std::collections::BTreeSet::new();
+    for r in (0..carrier.ny).step_by(256) {
+        for c in (0..carrier.nx).step_by(256) {
+            let raw =
+                reader.read_window_raw(c, r, 256.min(carrier.nx - c), 256.min(carrier.ny - r))?;
+            for value in raw {
+                if value.is_finite() && nodata != Some(value) {
+                    seen.insert(value as i64);
+                }
+            }
+        }
+    }
+    let unknown: Vec<i64> = seen
+        .iter()
+        .copied()
+        .filter(|v| !mapping.contains_key(v))
+        .collect();
+    if !unknown.is_empty() {
+        return Err(invalid(format!(
+            "raster {} contains unmapped categories {unknown:?}",
+            source.path.display()
+        )));
+    }
+    for raw in seen {
+        let v = mapping[&raw] as i16;
+        if v > 0 && v as usize > category_count {
+            return Err(invalid(format!(
+                "mapped category {v} is outside 1..{category_count}"
+            )));
+        }
+    }
+    let (dst_crs, transform, (ny, nx)) = raster_geometry(spec)?;
+    warp::reproject_categories_windowed(
+        &carrier,
+        &dst_crs,
+        transform,
+        ny,
+        nx,
+        category_count,
+        |c, r, w, h| {
+            let raw = reader.read_window_raw(c, r, w, h)?;
+            Ok(raw
+                .into_iter()
+                .map(|v| {
+                    if !v.is_finite() || nodata == Some(v) {
+                        0
+                    } else {
+                        mapping.get(&(v as i64)).copied().unwrap_or(0) as i16
+                    }
+                })
+                .collect())
+        },
+    )
+}
+
+/// Reproject one continuous raster to mass points in south-north order
+/// (`resample_continuous`).
+pub fn resample_continuous(source: &Raster, spec: &GridSpec, method: Resampling) -> Result<Grid2> {
     let (dst_crs, dst_transform, (ny, nx)) = raster_geometry(spec)?;
     warp::reproject_continuous(source, &dst_crs, dst_transform, ny, nx, method)
 }
@@ -326,11 +457,7 @@ pub fn resample_mapped_categories_u8(
     // whole number in 0..=255; any other sentinel masks nothing, exactly
     // as the f64 comparison does.
     let sentinel: Option<u8> = nodata
-        .filter(|value| {
-            value.is_finite()
-                && value.fract() == 0.0
-                && (0.0..=255.0).contains(value)
-        })
+        .filter(|value| value.is_finite() && value.fract() == 0.0 && (0.0..=255.0).contains(value))
         .map(|value| value as u8);
     let mut seen = [false; 256];
     for value in raw {
@@ -390,10 +517,7 @@ const METRES_PER_DEGREE: f64 = 111_320.0;
 /// floored at cos 87 degrees.
 pub fn margin_degrees(lat_min: f64, lat_max: f64, margin_m: f64) -> (f64, f64) {
     let extreme = lat_min.abs().max(lat_max.abs()).min(90.0);
-    let shrink = extreme
-        .to_radians()
-        .cos()
-        .max(87.0f64.to_radians().cos());
+    let shrink = extreme.to_radians().cos().max(87.0f64.to_radians().cos());
     (
         margin_m / (METRES_PER_DEGREE * shrink),
         margin_m / METRES_PER_DEGREE,
@@ -418,11 +542,7 @@ pub fn require_coverage(name: &str, values: &[f64]) -> Result<()> {
 /// USDA texture categories 1..12 from sand/silt/clay percentages
 /// (`usda_texture_category`); refuses unclassified points by value,
 /// exactly as the Python.
-pub fn usda_texture_category(
-    sand: &[f64],
-    silt: &[f64],
-    clay: &[f64],
-) -> Result<Vec<i16>> {
+pub fn usda_texture_category(sand: &[f64], silt: &[f64], clay: &[f64]) -> Result<Vec<i16>> {
     if sand.len() != silt.len() || sand.len() != clay.len() {
         return Err(invalid("sand, silt, and clay shapes differ"));
     }
@@ -447,12 +567,8 @@ pub fn usda_texture_category(
             (2, silt + 1.5 * clay >= 15.0 && silt + 2.0 * clay < 30.0),
             (
                 3,
-                ((7.0..20.0).contains(&clay)
-                    && sand > 52.0
-                    && silt + 2.0 * clay >= 30.0)
-                    || (clay < 7.0
-                        && silt < 50.0
-                        && silt + 2.0 * clay >= 30.0),
+                ((7.0..20.0).contains(&clay) && sand > 52.0 && silt + 2.0 * clay >= 30.0)
+                    || (clay < 7.0 && silt < 50.0 && silt + 2.0 * clay >= 30.0),
             ),
             (
                 4,
@@ -462,9 +578,7 @@ pub fn usda_texture_category(
             (5, silt >= 80.0 && clay < 12.0),
             (
                 6,
-                (7.0..27.0).contains(&clay)
-                    && (28.0..50.0).contains(&silt)
-                    && sand <= 52.0,
+                (7.0..27.0).contains(&clay) && (28.0..50.0).contains(&silt) && sand <= 52.0,
             ),
             (
                 7,
@@ -473,9 +587,7 @@ pub fn usda_texture_category(
             (8, (27.0..40.0).contains(&clay) && sand <= 20.0),
             (
                 9,
-                (27.0..40.0).contains(&clay)
-                    && sand > 20.0
-                    && sand <= 45.0,
+                (27.0..40.0).contains(&clay) && sand > 20.0 && sand <= 45.0,
             ),
             (10, clay >= 35.0 && sand > 45.0),
             (11, clay >= 40.0 && silt >= 40.0),
@@ -513,9 +625,7 @@ pub fn soilgrids_categories(
     let components = ["sand", "silt", "clay"];
     for component in components {
         let stack = planes.get(component).ok_or_else(|| {
-            StaticError::Missing(format!(
-                "missing SoilGrids sources: {component:?}"
-            ))
+            StaticError::Missing(format!("missing SoilGrids sources: {component:?}"))
         })?;
         if stack.len() != weights.len() {
             return Err(invalid(format!(
@@ -527,9 +637,7 @@ pub fn soilgrids_categories(
         }
         for plane in stack {
             if plane.len() != len {
-                return Err(invalid(
-                    "SoilGrids source rasters are not co-registered",
-                ));
+                return Err(invalid("SoilGrids source rasters are not co-registered"));
             }
         }
     }
@@ -564,8 +672,7 @@ pub fn soilgrids_categories(
         .collect();
     // The triangle runs on the VALID subset, exactly as the Python
     // indexes it, so an invalid total on a valid cell refuses there.
-    let subset: Vec<usize> =
-        (0..len).filter(|index| valid[*index]).collect();
+    let subset: Vec<usize> = (0..len).filter(|index| valid[*index]).collect();
     let sand: Vec<f64> = subset.iter().map(|i| means["sand"][*i]).collect();
     let silt: Vec<f64> = subset.iter().map(|i| means["silt"][*i]).collect();
     let clay: Vec<f64> = subset.iter().map(|i| means["clay"][*i]).collect();
@@ -575,9 +682,7 @@ pub fn soilgrids_categories(
         category[*index] = categories[subset_index];
     }
     let raw_total: Vec<f64> = (0..len)
-        .map(|index| {
-            means["sand"][index] + means["silt"][index] + means["clay"][index]
-        })
+        .map(|index| means["sand"][index] + means["silt"][index] + means["clay"][index])
         .collect();
     Ok((category, valid, raw_total))
 }
@@ -591,20 +696,13 @@ pub fn soilgrids_categories(
 /// 4-neighbour expansion in the Python's (up, left, right, down) push
 /// order — the queue order IS the tie-break and is part of the byte
 /// contract.  Returns `(donor_y, donor_x)`.
-pub fn nearest_donors(
-    valid: &[bool],
-    ny: usize,
-    nx: usize,
-) -> Result<(Vec<i32>, Vec<i32>)> {
+pub fn nearest_donors(valid: &[bool], ny: usize, nx: usize) -> Result<(Vec<i32>, Vec<i32>)> {
     if valid.len() != ny * nx || !valid.iter().any(|ok| *ok) {
-        return Err(invalid(
-            "nearest-donor mask must be 2-D with a valid cell",
-        ));
+        return Err(invalid("nearest-donor mask must be 2-D with a valid cell"));
     }
     let mut donor_y = vec![-1i32; ny * nx];
     let mut donor_x = vec![-1i32; ny * nx];
-    let mut queue: std::collections::VecDeque<(usize, usize)> =
-        std::collections::VecDeque::new();
+    let mut queue: std::collections::VecDeque<(usize, usize)> = std::collections::VecDeque::new();
     for y in 0..ny {
         for x in 0..nx {
             if valid[y * nx + x] {
@@ -648,10 +746,7 @@ fn plane<'a>(set: &'a FieldSet, name: &str) -> Result<&'a Grid2> {
     }
 }
 
-fn missing_from(
-    set: &FieldSet,
-    required: &[&'static str],
-) -> Vec<&'static str> {
+fn missing_from(set: &FieldSet, required: &[&'static str]) -> Vec<&'static str> {
     let mut missing: Vec<&'static str> = required
         .iter()
         .copied()
@@ -694,17 +789,22 @@ pub fn merge_terrain_override(
         )));
     }
     let baseline_hgt = plane(baseline, "HGT_M")?;
-    if (hgt_override.ny, hgt_override.nx)
-        != (baseline_hgt.ny, baseline_hgt.nx)
-    {
+    if (hgt_override.ny, hgt_override.nx) != (baseline_hgt.ny, baseline_hgt.nx) {
         return Err(invalid(format!(
             "terrain override shape ({}, {}) differs from baseline \
              ({}, {})",
-            hgt_override.ny, hgt_override.nx, baseline_hgt.ny,
-            baseline_hgt.nx
+            hgt_override.ny, hgt_override.nx, baseline_hgt.ny, baseline_hgt.nx
         )));
     }
-    let mut out = baseline.clone();
+    let mut out = FieldSet {
+        fields: baseline
+            .fields
+            .iter()
+            .filter(|(name, _)| !matches!(name.as_str(), "HGT_M" | "TMN"))
+            .map(|(name, field)| (name.clone(), field.clone()))
+            .collect(),
+        coverage_reports: baseline.coverage_reports.clone(),
+    };
     let changed = baseline_hgt
         .data
         .iter()
@@ -714,8 +814,8 @@ pub fn merge_terrain_override(
     out.fields
         .insert("HGT_M".into(), Field::Plane(hgt_override.clone()));
 
-    let landmask = plane(baseline, "LANDMASK")?.clone();
-    let soiltemp = plane(baseline, "SOILTEMP")?.clone();
+    let landmask = plane(baseline, "LANDMASK")?;
+    let soiltemp = plane(baseline, "SOILTEMP")?;
     if landmask.data.len() != hgt_override.data.len()
         || soiltemp.data.len() != hgt_override.data.len()
     {
@@ -771,10 +871,7 @@ const DEEP_SOIL_KELVIN_RANGE: (f64, f64) = (170.0, 400.0);
 const LAND_ONLY_DEEP_SOIL: [&str; 2] = ["SOILTEMP", "TMN"];
 
 /// `_refuse_unusable_merged_statics`, verbatim gate logic.
-fn refuse_unusable_merged_statics(
-    out: &FieldSet,
-    new_land: &[bool],
-) -> Result<()> {
+fn refuse_unusable_merged_statics(out: &FieldSet, new_land: &[bool]) -> Result<()> {
     for (name, field) in &out.fields {
         let (planes, ny, nx) = field.dims();
         let data = field.data();
@@ -785,9 +882,7 @@ fn refuse_unusable_merged_statics(
         let mut holed = 0usize;
         for plane_index in 0..planes {
             for cell in 0..ny * nx {
-                if new_land[cell]
-                    && !data[plane_index * ny * nx + cell].is_finite()
-                {
+                if new_land[cell] && !data[plane_index * ny * nx + cell].is_finite() {
                     holed += 1;
                 }
             }
@@ -859,9 +954,19 @@ pub fn merge_highres_overrides(
     let missing = missing_from(
         baseline,
         &[
-            "HGT_M", "LANDUSEF", "LANDMASK", "LU_INDEX", "SOILCTOP",
-            "SCT_DOM", "SOILCBOT", "SCB_DOM", "GREENFRAC", "LAI12M",
-            "ALBEDO12M", "SNOALB", "SOILTEMP",
+            "HGT_M",
+            "LANDUSEF",
+            "LANDMASK",
+            "LU_INDEX",
+            "SOILCTOP",
+            "SCT_DOM",
+            "SOILCBOT",
+            "SCB_DOM",
+            "GREENFRAC",
+            "LAI12M",
+            "ALBEDO12M",
+            "SNOALB",
+            "SOILTEMP",
         ],
     );
     if !missing.is_empty() {
@@ -873,8 +978,8 @@ pub fn merge_highres_overrides(
     let missing = missing_from(
         overrides,
         &[
-            "HGT_M", "LANDUSEF", "LANDMASK", "LU_INDEX", "SOILCTOP",
-            "SCT_DOM", "SOILCBOT", "SCB_DOM",
+            "HGT_M", "LANDUSEF", "LANDMASK", "LU_INDEX", "SOILCTOP", "SCT_DOM", "SOILCBOT",
+            "SCB_DOM",
         ],
     );
     if !missing.is_empty() {
@@ -884,13 +989,31 @@ pub fn merge_highres_overrides(
         )));
     }
 
-    let mut out = baseline.clone();
+    let rebuilt_names = [
+        "GREENFRAC",
+        "LAI12M",
+        "ALBEDO12M",
+        "SNOALB",
+        "SOILTEMP",
+        "TMN",
+    ];
+    let mut out = FieldSet {
+        fields: baseline
+            .fields
+            .iter()
+            .filter(|(name, _)| {
+                !overrides.fields.contains_key(*name) && !rebuilt_names.contains(&name.as_str())
+            })
+            .map(|(name, field)| (name.clone(), field.clone()))
+            .collect(),
+        coverage_reports: baseline.coverage_reports.clone(),
+    };
     for (name, field) in &overrides.fields {
         out.fields.insert(name.clone(), field.clone());
     }
 
     let old_landmask = plane(baseline, "LANDMASK")?;
-    let new_landmask = plane(&out, "LANDMASK")?.clone();
+    let new_landmask = plane(&out, "LANDMASK")?;
     let (ny, nx) = (old_landmask.ny, old_landmask.nx);
     if (new_landmask.ny, new_landmask.nx) != (ny, nx) {
         return Err(invalid(format!(
@@ -899,10 +1022,8 @@ pub fn merge_highres_overrides(
             new_landmask.ny, new_landmask.nx
         )));
     }
-    let old_land: Vec<bool> =
-        old_landmask.data.iter().map(|value| *value > 0.5).collect();
-    let new_land: Vec<bool> =
-        new_landmask.data.iter().map(|value| *value > 0.5).collect();
+    let old_land: Vec<bool> = old_landmask.data.iter().map(|value| *value > 0.5).collect();
+    let new_land: Vec<bool> = new_landmask.data.iter().map(|value| *value > 0.5).collect();
     let newly_land: Vec<bool> = old_land
         .iter()
         .zip(&new_land)
@@ -924,7 +1045,7 @@ pub fn merge_highres_overrides(
         ("SOILTEMP", f64::NAN),
     ];
     for (name, water_fill) in fills {
-        let field = baseline.fields.get(name).unwrap().clone();
+        let field = baseline.fields.get(name).unwrap();
         let (planes, fny, fnx) = field.dims();
         if (fny, fnx) != (ny, nx) {
             return Err(invalid(format!(
@@ -935,11 +1056,9 @@ pub fn merge_highres_overrides(
         let mut data = field.data().to_vec();
         for cell in 0..ny * nx {
             if newly_land[cell] {
-                let donor = donor_y[cell] as usize * nx
-                    + donor_x[cell] as usize;
+                let donor = donor_y[cell] as usize * nx + donor_x[cell] as usize;
                 for plane_index in 0..planes {
-                    data[plane_index * ny * nx + cell] =
-                        data[plane_index * ny * nx + donor];
+                    data[plane_index * ny * nx + cell] = data[plane_index * ny * nx + donor];
                 }
             }
         }
@@ -953,12 +1072,17 @@ pub fn merge_highres_overrides(
         let rebuilt = if planes == 1 {
             Field::Plane(Grid2 { ny, nx, data })
         } else {
-            Field::Stack(Stack3 { planes, ny, nx, data })
+            Field::Stack(Stack3 {
+                planes,
+                ny,
+                nx,
+                data,
+            })
         };
         out.fields.insert(name.to_string(), rebuilt);
     }
 
-    let soiltemp = plane(&out, "SOILTEMP")?.clone();
+    let soiltemp = plane(&out, "SOILTEMP")?;
     let hgt = plane(&out, "HGT_M")?;
     if (hgt.ny, hgt.nx) != (ny, nx) {
         return Err(invalid(format!(
@@ -967,7 +1091,11 @@ pub fn merge_highres_overrides(
             hgt.ny, hgt.nx
         )));
     }
-    let mut tmn = Grid2 { ny, nx, data: vec![0.0; ny * nx] };
+    let mut tmn = Grid2 {
+        ny,
+        nx,
+        data: vec![0.0; ny * nx],
+    };
     for cell in 0..ny * nx {
         tmn.data[cell] = if new_land[cell] {
             soiltemp.data[cell] - 0.0065 * hgt.data[cell]
@@ -994,8 +1122,7 @@ pub fn merge_highres_overrides(
         }
     }
 
-    let newly_land_count =
-        newly_land.iter().filter(|ok| **ok).count() as u64;
+    let newly_land_count = newly_land.iter().filter(|ok| **ok).count() as u64;
     let unchanged = old_land
         .iter()
         .zip(&new_land)
@@ -1030,6 +1157,27 @@ pub fn build_terrain_grid(
 ) -> Result<Grid2> {
     let extended = extended_spec(spec, halo);
     let warped = resample_continuous(terrain, &extended, Resampling::Average)?;
+    finish_terrain_grid(spec, warped, halo, smooth_passes)
+}
+
+/// Production terrain build with bounded source decode windows.
+pub fn build_terrain_bound(
+    spec: &GridSpec,
+    terrain: &BoundRasterSpec,
+    halo: usize,
+    smooth_passes: usize,
+) -> Result<Grid2> {
+    let extended = extended_spec(spec, halo);
+    let warped = resample_continuous_bound(terrain, &extended, Resampling::Average)?;
+    finish_terrain_grid(spec, warped, halo, smooth_passes)
+}
+
+fn finish_terrain_grid(
+    spec: &GridSpec,
+    warped: Grid2,
+    halo: usize,
+    smooth_passes: usize,
+) -> Result<Grid2> {
     require_coverage("terrain", &warped.data)?;
     let smoothed = if smooth_passes > 0 {
         crate::smooth::smth_desmth_special(&warped, smooth_passes)?
@@ -1038,11 +1186,14 @@ pub fn build_terrain_grid(
     };
     let ny = (spec.e_sn - 1) as usize;
     let nx = (spec.e_we - 1) as usize;
-    let mut cropped = Grid2 { ny, nx, data: vec![0.0; ny * nx] };
+    let mut cropped = Grid2 {
+        ny,
+        nx,
+        data: vec![0.0; ny * nx],
+    };
     for row in 0..ny {
         let src = (row + halo) * smoothed.nx + halo;
-        cropped.data[row * nx..(row + 1) * nx]
-            .copy_from_slice(&smoothed.data[src..src + nx]);
+        cropped.data[row * nx..(row + 1) * nx].copy_from_slice(&smoothed.data[src..src + nx]);
     }
     Ok(cropped)
 }
@@ -1103,9 +1254,7 @@ pub fn copernicus_dem_tile_ids(bbox: BBox) -> Result<Vec<String>> {
         }
     }
     if tiles.is_empty() {
-        return Err(invalid(
-            "footprint enumerates no Copernicus DEM tile",
-        ));
+        return Err(invalid("footprint enumerates no Copernicus DEM tile"));
     }
     Ok(tiles)
 }

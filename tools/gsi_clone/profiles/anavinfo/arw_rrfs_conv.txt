@@ -1,0 +1,100 @@
+!! RRFS v1's conv_dbz variable table (NOAA-EMC/GSI-fix 3ccc7626b6
+!! anavinfo.rrfs_conv_dbz) on GSI's WRF mass interface. The control vector,
+!! its itracer groups (0/1 for the dynamics group, 11 for the hydrometeor and
+!! w group that RRFS localizes at 15 km) and the static amplitudes are RRFS's.
+!! Changed for the WRF interface: met_guess orig_name values are the WRF
+!! reader's, the ql control points at WRF's ql state instead of FV3's qc,
+!! delp (an FV3 restart field) is not read, and cw is carried as the
+!! WRF reader expects. qnr, qni and qnc are guess-only rows, as in HRRR's WRF
+!! table: GSI's WRF analysis writer writes them only when they are in the
+!! table while its netCDF updater always reads them (db90edf
+!! cplr_wrwrfmassa.f90 against cplr_wrf_netcdf_interface.f90; MEASURED
+!! 2026-10-03: end-of-file on siganl without them). Not carried: fed (reason
+!! in rrfs-v1.0.25b.profile). @NZ@ is the background's level count, @NZ1@ one
+!! more; case/run_singleob.sh fills them from the file.
+met_guess::
+!var     level    crtm_use    desc              orig_name
+  ps        1      -1         surface_pressure     ps
+  z         1      -1         geopotential_height  phis
+  u       @NZ@      2         zonal_wind           u
+  v       @NZ@      2         meridional_wind      v
+  w       @NZ@     -1         vertical_velocity    w
+  tv      @NZ@      2         virtual_temperature  tv
+  q       @NZ@      2         specific_humidity    sphu
+  t2m       1      -1         2-m_T                t2m
+  q2m       1      -1         2-m_Q                q2m
+  oz      @NZ@      2         ozone                ozone
+  cw      @NZ@     10         cloud_condensate     cw
+  ql      @NZ@     10         cloud_liquid         ql
+  qi      @NZ@     10         cloud_ice            qi
+  qr      @NZ@     10         rain                 qr
+  qs      @NZ@     10         snow                 qs
+  qg      @NZ@     10         graupel              qg
+  qnr     @NZ@     10         rain_noconc          qnr
+  qni     @NZ@     10         ice_noconc           qni
+  qnc     @NZ@     10         cloud_noconc         qnc
+  dbz     @NZ@     10         reflectivity         REFL_10CM
+::
+
+state_derivatives::
+!var  level  src
+ ps   1      met_guess
+ u    @NZ@     met_guess
+ v    @NZ@     met_guess
+ tv   @NZ@     met_guess
+ q    @NZ@     met_guess
+ oz   @NZ@     met_guess
+ cw   @NZ@     met_guess
+ prse @NZ1@     met_guess
+::
+
+state_tendencies::
+!var  levels  source
+ u    @NZ@      met_guess
+ v    @NZ@      met_guess
+ tv   @NZ@      met_guess
+ q    @NZ@      met_guess
+ cw   @NZ@      met_guess
+ oz   @NZ@      met_guess
+ prse @NZ1@      met_guess
+::
+
+state_vector::
+!var     level  itracer source     funcof
+ u       @NZ@      0     met_guess    u
+ v       @NZ@      0     met_guess    v
+ w       @NZ@      0     met_guess    w
+ tv      @NZ@      0     met_guess    tv
+ tsen    @NZ@      0     met_guess    tv,q
+ q       @NZ@      1     met_guess    q
+ oz      @NZ@      1     met_guess    oz
+ cw      @NZ@      1     met_guess    cw
+ prse    @NZ1@      0     met_guess    prse
+ ps        1      0     met_guess    prse
+ sst       1      0     met_guess    sst
+ qr      @NZ@      1     met_guess    qr
+ ql      @NZ@      1     met_guess    ql
+ qs      @NZ@      1     met_guess    qs
+ qi      @NZ@      1     met_guess    qi
+ qg      @NZ@      1     met_guess    qg
+ dbz     @NZ@      1     met_guess    dbz
+::
+
+control_vector::
+!var     level  itracer as/tsfc_sdv  an_amp0   source  funcof
+ sf      @NZ@      0       0.90        -1.0     state    u,v
+ vp      @NZ@      0       0.90        -1.0     state    u,v
+ ps        1      0       1.00        -1.0     state    prse
+ t       @NZ@      0       1.40        -1.0     state    tv
+ q       @NZ@      1       0.80        -1.0     state    q
+ sst       1      0       1.00        -1.0     state    sst
+ w       @NZ@     11       0.00        -1.0     state    w
+ qr      @NZ@     11       0.00        -1.0     state    qr
+ qs      @NZ@     11       0.00        -1.0     state    qs
+ qi      @NZ@     11       0.00        -1.0     state    qi
+ qg      @NZ@     11       0.00        -1.0     state    qg
+ ql      @NZ@     11       0.00        -1.0     state    ql
+ dbz     @NZ@     11       0.00        -1.0     state    dbz
+ stl       1      0       1.00        -1.0     motley   sst
+ sti       1      0       1.00        -1.0     motley   sst
+::

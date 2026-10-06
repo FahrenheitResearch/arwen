@@ -80,18 +80,19 @@ def _worst_gap(host, device) -> dict[str, int]:
 def forced_nine_level_tier(monkeypatch):
     """Route every RUC launcher through the SPECIALIZED loader at nine.
 
-    ``ruc_module_defines(9)`` is empty by design, so the shipped nine-level
-    run never touches the tiered path.  This makes it take it anyway, at the
+    ``ruc_module_defines(9, snow="wrf_45")`` is empty by design.  This fixture
+    takes the tiered path under the same explicit snow choice, at the
     same geometry, which is the only way to exercise the ladder, the derived
     macros and the ``#if``-selected table against something that has an
     oracle.
     """
     real = ruc_tier.ruc_module_defines
 
-    def always_specialize(nzs: int, soilprop: str = "wrf_45"
+    def always_specialize(nzs: int, soilprop: str = "wrf_45",
+                          snow: str = "wrf_45",
                           ) -> tuple[tuple[str, int], ...]:
-        # keep the admitted-set refusals; the lineage define rides along
-        lineage = real(nzs, soilprop)
+        # keep the admitted-set refusals; the lineage defines ride along
+        lineage = real(nzs, soilprop, snow)
         return (("RUC_NZS", int(nzs)),) + lineage
 
     monkeypatch.setattr(ruc_tier, "ruc_module_defines", always_specialize)
@@ -105,7 +106,7 @@ def test_the_forced_tier_really_is_a_different_translation_unit(
     Without this the bitwise gate below could pass because the monkeypatch
     did nothing at all.
     """
-    assert ruc_tier.ruc_module_defines(9) == (("RUC_NZS", 9),)
+    assert ruc_tier.ruc_module_defines(9, snow="wrf_45") == (("RUC_NZS", 9),)
     specialized = module_source_int_defines("ruc", (("RUC_NZS", 9),))
     unspecialized = module_source("ruc")
     assert specialized != unspecialized
@@ -115,7 +116,7 @@ def test_the_forced_tier_really_is_a_different_translation_unit(
     assert specialized.count("#define RUC_NZS 9\n") == 2
     assert unspecialized.count("#define RUC_NZS 9\n") == 1
     assert specialized.replace("#define RUC_NZS 9\n", "", 1) == unspecialized
-    assert ruc_tier.ruc_kernel_source(9) == specialized
+    assert ruc_tier.ruc_kernel_source(9, snow="wrf_45") == specialized
 
 
 @pytest.mark.parametrize("snow,water,ice", [

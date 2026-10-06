@@ -70,6 +70,20 @@ def _digest(value):
                                     allow_nan=False).encode()).hexdigest()
 
 
+def _preparation_experiment_identity(exp):
+    """The existing root identity without forecast-time parameter sets.
+
+    Parameter values change physics initialization and integration, while
+    cold source preparation retains its original fields. Removing this one
+    field at either None or an active set preserves the former default key
+    and lets parameter members restore the same prepared source words.
+    Member trajectories and checkpoint identities still bind the set.
+    """
+    document = _plain(exp)
+    document.pop("physics_params", None)
+    return document
+
+
 def _grid_identity(grid):
     names = ("map_proj", "ref_lat", "ref_lon", "truelat1", "truelat2", "stand_lon",
              "known_x", "known_y", "dx", "dy", "e_we", "e_sn")
@@ -285,7 +299,7 @@ class RuntimePreparationSource:
         binding = _binding_identity(_MEMBER_INPUT.get())
         projection = _grid_identity(grid)
         static_sha256 = _digest(static)
-        key = _digest({"experiment": exp, "case_data": data,
+        key = _digest({"experiment": _preparation_experiment_identity(exp), "case_data": data,
             "catalog": catalog.fingerprint, "projection": projection,
             "static": static_sha256, "member_source": _preparation_binding(binding),
             "host_initialization": store_request is not None,

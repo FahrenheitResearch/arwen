@@ -1,0 +1,131 @@
+# Published static files a configuration can take its geography from,
+# byte for byte, in place of building it from WPS_GEOG.
+#
+# A row is data, not code: gpuwm.static.external_source reads every row
+# through one reader and one crop.  Adding a model that publishes its own
+# geo_em (another HRRR domain, RAP, a future system) is a new row here.
+#
+# Selected by a configuration's metadata: `[static] source = "<id>"`
+# (optionally `source_fields = [...]`, default "all").  A source adapter
+# can also select a row by default (the hrrr, hrrr-prs and hrrr-native
+# adapters select hrrr-conus-v4).  A configuration that names no source
+# takes that default only on the row's own projection; on any other
+# projection it builds from WPS_GEOG exactly as it always did, and the
+# static receipt says "defaulted source did not match; WPS_GEOG used".
+# A source the configuration names itself is never set aside: a projection
+# that differs from the row's is refused, naming the row.
+#
+# Keys:
+#   id, describes      the row's name and what it describes
+#   format             "wps-geo_em": a WPS geogrid output file
+#   filename           the file name in the local cache
+#   url                where the publisher serves it
+#   mirrors            further URLs serving the same bytes (tried after url)
+#   sha256, bytes      the pin; any other bytes are refused
+#   [grid]             the file's mass grid (WPS conventions: e_we/e_sn are
+#                      staggered sizes, ref point at the grid centre)
+#   [attrs]            global attributes the file must carry
+#   fields             geo_em variables taken from the file
+#   [rename]           file name -> engine name, for fields whose engine
+#                      name differs; every other field keeps its own name
+#   drag_semantics     what the drag fields mean, for the reader
+#   provenance         how the file was made, as far as it is known
+
+schema = "gpuwm-static-sources-v1"
+
+[[source]]
+id = "hrrr-conus-v4"
+describes = "Operational HRRR v4 CONUS static file (NCO production tree hrrr.v4.1.21, fix/conus)"
+format = "wps-geo_em"
+filename = "hrrr_geo_em.d01.nc"
+url = "https://www.nco.ncep.noaa.gov/pmb/codes/nwprod/hrrr.v4.1.21/fix/conus/hrrr_geo_em.d01.nc"
+# The NCO version folder rotates (the v4.1.19 path already returns 404),
+# so a durable mirror belongs here once one is published.
+mirrors = []
+sha256 = "a785b53fdb8493e376b88ece6e166ddd8046588dd1c0062181141bf2b012f6e2"
+bytes = 1112724420
+fields = [
+    "LANDMASK", "LU_INDEX", "LANDUSEF",
+    "SCT_DOM", "SCB_DOM", "SOILCTOP", "SOILCBOT",
+    "HGT_M", "SLOPECAT",
+    "GREENFRAC", "LAI12M", "ALBEDO12M", "SNOALB",
+    "SOILTEMP",
+    "LAKE_DEPTH", "VAR_SSO",
+    "CON", "VAR", "OA1", "OA2", "OA3", "OA4", "OL1", "OL2", "OL3", "OL4",
+    "CONSS", "VARSS", "OA1SS", "OA2SS", "OA3SS", "OA4SS",
+    "OL1SS", "OL2SS", "OL3SS", "OL4SS",
+]
+drag_semantics = "wrf39-gsl: CON/VAR/OA*/OL* are the GSL drag suite's large-scale set and the *SS names its small-scale set; in this file the small-scale set equals the large-scale set, one GSL-made set serving both scales"
+provenance = "GEOGRID V3.9.1 output; BNU 30-second soil, MODIS 20-class 15-second land use with HRRR's own lakes, MODIS LAI and albedo, GMTED2010 terrain with the v4.1.1 Great Lakes height edit; drag fields grafted from GSL's GWD_mdt_10newfields.HRRR.nc (2019-02-19)"
+
+[source.grid]
+map_proj = "lambert"
+ref_lat = 38.5
+ref_lon = -97.5
+truelat1 = 38.5
+truelat2 = 38.5
+stand_lon = -97.5
+dx = 3000.0
+dy = 3000.0
+e_we = 1800
+e_sn = 1060
+
+[source.attrs]
+MMINLU = "MODIFIED_IGBP_MODIS_NOAH"
+NUM_LAND_CAT = 21
+ISWATER = 17
+ISLAKE = 21
+ISICE = 15
+ISURBAN = 13
+ISOILWATER = 14
+
+[source.rename]
+CON = "CONLS"
+VAR = "VARLS"
+OA1 = "OA1LS"
+OA2 = "OA2LS"
+OA3 = "OA3LS"
+OA4 = "OA4LS"
+OL1 = "OL1LS"
+OL2 = "OL2LS"
+OL3 = "OL3LS"
+OL4 = "OL4LS"
+
+# Same-spacing fractional windows use the source row's declared methods.
+[source.field_sampling]
+LANDMASK = "nearest"
+LU_INDEX = "nearest"
+LANDUSEF = "bilinear"
+SCT_DOM = "nearest"
+SCB_DOM = "nearest"
+SOILCTOP = "bilinear"
+SOILCBOT = "bilinear"
+HGT_M = "bilinear"
+SLOPECAT = "nearest"
+GREENFRAC = "bilinear"
+LAI12M = "bilinear"
+ALBEDO12M = "bilinear"
+SNOALB = "bilinear"
+SOILTEMP = "bilinear"
+LAKE_DEPTH = "bilinear"
+VAR_SSO = "bilinear"
+CON = "bilinear"
+VAR = "bilinear"
+OA1 = "bilinear"
+OA2 = "bilinear"
+OA3 = "bilinear"
+OA4 = "bilinear"
+OL1 = "bilinear"
+OL2 = "bilinear"
+OL3 = "bilinear"
+OL4 = "bilinear"
+CONSS = "bilinear"
+VARSS = "bilinear"
+OA1SS = "bilinear"
+OA2SS = "bilinear"
+OA3SS = "bilinear"
+OA4SS = "bilinear"
+OL1SS = "bilinear"
+OL2SS = "bilinear"
+OL3SS = "bilinear"
+OL4SS = "bilinear"

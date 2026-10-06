@@ -2944,7 +2944,7 @@ class CudaSW:
         # (cuda/compiler.py:_compile), and NVRTC 13 rejects that duplicate
         # too; the arch cupy derives is ``_get_arch()``, the same value an
         # explicit option would have carried.
-        from cupy.cuda import compiler as _cc
+        from gpuwm import nvrtc_ptx_cache as _cc
         ptx, _mapping = _cc.compile_using_nvrtc(
             code, ("-std=c++17", "--ftz=false"), None, "rrtmg_sw.cu")
         self.module = cp.cuda.function.Module()
@@ -3375,7 +3375,7 @@ class CudaSW:
                                 fsfcmcl, ciwpmcl, clwpmcl, cswpmcl,
                                 reicmcl, relqmcl, resnmcl, aer_opt=0,
                                 column_chunk=None, _stage_probe=None,
-                                mcica_layout="gpoint"):
+                                mcica_layout="gpoint", aerosol=None):
         """Batched full SW chain, device-resident: the ``_b`` re-indexing
         twins of Section 10's kernels, same compile path, same per-thread
         statement order -- the only changes are grid sizes (ncol > 1) and
@@ -3384,11 +3384,25 @@ class CudaSW:
         DAY COLUMNS ONLY: every ``coszen`` must be > 0 (the WRF driver's
         night gate skips the SW call entirely; night columns have no
         defined SW output).  A batch containing any coszen <= 0 raises
-        ValueError (fails closed) -- callers filter first.  ZERO AEROSOL
-        is likewise a validated precondition: only aer_opt = 0 is
-        accepted; nonzero-aerosol WRF configurations (aer_opt = 2/3) are
-        rejected rather than having their aerosol optics silently
-        discarded (2026-07-27 SW transcription audit, item 1).
+        ValueError (fails closed) -- callers filter first.
+
+        AEROSOL.  aer_opt = 0 builds WRF's zero-aerosol optics (0/1/0)
+        internally, exactly as before.  aer_opt = 3 (the Thompson
+        aerosol branch of the operational HRRR fork) takes the per-band
+        optics the caller formed, ``aerosol = (ztaua, zasya, zomga)``,
+        three float32 device arrays (ncol, NBNDSW, nlayers) in
+        rsw_spcvmc_gpt_b's per-column band-major layout
+        (gpuwm.core.rrtmg_aerosol_optics builds them); RRTMG_SWRAD runs
+        that branch with iaer = 10 and hands them to spcvmc unchanged
+        (module_ra_rrtmg_sw.F:9183, :9329-9331).  aer_opt = 1 and 2 stay
+        refused (their aerosol inputs are not transcribed; the optics
+        would be silently discarded, 2026-07-27 SW transcription audit,
+        item 1).
+        Caller-supplied optics reach the raw asymmetry-combination
+        division of rsw_spcvmc_gpt_b, whose operands the kernel header's
+        invariant requires to be zero or normal float32;
+        gpuwm.core.rrtmg_aerosol_optics states and tests that range for
+        the aer_opt = 3 producer.
 
         Layout (see the Section 11 header below): per-column arrays carry
         a leading ncol axis; McICA arrays default to (NGPTSW, ncol, nlay).
@@ -3416,14 +3430,24 @@ class CudaSW:
         if mcica_layout not in ("gpoint", "column"):
             raise ValueError("mcica_layout must be gpoint or column")
         cp = self.cp
-        if aer_opt != 0:
-            # Same fail-closed contract as the per-column CUDA entry: the
-            # device composition constructs zero aerosols; anything else
-            # would be silently wrong.
+        if aer_opt == 3:
+            if aerosol is None or len(aerosol) != 3:
+                raise ValueError(
+                    "aer_opt=3 needs the caller's per-band aerosol optics "
+                    "aerosol=(ztaua, zasya, zomga); without them the "
+                    "batch would run zero aerosol under aer_opt=3")
+        elif aer_opt != 0:
+            # The aer_opt = 1 and 2 inputs are not transcribed: running
+            # zero aerosol under them would be silently wrong.
             raise NotImplementedError(
                 f"aer_opt={aer_opt!r}: the CUDA SW composition implements "
-                "the zero-aerosol option-4 path only; nonzero aerosol "
-                "optics would be silently discarded -- fails closed")
+                "aer_opt 0 (zero aerosol) and 3 (caller-supplied per-band "
+                "optics); this option's aerosol inputs are not "
+                "transcribed and would be silently discarded -- fails "
+                "closed")
+        elif aerosol is not None:
+            raise ValueError("aerosol optics were supplied with aer_opt=0, "
+                             "which runs WRF's zero aerosol")
         if icld < 1:
             raise NotImplementedError(
                 "icld = 0 (clear-only) never occurs in the campaign "
@@ -3433,6 +3457,16 @@ class CudaSW:
         nlayers = _radiation_layer_count(nlay)
         ncol = int(ncol)
         nl1 = nlayers + 1
+        if aerosol is not None:
+            for name, a in zip(("ztaua", "zasya", "zomga"), aerosol):
+                if (not isinstance(a, cp.ndarray) or a.dtype != cp.float32
+                        or a.shape != (ncol, NBNDSW, nlayers)
+                        or not a.flags.c_contiguous):
+                    raise ValueError(
+                        f"aer_opt=3 {name} must be a C-contiguous float32 "
+                        f"device array {(ncol, NBNDSW, nlayers)}, got "
+                        f"{getattr(a, 'dtype', None)} "
+                        f"{getattr(a, 'shape', None)}")
         if column_chunk:
             chunk = int(column_chunk)
         else:
@@ -3628,14 +3662,21 @@ class CudaSW:
             zcldfmc_d, ztaucmc_d, ztaormc_d = cldfmc_d, taucmc_d, taormc_d
             zasycmc_d, zomgcmc_d = asmcmc_d, ssacmc_d
             del cldfmc_d, taucmc_d, taormc_d, asmcmc_d, ssacmc_d
-            # Zero-aerosol optics (aer_opt = 0 is the validated
-            # precondition): const inputs of rsw_spcvmc_gpt_b, filled once.
-            ztaua_d = scratch.constant(
-                "ztaua", (nc, NBNDSW, nlayers), f32, 0.0)
-            zasya_d = scratch.constant(
-                "zasya", (nc, NBNDSW, nlayers), f32, 0.0)
-            zomga_d = scratch.constant(
-                "zomga", (nc, NBNDSW, nlayers), f32, 1.0)
+            if aerosol is None:
+                # Zero-aerosol optics (aer_opt = 0): const inputs of
+                # rsw_spcvmc_gpt_b, filled once.
+                ztaua_d = scratch.constant(
+                    "ztaua", (nc, NBNDSW, nlayers), f32, 0.0)
+                zasya_d = scratch.constant(
+                    "zasya", (nc, NBNDSW, nlayers), f32, 0.0)
+                zomga_d = scratch.constant(
+                    "zomga", (nc, NBNDSW, nlayers), f32, 1.0)
+            else:
+                # aer_opt = 3: the caller's optics for these columns
+                # (contiguous row views, the same layout and dtype).
+                ztaua_d = aerosol[0][rows]
+                zasya_d = aerosol[1][rows]
+                zomga_d = aerosol[2][rows]
 
             albdif_d = cp.asarray(albdif_h[rows])
             albdir_d = cp.asarray(albdir_h[rows])
@@ -3729,7 +3770,10 @@ class CudaSW:
         O["swhr"] = swhr
         O["swhrc"] = swhrc
         # The clean-sky-no-aerosol pair IS zero by the aer_opt = 0
-        # contract: these two are the only zeroed returned slabs.
+        # contract; under aer_opt = 3 it stays zero because the operational
+        # HRRR fork's rrtmg_sw has no clean-sky pass at all (no *cln
+        # output in its module_ra_rrtmg_sw.F).  These two are the only
+        # zeroed returned slabs.
         O["swuflxcln"] = cp.zeros((ncol, nl1), dtype=cp.float32)
         O["swdflxcln"] = cp.zeros((ncol, nl1), dtype=cp.float32)
         return O

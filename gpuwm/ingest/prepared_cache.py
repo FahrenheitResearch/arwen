@@ -25,6 +25,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass, fields as dataclass_fields
 from datetime import datetime, timedelta, timezone
+import errno
 import hashlib
 import json
 import os
@@ -61,6 +62,7 @@ _MET_REQUIRED = frozenset({
 _LEGACY_HRRR_SOIL = frozenset({"SOILT", "SOILW"})
 _MET_OPTIONAL = frozenset({
     "SST", "XICE", "SEAICE", "SNOW", "SNOW_EC", "SNOWH",
+    "VEGFRA",
 })
 _CANONICAL_SURFACE_REQUIRED = frozenset({
     "TSK", "TSLB", "SMOIS", "SH2O", "TMN", "SEAICE", "XLAND",
@@ -74,6 +76,30 @@ class PreparedCacheMismatchError(ValueError):
 
 class PreparedCacheCorruptError(ValueError):
     """The cache is incomplete, malformed, or fails a content digest."""
+
+
+class PreparedCacheResourceLimitError(OSError):
+    """Opening a prepared cache exhausted process or system file handles."""
+
+
+def _raise_if_resource_limit(error: BaseException, *, context: str) -> None:
+    """Preserve descriptor exhaustion instead of reporting damaged data."""
+    if isinstance(error, PreparedCacheResourceLimitError):
+        raise error
+    if not isinstance(error, OSError) or error.errno not in {
+            errno.EMFILE, errno.ENFILE}:
+        return
+    if error.errno == errno.EMFILE:
+        reason = "process open-file resource limit (EMFILE)"
+    else:
+        reason = "system open-file resource limit (ENFILE)"
+    remedy = ("check ulimit -n and raise the process open-file limit, or "
+              "close unused file descriptors before retrying")
+    if error.errno == errno.ENFILE:
+        remedy += "; also free system file handles or raise the system open-file limit"
+    raise PreparedCacheResourceLimitError(
+        error.errno, f"{context}: {reason}; {remedy}",
+        error.filename) from error
 
 
 def _canonical(value) -> str:
@@ -298,8 +324,12 @@ DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
     "run.bl_mynn_output", "run.bl_mynn_tkeadvect", "run.icloud_bl",
     # MM5/MYNN surface layer (76cd7f18b):
     "run.isftcflx", "run.iz0tlnd",
-    # Noah LSM selectors (9fae17c50):
-    "run.opt_thcnd", "run.rdlai2d", "run.usemonalb",
+    # Noah LSM selector (9fae17c50), admitted for RUC as well. Prescribed
+    # LAI and background albedo have the stronger forecast-only ruling in
+    # PREPARATION_INERT_RUN_FIELDS below. The RUC sea-ice threshold switch
+    # is absent-tolerant at its default 0. A stated 1 still binds: soil
+    # preparation preserves the fraction and builds its ice column.
+    "run.opt_thcnd", "run.fractional_seaice",
     # Noah-MP (ab60dc8ab):
     "run.dveg", "run.opt_crs", "run.opt_btr", "run.opt_run", "run.opt_sfc",
     "run.opt_frz", "run.opt_inf", "run.opt_rad", "run.opt_alb",
@@ -609,6 +639,18 @@ INERT_DIAGNOSTIC_IDENTITY_FIELDS = frozenset(
 #: recorded in docs/superpowers/receipts/les/
 #: INFLOW-GENERATOR-ACCEPTANCE-V2.md item 10.
 PREPARATION_INERT_RUN_FIELDS = frozenset({
+    # Stability policy is read only when the forecast advances: epssm by
+    # core/acoustic.py and forecast-door acoustic_adaptation.py, and the
+    # sixth-order selectors by core/dycore.py. initialize_real constructs
+    # the hydrostatic analysis and boundaries without an acoustic or
+    # diffusion step (ingest/real.py). One verified preparation therefore
+    # serves these policies. They remain strict restart/trajectory identity.
+    "run.epssm", "run.diff_6th_opt", "run.diff_6th_factor",
+    "run.diff_6th_slopeopt",
+    # Prescribed LAI and background albedo are selected at forecast
+    # physics initialization from the cached monthly static fields;
+    # preparation writes those fields under either selector.
+    "run.rdlai2d", "run.usemonalb",
     # Only the forecast's final RK stage reads this numerical generation
     # (core/ieva.py). Neither initial fields nor boundary tables depend on
     # it, so one prepared bundle serves both variants. Checkpoints still
@@ -617,6 +659,48 @@ PREPARATION_INERT_RUN_FIELDS = frozenset({
     # Only LSMRUC's SOILPROP reads the soil-water lineage
     # (core/ruc_tier.py); preparation computes no diffusivity from it.
     "run.ruc_soilprop",
+    # Physics initialization and stepping read the Thompson generation;
+    # prepared initial and boundary fields do not depend on it. The fork's
+    # start emission is recomputed after the prepared state is loaded.
+    "run.thompson_version",
+    "run.thompson_fork_snow_fall",
+    # Only the MYNN column solver reads its generation and the gsd_41 TKE
+    # option; preparation computes nothing from either.
+    "run.bl_mynn_version",
+    "run.bl_mynn_gsd41_unsquared_qtke",
+    "run.bl_mynn_cloud_tendency_form",
+    # Only the MYNN surface-layer column solver reads its generation;
+    # preparation computes no surface exchange from it.
+    "run.mynn_sfclay_variant",
+    # The sixth-order filter form and its second factor are read only by
+    # the forecast's fixed tendencies (core/dycore.py), and mp_zero_out
+    # only after the forecast's microphysics call (core/microphysics.py);
+    # preparation computes neither.
+    "run.diff_6th_form",
+    "run.upper_wind_limiter_form",
+    "run.diff_6th_factor2",
+    "run.mp_zero_out",
+    "run.mp_zero_out_thresh",
+    "run.mp_zero_out_all",
+    # Only LSMRUC's post-SFCTMP step reads the irrigation rule
+    # (core/ruc_mosaic.py); preparation computes no soil water from it.
+    "run.ruc_irrigation",
+    # Only LSMRUC's first call reads the QVG cold start (core/ruc.py,
+    # the fused prologue); preparation computes no surface humidity from it.
+    "run.ruc_qvg_cold_start",
+    # Only SFCDIAGS_RUCLSM reads the 2 m form (the fused epilogue,
+    # core/ruc_runtime.py); preparation computes no 2 m value from it.
+    "run.ruc_2m_diagnostic",
+    # Only LSMRUC and SFCTMP read the snow lineage (core/ruc_tier.py, the
+    # fused prologue and sfctmp); preparation computes no snow from it.
+    "run.ruc_snow",
+    # The vertical advection ladder and the (declaration-only) horizontal
+    # momentum order are read by the flux-divergence launchers alone; no
+    # initial field or boundary table depends on them, so one prepared
+    # bundle serves vert_order 3 and 5.  Checkpoints still bind them.
+    "run.v_sca_adv_order",
+    "run.v_mom_adv_order",
+    "run.h_mom_adv_order",
     "run.inflow_perturbation",
     "run.inflow_perturbation_seed",
     "run.inflow_perturbation_amplitude_scale",
@@ -690,6 +774,34 @@ PREPARATION_INERT_RUN_FIELDS = frozenset({
     # town rule alike; they stay in the experiment fingerprint and the
     # restart identity when on.
     "run.sf_surface_mosaic", "run.mosaic_cat", "run.mosaic_urban_canopy",
+    # THE TERRAIN-CLOCK MODE (lane/286-fixed-step-grid), on the adaptive
+    # controller's argument.  Preparation never reads it: the terrain
+    # clock and the substep rule run at the forecast door, after the cache
+    # is read, and bind their derivation through the terrain_clock
+    # receipt.  The standing check holds: no prepare-side module names
+    # it.  So a tree prepared under "measured" (or before the field) is
+    # byte for byte the tree a "pinned" run needs at the same dt and
+    # time_step_sound; tolerance alone forgives only the default, and it
+    # refused the pinned run for a field that cannot move a prepared
+    # array.  It stays in the experiment fingerprint and the restart
+    # identity when pinned.
+    "run.terrain_clock",
+    # WRF'S RADIATION-DRIVER OPTIONS swint_opt AND aer_opt (lane
+    # 286-aer-swint), on the same argument.  Only the forecast reads them:
+    # the per-step surface shortwave fit (gpuwm/core/swint.py) and the
+    # legacy RRTMG shortwave's aerosol optics, formed on each radiation
+    # call from the live state (gpuwm/core/rrtmg_aerosol_optics.py).  The
+    # standing check holds: nothing under gpuwm/ingest names either, and
+    # the prepared initial state and boundary tables are the same under
+    # every value.  They stay in the experiment fingerprint and the
+    # restart identity when moved.
+    "run.swint_opt", "run.aer_opt",
+    # Sun-angle albedo reads live solar geometry on radiation steps; it
+    # changes no prepared state or boundary table.
+    "run.alb_sol", "run.rrtmg_cloud_optics_form",
+    # Prescribed smoke acts only in radiation after prepared-state restore.
+    # Its full member identity remains in forecast and restart identities.
+    "run.rrtmg_smoke_manifest",
 })
 
 
@@ -1220,6 +1332,7 @@ def read_manifest_array(directory, key: str, spec) -> np.ndarray:
         with path.open("rb") as stream:
             array = np.load(stream, allow_pickle=False)
     except (OSError, EOFError, ValueError) as exc:
+        _raise_if_resource_limit(exc, context=f"prepared cache array {key!r}")
         raise PreparedCacheCorruptError(
             f"prepared cache array {key!r} is unreadable") from exc
     if (list(array.shape) != spec["shape"]
@@ -1241,6 +1354,7 @@ class PreparedCacheReader:
             header = json.loads(raw)
         except (FileNotFoundError, OSError, UnicodeDecodeError,
                 json.JSONDecodeError) as exc:
+            _raise_if_resource_limit(exc, context=f"prepared cache header {self.path}")
             raise PreparedCacheCorruptError(
                 f"prepared cache {self.path} has no readable header") from exc
         required = {
@@ -1328,6 +1442,7 @@ class PreparedCacheReader:
             directories = [entry.name for entry in self.path.iterdir()
                            if entry.is_dir()]
         except OSError as exc:
+            _raise_if_resource_limit(exc, context=f"prepared cache inventory {self.path}")
             raise PreparedCacheCorruptError(
                 f"prepared cache {self.path} is unreadable") from exc
         if actual_files != expected_files or directories:
@@ -2911,6 +3026,7 @@ __all__ = [
     "NON_TRAJECTORY_IDENTITY_FIELDS", "PREPARATION_INERT_RUN_FIELDS",
     "PREPARED_CACHE_SCHEMA",
     "PreparedCacheCorruptError", "PreparedCacheMismatchError",
+    "PreparedCacheResourceLimitError",
     "PreparedCacheReader", "PreparedHeadReader", "RestoredPreparedCache",
     "SEALED_PREPARED_EXTENSION_MODE", "STRICT_IDENTITY_FIELDS",
     "UNSTAMPED_WRITER",

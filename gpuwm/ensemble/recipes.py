@@ -15,7 +15,7 @@ from pathlib import Path
 from gpuwm.ensemble.seeds import member_seed
 
 CONTRACT = "gpuwm-ensemble-source-recipe.v1"
-RECIPE_KINDS = ("input-ensemble", "recentered", "time-lagged", "multi-model", "control")
+RECIPE_KINDS = ("input-ensemble", "recentered", "time-lagged", "multi-model", "surface-state", "member-roster", "control")
 
 
 def _utc(value: datetime) -> datetime:
@@ -211,9 +211,15 @@ class SourceRecipe:
     members: tuple[RecipeMember, ...]
     donor_population: tuple[SourceTrajectory, ...] = ()
     calibration: str = "not calibrated"
+    perturbation: dict | None = None
+    member_variants: tuple = ()
 
     def describe(self) -> dict:
         document = asdict(self)
+        if self.perturbation is None:
+            document.pop("perturbation")
+        if not self.member_variants:
+            document.pop("member_variants")
         document["contract"] = CONTRACT
         # Native preparation consumes one shared geometry owner and distinct
         # atmospheric/boundary products. This is a requirement, not a receipt.
@@ -283,7 +289,9 @@ def build_recipe(*, source: str, cycle: datetime, start: datetime, end: datetime
                  donor: SourceTrajectory | None = None,
                  trajectories: tuple[SourceTrajectory, ...] = (),
                  max_lag_hours: int = 24,
-                 member: str | None = None) -> SourceRecipe:
+                 member: str | None = None,
+                 perturbation: dict | None = None,
+                 member_variants: tuple = ()) -> SourceRecipe:
     """Resolve a recipe without downloading data or initializing CUDA.
 
     Automatic singleton is the unchanged base. An explicit recipe can replay
@@ -320,7 +328,22 @@ def build_recipe(*, source: str, cycle: datetime, start: datetime, end: datetime
     if kind not in RECIPE_KINDS:
         raise ValueError(f"unknown source recipe {kind!r}; expected {RECIPE_KINDS}")
     population = ()
-    if kind == "control":
+    surface = None
+    variants = ()
+    if perturbation is not None:
+        from gpuwm.ensemble.surface_controls import validate_surface_recipe
+        surface = validate_surface_recipe(perturbation)
+    if kind == "member-roster":
+        from gpuwm.ensemble.member_variants import normalize_member_variants
+        if perturbation is not None:
+            raise ValueError("member-roster uses each member's own surface controls; omit shared perturbation")
+        variants = normalize_member_variants(member_variants, count)
+        selected = (base,) * count
+    elif kind == "surface-state":
+        from gpuwm.ensemble.surface_controls import shared_surface_options
+        surface = shared_surface_options(perturbation, count)
+        selected = (base,) * count
+    elif kind == "control":
         selected = (base,) * count
     elif kind == "input-ensemble":
         ensemble = adapter.source_id if adapter.member_set else getattr(adapter, "ensemble_source", None)
@@ -376,13 +399,14 @@ def build_recipe(*, source: str, cycle: datetime, start: datetime, end: datetime
                   "effective ensemble size. Keep one source id for each model run")
         if len({item.model for item in selected}) < 2:
             raise ValueError("the selected multi-model roster needs at least two distinct source models")
-    if kind != "control" and len({item.identity for item in selected}) != count:
+    if kind not in ("control", "surface-state", "member-roster") and len({item.identity for item in selected}) != count:
         raise ValueError("the member roster repeats a source trajectory and would inflate effective ensemble size")
     for item in (*selected, *population):
         item.window(start, end, native_bracketing=kind == "recentered" and item != base)
     return SourceRecipe(kind, base, start, end,
                         tuple(RecipeMember(index, member_seed(base_seed, index), item)
-                              for index, item in enumerate(selected)), population)
+                              for index, item in enumerate(selected)), population,
+                         perturbation=surface, member_variants=variants)
 
 
 def trajectory_time(value, *, refusal=ValueError) -> datetime:
@@ -446,9 +470,14 @@ def main(argv=None) -> int:
     parser.add_argument("--trajectories", metavar="FILE",
                         help="the multi-model member list: a JSON or TOML file of "
                              "{source, cycle[, member]} entries")
+    parser.add_argument("--surface-options", metavar="FILE",
+                        help="JSON surface-state descriptor with soil_moisture_scale "
+                             "and/or sst_offset_k (scalars or [minimum, maximum])")
     args = parser.parse_args(argv)
     donor = None if args.donor is None else SourceTrajectory(args.donor, args.donor_cycle or args.cycle)
     trajectories = ()
+    perturbation = (None if args.surface_options is None else
+                    json.loads(Path(args.surface_options).read_text(encoding="utf-8")))
     if args.trajectories is not None:
         trajectories = tuple(SourceTrajectory(str(item["source"]), trajectory_time(item["cycle"]),
                                               item.get("member"))
@@ -456,7 +485,7 @@ def main(argv=None) -> int:
     plan = build_recipe(source=args.source, cycle=args.cycle, start=args.cycle,
                         end=args.cycle + timedelta(hours=args.hours), count=args.members,
                         base_seed=args.seed, kind=args.recipe, donor=donor,
-                        trajectories=trajectories, member=args.member)
+                        trajectories=trajectories, member=args.member, perturbation=perturbation)
     print(json.dumps(plan.describe(), indent=2, sort_keys=True))
     return 0
 

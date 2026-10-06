@@ -36,7 +36,8 @@ import subprocess
 from dataclasses import dataclass
 
 from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
-                           default_bridge_dir, lazy_build_hints,
+                           default_bridge_dir,
+                           legacy_bridge_candidates, lazy_build_hints,
                            rustwx_build_hint,
                            accept_resolved, executable_name,
                            packaged_bridge_dir)
@@ -90,6 +91,7 @@ class FrontDoor:
             _repo_root() / "libexec" / "bridges" / filename,
             packaged_bridge_dir() / filename,
             default_bridge_dir() / filename,
+            *legacy_bridge_candidates(filename),
         ))
         return tuple(candidates)
 
@@ -193,14 +195,15 @@ class FrontDoor:
         return record
 
 
-#: The MRMS composite-reflectivity front door.
+#: Composite reflectivity and one-hour precipitation with coverage masks.
 MRMS = FrontDoor(
     name="rw_mrms",
     env_var="GPUWM_RW_MRMS",
     subject="the MRMS front door",
     abi_marker=(
         "gpuwm-obs.mrms-fetch.v1\tproduct\twindow\tbucket\tfiles\tbytes\t"
-        "sha256\tgpuwm-obs.obs-grid.v1\tcomposite_reflectivity\tdBZ"),
+        "sha256\tgpuwm-obs.obs-grid.v1\tcomposite_reflectivity\tdBZ\t"
+        "precipitation_accumulation\tmm\taccumulation_seconds"),
 )
 
 #: The Stage-IV precipitation front door.
@@ -318,6 +321,32 @@ ODIM = FrontDoor(
         "nodata\tsentinel_ambiguous\tassembled\tmanifest_sha256\tstamp"),
 )
 
+#: NCEP's prepbufr, the conventional-observation front door.
+#:
+#: It decodes the file's own dictionary and every report in Rust and
+#: writes ``gpuwm-obs.table.v2`` rows with GSI's use rule on NCEP's
+#: quality marks applied inside the door, so a reader of its table never
+#: sees a value whose mark is 4 or more.  ``mark-limit-4`` and
+#: ``pressure-mark`` are in the marker because a build without them would
+#: still print a plausible table of rejected reports.  ``surface-gsdqc-2``
+#: (GSI's surface dewpoint and calm mesonet wind rules) and
+#: ``error-table`` (each row's error is GSI's, from the conventional error
+#: table) are in it because a build without them writes rows GSI does not
+#: use and errors GSI does not assign.  It is not in
+#: :data:`FRONT_DOORS` yet: joining it needs a ``gpuwm obs prepbufr``
+#: subcommand, its line in the doctor's door names and a bundle entry.
+PREPBUFR = FrontDoor(
+    name="rw_prepbufr",
+    env_var="GPUWM_RW_PREPBUFR",
+    subject="the conventional-observation (prepbufr) front door",
+    abi_marker=(
+        "gpuwm-obs.prepbufr-fetch.v1\tgpuwm-obs.prepbufr-decode.v1\t"
+        "gpuwm-obs.prepbufr-table.v2\tgpuwm-obs.table.v2\t"
+        "gpuwm-obs.prepbufr-listing.v1\tmark-limit-4\tpressure-mark\t"
+        "upper-moisture-9-to-2\tvad-superob\tprofiler-400-hpa\t"
+        "surface-gsdqc-2\terror-table"),
+)
+
 #: Every front door the battery drives, by instrument id.
 #:
 #: ``goes`` is the satellite twin of ``nexrad``: it writes the ``.goespack``
@@ -336,5 +365,5 @@ FRONT_DOORS = {"mrms": MRMS, "stage4": STAGE4, "asos": ASOS, "goes": GOES,
 
 
 __all__ = ["ASOS", "CARGO_BUILD_HINT", "FRONT_DOORS", "GOES", "MRMS", "ODIM",
-           "OPERA",
+           "OPERA", "PREPBUFR",
            "STAGE4", "FrontDoor", "crate_dir"]

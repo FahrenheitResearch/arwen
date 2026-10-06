@@ -1,0 +1,63 @@
+{
+  "_doc": "Aspect-aware canvas layout for every map, sheet and section. Pixel values are at size-class scale 1.0. The canvas is sized from the map, and the map from the grid's own projected aspect, so a frame never carries padding the grid does not fill. Read by rustwx-render/src/layout_plan.rs.",
+  "map_area_px": 600000,
+  "map_w_max": 1400,
+  "map_h_max": 1000,
+  "map_short_min": 360,
+  "aspect_min": 0.40,
+  "aspect_max": 3.00,
+  "margin": 16,
+  "canvas_min_w": 480,
+  "header": {
+    "pad_top": 10,
+    "title_row_h": 34,
+    "meta_row_h": 24,
+    "pad_bottom": 8,
+    "two_row_min_content_w": 620,
+    "title_px": 20,
+    "title_min_px": 17,
+    "meta_px": 15
+  },
+  "bar": {
+    "bottom_min_aspect": 1.35,
+    "right": { "gap": 12, "thickness": 16, "tick_gap": 6, "label_w": 48 },
+    "bottom": { "gap": 10, "thickness": 14, "tick_gap": 4, "label_h": 18 },
+    "tick_px": 14,
+    "tick_spacing_vertical_px": 56,
+    "tick_spacing_horizontal_px": 72
+  },
+  "map_frame": { "outline_px": 1.5 },
+  "barb_spacing_px": 44,
+  "sharp_cell_px": 0,
+  "size_classes": {
+    "standard": { "scale": 1.0, "font": 1.0 },
+    "phone": { "scale": 0.8, "font": 1.35 },
+    "large": { "scale": 2.0, "font": 1.0 }
+  },
+  "sheet": {
+    "map_area_px": 900000,
+    "width_max": 1800,
+    "gutter": 12,
+    "label_h": 22,
+    "label_px": 14,
+    "leg_label_px": 16,
+    "target_aspect": 1.5,
+    "empty_cell_weight": 0.5
+  },
+  "layers": {
+    "_doc": "Map layers chosen by the frame's short side in km, never by where the frame is. Place tiers name the place catalog's density: none, major, major_and_aux, dense.",
+    "counties_max_short_km": 900,
+    "places": [
+      { "max_short_km": 120, "tier": "dense", "max_count": 3, "min_spacing_km": 50 },
+      { "max_short_km": 450, "tier": "major_and_aux", "max_count": 4, "min_spacing_km": 90 },
+      { "max_short_km": 1200, "tier": "major", "max_count": 8, "min_spacing_km": 180 },
+      { "max_short_km": null, "tier": "major", "max_count": 12, "min_spacing_km": 300 }
+    ]
+  },
+  "section": {
+    "plot_aspect": 2.0,
+    "plot_area_px": 600000,
+    "axis_left": 56,
+    "axis_bottom": 40
+  }
+}

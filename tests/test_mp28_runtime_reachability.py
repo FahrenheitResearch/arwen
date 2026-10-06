@@ -873,14 +873,35 @@ def test_the_runtime_refl_gates_are_reached_through_the_named_constant():
         assert "mp_physicsin(1,6,8,10,18)" not in normalized, relative
         assert "mp_physicsnotin(1,6,8,10,18)" not in normalized, relative
 
-    runtime_source = _code_without_comments_or_strings(
-        REPO / "gpuwm/runtime.py")
-    # Definition plus the three gates (case output, the per-substep
-    # refl_due schedule, the nested-tree history handoff).
-    assert runtime_source.count("REFL_10CM_MICROPHYSICS") == 4, (
-        "gpuwm/runtime.py should reference REFL_10CM_MICROPHYSICS exactly "
-        "four times (one definition + three gates); a different count means "
-        "a gate was added or one stopped using the constant")
+    import ast
+    from collections import Counter
+
+    class GateReads(ast.NodeVisitor):
+        def __init__(self):
+            self.functions = []
+            self.reads = Counter()
+
+        def visit_FunctionDef(self, node):
+            self.functions.append(node.name)
+            self.generic_visit(node)
+            self.functions.pop()
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_Name(self, node):
+            if node.id == "REFL_10CM_MICROPHYSICS":
+                self.reads[self.functions[-1] if self.functions else "<module>"] += 1
+
+    gates = GateReads()
+    gates.visit(ast.parse((REPO / "gpuwm/runtime.py").read_text(encoding="utf-8")))
+    # Case output now has distinct capture, streamed and resident handoffs.
+    # Pin their owning functions instead of conflating the added handoffs
+    # with imports or string references in a whole-module occurrence count.
+    assert gates.reads == {
+        "write_case_output": 3,
+        "integrate_prepared_case": 1,
+        "_submit_tree_history_frame": 1,
+    }
 
 
 def test_the_prepared_runner_consumes_the_mp28_refl_handoff():

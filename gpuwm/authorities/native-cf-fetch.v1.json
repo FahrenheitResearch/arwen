@@ -1,0 +1,134 @@
+{
+  "schema": "gpuwm-native-cf-fetch-v1",
+  "sources": {
+    "20crv3-cf": {
+      "contract": "native-cf-subset-v1",
+      "ncss_root": "https://psl.noaa.gov/thredds/ncss/grid/Datasets/20thC_ReanV3",
+      "file_root": "https://psl.noaa.gov/thredds/fileServer/Datasets/20thC_ReanV3",
+      "coverage_start": "1836-01-01T00:00:00",
+      "coverage_end": "2015-12-31T21:00:00",
+      "cadence_hours": 3,
+      "statistic": "Ensemble Mean",
+      "resolution_degrees": 1.0,
+      "eras": [
+        {
+          "through_year": 1980,
+          "suffix": "SI"
+        },
+        {
+          "through_year": 2015,
+          "suffix": "MO"
+        }
+      ],
+      "files": [
+        {
+          "directory": "prs",
+          "stem": "air",
+          "variable": "air"
+        },
+        {
+          "directory": "prs",
+          "stem": "hgt",
+          "variable": "hgt"
+        },
+        {
+          "directory": "prs",
+          "stem": "shum",
+          "variable": "shum"
+        },
+        {
+          "directory": "prs",
+          "stem": "uwnd",
+          "variable": "uwnd"
+        },
+        {
+          "directory": "prs",
+          "stem": "vwnd",
+          "variable": "vwnd"
+        },
+        {
+          "directory": "sfc",
+          "stem": "pres.sfc",
+          "variable": "pres"
+        },
+        {
+          "directory": "sfc",
+          "stem": "skt",
+          "variable": "skt"
+        },
+        {
+          "directory": "2m",
+          "stem": "air.2m",
+          "variable": "air"
+        },
+        {
+          "directory": "2m",
+          "stem": "shum.2m",
+          "variable": "shum"
+        },
+        {
+          "directory": "10m",
+          "stem": "uwnd.10m",
+          "variable": "uwnd"
+        },
+        {
+          "directory": "10m",
+          "stem": "vwnd.10m",
+          "variable": "vwnd"
+        },
+        {
+          "directory": "subsfc",
+          "stem": "tsoil",
+          "variable": "tsoil"
+        },
+        {
+          "directory": "subsfc",
+          "stem": "soilw",
+          "variable": "soilw"
+        }
+      ],
+      "invariants": {
+        "height": {
+          "path": "timeInvariantSI/hgt.sfc.nc",
+          "variable": "hgt"
+        },
+        "land": {
+          "path": "timeInvariantSI/land.nc",
+          "variable": "land"
+        }
+      },
+      "surface_policy": {
+        "soil_temperature": "published_tsoil_four_noah_layers",
+        "soil_moisture": "published_soilw_four_noah_layers",
+        "sea_surface_temperature": "published_skin_temperature_over_water",
+        "sst_divergence": "PSL has no separate sub-daily SST variable. Ocean initialization uses the published skt water boundary. No synthetic soil or SST climatology is substituted."
+      },
+      "reference": "https://psl.noaa.gov/data/20thC_Rean/20crv3.subdir.table.html",
+      "source_root": {
+        "why": "A staged ensemble-mean NetCDF series plus invariant.nc, with either published or recovered invariants and its own provenance receipt.",
+        "inputs": {
+          "match": [
+            "*.nc"
+          ],
+          "exclude": [
+            "wilt.nc",
+            "published-height.nc",
+            "published-land.nc"
+          ],
+          "format": "netcdf"
+        },
+        "supplements": [
+          {
+            "role": "twentycrv3_netcdf_recovered_invariant",
+            "match": [
+              "invariant.nc"
+            ],
+            "format": "netcdf",
+            "input": true,
+            "why": "The invariant surface height and land fraction bound to every primary valid time."
+          }
+        ]
+      }
+    }
+  }
+}

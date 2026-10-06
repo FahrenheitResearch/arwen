@@ -986,18 +986,50 @@ def test_ordinary_land_use_keys_import_with_receipts(tmp_path):
         " cudt = 5, 0,\n num_land_cat = 21,\n fractional_seaice = 1,")
     toml_text, report = import_namelists(*_pair(tmp_path, inp=inp))
 
-    # Neither key invents a TOML value.
+    # num_land_cat invents no TOML value; fractional_seaice = 1 under Noah
+    # (the fixture's sf_surface_physics = 2) is recorded as fixed at 0,
+    # because only the RUC seam carries the 0.02 fractional threshold.
     assert "num_land_cat" not in toml_text
     assert "fractional_seaice" not in toml_text
     fixed = {(f.section, f.key): f for f in report.fixed}
     assert fixed[("physics", "num_land_cat")].fixed_value == 21
     assert "LANDUSE.TBL" in fixed[("physics", "num_land_cat")].reason
-    dropped = {(d.section, d.key): d for d in report.dropped}
-    seaice = dropped[("physics", "fractional_seaice")]
-    assert seaice.values == (1,)
-    assert "FRACTIONAL" in seaice.reason.upper()
+    seaice = fixed[("physics", "fractional_seaice")]
+    assert seaice.values == (1,) and seaice.fixed_value == 0
+    assert "RUC" in seaice.reason
     rendered = report.format()
     assert "num_land_cat" in rendered and "fractional_seaice" in rendered
+
+    # Under RUC the key is WRF's own and reaches RunConfig as written.
+    ruc = INPUT_TEXT.replace(
+        " cudt = 5, 0,", " cudt = 5, 0,\n fractional_seaice = 1,").replace(
+        "mp_physics = 55, 55", "mp_physics = 8, 8").replace(
+        "sf_sfclay_physics = 91, 91", "sf_sfclay_physics = 5, 5").replace(
+        "sf_surface_physics = 2, 2", "sf_surface_physics = 3, 3").replace(
+        "bl_pbl_physics = 11, 11", "bl_pbl_physics = 5, 5").replace(
+        " bldt = 0, 0,", " num_soil_layers = 9,\n bldt = 0, 0,")
+    toml_ruc, report_ruc = import_namelists(*_pair(tmp_path, inp=ruc))
+    assert "fractional_seaice = 1" in toml_ruc
+    assert ("physics", "fractional_seaice") not in {
+        (f.section, f.key) for f in report_ruc.fixed}
+
+    # Operational HRRR's three RUC surface switches (hrrr_wrf.nl:148-149,
+    # :154) all reach the configuration a RUC namelist imports into, so an
+    # imported HRRR run takes them with no extra flag.
+    hrrr_surface = ruc.replace(
+        " fractional_seaice = 1,",
+        " fractional_seaice = 1,\n usemonalb = .true.,\n rdlai2d = .true.,")
+    toml_hrrr, report_hrrr = import_namelists(
+        *_pair(tmp_path, inp=hrrr_surface))
+    import tomllib
+    shared = tomllib.loads(toml_hrrr)["shared"]
+    assert shared["usemonalb"] is True
+    assert shared["rdlai2d"] is True
+    assert shared["fractional_seaice"] == 1
+    untouched = {(f.section, f.key) for f in report_hrrr.fixed} | {
+        (d.section, d.key) for d in report_hrrr.dropped}
+    for key in ("usemonalb", "rdlai2d", "fractional_seaice"):
+        assert ("physics", key) not in untouched
 
     # A category count describing geography gpuwm does not build refuses.
     usgs = INPUT_TEXT.replace(
@@ -1233,7 +1265,7 @@ def test_mix_full_fields_default_and_false_are_declared_substitutions(tmp_path):
     change = next(entry for entry in report.substitutions
                   if entry.key == "mix_full_fields")
     assert change.wrf_value == (True, False)
-    assert "tendencies can differ" in change.reason
+    assert "established full-field mixing resolution" in change.reason
 
     toml_text, _ = import_namelists(*_pair(tmp_path, inp=INPUT_TEXT))
     assert "km_opt = 4" in toml_text
@@ -1655,8 +1687,10 @@ def test_new_physics_knob_invalid_values_are_rejected(tmp_path, line,
 
 
 def test_pinned_dynamics_orders_fix_and_refuse(tmp_path):
-    """rk_ord / advection orders / momentum_adv_opt: the WRF defaults the
-    dycore hardcodes import as fixed-by-ArWen; any other value refuses."""
+    """rk_ord / h_mom_adv_order / momentum_adv_opt: the WRF defaults the
+    dycore hardcodes import as fixed-by-ArWen; any other value refuses.
+    The vertical orders are no longer pins: both WRF ladders are carried
+    (gpuwm/core/kernels/advection.cu) and the keys import as columns."""
     _, report = _import_with(
         tmp_path,
         extra_dynamics=(" rk_ord = 3,\n h_mom_adv_order = 5, 5,\n"
@@ -1665,18 +1699,65 @@ def test_pinned_dynamics_orders_fix_and_refuse(tmp_path):
                         " momentum_adv_opt = 1, 1,\n"))
     fixed = {(f.section, f.key): f for f in report.fixed}
     for key, pin in (("rk_ord", 3), ("h_mom_adv_order", 5),
-                     ("v_mom_adv_order", 3), ("v_sca_adv_order", 3),
                      ("momentum_adv_opt", 1)):
         entry = fixed[("dynamics", key)]
         assert entry.fixed_value == pin
         assert entry.reason
+    assert ("dynamics", "v_mom_adv_order") not in fixed
+    assert ("dynamics", "v_sca_adv_order") not in fixed
     for line, match in ((" rk_ord = 2,\n", "rk_ord"),
                         (" h_mom_adv_order = 3, 3,\n", "h_mom_adv_order"),
-                        (" v_sca_adv_order = 5, 5,\n", "v_sca_adv_order"),
+                        (" v_sca_adv_order = 4, 4,\n", "v_sca_adv_order"),
+                        (" v_mom_adv_order = 6, 6,\n", "v_mom_adv_order"),
                         (" momentum_adv_opt = 3, 3,\n",
                          "momentum_adv_opt")):
         with pytest.raises(ValueError, match=match):
             _import_with(tmp_path, extra_dynamics=line)
+
+
+def test_vertical_advection_orders_import_per_domain(tmp_path):
+    """WRF's vert_order 5 ladder imports: the operational HRRR shape
+    (5 on the root, 3 on a declared nest) lands as a [shared] value with
+    a per-domain override, a uniform column emits the [shared] line only,
+    and an omitted key emits nothing (knob parity with the Registry
+    default 3)."""
+    import tomllib
+    toml_text, _ = _import_with(
+        tmp_path, extra_dynamics=(" v_mom_adv_order = 5, 3,\n"
+                                  " v_sca_adv_order = 5, 3,\n"))
+    doc = tomllib.loads(toml_text)
+    assert doc["shared"]["v_sca_adv_order"] == 5
+    assert doc["shared"]["v_mom_adv_order"] == 5
+    assert "v_sca_adv_order" not in doc["domain"][0]
+    assert doc["domain"][1]["v_sca_adv_order"] == 3
+    assert doc["domain"][1]["v_mom_adv_order"] == 3
+    # One value on a two-domain namelist: wrf.exe keeps the Registry
+    # default 3 for the omitted nest entry, so the nest imports at 3.
+    toml_text, _ = _import_with(tmp_path,
+                                extra_dynamics=" v_sca_adv_order = 5,\n")
+    doc = tomllib.loads(toml_text)
+    assert doc["shared"]["v_sca_adv_order"] == 5
+    assert "v_mom_adv_order" not in doc["shared"]
+    assert "v_sca_adv_order" not in doc["domain"][0]
+    assert doc["domain"][1]["v_sca_adv_order"] == 3
+    assert all("v_mom_adv_order" not in d for d in doc["domain"])
+    # A uniform column emits the [shared] line only.
+    toml_text, _ = _import_with(tmp_path,
+                                extra_dynamics=" v_sca_adv_order = 5, 5,\n")
+    doc = tomllib.loads(toml_text)
+    assert doc["shared"]["v_sca_adv_order"] == 5
+    assert all("v_sca_adv_order" not in d for d in doc["domain"])
+    toml_text, _ = _import_with(tmp_path)
+    doc = tomllib.loads(toml_text)
+    assert "v_sca_adv_order" not in doc["shared"]
+    assert "v_mom_adv_order" not in doc["shared"]
+
+    # Explicit Registry defaults retain the omission and the entire
+    # configuration byte stream, rather than gaining inert new keys.
+    explicit_defaults, _ = _import_with(
+        tmp_path, extra_dynamics=" v_sca_adv_order = 3, 3,\n"
+        " v_mom_adv_order = 3, 3,\n")
+    assert explicit_defaults == toml_text
 
 
 def test_h_sca_adv_order_nondefault_is_refused(tmp_path):
@@ -1742,7 +1823,7 @@ def test_tke_adv_opt_drops_as_inert(tmp_path):
     # gwd_opt left this list with lane/282-terrain-drag: 1 and 3 are ported
     # (tests/test_terrain_drag_config.py).
     # CLM lake 0/1 and its WRF defaults are held by test_lake_options.py.
-    "swint_opt", "shcu_physics",
+    "shcu_physics",
     "kf_edrates", "flag_sm_adj",
     "sst_update", "sst_skin", "tmn_update",
 ])
@@ -1813,6 +1894,66 @@ def test_mynn_mixing_length_and_scalar_diffusion_import_without_substitution(tmp
         assert domain.run.bl_mynn_mixscalars == 0
     assert "bl_mynn_mixlength = 2" in text
     assert "scalar_pblmix = 1" in text
+
+
+def test_wrf3x_mynn_tkebudget_spelling_imports_the_gsd41_generation(tmp_path):
+    # bl_mynn_tkebudget is the WRF 3.x spelling of MYNN's budget switch; a
+    # namelist written that way selects the WRF 3.9-branch MYNN (gsd_41).
+    inp = INPUT_TEXT.replace(
+        " mp_physics = 55, 55,",
+        " mp_physics = 28, 28,\n bl_mynn_mixlength = 2,\n"
+        " bl_mynn_tkebudget = 0,")
+    inp = inp.replace(" bl_pbl_physics = 11, 11,", " bl_pbl_physics = 5, 5,")
+    inp = inp.replace(" sf_sfclay_physics = 91, 91,", " sf_sfclay_physics = 5, 5,")
+    text, _ = import_namelists(*_pair(tmp_path, inp=inp), name="mynn-gsd41")
+    exp = _load(tmp_path, text, "mynn-gsd41.toml")
+    for domain in exp.domains:
+        assert domain.run.bl_mynn_version == "gsd_41"
+        assert domain.run.bl_mynn_mixlength == 2
+    assert 'bl_mynn_version = "gsd_41"' in text
+    assert 'ra_rrtmg_variant = "rrtmg_legacy"' in text
+    with pytest.raises(ValueError, match="in-cloud QC_BL"):
+        import_namelists(*_pair(tmp_path, inp=inp), name="mynn-gsd41-modern",
+                         rrtmg_variant="rte-rrtmgp")
+    with pytest.raises(ValueError, match="bl_mynn_tkebudget"):
+        import_namelists(*_pair(tmp_path, inp=inp.replace(
+            "bl_mynn_tkebudget = 0,", "bl_mynn_tkebudget = 1,")),
+            name="mynn-gsd41-budget", rrtmg_variant="rrtmg_legacy")
+
+
+def test_wrf4_mynn_namelist_keeps_the_wrf461_generation(tmp_path):
+    inp = INPUT_TEXT.replace(
+        " mp_physics = 55, 55,", " mp_physics = 28, 28,\n bl_mynn_mixlength = 2,")
+    inp = inp.replace(" bl_pbl_physics = 11, 11,", " bl_pbl_physics = 5, 5,")
+    inp = inp.replace(" sf_sfclay_physics = 91, 91,", " sf_sfclay_physics = 5, 5,")
+    text, _ = import_namelists(*_pair(tmp_path, inp=inp), name="mynn-461")
+    assert "bl_mynn_version" not in text
+    exp = _load(tmp_path, text, "mynn-461.toml")
+    assert {d.run.bl_mynn_version for d in exp.domains} == {"wrf_461"}
+
+
+def test_actual_fork_mynn_keys_select_source_and_radiation(tmp_path):
+    import hashlib
+    from gpuwm.fortran_namelist import parse_namelist
+    path = Path(__file__).parent / "fixtures/namelist/hrrr_wrf-v4.1.21.nl"
+    assert hashlib.sha256(path.read_text().encode()).hexdigest() == "50ac01dbeaca863dfc313eae7dd53865458b2bffdfcc1e402d350d860bef5694"
+    physics = parse_namelist(path)["physics"]
+    keys = ("bl_mynn_tkebudget", "bl_mynn_tkeadvect", "bl_mynn_cloudpdf",
+            "bl_mynn_edmf", "bl_mynn_edmf_mom", "bl_mynn_edmf_tke", "bl_mynn_mixlength")
+    rows = []
+    for key in keys:
+        value = physics[key][0]
+        literal = (".true." if value else ".false.") if type(value) is bool else str(value)
+        rows.append(f" {key} = {literal},")
+    inp = INPUT_TEXT.replace(" mp_physics = 55, 55,", " mp_physics = 28, 28,\n" + "\n".join(rows))
+    inp = inp.replace(" bl_pbl_physics = 11, 11,", " bl_pbl_physics = 5, 5,")
+    inp = inp.replace(" sf_sfclay_physics = 91, 91,", " sf_sfclay_physics = 5, 5,")
+    text, _ = import_namelists(*_pair(tmp_path, inp=inp), name="fork-mynn-keys")
+    exp = _load(tmp_path, text, "fork-mynn-keys.toml")
+    for domain in exp.domains:
+        assert domain.run.bl_mynn_version == "gsd_41"
+        assert domain.run.bl_mynn_mixlength == 2
+        assert domain.run.ra_rrtmg_variant == "rrtmg_legacy"
 
 
 @pytest.mark.parametrize("key, values", [
@@ -2052,7 +2193,7 @@ def test_nssl_variant_selectors_refuse_a_per_domain_split(tmp_path):
 
 def test_report_carries_three_explicit_sections(tmp_path):
     _, report = _import_with(tmp_path,
-                             extra_physics=" swint_opt = 0,\n")
+                             extra_physics=" shcu_physics = 0,\n")
     formatted = report.format()
     assert "Other parsed controls (not a configuration-equivalence claim):" in formatted
     assert "Fixed by ArWen (validated against the only implemented " \
@@ -2953,3 +3094,328 @@ def test_a142_cli_import_namelist_reads_the_reported_line(tmp_path, capsys):
                      "--output", str(out), "--name", "a142"]) == 0
     capsys.readouterr()
     assert load_experiment(out).start_time == datetime(1999, 5, 3, 12)
+
+
+# ---------------------------------------------------------------------------
+# WRF's fixed step through the adaptive clock (HRRR v4's 20/20/20 shape).
+# ---------------------------------------------------------------------------
+
+
+def _fixed_through_adaptive_input(step: int, *, least: int | None = None):
+    least = step if least is None else least
+    return INPUT_TEXT.replace(
+        " time_step = 60,",
+        f" time_step = {step},\n"
+        " use_adaptive_time_step = .true.,\n"
+        " step_to_output_time = .true.,\n"
+        " target_cfl = 1.2,\n"
+        " max_step_increase_pct = 5,\n"
+        f" starting_time_step = {step},\n"
+        f" max_time_step = {step},\n"
+        f" min_time_step = {least},\n")
+
+
+def _single_domain_pair(tmp_path, inp, *, filename="namelist.input"):
+    """The fixture pair as a one-domain run.  The columns past max_dom
+    stay in the text and are unread, as in an operational namelist that
+    keeps its unused nest columns."""
+    wps, namelist = _pair(
+        tmp_path, wps=WPS_TEXT.replace(" max_dom = 2,", " max_dom = 1,"),
+        inp=inp.replace(" max_dom = 2,", " max_dom = 1,"))
+    if filename != namelist.name:
+        named = tmp_path / filename
+        named.write_bytes(namelist.read_bytes())
+        namelist = named
+    return wps, namelist
+
+
+def test_a_fixed_step_through_the_adaptive_clock_imports_as_a_pinned_fixed_clock(
+        tmp_path):
+    """starting = max = min clamps every WRF step to one value
+    (adapt_timestep_em.F); start_em.F zeroes time_step_sound and solve_em.F
+    derives the count.  The TOML says what runs."""
+    from gpuwm.namelist_import import largest_mass_map_factor
+
+    toml_text, report = import_namelists(*_single_domain_pair(
+        tmp_path, _fixed_through_adaptive_input(60), filename="hrrr_wrf.nl"))
+    fixed = {(f.section, f.key): f for f in report.fixed}
+    assert ("domains", "use_adaptive_time_step") in fixed
+    assert fixed[("domains", "use_adaptive_time_step")].fixed_value is False
+    assert "fixed step of 60 s" in fixed[
+        ("domains", "use_adaptive_time_step")].reason
+    # The synthetic 12 km grid (truelat 30/60, centred 39.7 N) has a
+    # largest mass map factor under 1.01, so WRF's rule gives 4 at 60 s
+    # (300 * 60 / 12000 = 1.5 -> 2 * (1 + 1)); the namelist's omitted
+    # time_step_sound imports as 4 and nothing is fixed for it.
+    factor = largest_mass_map_factor(
+        {"ref_lat": 39.7, "ref_lon": -83.9, "truelat1": 30.0,
+         "truelat2": 60.0, "stand_lon": -83.9}, "lambert",
+        dx=12000.0, dy=12000.0, e_we=101, e_sn=81)
+    assert 0.9 < factor < 1.01
+    assert ("dynamics", "time_step_sound") not in fixed
+    assert 'terrain_clock = "pinned"' in toml_text
+    assert "use_adaptive_time_step = false" in toml_text
+    exp = _load(tmp_path, toml_text)
+    run = exp.root.run
+    assert run.terrain_clock == "pinned"
+    assert run.use_adaptive_time_step is False
+    assert run.time_step_sound == 4
+    assert exp.dt_exact(1) == Fraction(60)
+
+
+def test_a_fixed_step_through_the_adaptive_clock_takes_wrfs_derived_count(
+        tmp_path):
+    """A 12 km grid at a 90 s step: 300 * 90 / 12000 = 2.25 -> 6, where
+    the namelist spells 4.  The fix names the rule and the map factor.
+    (The fixture's 5 min cumulus cadence is not a whole number of 90 s
+    steps, so it is turned off; radiation's 12 min is.)"""
+    inp = _fixed_through_adaptive_input(90).replace(
+        " hybrid_opt = 2,", " hybrid_opt = 2,\n time_step_sound = 4,"
+    ).replace(" cudt = 5, 0,", " cudt = 0, 0,")
+    toml_text, report = import_namelists(
+        *_single_domain_pair(tmp_path, inp, filename="hrrr_wrf.nl"))
+    fixed = {(f.section, f.key): f for f in report.fixed}
+    entry = fixed[("dynamics", "time_step_sound")]
+    assert entry.values == (4,) and entry.fixed_value == 6
+    assert "solve_em.F" in entry.reason and "map factor" in entry.reason
+    assert "time_step_sound = 6" in toml_text
+    run = _load(tmp_path, toml_text).root.run
+    assert run.time_step_sound == 6 and run.terrain_clock == "pinned"
+
+
+def test_non_source_fixed_triplet_keeps_current_staging_importer_bytes(tmp_path):
+    import hashlib
+    import json
+    fixture = Path(__file__).parent / "fixtures/source_requests/identity-bf8a9a71d-clock.json"
+    text, report = import_namelists(
+        *_single_domain_pair(tmp_path, _fixed_through_adaptive_input(60)),
+        name="fixed-triplet-control")
+    baseline = json.loads(fixture.read_text())
+    assert hashlib.sha256(text.encode()).hexdigest() == baseline["fixed_triplet_60"]
+    assert "terrain_clock" not in text
+    run = _load(tmp_path, text).root.run
+    assert run.terrain_clock == "measured"
+    assert run.use_adaptive_time_step is True
+    assert not any(row.key == "use_adaptive_time_step" for row in report.fixed)
+
+
+def test_an_explicit_measured_comment_keeps_the_adaptive_triplet_clock(tmp_path):
+    from gpuwm.physics_source_defaults import with_physics_selector_comment
+    pair = _single_domain_pair(
+        tmp_path, _fixed_through_adaptive_input(60), filename="hrrr_wrf.nl")
+    pair[1].write_text(with_physics_selector_comment(
+        pair[1].read_text(), {"terrain_clock": "measured"}))
+    text, report = import_namelists(*pair)
+    run = _load(tmp_path, text).root.run
+    assert run.terrain_clock == "measured"
+    assert run.use_adaptive_time_step is True
+    assert not any(row.key == "use_adaptive_time_step" for row in report.fixed)
+
+
+def test_hrrr_v4s_clock_derives_six_substeps_at_20_s():
+    """HRRR v4: 1800 x 1060 at 3 km on Lambert 38.5/38.5/-97.5, adaptive
+    20/20/20, time_step_sound 4.  WRF's rule with the grid's largest mass
+    map factor (1.0443 at 21.14 N, the south-west corner) gives 6."""
+    from gpuwm.namelist_import import (_fixed_step_through_adaptive_clock,
+                                       largest_mass_map_factor)
+
+    projection = {"ref_lat": 38.5, "ref_lon": -97.5, "truelat1": 38.5,
+                  "truelat2": 38.5, "stand_lon": -97.5}
+    factor = largest_mass_map_factor(projection, "lambert", dx=3000.0,
+                                     dy=3000.0, e_we=1800, e_sn=1060)
+    assert factor == pytest.approx(1.044304, abs=2e-6)
+    derived = _fixed_step_through_adaptive_clock(
+        True, (20, 0), (20, 0), (20, 0), projection=projection,
+        map_proj="lambert", dx=3000.0, dy=3000.0, e_we=1800, e_sn=1060)
+    assert derived is not None
+    step, count, _factor = derived
+    assert step == Fraction(20) and count == 6
+    # Without the map factor (WRF's fixed-clock branch) the same step
+    # gives 4: the operational count comes from the adaptive branch.
+    from gpuwm.core.adaptive_clock import wrf_num_sound_steps
+    assert wrf_num_sound_steps(20.0, 3000.0, 3000.0, 1.0) == 4
+    # The same triplet on a nested run is not a fixed tree (next test).
+    assert _fixed_step_through_adaptive_clock(
+        True, (20, 0), (20, 0), (20, 0), projection=projection,
+        map_proj="lambert", dx=3000.0, dy=3000.0, e_we=1800, e_sn=1060,
+        max_dom=2) is None
+
+
+@pytest.mark.parametrize("single_domain", [True, False])
+def test_an_adaptive_clock_with_a_range_still_imports_as_adaptive(
+        tmp_path, single_domain):
+    inp = _fixed_through_adaptive_input(60, least=30)
+    pair = (_single_domain_pair(tmp_path, inp) if single_domain
+            else _pair(tmp_path, inp=inp))
+    toml_text, report = import_namelists(*pair)
+    fixed = {(f.section, f.key) for f in report.fixed}
+    assert ("domains", "use_adaptive_time_step") not in fixed
+    assert "use_adaptive_time_step = true" in toml_text
+    assert "terrain_clock" not in toml_text
+    run = _load(tmp_path, toml_text).root.run
+    assert run.use_adaptive_time_step is True
+    assert run.terrain_clock == "measured"
+
+
+def test_a_nested_namelist_with_a_pinned_root_triplet_stays_adaptive(
+        tmp_path):
+    """WRF clamps each grid to its own bounds and rounds a nest's step to
+    a whole divisor of its parent's (adapt_timestep_em.F), and derives
+    each grid's substep count from that grid's own step, so a root pinned
+    by its triplet does not pin its nest.  The two-domain import stays
+    the adaptive clock the namelist names: nothing is fixed, no terrain
+    clock mode is written, and the count is the namelist's."""
+    inp = _fixed_through_adaptive_input(90).replace(
+        " hybrid_opt = 2,", " hybrid_opt = 2,\n time_step_sound = 4,"
+    ).replace(" cudt = 5, 0,", " cudt = 0, 0,")
+    toml_text, report = import_namelists(*_pair(tmp_path, inp=inp))
+    fixed = {(f.section, f.key) for f in report.fixed}
+    assert ("domains", "use_adaptive_time_step") not in fixed
+    assert ("dynamics", "time_step_sound") not in fixed
+    assert ("domains", "time_step") not in fixed
+    assert "use_adaptive_time_step = true" in toml_text
+    assert "time_step_sound = 4" in toml_text
+    assert "terrain_clock" not in toml_text
+    exp = _load(tmp_path, toml_text)
+    assert exp.root.run.use_adaptive_time_step is True
+    assert exp.root.run.terrain_clock == "measured"
+
+def _import_radiation_options(tmp_path, lines, *, mp_physics=55,
+                              rrtmg_variant="rrtmg_legacy"):
+    """INPUT_TEXT with ``lines`` (one namelist line each) appended inside
+    &physics, the microphysics column set to ``mp_physics`` on both
+    domains, imported with the named RRTMG mapping."""
+    block = "".join(f" {line},\n" for line in lines)
+    inp = INPUT_TEXT.replace(
+        " mp_physics = 55, 55,",
+        f" mp_physics = {mp_physics}, {mp_physics},\n" + block)
+    return import_namelists(*_pair(tmp_path, inp=inp),
+                            rrtmg_variant=rrtmg_variant)
+
+
+def test_swint_opt_and_aer_opt_reach_the_run_config(tmp_path):
+    """swint_opt and aer_opt are honoured, not pinned: the HRRR values
+    (swint_opt = 1, aer_opt = 3 on legacy RRTMG 4/4 with mp_physics = 28)
+    land on the RunConfig, and an absent key keeps the import byte-
+    identical (no line is emitted for it)."""
+    toml_text, report = _import_radiation_options(
+        tmp_path, ["swint_opt = 1", "aer_opt = 3"], mp_physics=28)
+    exp = _load(tmp_path, toml_text)
+    for dc in exp.domains:
+        assert dc.run.swint_opt == 1
+        assert dc.run.aer_opt == 3
+        assert dc.run.mp_physics == 28
+        assert dc.run.ra_rrtmg_variant == "rrtmg_legacy"
+    translated = {(t.section, t.key) for t in report.translated}
+    assert ("physics", "swint_opt") in translated
+    assert ("physics", "aer_opt") in translated
+    fixed = {(f.section, f.key) for f in report.fixed}
+    assert ("physics", "swint_opt") not in fixed
+    assert ("physics", "aer_opt") not in fixed
+    plain, _ = _import_radiation_options(tmp_path, [])
+    assert "swint_opt" not in plain and "aer_opt" not in plain
+
+
+@pytest.mark.parametrize(("line", "mp", "match"), [
+    ("swint_opt = 2", 55, "swint_opt"),
+    ("aer_opt = 1", 28, "not transcribed"),
+    ("aer_opt = 2", 28, "not transcribed"),
+    ("aer_opt = 4", 28, "must be 0, 1, 2 or 3"),
+    # mp_physics = 55 (P3): WRF gates aer_opt = 3 on the Thompson aerosol
+    # package, so the namelist claims aerosol-aware radiation it would
+    # not get.
+    ("aer_opt = 3", 55, "mp_physics = 28"),
+])
+def test_swint_opt_and_aer_opt_refusals_name_the_gap(tmp_path, line, mp,
+                                                     match):
+    with pytest.raises(ValueError, match=match):
+        _import_radiation_options(tmp_path, [line], mp_physics=mp)
+
+
+def test_aer_opt_3_refuses_the_rte_rrtmgp_mapping(tmp_path):
+    """4/4 mapped to RTE+RRTMGP has no aerosol optics input: aer_opt = 3
+    refuses by name instead of silently running zero aerosol."""
+    with pytest.raises(ValueError, match="legacy RRTMG") as refused:
+        _import_radiation_options(tmp_path, ["aer_opt = 3"], mp_physics=28,
+                                  rrtmg_variant="rte-rrtmgp")
+    # The refusal names the way through: the same namelist imported with
+    # the legacy mapping carries the aerosol.
+    assert "--rrtmg-variant rrtmg_legacy" in str(refused.value)
+    toml_text, _ = _import_radiation_options(
+        tmp_path, ["aer_opt = 3"], mp_physics=28,
+        rrtmg_variant="rrtmg_legacy")
+    assert all(dc.run.aer_opt == 3
+               for dc in _load(tmp_path, toml_text).domains)
+
+
+def test_omitted_mapping_keeps_generic_bytes_and_explicit_none_keeps_legacy(tmp_path):
+    pair = _pair(tmp_path)
+    omitted, _ = import_namelists(*pair)
+    modern, _ = import_namelists(*pair, rrtmg_variant="rte-rrtmgp")
+    explicit_none, _ = import_namelists(*pair, rrtmg_variant=None)
+    legacy, _ = import_namelists(*pair, rrtmg_variant="rrtmg_legacy")
+    assert omitted == modern
+    assert explicit_none == legacy
+    assert _load(tmp_path, omitted).root.run.ra_rrtmg_variant == "rte-rrtmgp"
+    assert _load(tmp_path, explicit_none).root.run.ra_rrtmg_variant == "rrtmg_legacy"
+
+
+
+def test_parsed_import_opens_no_provenance_label_and_keeps_generic_bytes(tmp_path, monkeypatch):
+    from gpuwm.namelist_import import import_parsed_namelists, parse_namelist_text
+
+    wps_path, input_path = _pair(tmp_path)
+    expected, _ = import_namelists(wps_path, input_path, name="parsed-contract")
+    wps = parse_namelist_text(WPS_TEXT)
+    inp = parse_namelist_text(INPUT_TEXT)
+    original = Path.read_text
+    def checked(path, *args, **kwargs):
+        if path in (wps_path, input_path):
+            raise AssertionError("parsed-import paths are labels, not a read request")
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "read_text", checked)
+    # The caller holds the input snapshot, so it passes it: with a snapshot
+    # the labels are never opened.  Without one, an existing input file
+    # supplies its selector carrier (fc328845f, lane/286-staging-repair,
+    # restoring 7ba801346), which is the read this control forbids.
+    actual, _ = import_parsed_namelists(
+        wps, inp, wps_path=wps_path, input_path=input_path,
+        name="parsed-contract", source_text=INPUT_TEXT)
+    assert actual.encode("utf-8") == expected.encode("utf-8")
+
+
+def test_parsed_named_source_defaults_need_no_source_file():
+    from gpuwm.namelist_import import import_parsed_namelists, parse_namelist_text
+    from gpuwm.experiment import build_experiment
+    from pathlib import Path
+    import tomllib
+
+    fixture = Path(__file__).parent / "fixtures/source_requests"
+    wps = parse_namelist_text((fixture / "hrrr_namelist.wps.c18").read_text())
+    inp = parse_namelist_text((fixture / "hrrr_wrf.nl.c18c").read_text())
+    actual, _ = import_parsed_namelists(wps, inp,
+        wps_path="in-memory/namelist.wps", input_path="in-memory/hrrr_wrf.nl")
+    cfg = build_experiment(tomllib.loads(actual), source="parsed named source").root.run
+    assert cfg.bl_mynn_version == "gsd_41"
+    assert cfg.ra_rrtmg_variant == "rrtmg_legacy"
+    assert cfg.rrtmg_cloud_optics_form == "noaa_wrf39"
+
+
+def test_parsed_source_text_carries_explicit_selectors_without_opening_labels():
+    from gpuwm.namelist_import import import_parsed_namelists, parse_namelist_text
+    from gpuwm.physics_source_defaults import with_physics_selector_comment
+    from gpuwm.experiment import build_experiment
+    import tomllib
+
+    fixture = Path(__file__).parent / "fixtures/source_requests"
+    wps_text = (fixture / "hrrr_namelist.wps.c18").read_text()
+    input_text = with_physics_selector_comment(
+        (fixture / "hrrr_wrf.nl.c18c").read_text(), {"bl_mynn_version": "wrf_461"})
+    actual, _ = import_parsed_namelists(
+        parse_namelist_text(wps_text), parse_namelist_text(input_text),
+        wps_path="in-memory/namelist.wps", input_path="in-memory/hrrr_wrf.nl",
+        source_text=input_text)
+    cfg = build_experiment(tomllib.loads(actual), source="parsed named selector").root.run
+    assert cfg.bl_mynn_version == "wrf_461"
+    assert cfg.ra_rrtmg_variant == "rrtmg_legacy"
+    assert cfg.rrtmg_cloud_optics_form == "noaa_wrf39"

@@ -116,6 +116,9 @@ def test_legacy_adapter_o3input_identity_must_match_run_config():
 
     adapter = object.__new__(RRTMGLegacyRadiation)
     adapter.o3input = 0
+    # the adapter's shortwave aerosol identity, which _check_pins also holds
+    adapter.shortwave = True
+    adapter.aer_opt = 0
     cfg = SimpleNamespace(
         icloud=1, cldovrlp=2, idcor=0, ghg_input=0, aer_opt=0,
         swint_opt=0, o3input=0)

@@ -76,8 +76,8 @@ The committed corpus is packed one file per case.  To regenerate it:
 
 ```sh
 bash tools/noah_mosaic_wrf471_oracle/build.sh WRF_SOURCE_ROOT BUILD_DIR
-python tools/noah_mosaic_wrf471_oracle/pack_fixtures.py     BUILD_DIR/fixtures/mosaic gpuwm/data/noah_mosaic/oracle
-python tools/noah_mosaic_wrf471_oracle/pack_fixtures.py     BUILD_DIR/fixtures gpuwm/data/noah_mosaic/oracle   # mosaic_init
+python tools/noah_mosaic_wrf471_oracle/pack_fixtures.py     BUILD_DIR/fixtures/mosaic tests/data/oracles/noah_mosaic
+python tools/noah_mosaic_wrf471_oracle/pack_fixtures.py     BUILD_DIR/fixtures tests/data/oracles/noah_mosaic   # mosaic_init
 ```
 
 pack_fixtures.py refuses any .bin whose SHA-256 is not the one recorded in
@@ -122,7 +122,7 @@ the preceding urban tile's grid CHS floor before computing the D2 control.
 
 ```sh
 python tools/noah_mosaic_wrf471_oracle/pack_ucm_run.py \
-    BUILD_DIR/fixtures/mosaic_ucm gpuwm/data/noah_mosaic/oracle
+    BUILD_DIR/fixtures/mosaic_ucm tests/data/oracles/noah_mosaic
 python -m pytest tests/test_noah_mosaic_ucm_wrf471_parity.py
 ```
 
@@ -148,6 +148,6 @@ them reproduced every recorded word of the other families
 
 ```sh
 python tools/noah_mosaic_wrf471_oracle/pack_ucm_run.py \
-    BUILD_DIR/fixtures/mosaic_ucm gpuwm/data/noah_mosaic/oracle \
+    BUILD_DIR/fixtures/mosaic_ucm tests/data/oracles/noah_mosaic \
     ucm_wrfinit ucm_lcz_wrfinit
 ```

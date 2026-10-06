@@ -46,7 +46,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from gpuwm.core.kernels import get_kernel
+from gpuwm.core.thompson_aerosol_launch import aerosol_kernel
 from gpuwm.core.state import DTYPE
 from gpuwm.core.thompson_aerosol_launch import (
     WARM_MODULE,
@@ -71,6 +71,24 @@ RAIN_GRAUPEL_TABLE_NAMES = (
 
 RAIN_SNOW_TABLE_SHAPE = (37, 9, 37, 37)
 RAIN_GRAUPEL_TABLE_SHAPE = (37, 37, 1, 37, 37)
+#: The operational WRF 3.9 fork's shapes (thompson_version = "wrf_39_noaa",
+#: gpuwm.core.thompson_contract.FORK_GENERATED_TABLE_FILES).
+WRF39_RAIN_SNOW_TABLE_SHAPE = (28, 9, 37, 37)
+WRF39_RAIN_GRAUPEL_TABLE_SHAPE = (28, 28, 37, 37)
+
+
+def _rain_snow_shape():
+    from gpuwm.core.thompson_aerosol_launch import active_thompson_version
+    return (WRF39_RAIN_SNOW_TABLE_SHAPE
+            if active_thompson_version() == "wrf_39_noaa"
+            else RAIN_SNOW_TABLE_SHAPE)
+
+
+def _rain_graupel_shape():
+    from gpuwm.core.thompson_aerosol_launch import active_thompson_version
+    return (WRF39_RAIN_GRAUPEL_TABLE_SHAPE
+            if active_thompson_version() == "wrf_39_noaa"
+            else RAIN_GRAUPEL_TABLE_SHAPE)
 EFFICIENCY_TABLE_SHAPE = (100, 100)
 
 
@@ -126,11 +144,11 @@ def _validate_collision_tables(rain_snow_tables, rain_graupel_tables):
             f"got {len(rain_graupel_values)}")
     for name, table in zip(
             RAIN_SNOW_TABLE_NAMES, rain_snow_values, strict=True):
-        validate_fp64_fortran_table(name, table, RAIN_SNOW_TABLE_SHAPE)
+        validate_fp64_fortran_table(name, table, _rain_snow_shape())
     for name, table in zip(
             RAIN_GRAUPEL_TABLE_NAMES, rain_graupel_values, strict=True):
         validate_fp64_fortran_table(
-            name, table, RAIN_GRAUPEL_TABLE_SHAPE)
+            name, table, _rain_graupel_shape())
     return rain_snow_values, rain_graupel_values
 
 
@@ -213,7 +231,7 @@ def launch_aerosol_warm_source_network(
 
     # Smaller blocks admit more resident warps without changing cell arithmetic.
     grid, block = launch_grid(size, threads=64)
-    get_kernel(WARM_MODULE, "thompson_aa_warm_source_network")(
+    aerosol_kernel(WARM_MODULE, "thompson_aa_warm_source_network")(
         grid, block,
         (qc, qr, nr, qs, qg, graupel_number_shadow,
          graupel_melt_marker, snow_melt_marker,
@@ -295,7 +313,7 @@ def launch_ncten_balance(
     _validate_dt(dt)
 
     grid, block = launch_grid(size)
-    get_kernel(WARM_MODULE, "thompson_aa_ncten_balance")(
+    aerosol_kernel(WARM_MODULE, "thompson_aa_ncten_balance")(
         grid, block,
         (qc_entry, qc_after, nc_entry, density, ncten,
          DTYPE(dt), np.int32(size)))
@@ -343,7 +361,7 @@ def probe_warm_rates(pressure, temperature, qv, qc, nc_entry, qr, nr_entry,
         out[name] = cp.empty(shape, dtype=cp.float64)
 
     grid, block = launch_grid(size)
-    get_kernel(WARM_MODULE, "thompson_aa_probe_warm_rates")(
+    aerosol_kernel(WARM_MODULE, "thompson_aa_probe_warm_rates")(
         grid, block,
         (pressure, temperature, qv, qc, nc_entry, qr, nr_entry,
          nwfa_entry, nifa_entry, rain_cloud_efficiency,
@@ -381,7 +399,7 @@ def probe_frozen_constants():
     import cupy as cp
 
     out = cp.empty(len(FROZEN_CONSTANT_NAMES), dtype=cp.float64)
-    get_kernel(WARM_MODULE, "thompson_aa_probe_frozen_constants")(
+    aerosol_kernel(WARM_MODULE, "thompson_aa_probe_frozen_constants")(
         (1,), (32,), (out,))
     values = cp.asnumpy(out)
     return dict(zip(FROZEN_CONSTANT_NAMES,
@@ -461,7 +479,7 @@ def probe_warm_frozen_rates(
         + [out[name] for name in _FROZEN_RATE_NAMES])
 
     grid, block = launch_grid(size)
-    get_kernel(WARM_MODULE, "thompson_aa_probe_warm_frozen_rates")(
+    aerosol_kernel(WARM_MODULE, "thompson_aa_probe_warm_frozen_rates")(
         grid, block,
         (pressure, temperature, qv, qc, nc_entry, qs, qg, ng_entry,
          nwfa_entry, nifa_entry,

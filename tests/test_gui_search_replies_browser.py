@@ -68,7 +68,7 @@ def tab(browser, served):
 
 
 def _held_search(tab, words):
-    return tab.hold(f"**/api/wiki/search?q={words}&sort=score")
+    return tab.hold(f"**/api/library/search?q={words}&sort=score")
 
 
 def _answer(held, document):
@@ -135,7 +135,7 @@ def test_enter_opens_an_event_only_from_the_list_on_screen(tab):
     assert _moves(tab) == []
     # Back in the field the same words' choices are shown again, and Enter opens the first.  (The event's
     # recipe is never answered: only where Enter goes is under test here.)
-    tab.page.route("**/api/wiki/recipe/**", lambda route: None)
+    tab.page.route("**/api/library/recipe/**", lambda route: None)
     field.focus()
     tab.page.locator(".finderrow", has_text="Obsolete event").wait_for()
     field.press("Enter")
@@ -149,6 +149,7 @@ def test_enter_opens_an_event_only_from_the_list_on_screen(tab):
 def test_the_header_search_shows_and_opens_only_answers_for_the_words_typed(tab, answered):
     tab.page.goto(f"http://127.0.0.1:{tab.server.port}/#/wiki")
     tab.page.wait_for_function("() => !!document.body.dataset.ready", timeout=20000)
+    assert tab.hash() == "#/library"
     held = _held_search(tab, "tornado")
     tab.page.keyboard.press("Control+k")
     field = tab.page.locator(".pal input")

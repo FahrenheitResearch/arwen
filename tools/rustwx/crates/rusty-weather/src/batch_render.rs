@@ -647,6 +647,7 @@ pub fn run_batch_render(
     };
     let mut completed = 0usize;
     let mut native_domain = None;
+    let mut planned_canvas = None;
     // Say-once advisory keys, for the whole job rather than per hour: a
     // warning about a subtitle that does not fit is one fact about this
     // gallery, not one fact per stored hour.
@@ -727,7 +728,8 @@ pub fn run_batch_render(
             &store,
             &mut native_domain,
         )?;
-        let config = render_config(&request, model, &cycle, source, domain);
+        let mut config = render_config(&request, model, &cycle, source, domain);
+        apply_planned_canvas(&mut config, &store, &mut planned_canvas)?;
 
         render_hour_items(
             pool.as_ref(),
@@ -774,7 +776,8 @@ pub fn run_batch_render(
                     &store,
                     &mut native_domain,
                 )?;
-                let config = render_config(&request, model, &cycle, source, domain);
+                let mut config = render_config(&request, model, &cycle, source, domain);
+                apply_planned_canvas(&mut config, &store, &mut planned_canvas)?;
                 for slug in &product_request.windowed {
                     emit(BatchRenderEvent::ItemStarted {
                         hour: Some(anchor_hour),
@@ -1384,6 +1387,40 @@ fn render_config(
         geographic_overlays: request.geographic_overlays.clone(),
         panel_annotations: request.panel_annotations.clone(),
     }
+}
+
+/// Under auto layout, the canvas every product of this run's domain is
+/// drawn on: planned once from the stored grid's own projected shape and
+/// kept for every hour, so the whole run shares one frame size.  Fixed
+/// layout leaves the request's pixel size alone.
+fn apply_planned_canvas(
+    config: &mut StoreRenderConfig,
+    store: &StoreFieldSource,
+    planned: &mut Option<(u32, u32)>,
+) -> Result<(), String> {
+    if !rustwx_render::auto_layout_active() {
+        return Ok(());
+    }
+    if planned.is_none() {
+        let (latitudes, longitudes) = store.grid_coordinates();
+        let plan = rustwx_products::direct::plan_canvas_for_grid(
+            latitudes,
+            longitudes,
+            store.projection(),
+            config.domain.bounds,
+        )
+        .map_err(|err| format!("plan the canvas for the {} grid: {err}", config.domain.slug))?;
+        *planned = plan.map(|plan| (plan.canvas_w, plan.canvas_h));
+    }
+    if let Some((width, height)) = *planned {
+        config.output_width = width;
+        config.output_height = height;
+    }
+    if config.place_label_overlay.is_none() {
+        config.place_label_overlay =
+            rustwx_products::direct::planned_place_labels(config.domain.bounds);
+    }
+    Ok(())
 }
 
 fn parse_model(model_slug: &str) -> Result<ModelId, String> {

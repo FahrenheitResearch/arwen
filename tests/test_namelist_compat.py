@@ -519,6 +519,30 @@ def test_mix_full_fields_defaults_and_unassigned_tails_are_declared(
         assert "domains [1, 2, 3, 4, 5, 6]" in issue["message"]
 
 
+def test_an_omitted_use_theta_m_on_the_wrf3_line_is_matched(tmp_path):
+    """The WRF line decides what an omitted use_theta_m means.
+
+    V4 defaults it to 1 (booked as the dry-theta substitution above); the
+    V3.9 line operational HRRR v4 runs defaults it to 0, dry theta, which
+    is what the engine integrates, so nothing is booked.
+    """
+    wps, inp = _write_pair(tmp_path, mp=6)
+    inp.write_text(
+        inp.read_text(encoding="utf-8").replace(" use_theta_m = 0,\n", ""),
+        encoding="utf-8",
+    )
+    report = analyze_namelists(wps, inp, wrf_version="3")
+    assert report["verdict"] == "PASS"
+    assert not [item for item in report["issues"]
+                if item["code"] == "THETA_M_DRY_SUBSTITUTION"]
+    report4 = analyze_namelists(wps, inp, wrf_version="4")
+    issue = next(item for item in report4["issues"]
+                 if item["code"] == "THETA_M_DRY_SUBSTITUTION")
+    assert "WRF Registry default 1" in issue["message"]
+    with pytest.raises(ValueError, match="wrf_version"):
+        analyze_namelists(wps, inp, wrf_version="5")
+
+
 def test_mix_full_fields_still_requires_fortran_logicals(tmp_path):
     wps, inp = _write_pair(tmp_path, mp=6)
     inp.write_text(inp.read_text(encoding="utf-8").replace(

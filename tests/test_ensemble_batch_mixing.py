@@ -56,8 +56,7 @@ def test_original_architecture_w_entries_have_complete_explicit_float_pointer_ab
         assert names[-6:] == ("nz", "ny", "nx", "phb3d", "boundary_x", "boundary_y")
     assert metric_w_entry_family(exact="GPUWM_WRF_EXACT" in " ".join(options), compute_capability="120" if "120" in options[0] else "90") == (
         ("wrf_smag_hd_w",) if "GPUWM_WRF_EXACT" in " ".join(options)
-        else ("wrf_smag_w_stress", "wrf_smag_hd_w_stress") if "120" in options[0]
-        else ("wrf_smag_w_primitives", "wrf_smag_hd_w_cached"))
+        else ("wrf_smag_w_stress", "wrf_smag_hd_w_stress"))
 
 
 def test_new_or_missing_macro_entry_is_not_silently_admitted(monkeypatch):

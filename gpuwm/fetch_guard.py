@@ -83,6 +83,23 @@ _HELD: dict[str, "_Entry"] = {}
 _REGISTRY_GUARD = threading.Lock()
 
 
+def _after_fork() -> None:
+    """A child must acquire its own OS lock instead of inheriting re-entry."""
+    global _KEY_LOCKS, _HELD, _REGISTRY_GUARD
+    # Close inherited descriptors without LOCK_UN: flock attaches to the
+    # shared open-file description and unlocking it would release the
+    # parent's lock too. The parent's descriptor remains open.
+    for entry in _HELD.values():
+        entry.stream.close()
+    _KEY_LOCKS = {}
+    _HELD = {}
+    _REGISTRY_GUARD = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_after_fork)
+
+
 class FetchLockBusy(RuntimeError):
     """Another writer holds the output root; this one refuses.
 

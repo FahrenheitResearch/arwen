@@ -17,6 +17,7 @@ from gpuwm.ingest.hrrr_target import load_hrrr_target_domain  # noqa: E402
 from gpuwm.vertical_contract import (  # noqa: E402
     explicit_vertical_from_wrf_namelist,
 )
+from gpuwm.wrf_physics_inventory import EXPORT_USE_THETA_M  # noqa: E402
 
 
 def _date_fields(value: datetime, prefix: str) -> str:
@@ -63,6 +64,16 @@ def render_namelist(
         *, target, eta, valid_time, run_seconds: int,
         p_top: float = 10_000.0, hybrid_opt: int = 2,
         etac: float = 0.2) -> str:
+    """The acceptance namelist for one direct export.
+
+    ``use_theta_m`` is the export's own declaration
+    (:data:`gpuwm.wrf_physics_inventory.EXPORT_USE_THETA_M`, dry theta),
+    never a literal here: WRF's input gate (share/input_wrf.F) stops the
+    run when the namelist and the files' ``USE_THETA_M`` disagree, which
+    is what a literal 0 did while the export still declared 1.
+    ``mix_full_fields`` is WRF's Registry default, the value operational
+    HRRR runs.
+    """
     end_time = valid_time + timedelta(seconds=run_seconds)
     return f"""&time_control
  run_days                            = 0,
@@ -130,13 +141,14 @@ def render_namelist(
  /
 
 &dynamics
+ use_theta_m                         = {EXPORT_USE_THETA_M},
  hybrid_opt                          = {hybrid_opt},
  etac                                = {etac:.12g},
  w_damping                           = 1,
  epssm                               = 0.5,
  diff_opt                            = 2,
  km_opt                              = 4,
- mix_full_fields                     = .true.,
+ mix_full_fields                     = .false.,
  diff_6th_opt                        = 2,
  diff_6th_factor                     = 0.08,
  diff_6th_slopeopt                   = 1,

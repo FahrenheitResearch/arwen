@@ -276,6 +276,7 @@ class PreparedTileMemory:
     #: follower contexts whose arrays this model now PRICES rather than
     #: declining to price, and the store road the carriers take.
     options: object = field(default=None, repr=False, compare=False)
+    loader_budget_bytes: int | None = field(default=None, repr=False, compare=False)
 
     @property
     def domain_config(self):
@@ -338,16 +339,10 @@ class PreparedTileMemory:
     def fixed_terms(self):
         if "fixed" not in self._cache:
             from gpuwm.core import preflight as pf
-            from gpuwm.ingest.prepared_store import default_slab_rows
+            from gpuwm.ingest.prepared_store import default_slab_rows, maximum_slab_rows
             exp = self.experiment
             nx, ny = self.cfg.nx, self.cfg.ny
-            rows = default_slab_rows(nx, ny)
-            last = ny % rows or rows
-            template, slab = self._domain(nx, last), self._domain(nx, rows)
-            self._cache["fixed"] = {
-                "loader_rows": rows,
-                "template_resident_bytes": template.resident_bytes,
-                "loader_pool_peak_bytes": slab.resident_bytes + slab.transient_bytes,
+            fixed = {
                 "k_tables_bytes": pf.k_distribution_bytes(),
                 "physics_tables_bytes": (pf.thompson_coefficient_bytes(
                     int(self.cfg.mp_physics) == 28)
@@ -356,6 +351,38 @@ class PreparedTileMemory:
                 "local_memory_bytes": pf.kernel_local_memory_bytes(exp, profile=self.profile),
                 "unmodelled_bytes": pf.ENVELOPE_UNMODELLED_BYTES,
             }
+            rows = default_slab_rows(nx, ny)
+            template_rows = 1
+            if self.loader_budget_bytes is not None:
+                rows = maximum_slab_rows(nx, ny)
+                # The last one-row slab retains the same height-invariant
+                # template regardless of a lower runtime memory allowance.
+                template_rows = 1
+                tables = fixed["k_tables_bytes"] + fixed["physics_tables_bytes"]
+                overhead = (fixed["cuda_context_bytes"] + fixed["local_memory_bytes"]
+                            + fixed["unmodelled_bytes"] + self.device_store_bytes())
+
+                def loader_price(height):
+                    slab = self._domain(nx, height)
+                    pool = slab.resident_bytes + slab.transient_bytes + tables
+                    return math.ceil(self.pool_headroom * pool) + overhead
+
+                if loader_price(rows) > int(self.loader_budget_bytes):
+                    lo, hi = 1, rows
+                    while lo < hi:
+                        mid = (lo + hi + 1) // 2
+                        if loader_price(mid) <= int(self.loader_budget_bytes):
+                            lo = mid
+                        else:
+                            hi = mid - 1
+                    rows = lo
+                    # If one row exceeds the allowance, keep its real price.
+                    # The ordinary planner refusal then names that floor.
+            template, slab = self._domain(nx, template_rows), self._domain(nx, rows)
+            fixed.update(loader_rows=rows, template_rows=template_rows,
+                         template_resident_bytes=template.resident_bytes,
+                         loader_pool_peak_bytes=slab.resident_bytes + slab.transient_bytes)
+            self._cache["fixed"] = fixed
         return self._cache["fixed"]
 
     def _columns(self, window_cells):
@@ -469,7 +496,8 @@ class PreparedTileMemory:
                 ncol=int(columns), nz=int(cfg.nz), p_top=exp.vertical.p_top,
                 column_chunk=None, longwave=longwave == 4, shortwave=shortwave == 4,
                 resident_threads=(0 if self.profile is None
-                                  else self.profile.resident_thread_capacity)))
+                                  else self.profile.resident_thread_capacity),
+                aer_opt=int(getattr(cfg, "aer_opt", 0))))
         return int(sum(standalone_rte_storage_bytes(
             self.nz, columns, exp.column_chunk, exp.vertical.p_top).values()))
 
@@ -653,7 +681,7 @@ def decline_basis(cfg, options, *, estimate=None) -> str | None:
     return None
 
 
-def for_options(cfg, options, *, profile=None, estimate=None):
+def for_options(cfg, options, *, profile=None, estimate=None, machine=None):
     """Return an inventoried-contract model, otherwise retain old pricing.
 
     Every ``None`` return states its basis through :func:`decline_basis`;
@@ -667,6 +695,10 @@ def for_options(cfg, options, *, profile=None, estimate=None):
     # THE DOMAIN BEING PRICED and ITS OWN [tiles], so a tree walk itemizes
     # each streamed domain at its own geometry, boundary tables, radiation
     # context and follower carriers instead of the root's.
+    budget = getattr(options, "vram_budget_bytes", None)
+    if budget is None and machine is not None:
+        budget = max(0, int(machine.vram_bytes) - pf.EXTERNAL_MARGIN_BYTES)
     return PreparedTileMemory(exp, profile or pf.MEASURED_LOCAL_MEMORY_PROFILE,
                               estimate.retained_forcing_intervals,
-                              domain=domain_of(exp, cfg), options=options)
+                              domain=domain_of(exp, cfg), options=options,
+                              loader_budget_bytes=budget)

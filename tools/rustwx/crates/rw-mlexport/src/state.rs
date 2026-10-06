@@ -18,7 +18,7 @@ use crate::request::Request;
 
 pub const STATE_DIR: &str = ".ml-export-state";
 const STATE_FILE: &str = "state.json";
-pub const STATE_SCHEMA: &str = "ml-export.state/v3";
+pub const STATE_SCHEMA: &str = "ml-export.state/v4";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InputRecord {
@@ -74,6 +74,10 @@ pub struct DomainState {
     /// stated it (P_TOP) or it is the top mass level.
     pub lid_pa: f64,
     pub lid_stated: bool,
+    /// Geopotential on pressure levels is read between the layer interfaces
+    /// (the first frame states its eta levels), not off layer means at the
+    /// mass-level pressure.  Fixed for the export: every frame must agree.
+    pub geopotential_between_interfaces: bool,
     pub levels_per_chunk: usize,
     pub variables: Vec<VarState>,
     /// For each time, which stored latitude/longitude it has (0 = the

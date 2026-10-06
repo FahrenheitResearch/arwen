@@ -32,16 +32,14 @@ def priced_host_live_bytes(inventory, geography, boundaries=None):
     The caller caps each credit at the matching estimate term.
     """
     import numpy as np
+    from gpuwm.ingest.prepared_mmap import is_file_backed_array
 
     def spans(arrays):
         result = []
         for array in arrays:
             if not isinstance(array, np.ndarray) or not array.flags.c_contiguous:
                 continue
-            owner = array
-            while owner is not None and not isinstance(owner, np.memmap):
-                owner = getattr(owner, "base", None)
-            if isinstance(owner, np.memmap):
+            if is_file_backed_array(array):
                 continue
             start = int(array.__array_interface__["data"][0])
             if array.nbytes:
@@ -364,7 +362,8 @@ def estimate_devices(exp, *, options=None, max_map_factor=1.0,
         radiation_owners = int(bool(lw or sw)) + (2 if lw != sw and lw and sw else 0)
         coordinate_owners = (radiation_owners
                              + int(cfg.sf_surface_physics == 4)
-                             + int(cfg.o3input == 2))
+                             + int(cfg.o3input == 2)
+                             + int(int(getattr(cfg, "swint_opt", 0) or 0) == 1))
         geo += coordinate_owners * 2 * cfg.nx * cfg.ny * 8
         basis = "hoststore FieldSpec products over resident carrier/setup census upper bound"
     else:

@@ -84,9 +84,13 @@ fn static_model_data_domain_frame() -> DomainFrame {
     }
 }
 
+/// The map-viewport frame (and with it the whitespace crop) for western
+/// domains, only under the explicit `RUSTWX_STRAIGHT_WEST_PROJECTION`
+/// opt-in.  It used to be the default inside a hard-coded western lat/lon
+/// box, so the same domain shape came out cropped in one place and
+/// letterboxed in another; the canvas is now sized from the grid.
 fn straight_western_domain_frame_enabled(bounds: (f64, f64, f64, f64)) -> bool {
-    let default = is_straight_western_domain_frame_candidate(bounds);
-    std::env::var("RUSTWX_STRAIGHT_WEST_PROJECTION")
+    let opted_in = std::env::var("RUSTWX_STRAIGHT_WEST_PROJECTION")
         .ok()
         .map(|value| {
             matches!(
@@ -94,7 +98,8 @@ fn straight_western_domain_frame_enabled(bounds: (f64, f64, f64, f64)) -> bool {
                 "1" | "true" | "yes" | "on" | "mercator" | "straight" | "northup"
             )
         })
-        .unwrap_or(default)
+        .unwrap_or(false);
+    opted_in && is_straight_western_domain_frame_candidate(bounds)
 }
 
 fn is_straight_western_domain_frame_candidate(bounds: (f64, f64, f64, f64)) -> bool {
@@ -691,6 +696,12 @@ fn surface_relative_humidity_colors() -> Vec<Color> {
     ]
 }
 
+/// Cloud cover in percent.  Under the first level (10 %) the sky is clear
+/// and nothing is drawn, so the basemap shows through as it does under the
+/// reflectivity and QPF ladders.  Before, clear sky took the ladder's
+/// first colour: a clear 750 m afternoon drew as one white sheet, which on
+/// a dark theme is a glaring slab and on a light one hides land and water,
+/// and white is the colour a reader takes for cloud.
 fn cloud_cover_scale() -> DiscreteColorScale {
     DiscreteColorScale {
         levels: range_step(10.0, 100.0, 10.0),
@@ -705,8 +716,8 @@ fn cloud_cover_scale() -> DiscreteColorScale {
             Color::rgba(103, 177, 209, 255),
             Color::rgba(189, 232, 241, 255),
         ],
-        extend: ExtendMode::Both,
-        mask_below: None,
+        extend: ExtendMode::Max,
+        mask_below: Some(10.0),
     }
 }
 
@@ -973,6 +984,57 @@ mod tests {
     }
 
     #[test]
+    fn clear_sky_under_the_first_cloud_level_draws_nothing() {
+        let scale = cloud_cover_scale();
+        assert_eq!(scale.mask_below, Some(10.0));
+        assert_eq!(scale.levels.first().copied(), Some(10.0));
+        assert!(matches!(scale.extend, ExtendMode::Max));
+    }
+
+    #[test]
+    fn clear_sky_pixels_are_the_uncovered_basemap_and_ten_percent_draws_cloud() {
+        let mut request = sample_request();
+        request.width = 320;
+        request.height = 240;
+        request.colorbar = false;
+        request.background = Color::rgba(21, 37, 58, 255);
+        request.scale = ColorScale::Discrete(cloud_cover_scale());
+        request.field.values.fill(f32::NAN);
+        let uncovered = rustwx_render::render_image(&request).unwrap();
+        let evidence = std::env::var_os("RUSTWX_CLOUD_MASK_EVIDENCE").map(std::path::PathBuf::from);
+        if let Some(folder) = &evidence {
+            std::fs::create_dir_all(folder).unwrap();
+            uncovered.save(folder.join("cloud-uncovered.png")).unwrap();
+        }
+        let mut clear_images = Vec::new();
+        for value in [0.0, 5.0, 9.999, 10.0, 95.0] {
+            request.field.values.fill(value);
+            let image = rustwx_render::render_image(&request).unwrap();
+            if let Some(folder) = &evidence {
+                image.save(folder.join(format!("cloud-{value}-percent.png"))).unwrap();
+            }
+            if value < 10.0 {
+                clear_images.push((value, image));
+            }
+        }
+        for (value, clear) in clear_images {
+            assert_eq!(clear, uncovered, "{value}% cloud painted a basemap pixel");
+        }
+        request.field.values.fill(10.0);
+        let cloudy = rustwx_render::render_image(&request).unwrap();
+        let mut old_scale = cloud_cover_scale();
+        old_scale.mask_below = None;
+        old_scale.extend = ExtendMode::Both;
+        request.scale = ColorScale::Discrete(old_scale);
+        let first_level_control = rustwx_render::render_image(&request).unwrap();
+        assert_eq!(cloudy, first_level_control,
+                   "the clear-sky mask changed a pixel at the first drawn cloud level");
+        let painted = cloudy.pixels().zip(uncovered.pixels())
+            .filter(|(cloud, base)| cloud != base).count();
+        assert!(painted > 100, "the first drawn cloud level painted {painted} pixels");
+    }
+
+    #[test]
     fn regional_static_design_uses_projected_grid_frame_and_smooth_legend() {
         let mut request = sample_request();
 
@@ -992,31 +1054,22 @@ mod tests {
         assert_eq!(request.render_density.palette_multiplier, 4);
     }
 
+    /// A western domain gets the same grid frame as every other domain:
+    /// the viewport frame (and the whitespace crop it brought) is only the
+    /// explicit opt-in now, never a default chosen by location.
     #[test]
-    fn straight_west_static_design_uses_viewport_frame() {
-        let mut request = sample_request();
-
-        StaticPlotDesign::new(
-            (-124.9, -113.8, 31.9, 42.5),
-            ProductVisualMode::FilledMeteorology,
-        )
-        .apply_to_request(&mut request);
-
-        assert_eq!(
-            request.domain_frame.map(|frame| frame.source),
-            Some(DomainFrameSource::MapViewport)
-        );
-
-        let mut west_request = sample_request();
-        StaticPlotDesign::new(
-            (-125.7, -110.5, 30.5, 49.0),
-            ProductVisualMode::FilledMeteorology,
-        )
-        .apply_to_request(&mut west_request);
-        assert_eq!(
-            west_request.domain_frame.map(|frame| frame.source),
-            Some(DomainFrameSource::MapViewport)
-        );
+    fn a_western_domain_uses_the_grid_frame_like_any_other() {
+        for bounds in [(-124.9, -113.8, 31.9, 42.5), (-125.7, -110.5, 30.5, 49.0)] {
+            assert!(is_straight_western_domain_frame_candidate(bounds));
+            let mut request = sample_request();
+            StaticPlotDesign::new(bounds, ProductVisualMode::FilledMeteorology)
+                .apply_to_request(&mut request);
+            assert_eq!(
+                request.domain_frame.map(|frame| frame.source),
+                Some(DomainFrameSource::ProjectedGrid),
+                "{bounds:?}"
+            );
+        }
     }
 
     #[test]

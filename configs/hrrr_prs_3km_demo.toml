@@ -15,6 +15,7 @@
 #   gpuwm sim DIR --experiment-config THIS
 #       --wps-namelist THIS.namelist.wps --outdir OUT
 #
+# Prior YSU/MM5 suite measurements, before selecting MYNN below:
 # sized for a 10 GiB card: emitted by `gpuwm domain --vram-gib 10 --source
 # hrrr-prs --root-dx 3 --physics-profile
 # thompson-mp8-ysu-mm5-noah-rrtmg-legacy-v1`, forecast peak envelope
@@ -29,11 +30,9 @@
 #
 # The wizard's own default suite for this source is Morrison + RTE+RRTMGP
 # with Kain-Fritsch, and at 3 km that prints a cumulus advisory rather than
-# a refusal.  This file takes the Thompson + legacy-RRTMG suite instead,
-# because that one carries cu_physics = 0 -- the right answer at
-# convection-permitting spacing -- and because it is the one suite
-# admissible on BOTH hrrr and hrrr-prs, so the two demos differ in their
-# source and in nothing else.
+# a refusal. This file explicitly selects Thompson, MYNN PBL and MYNN
+# surface layer with the GSL WRF39 surface generation, Noah and legacy
+# RRTMG. It carries cu_physics = 0 at convection-permitting spacing.
 # NOCTURNALLY VALID: longwave and shortwave both run.
 
 [experiment]
@@ -48,13 +47,21 @@ restart_interval_s = 0.0
 
 [projection]
 map_proj = "lambert"
-ref_lat = 35.3
-ref_lon = -97.5
-truelat1 = 25.3
-truelat2 = 45.3
+ref_lat = 35.30404923695053
+ref_lon = -97.51650693799445
+truelat1 = 38.5
+truelat2 = 38.5
 stand_lon = -97.5
 
 [shared]
+mynn_sfclay_variant = "gsl_wrf39"
+terrain_clock = "pinned"
+diff_6th_form = "noaa_wrf39"
+diff_6th_factor2 = 0.04
+mp_zero_out = 2
+mp_zero_out_thresh = 1e-12
+mp_zero_out_all = 1
+upper_wind_limiter_form = "noaa_wrf39"
 nz = 49
 ztop = 20000.0
 p_top = 10000.0
@@ -99,11 +106,12 @@ wsm6_hail_opt = 0
 ra_physics = 0
 ra_lw_physics = 4
 ra_sw_physics = 4
+alb_sol = 1
 wrf_rrtmg_compatibility = "wrf-rrtmg-4-4-legacy-v1"
 ra_rrtmg_variant = "rrtmg_legacy"
-sf_sfclay_physics = 91
+sf_sfclay_physics = 5
 sf_surface_physics = 2
-bl_pbl_physics = 1
+bl_pbl_physics = 5
 num_soil_layers = 4
 terrain_opt = 1
 km_opt = 4
@@ -112,6 +120,8 @@ diff_6th_slopeopt = 1
 map_proj = 1
 
 [[domain]]
+v_sca_adv_order = 5
+v_mom_adv_order = 5
 grid_id = 1
 parent_id = 0
 i_parent_start = 1
@@ -137,3 +147,6 @@ cycle = "2026-08-20T00"
 hours = 3
 out = "data/hrrr_prs_3km_demo"
 cadence = 1
+
+[static]
+source = "hrrr-conus-v4"

@@ -1194,7 +1194,14 @@ def test_the_aerosol_aware_suite_is_offered_on_the_prepared_single_domain_route(
 
     registry = physics_registry()
     routes = registry["runner_routes"]
-    (suite,) = template_ids_with_components(microphysics="thompson-aerosol-mp28")
+    # Selected by its whole qualified MYJ/ETA/Noah composition: a second
+    # mp28 suite (the GSD MYNN 4.1 one) now exists beside it.
+    (suite,) = template_ids_with_components(
+        microphysics="thompson-aerosol-mp28", pbl="myj",
+        surface_layer="eta-similarity", land_surface="noah")
+    suites = template_ids_with_components(microphysics="thompson-aerosol-mp28")
+    assert sorted(suites) == sorted([
+        suite, "thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1"]), suites
     single = routes["tools.prepared_single_domain_forecast"]
     assert suite not in (single.get("refused_template_ids") or {})
     assert suite in single["source_template_ids"]["gfs"]
@@ -2540,9 +2547,9 @@ def test_mp28_has_its_own_suite_and_is_still_no_default():
     which is the ship-only-what-users-can-reach rule failing quietly.  It
     has a template now, so what this guard holds is the half a
     reachability recomputation cannot express as an intention: that
-    exactly ONE template selects it, that the template is not on a route
-    whose runner cannot initialize it, and that the shipped default is
-    untouched.
+    the generic suite and explicit source-version suite select it, that
+    their routes can initialize them, and that the shipped default is
+    unchanged.
     """
     from gpuwm.physics_registry import (DEFAULT_TEMPLATE_ID,
                                         THOMPSON_KF_TEMPLATE_ID)
@@ -2556,7 +2563,11 @@ def test_mp28_has_its_own_suite_and_is_still_no_default():
         template_id for template_id, template in registry["templates"].items()
         if template["components"]["microphysics"] == MP28_OPTION_ID
     ]
-    assert len(selecting) == 1, selecting
+    generic_suite = "thompson-aerosol-mp28-myj-eta-noah-rte-rrtmgp-v1"
+    source_suite = "thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1"
+    # These two compositions select mp28, and neither is the default.
+    assert sorted(selecting) == [generic_suite, source_suite], selecting
+    assert DEFAULT_TEMPLATE_ID not in selecting
     assert DEFAULT_TEMPLATE_ID == THOMPSON_KF_TEMPLATE_ID
     assert registry["templates"][DEFAULT_TEMPLATE_ID]["components"][
         "microphysics"] == "thompson-mp8"
@@ -2573,8 +2584,13 @@ def test_mp28_has_its_own_suite_and_is_still_no_default():
             for ids in (route.get(key, {}) or {}).values()
             for template_id in ids
         }
-        assert (selecting[0] in declared) == (
+        assert (generic_suite in declared) == (
             route_id != "tools.hrrr_single_domain_benchmark"), route_id
+    source_route = registry["runner_routes"][
+        "tools.prepared_single_domain_forecast"]
+    assert any(source_suite in ids for ids in
+               source_route["source_template_ids"].values())
+    assert source_suite not in source_route["source_template_ids"]["gfs"]
 
     # It really is selectable, both as its own suite and as the override.
     report = validate_physics_plan(_mp28_tree_plan())

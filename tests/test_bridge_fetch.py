@@ -191,12 +191,14 @@ def test_a_corrupt_member_is_refused_and_never_installed(tmp_path):
         bridge_assets.stage_from_bundle(archive, bundle, dest,
                                         progress=lambda _line: None)
 
-    # The refusal is per-file and it stops there: the good member ahead
-    # of it installed, the bad one did not, and nothing half-written is
-    # left behind for the resolver to find.
-    assert (dest / "alpha.bin").is_file()
+    # The refusal is for the WHOLE bundle (2.8.6): the good member ahead
+    # of the bad one is not installed either, because half a release's
+    # set beside older copies of the rest is a mixed estate the routes
+    # would run without saying so.  Nothing half-written is left behind
+    # for the resolver to find.
+    assert not (dest / "alpha.bin").exists()
     assert not (dest / "beta.bin").exists()
-    assert not (dest / f"{bridge_assets.ARCHIVE_SUBDIR}-stage").exists()
+    assert not list(dest.glob(f"{bridge_assets.ARCHIVE_SUBDIR}-stage*"))
 
 
 def test_a_member_of_the_wrong_size_is_refused_before_the_hash(tmp_path):
@@ -690,6 +692,8 @@ def test_artifact_filenames_agree_with_the_resolvers_on_this_host():
     from gpuwm.static.rust_bridge import library_names as static_names
     from gpuwm.obs_regrid_bridge import (
         library_names as obsregrid_names)
+    from gpuwm.obs_score_bridge import library_names as obsscore_names
+    from gpuwm.isobaric_bridge import library_names as isobaric_names
 
     # One expected filename per library, from the resolver that actually
     # searches for it: libraries with one shared expectation would
@@ -698,7 +702,9 @@ def test_artifact_filenames_agree_with_the_resolvers_on_this_host():
                  "region_global_dealias": region_library_name(),
                  "netcdf_writer": ncwrite_names()[0],
                  "static_fields": static_names()[0],
-                 "obs_regrid": obsregrid_names()[0]}
+                 "obs_regrid": obsregrid_names()[0],
+                 "obs_score": obsscore_names()[0],
+                 "rw_isobaric": isobaric_names()[0]}
     for artifact in bridge_assets.BUNDLED_ARTIFACTS:
         produced = bridge_assets.artifact_filename(artifact, host)
         if artifact.kind == "library":

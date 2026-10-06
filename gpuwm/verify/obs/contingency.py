@@ -25,6 +25,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from gpuwm import obs_score_bridge
+
 
 @dataclass(frozen=True)
 class ContingencyTable:
@@ -63,52 +65,20 @@ def contingency_table(observed: np.ndarray, forecast: np.ndarray, *,
         mask = np.asarray(valid, dtype=bool)
         if mask.shape != observed.shape:
             raise ValueError("the validity mask must match the scored grid")
-    if not mask.any():
-        raise ValueError("a contingency table needs at least one valid cell")
-    observed_event = (observed >= float(threshold)) & mask
-    forecast_event = (forecast >= float(threshold)) & mask
-    return ContingencyTable(
-        hits=int(np.count_nonzero(observed_event & forecast_event)),
-        misses=int(np.count_nonzero(observed_event & ~forecast_event & mask)),
-        false_alarms=int(
-            np.count_nonzero(~observed_event & forecast_event & mask)),
-        correct_negatives=int(
-            np.count_nonzero(~observed_event & ~forecast_event & mask)),
-    )
-
-
-def _ratio(numerator: float, denominator: float) -> float | None:
-    return float(numerator) / float(denominator) if denominator else None
+    return ContingencyTable(*obs_score_bridge.contingency_table(
+        observed, forecast, mask, float(threshold)))
 
 
 def contingency_scores(table: ContingencyTable) -> dict[str, float | int | None]:
     """POD, FAR, CSI, frequency bias, ETS and HSS from one table."""
-    hits = int(table.hits)
-    misses = int(table.misses)
-    false_alarms = int(table.false_alarms)
-    correct_negatives = int(table.correct_negatives)
-    total = table.total
-    if total == 0:
-        raise ValueError("a contingency table with no cells has no scores")
-    random_hits = ((hits + misses) * (hits + false_alarms) / total
-                   if total else 0.0)
-    hss_numerator = 2.0 * (hits * correct_negatives - misses * false_alarms)
-    hss_denominator = ((hits + misses) * (misses + correct_negatives)
-                       + (hits + false_alarms)
-                       * (false_alarms + correct_negatives))
     scores: dict[str, float | int | None] = dict(table.record())
-    scores.update({
-        "observed_event_fraction": _ratio(hits + misses, total),
-        "forecast_event_fraction": _ratio(hits + false_alarms, total),
-        "probability_of_detection": _ratio(hits, hits + misses),
-        "false_alarm_ratio": _ratio(false_alarms, hits + false_alarms),
-        "critical_success_index": _ratio(hits, hits + misses + false_alarms),
-        "frequency_bias": _ratio(hits + false_alarms, hits + misses),
-        "equitable_threat_score": _ratio(
-            hits - random_hits,
-            hits + misses + false_alarms - random_hits),
-        "heidke_skill_score": _ratio(hss_numerator, hss_denominator),
-    })
+    names = ("observed_event_fraction", "forecast_event_fraction",
+             "probability_of_detection", "false_alarm_ratio",
+             "critical_success_index", "frequency_bias",
+             "equitable_threat_score", "heidke_skill_score")
+    scores.update(zip(names, obs_score_bridge.contingency_scores(
+        (int(table.hits), int(table.misses), int(table.false_alarms),
+         int(table.correct_negatives)))))
     return scores
 
 

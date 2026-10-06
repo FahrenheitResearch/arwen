@@ -383,6 +383,13 @@ pub fn render(path: &Path, out: &Path, fields: &[String], domain: &str,
 
 /// Additive dispatch: existing deterministic WRF invocations retain their ABI.
 pub fn try_cli(args: &[String]) -> Option<Result<(), String>> {
+    if args.first().map(String::as_str) == Some("--ensemble-diagnostic-reduce-abi") {
+        println!("{}", crate::ensemble_reduce::ABI);
+        return Some(Ok(()));
+    }
+    if args.first().map(String::as_str) == Some("--ensemble-diagnostic-reduce") {
+        return Some(crate::ensemble_reduce::cli(args));
+    }
     if args.first().map(String::as_str) == Some("--ensemble-diagnostic-dump") {
         return Some(dump_diagnostic(args));
     }

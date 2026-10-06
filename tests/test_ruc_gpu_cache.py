@@ -19,37 +19,75 @@ def _changed_bundle(bundle, **row_changes):
 
 @pytest.mark.gpu
 @requires_gpu
-def test_resident_snow_guard_parses_default_only_once(monkeypatch):
+@pytest.mark.parametrize("resident", [False, True])
+def test_snow_stage_forwards_default_and_changed_bundle(monkeypatch, resident):
+    from gpuwm.core import ruc_gpu as gpu
+    from types import SimpleNamespace
+
+    calls = []
+    result = SimpleNamespace(**{
+        name: object() for name in gpu.RucSnowPreparation.__dataclass_fields__})
+
+    def launch(*args, **kwargs):
+        calls.append(kwargs["parameters"])
+        return result
+
+    monkeypatch.setattr(gpu, "ruc_snow_preparation_cuda", launch)
+    monkeypatch.setattr(gpu.cp, "asnumpy", lambda value: value)
+    bundle = gpu.load_ruc_parameters()
+    changed = _changed_bundle(bundle, z0=bundle.vegetation_for(
+        "MODIFIED_IGBP_MODIS_NOAH").rows[0].z0 + 0.01)
+    call = (gpu._resident_snow_prep() if resident
+            else gpu._host_facing_snow_prep())
+    for candidate in (None, bundle, changed):
+        actual = call({}, delt=12.0, ivgtyp=None, iland=None, bundle=candidate)
+        if resident:
+            assert actual is result
+        else:
+            for name in gpu.RucSnowPreparation.__dataclass_fields__:
+                assert getattr(actual, name) is getattr(result, name)
+    assert calls == [None, bundle, changed]
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_snow_bundle_tables_share_default_and_isolate_consumed_columns():
     from gpuwm.core import ruc_gpu as gpu
 
     gpu._default_parameter_bundle.cache_clear()
-    original = gpu.load_ruc_parameters
-    calls = []
-
-    def load():
-        calls.append(None)
-        return original()
-
-    sentinel = object()
-    monkeypatch.setattr(gpu, "load_ruc_parameters", load)
-    monkeypatch.setattr(gpu, "ruc_snow_preparation_cuda",
-                        lambda *args, **kwargs: sentinel)
-    bundle = original()
-    call = gpu._resident_snow_prep()
+    bundle = gpu.load_ruc_parameters()
+    dataset = "MODIFIED_IGBP_MODIS_NOAH"
+    table = bundle.vegetation_for(dataset)
     try:
-        for _ in range(3):
-            assert call({}, delt=12.0, ivgtyp=None, iland=None,
-                        bundle=bundle) is sentinel
-        assert len(calls) == 1
-        changed = _changed_bundle(bundle, z0=bundle.vegetation_for(
-            "MODIFIED_IGBP_MODIS_NOAH").rows[0].z0 + 0.01)
-        with pytest.raises(ValueError) as error:
-            call({}, delt=12.0, ivgtyp=None, iland=None, bundle=changed)
-        assert str(error.value) == (
-            "the RUC CUDA snow-preparation stage indexes device "
-            "tables built from the default parameter bundle; the "
-            "supplied bundle differs in z0tbl, lemitbl or URBAN")
-        assert len(calls) == 1
+        default = gpu._snow_preparation_tables_for(None, dataset)
+        assert gpu._snow_preparation_tables_for(bundle, dataset) is default
+        assert gpu._snow_preparation_tables_for(
+            gpu.load_ruc_parameters(), dataset) is default
+        assert gpu._default_parameter_bundle.cache_info().misses == 1
+        for column, position, value in (("z0", 0, 0.123), ("lemi", 1, 0.75)):
+            changed = _changed_bundle(bundle, **{column: value})
+            selected = gpu._snow_preparation_tables_for(changed, dataset)
+            assert selected is not default
+            assert gpu._snow_preparation_tables_for(changed, dataset) is selected
+            assert gpu._snow_preparation_tables_for(
+                _changed_bundle(bundle, **{column: value}), dataset) is selected
+            assert float(selected[position][0]) == np.float32(value)
+            other = 1 - position
+            np.testing.assert_array_equal(gpu.cp.asnumpy(selected[other]),
+                                          gpu.cp.asnumpy(default[other]))
+            assert selected[2:] == default[2:]
+        scalars = dict(table.scalars, URBAN=10)
+        tables = dict(bundle.vegetation)
+        tables[table.name] = replace(table, scalars=MappingProxyType(scalars))
+        changed = replace(bundle, vegetation=MappingProxyType(tables))
+        selected = gpu._snow_preparation_tables_for(changed, dataset)
+        assert selected is not default
+        assert selected[2] == 10
+        assert selected[3] == default[3]
+        for position in (0, 1):
+            np.testing.assert_array_equal(gpu.cp.asnumpy(selected[position]),
+                                          gpu.cp.asnumpy(default[position]))
+        assert gpu._snow_preparation_tables_for(bundle, dataset) is default
     finally:
         gpu._default_parameter_bundle.cache_clear()
 

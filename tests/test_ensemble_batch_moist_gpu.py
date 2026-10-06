@@ -17,7 +17,7 @@ class _Tendencies:
         return self.fields.get(name)
 
 
-def _pack(count, *, mapped, boundary, sources):
+def _pack(count, *, mapped, boundary, sources, vorder=3):
     import cupy as cp
     from gpuwm.config import RunConfig
     from gpuwm.core.device_inventory import state_array_shapes
@@ -29,7 +29,7 @@ def _pack(count, *, mapped, boundary, sources):
     from test_ensemble_batch_bigstep_gpu import _scalar_state
     cfg = RunConfig(nx=11, ny=11, nz=5, dx=3000., dy=3000., ztop=9000., dt=3., run_seconds=6.,
         moist=True, mp_physics=8, km_opt=1, diff_opt=2,
-        specified=boundary == 'specified', open_x=boundary == 'open')
+        specified=boundary == 'specified', open_x=boundary == 'open', v_sca_adv_order=vorder)
     shapes = state_array_shapes(cfg)
     specs = batch_moist.workspace_specs(cfg)
     if sources:
@@ -95,11 +95,11 @@ def _same(cp, actual, expected, label):
 @pytest.mark.parametrize('mapped', (False, True))
 @pytest.mark.parametrize('boundary', ('periodic', 'specified', 'open'))
 @pytest.mark.parametrize('sources', (False, True))
-def test_three_scalar_stages_match_all_original_species_and_live_scratch(count, mapped, boundary, sources):
+def test_three_scalar_stages_match_all_original_species_and_live_scratch(count, mapped, boundary, sources, vorder=3):
     import cupy as cp
     from gpuwm.core import moist as original
     from gpuwm.ensemble import batch_moist
-    batch, references, inputs = _pack(count, mapped=mapped, boundary=boundary, sources=sources)
+    batch, references, inputs = _pack(count, mapped=mapped, boundary=boundary, sources=sources, vorder=vorder)
     names = original.moist_species(batch)
     physics = _Tendencies({name: batch.storage.arrays['transport_physics_' + name]
                           for name in ('qv', 'qc', 'nr')}) if sources else None
@@ -122,6 +122,13 @@ def test_three_scalar_stages_match_all_original_species_and_live_scratch(count, 
             for slot, expected in reference._scratch.items():
                 if slot.startswith(('moist_', 'pd_')):
                     _same(cp, batch.scratch_member_view(slot, member), expected, (stage, member, slot))
+
+
+@pytest.mark.parametrize('count', (1, 4))
+@pytest.mark.parametrize('boundary', ('periodic', 'specified'))
+def test_order_five_scalar_stages_match_all_member_words(count, boundary):
+    test_three_scalar_stages_match_all_original_species_and_live_scratch(
+        count, True, boundary, True, vorder=5)
 
 
 @pytest.mark.parametrize('count', (1, 4, 10, 20))

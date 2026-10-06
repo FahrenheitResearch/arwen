@@ -58,6 +58,96 @@ RUC_MODULE = "ruc"
 RUC_SOILPROP_FORMS = ("wrf_45", "wrf_461")
 RUC_SOILPROP_DEFAULT = "wrf_45"
 
+#: LSMRUC's cold start of the ground vapour and condensate (QVG, QCG) when
+#: the run starts without them (``RunConfig.ruc_qvg_cold_start``).
+#:
+#: ``air``: the operational RAP/HRRR branch, ``module_sf_ruclsm.F:479-483``
+#: there: an invalid QVG takes the lowest-level vapour and QCG becomes 0; the
+#: branch has no separate QCG check.  Its comment gives the reason: QSG times
+#: MAVAIL is a bad approximation where MAVAIL is very low.  No public WRF
+#: carries it.
+#:
+#: ``wrf``: public WRF v4.6.1 ``:505-514`` (v4.5.2 ``:481`` alike): an
+#: invalid QCG takes the lowest-level condensate, an invalid QVG takes
+#: saturation at the skin times moisture availability.
+#:
+#: Generic forecasts default to ``wrf``. The operational namelist importer
+#: and configuration recipe explicitly select ``air``. SOILTEMP's energy
+#: balance carries the vapour storage of the constant-flux layer from OLD QVG
+#: (``xlv*r210*qvg`` with ``r211 = 0.5*conflx/delt``, ten to thirty times
+#: the exchange coefficient at a 12 to 20 s step), so the first steps tie
+#: the skin to whatever QVG the start supplied.  The branch's fallback is
+#: rarely run there (it cycles QVG); every gpuwm forecast is a cold start.
+#: MEASURED, the RUC runtime fixture (moist loam, 12 s step): ``air`` puts
+#: the first-step skin at 296.3 K against 302.2 K, sensible heat at -105
+#: against +58 W/m2, and after 20 steps the skin is still 2.7 K colder.
+#: MEASURED, a 3 km cut of a native operational-HRRR start (106,671 land
+#: cells): ``air`` moves the 2 m dewpoint by -0.013 / -0.016 K at f01 / f02
+#: of a 21Z start and by +0.018 K of an 06Z start against the operational
+#: model's own files.
+RUC_QVG_COLD_START_FORMS = ("air", "wrf")
+RUC_QVG_COLD_START_DEFAULT = "wrf"
+
+#: How SFCDIAGS_RUCLSM writes T2, TH2 and Q2 (``RunConfig.ruc_2m_diagnostic``).
+#:
+#: ``flux``: public WRF ``module_sf_sfcdiags_ruclsm.F:53-146``, the flux form,
+#: and the default.
+#:
+#: ``log_profile``: adds the block the operational RAP/HRRR branch carries at
+#: ``:150-179`` there and no public WRF 3.9 to 4.7.1 has.  With dT = T1 - TSK,
+#: dQ = qlev1 - QSFCmr and dz1 = half the lowest layer: where dT > 0,
+#: fh = min(max(1 - dT/10, 0.01), 1) and fac = log(2.05/(0.05 + fh)) /
+#: log((dz1 + 0.05)/(0.05 + fh)), T2 = TSK + fac*(T1 - TSK) and TH2 from it;
+#: where dQ > 0, the same with fh from dQ/0.003, Q2 = QSFCmr + fac*(qlev1 -
+#: QSFCmr), with no saturation cap.  Elsewhere the flux values stand.
+#:
+#: MEASURED on a 3 km cut of a native operational-HRRR start (106,671 land
+#: cells), against the operational model's own files: on an 06Z start (97
+#: percent of land stable) it lowers T2 by 0.33 to 0.36 K, which moves the
+#: mean from -0.03 / +0.03 / +0.04 K to -0.39 / -0.32 / -0.29 K at f01 to
+#: f03, and moves the 2 m dewpoint by -0.008 to -0.011 K; on a 21Z start it
+#: lowers T2 by 0.06 / 0.14 K and leaves Q2 unchanged.  Either the
+#: operational files' 2 m values do not come from this block as ported or
+#: the port differs from the branch elsewhere. Generic forecasts keep the
+#: flux default; the operational namelist importer and configuration recipe
+#: explicitly select log_profile to reproduce the fork diagnostic block.
+RUC_2M_DIAGNOSTIC_FORMS = ("flux", "log_profile")
+RUC_2M_DIAGNOSTIC_DEFAULT = "flux"
+
+#: The RUC snow scheme's two WRF lineages (``RunConfig.ruc_snow``).
+#:
+#: ``wrf_45``: WRF v4.0 to v4.5 SFCTMP, SNOWSOIL and SNOWTEMP, which the
+#: operational RAP/HRRR branch carries line for line apart from dead code.
+#: Constant snow conductivity 0.265 W/m/K (4.6.1's ``isncond_opt = 1``);
+#: snow cover ``min(1, snhei/(2*snhei_crit))`` with the critical depth taken
+#: after compaction and new-snow density (4.6.1's ``isncovr_opt = 1``
+#: formula, at the branch's position), and not rebuilt after the snow
+#: column; fresh-snow albedo kept from the depth on the ground; melt cap
+#: independent of the step; melt bookkeeping scaled by cover under the
+#: snow mosaic; SNOWFALLAC grown by new snow less its melt; and the
+#: ``ktau = 1`` snow cover default from snow water.
+#:
+#: ``wrf_461``: WRF v4.6.1 (``isncond_opt = 2``, ``isncovr_opt = 2``), the
+#: form every earlier gpuwm build ran and the WRF v4.6.1 oracle pins.
+#:
+#: The generic forecast and transcription leaves default to ``wrf_461``.
+#: The operational namelist importer and configuration recipe select
+#: ``wrf_45`` explicitly. The two differ only where there is snow.
+RUC_SNOW_FORMS = ("wrf_45", "wrf_461")
+RUC_SNOW_DEFAULT = "wrf_461"
+
+
+def ruc_snow_form(value) -> str:
+    """The snow lineage name, or refuse an unknown one by name."""
+    if type(value) is not str or value not in RUC_SNOW_FORMS:
+        raise ValueError(
+            f"RUC ruc_snow={value!r} must be one of {RUC_SNOW_FORMS}: "
+            "'wrf_45' is the WRF v4.0-4.5 snow scheme the operational "
+            "RAP/HRRR branch carries and 'wrf_461' the WRF v4.6.1 rewrite; "
+            "the two differ in snow conductivity, cover, melt and albedo, so "
+            "an unknown name cannot select either")
+    return value
+
 
 def ruc_soilprop_form(value) -> str:
     """The SOILPROP lineage name, or refuse an unknown one by name."""
@@ -72,16 +162,41 @@ def ruc_soilprop_form(value) -> str:
     return value
 
 
-def ruc_module_defines(nzs: int, soilprop: str = RUC_SOILPROP_DEFAULT
+def ruc_qvg_cold_start_form(value) -> int:
+    """The kernel selector (1 for ``air``, 0 for ``wrf``), or refuse."""
+    if type(value) is not str or value not in RUC_QVG_COLD_START_FORMS:
+        raise ValueError(
+            f"RUC ruc_qvg_cold_start={value!r} must be one of "
+            f"{RUC_QVG_COLD_START_FORMS}: 'air' starts the ground vapour from "
+            "the lowest-level air (the operational RAP/HRRR form) and 'wrf' "
+            "from saturation at the skin times moisture availability (public "
+            "WRF); the two start different surface humidity, so an unknown "
+            "name cannot select either")
+    return int(value == "air")
+
+
+def ruc_2m_diagnostic_form(value) -> int:
+    """The kernel selector (1 for ``log_profile``, 0 for ``flux``), or refuse."""
+    if type(value) is not str or value not in RUC_2M_DIAGNOSTIC_FORMS:
+        raise ValueError(
+            f"RUC ruc_2m_diagnostic={value!r} must be one of "
+            f"{RUC_2M_DIAGNOSTIC_FORMS}: 'flux' writes T2 and Q2 by public "
+            "WRF's flux form and 'log_profile' adds the operational RAP/HRRR "
+            "branch's logarithmic profile where the air is warmer or moister "
+            "than the surface; the two write different 2 m values, so an "
+            "unknown name cannot select either")
+    return int(value == "log_profile")
+
+
+def ruc_module_defines(nzs: int, soilprop: str = RUC_SOILPROP_DEFAULT,
+                       snow: str = RUC_SNOW_DEFAULT,
                        ) -> tuple[tuple[str, int], ...]:
     """Integer defines the RUC module compiles with at this soil geometry.
 
-    EMPTY at the shipped geometry.  That emptiness is the whole mechanism:
-    it routes the launcher to the unspecialized loader, which assembles the
-    same string it assembled before the ladder existed, so no nine-level run
-    can see a different translation unit or a different manifest key.  The
-    launcher branches HERE and nowhere else.  Mirrors
-    :func:`gpuwm.core.acoustic.wphi_module_defines`.
+    At nine levels geometry adds no define. Named physics forms still bind
+    their defines: wrf_461 snow always compiles GPUWM_SNOW_WRF461, while the
+    explicit wrf_45 form leaves it absent. This mapping is independent of the
+    generic selector default. Six levels also bind RUC_NZS.
     """
     nzs = int(nzs)
     if nzs not in WRF_SUPPORTED_NUM_SOIL_LAYERS:
@@ -90,32 +205,35 @@ def ruc_module_defines(nzs: int, soilprop: str = RUC_SOILPROP_DEFAULT
             f"{WRF_SUPPORTED_NUM_SOIL_LAYERS}")
     lineage = (() if ruc_soilprop_form(soilprop) == RUC_SOILPROP_DEFAULT
                else (("GPUWM_SOILPROP_WRF461", 1),))
+    lineage += (() if ruc_snow_form(snow) == "wrf_45"
+                else (("GPUWM_SNOW_WRF461", 1),))
     if nzs == NUM_SOIL_LAYERS:
         return lineage
     return (("RUC_NZS", nzs),) + lineage
 
 
-def ruc_kernel(func: str, nzs: int, soilprop: str = RUC_SOILPROP_DEFAULT):
+def ruc_kernel(func: str, nzs: int, soilprop: str = RUC_SOILPROP_DEFAULT,
+               snow: str = RUC_SNOW_DEFAULT):
     """The RUC kernel ``func`` compiled at this geometry's tier.
 
-    At the shipped geometry this is :func:`gpuwm.core.kernels.get_kernel` --
-    the same call, on the same module, every untiered RUC launcher makes --
-    so a nine-level process compiles exactly one RUC translation unit and it
-    is the pre-ladder one.
+    At nine levels the geometry itself adds no define. The generic snow
+    form binds GPUWM_SNOW_WRF461; the explicit fork form leaves it absent.
+    Each geometry and named lineage has its own compiled module key.
     """
-    defines = ruc_module_defines(nzs, soilprop)
+    defines = ruc_module_defines(nzs, soilprop, snow)
     if not defines:
         return get_kernel(RUC_MODULE, func)
     return get_kernel_int_defines(RUC_MODULE, func, defines)
 
 
-def ruc_kernel_source(nzs: int, soilprop: str = RUC_SOILPROP_DEFAULT) -> str:
+def ruc_kernel_source(nzs: int, soilprop: str = RUC_SOILPROP_DEFAULT,
+                      snow: str = RUC_SNOW_DEFAULT) -> str:
     """The exact string NVRTC receives for RUC at ``nzs``.  CPU-only.
 
     Imports no CuPy and touches no device, so the identity of the nine-level
     translation unit is testable on any box.
     """
-    defines = ruc_module_defines(nzs, soilprop)
+    defines = ruc_module_defines(nzs, soilprop, snow)
     if not defines:
         return module_source(RUC_MODULE)
     return module_source_int_defines(RUC_MODULE, defines)
@@ -154,7 +272,8 @@ _RUC_AS_DEVICE_CLOSE = (
 
 
 def ruc_fused_source(nzs: int, *, kernel_dir=None,
-                     soilprop: str = RUC_SOILPROP_DEFAULT) -> str:
+                     soilprop: str = RUC_SOILPROP_DEFAULT,
+                     snow: str = RUC_SNOW_DEFAULT) -> str:
     """The exact string NVRTC receives for the fused RUC unit.  CPU-only.
 
     The preamble, then the tier define exactly where
@@ -169,7 +288,7 @@ def ruc_fused_source(nzs: int, *, kernel_dir=None,
     from gpuwm.core.kernels import _ENCODING, _KDIR, _preamble
 
     kdir = _KDIR if kernel_dir is None else Path(kernel_dir)
-    defines = ruc_module_defines(nzs, soilprop)
+    defines = ruc_module_defines(nzs, soilprop, snow)
     prefix = "".join(f"#define {key} {value}\n" for key, value in defines)
     parts = [_preamble(kdir), prefix,
              (kdir / "glibc_flt32.cuh").read_text(encoding=_ENCODING),
@@ -181,20 +300,22 @@ def ruc_fused_source(nzs: int, *, kernel_dir=None,
     return "".join(parts)
 
 
-def _ruc_fused_module_key(nzs: int, soilprop: str = RUC_SOILPROP_DEFAULT) -> str:
+def _ruc_fused_module_key(nzs: int, soilprop: str = RUC_SOILPROP_DEFAULT,
+                          snow: str = RUC_SNOW_DEFAULT) -> str:
     from gpuwm.core.kernels import MODULE_KEY_ROOT
 
-    defines = ruc_module_defines(nzs, soilprop)
+    defines = ruc_module_defines(nzs, soilprop, snow)
     key = f"{MODULE_KEY_ROOT}:{RUC_FUSED_MODULE}"
     if defines:
         key += "[" + ",".join(f"{k}={v}" for k, v in defines) + "]"
     return key
 
 
-_RUC_FUSED_MODULES: dict[tuple[int, int, str], object] = {}
+_RUC_FUSED_MODULES: dict[tuple[int, int, str, str], object] = {}
 
 
-def ruc_fused_kernel(func: str, nzs: int, soilprop: str = RUC_SOILPROP_DEFAULT):
+def ruc_fused_kernel(func: str, nzs: int, soilprop: str = RUC_SOILPROP_DEFAULT,
+                     snow: str = RUC_SNOW_DEFAULT):
     """A kernel of the fused RUC unit at this soil geometry.
 
     One compile per geometry per process, recorded in the kernel manifest
@@ -204,7 +325,8 @@ def ruc_fused_kernel(func: str, nzs: int, soilprop: str = RUC_SOILPROP_DEFAULT):
 
     nzs = int(nzs)
     soilprop = ruc_soilprop_form(soilprop)
-    owner = (int(cp.cuda.Device().id), nzs, soilprop)
+    snow = ruc_snow_form(snow)
+    owner = (int(cp.cuda.Device().id), nzs, soilprop, snow)
     module = _RUC_FUSED_MODULES.get(owner)
     if module is None:
         import cupy as cp
@@ -212,8 +334,8 @@ def ruc_fused_kernel(func: str, nzs: int, soilprop: str = RUC_SOILPROP_DEFAULT):
         from gpuwm.certify.kernel_manifest import record_module
         from gpuwm.core.kernels import _compile_observed
 
-        source = ruc_fused_source(nzs, soilprop=soilprop)
-        key = _ruc_fused_module_key(nzs, soilprop)
+        source = ruc_fused_source(nzs, soilprop=soilprop, snow=snow)
+        key = _ruc_fused_module_key(nzs, soilprop, snow)
         module = cp.RawModule(code=source, options=("-std=c++17",),
                               name_expressions=None)
         _compile_observed(module, key)

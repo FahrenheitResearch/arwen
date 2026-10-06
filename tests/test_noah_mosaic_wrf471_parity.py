@@ -17,7 +17,7 @@ from gpuwm.verify.noah_mosaic_oracle import (
     load, fixture_device_fields, gpuwm_to_wrf, soil_reduction, weighted_twin_increments, ulp_table,
 )
 
-ROOT = Path(__file__).resolve().parents[1] / "gpuwm/data/noah_mosaic/oracle"
+ROOT = Path(__file__).resolve().parents[1] / "tests/data/oracles/noah_mosaic"
 OUTPUTS = tuple(n for n in _F2D if n not in ("reslin", "psfc", "sfcprs", "sfctmp", "qv1", "dz8w1")) + _F3D + MOSAIC_TILE_FIELDS + MOSAIC_SOIL_FIELDS + ("ivgtyp", "isltyp", "mosaic_cat_index", "landusef2")
 # SNOW smallest-subnormal input: CUDA FTZ makes SNOW>0 false in driver prep,
 # removing the ice-saturation blend. These 23 fields carry that branch change.

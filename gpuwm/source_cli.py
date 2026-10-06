@@ -166,6 +166,17 @@ def _parser(*, prog: str = "gpuwm-wrf-init", add_help: bool = True,
             "--namelist-support-report to reject vertical extrapolation"
         ),
     )
+    inventory.add_argument(
+        "--wrf-version",
+        choices=("3", "4"),
+        default=None,
+        help=(
+            "with --namelist-support-report: the WRF line the namelist was "
+            "written for, which selects only the Registry default an "
+            "omitted &dynamics/use_theta_m takes (3: 0, dry theta, the "
+            "line operational HRRR v4 runs; 4, the default: 1, moist theta)"
+        ),
+    )
     parser.add_argument("--source", metavar="MODEL", help="native source adapter id")
     parser.add_argument(
         "--initial-inputs", type=Path, metavar="JSON",
@@ -378,8 +389,9 @@ def _parser(*, prog: str = "gpuwm-wrf-init", add_help: bool = True,
         type=Path,
         help=(
             "unchanged-stock-WRF namelist matching the native hierarchy "
-            "except for the certified LW and moist-theta representation "
-            "selections"
+            "except for the certified longwave selection and the "
+            "stock-only ghg_input and do_radar_ref keys; both declare "
+            "use_theta_m = 0, the dry theta the exported files hold"
         ),
     )
     parser.add_argument(
@@ -1416,13 +1428,15 @@ def _apply_packaged_profile(
 
     from gpuwm.source_authorities import (packaged_authorities,
                                           packaged_contributing_mappings,
-                                          packaged_profile)
+                                          packaged_profile,
+                                          packaged_provenance_files)
 
     try:
         profile = packaged_profile(str(adapter.packaged_profile))
         authorities = packaged_authorities(str(adapter.packaged_profile))
         contributing = packaged_contributing_mappings(
             str(adapter.packaged_profile))
+        provenance_files = packaged_provenance_files(str(adapter.packaged_profile))
     except (KeyError, FileNotFoundError, RuntimeError) as error:
         return [f"packaged source profile: {error}"]
 
@@ -1461,9 +1475,10 @@ def _apply_packaged_profile(
     args._packaged_input_normalizer = profile.get("input_normalizer")
     args.mapping = authorities["mapping"]
     args.composition = authorities["composition"]
-    args.provenance = [
-        f"{profile['provenance_role']}={authorities['provenance']}"
-    ]
+    composition_document = json.loads(authorities["composition"].read_text(encoding="utf-8"))
+    field_sources = composition_document.get("field_sources", {})
+    args.provenance = [f"{role}={path}"
+                       for role, path in sorted(provenance_files.items())]
     args.contributing_mapping = [
         f"{role}={path}" for role, path in sorted(contributing.items())
     ]
@@ -1472,10 +1487,11 @@ def _apply_packaged_profile(
     # already names the profile's own role is accepted unchanged so the
     # printed `--dry-run` command can be pasted back.
     role = str(profile["data_role"])
+    allowed_roles = {role, *(binding["data_role"] for binding in field_sources.values())}
     bound = []
     for value in args.supplement or ():
         text = str(value)
-        if text.startswith(f"{role}="):
+        if "=" in text and text.split("=", 1)[0] in allowed_roles:
             bound.append(text)
         elif "=" in text and not Path(text.split("=", 1)[0]).exists():
             return [
@@ -2785,7 +2801,10 @@ def _mapped_geography_fields(wps: Path, geog: Path, grid, cfg, highres):
         grid, geog, selection=with_terrain_drag_statics(selection, cfg))
     landuse = selection.landuse_global_attrs()
     smoothing = smoothing_receipt(highres)
-    origin = {"terrain_smoothing": smoothing} if smoothing else {}
+    from gpuwm.static.external_source import static_source_receipt
+    static_source = static_source_receipt(highres)
+    origin = {**({"terrain_smoothing": smoothing} if smoothing else {}),
+              **({"static_source": static_source} if static_source else {})}
     return fields, origin, landuse
 
 
@@ -2860,6 +2879,10 @@ def dispatch(args: argparse.Namespace, *,
         parser.error(
             "--source-top-pressure-pa is only valid with "
             "--namelist-support-report"
+        )
+    if args.wrf_version is not None and not args.namelist_support_report:
+        parser.error(
+            "--wrf-version is only valid with --namelist-support-report"
         )
     if (
         args.canonical_physics_plan_output is not None
@@ -3015,6 +3038,10 @@ def dispatch(args: argparse.Namespace, *,
                 args.wps_namelist,
                 args.namelist_input,
                 source_top_pressure_pa=args.source_top_pressure_pa,
+                **({} if args.wrf_version is None
+                   else {"wrf_version": args.wrf_version,
+                         "wrf_version_source":
+                             f"--wrf-version {args.wrf_version}"}),
             )
         except (OSError, UnicodeDecodeError, ValueError) as error:
             print(f"--namelist-support-report: {error}", file=sys.stderr)

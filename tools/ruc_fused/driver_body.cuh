@@ -48,12 +48,15 @@ extern "C" __global__ void ruc_driver_prologue(
     int n,int ktau,float dt,int iswater,int isice,int nv,int ns,
     float icealbedo,float cn,
     const float* landusef,const float* soilctop,int nlcat,int nscat,
-    int mosaic_lu,int mosaic_soil,int lakemodel) {
+    int mosaic_lu,int mosaic_soil,int lakemodel,
+    int qvg_air,int rdlai2d,float xice_threshold) {
     int i=blockIdx.x*blockDim.x+threadIdx.x;
     if(i>=n) return;
     D_DECLARE_SCRATCH
     D_COPY_INPUT
-    bool component=D_F(xice)>=0.5f && D_F(xice)<=1.0f;
+    // xice_threshold: module_surface_driver.F:1365-1368, 0.5 or 0.02 by
+    // fractional_seaice; the host hands the run's value to every ice test.
+    bool component=D_F(xice)>=xice_threshold && D_F(xice)<=1.0f;
     if(component) {
         D_F(albbck)=icealbedo;
         D_F(alb)=Q(B(D_F(alb),M(B(1.0f,D_F(xice)),0.08f)),D_F(xice));
@@ -70,12 +73,32 @@ extern "C" __global__ void ruc_driver_prologue(
     if(ktau==1) {
         for(int k=0;k<RUC_NZS;++k) D_P(keepfr3dflag,k)=0.0f;
         float blended=M(0.5f,A(D_F(soilt),D_P(tso,0)));
+        // Snow by lineage (gpuwm.core.ruc_tier RUC_SNOW_FORMS).  wrf_45, the
+        // operational RAP/HRRR branch's LSMRUC:459-465: snow water with no
+        // cover starts at min(1, snow/32), written as the exact snow*2**-5,
+        // and the inside-snow repair blends above 32 mm of snow water.
+        // GPUWM_SNOW_WRF461: WRF v4.6.1 blends wherever snowc > 0.
+#ifdef GPUWM_SNOW_WRF461
+        bool inside_snow=D_F(snowc)>0.0f;
+#else
+        if(D_F(snow)>0.0f && D_F(snowc)<=0.0f) D_F(snowc)=d_min(1.0f,M(D_F(snow),0.03125f));
+        bool inside_snow=D_F(snow)>32.0f;
+#endif
         if(D_F(soilt1)<170.0f || D_F(soilt1)>400.0f)
-            D_F(soilt1)=D_F(snowc)>0.0f ? blended:D_P(tso,0);
+            D_F(soilt1)=inside_snow ? blended:D_P(tso,0);
         D_F(tsnav)=B(blended,273.15f);
         D_F(qsg)=Q(d_qsn(D_F(soilt),tbq,flags,80,&admitted),M(D_F(p8w),1.0e-2f));
-        if(D_F(qcg)<0.0f || D_F(qcg)>0.1f) D_F(qcg)=D_F(qc3d);
-        if(D_F(qvg)<=0.0f || D_F(qvg)>0.1f) D_F(qvg)=M(D_F(qsg),D_F(mavail));
+        // QVG/QCG cold start by lineage (gpuwm.core.ruc_tier
+        // RUC_QVG_COLD_START_FORMS).  qvg_air: the operational RAP/HRRR branch's
+        // LSMRUC:479-483, the lowest-level vapour with no ground condensate.
+        // Otherwise public WRF v4.6.1 LSMRUC:505-514, saturation at the
+        // skin times moisture availability, condensate from the air.
+        if(qvg_air) {
+            if(D_F(qvg)<=0.0f || D_F(qvg)>0.1f) { D_F(qvg)=D_F(qv3d); D_F(qcg)=0.0f; }
+        } else {
+            if(D_F(qcg)<0.0f || D_F(qcg)>0.1f) D_F(qcg)=D_F(qc3d);
+            if(D_F(qvg)<=0.0f || D_F(qvg)>0.1f) D_F(qvg)=M(D_F(qsg),D_F(mavail));
+        }
         D_F(qsfc)=Q(D_F(qvg),A(1.0f,D_F(qvg)));
         D_F(snom)=D_F(snowfallac)=D_F(precipfr)=D_F(dew)=0.0f;
         D_F(sfcrunoff)=D_F(udrunoff)=D_F(acrunoff)=0.0f;
@@ -121,7 +144,9 @@ extern "C" __global__ void ruc_driver_prologue(
     if(forest==4) delta=d_min(0.75f,scaled);
     if(forest==5) delta=d_min(0.86f,scaled);
     float incoming_znt=D_F(znt);
-    D_F(lai)=veg==iswater ? laitbl[veg-1]:B(laitbl[veg-1],M(delta,factor));
+    // module_sf_ruclsm.F:7075 ``if(.not.rdlai2d) LAI = LAItoday(IVGTYP)``:
+    // under rdlai2d the prescribed 2-D LAI (the monthly field) stays.
+    if(!rdlai2d) D_F(lai)=veg==iswater ? laitbl[veg-1]:B(laitbl[veg-1],M(delta,factor));
     if(veg!=iswater) D_F(znt)=forest==7 ? B(z0tbl[veg-1],M(0.125f,factor)):z0tbl[veg-1];
     D_F(emissl)=lemitbl[veg-1]; D_F(pc)=pctbl[veg-1];
     D_F(qwrtz)=D_F(rhocs)=D_F(bclh)=D_F(dqm)=D_F(ksat)=D_F(psis)=D_F(qmin)=D_F(ref)=D_F(wilt)=0.0f;
@@ -132,7 +157,7 @@ extern "C" __global__ void ruc_driver_prologue(
         D_F(qmin)=drysmc[soil-1]; D_F(ref)=refsmc[soil-1]; D_F(wilt)=wltsmc[soil-1];
     }
     ruc_mosaic_parameters(i,n,nlcat,nscat,mosaic_lu,mosaic_soil,
-        landusef,soilctop,soil,iswater,false,factor,incoming_znt,
+        landusef,soilctop,soil,iswater,rdlai2d!=0,factor,incoming_znt,
         ifortbl,z0tbl,lemitbl,pctbl,laitbl,bb,drysmc,hc,maxsmc,
         refsmc,satpsi,satdk,wltsmc,qtz,
         D_F(emissl),D_F(pc),D_F(znt),D_F(lai),D_F(qwrtz),
@@ -147,8 +172,8 @@ extern "C" __global__ void ruc_driver_prologue(
     bool lake=lakemodel==1 && D_F(lakemask)==1.0f;
     bool water=B(D_F(xland),1.5f)>=0.0f && !lake;
     bool land=!(B(D_F(xland),1.5f)>=0.0f || lake);
-    bool ice=land && D_F(xice)>=0.5f;
-    D_F(seaice)=D_F(xice)>=0.5f ? 1.0f:0.0f;
+    bool ice=land && D_F(xice)>=xice_threshold;
+    D_F(seaice)=D_F(xice)>=xice_threshold ? 1.0f:0.0f;
     integer[2*n+i]=ice ? isice:veg; integer[4*n+i]=1;
     if(water) {
         D_F(smavail)=D_F(smmax)=1.0f; D_F(snow)=D_F(snowh)=D_F(snowc)=0.0f;
@@ -232,7 +257,8 @@ extern "C" __global__ void ruc_driver_epilogue(
     const unsigned long long* sp,const unsigned long long* op,
     const int* integer,const bool* run,unsigned* flags,
     const float* tbq,const float* lemitbl,const float* half,float dt,int n,
-    const float* landusef,int mosaic_lu,int crop,int natural) {
+    const float* landusef,int nlcat,int mosaic_lu,int crop,int natural,
+    int irrigation,int log_profile,float xice_threshold) {
     int i=blockIdx.x*blockDim.x+threadIdx.x;
     if(i>=n) return;
     D_DECLARE_SCRATCH
@@ -252,17 +278,44 @@ extern "C" __global__ void ruc_driver_epilogue(
         FROM(lmavail,mavail); FROM(smelt,smelt); FROM(runoff1,runoff1);
         FROM(runoff2,runoff2); FROM(infiltr,infiltr); FROM(qfx,eeta);
         FROM(lh,qfx); FROM(hfx,hfx); FROM(s,s);
-        // WRF LSMRUC:985-1009, after SFCTMP and before soil diagnostics.
-        if(mosaic_lu) {
-            float croparea=landusef[(crop-1)*n+i];
-            float naturalarea=landusef[(natural-1)*n+i];
-            float factor=d_max(0.0f,d_min(1.0f,Q(B(D_F(vegfra),D_F(shdmin)),d_max(1.0f,B(D_F(shdmax),D_F(shdmin))))));
-            if((croparea>0.0f || naturalarea>0.0f) && factor>0.75f) {
+        // Irrigation after SFCTMP and before soil diagnostics, by WRF
+        // lineage (gpuwm.core.ruc_mosaic.IRRIGATION_FORMS; the host twin is
+        // ruc_mosaic.irrigate).  irrigation==1: WRF v4.6.1 LSMRUC:985-1009
+        // under mosaic_lu, a per-step relaxation.  irrigation==0: WRF v4.5.2
+        // LSMRUC:970-999, a crop-fraction-scaled hard floor with no mosaic
+        // gate.  It reads the LANDUSEF fractions when the run carries them
+        // (nlcat>0); a run without them (mosaic_lu=0) gives the dominant
+        // category the whole cell, which is WRF's arithmetic on a one-hot
+        // LANDUSEF.  Its gates read the leaf area index SOILVEGIN left in
+        // the scratch, table or 2-D, and the dominant category.
+        if(irrigation==1) {
+            if(mosaic_lu) {
+                float croparea=landusef[(crop-1)*n+i];
+                float naturalarea=landusef[(natural-1)*n+i];
+                float factor=d_max(0.0f,d_min(1.0f,Q(B(D_F(vegfra),D_F(shdmin)),d_max(1.0f,B(D_F(shdmax),D_F(shdmin))))));
+                if((croparea>0.0f || naturalarea>0.0f) && factor>0.75f) {
+                    float cropsm=B(M(1.1f,D_F(wilt)),D_F(qmin));
+                    float cropfr=d_min(1.0f,A(croparea,M(0.4f,naturalarea)));
+                    for(int k=0;k<integer[3*n+i];++k) {
+                        float newsm=A(M(cropsm,cropfr),M(B(1.0f,cropfr),D_P(soilm1d,k)));
+                        if(D_P(soilm1d,k)<newsm) D_P(soilm1d,k)=newsm;
+                    }
+                }
+            }
+        } else {
+            float croparea=nlcat>0 ? landusef[(crop-1)*n+i]:(integer[i]==crop ? 1.0f:0.0f);
+            float naturalarea=nlcat>0 ? landusef[(natural-1)*n+i]:(integer[i]==natural ? 1.0f:0.0f);
+            if(croparea>0.0f && D_F(lai)>1.1f) {
                 float cropsm=B(M(1.1f,D_F(wilt)),D_F(qmin));
-                float cropfr=d_min(1.0f,A(croparea,M(0.4f,naturalarea)));
+                float floor=M(cropsm,croparea);
                 for(int k=0;k<integer[3*n+i];++k) {
-                    float newsm=A(M(cropsm,cropfr),M(B(1.0f,cropfr),D_P(soilm1d,k)));
-                    if(D_P(soilm1d,k)<newsm) D_P(soilm1d,k)=newsm;
+                    if(D_P(soilm1d,k)<floor) D_P(soilm1d,k)=floor;
+                }
+            } else if(integer[i]==natural && D_F(lai)>0.7f) {
+                float cropsm=B(M(1.2f,D_F(wilt)),D_F(qmin));
+                float floor=M(M(cropsm,naturalarea),0.4f);
+                for(int k=0;k<integer[3*n+i];++k) {
+                    if(D_P(soilm1d,k)<floor) D_P(soilm1d,k)=floor;
                 }
             }
         }
@@ -292,13 +345,13 @@ extern "C" __global__ void ruc_driver_epilogue(
         D_F(snow)=M(D_F(snwe),1000.0f); D_F(snowh)=D_F(snhei);
         D_F(canwat)=M(D_F(canwatr),1000.0f); D_F(mavail)=D_F(lmavail);
         D_F(sfcevp)=A(D_F(sfcevp),M(D_F(qfx),dt)); D_F(grdflx)=M(-1.0f,D_F(s));
-        D_F(snowc)=D_F(snowfrac)>0.0f && D_F(xice)>=0.5f ? M(D_F(snowfrac),D_F(xice)):D_F(snowfrac);
+        D_F(snowc)=D_F(snowfrac)>0.0f && D_F(xice)>=xice_threshold ? M(D_F(snowfrac),D_F(xice)):D_F(snowfrac);
         D_F(rhosnf)=D_F(rhosnfall);
         D_F(sfcevp)=A(D_F(sfcevp),M(D_F(qfx),dt));
     }
     D_CHECK_OUTPUT
     float fraction=D_F(xice);
-    bool component=fraction>=0.5f && fraction<=1.0f;
+    bool component=fraction>=xice_threshold && fraction<=1.0f;
     REBLEND(alb,0.08f); REBLEND(emiss,0.98f);
     REBLEND(flhc,D_F(flhc_sea)); REBLEND(flqc,D_F(flqc_sea));
     REBLEND(cpm,D_F(cpm_sea)); REBLEND(cqs2,D_F(cqs2_sea));
@@ -320,6 +373,28 @@ extern "C" __global__ void ruc_driver_epilogue(
     float q2=D_F(cqs2)<1.0e-5f ? qlev:P_B(prox,P_Q(D_F(qfx),P_M(D_F(rho3d),D_F(cqs2))));
     q2=d_npmin(d_npmax(qsfcmr,qlev),d_npmax(d_npmin(qsfcmr,qlev),q2));
     D_F(q2)=d_npmin(d_saturation(D_F(psfc),t2),q2);
+    // ruc_2m_diagnostic = log_profile: the operational RAP/HRRR branch's
+    // module_sf_sfcdiags_ruclsm.F:150-179 (gpuwm.core.ruc_tier
+    // RUC_2M_DIAGNOSTIC_FORMS; host twin ruc_runtime._sfcdiags_ruclsm).
+    // dz1 is half the lowest layer, LSMRUC's conflx.
+    if(log_profile) {
+        float dz1=D_F(conflx);
+        float dT=P_B(D_F(t3d),D_F(soilt));
+        float dQ=P_B(qlev,qsfcmr);
+        if(dT>0.0f) {
+            float fh=d_npmin(d_npmax(P_B(1.0f,P_Q(dT,10.0f)),0.01f),1.0f);
+            float fac=P_Q(gfk_log(P_Q(P_A(2.0f,0.05f),P_A(0.05f,fh))),
+                          gfk_log(P_Q(P_A(dz1,0.05f),P_A(0.05f,fh))));
+            float t2a=P_A(D_F(soilt),P_M(fac,P_B(D_F(t3d),D_F(soilt))));
+            D_F(t2)=t2a; D_F(th2)=P_M(t2a,D_F(scale));
+        }
+        if(dQ>0.0f) {
+            float fh=d_npmin(d_npmax(P_B(1.0f,P_Q(dQ,0.003f)),0.01f),1.0f);
+            float fac=P_Q(gfk_log(P_Q(P_A(2.0f,0.05f),P_A(0.05f,fh))),
+                          gfk_log(P_Q(P_A(dz1,0.05f),P_A(0.05f,fh))));
+            D_F(q2)=P_A(qsfcmr,P_M(fac,P_B(qlev,qsfcmr)));
+        }
+    }
 }
 
 // The fields are written only when no check anywhere in the call failed:

@@ -50,6 +50,122 @@ def advect_gpu_identity() -> tuple[str, tuple[int, int]]:
             (device["major"], device["minor"]))
 
 
+# Byte identity is CERTIFIED on Blackwell and newer only: compute capability
+# 10.x (sm_100) and 12.x (sm_120) and later.  Ada, Ampere and Hopper run but
+# are not certified (ruling 2026-10-04).  So a receipt measured on an
+# older architecture is informational: it stays committed and is checked for
+# presence and format, but a kernel or fixture move that leaves it behind is
+# reported (UncertifiedReceiptStale, naming the commit that staled it) and
+# fails nothing.  A Blackwell receipt gates exactly as before.
+#
+# The breakage this prevents: b70a94a48 (the vert_order 5 ladder) moved every
+# advection entry point; 71be2bf27 recaptured the RTX 4090 and RTX 5090
+# receipts, and the H100 receipt, which no lane can reach, held the 2.8.6
+# receipt-pin test red on an architecture nobody certifies.
+CERTIFIED_MIN_COMPUTE_MAJOR = 10
+#: The receipt-index key that records which commit staled an uncertified
+#: receipt: {receipt file: {"staled_by": 40-hex commit, "pins": {pin: digest}}}.
+#: ``pins`` are the receipt's own digests that commit left behind ("fixture"
+#: for ``fixture_manifest_sha256``).  tools/advect_wrf471_oracle/
+#: recapture_receipt.py drops the record when it installs that receipt again.
+UNCERTIFIED_STALE_KEY = "uncertified_stale"
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+
+
+class UncertifiedReceiptStale(UserWarning):
+    """A receipt of an uncertified architecture trails the source or fixture."""
+
+
+def architecture_is_certified(compute_capability) -> bool:
+    """Blackwell and newer (ruling 2026-10-04); ``None`` (no card) is not."""
+    return (compute_capability is not None
+            and int(tuple(compute_capability)[0]) >= CERTIFIED_MIN_COMPUTE_MAJOR)
+
+
+def check_receipt_format(receipt: dict, fixture_dir: Path, modules, cases) -> None:
+    """Presence and format, for every receipt, certified or not."""
+    assert receipt.get("schema_version") == 1, receipt.get("schema_version")
+    assert isinstance(receipt.get("gpu"), str) and receipt["gpu"], receipt.get("gpu")
+    capability = receipt.get("compute_capability")
+    assert (isinstance(capability, list) and len(capability) == 2
+            and all(isinstance(part, int) for part in capability)), capability
+    for module in modules:
+        assert _HEX64.fullmatch(str(receipt["kernels"].get(module))), (receipt["gpu"], module)
+    assert _HEX64.fullmatch(str(receipt.get("fixture_manifest_sha256"))), receipt["gpu"]
+    assert (Path(fixture_dir) / receipt.get("words_directory", "gpu-words")).is_dir(), receipt["gpu"]
+    assert receipt.get("mutation_rejected") is True, receipt["gpu"]
+    for case in cases:
+        row = receipt["cases"][case.name]
+        assert _HEX64.fullmatch(str(row["words_sha256"])), (receipt["gpu"], case.name)
+        assert row["words_file"] and set(row["measurements"]) >= set(SUPPORTED_OUTPUTS), (
+            receipt["gpu"], case.name)
+
+
+def receipt_staleness(receipt: dict, fixture_dir: Path, modules) -> dict[str, tuple[str, str]]:
+    """``{pin: (recorded, current)}`` for each pin the receipt trails.
+
+    Kernel pins are the SHA-256 of exactly the source the default loader
+    compiles; ``"fixture"`` is the fixture's ``cases.json``.
+    """
+    from gpuwm.core.kernels import module_source
+    moved = {}
+    for module in modules:
+        current = hashlib.sha256(module_source(module).encode("utf-8")).hexdigest()
+        if receipt["kernels"][module] != current:
+            moved[module] = (receipt["kernels"][module], current)
+    manifest = sha256(Path(fixture_dir) / "cases.json")
+    if receipt["fixture_manifest_sha256"] != manifest:
+        moved["fixture"] = (receipt["fixture_manifest_sha256"], manifest)
+    return moved
+
+
+def _recorded_pin(receipt: dict, pin: str) -> str:
+    return receipt["fixture_manifest_sha256"] if pin == "fixture" else receipt["kernels"][pin]
+
+
+def check_uncertified_stale_records(index: dict, fixture_dir: Path, modules) -> dict:
+    """Every staleness record must be true; returns them by receipt file.
+
+    A record names an uncertified receipt the index selects, a full commit,
+    and digests the receipt still carries and the tree has left.  A record on
+    a Blackwell receipt would excuse a certified pin, and one that outlives a
+    recapture would name a staling that no longer holds: both fail here.
+    """
+    records = index.get(UNCERTIFIED_STALE_KEY, {})
+    selectable = set(index["cards"].values()) | set(index["architectures"].values())
+    for name, record in records.items():
+        assert name in selectable, f"{UNCERTIFIED_STALE_KEY} names {name}, which the index never selects"
+        receipt = json.loads((Path(fixture_dir) / name).read_text(encoding="ascii"))
+        assert not architecture_is_certified(receipt["compute_capability"]), (
+            f"{name} is a certified (Blackwell or newer) receipt; it gates and has no staleness record")
+        assert re.fullmatch(r"[0-9a-f]{40}", str(record.get("staled_by"))), (name, record.get("staled_by"))
+        moved = receipt_staleness(receipt, fixture_dir, modules)
+        assert record.get("pins"), name
+        for pin, digest in record["pins"].items():
+            assert digest == _recorded_pin(receipt, pin), (
+                f"{name}'s staleness record pins {pin} {str(digest)[:8]}, but the receipt now "
+                f"pins {_recorded_pin(receipt, pin)[:8]}: drop or rewrite the record")
+            assert pin in moved, (
+                f"{name}'s {pin} pin is current again; its staleness record must go")
+    return records
+
+
+def uncertified_stale_report(name: str, receipt: dict, moved: dict, record: dict | None) -> str:
+    """The informational line for an uncertified receipt that trails the tree."""
+    major, minor = receipt["compute_capability"]
+    recorded = (record or {}).get("pins", {})
+    parts = []
+    for pin, (was, now) in sorted(moved.items()):
+        cause = (f"staled by {record['staled_by'][:9]}" if pin in recorded
+                 else "staling commit not recorded under "
+                      f"{UNCERTIFIED_STALE_KEY!r} in gpu-receipts.json")
+        parts.append(f"{pin} {was[:8]} -> {now[:8]} ({cause})")
+    return (f"{name} ({receipt['gpu']}, sm_{major}{minor}) is informational, not a gate: "
+            "byte identity is certified on Blackwell and newer only (ruling 2026-10-04). "
+            f"It trails the tree: {'; '.join(parts)}. A capture on that card with "
+            "tools/advect_wrf471_oracle/recapture_receipt.py --install brings it current.")
+
+
 @dataclass(frozen=True)
 class AdvectOracleCase:
     name: str
@@ -223,6 +339,16 @@ def _vertical(case, name):
     return np.pad(values[:nz + 1], (0, max(0, nz + 1 - len(values)))).astype(np.float32)
 
 
+def advection_orders(metadata) -> dict[str, int]:
+    """The four WRF advection orders a case runs, WRF's Registry defaults
+    (h 5, v 3) where its metadata names none; the native header and the
+    CUDA launchers both read them so one case means one configuration."""
+    return {"h_mom_adv_order": int(metadata.get("h_mom_adv_order", 5)),
+            "v_mom_adv_order": int(metadata.get("v_mom_adv_order", 3)),
+            "h_sca_adv_order": int(metadata.get("h_sca_adv_order", 5)),
+            "v_sca_adv_order": int(metadata.get("v_sca_adv_order", 3))}
+
+
 def write_fortran_input(case: AdvectOracleCase, routine: str, path: Path) -> np.ndarray:
     """Serialize the real argument arrays using the fixed Fortran stream ABI."""
     validate_case(case)
@@ -235,11 +361,14 @@ def write_fortran_input(case: AdvectOracleCase, routine: str, path: Path) -> np.
         flags |= (1 << 4) | (1 << 5)
     if m["open_y"] and not m["specified"]:
         flags |= (1 << 6) | (1 << 7)
+    orders = advection_orders(m)
     header = np.asarray([
         PROTOCOL_VERSION, mode, 1, nx + 1, 1, ny + 1, 1, nz + 1,
         -3, nx + 4, -3, ny + 4, 1, nz + 1,
         1, nx + 1, 1, ny + 1, 1, nz + 1,
-        1, 5, 3, 5, 3, flags, int(mode >= 5),
+        1, orders["h_mom_adv_order"], orders["v_mom_adv_order"],
+        orders["h_sca_adv_order"], orders["v_sca_adv_order"],
+        flags, int(mode >= 5),
     ], dtype="<i4")
     scalars = np.asarray([1.0 / m["dx"], 1.0 / m["dy"], m["dt"]], dtype="<f4")
     a = case.inputs
@@ -311,19 +440,25 @@ def advect_port_outputs(case: AdvectOracleCase, *, variant="production") -> dict
     coord = SimpleNamespace(**{key: a[key] for key in ("rdnw", "rdn", "fnm", "fnp", "c1h", "c2h")})
     m = case.metadata
     common = dict(open_x=bool(m["open_x"]), open_y=bool(m["open_y"]), has_msf=True)
+    orders = advection_orders(m)
+    if orders["h_mom_adv_order"] != 5 or orders["h_sca_adv_order"] != 5:
+        raise ValueError(f"{case.name}: the launchers carry WRF's 5th-order horizontal stencils only")
     output = {}
     tendencies = {}
+    # WRF advect_w keys its vertical order on v_sca_adv_order; u and v on
+    # v_mom_adv_order (module_advect_em.F).
     launchers = {
-        "advect_scalar": (launch_flux_div_scalar, "msftx"),
-        "advect_u": (launch_flux_div_u, "msfux"),
-        "advect_v": (launch_flux_div_v, "msfvx"),
-        "advect_w": (launch_flux_div_w, "msftx"),
+        "advect_scalar": (launch_flux_div_scalar, "msftx", orders["v_sca_adv_order"]),
+        "advect_u": (launch_flux_div_u, "msfux", orders["v_mom_adv_order"]),
+        "advect_v": (launch_flux_div_v, "msfvx", orders["v_mom_adv_order"]),
+        "advect_w": (launch_flux_div_w, "msftx", orders["v_sca_adv_order"]),
     }
-    for routine, (launch, map_name) in launchers.items():
+    for routine, (launch, map_name, vorder) in launchers.items():
         _, field, tend_name = ROUTINES[routine]
         tend = cp.asarray(_initial(case, tend_name, case.inputs[field].shape))
         launch(a[field], a["ru"], a["rv"], a["rw"], tend, coord,
-               m["dx"], m["dy"], msf=a[map_name], spec=bool(m["specified"]), **common)
+               m["dx"], m["dy"], msf=a[map_name], spec=bool(m["specified"]),
+               vorder=vorder, **common)
         tendencies[routine] = tend
         output[routine] = _pad3(case, cp.asnumpy(tend), sentinel=True)
     nz, ny, nx = case.shape
@@ -345,7 +480,8 @@ def advect_port_outputs(case: AdvectOracleCase, *, variant="production") -> dict
     fluxes = [cp.full(shape, np.nan, dtype=cp.float32) for shape in shapes]
     tend = cp.asarray(_initial(case, "tend_pd", case.shape))
     launch_pd_fluxes(a["scalar_pd"], a["q0"], a["ru"], a["rv"], a["rw"], a["muts"],
-                     coord, m["dx"], m["dy"], m["dt"], *fluxes, msft=a["msftx"], **common)
+                     coord, m["dx"], m["dy"], m["dt"], *fluxes, msft=a["msftx"],
+                     vorder=orders["v_sca_adv_order"], **common)
     launch_pd_renorm_apply(a["q0"], a["mu_old"], *fluxes, tend=tend, coord=coord,
                            dx=m["dx"], dy=m["dy"], dt=m["dt"], msft=a["msftx"], **common)
     output["advect_scalar_pd"] = _pad3(case, cp.asnumpy(tend), sentinel=True)
@@ -451,7 +587,7 @@ def control_source(module: str, variant: str) -> str:
         return source.replace("37.0f", "38.0f", 1)
     if variant not in ("wrf_flux", "wrf_flux_no_fma"):
         raise ValueError(variant)
-    prefix = "pd_" if module == "pd_advection" else ""
+    prefix = "pd_" if module in ("pd_advection", "pd_vertical_sl") else ""
     if prefix:
         center5 = "0.6166666746139526f * (q0 + qm1) - 0.13333334028720856f * (qp1 + qm2) + 0.01666666753590107f * (qp2 + qm3)"
         dissip5 = "copysignf(1.0f, vel) * 0.01666666753590107f * ((qp2 - qm3) - 5.0f * (qp1 - qm2) + 10.0f * (q0 - qm1))"
@@ -480,7 +616,7 @@ def arithmetic_control(variant="production"):
     import gpuwm.core.dycore as dycore
     options = ("-std=c++17", "--fmad=false") if variant.endswith("no_fma") else ("-std=c++17",)
     modules = {name: cp.RawModule(code=control_source(name, variant), options=options)
-               for name in ("advection", "pd_advection", "openbc")}
+               for name in ("advection", "pd_advection", "pd_vertical_sl", "openbc")}
     originals = advect.get_kernel, moist.get_kernel, dycore.get_kernel
     def get_control(name, func):
         if name in modules:

@@ -40,7 +40,7 @@ from gpuwm import bridge_assets, bridges, mpas_mesh
 #: this produces the boundary series that mesh is driven by), so its
 #: absence made the cull's output a file nothing could run.
 MPAS_ARTIFACTS = ("rw_mpas_mesh", "rw_mpas_init", "rw_mpas_convert",
-                  "rw_mpas_lbc")
+                  "rw_mpas_lbc", "rw_mpas_geometry", "rw_mpas_hostprep")
 
 
 # ---------------------------------------------------------------------------

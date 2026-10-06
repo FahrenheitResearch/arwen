@@ -146,7 +146,8 @@ class Starter:
             from gpuwm.static.highres_production import parse_static_table
             config = parse_static_table(self.raw["static"], source=str(self.path),
                                         base_dir=authority.base_dir)
-            self.raw["static"]["highres"]["cache_root"] = str(config.cache_root.resolve())
+            if "highres" in self.raw["static"]:
+                self.raw["static"]["highres"]["cache_root"] = str(config.cache_root.resolve())
 
     def tables(self, dims):
         raw = copy.deepcopy(self.raw)
@@ -578,7 +579,7 @@ def _tiles_tables(authority, mode):
         highres = parse_static_table(
             raw["static"], source=str(authority.source),
             base_dir=authority.base_dir)
-        if highres is not None:
+        if highres is not None and "highres" in raw["static"]:
             raw["static"]["highres"]["cache_root"] = str(highres.cache_root.resolve())
     rebased = copy.deepcopy(raw)
     raw["tiles"] = {**configured, "mode": mode, "store": "host"}

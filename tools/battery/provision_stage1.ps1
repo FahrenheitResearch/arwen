@@ -113,6 +113,9 @@ $Manifest = @(
     # `rw_wrfbatch.exe` is the one the render law names.
     'tools/rustwx/target/release/netcdf_writer.dll'
     'tools/rustwx/target/release/obs_regrid.dll'
+    # The isobaric-height reader the tracker, RO operator and
+    # verification maps read heights through (tests/test_isobaric_bridge.py).
+    'tools/rustwx/target/release/rw_isobaric.dll'
     'tools/rustwx/target/release/rw_asos.exe'
     'tools/rustwx/target/release/rw_ensbatch.exe'
     'tools/rustwx/target/release/rw_fetch.exe'

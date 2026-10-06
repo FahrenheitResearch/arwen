@@ -712,15 +712,19 @@ def test_a_chain_review_answers_what_the_chain_answers(tmp_path, stem, edit, out
 
 GRID = {"mass_shape": [3, 4]}
 
-#: Digests of the contracts the two Python tables produced at e3ac018cb, for
-#: this grid and evidence: canonical JSON, then JSON in insertion order.
+#: Digests of the contracts for this grid and evidence. GFS retains the
+#: Python table at e3ac018cb; HRRR includes the analyzed vegetation carrier.
+#: Canonical JSON, then JSON in insertion order.
 GOLDEN = {
     "gfs-pgrb2-0p25-physical-fields-v1": (
         "de7f6542d82cbec219d3ef0c5b5665fa86cfa33a24a84afb06117482389ce6d4",
         "2bcf3fa4c75907d5a43e7f321bbfca571bec01b58379b05c3180bef34d587bdf"),
     "hrrr-f00-f12-physical-fields-v1": (
-        "209229ba716323ca2eda73243ce5a7f17eacf6f99e8ef8a462df7809b163af40",
-        "52e7150bf845d4fcc74aa5f7355daf784a3f1c7a7fdeed13274ad82f8cf01b00"),
+        # lane/hrrr-statics commit 6a69b356f, merged by b3462fb33:
+        # retain analyzed surface VEGFRA (GRIB2 2/0/4) in percent on the
+        # mass grid, rather than replacing it with monthly climatology.
+        "153e9ae308606d21e33ae7d3c2fbc7ae33a52447bae11d9731cb2455d9a412fa",
+        "6afa85fede7db449f12ac0dc02fec200b3c3e5c4a7158580c74498d33a799ddf"),
 }
 
 
@@ -773,13 +777,42 @@ def test_the_import_paths_still_serve_the_same_contracts():
         GRID, evidence=_evidence(hrrr_physical_contract.CONTRACT_ID))
     assert field_contract_sha256(gfs) == GOLDEN[gfs_physical_contract.CONTRACT_ID][0]
     assert field_contract_sha256(hrrr) == GOLDEN[hrrr_physical_contract.CONTRACT_ID][0]
-    # The table digest the Python module bound as evidence, unchanged.
+    # The same statics commit adds VEGFRA to the bound parameter table.
     assert hrrr["evidence"]["hrrr_parameter_contract"] == (
-        "aeef4e0cb588e3051ee66b29b559443300fea83f91f06f0f68a9fdb83acc7b52")
+        "9036da53e6bd39b5393da1cafb9a2164271386648920a2b70e3ee01e28011259")
     # Evidence names the document that defines the contract.
     assert gfs_physical_contract.contract_sha256() == hashlib.sha256(
         (REPO / "gpuwm" / "authorities" / "rw-wps-gfs-pgrb2-0p25.physical-fields.json").read_bytes()
     ).hexdigest()
+
+
+def test_the_analyzed_vegetation_carrier_keeps_its_percent_semantics():
+    """The statics addition declares analyzed percent, not monthly climatology."""
+    import numpy as np
+    from gpuwm.ensemble import hrrr_physical_contract
+    from gpuwm.ensemble.physical_fields import native_contract_document
+    from gpuwm.ingest.vegetation import initial_vegetation_fraction
+
+    document = native_contract_document(hrrr_physical_contract.CONTRACT_ID)
+    assert document["parameters"]["VEGFRA"] == [[2, 0, 4], "percent"]
+    expected = {
+        "units": "percent", "dimensions": ["y", "x"], "basis": "scalar",
+        "source_fields": ["VEGFRA"],
+        "operation": "Bilinear interpolation of analyzed vegetation fraction "
+                     "in the source projection; percent units unchanged.",
+    }
+    assert document["arrays"]["field__VEGFRA"] == expected
+    contract = hrrr_physical_contract.hrrr_physical_field_contract(
+        GRID, evidence=_evidence(hrrr_physical_contract.CONTRACT_ID))
+    assert contract["arrays"]["field__VEGFRA"] == expected
+
+    # An analyzed mass-grid field overrides a different monthly climatology
+    # and retains its values, including both endpoints, without rescaling.
+    analyzed = np.tile(np.array([0.0, 25.0, 75.0, 100.0], np.float32), (3, 1))
+    static = {"LANDMASK": np.ones((3, 4)), "GREENFRAC": np.zeros((12, 3, 4))}
+    assert initial_vegetation_fraction(
+        SimpleNamespace(fields={"VEGFRA": analyzed}), static,
+        datetime(2026, 1, 1, tzinfo=timezone.utc)) is analyzed
 
 
 def test_the_native_axes_a_document_repeats_are_the_ingest_constants():

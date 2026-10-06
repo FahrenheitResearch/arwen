@@ -85,6 +85,12 @@ _URBAN = (
     "the urban canopy models (sf_urban_physics), a component 2.8.0 did not "
     "have, off at its none option in every template (f21eedce3)")
 PHYSICS_CHANGES_SINCE_280 = {
+    "templates.thompson-mp8-mynn-mynn-ruc-monthly-rrtmg-legacy-v1": (
+        "a new named configuration selects the prescribed monthly surface "
+        "fields and fractional sea ice; earlier templates keep their settings"),
+    "templates.thompson-mp8-mynn-mynn-ruc-monthly-solar-rrtmg-legacy-v1": (
+        "a new named configuration adds sun-angle albedo to the monthly "
+        "surface fields; earlier templates keep their settings"),
     "components.pbl.options.mynn": (
         "mixing length 2 and local scalar diffusion are implemented; "
         "cold initialization now passes vapor to the WRF moments solve"),
@@ -151,6 +157,10 @@ PHYSICS_CHANGES_SINCE_280 = {
     "parameters.use_wudapt_lcz": (
         "an urban knob only the three urban canopy options read "
         "(f21eedce3)"),
+    "parameters.fractional_seaice": (
+        "WRF's sea-ice threshold select, declared but not implemented at "
+        "2.8.0, now implemented for the RUC LSM and off at 0, the 0.5 "
+        "threshold every earlier RUC run used (lane/286-veg-albedo-seaice)"),
     "parameters.slope_rad": (
         "slope-aware radiation, declared but not implemented at 2.8.0, now "
         "implemented and off at 0 (the namelist gaps, cb8af5ccb)"),
@@ -183,14 +193,44 @@ PHYSICS_CHANGES_SINCE_280 = {
         "a LAKEMASK column is bypassed only when the lake model is selected "
         "(module_sf_ruclsm.F:824), so with sf_lake_physics = 0 it runs the "
         "water branch instead of never being advanced; the option's restart "
-        "algorithm identity advanced to v2 with it, and to v3 with the "
-        "SOILPROP lineage default (ruc_soilprop), whose admitted names "
-        "wrf_45 and wrf_461 the option declares"),
+        "algorithm identity advanced to v2 with it, to v3 with the SOILPROP "
+        "lineage default (ruc_soilprop) and to v4 with the irrigation "
+        "default (ruc_irrigation), whose admitted names wrf_45 and wrf_461 "
+        "the option declares, as it declares ruc_qvg_cold_start's air and "
+        "wrf and ruc_2m_diagnostic's flux and log_profile; v5 with the "
+        "snow default (ruc_snow), whose admitted names are wrf_45 and "
+        "wrf_461; v6 binds the restored generic irrigation and snow "
+        "defaults, wrf_461, so a v5 header which omitted wrf_45 cannot "
+        "silently resume as wrf_461"),
+    "parameters.mynn_sfclay_variant": (
+        "the MYNN surface layer's generation, a knob 2.8.0 did not have: "
+        "the default wrf_461 is the WRF v4.6.1 form every earlier build "
+        "ran; gsl_wrf39 selects the GSL WRF 3.9 fork's form by name"),
     "parameters.ruc_soilprop": (
         "LSMRUC SOILPROP's soil-water lineage, a knob 2.8.0 did not have: "
         "the default wrf_45 diffusivity over the moisture above the residual "
         "replaces the WRF v4.6.1 form over total porosity, which stays "
         "selectable as wrf_461; every RUC configuration changes answers"),
+    "parameters.thompson_version": (
+        "the aerosol-aware scheme's source generation; wrf_461 preserves "
+        "the previous default and wrf_39_noaa selects the fork's own tables "
+        "and process rules"),
+    "parameters.thompson_fork_snow_fall": (
+        "the fork's singular melting-snow fall speed; the default blend "
+        "keeps the later rain-share form and the fork defect is explicit"),
+    "parameters.bl_mynn_cloud_tendency_form": (
+        "paired source cloud conservation defects, explicitly selected and off at wrf_461"),
+    "parameters.bl_mynn_version": (
+        "the MYNN generation, a knob 2.8.0 did not have: wrf_461 (default) "
+        "is WRF v4.6.1, gsd_41 the GSD MYNN v4.1 of the NOAA-EMC WRF 3.9 "
+        "branch, selected by a WRF 3.x MYNN namelist"),
+    "parameters.bl_mynn_gsd41_unsquared_qtke": (
+        "the gsd_41 option-2 TKE conversion as written, a knob 2.8.0 did "
+        "not have, off at false"),
+    "templates.thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1": (
+        "the explicit GSD v4.1 PBL, GSL surface, aerosol Thompson and "
+        "legacy radiation composition, a template 2.8.0 did not have; "
+        "generic compositions keep their original switch sets"),
     "parameters.mosaic_lu": (
         "RUC fractional land-use mosaic, implemented and off at 0"),
     "parameters.mosaic_soil": (
@@ -213,6 +253,67 @@ PHYSICS_CHANGES_SINCE_280 = {
     "parameters.spp_pbl": (
         "WRF's stochastic parameter perturbation for MYNN, a knob 2.8.0 did "
         "not have, off at 0"),
+    "parameters.diff_6th_form": (
+        "the sixth-order filter's source form, a knob 2.8.0 did not have, "
+        "at wrf_461, the filter every earlier build ran"),
+    "parameters.upper_wind_limiter_form": (
+        "the NOAA WRFV3.9 saved-wind limiter, absent from earlier builds, "
+        "off under wrf_461"),
+    "parameters.diff_6th_factor2": (
+        "the NOAA WRFV3.9 fork's moisture filter factor, a knob 2.8.0 did "
+        "not have, unset and refused outside the fork form"),
+    "parameters.mp_zero_out": (
+        "WRF's post-microphysics zero-out, a knob 2.8.0 did not have, off "
+        "at 0"),
+    "parameters.mp_zero_out_thresh": (
+        "WRF's zero-out threshold, read only with mp_zero_out > 0"),
+    "parameters.mp_zero_out_all": (
+        "WRF v4.6.1's zero-out array switch, read only with mp_zero_out > 0"),
+    "parameters.v_sca_adv_order": (
+        "WRF's vertical scalar advection order (lane/286-vadv5), a knob "
+        "2.8.0 did not have, at 3 the ladder every earlier build ran"),
+    "parameters.v_mom_adv_order": (
+        "WRF's vertical momentum advection order (lane/286-vadv5), a knob "
+        "2.8.0 did not have, at 3 the ladder every earlier build ran"),
+    "parameters.h_mom_adv_order": (
+        "WRF's horizontal momentum advection order (lane/286-vadv5), "
+        "declared at 5, the flux5 stencil every earlier build ran"),
+    "parameters.ruc_snow": (
+        "the RUC snow scheme's lineage, a knob 2.8.0 did not have: the "
+        "generic default wrf_461 keeps the v4.6.1 form every earlier build "
+        "ran; the HRRR namelist importer and recipe select the WRF v4.0-4.5 "
+        "form wrf_45 explicitly"),
+    "parameters.ruc_2m_diagnostic": (
+        "SFCDIAGS_RUCLSM's 2 m form, a knob 2.8.0 did not have, at public "
+        "WRF's flux form by default; log_profile adds the operational "
+        "RAP/HRRR branch's logarithmic block by name"),
+    "parameters.ruc_qvg_cold_start": (
+        "LSMRUC's QVG cold start, a knob 2.8.0 did not have, at public "
+        "WRF's form by default; air starts the ground vapour from the "
+        "lowest-level air as the operational RAP/HRRR branch's fallback "
+        "does, by name"),
+    "parameters.ruc_irrigation": (
+        "LSMRUC's irrigation rule by WRF lineage, a knob 2.8.0 did not "
+        "have: the generic default wrf_461 keeps the WRF v4.6.1 per-step "
+        "relaxation; the HRRR namelist importer and recipe select the "
+        "crop-fraction-scaled floor wrf_45 explicitly"),
+    "parameters.swint_opt": (
+        "WRF's surface shortwave interpolation between radiation calls "
+        "(lane/286-aer-swint), implemented at 1; 0 holds the radiation "
+        "call's fluxes, as every earlier build did"),
+    "parameters.rrtmg_cloud_optics_form": (
+        "the legacy RRTMG cloud wrapper source form; wrf_461 is the "
+        "wrapper every earlier build ran, noaa_wrf39 is source-selected"),
+    "parameters.rrtmg_smoke_manifest": (
+        "prescribed source smoke profiles bind their manifest and member "
+        "contents; empty remains the prior radiation input path"),
+    "parameters.aer_opt": (
+        "WRF's radiation aerosol input (lane/286-aer-swint), implemented at "
+        "3 for the legacy RRTMG shortwave; 0 runs zero aerosol, as every "
+        "earlier build did"),
+    "parameters.alb_sol": (
+        "sun-angle-dependent land albedo, implemented at 1; 0 preserves "
+        "the albedo carrier every earlier build used"),
 }
 
 _WDM6_SUITE = "wdm6-mp16-ysu-mm5-noah-grell-freitas-rte-rrtmgp-v1"
@@ -346,10 +447,10 @@ def _move_citation(text: str, old: str, new: str) -> str:
     (("components", "pbl", "options", "shinhong", "warnings", 1),
      "kernels/shinhong.cu:1429", "kernels/shinhong.cu:1371"),
     (("components", "turbulence", "options", "tke-1.5-order", "warnings", 0),
-     "gpuwm/core/dycore.py:1247", "gpuwm/core/dycore.py:1041"),
+     "gpuwm/core/dycore.py:1267", "gpuwm/core/dycore.py:1041"),
     (("components", "turbulence", "options", "smagorinsky-3d", "warnings",
       0),
-     "gpuwm/core/dycore.py:1341", "gpuwm/core/dycore.py:1131"),
+     "gpuwm/core/dycore.py:1361", "gpuwm/core/dycore.py:1131"),
 ])
 def test_a_citation_edit_keeps_the_physics_identity(path, old, new):
     registry = physics_registry()
@@ -1086,8 +1187,9 @@ def test_added_aerosol_refusals_preserve_only_admitted_prior_options():
 def test_without_the_configuration_an_added_knob_is_named(monkeypatch):
     """Unknown values cannot be shown off: name every knob added or
     implemented since 2.8.0, including A179's registered IEVA knob,
-    lane/282-namelist-tolerance's diff_opt and mix_full_fields, and terrain
-    drag."""
+    lane/282-namelist-tolerance's diff_opt and mix_full_fields, terrain
+    drag, WRF's three advection orders, and the radiation-driver options
+    swint_opt, aer_opt, alb_sol and source cloud/smoke controls."""
     row = next(row for row in _receipts_2492999cd()
                if row["profile"] == PROFILE)
     _added_knobs(monkeypatch)
@@ -1099,13 +1201,7 @@ def test_without_the_configuration_an_added_knob_is_named(monkeypatch):
         "registry physics of parameters.use_rap_aero_icbc (absent from the prepared registry)", *[
         f"registry physics of parameters.{knob} (absent from the prepared "
         "registry)"
-        for knob in ("diff_opt", "gwd_opt", "lake_min_elev",
-                     "lakedepth_default", "mix_full_fields", "mosaic_cat",
-                     "mosaic_urban_canopy", "sf_lake_physics",
-                     "sf_surface_mosaic", "slope_rad", "spp_conv", "spp_pbl",
-                     "topo_shading",
-                     "topo_wind", "use_lakedepth", "zadvect_implicit",
-                     "zadvect_implicit_variant")])
+        for knob in ('aer_opt', 'alb_sol', 'bl_mynn_cloud_tendency_form', 'bl_mynn_gsd41_unsquared_qtke', 'bl_mynn_version', 'diff_6th_factor2', 'diff_6th_form', 'diff_opt', 'fractional_seaice', 'gwd_opt', 'h_mom_adv_order', 'lake_min_elev', 'lakedepth_default', 'mix_full_fields', 'mosaic_cat', 'mosaic_urban_canopy', 'mp_zero_out', 'mp_zero_out_all', 'mp_zero_out_thresh', 'rrtmg_cloud_optics_form', 'rrtmg_smoke_manifest', 'sf_lake_physics', 'sf_surface_mosaic', 'slope_rad', 'spp_conv', 'spp_pbl', 'swint_opt', 'thompson_fork_snow_fall', 'thompson_version', 'topo_shading', 'topo_wind', 'upper_wind_limiter_form', 'use_lakedepth', 'v_mom_adv_order', 'v_sca_adv_order', 'zadvect_implicit', 'zadvect_implicit_variant')])
 
 
 def test_a_new_receipt_resolves_to_its_own_parts():

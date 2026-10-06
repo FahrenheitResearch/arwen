@@ -23,6 +23,23 @@ class MemberOutputCapture:
         estimate = getattr(owner, "capturework_bytes", None)
         return None if estimate is None else int(estimate(metadata))
 
+    def history_committed(self, proof, *, grid_id, episode=0, valid_time):
+        """Register a durable raw identity before a consumer can retire it.
+
+        The owner decides whether the history is its own to ledger: this
+        capture's flag only says the writer must write it (simulated radar
+        needs histories the request does not retain).
+        """
+        owner = getattr(self.callback, "__self__", self.callback)
+        register = getattr(owner, "history_committed", None)
+        if self.keep_member_files and callable(register):
+            return register(proof, member_id=self.member_id, grid_id=grid_id,
+                episode=episode, valid_time=valid_time)
+
+    def history_committer(self, *, grid_id, episode=0):
+        return lambda proof, valid_time: self.history_committed(proof,
+            grid_id=grid_id, episode=episode, valid_time=valid_time)
+
     def submit(self, *, state, streamed, metadata, refl_field, valid_time,
                grid_id, episode=0, clock=None):
         result = self.callback(state=state, streamed=streamed, metadata=metadata,

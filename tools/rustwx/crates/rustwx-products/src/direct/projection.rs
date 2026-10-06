@@ -1,7 +1,7 @@
 use rustwx_core::GridProjection;
 use rustwx_render::{
     BasemapDetail, DomainFrame, DomainFrameSource, GeographicClipBounds, InverseRasterProjection,
-    ProductVisualMode, ProjectedMap, ProjectedMapBuildOptions,
+    ProductVisualMode, ProjectedFrameSource, ProjectedMap, ProjectedMapBuildOptions,
 };
 
 use crate::shared_context::static_chrome_scale;
@@ -42,7 +42,58 @@ pub fn build_projected_map_with_projection(
         rustwx_render::build_projected_map_with_options(lat_deg, lon_deg, &options)?;
     projected.inverse_raster_projection =
         inverse_raster_projection_for_latlon_mesh(projection, frame_bounds, lat_deg, lon_deg);
+    drop_layers_the_frame_is_too_large_for(&mut projected, bounds);
     Ok(projected)
+}
+
+/// The short side of a frame, in km, from its geographic bounds.
+pub fn frame_short_side_km(bounds: (f64, f64, f64, f64)) -> f64 {
+    const KM_PER_DEG: f64 = 111.32;
+    let mid_lat = (0.5 * (bounds.2 + bounds.3)).to_radians();
+    let height = (bounds.3 - bounds.2).abs() * KM_PER_DEG;
+    let width = longitude_bounds_span_deg(bounds) * KM_PER_DEG * mid_lat.cos().abs();
+    width.min(height)
+}
+
+/// A planned frame drops the county mesh when its short side is past the
+/// layer table's county limit.
+fn drop_layers_the_frame_is_too_large_for(projected: &mut ProjectedMap, bounds: (f64, f64, f64, f64)) {
+    if !planned_grid_frame(bounds) {
+        return;
+    }
+    let layers = &rustwx_render::LayoutTable::builtin().layers;
+    if !layers.counties_visible(frame_short_side_km(bounds)) {
+        projected
+            .lines
+            .retain(|line| line.role != rustwx_render::LineworkRole::County);
+    }
+}
+
+/// The place labels a planned frame carries: the catalog density the layer
+/// table names for the frame's short side.  `None` under fixed layout.
+pub fn planned_place_labels(
+    bounds: (f64, f64, f64, f64),
+) -> Option<crate::places::PlaceLabelOverlay> {
+    if !planned_grid_frame(bounds) {
+        return None;
+    }
+    let row = rustwx_render::LayoutTable::builtin()
+        .layers
+        .place_row(frame_short_side_km(bounds))?;
+    let density = match row.tier.as_str() {
+        "dense" => crate::places::PlaceLabelDensityTier::Dense,
+        "major_and_aux" => crate::places::PlaceLabelDensityTier::MajorAndAux,
+        "major" => crate::places::PlaceLabelDensityTier::Major,
+        _ => return None,
+    };
+    Some(crate::places::PlaceLabelOverlay {
+        density,
+        included_place_slugs: Vec::new(),
+        frame_plan: Some(crate::places::PlaceFramePlan {
+            max_count: row.max_count,
+            min_center_spacing_km: row.min_spacing_km,
+        }),
+    })
 }
 
 /// The options (and the frame bounds they were derived from) that
@@ -66,7 +117,13 @@ fn presentation_projected_map_options(
         target_ratio,
     );
     let mut options = ProjectedMapBuildOptions::from_bounds(frame_bounds, target_ratio);
-    if straight_western_projection_enabled(bounds) {
+    let planned_frame = planned_grid_frame(bounds);
+    if planned_frame {
+        // The frame is the grid's own projected box: the canvas was sized
+        // to it, so there is nothing to pad and no lat/lon rectangle to
+        // widen it past the grid's edges.
+        options.domain.frame_source = ProjectedFrameSource::FullDomain;
+    } else if straight_western_projection_enabled(bounds) {
         options = options
             .with_geographic_grid_intersection_frame(frame_bounds)
             .with_natural_frame_aspect();
@@ -80,8 +137,69 @@ fn presentation_projected_map_options(
         }
     }
     options = options.with_basemap_detail(basemap_detail_for_bounds(frame_bounds));
-    options.domain.pad_fraction = presentation_pad_fraction_for_bounds(frame_bounds);
+    options.domain.pad_fraction = if planned_frame {
+        0.0
+    } else {
+        presentation_pad_fraction_for_bounds(frame_bounds)
+    };
     (options, frame_bounds)
+}
+
+/// Whether this frame is laid out by the canvas plan: auto layout is on
+/// and the domain is regional.  A global frame keeps its padded Robinson
+/// silhouette.
+fn planned_grid_frame(bounds: (f64, f64, f64, f64)) -> bool {
+    rustwx_render::auto_layout_active() && !is_global_scale_domain(bounds)
+}
+
+/// The grid's own projected aspect (width over height) in the projection
+/// its panels are drawn in: the frame a planned canvas is sized from.
+pub fn natural_grid_aspect(
+    lat_deg: &[f32],
+    lon_deg: &[f32],
+    projection: Option<&GridProjection>,
+    bounds: (f64, f64, f64, f64),
+) -> Result<f64, Box<dyn std::error::Error>> {
+    if is_global_scale_domain(bounds) {
+        return Ok(GLOBAL_FRAME_ASPECT);
+    }
+    let options = if full_domain_projected_frame_enabled(projection, bounds) {
+        full_domain_projected_map_options(lat_deg, lon_deg, projection, bounds, 1.0)
+    } else {
+        presentation_projected_map_options(projection, bounds, 1.0).0
+    };
+    let mut domain = options.domain;
+    domain.frame_source = ProjectedFrameSource::FullDomain;
+    domain.pad_fraction = 0.0;
+    domain.fit_to_target_aspect = false;
+    let projected = rustwx_render::build_projected_domain(lat_deg, lon_deg, &domain)?;
+    let dx = projected.extent.x_max - projected.extent.x_min;
+    let dy = projected.extent.y_max - projected.extent.y_min;
+    if dx.is_finite() && dy.is_finite() && dx > 0.0 && dy > 0.0 {
+        Ok(dx / dy)
+    } else {
+        Err("the grid's projected extent is empty".into())
+    }
+}
+
+/// A global frame's fixed aspect: Robinson is about twice as wide as tall.
+const GLOBAL_FRAME_ASPECT: f64 = 2.0;
+
+/// Plan and register the canvas for a grid when auto layout is on, and
+/// return it.  `None` in fixed mode: the caller keeps its pixel size.
+pub fn plan_canvas_for_grid(
+    lat_deg: &[f32],
+    lon_deg: &[f32],
+    projection: Option<&GridProjection>,
+    bounds: (f64, f64, f64, f64),
+) -> Result<Option<rustwx_render::CanvasPlan>, Box<dyn std::error::Error>> {
+    let rustwx_render::LayoutMode::Auto { class, scale } = rustwx_render::layout_mode() else {
+        return Ok(None);
+    };
+    let aspect = natural_grid_aspect(lat_deg, lon_deg, projection, bounds)?;
+    let plan = rustwx_render::LayoutTable::builtin().plan_map(aspect, class, scale);
+    rustwx_render::register_canvas_plan(plan);
+    Ok(Some(plan))
 }
 
 /// Where `(lat, lon)` degree pairs land in the projected space
@@ -266,7 +384,11 @@ fn full_domain_projected_map_options(
     }
     let basemap_bounds = latlon_mesh_bounds(lat_deg, lon_deg).unwrap_or(bounds);
     options = options.with_basemap_detail(basemap_detail_for_bounds(basemap_bounds));
-    options.domain.pad_fraction = full_domain_projected_frame_pad_fraction();
+    options.domain.pad_fraction = if planned_grid_frame(bounds) {
+        0.0
+    } else {
+        full_domain_projected_frame_pad_fraction()
+    };
     options
 }
 
@@ -284,6 +406,7 @@ fn build_full_domain_projected_map_with_projection(
         rustwx_render::build_projected_map_with_options(lat_deg, lon_deg, &options)?;
     projected.inverse_raster_projection =
         inverse_raster_projection_for_latlon_mesh(projection, basemap_bounds, lat_deg, lon_deg);
+    drop_layers_the_frame_is_too_large_for(&mut projected, bounds);
     Ok(projected)
 }
 
@@ -859,9 +982,15 @@ fn stabilize_presentation_parallel(lat_deg: f64) -> f64 {
     }
 }
 
+/// The north-up Mercator presentation for western domains.  Off unless
+/// `RUSTWX_STRAIGHT_WEST_PROJECTION` asks for it: chosen by where a domain
+/// sat on the Earth, it drew a Lambert grid as a slanted quadrilateral
+/// with canvas-colour wedges in its corners, and it was the only way a
+/// western domain reached the whitespace crop.  The canvas is now sized
+/// from the grid itself, so no location needs a different frame.
 fn straight_western_projection_enabled(bounds: (f64, f64, f64, f64)) -> bool {
-    let default = is_straight_western_projection_candidate(bounds);
-    env_flag_enabled("RUSTWX_STRAIGHT_WEST_PROJECTION", default)
+    env_flag_enabled("RUSTWX_STRAIGHT_WEST_PROJECTION", false)
+        && is_straight_western_projection_candidate(bounds)
 }
 
 fn is_straight_western_projection_candidate(bounds: (f64, f64, f64, f64)) -> bool {

@@ -12,6 +12,7 @@
 members = [
     "crates/netcdf-writer",
     "crates/obs-regrid",
+    "crates/obs-score",
     "crates/rustwx-calc",
     "crates/rustwx-contour",
     "crates/rustwx-core",
@@ -58,6 +59,7 @@ exclude = [
     "vendor/metrust",
     "vendor/netcrust",
     "vendor/netcrust/vendor/hdf5-reader",
+    "vendor/netcrust/vendor/netcdf-reader",
     "vendor/wx-core",
     "vendor/wx-field",
     "vendor/wx-math",
@@ -80,12 +82,11 @@ serde_json = "1"
 thiserror = "2"
 ureq = { version = "3", default-features = false, features = ["rustls-no-provider", "rustls-webpki-roots"] }
 
-# netcrust must resolve `hdf5-reader = "0.3"` to the vendored, production-
-# tested tree (vendor/netcrust/vendor/hdf5-reader), not the crates.io
-# package.  Patches only apply from the workspace root, so the pin lives
-# here, exactly as in the source workspace.
+# Direct registry dependencies use the same readers as netcrust's path
+# dependencies. The facade itself does not require a workspace patch.
 [patch.crates-io]
 hdf5-reader = { path = "vendor/netcrust/vendor/hdf5-reader" }
+netcdf-reader = { path = "vendor/netcrust/vendor/netcdf-reader" }
 
 [profile.release]
 lto = "thin"

@@ -14,6 +14,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+import gzip
+import hashlib
+import json
+import sys
+import types
 
 import numpy as np
 import pytest
@@ -37,6 +42,7 @@ def _declaration(**overrides):
     raw = {
         "family": "lambert_conformal",
         "wind_basis": "grid_relative_with_rotation",
+        "same_grid_pairing": "identity",
         "parameters": parameters,
     }
     raw.update(overrides)
@@ -47,6 +53,15 @@ def test_grid_declaration_normalizes_and_fails_closed():
     declared = _declaration()
     assert declared["family"] == "lambert_conformal"
     assert declared["wind_basis"] == "grid_relative_with_rotation"
+    assert declared["same_grid_pairing"] == "identity"
+    assert "same_grid_pairing" not in _declaration(same_grid_pairing=None)
+    for value in (True, 1, "projected", "unknown"):
+        with pytest.raises(ValueError, match="same_grid_pairing"):
+            _declaration(same_grid_pairing=value)
+    with pytest.raises(ValueError, match="same_grid_pairing"):
+        ms._validate_grid_declaration(
+            {"family": "regular_latitude_longitude", "same_grid_pairing": "identity"},
+            "grib2")
 
     with pytest.raises(ValueError, match="unsupported mapping.grid.family"):
         ms._validate_grid_declaration({"family": "icosahedral"}, "grib2")
@@ -418,3 +433,384 @@ def test_load_mapping_accepts_and_normalizes_the_grid_block(tmp_path):
     loaded = ms.load_mapping(path)
     assert loaded["grid"]["family"] == "regular_latitude_longitude"
     assert loaded["grid"]["wind_basis"] == "earth_relative"
+
+
+# ---------------------------------------------------------------------------
+# The identity pairing (lane/286-fixed-step-grid): a target that IS the
+# declared source grid copies index for index.
+# ---------------------------------------------------------------------------
+
+
+def _declared_snapshot(parameters=None, *, same_grid_pairing="identity"):
+    parameters = dict(HRRR_PARAMETERS if parameters is None else parameters)
+    y_axis, x_axis = ms._projected_axes(parameters)
+    return Era5Snapshot(
+        valid_time=datetime(2026, 8, 15, 0),
+        levels_hpa=np.array([1000.0]),
+        latitude=y_axis, longitude=x_axis, fields={},
+        projection={
+            "family": "lambert_conformal",
+            "parameters": {
+                **parameters, "axis_unit_m": ms.PROJECTED_AXIS_UNIT_M,
+                **({"same_grid_pairing": same_grid_pairing}
+                   if same_grid_pairing is not None else {}),
+            },
+        },
+    )
+
+
+def _wps_target(nx=1799, ny=1059, *, ref_lat=38.5, ref_lon=-97.5,
+                dx=3000.0):
+    """The grid as its own namelist.wps spells it: the WPS sphere, centred."""
+
+    from gpuwm.static.lambert import LambertGrid
+
+    return LambertGrid(ref_lat=ref_lat, ref_lon=ref_lon, truelat1=38.5,
+                       truelat2=38.5, stand_lon=-97.5, dx=dx, dy=dx,
+                       e_we=nx + 1, e_sn=ny + 1)
+
+
+def _raw_projection(parameters, lat, lon):
+    """The pairing every target took before the identity route."""
+
+    grid = ms.declared_lambert_source_grid(parameters)
+    x, y = grid.latlon_to_ij(np.asarray(lat, dtype=np.float64),
+                             np.asarray(lon, dtype=np.float64))
+    unit = ms.PROJECTED_AXIS_UNIT_M
+    return ((np.asarray(y, dtype=np.float64) - 1.0) * float(parameters["dy_m"]) / unit,
+            (np.asarray(x, dtype=np.float64) - 1.0) * float(parameters["dx_m"]) / unit)
+
+
+@pytest.mark.parametrize("source_id", ["rap-native", "rrfs"])
+def test_unmarked_sources_keep_previous_mass_and_face_index_bytes(source_id):
+    """An exact projected grid without selection keeps the old indices.
+
+    Both sources would have taken the all-source snap. The unadjusted WPS
+    sphere gives a measurable fractional-index drift for the source's own
+    full grid, so equality does not pass through an inactive geometric arm.
+    """
+    from gpuwm.ingest.source_coverage import lattice_identity
+    from gpuwm.source_adapters import get_source_adapter
+    from gpuwm.source_authorities import packaged_authorities
+    from gpuwm.static.lambert import LambertGrid
+    from gpuwm.static.projection import EARTH_RADIUS_M
+
+    adapter = get_source_adapter(source_id)
+    path = packaged_authorities(adapter.packaged_profile)["mapping"]
+    mapping = ms.load_mapping(path)
+    declaration = mapping["grid"]
+    assert "same_grid_pairing" not in declaration
+    parameters = declaration["parameters"]
+    target = LambertGrid(
+        ref_lat=float(parameters["lat1"]), ref_lon=float(parameters["lon1"]),
+        truelat1=float(parameters["latin1"]), truelat2=float(parameters["latin2"]),
+        stand_lon=float(parameters["lov"]),
+        dx=float(parameters["dx_m"]), dy=float(parameters["dy_m"]),
+        e_we=int(parameters["nx"]) + 1, e_sn=int(parameters["ny"]) + 1,
+        known_x=1.0, known_y=1.0)
+    snapshot = _declared_snapshot(parameters, same_grid_pairing=None)
+    transform, _ = source_coordinate_transform(snapshot)
+    for latitude, longitude in (target.latlon_mass(), target.latlon_u(), target.latlon_v()):
+        actual = transform(latitude, longitude)
+        previous = _raw_projection(parameters, latitude, longitude)
+        for got, expected in zip(actual, previous):
+            np.testing.assert_array_equal(got.view(np.uint64), expected.view(np.uint64))
+    latitude, longitude = target.latlon_mass()
+    raw_y, raw_x = _raw_projection(parameters, latitude, longitude)
+    y_index = raw_y * ms.PROJECTED_AXIS_UNIT_M / float(parameters["dy_m"])
+    x_index = raw_x * ms.PROJECTED_AXIS_UNIT_M / float(parameters["dx_m"])
+    assert lattice_identity(
+        y_index, x_index, nx=int(parameters["nx"]), ny=int(parameters["ny"]),
+        sphere_scale=float(parameters["earth_radius_m"]) / EARTH_RADIUS_M) is not None
+    from gpuwm.ingest.horiz import declared_grid_pairing
+    assert declared_grid_pairing(declaration, target) is None
+
+
+def test_unmarked_shared_geometry_keeps_previous_coverage_refusal():
+    """Identical published geometry does not select another source's route."""
+    from types import SimpleNamespace
+    from gpuwm.source_adapters import get_source_adapter
+    from gpuwm.source_coverage import config_source_coverage_refusal
+
+    experiment = SimpleNamespace(
+        projection=SimpleNamespace(
+            map_proj="lambert", ref_lat=38.5, ref_lon=-97.5,
+            truelat1=38.5, truelat2=38.5, stand_lon=-97.5),
+        root=SimpleNamespace(run=SimpleNamespace(nx=1799, ny=1059, dx=3000.0)))
+    assert get_source_adapter("rrfs").coverage_window is get_source_adapter("hrrr-prs").coverage_window
+    assert get_source_adapter("rrfs").same_grid_pairing is None
+    assert config_source_coverage_refusal(experiment, "hrrr-prs") is None
+    refusal = config_source_coverage_refusal(experiment, "rrfs")
+    assert refusal is not None and "cell corners are outside" in refusal
+
+
+def test_only_declared_source_rows_and_mappings_select_exact_grid_pairing():
+    from gpuwm.source_adapters import get_source_adapter, source_adapters
+    from gpuwm.source_authorities import packaged_authorities
+
+    selected = {adapter.source_id for adapter in source_adapters()
+                if adapter.same_grid_pairing == "identity"}
+    assert selected == {"hrrr", "hrrr-prs", "hrrr-native"}
+    for source in ("hrrr-prs", "hrrr-native"):
+        profile = packaged_authorities(get_source_adapter(source).packaged_profile)
+        assert ms.load_mapping(profile["mapping"])["grid"]["same_grid_pairing"] == "identity"
+    vegetation = Path(ms.__file__).parent / "authorities" / "rw-wps-hrrr-surface-vegetation-grib2.mapping.json"
+    assert ms.load_mapping(vegetation)["grid"]["same_grid_pairing"] == "identity"
+    for adapter in source_adapters():
+        for alias in adapter.aliases:
+            assert get_source_adapter(alias).same_grid_pairing == adapter.same_grid_pairing
+        if adapter.source_id not in selected:
+            assert "same_grid_pairing" not in adapter.to_dict()
+            if adapter.packaged_profile:
+                mapping = ms.load_mapping(packaged_authorities(adapter.packaged_profile)["mapping"])
+                assert "same_grid_pairing" not in mapping.get("grid", {})
+
+
+def test_unmarked_source_metadata_bytes_match_the_staged_baseline():
+    """Actual serialization against retained code from the staging parent."""
+    from gpuwm.source_adapters import source_adapters
+
+    directory = Path(__file__).parent / "data"
+    manifest = json.loads((directory / "projected_grid_pairing_baseline.json").read_text())
+    source = gzip.decompress((directory / "source_adapter_pairing_baseline.py.gz").read_bytes())
+    assert hashlib.sha256(source).hexdigest() == manifest["source_adapters_sha256"]
+    module_name = "_source_adapter_pairing_baseline"
+    baseline = types.ModuleType(module_name)
+    sys.modules[module_name] = baseline
+    try:
+        exec(compile(source, "<retained-source-adapter-baseline>", "exec"), baseline.__dict__)
+        before = {adapter.source_id: adapter for adapter in baseline.source_adapters()}
+        for adapter in source_adapters():
+            if adapter.same_grid_pairing is None:
+                actual = json.dumps(adapter.to_dict(), separators=(",", ":"))
+                previous = json.dumps(before[adapter.source_id].to_dict(), separators=(",", ":"))
+                assert actual.encode("utf-8") == previous.encode("utf-8"), adapter.source_id
+    finally:
+        sys.modules.pop(module_name, None)
+
+
+@pytest.mark.parametrize("selected", [False, True])
+def test_grid_pairing_header_selects_metadata_without_changing_unmarked_bytes(selected):
+    """Canonical header forwarding against the retained prior writer."""
+    directory = Path(__file__).parent / "data"
+    manifest = json.loads((directory / "projected_grid_pairing_baseline.json").read_text())
+    source = (directory / "projected_grid_header_baseline.py").read_bytes()
+    assert hashlib.sha256(source).hexdigest() == manifest["frame_header_sha256"]
+    namespace = dict(vars(ms))
+    exec(compile(source, "<retained-frame-header-baseline>", "exec"), namespace)
+    mapping = _lambert_mapping()
+    parameters = mapping["grid"]["parameters"]
+    latitude, longitude = ms._projected_axes(parameters)
+    arguments = dict(
+        valid_time=datetime(2026, 8, 15), source_cycle=datetime(2026, 8, 15),
+        latitude=latitude, longitude=longitude,
+        vertical_values=np.array([100000.0]), fields={}, source_id="projected-test")
+    previous = namespace["_frame_header"](mapping, **arguments)
+    if selected:
+        mapping["grid"]["same_grid_pairing"] = "identity"
+    header = ms._frame_header(mapping, **arguments)
+    if selected:
+        assert header.grid.parameters["same_grid_pairing"] == "identity"
+        from dataclasses import replace
+        unmarked = dict(header.grid.parameters)
+        unmarked.pop("same_grid_pairing")
+        header = replace(header, grid=replace(header.grid, parameters=unmarked))
+    else:
+        assert "same_grid_pairing" not in header.grid.parameters
+    from dataclasses import asdict
+    assert json.dumps(asdict(header), separators=(",", ":")).encode() == \
+        json.dumps(asdict(previous), separators=(",", ":")).encode()
+
+
+def test_the_declared_grid_pairs_onto_its_own_lattice_and_the_edge_faces_clamp():
+    """The native grid, spelled on the WPS sphere, against its GRIB header
+    on the 6,371.229 km sphere: projected, its far corner lands 0.35 cells
+    past the last source column and its outer faces half a cell past the
+    edge, so every coverage guard refused it.  Paired by identity, mass
+    points sit exactly on their own cells, interior faces half way
+    between two, and the outermost faces on the edge cell."""
+
+    snapshot = _declared_snapshot()
+    transform, projected = source_coordinate_transform(snapshot)
+    assert projected
+    target = _wps_target()
+    unit = ms.PROJECTED_AXIS_UNIT_M
+    step = 3000.0
+
+    lat, lon = target.latlon_mass()
+    raw_y, raw_x = _raw_projection(HRRR_PARAMETERS, lat, lon)
+    assert raw_x.max() / (step / unit) > 1798.3        # the sphere drift
+    y, x = transform(lat, lon)
+    rows, cols = np.indices((1059, 1799), dtype=np.float64)
+    np.testing.assert_array_equal(y, rows * step / unit)
+    np.testing.assert_array_equal(x, cols * step / unit)
+
+    lat, lon = target.latlon_u()
+    y, x = transform(lat, lon)
+    assert x.shape == (1059, 1800)
+    rows, cols = np.indices((1059, 1800), dtype=np.float64)
+    faces = np.clip(cols - 0.5, 0.0, 1798.0)
+    np.testing.assert_array_equal(x, faces * step / unit)
+    np.testing.assert_array_equal(y, rows * step / unit)
+    assert x[0, 0] == 0.0 and x[0, -1] == 1798.0 * step / unit
+
+    lat, lon = target.latlon_v()
+    y, x = transform(lat, lon)
+    rows, cols = np.indices((1060, 1799), dtype=np.float64)
+    np.testing.assert_array_equal(y, np.clip(rows - 0.5, 0.0, 1058.0)
+                                  * step / unit)
+    np.testing.assert_array_equal(x, cols * step / unit)
+
+
+def test_every_other_target_projects_exactly_as_before():
+    """Byte identity for everything that is not the declared grid: the
+    one-row trim, the full size shifted a tenth of a degree, the full size
+    at another spacing, and a small domain inside it."""
+
+    snapshot = _declared_snapshot()
+    transform, _ = source_coordinate_transform(snapshot)
+    for target in (_wps_target(1797, 1057), _wps_target(ref_lon=-97.6),
+                   _wps_target(dx=3010.0), _wps_target(64, 48, ref_lat=39.0,
+                                                       ref_lon=-110.0)):
+        for lat, lon in (target.latlon_mass(), target.latlon_u(),
+                         target.latlon_v()):
+            y, x = transform(lat, lon)
+            raw_y, raw_x = _raw_projection(HRRR_PARAMETERS, lat, lon)
+            np.testing.assert_array_equal(y, raw_y)
+            np.testing.assert_array_equal(x, raw_x)
+
+
+def test_lattice_identity_takes_only_the_grids_own_staggerings():
+    from gpuwm.ingest.source_coverage import (
+        LATTICE_IDENTITY_ANCHOR_CELLS, lattice_identity)
+
+    rows, cols = np.indices((3, 4), dtype=np.float64)
+    # A drift that grows from the anchor (the two spheres), under half a cell.
+    snapped = lattice_identity(rows * 1.01, cols * 1.01, nx=4, ny=3,
+                               sphere_scale=1.01)
+    assert snapped is not None
+    np.testing.assert_array_equal(snapped[0], rows)
+    np.testing.assert_array_equal(snapped[1], cols)
+    # u faces: shape (ny, nx + 1), face i at i - 1/2, the outer two clamped.
+    rows, cols = np.indices((3, 5), dtype=np.float64)
+    snapped = lattice_identity(rows, cols - 0.5, nx=4, ny=3)
+    np.testing.assert_array_equal(snapped[1][0], [0.0, 0.5, 1.5, 2.5, 3.0])
+    # Not the grid: another shape, a first point off its cell, a point
+    # half a cell or more from its own, a non-finite point.
+    rows, cols = np.indices((3, 4), dtype=np.float64)
+    assert lattice_identity(rows[:, :3], cols[:, :3], nx=4, ny=3) is None
+    assert lattice_identity(rows, cols + 2 * LATTICE_IDENTITY_ANCHOR_CELLS,
+                            nx=4, ny=3) is None
+    far = cols.copy()
+    far[2, 3] += 0.5
+    assert lattice_identity(rows, far, nx=4, ny=3) is None
+    bad = cols.copy()
+    bad[1, 1] = np.nan
+    assert lattice_identity(rows, bad, nx=4, ny=3) is None
+
+
+def test_the_preflight_admits_the_declared_grid_and_still_refuses_a_shift():
+    """The plan-review coverage guard refused the native grid because its
+    cell corners lie half a cell past the source's outermost points; those
+    corners are the grid's own cell boundaries and nothing is
+    interpolated there.  A grid that is not the source's still meets the
+    guard."""
+
+    from types import SimpleNamespace
+
+    from gpuwm.source_coverage import config_source_coverage_refusal
+
+    def experiment(nx, ny, ref_lon):
+        return SimpleNamespace(
+            projection=SimpleNamespace(
+                map_proj="lambert", ref_lat=38.5, ref_lon=ref_lon,
+                truelat1=38.5, truelat2=38.5, stand_lon=-97.5),
+            root=SimpleNamespace(run=SimpleNamespace(nx=nx, ny=ny,
+                                                     dx=3000.0)))
+
+    assert config_source_coverage_refusal(
+        experiment(1799, 1059, -97.5), "hrrr-prs") is None
+    assert config_source_coverage_refusal(
+        experiment(1797, 1057, -97.5), "hrrr-prs") is None
+    refusal = config_source_coverage_refusal(
+        experiment(1799, 1059, -97.6), "hrrr-prs")
+    assert refusal is not None and "cell corners are outside" in refusal
+
+
+def test_the_declared_grid_copies_a_field_cell_for_cell_through_the_cpu_plan():
+    """The real operator, not the arithmetic: through the Rust CPU plan a
+    random field on the native grid comes back bit for bit at every mass
+    point, by every operator, and an interior u face is the mean of its two
+    cells under the bilinear operator."""
+
+    from gpuwm.ingest.cpu_backend import CpuPreprocessBackend
+    from gpuwm.ingest.preprocess_backend import ParallelCpuPreprocessBackend
+
+    try:
+        CpuPreprocessBackend()
+    except (FileNotFoundError, OSError) as error:
+        pytest.skip(f"native CPU bridge is not built: {error}")
+    engine = ParallelCpuPreprocessBackend(workers=4)
+    snapshot = _declared_snapshot()
+    transform, _ = source_coordinate_transform(snapshot)
+    target = _wps_target()
+    field = np.random.default_rng(286).standard_normal(
+        (1059, 1799)).astype(np.float32) * 10.0 + 280.0
+
+    y, x = transform(*target.latlon_mass())
+    plan = engine.regular_plan(snapshot.latitude, snapshot.longitude, y, x)
+    for method in ("nearest", "bilinear", "parabolic"):
+        copied = np.asarray(plan.apply(field, method=method))
+        assert copied.shape == field.shape
+        np.testing.assert_array_equal(copied.view(np.uint32),
+                                      field.view(np.uint32), err_msg=method)
+
+    y, x = transform(*target.latlon_u())
+    plan = engine.regular_plan(snapshot.latitude, snapshot.longitude, y, x)
+    faces = np.asarray(plan.apply(field, method="bilinear"))
+    assert faces.shape == (1059, 1800)
+    np.testing.assert_array_equal(faces[:, 0], field[:, 0])
+    np.testing.assert_array_equal(faces[:, -1], field[:, -1])
+    np.testing.assert_allclose(faces[:, 1:-1],
+                               0.5 * (field[:, :-1] + field[:, 1:]),
+                               rtol=0.0, atol=1.0e-4)
+
+
+def test_the_proof_names_the_identity_pairing_only_for_the_declared_grid():
+    from gpuwm.ingest.horiz import declared_grid_pairing
+
+    declaration = _declaration()
+    assert declared_grid_pairing(declaration, _wps_target()) == "identity"
+    assert declared_grid_pairing(declaration, _wps_target(1797, 1057)) is None
+    assert declared_grid_pairing(declaration,
+                                 _wps_target(ref_lon=-97.6)) is None
+    assert declared_grid_pairing(None, _wps_target()) is None
+
+@pytest.mark.parametrize("changes", [
+    {"ref_lon": -97.5001},
+    {"dx": 3000.1},
+])
+def test_nearby_full_grids_keep_interpolation(changes):
+    """A subcell shift or spacing change is a different target grid."""
+    snapshot = _declared_snapshot()
+    transform, _ = source_coordinate_transform(snapshot)
+    target = _wps_target(**changes)
+    assert declared_pairing_for_test(target) is None
+    for lat, lon in (target.latlon_mass(), target.latlon_u(), target.latlon_v()):
+        actual = transform(lat, lon)
+        expected = _raw_projection(HRRR_PARAMETERS, lat, lon)
+        for got, wanted in zip(actual, expected):
+            np.testing.assert_array_equal(got, wanted)
+
+
+def declared_pairing_for_test(target):
+    from gpuwm.ingest.horiz import declared_grid_pairing
+    return declared_grid_pairing(_declaration(), target)
+
+
+def test_lattice_identity_refuses_local_distortion():
+    from gpuwm.ingest.source_coverage import lattice_identity
+    rows, cols = np.indices((3, 4), dtype=np.float64)
+    distorted = cols.copy()
+    distorted[1, 2] += 0.01
+    assert lattice_identity(rows, distorted, nx=4, ny=3) is None

@@ -15,6 +15,19 @@ import numpy as np
 from gpuwm.core.constants import G
 
 
+def scalar_index32_fits(nz: int, ny: int, nx: int) -> bool:
+    """Whether all scalar-flux input and staggered output offsets fit uint32.
+
+    The conservative box includes both horizontal faces and the extra
+    geopotential level.  Python integers make the capacity check exact even
+    when a requested grid needs the ordinary size_t CUDA module.
+    """
+    axes = (int(nz), int(ny), int(nx))
+    return (all(0 < axis <= 0x7ffffffe for axis in axes)
+            and (axes[0] + 1) * (axes[1] + 1) * (axes[2] + 1)
+            <= 0xffffffff)
+
+
 def wrf_d11_algebra(*, du_dx_hat: float, du_deta_hat: float,
                     zx: float, rdzw: float,
                     msftx: float = 1.0, msfty: float = 1.0) -> float:

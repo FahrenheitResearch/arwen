@@ -129,6 +129,9 @@ def test_the_legacy_adapter_admits_maximum_random_overlap_and_nothing_else():
 
     adapter = object.__new__(RRTMGLegacyRadiation)
     adapter.o3input = 2
+    # the adapter's shortwave aerosol identity, which _check_pins also holds
+    adapter.shortwave = True
+    adapter.aer_opt = 0
 
     def cfg(cldovrlp):
         return SimpleNamespace(icloud=1, cldovrlp=cldovrlp, idcor=0,

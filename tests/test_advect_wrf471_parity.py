@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -20,15 +22,31 @@ from gpuwm.verify.advect_oracle import (
     SENTINEL, load_advect_cases, validate_case, write_fortran_input,
     defined_output_mask, measure_words, measure_advect_parity,
     arithmetic_control, advect_port_outputs, w_lid_control_cases,
-    mapped_radiation_control_cases)
+    mapped_radiation_control_cases, advect_gpu_identity,
+    architecture_is_certified, check_receipt_format, receipt_staleness,
+    check_uncertified_stale_records, uncertified_stale_report,
+    UncertifiedReceiptStale, UNCERTIFIED_STALE_KEY)
+
+#: The modules every receipt of this fixture pins by assembled source.
+RECEIPT_MODULES = ("advection", "pd_advection", "openbc")
 
 
-GPU_RECEIPTS = {
-    "NVIDIA GeForce RTX 4090": "gpu-receipt.json",
-    "NVIDIA H100 80GB HBM3": "gpu-receipt-h100.json",
-    "NVIDIA GeForce RTX 5090": "gpu-receipt-sm120.json",
-}
-ARCH_RECEIPTS = {(12, 0): "gpu-receipt-sm120.json"}
+def _receipt_index(directory):
+    """The fixture's gpu-receipts.json: card name and "major.minor" -> receipt.
+
+    One file read by these tests and written by
+    tools/advect_wrf471_oracle/recapture_receipt.py, so a capture installed
+    for a new card is replayed here without a test edit.
+    """
+    index = json.loads((directory / "gpu-receipts.json").read_text(encoding="ascii"))
+    assert index["schema_version"] == 1
+    architectures = {tuple(int(part) for part in key.split(".")): name
+                     for key, name in index["architectures"].items()}
+    return dict(index["cards"]), architectures
+
+
+GPU_RECEIPTS, ARCH_RECEIPTS = _receipt_index(ADVECT_ORACLE_DIR)
+RECEIPT_INDEX = json.loads((ADVECT_ORACLE_DIR / "gpu-receipts.json").read_text(encoding="ascii"))
 
 
 def _receipt(name="gpu-receipt.json"):
@@ -60,8 +78,28 @@ def _receipt_for_gpu(gpu_name, compute_capability=None):
 
 
 def _device_receipt():
-    from gpuwm.verify.advect_oracle import advect_gpu_identity
-    return _receipt_for_gpu(*advect_gpu_identity())
+    """The receipt this card's runtime words are compared with.
+
+    A Blackwell or newer card gates exactly as before: no receipt is a
+    coverage gap, a stale receipt fails.  An older card is not certified
+    (ruling 2026-10-04): with no receipt, or with one that trails the tree,
+    the word comparison is skipped and says why; a current receipt still
+    compares every word.
+    """
+    gpu, capability = advect_gpu_identity()
+    if not architecture_is_certified(capability):
+        if GPU_RECEIPTS.get(gpu) is None and ARCH_RECEIPTS.get(tuple(capability)) is None:
+            pytest.skip(f"{gpu} (sm_{capability[0]}{capability[1]}) has no advection receipt and is "
+                        "not certified: byte identity is certified on Blackwell and newer only "
+                        "(ruling 2026-10-04)")
+        receipt = _receipt_for_gpu(gpu, capability)
+        name = GPU_RECEIPTS.get(gpu) or ARCH_RECEIPTS[tuple(capability)]
+        moved = receipt_staleness(receipt, ADVECT_ORACLE_DIR, RECEIPT_MODULES)
+        if moved:
+            pytest.skip(uncertified_stale_report(
+                name, receipt, moved, RECEIPT_INDEX.get(UNCERTIFIED_STALE_KEY, {}).get(name)))
+        return receipt
+    return _receipt_for_gpu(gpu, capability)
 
 
 def _available_receipts():
@@ -84,6 +122,75 @@ def test_advect_sm120_selection_preserves_the_measured_card_provenance():
     assert receipt["compute_capability"] == [12, 0]
     with pytest.raises(AssertionError):
         _receipt_for_gpu("NVIDIA GeForce RTX 5090", (13, 0))
+
+
+def test_advect_receipts_certify_blackwell_and_report_older_cards_with_their_staling_commit(monkeypatch):
+    """Byte identity is certified on Blackwell and newer only (ruling 2026-10-04).
+
+    The breakage this prevents, both ways: an uncertified receipt (the H100,
+    left behind by b70a94a48) holding the receipt-pin test red, and a
+    staleness record quietly excusing a Blackwell pin or outliving the
+    capture that brought its receipt current.  Nothing here depends on which
+    uncertified receipt trails the tree today.
+    """
+    import gpuwm.verify.advect_oracle as oracle
+    assert [architecture_is_certified(cc) for cc in ((8, 6), (8, 9), (9, 0), (10, 0), (12, 0), (13, 0))] == [
+        False, False, False, True, True, True]
+    assert not architecture_is_certified(None)
+    check_uncertified_stale_records(RECEIPT_INDEX, ADVECT_ORACLE_DIR, RECEIPT_MODULES)
+    h100 = _receipt("gpu-receipt-h100.json")
+    moved = {"advection": (h100["kernels"]["advection"], "a" * 64), "openbc": (h100["kernels"]["openbc"], "c" * 64)}
+    record = {"staled_by": "b70a94a4869e1dcf65149c0701e83b54208a6a07",
+              "pins": {"advection": h100["kernels"]["advection"]}}
+    report = uncertified_stale_report("gpu-receipt-h100.json", h100, moved, record)
+    assert "sm_90" in report and "ruling 2026-10-04" in report and "informational" in report
+    assert "advection e3fa6135 -> aaaaaaaa (staled by b70a94a48)" in report
+    assert "openbc 5bf7babe -> cccccccc (staling commit not recorded" in report
+    stale = {"staled_by": "b" * 40}
+    certified = _receipt("gpu-receipt-sm120.json")
+    index = dict(RECEIPT_INDEX, **{UNCERTIFIED_STALE_KEY: {"gpu-receipt-sm120.json": dict(
+        stale, pins={"advection": certified["kernels"]["advection"]})}})
+    with pytest.raises(AssertionError, match="certified"):
+        check_uncertified_stale_records(index, ADVECT_ORACLE_DIR, RECEIPT_MODULES)
+    index = dict(RECEIPT_INDEX, **{UNCERTIFIED_STALE_KEY: {"gpu-receipt-h100.json": dict(
+        stale, pins={"advection": "0" * 64})}})
+    with pytest.raises(AssertionError, match="drop or rewrite"):
+        check_uncertified_stale_records(index, ADVECT_ORACLE_DIR, RECEIPT_MODULES)
+    index = dict(RECEIPT_INDEX, **{UNCERTIFIED_STALE_KEY: {"gpu-receipt-h100.json": dict(
+        stale, pins={"advection": h100["kernels"]["advection"]})}})
+    monkeypatch.setattr(oracle, "receipt_staleness", lambda *args: {})
+    with pytest.raises(AssertionError, match="current again"):
+        check_uncertified_stale_records(index, ADVECT_ORACLE_DIR, RECEIPT_MODULES)
+
+
+def test_advect_device_receipt_gates_blackwell_and_skips_older_cards_only_when_stale(monkeypatch):
+    """The device half of the 2026-10-04 ruling, without a card.
+
+    The breakage this prevents: the device word tests failing on an
+    uncertified card whose receipt trails the tree (or that has none), and
+    the converse, a Blackwell card losing its coverage-gap failure or its
+    word comparison.  A current uncertified receipt still compares words.
+    """
+    module = sys.modules[__name__]
+
+    def card(name, capability, moved=None):
+        monkeypatch.setattr(module, "advect_gpu_identity", lambda: (name, capability))
+        monkeypatch.setattr(module, "receipt_staleness", lambda *args: dict(moved or {}))
+
+    stale = {"advection": ("e" * 64, "a" * 64)}
+    card("NVIDIA GeForce RTX 5090", (12, 0), stale)
+    assert _device_receipt()["gpu"] == "NVIDIA GeForce RTX 5090"
+    card("unmeasured Blackwell", (10, 0))
+    with pytest.raises(AssertionError, match="test coverage gap"):
+        _device_receipt()
+    card("unmeasured Ampere", (8, 6))
+    with pytest.raises(pytest.skip.Exception, match="not certified"):
+        _device_receipt()
+    card("NVIDIA H100 80GB HBM3", (9, 0), stale)
+    with pytest.raises(pytest.skip.Exception, match="informational, not a gate"):
+        _device_receipt()
+    card("NVIDIA H100 80GB HBM3", (9, 0))
+    assert _device_receipt()["gpu"] == "NVIDIA H100 80GB HBM3"
 
 
 def test_advect_fixture_has_real_source_and_exact_input_receipts():
@@ -134,19 +241,42 @@ def test_advect_word_metric_does_not_hide_signed_zero():
 
 
 def test_advect_native_reference_and_cuda_words_match_their_receipts():
+    """Blackwell receipts gate their pins; older ones are reported when stale.
+
+    Byte identity is certified on Blackwell and newer only (ruling
+    2026-10-04).  Every receipt is checked for presence and format and its
+    committed words replay against the reference; only a Blackwell
+    receipt's kernel and fixture pins must equal the tree.
+    """
     from gpuwm.core.kernels import module_source
+    records = check_uncertified_stale_records(RECEIPT_INDEX, ADVECT_ORACLE_DIR, RECEIPT_MODULES)
+    cases = load_advect_cases()
     for name, receipt in _available_receipts():
-        for module in ("advection", "pd_advection", "openbc"):
-            # Exactly the source the default loader compiles. A receipt
-            # digest moves only with a PTX identity receipt for the kernels
-            # this oracle runs, or a fresh capture on the receipt's card (or
-            # architecture, for sm_120) reproducing every recorded word
-            # (tools/advect_wrf471_oracle/README.md).
-            digest = receipt["kernels"][module]
-            assert hashlib.sha256(module_source(module).encode("utf-8")).hexdigest() == digest, (name, module)
-        assert receipt["fixture_manifest_sha256"] == hashlib.sha256((ADVECT_ORACLE_DIR / "cases.json").read_bytes()).hexdigest(), name
+        check_receipt_format(receipt, ADVECT_ORACLE_DIR, RECEIPT_MODULES, cases)
+        if not architecture_is_certified(receipt["compute_capability"]):
+            moved = receipt_staleness(receipt, ADVECT_ORACLE_DIR, RECEIPT_MODULES)
+            if moved:
+                warnings.warn(UncertifiedReceiptStale(
+                    uncertified_stale_report(name, receipt, moved, records.get(name))))
+            if "fixture" in moved:
+                # Its words were measured against another fixture's reference.
+                continue
+        else:
+            for module in RECEIPT_MODULES:
+                # Exactly the source the default loader compiles. A receipt
+                # digest moves only with a PTX identity receipt for the kernels
+                # this oracle runs, or a fresh capture on the receipt's card (or
+                # architecture, for sm_120) reproducing every recorded word
+                # (tools/advect_wrf471_oracle/README.md).
+                digest = receipt["kernels"][module]
+                assert hashlib.sha256(module_source(module).encode("utf-8")).hexdigest() == digest, (
+                    f"{name} pins {module} source {digest[:8]}, not the source the loader compiles: "
+                    f"the kernel moved and {receipt['gpu']} has not reproduced its words at it. "
+                    "On that card: python tools/advect_wrf471_oracle/recapture_receipt.py "
+                    "--fixture tests/data/wrf471_advect --scratch <empty dir> --install")
+            assert receipt["fixture_manifest_sha256"] == hashlib.sha256((ADVECT_ORACLE_DIR / "cases.json").read_bytes()).hexdigest(), name
         words_directory = receipt.get("words_directory", "gpu-words")
-        for case in load_advect_cases():
+        for case in cases:
             assert set(ROUTINES).issubset(case.reference)
             row = receipt["cases"][case.name]
             path = ADVECT_ORACLE_DIR / words_directory / row["words_file"]
@@ -211,16 +341,30 @@ def test_advect_mono_reference_distinguishes_the_unimplemented_option():
 
 
 @pytest.fixture(scope="module")
+def device_receipt():
+    """This card's receipt, resolved before ``cuda_cases`` launches anything.
+
+    A test that compares receipt words asks for this fixture ahead of
+    ``cuda_cases``, so on an uncertified card whose receipt is missing or
+    stale it skips before every case's kernels run for nothing.
+    """
+    return _device_receipt()
+
+
+@pytest.fixture(scope="module")
 def cuda_cases():
-    _device_receipt()
+    gpu, capability = advect_gpu_identity()
+    if architecture_is_certified(capability):
+        # A certified card with no receipt is a coverage gap: fail before the launches.
+        _receipt_for_gpu(gpu, capability)
     return {case.name: (case, advect_port_outputs(case)) for case in load_advect_cases()}
 
 
 @pytest.mark.gpu
 @requires_gpu
 @pytest.mark.parametrize("routine", SUPPORTED_ROUTINES)
-def test_advect_cuda_routine_holds_every_measured_wrf_word(routine, cuda_cases):
-    receipt = _device_receipt()
+def test_advect_cuda_routine_holds_every_measured_wrf_word(routine, device_receipt, cuda_cases):
+    receipt = device_receipt
     for name, (case, outputs) in cuda_cases.items():
         row = measure_words(outputs[routine], case.reference[routine])
         assert row == receipt["cases"][name]["measurements"][routine], (name, routine, row)
@@ -228,8 +372,8 @@ def test_advect_cuda_routine_holds_every_measured_wrf_word(routine, cuda_cases):
 
 @pytest.mark.gpu
 @requires_gpu
-def test_advect_cuda_pd_optional_channels_hold_every_defined_word(cuda_cases):
-    receipt = _device_receipt()
+def test_advect_cuda_pd_optional_channels_hold_every_defined_word(device_receipt, cuda_cases):
+    receipt = device_receipt
     for name, (case, outputs) in cuda_cases.items():
         for key in ("advect_scalar_pd.h_tendency", "advect_scalar_pd.z_tendency"):
             row = measure_words(outputs[key], case.reference[key], defined=defined_output_mask(case, key))

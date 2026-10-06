@@ -8,7 +8,17 @@
 # 1993, NCAR/TN-396, the formulas NCL's vinth2p_ecmwf and GeoCAT's
 # interp_hybrid_to_pressure implement) live beside them because they are
 # the same column arithmetic and nothing else in the workspace carries
-# them.  No dependencies.
+# them.  So does isobaric height read between layer interfaces, which every
+# consumer uses in place of a layer-mean height at the mass-level pressure:
+# the renderer and the exporter as an rlib, the Python consumers (vortex
+# tracker, GNSS-RO operator, verification maps, flagship products) through
+# the C ABI in src/capi.rs, loaded by gpuwm/isobaric_bridge.py.
+#
+# One dependency, the vendored `libm` 0.2.16 the static-field builder
+# already pins: its `log` is pure IEEE arithmetic, so a height is the same
+# bits on every host, and gpuwm/core/kernels/portable_libm64.cuh transcribes
+# it for the card, which is what lets the tracker's device path equal this
+# crate word for word.
 [package]
 name = "rw-isobaric"
 version = "0.1.0"
@@ -16,3 +26,12 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 rust-version.workspace = true
+
+[lib]
+name = "rw_isobaric"
+# cdylib: the ctypes seam gpuwm/isobaric_bridge.py loads (src/capi.rs).
+# rlib:   rw-wrfbatch, rw-mlexport and the crate's own tests.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+libm = { version = "0.2.16", default-features = false, features = ["force-soft-floats"] }

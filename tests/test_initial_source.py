@@ -9,7 +9,10 @@ from gpuwm.initial_source import (
     REQUEST_SCHEMA, RECEIPT_SCHEMA, read_initial_inputs,
     validate_initial_evidence, write_initial_evidence,
 )
-from gpuwm.source_authorities import packaged_authorities, packaged_profile
+from gpuwm.source_authorities import (
+    packaged_authorities, packaged_contributing_mappings, packaged_profile,
+    packaged_provenance_files,
+)
 
 
 def _request(tmp_path, **changes):
@@ -48,17 +51,28 @@ def _bound_evidence(tmp_path):
     evidence = {f"{role}.json": Path(authorities[role]).read_bytes()
                 for role in ("mapping", "composition", "provenance")}
     evidence["request.json"] = _request(tmp_path).read_bytes()
+    # Contributor authorities are evidence exactly as decode_initial_analysis
+    # writes them: hrrr-prs-grib2-v1 gained the vegetation_surface contributor
+    # in 6a69b356f and its own contributor provenance in 533939492.
+    for index, (_, value) in enumerate(sorted(
+            packaged_contributing_mappings("hrrr-prs-grib2-v1").items())):
+        evidence[f"contributing-{index}.json"] = Path(value).read_bytes()
+    for role, value in sorted(packaged_provenance_files("hrrr-prs-grib2-v1").items()):
+        if value != authorities["provenance"]:
+            evidence[f"{role}.json"] = Path(value).read_bytes()
     manifest = {f"{role}_sha256": hashlib.sha256(evidence[f"{role}.json"]).hexdigest()
                 for role in ("mapping", "composition")}
     from gpuwm.mapped_composition import (
         INPUT_MANIFEST_SCHEMA, RECEIPT_SCHEMA as COMPOSITION_RECEIPT_SCHEMA,
         _canonical_sha256,
     )
-    provenance_role = packaged_profile("hrrr-prs-grib2-v1")["provenance_role"]
+    # author_input_manifest binds every composition provenance role, each
+    # to the document packaged_provenance_files resolves for it.
     manifest.update(schema=INPUT_MANIFEST_SCHEMA,
                     primary_files=[{"path": "analysis.grib2", "sha256": "1" * 64}],
                     supplements={},
-                    provenance={provenance_role: {"sha256": hashlib.sha256(evidence["provenance.json"]).hexdigest()}},
+                    provenance={role: {"sha256": hashlib.sha256(Path(value).read_bytes()).hexdigest()}
+                                for role, value in packaged_provenance_files("hrrr-prs-grib2-v1").items()},
                     decoders={"mapped_engine": {"sha256": "2" * 64}})
     evidence["input-manifest.json"] = json.dumps(manifest).encode()
     composed = {role: {"sha256": hashlib.sha256(evidence[name]).hexdigest()}
@@ -92,6 +106,15 @@ def test_changed_initial_authority_refuses_at_forecast(tmp_path, name):
     root, receipt = _bound_evidence(tmp_path)
     (root / "source-evidence" / "initial" / name).write_bytes(b"changed")
     with pytest.raises(ValueError, match="evidence changed"):
+        validate_initial_evidence(root, receipt, valid_time=receipt["valid_time"])
+
+
+def test_initial_evidence_without_its_contributor_is_incomplete(tmp_path):
+    root, receipt = _bound_evidence(tmp_path)
+    contributors = [name for name in receipt["evidence"] if name.startswith("contributing-")]
+    assert contributors, "hrrr-prs-grib2-v1 declares a contributing mapping"
+    del receipt["evidence"][contributors[0]]
+    with pytest.raises(ValueError, match="inventory is incomplete"):
         validate_initial_evidence(root, receipt, valid_time=receipt["valid_time"])
 
 
@@ -291,3 +314,72 @@ def test_initial_decode_releases_bundle_and_scratch_on_failure(tmp_path, monkeyp
             raise RuntimeError("consumer failed")
     assert records["closed"] == (0 if failure == "decode" else 1)
     assert not records["scratch"].exists()
+
+
+CONTRIBUTOR = "vegetation_surface_provenance.json"
+
+
+def _manifest_with(root, receipt, **rows):
+    path = root / "source-evidence" / "initial" / "input-manifest.json"
+    document = json.loads(path.read_bytes())
+    for role, row in rows.items():
+        if row is None:
+            document["provenance"].pop(role)
+        else:
+            document["provenance"][role] = row
+    _replace_evidence(root, receipt, path.name, document)
+
+
+def test_fixture_carries_the_pinned_contributor_provenance(tmp_path):
+    # The tests below prove the contributor pin only while the fixture is
+    # what a real decode writes: the packaged donor document, bound in the
+    # manifest under its own role.
+    root, receipt = _bound_evidence(tmp_path)
+    role = CONTRIBUTOR[:-len(".json")]
+    pin = packaged_profile("hrrr-prs-grib2-v1")["contributing_provenances"][role]["sha256"]
+    assert receipt["evidence"][CONTRIBUTOR] == pin
+    assert pin != receipt["evidence"]["provenance.json"]
+    manifest = json.loads((root / "source-evidence" / "initial" / "input-manifest.json").read_bytes())
+    assert manifest["provenance"][role] == {"sha256": pin}
+
+
+@pytest.mark.parametrize("bound_in_manifest", [False, True])
+def test_tampered_contributor_provenance_is_refused_despite_matching_receipt(
+        tmp_path, bound_in_manifest):
+    # Breakage prevented: a wrong vegetation donor provenance whose receipt
+    # digest (and, with bound_in_manifest, its input-manifest row) was
+    # rewritten to match passed the forecast check, so the start was
+    # attributed to evidence nobody shipped.
+    root, receipt = _bound_evidence(tmp_path)
+    wrong = packaged_authorities("hrrr-prs-grib2-v1")["provenance"].read_bytes()
+    (root / "source-evidence" / "initial" / CONTRIBUTOR).write_bytes(wrong)
+    receipt["evidence"][CONTRIBUTOR] = hashlib.sha256(wrong).hexdigest()
+    if bound_in_manifest:
+        _manifest_with(root, receipt, **{CONTRIBUTOR[:-len(".json")]: {
+            "sha256": receipt["evidence"][CONTRIBUTOR]}})
+    with pytest.raises(ValueError, match=(
+            "initial analysis vegetation_surface_provenance.json differs "
+            "from its packaged authority")):
+        validate_initial_evidence(root, receipt, valid_time=receipt["valid_time"])
+
+
+def test_contributor_provenance_cannot_be_dropped_from_the_inventory(tmp_path):
+    root, receipt = _bound_evidence(tmp_path)
+    del receipt["evidence"][CONTRIBUTOR]
+    with pytest.raises(ValueError, match="evidence inventory is incomplete"):
+        validate_initial_evidence(root, receipt, valid_time=receipt["valid_time"])
+
+
+@pytest.mark.parametrize("rows", [
+    {"vegetation_surface_provenance": {"sha256": "5" * 64}},
+    {"vegetation_surface_provenance": None},
+    {"vegetation_surface_provenance": []},
+    {"unbound_provenance": {"sha256": "5" * 64}},
+])
+def test_manifest_must_bind_every_role_to_its_pinned_provenance(tmp_path, rows):
+    # The decode's own manifest must name the pinned document for every
+    # composition provenance role, not only the primary one.
+    root, receipt = _bound_evidence(tmp_path)
+    _manifest_with(root, receipt, **rows)
+    with pytest.raises(ValueError, match="input manifest binds different provenance"):
+        validate_initial_evidence(root, receipt, valid_time=receipt["valid_time"])

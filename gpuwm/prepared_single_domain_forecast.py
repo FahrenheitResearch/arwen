@@ -17,7 +17,7 @@ from gpuwm.physics_registry import canonical_template_id
 import argparse
 import copy
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from fractions import Fraction
 import hashlib
@@ -138,6 +138,7 @@ from gpuwm.physics_compat import (  # noqa: E402
     validate_single_domain_physics_profile,
 )
 from gpuwm.certify.capsule import emit_run_capsule  # noqa: E402
+from gpuwm.physics_profile_siblings import with_profile_siblings
 from gpuwm.spectral_seam import (  # noqa: E402
     seam_capsule_receipts as _seam_capsule_receipts,
 )
@@ -328,7 +329,13 @@ _VERIFIED_SOURCE_PHYSICS_PROFILES = {
         # it moves the microphysics of, as the registry route declares it.
         THOMPSON_MYNN_RUC_DUDHIA_PHYSICS_PROFILE,
         MYNN_RUC_RTE_RRTMGP_PHYSICS_PROFILE,
-        THOMPSON_MYNN_RUC_RTE_RRTMGP_PHYSICS_PROFILE),
+        THOMPSON_MYNN_RUC_RTE_RRTMGP_PHYSICS_PROFILE,
+        "thompson-mp8-mynn-mynn-ruc-monthly-rrtmg-legacy-v1",
+        # The monthly-albedo twin with alb_sol 1 (lane/286-albsol) and the
+        # GSD MYNN 4.1 Thompson-aerosol suite (lane/286-fork-mynn), as the
+        # registry route declares them for this source.
+        "thompson-mp8-mynn-mynn-ruc-monthly-solar-rrtmg-legacy-v1",
+        "thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1"),
     "20crv3": (
         TWENTYCRV3_WSM6_PHYSICS_PROFILE, PHYSICS_PROFILE,
         THOMPSON_PHYSICS_PROFILE, MORRISON_PHYSICS_PROFILE,
@@ -458,7 +465,7 @@ _EXPERT_PROFILE_IDS = (
 #: template list is empty).
 _SOURCE_PHYSICS_PROFILES = MappingProxyType({
     source_id: (
-        tuple(p for p in profiles if p not in _EXPERT_PROFILE_IDS)
+        with_profile_siblings(p for p in profiles if p not in _EXPERT_PROFILE_IDS)
         + COMPOSITION_SUITE_PROFILE_IDS
         + _EXPERT_PROFILE_IDS
         if profiles else profiles)
@@ -675,9 +682,13 @@ MAPPED_PREPARATION_TELEMETRY_KEYS = frozenset({
 #: deferred_initial_perturbation).
 #: ``posting`` likewise: written only by a preparation made as its leads
 #: posted (DESIGN A136 2.4 item 6), the leads it waited for.
+#: ``source_pairing`` likewise: written only when the root is its source's
+#: own declared grid and pairs cell for cell (lane/286-fixed-step-grid,
+#: horiz.declared_grid_pairing); without it here the runner refused every
+#: such bundle as an unknown top-level inventory.
 MAPPED_OPTIONAL_PROOF_KEYS = frozenset({
     "statics_corridor", "source_vertical_ladder", "soil_temperature_repair",
-    "initial_perturbation", "posting", "initial_source"})
+    "initial_perturbation", "posting", "initial_source", "source_pairing"})
 _SOURCE_ADAPTER = {
     # The generic mapped adapter, truthfully: a packaged profile is
     # prepared by `gpuwm.mapped_direct` with nothing model-specific in
@@ -1485,6 +1496,9 @@ class PreparedForecastInputs:
     #: clock, kept for a head-bound run only
     #: (:class:`gpuwm.ingest.boundary_stream.ClockBasis`).
     clock_basis: object | None = None
+    #: Ephemeral immutable mappings verified by this sealed direct preflight.
+    #: These change no run authority or serialized receipt identity.
+    cache_payload: object | None = field(default=None, repr=False, compare=False)
 
     @property
     def execution_plan(self):
@@ -1626,7 +1640,8 @@ def _completed_history_inventory(records, schedule, *, captured_paths=None):
         }
     inventory = [{**record, "model_elapsed_seconds": offset,
                   "valid_time": valid_time.isoformat(),
-                  "atomic_writer_readback_verified": True}
+                  "atomic_writer_readback_verified": (
+                      record["sha256"] is not None and record["bytes"] is not None)}
                  for record, (offset, valid_time, _name) in zip(records, schedule, strict=True)]
     return inventory, {}
 
@@ -3000,6 +3015,11 @@ def claim_output_directory(
                 f"here to refuse or to reuse -- pass an {flag} that names "
                 f"a real path.") from probe_error
         if held:
+            from gpuwm.ensemble.runtime_context import current_session
+            session = current_session()
+            if (session is not None and session.restart_roster is not None
+                    and path.resolve() == session.output_directory.resolve()):
+                return keep_spelling(given, _resolve_or_refuse(path, flag))
             raise FileExistsError(
                 f"{resolved} already holds a run's output "
                 f"({', '.join(held)[:120]}), and this runner never merges "
@@ -4496,6 +4516,57 @@ def _execution_plan_receipt(
     }
 
 
+def _apply_runtime_run_overrides(exp, overrides):
+    """Apply only run fields the prepared-state contract declares inert."""
+    if overrides is None:
+        return exp, []
+    if not isinstance(overrides, Mapping):
+        raise TypeError("runtime_run_overrides must be a mapping of RunConfig fields")
+    from gpuwm.config import RunConfig, validate_run_config
+    from gpuwm.ingest.prepared_cache import (
+        PREPARATION_INERT_RUN_FIELDS, effective_prepared_domain_config,
+        prepared_domain_config_identity)
+
+    allowed = {path.removeprefix("run.")
+               for path in PREPARATION_INERT_RUN_FIELDS if path.startswith("run.")}
+    for name in overrides:
+        if not isinstance(name, str) or name not in allowed:
+            raise ValueError(
+                f"runtime run override {name!r} changes a preparation input or "
+                "is unknown; only PREPARATION_INERT_RUN_FIELDS may reuse "
+                "the verified prepared state")
+        value = overrides[name]
+        declared = RunConfig.__dataclass_fields__[name].type
+        valid_type = {
+            "bool": type(value) is bool,
+            "int": type(value) is int,
+            "str": type(value) is str,
+            "float": type(value) in (int, float) and math.isfinite(value),
+            "float | None": value is None or (
+                type(value) in (int, float) and math.isfinite(value)),
+        }.get(declared, False)
+        if not valid_type:
+            raise ValueError(
+                f"runtime run override {name} must have declared type "
+                f"{declared}, got {value!r}")
+    original = exp.root.run
+    executed = validate_run_config(replace(original, **copy.deepcopy(dict(overrides))))
+    domain = replace(exp.root, run=executed)
+    if effective_prepared_domain_config(prepared_domain_config_identity(exp.root)) != \
+            effective_prepared_domain_config(prepared_domain_config_identity(domain)):
+        raise ValueError("runtime run overrides changed the prepared-domain identity")
+    changed = [{
+        "field": f"domain_config.run.{name}",
+        "prepared": getattr(original, name),
+        "executed": getattr(executed, name),
+        "prepared_state_changed": False,
+        "model_state_or_physics_changed": True,
+        "reason": "preparation does not read this field; the forecast uses the executed value",
+    } for name in sorted(overrides)
+        if getattr(original, name) != getattr(executed, name)]
+    return replace(exp, domains=(domain,)), changed
+
+
 def _validate_execution_file_receipt(
         receipt, actual: Path | None, label: str,
 ) -> None:
@@ -5126,7 +5197,7 @@ def _validate_packaged_mapped_evidence(
         # was invariant across the supplied times -- plus the fact that
         # its bytes are inside the proof, whose content hash the caller
         # pinned.
-        if declared_bindings:
+        if terrain_binding is not None:
             # Cross-source: the top-level alignment is the terrain
             # provider's binding receipt, under the binding's own declared
             # clock; every borrowed field must carry a subset digest, and
@@ -6452,6 +6523,23 @@ def _require_sealed_identity(inputs, sealed_inputs, head) -> None:
             f"forecast started from: {error}") from None
 
 
+def _retained_preflight_payload(reader, *, layout, head):
+    """Use the additive native hasher for sealed direct immutable mappings."""
+    if head is not None or layout not in _DIRECT_LAYOUTS:
+        return None
+    from gpuwm.ingest.prepared_writer import native_hasher
+    try:
+        entry = native_hasher()
+    except (OSError, RuntimeError):
+        # Older installs without this additive bridge retain their original
+        # full checked reads. Source and byte identity rules are unchanged.
+        return None
+    if entry is None:
+        return None
+    from gpuwm.ingest.prepared_store import _CachePayload
+    return _CachePayload(reader, log=lambda _: None)
+
+
 def preflight_prepared_forecast(
         *, source: str, prepared_root: Path, proof_sha256: str | None = None,
         source_manifest_sha256: str,
@@ -6464,8 +6552,16 @@ def preflight_prepared_forecast(
         domain_bundle: Path | None = None,
         tiles=None, devices: int | None = None, devices_options=None,
         simulated_radar=None,
+        runtime_run_overrides: Mapping[str, object] | None = None,
 ) -> PreparedForecastInputs:
     """Validate every portable preparation authority without importing CuPy.
+
+    ``runtime_run_overrides`` is a Python API mapping of RunConfig fields
+    declared in PREPARATION_INERT_RUN_FIELDS. The original experiment and
+    WPS bytes remain bound to the preparation, and each changed runtime
+    value is validated and recorded in the execution plan. Preparation
+    inputs, including grid, soil geometry and microphysics selectors,
+    cannot be replaced through this mapping.
 
     ``tiles`` is an optional :class:`~gpuwm.core.streaming.StreamingOptions`
     that REPLACES whatever the hash-bound experiment declares, and it is
@@ -6493,6 +6589,10 @@ def preflight_prepared_forecast(
 
     if source not in SUPPORTED_SOURCES:
         raise ValueError(f"unsupported prepared forecast source {source!r}")
+    if runtime_run_overrides is not None:
+        if not isinstance(runtime_run_overrides, Mapping):
+            raise TypeError("runtime_run_overrides must be a mapping of RunConfig fields")
+        runtime_run_overrides = MappingProxyType(copy.deepcopy(dict(runtime_run_overrides)))
     preflight_arguments = MappingProxyType(dict(
         source=source, prepared_root=prepared_root,
         source_manifest_sha256=source_manifest_sha256,
@@ -6503,6 +6603,8 @@ def preflight_prepared_forecast(
         history_interval_seconds=history_interval_seconds,
         domain_bundle=domain_bundle, tiles=tiles, devices=devices,
         devices_options=devices_options,
+        **({} if runtime_run_overrides is None else
+           {"runtime_run_overrides": runtime_run_overrides}),
         **({} if simulated_radar is None else {"simulated_radar": simulated_radar})))
     head = None
     #: An as-posted head's block (``basis.as_posted``): the head binds the
@@ -6631,14 +6733,18 @@ def preflight_prepared_forecast(
 
     exp = source_exp if len(source_exp.domains) == 1 else replace(
         source_exp, domains=(source_exp.root,))
+    prepared_run = exp.root.run
+    exp, runtime_overrides = _apply_runtime_run_overrides(exp, runtime_run_overrides)
     physics_receipt = _validate_physics(
         exp, physics_profile, run_seconds, history_interval_seconds,
         source=source, expert_acknowledgements=expert_acknowledgements)
     front_door_physics = _validate_front_door_physics_proof(
-        proof, source=source, profile=physics_profile, cfg=exp.root.run)
+        proof, source=source, profile=physics_profile, cfg=prepared_run)
     physics_receipt["execution_plan"] = _execution_plan_receipt(
         source_exp=source_exp, executed_exp=exp, profile=physics_profile,
         history_interval_seconds=history_interval_seconds)
+    if runtime_overrides:
+        physics_receipt["execution_plan"]["physics_overrides"] = runtime_overrides
     manifest_files, source_manifest_receipt = _manifest_file_specs(
         source, manifest, source_exp, proof,
         pending=_as_posted_pending_roles(as_posted, manifest),
@@ -6954,7 +7060,11 @@ def preflight_prepared_forecast(
     if head is None:
         reader = PreparedCacheReader(
             prepared_cache_path, expected_identity=cache_identity)
-        verified_cache = reader.verify_all()
+        cache_payload = _retained_preflight_payload(
+            reader, layout=layout.kind, head=head)
+        readonly_reader = (reader if cache_payload is None
+                           else cache_payload.read_only_reader())
+        verified_cache = readonly_reader.verify_all()
         if verified_cache["content_sha256"] != prepared_content_sha256:
             raise ValueError(
                 "verified prepared cache differs from the caller pin")
@@ -6962,6 +7072,8 @@ def preflight_prepared_forecast(
         reader = PreparedHeadReader(
             prepared_root, head, expected_identity=cache_identity)
         reader.verify_all()
+        cache_payload = None
+        readonly_reader = reader
     _validate_cache_metadata(
         reader, source=source, exp=exp, forcing_hours=forcing_hours,
         boundary_interval_seconds=boundary_interval_seconds, proof=proof,
@@ -6976,7 +7088,7 @@ def preflight_prepared_forecast(
         label=f"d{int(exp.root.grid_id):02d}", vertical=exp.vertical,
         coord_scalars=(reader.header.get("metadata") or {}).get(
             "coord_scalars") or {},
-        base_arrays={"mub": reader.read_array("base/mub")}
+        base_arrays={"mub": readonly_reader.read_array("base/mub")}
         if "base/mub" in reader.arrays else {})
     if _coordinate_refusal is not None:
         raise ValueError(_coordinate_refusal)
@@ -7184,7 +7296,7 @@ def preflight_prepared_forecast(
     # arrives (run_prepared_forecast's clock guard).
     clock_basis: dict = {}
     exp = _terrain_derivations(
-        exp, static, grid, reader, physics_receipt,
+        exp, static, grid, readonly_reader, physics_receipt,
         basis_out=clock_basis if head is not None else None)
     if tiles is not None:
         # LAST, after every identity comparison above.  [tiles] is not a
@@ -7247,6 +7359,7 @@ def preflight_prepared_forecast(
         stream_head=(None if head is None else MappingProxyType(head)),
         preflight_arguments=preflight_arguments,
         clock_basis=clock_basis.get("basis"),
+        cache_payload=cache_payload,
     )
 
 
@@ -8563,6 +8676,12 @@ def _single_prepared_root(domain_cfg, grid, state, clock, *, store_direct):
 
 def _single_checkpoint_identity(inputs, runtime_source_identity):
     """Bind every sealed authority, including the unchanged stop time in TOML."""
+    from gpuwm.physics_params import document as parameter_document
+
+    parameters = parameter_document(getattr(
+        getattr(inputs, "experiment", None), "physics_params", None))
+    parameter_binding = ({} if parameters is None
+                         else {"physics_params": parameters})
     stream_head = getattr(inputs, "stream_head", None)
     head_sha256 = (stream_head["head_sha256"] if stream_head is not None
                    else (dict(getattr(inputs, "proof", {}) or {}).get(
@@ -8574,6 +8693,7 @@ def _single_checkpoint_identity(inputs, runtime_source_identity):
             "prepared_content_sha256": inputs.cache_reader.content_sha256,
             "authority_sha256": dict(inputs.file_sha256),
             "runtime_source_identity": runtime_source_identity,
+            **parameter_binding,
         }
     # A chained preparation is bound by its head whichever way this run
     # binds it (the head at launch, or the sealed proof that names it), so
@@ -8595,6 +8715,7 @@ def _single_checkpoint_identity(inputs, runtime_source_identity):
             name: digest for name, digest in inputs.file_sha256.items()
             if name not in sealed_only},
         "runtime_source_identity": runtime_source_identity,
+        **parameter_binding,
     }
 
 
@@ -9063,12 +9184,21 @@ def run_prepared_forecast(
         started = time.perf_counter()
         if getattr(getattr(exp, "devices", None), "enabled", False):
             cp.cuda.Device(exp.devices.device_ids()[0]).use()
+        loader_memory = streaming.radiation_footprint(
+            cfg, tiles_options, resident_estimate=resident_estimate,
+            machine=planning_machine).prepared_memory
+        loader_terms = None if loader_memory is None else loader_memory.fixed_terms()
         bundle = store_from_prepared_cache(
             inputs.prepared_cache_path,
             expected_identity=inputs.cache_identity,
             cfg=cfg, static=inputs.static,
-            reader=(inputs.cache_reader if boundary_source is not None
+            reader=(inputs.cache_reader if (boundary_source is not None
+                    or inputs.cache_payload is not None)
                     else None),
+            cache_payload=inputs.cache_payload,
+            rows_per_slab=(None if loader_terms is None else loader_terms["loader_rows"]),
+            retain_template_rows=(None if loader_terms is None else loader_terms["template_rows"]),
+            column_chunk=exp.column_chunk,
             boundary_source=boundary_source,
             landuse_attrs=inputs.landuse_identity, grid=inputs.grid,
             valid_time=exp.start_time,
@@ -9952,16 +10082,21 @@ def run_prepared_forecast(
             "frames_per_file": 1,
             "expected_frame_count": expected_frames,
             "exact_frame_count_verified": True,
-            "initial_frame_verified": restart_info is None,
-            "last_scheduled_frame_verified": bool(output_schedule),
+            "initial_frame_verified": (restart_info is None and bool(output_inventory)
+                and output_inventory[0]["atomic_writer_readback_verified"]),
+            "last_scheduled_frame_verified": (bool(output_inventory)
+                and output_inventory[-1]["atomic_writer_readback_verified"]),
             "last_scheduled_offset_seconds": cadence_receipt[
                 "last_scheduled_offset_seconds"],
             "last_scheduled_valid_time": cadence_receipt[
                 "last_scheduled_valid_time"],
             "last_scheduled_equals_run_end": cadence_receipt[
                 "last_scheduled_equals_run_end"],
-            "initial_and_final_frames_verified": (restart_info is None and cadence_receipt[
-                "last_scheduled_equals_run_end"]),
+            "initial_and_final_frames_verified": (restart_info is None
+                and cadence_receipt["last_scheduled_equals_run_end"]
+                and bool(output_inventory)
+                and output_inventory[0]["atomic_writer_readback_verified"]
+                and output_inventory[-1]["atomic_writer_readback_verified"]),
             "all_frames_readback_verified": all(
                 item["atomic_writer_readback_verified"]
                 for item in output_inventory),
@@ -9970,7 +10105,8 @@ def run_prepared_forecast(
                 "value": 1,
             },
             "frame_count": len(output_inventory),
-            "total_bytes": sum(item["bytes"] for item in output_inventory),
+            "total_bytes": (sum(item["bytes"] for item in output_inventory)
+                if all(item["bytes"] is not None for item in output_inventory) else None),
             "files": output_inventory,
             **capture_output,
         },
@@ -10644,6 +10780,11 @@ def main(argv=None, *, observer=None) -> int:
     changes nothing.
     """
 
+    if argv is None:
+        # Before any heavy import: a free-threaded build keeps the rank
+        # threads off the interpreter lock (gpuwm.free_threading).
+        from gpuwm.free_threading import keep_gil_disabled
+        keep_gil_disabled()
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv == ["--show-capabilities"]:
         print(json.dumps(runner_capabilities(), sort_keys=True))

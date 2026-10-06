@@ -188,6 +188,20 @@ fn detach_keeps_worker_and_logs_alive() {
 fn stop_covers_grandchild_and_leaves_unrelated_process_running() {
     let root = scratch("stop");
     fixture(&root);
+    #[cfg(unix)]
+    let worker_python = {
+        use std::os::unix::fs::PermissionsExt;
+        // A background launcher passes SIG_IGN across exec. This helper is
+        // owned by this fixture and changes no signal disposition in the test
+        // process or its other concurrently running jobs.
+        let launcher = root.join("python-with-ignored-interrupt");
+        let executable = python().to_string_lossy().replace('\'', "'\\''");
+        fs::write(&launcher, format!("#!/bin/sh\ntrap '' INT\nexec '{executable}' \"$@\"\n")).unwrap();
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
+        launcher
+    };
+    #[cfg(not(unix))]
+    let worker_python = python();
     let mut unrelated = Command::new(python())
         .arg("-c")
         .arg("import time; time.sleep(30)")
@@ -198,7 +212,7 @@ fn stop_covers_grandchild_and_leaves_unrelated_process_running() {
         .unwrap();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut running =
-            job::Job::start_with_module_path(&python(), "fixture-wait", &[], &root.join("job"), &root, Some(&root)).unwrap();
+            job::Job::start_with_module_path(&worker_python, "fixture-wait", &[], &root.join("job"), &root, Some(&root)).unwrap();
         await_started(&mut running);
         let heartbeat = root.join("grandchild.log");
         await_file(&heartbeat);

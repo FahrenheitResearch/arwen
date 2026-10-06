@@ -2,9 +2,19 @@
 //
 // Flux-form advection on the Arakawa C-grid (WRF-ARW schemes):
 //   horizontal: 5th-order upwind-biased fluxes (WRF flux5),
-//   vertical:   3rd-order upwind-biased fluxes (WRF flux3), with a
-//               2nd-order centered fallback one face in from each boundary
-//               and zero flux through the domain top/bottom faces.
+//   vertical:   WRF's vert_order ladder, selected per launch by the
+//               trailing vorder argument (RunConfig v_sca_adv_order for
+//               scalars and w, v_mom_adv_order for u and v):
+//                 3: 3rd-order upwind-biased fluxes (WRF flux3), with a
+//                    2nd-order centered fallback one face in from each
+//                    boundary and zero flux through the domain top/bottom
+//                    faces (every run before the argument existed);
+//                 5: WRF's vert_order == 5 ladder (NOAA-EMC/HRRR
+//                    40ee6058c, WRFV3.9 module_advect_em.F, the same
+//                    text as WRF 4.7.1): 2nd order one face in, flux3
+//                    two faces in, flux5 (Omega-signed, flux5v) between
+//                    (advect_scalar F:5106-5147, advect_u F:2270-2310,
+//                    advect_v F:3751-3796, advect_w F:6782-6830).
 //
 // All four kernels ADD  -dF_x/dx - dF_y/dy - dF_eta/deta  into tend_out.
 // ru (nz,ny,nx+1), rv (nz,ny+1,nx), rw (nz+1,ny,nx) are coupled mass
@@ -115,6 +125,29 @@ real flux3(real qm2, real qm1, real q0, real qp1, real vel)
 #endif
 }
 
+// Vertical 5th-order face flux: WRF flux5 called with -vel (module_advect_em.F
+// vert_order == 5, vflux = vel*flux5(q(k-3..k+2), -vel)), so its dissipation
+// carries the Omega-signed sign of the vertical flux3 above, opposite to the
+// horizontal flux5.  Its own function rather than flux5 with a flipped
+// argument: under the exact-C build the Fortran expression order is
+// vel*(flux6 - sign(1,-vel)*D/60) = vel*(center + dissipation), and the
+// fabsf form of the default build rounds the same way as flux3 does.
+__device__ __forceinline__
+real flux5v(real qm3, real qm2, real qm1, real q0, real qp1, real qp2, real vel)
+{
+#if GPUWM_WRF_EXACT_C_ADVECTION
+    real center = __fdiv_rn(37.0f * (q0 + qm1)
+                    - 8.0f * (qp1 + qm2) + (qp2 + qm3), 60.0f);
+    real dissipation = __fdiv_rn(copysignf(1.0f, vel)
+        * ((qp2 - qm3) - 5.0f * (qp1 - qm2) + 10.0f * (q0 - qm1)), 60.0f);
+    return vel * (center + dissipation);
+#else
+    return __fdiv_rn((vel * (37.0f * (q0 + qm1) - 8.0f * (qp1 + qm2) + (qp2 + qm3))
+            + fabsf(vel) * (10.0f * (q0 - qm1) - 5.0f * (qp1 - qm2)
+                            + (qp2 - qm3))), 60.0f);
+#endif
+}
+
 // Horizontal 3rd-order face flux (WRF flux3 with the flux5 upwinding
 // sign; the vertical flux3 above carries the opposite, Omega-signed
 // dissipation) -- used two faces in from an open boundary.
@@ -216,17 +249,32 @@ real yface_cell_per(const real* q, real vel, int k, int g, int i,
 // 2nd-order face value one face in (module_advect_em.F vert_order 3:
 // vflux = rom*(fzm(k)*f(k) + fzp(k)*f(k-1)) at k=kts+1 and k=ktf, scalars
 // :4322/:4327, u :1486/:1490, v mirrors; reduces bitwise to the 0.5/0.5
-// average on a uniform grid), 3rd order in the interior.  q is indexed
-// with row width nxs (nx or nx+1).
+// average on a uniform grid), then the vorder ladder:
+//   3: flux3 everywhere between (every run before vorder existed);
+//   5: WRF vert_order == 5 (HRRR fork module_advect_em.F advect_scalar
+//      F:5106-5147, advect_u F:2270-2310, advect_v F:3751-3796): flux3 at
+//      k = kts+2 and k = ktf-1 (0-based w faces 2 and nz-2), flux5 with
+//      -vel (flux5v) at k = kts+3 .. ktf-2 (faces 3 .. nz-3).
+// The 2nd-order test comes first, so a column too short for WRF's loops
+// (nz < 4, where the Fortran would read below its own memory bounds) runs
+// the 2nd-order faces alone, as vorder 3 does.  q is indexed with row
+// width nxs (nx or nx+1).
 __device__ __forceinline__
 real zface_half(const real* q, real vel, int kf, int j, int i,
                 int nz, int ny, int nxs,
-                const real* fnm, const real* fnp)
+                const real* fnm, const real* fnp, int vorder)
 {
     if (kf == 0 || kf == nz) return 0.0f;
     if (kf == 1 || kf == nz - 1)
         return vel * (fnm[kf] * q[I3S(kf,     j, i, ny, nxs)]
                       + fnp[kf] * q[I3S(kf - 1, j, i, ny, nxs)]);
+    if (vorder == 5 && kf >= 3 && kf <= nz - 3)
+        return flux5v(q[I3S(kf - 3, j, i, ny, nxs)],
+                      q[I3S(kf - 2, j, i, ny, nxs)],
+                      q[I3S(kf - 1, j, i, ny, nxs)],
+                      q[I3S(kf,     j, i, ny, nxs)],
+                      q[I3S(kf + 1, j, i, ny, nxs)],
+                      q[I3S(kf + 2, j, i, ny, nxs)], vel);
     return flux3(q[I3S(kf - 2, j, i, ny, nxs)],
                  q[I3S(kf - 1, j, i, ny, nxs)],
                  q[I3S(kf,     j, i, ny, nxs)],
@@ -248,7 +296,8 @@ void flux_div_scalar(const real* __restrict__ q,
                      const real* __restrict__ msf,      // (ny, nx) mass-pt
                      real dx_inv, real dy_inv,
                      int nz, int ny, int nx,
-                     int open_x, int open_y, int has_msf, int spec)
+                     int open_x, int open_y, int has_msf, int spec,
+                     int vorder)
 {
 #if GPUWM_WRF_EXACT_C_ADVECTION
 
@@ -332,7 +381,7 @@ void flux_div_scalar(const real* __restrict__ q,
         for (int s = 0; s < 2; ++s) {
             int kf = k + s;
             fzo[s] = zface_half(q, rw[I3(kf, j, i, ny, nx)], kf, j, i,
-                                nz, ny, nx, fnm, fnp);
+                                nz, ny, nx, fnm, fnp, vorder);
         }
         real t = tend_out[IDX3(k,j,i)];
         if(applyy)t=t-ty;
@@ -361,7 +410,7 @@ void flux_div_scalar(const real* __restrict__ q,
                       rv[I3(k, g, i, ny + 1, nx)]);
         int kf = k + s;                                // w-face index 0..nz
         real vel = rw[I3(kf, j, i, ny, nx)];
-        fz[s] = zface_half(q, vel, kf, j, i, nz, ny, nx, fnm, fnp);
+        fz[s] = zface_half(q, vel, kf, j, i, nz, ny, nx, fnm, fnp, vorder);
     }
     real result=tend_out[IDX3(k,j,i)];
     result=result-(mscale*dy_inv)*(fy[1]-fy[0]);
@@ -449,7 +498,7 @@ void flux_div_scalar(const real* __restrict__ q,
         for (int s = 0; s < 2; ++s) {
             int kf = k + s;
             fzo[s] = zface_half(q, rw[I3(kf, j, i, ny, nx)], kf, j, i,
-                                nz, ny, nx, fnm, fnp);
+                                nz, ny, nx, fnm, fnp, vorder);
         }
         tend_out[IDX3(k, j, i)] += t - (fzo[1] - fzo[0]) * rdnw[k];
         return;
@@ -527,7 +576,7 @@ void flux_div_scalar(const real* __restrict__ q,
         for (int s = 0; s < 2; ++s) {
             int kf = k + s;
             fzo[s] = zface_half(q, rw[I3(kf, j, i, ny, nx)], kf, j, i,
-                                nz, ny, nx, fnm, fnp);
+                                nz, ny, nx, fnm, fnp, vorder);
         }
         real t = msf[(size_t)j * nx + i] * th + tb;    // WRF mrdx/mrdy
         tend_out[IDX3(k, j, i)] += t - (fzo[1] - fzo[0]) * rdnw[k];
@@ -554,7 +603,7 @@ void flux_div_scalar(const real* __restrict__ q,
                       rv[I3(k, g, i, ny + 1, nx)]);
         int kf = k + s;                                // w-face index 0..nz
         real vel = rw[I3(kf, j, i, ny, nx)];
-        fz[s] = zface_half(q, vel, kf, j, i, nz, ny, nx, fnm, fnp);
+        fz[s] = zface_half(q, vel, kf, j, i, nz, ny, nx, fnm, fnp, vorder);
     }
     if (has_msf) {                       // WRF mrdx/mrdy = msft*rdx/rdy
         tend_out[IDX3(k, j, i)] += msf[(size_t)j * nx + i]
@@ -587,7 +636,8 @@ void flux_div_u(const real* __restrict__ u,            // (nz, ny, nx+1)
                 const real* __restrict__ msf,          // (ny, nx+1) u-pt
                 real dx_inv, real dy_inv,
                 int nz, int ny, int nx,
-                int open_x, int open_y, int has_msf, int spec)
+                int open_x, int open_y, int has_msf, int spec,
+                     int vorder)
 {
 #if GPUWM_WRF_EXACT_C_ADVECTION
 
@@ -719,7 +769,7 @@ void flux_div_u(const real* __restrict__ u,            // (nz, ny, nx+1)
                 else
                     velz = 0.5f * (rw[I3(kf, j, cl, ny, nx)]
                                    + rw[I3(kf, j, cr, ny, nx)]);
-                fz2[s] = zface_half(u, velz, kf, j, iu, nz, ny, nxs, fnm, fnp);
+                fz2[s] = zface_half(u, velz, kf, j, iu, nz, ny, nxs, fnm, fnp, vorder);
             }
             t = t - rdnw[k]*(fz2[1]-fz2[0]);
         }
@@ -755,7 +805,7 @@ void flux_div_u(const real* __restrict__ u,            // (nz, ny, nx+1)
         int kf = k + s;
         real velz = 0.5f * (rw[I3(kf, j, im1c, ny, nx)]
                           + rw[I3(kf, j, ic,   ny, nx)]);
-        fz[s] = zface_half(u, velz, kf, j, ic, nz, ny, nx + 1, fnm, fnp);
+        fz[s] = zface_half(u, velz, kf, j, ic, nz, ny, nx + 1, fnm, fnp, vorder);
     }
     real result=tend_out[I3(k,j,i,ny,nx+1)];
     result=result-(mscale*dy_inv)*(fy[1]-fy[0]);
@@ -889,7 +939,7 @@ void flux_div_u(const real* __restrict__ u,            // (nz, ny, nx+1)
                 else
                     velz = 0.5f * (rw[I3(kf, j, cl, ny, nx)]
                                    + rw[I3(kf, j, cr, ny, nx)]);
-                fz2[s] = zface_half(u, velz, kf, j, iu, nz, ny, nxs, fnm, fnp);
+                fz2[s] = zface_half(u, velz, kf, j, iu, nz, ny, nxs, fnm, fnp, vorder);
             }
             t += -(fz2[1] - fz2[0]) * rdnw[k];
         }
@@ -925,7 +975,7 @@ void flux_div_u(const real* __restrict__ u,            // (nz, ny, nx+1)
         int kf = k + s;
         real velz = 0.5f * (rw[I3(kf, j, im1c, ny, nx)]
                           + rw[I3(kf, j, ic,   ny, nx)]);
-        fz[s] = zface_half(u, velz, kf, j, ic, nz, ny, nx + 1, fnm, fnp);
+        fz[s] = zface_half(u, velz, kf, j, ic, nz, ny, nx + 1, fnm, fnp, vorder);
     }
     if (has_msf) {                       // WRF advect_u: msfux at the u point
         tend_out[I3(k, j, i, ny, nx + 1)] += msf[(size_t)j * (nx + 1) + i]
@@ -955,7 +1005,8 @@ void flux_div_v(const real* __restrict__ v,            // (nz, ny+1, nx)
                 const real* __restrict__ msf,          // (ny+1, nx) v-pt
                 real dx_inv, real dy_inv,
                 int nz, int ny, int nx,
-                int open_x, int open_y, int has_msf, int spec)
+                int open_x, int open_y, int has_msf, int spec,
+                     int vorder)
 {
 #if GPUWM_WRF_EXACT_C_ADVECTION
 
@@ -1078,7 +1129,7 @@ void flux_div_v(const real* __restrict__ v,            // (nz, ny+1, nx)
                 int kf = k + s;
                 real velz = 0.5f * (rw[I3(kf, rs, i, ny, nx)]
                                     + rw[I3(kf, rn, i, ny, nx)]);
-                fz2[s] = zface_half(v, velz, kf, jv, i, nz, nys, nx, fnm, fnp);
+                fz2[s] = zface_half(v, velz, kf, jv, i, nz, nys, nx, fnm, fnp, vorder);
             }
             t = t - rdnw[k]*(fz2[1]-fz2[0]);
         }
@@ -1114,7 +1165,7 @@ void flux_div_v(const real* __restrict__ v,            // (nz, ny+1, nx)
         int kf = k + s;
         real velz = 0.5f * (rw[I3(kf, jm1c, i, ny, nx)]
                           + rw[I3(kf, jc,   i, ny, nx)]);
-        fz[s] = zface_half(v, velz, kf, jc, i, nz, ny + 1, nx, fnm, fnp);
+        fz[s] = zface_half(v, velz, kf, jc, i, nz, ny + 1, nx, fnm, fnp, vorder);
     }
     real result=tend_out[I3(k,j,i,ny+1,nx)];
     result=result-(mscale*dy_inv)*(fy[1]-fy[0]);
@@ -1239,7 +1290,7 @@ void flux_div_v(const real* __restrict__ v,            // (nz, ny+1, nx)
                 int kf = k + s;
                 real velz = 0.5f * (rw[I3(kf, rs, i, ny, nx)]
                                     + rw[I3(kf, rn, i, ny, nx)]);
-                fz2[s] = zface_half(v, velz, kf, jv, i, nz, nys, nx, fnm, fnp);
+                fz2[s] = zface_half(v, velz, kf, jv, i, nz, nys, nx, fnm, fnp, vorder);
             }
             t += -(fz2[1] - fz2[0]) * rdnw[k];
         }
@@ -1275,7 +1326,7 @@ void flux_div_v(const real* __restrict__ v,            // (nz, ny+1, nx)
         int kf = k + s;
         real velz = 0.5f * (rw[I3(kf, jm1c, i, ny, nx)]
                           + rw[I3(kf, jc,   i, ny, nx)]);
-        fz[s] = zface_half(v, velz, kf, jc, i, nz, ny + 1, nx, fnm, fnp);
+        fz[s] = zface_half(v, velz, kf, jc, i, nz, ny + 1, nx, fnm, fnp, vorder);
     }
     if (has_msf) {                       // WRF advect_v: msfvy at the v point
         tend_out[I3(k, j, i, ny + 1, nx)] += msf[(size_t)j * nx + i]
@@ -1318,7 +1369,8 @@ void flux_div_w(const real* __restrict__ w,            // (nz+1, ny, nx)
                 const real* __restrict__ msf,          // (ny, nx) mass-pt
                 real dx_inv, real dy_inv,
                 int nz, int ny, int nx,
-                int open_x, int open_y, int has_msf, int spec)
+                int open_x, int open_y, int has_msf, int spec,
+                     int vorder)
 {
 #if GPUWM_WRF_EXACT_C_ADVECTION
 
@@ -1463,12 +1515,24 @@ void flux_div_w(const real* __restrict__ w,            // (nz+1, ny, nx)
             }
             ty = mscale*dy_inv*(fy2[1]-fy2[0]); applyy=true;
         }
+        // Vertical faces on mass levels m (WRF advect_w vflux(k), m = k-2):
+        // m == 0 and nz-1 are WRF's 0.25*(rom(k)+rom(k-1))*(w(k)+w(k-1))
+        // faces (flux2), and under vorder 5 (HRRR fork module_advect_em.F
+        // advect_w F:6782-6830, which keys on v_sca_adv_order) m == 1 and
+        // nz-2 are flux3 (k = kts+2, ktf) with flux5v on w[m-2..m+3] for
+        // m = 2 .. nz-3 (k = kts+3 .. ktf-1); vorder 3 keeps flux3 between.
+        // The lid row's 2*rdzu(ktf)*vflux(ktf+1) reads the top flux2 face.
         real fz2[2];
         for (int s = 0; s < 2; ++s) {
             int m = k - 1 + s;                         // mass-level face
             real velz = 0.5f * (rw[IDX3(m, j, i)] + rw[IDX3(m + 1, j, i)]);
             if (m == 0 || m == nz - 1)
                 fz2[s] = flux2(w[IDX3(m, j, i)], w[IDX3(m + 1, j, i)], velz);
+            else if (vorder == 5 && m >= 2 && m <= nz - 3)
+                fz2[s] = flux5v(w[IDX3(m - 2, j, i)], w[IDX3(m - 1, j, i)],
+                                w[IDX3(m, j, i)], w[IDX3(m + 1, j, i)],
+                                w[IDX3(m + 2, j, i)], w[IDX3(m + 3, j, i)],
+                                velz);
             else
                 fz2[s] = flux3(w[IDX3(m - 1, j, i)], w[IDX3(m, j, i)],
                                w[IDX3(m + 1, j, i)], w[IDX3(m + 2, j, i)],
@@ -1509,6 +1573,10 @@ void flux_div_w(const real* __restrict__ w,            // (nz+1, ny, nx)
         real velz = 0.5f * (rw[IDX3(m, j, i)] + rw[IDX3(m + 1, j, i)]);
         if (m == 0 || m == nz - 1)
             fz[s] = flux2(w[IDX3(m, j, i)], w[IDX3(m + 1, j, i)], velz);
+        else if (vorder == 5 && m >= 2 && m <= nz - 3)
+            fz[s] = flux5v(w[IDX3(m - 2, j, i)], w[IDX3(m - 1, j, i)],
+                            w[IDX3(m, j, i)], w[IDX3(m + 1, j, i)],
+                            w[IDX3(m + 2, j, i)], w[IDX3(m + 3, j, i)], velz);
         else
             fz[s] = flux3(w[IDX3(m - 1, j, i)], w[IDX3(m, j, i)],
                           w[IDX3(m + 1, j, i)], w[IDX3(m + 2, j, i)], velz);
@@ -1656,12 +1724,24 @@ void flux_div_w(const real* __restrict__ w,            // (nz+1, ny, nx)
             }
             t += -(fy2[1] - fy2[0]) * dy_inv;
         }
+        // Vertical faces on mass levels m (WRF advect_w vflux(k), m = k-2):
+        // m == 0 and nz-1 are WRF's 0.25*(rom(k)+rom(k-1))*(w(k)+w(k-1))
+        // faces (flux2), and under vorder 5 (HRRR fork module_advect_em.F
+        // advect_w F:6782-6830, which keys on v_sca_adv_order) m == 1 and
+        // nz-2 are flux3 (k = kts+2, ktf) with flux5v on w[m-2..m+3] for
+        // m = 2 .. nz-3 (k = kts+3 .. ktf-1); vorder 3 keeps flux3 between.
+        // The lid row's 2*rdzu(ktf)*vflux(ktf+1) reads the top flux2 face.
         real fz2[2];
         for (int s = 0; s < 2; ++s) {
             int m = k - 1 + s;                         // mass-level face
             real velz = 0.5f * (rw[IDX3(m, j, i)] + rw[IDX3(m + 1, j, i)]);
             if (m == 0 || m == nz - 1)
                 fz2[s] = flux2(w[IDX3(m, j, i)], w[IDX3(m + 1, j, i)], velz);
+            else if (vorder == 5 && m >= 2 && m <= nz - 3)
+                fz2[s] = flux5v(w[IDX3(m - 2, j, i)], w[IDX3(m - 1, j, i)],
+                                w[IDX3(m, j, i)], w[IDX3(m + 1, j, i)],
+                                w[IDX3(m + 2, j, i)], w[IDX3(m + 3, j, i)],
+                                velz);
             else
                 fz2[s] = flux3(w[IDX3(m - 1, j, i)], w[IDX3(m, j, i)],
                                w[IDX3(m + 1, j, i)], w[IDX3(m + 2, j, i)],
@@ -1749,12 +1829,24 @@ void flux_div_w(const real* __restrict__ w,            // (nz+1, ny, nx)
             }
             th += -(fy2[1] - fy2[0]) * dy_inv;
         }
+        // Vertical faces on mass levels m (WRF advect_w vflux(k), m = k-2):
+        // m == 0 and nz-1 are WRF's 0.25*(rom(k)+rom(k-1))*(w(k)+w(k-1))
+        // faces (flux2), and under vorder 5 (HRRR fork module_advect_em.F
+        // advect_w F:6782-6830, which keys on v_sca_adv_order) m == 1 and
+        // nz-2 are flux3 (k = kts+2, ktf) with flux5v on w[m-2..m+3] for
+        // m = 2 .. nz-3 (k = kts+3 .. ktf-1); vorder 3 keeps flux3 between.
+        // The lid row's 2*rdzu(ktf)*vflux(ktf+1) reads the top flux2 face.
         real fz2[2];
         for (int s = 0; s < 2; ++s) {
             int m = k - 1 + s;                         // mass-level face
             real velz = 0.5f * (rw[IDX3(m, j, i)] + rw[IDX3(m + 1, j, i)]);
             if (m == 0 || m == nz - 1)
                 fz2[s] = flux2(w[IDX3(m, j, i)], w[IDX3(m + 1, j, i)], velz);
+            else if (vorder == 5 && m >= 2 && m <= nz - 3)
+                fz2[s] = flux5v(w[IDX3(m - 2, j, i)], w[IDX3(m - 1, j, i)],
+                                w[IDX3(m, j, i)], w[IDX3(m + 1, j, i)],
+                                w[IDX3(m + 2, j, i)], w[IDX3(m + 3, j, i)],
+                                velz);
             else
                 fz2[s] = flux3(w[IDX3(m - 1, j, i)], w[IDX3(m, j, i)],
                                w[IDX3(m + 1, j, i)], w[IDX3(m + 2, j, i)],
@@ -1793,6 +1885,10 @@ void flux_div_w(const real* __restrict__ w,            // (nz+1, ny, nx)
         real velz = 0.5f * (rw[IDX3(m, j, i)] + rw[IDX3(m + 1, j, i)]);
         if (m == 0 || m == nz - 1)
             fz[s] = flux2(w[IDX3(m, j, i)], w[IDX3(m + 1, j, i)], velz);
+        else if (vorder == 5 && m >= 2 && m <= nz - 3)
+            fz[s] = flux5v(w[IDX3(m - 2, j, i)], w[IDX3(m - 1, j, i)],
+                            w[IDX3(m, j, i)], w[IDX3(m + 1, j, i)],
+                            w[IDX3(m + 2, j, i)], w[IDX3(m + 3, j, i)], velz);
         else
             fz[s] = flux3(w[IDX3(m - 1, j, i)], w[IDX3(m, j, i)],
                           w[IDX3(m + 1, j, i)], w[IDX3(m + 2, j, i)], velz);

@@ -1,0 +1,378 @@
+{
+ "compute_capability": [
+  [
+   8,
+   9
+  ],
+  [
+   8,
+   9
+  ]
+ ],
+ "gpu": [
+  "NVIDIA GeForce RTX 4090",
+  "NVIDIA GeForce RTX 4090"
+ ],
+ "kernels_new": {
+  "advection": "af8f5c6cb0441dcdc8198ac7453bca539edaaf56aa1d450e9ab0fb7d1d8de66e",
+  "openbc": "5bf7babe4a953b1a12f8ddca403f04d86fa0aed0f7684992b5eabb5d82cbca57",
+  "pd_advection": "9011930b5b510770f81e11c56a7fd6764233e1592127edc05c1d9c20f7e5142b"
+ },
+ "kernels_old": {
+  "advection": "e3fa613578e3989e27678e1cce00f4465a941bd541567807a96da652f2b2c9ab",
+  "openbc": "5bf7babe4a953b1a12f8ddca403f04d86fa0aed0f7684992b5eabb5d82cbca57",
+  "pd_advection": "b4832282be55c3658586478788e979e3595a66a9fae56e00378843c25f62b28f"
+ },
+ "mutation_rejected": true,
+ "new": "<lane scratch>/recap2/wrf471-new/gpu-receipt.json",
+ "old": "<lane scratch>/recap2/wrf471-old/gpu-receipt.json",
+ "variants": {
+  "mutation": {
+   "cases": {
+    "limiter_moisture_front": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": true
+    },
+    "map_factor_extremes": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": true
+    },
+    "real_interior": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": true
+    },
+    "real_open_boundary": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": true
+    },
+    "real_steep_terrain": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": true
+    },
+    "real_west_boundary": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": true
+    },
+    "southern_reflection": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": true
+    },
+    "zero_nearzero_tracers": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": true
+    }
+   },
+   "identical": true,
+   "words_compared": 0,
+   "words_different": 0
+  },
+  "no_fma": {
+   "cases": {
+    "limiter_moisture_front": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": true
+    },
+    "map_factor_extremes": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": true
+    },
+    "real_interior": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": true
+    },
+    "real_open_boundary": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": true
+    },
+    "real_steep_terrain": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": true
+    },
+    "real_west_boundary": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": true
+    },
+    "southern_reflection": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": true
+    },
+    "zero_nearzero_tracers": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": true
+    }
+   },
+   "identical": true,
+   "words_compared": 0,
+   "words_different": 0
+  },
+  "production": {
+   "cases": {
+    "limiter_moisture_front": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "words_compared": 358400,
+     "words_different": 0,
+     "words_sha256_identical": true
+    },
+    "map_factor_extremes": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "words_compared": 358400,
+     "words_different": 0,
+     "words_sha256_identical": true
+    },
+    "real_interior": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "words_compared": 358400,
+     "words_different": 0,
+     "words_sha256_identical": true
+    },
+    "real_open_boundary": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "words_compared": 358400,
+     "words_different": 0,
+     "words_sha256_identical": true
+    },
+    "real_steep_terrain": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "words_compared": 358400,
+     "words_different": 0,
+     "words_sha256_identical": true
+    },
+    "real_west_boundary": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "words_compared": 358400,
+     "words_different": 0,
+     "words_sha256_identical": true
+    },
+    "southern_reflection": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "words_compared": 358400,
+     "words_different": 0,
+     "words_sha256_identical": true
+    },
+    "zero_nearzero_tracers": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "words_compared": 358400,
+     "words_different": 0,
+     "words_sha256_identical": true
+    }
+   },
+   "identical": true,
+   "words_compared": 2867200,
+   "words_different": 0
+  },
+  "wrf_flux": {
+   "cases": {
+    "limiter_moisture_front": {
+     "levels_identical": false,
+     "measurements_identical": false,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": false
+    },
+    "map_factor_extremes": {
+     "levels_identical": false,
+     "measurements_identical": false,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": false
+    },
+    "real_interior": {
+     "levels_identical": false,
+     "measurements_identical": false,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": false
+    },
+    "real_open_boundary": {
+     "levels_identical": false,
+     "measurements_identical": false,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": false
+    },
+    "real_steep_terrain": {
+     "levels_identical": false,
+     "measurements_identical": false,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": false
+    },
+    "real_west_boundary": {
+     "levels_identical": false,
+     "measurements_identical": false,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": false
+    },
+    "southern_reflection": {
+     "levels_identical": false,
+     "measurements_identical": false,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": false
+    },
+    "zero_nearzero_tracers": {
+     "levels_identical": false,
+     "measurements_identical": false,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": false
+    }
+   },
+   "identical": false,
+   "words_compared": 0,
+   "words_different": 0
+  },
+  "wrf_flux_no_fma": {
+   "cases": {
+    "limiter_moisture_front": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": true
+    },
+    "map_factor_extremes": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": true
+    },
+    "real_interior": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": true
+    },
+    "real_open_boundary": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": true
+    },
+    "real_steep_terrain": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": true
+    },
+    "real_west_boundary": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": true
+    },
+    "southern_reflection": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": true
+    },
+    "zero_nearzero_tracers": {
+     "levels_identical": true,
+     "measurements_identical": true,
+     "note": "archive not stored on one side (receipt rows compared)",
+     "words_compared": null,
+     "words_different": null,
+     "words_sha256_identical": true
+    }
+   },
+   "identical": true,
+   "words_compared": 0,
+   "words_different": 0
+  }
+ }
+}

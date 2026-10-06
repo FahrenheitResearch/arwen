@@ -50,7 +50,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from gpuwm.core.kernels import get_kernel
+from gpuwm.core.thompson_aerosol_launch import aerosol_kernel
 from gpuwm.core.thompson_aerosol_launch import (
     CCN_ACTIVATION_SHAPE,
     SAT_MODULE,
@@ -151,7 +151,7 @@ def launch_aerosol_saturation_adjust(
     step = _require_positive_dt(dt)
 
     grid, block = launch_grid(size)
-    get_kernel(SAT_MODULE, SATURATION_ADJUST_KERNEL)(
+    aerosol_kernel(SAT_MODULE, SATURATION_ADJUST_KERNEL)(
         grid, block,
         (temperature, pressure, qv, qc, nc_entry, ncten, nwfaten,
          nwfa_work_m3, w, tnccn_act, tnc_wev,
@@ -212,7 +212,7 @@ def launch_aerosol_rain_evaporation(
     step = _require_positive_dt(dt)
 
     grid, block = launch_grid(size)
-    get_kernel(SAT_MODULE, RAIN_EVAPORATION_KERNEL)(
+    aerosol_kernel(SAT_MODULE, RAIN_EVAPORATION_KERNEL)(
         grid, block,
         (qr, nr, temperature, pressure, qv, nwfaten,
          reference_density, reference_temperature, graupel_melt_marker,
@@ -253,7 +253,7 @@ def probe_droplet_evaporation_indices(
     pnc = cp.empty(shape, dtype=cp.float64)
 
     grid, block = launch_grid(size)
-    get_kernel(SAT_MODULE, DROPLET_EVAP_PROBE_KERNEL)(
+    aerosol_kernel(SAT_MODULE, DROPLET_EVAP_PROBE_KERNEL)(
         grid, block,
         (temperature, pressure, qv, qc, nc_work_m3, tnc_wev,
          idx_d, idx_c, idx_n, tnc, pnc,
@@ -301,7 +301,7 @@ def probe_rain_evaporation_rates(
     bound = cp.empty(shape, dtype=cp.float32)
 
     grid, block = launch_grid(size)
-    get_kernel(SAT_MODULE, RAIN_EVAP_PROBE_KERNEL)(
+    aerosol_kernel(SAT_MODULE, RAIN_EVAP_PROBE_KERNEL)(
         grid, block,
         (scratch[0], scratch[1], scratch[2], pressure, scratch[3],
          graupel_melt_marker, entry_density, prv, pnr, bound,

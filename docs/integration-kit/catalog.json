@@ -6,8 +6,814 @@
     "direct",
     "derived",
     "heavy",
-    "windowed"
+    "windowed",
+    "variables"
   ],
+  "local_run": {
+    "basis": "the renderer's own fileless verdict on the wrfout import lane: a product is offered when every field it needs is one that import writes and, for a run of known length, when its time window closes within the run",
+    "products": [
+      {
+        "kind": "windowed",
+        "minimum_hour": 24,
+        "name": "10m_wind_0_24h_max"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "10m_wind_0_48h_max"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 1,
+        "name": "10m_wind_1h_max"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "10m_wind_24_48h_max"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 1,
+        "name": "10m_wind_run_max"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "10m_wind_speed_and_direction"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "1km_reflectivity"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "200mb_absolute_vorticity_height_winds"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "200mb_height_winds"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "200mb_rh_height_winds"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "200mb_temperature_height_winds"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "250mb_height_winds"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "250mb_temperature_height_winds"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "2m_dewpoint"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 24,
+        "name": "2m_dewpoint_0_24h_max"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 24,
+        "name": "2m_dewpoint_0_24h_min"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 24,
+        "name": "2m_dewpoint_0_24h_range"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "2m_dewpoint_0_48h_max"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "2m_dewpoint_0_48h_min"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "2m_dewpoint_0_48h_range"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "2m_dewpoint_10m_winds"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "2m_dewpoint_24_48h_max"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "2m_dewpoint_24_48h_min"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "2m_dewpoint_24_48h_range"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "2m_relative_humidity"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "2m_relative_humidity_10m_winds"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 24,
+        "name": "2m_rh_0_24h_max"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 24,
+        "name": "2m_rh_0_24h_min"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 24,
+        "name": "2m_rh_0_24h_range"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "2m_rh_0_48h_max"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "2m_rh_0_48h_min"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "2m_rh_0_48h_range"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "2m_rh_24_48h_max"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "2m_rh_24_48h_min"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "2m_rh_24_48h_range"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 24,
+        "name": "2m_temp_0_24h_max"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 24,
+        "name": "2m_temp_0_24h_min"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 24,
+        "name": "2m_temp_0_24h_range"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "2m_temp_0_48h_max"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "2m_temp_0_48h_min"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "2m_temp_0_48h_range"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "2m_temp_24_48h_max"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "2m_temp_24_48h_min"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "2m_temp_24_48h_range"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "2m_temperature"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "2m_temperature_10m_winds"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 24,
+        "name": "2m_vpd_0_24h_max"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 24,
+        "name": "2m_vpd_0_24h_min"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 24,
+        "name": "2m_vpd_0_24h_range"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "2m_vpd_0_48h_max"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "2m_vpd_0_48h_min"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "2m_vpd_0_48h_range"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "2m_vpd_24_48h_max"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "2m_vpd_24_48h_min"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 48,
+        "name": "2m_vpd_24_48h_range"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "300mb_absolute_vorticity_height_winds"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "300mb_height_winds"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "300mb_rh_height_winds"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "300mb_temperature_height_winds"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "500mb_absolute_vorticity_height_winds"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "500mb_height_winds"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "500mb_rh_height_winds"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "500mb_temperature_height_winds"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "700mb_absolute_vorticity_height_winds"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "700mb_dewpoint_height_winds"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "700mb_height_winds"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "700mb_rh_height_winds"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "700mb_temperature_height_winds"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "850mb_absolute_vorticity_height_winds"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "850mb_dewpoint_height_winds"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "850mb_height_winds"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "850mb_rh_height_winds"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "850mb_temperature_height_winds"
+      },
+      {
+        "kind": "derived",
+        "minimum_hour": 0,
+        "name": "bulk_shear_0_1km"
+      },
+      {
+        "kind": "derived",
+        "minimum_hour": 0,
+        "name": "bulk_shear_0_6km"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "cloud_cover_levels"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "cloud_ice_column_max"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "cloud_water_column_max"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "composite_reflectivity"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "composite_reflectivity_uh"
+      },
+      {
+        "kind": "derived",
+        "minimum_hour": 0,
+        "name": "ehi_0_1km"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "graupel_column_max"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "high_cloud_cover"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "isotherm_height_0c"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "isotherm_height_minus10c"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "isotherm_height_minus20c"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "low_cloud_cover"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "middle_cloud_cover"
+      },
+      {
+        "kind": "derived",
+        "minimum_hour": 0,
+        "name": "mlcape"
+      },
+      {
+        "kind": "derived",
+        "minimum_hour": 0,
+        "name": "mlcin"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "mslp_10m_winds"
+      },
+      {
+        "kind": "derived",
+        "minimum_hour": 0,
+        "name": "mucape"
+      },
+      {
+        "kind": "derived",
+        "minimum_hour": 0,
+        "name": "mucin"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "precipitable_water"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 12,
+        "name": "qpf_12h"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 1,
+        "name": "qpf_1h"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 24,
+        "name": "qpf_24h"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 6,
+        "name": "qpf_6h"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 1,
+        "name": "qpf_total"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "rain_water_column_max"
+      },
+      {
+        "kind": "derived",
+        "minimum_hour": 0,
+        "name": "sbcape"
+      },
+      {
+        "kind": "derived",
+        "minimum_hour": 0,
+        "name": "sbcin"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "simulated_ir_satellite"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "snow_column_max"
+      },
+      {
+        "kind": "derived",
+        "minimum_hour": 0,
+        "name": "srh_0_1km"
+      },
+      {
+        "kind": "derived",
+        "minimum_hour": 0,
+        "name": "srh_0_3km"
+      },
+      {
+        "kind": "derived",
+        "minimum_hour": 0,
+        "name": "stp_fixed"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "supercooled_water_path"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "supercooled_water_path_0_3km"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "supercooled_water_path_3_6km"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "terrain_height"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "total_qpf"
+      },
+      {
+        "kind": "direct",
+        "minimum_hour": 0,
+        "name": "uh_2to5km"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 1,
+        "name": "uh_2to5km_1h_max"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 3,
+        "name": "uh_2to5km_3h_max"
+      },
+      {
+        "kind": "windowed",
+        "minimum_hour": 1,
+        "name": "uh_2to5km_run_max"
+      }
+    ],
+    "run_hours": null,
+    "unavailable": {
+      "10m_wind_gusts": "a wrfout import writes no wind_gust_10m_agl",
+      "aigefs_spr_2m_temperature_stddev": "a wrfout import writes no temperature_2m_agl_ensemble_stddev",
+      "aigefs_spr_500mb_height_stddev": "a wrfout import writes no geopotential_height_500hpa_ensemble_stddev",
+      "aigefs_spr_500mb_temperature_stddev": "a wrfout import writes no temperature_500hpa_ensemble_stddev",
+      "aigefs_spr_6h_qpf_stddev": "a wrfout import writes no total_precipitation_surface_ensemble_stddev",
+      "aigefs_spr_mslp_stddev": "a wrfout import writes no pressure_reduced_to_mean_sea_level_mean_sea_level_ensemble_stddev",
+      "apparent_temperature_2m": "no 'apparent_temperature_2m' grid: no wrf-core diagnostic of the wrfout import is stored under this recipe slug",
+      "categorical_freezing_rain": "a wrfout import writes no categorical_freezing_rain_surface",
+      "categorical_ice_pellets": "a wrfout import writes no categorical_ice_pellets_surface",
+      "categorical_rain": "a wrfout import writes no categorical_rain_surface",
+      "categorical_snow": "a wrfout import writes no categorical_snow_surface",
+      "cloud_cover": "a wrfout import writes no total_cloud_cover_entire_atmosphere",
+      "dcape": "no 'dcape' grid: no wrf-core diagnostic of the wrfout import is stored under this recipe slug",
+      "dewpoint_depression_2m": "no 'dewpoint_depression_2m' grid: no wrf-core diagnostic of the wrfout import is stored under this recipe slug",
+      "ecape_ehi_0_1km": "no 'ecape_ehi_0_1km' grid: only the heavy import stage computes it, and a default wrfout import does not run that stage",
+      "ecape_ehi_0_3km": "no 'ecape_ehi_0_3km' grid: only the heavy import stage computes it, and a default wrfout import does not run that stage",
+      "ecape_scp": "no 'ecape_scp' grid: only the heavy import stage computes it, and a default wrfout import does not run that stage",
+      "ecape_stp": "no 'ecape_stp' grid: only the heavy import stage computes it, and a default wrfout import does not run that stage",
+      "ehi_0_3km": "no 'ehi_0_3km' grid: no wrf-core diagnostic of the wrfout import is stored under this recipe slug",
+      "fire_weather_composite": "no 'fire_weather_composite' grid: no wrf-core diagnostic of the wrfout import is stored under this recipe slug",
+      "gefs_avg_2m_relative_humidity": "a wrfout import writes no relative_humidity_2m_agl_ensemble_mean",
+      "gefs_avg_2m_temperature_10m_winds": "a wrfout import writes no temperature_2m_agl_ensemble_mean, pressure_reduced_to_mean_sea_level_mean_sea_level_ensemble_mean, u_wind_10m_agl_ensemble_mean, v_wind_10m_agl_ensemble_mean",
+      "gefs_avg_500mb_height_winds": "a wrfout import writes no geopotential_height_500hpa_ensemble_mean, u_wind_500hpa_ensemble_mean, v_wind_500hpa_ensemble_mean",
+      "gefs_avg_500mb_rh_height_winds": "a wrfout import writes no relative_humidity_500hpa_ensemble_mean, geopotential_height_500hpa_ensemble_mean, u_wind_500hpa_ensemble_mean, v_wind_500hpa_ensemble_mean",
+      "gefs_avg_500mb_temperature_height_winds": "a wrfout import writes no temperature_500hpa_ensemble_mean, geopotential_height_500hpa_ensemble_mean, u_wind_500hpa_ensemble_mean, v_wind_500hpa_ensemble_mean",
+      "gefs_avg_6h_qpf": "a wrfout import writes no total_precipitation_surface_ensemble_mean",
+      "gefs_avg_cloud_cover": "a wrfout import writes no total_cloud_cover_entire_atmosphere_ensemble_mean",
+      "gefs_avg_mslp_10m_winds": "a wrfout import writes no pressure_reduced_to_mean_sea_level_mean_sea_level_ensemble_mean, u_wind_10m_agl_ensemble_mean, v_wind_10m_agl_ensemble_mean",
+      "gefs_avg_precipitable_water": "a wrfout import writes no precipitable_water_entire_atmosphere_ensemble_mean",
+      "gefs_spr_2m_relative_humidity_stddev": "a wrfout import writes no relative_humidity_2m_agl_ensemble_stddev",
+      "gefs_spr_2m_temperature_stddev": "a wrfout import writes no temperature_2m_agl_ensemble_stddev",
+      "gefs_spr_500mb_height_stddev": "a wrfout import writes no geopotential_height_500hpa_ensemble_stddev",
+      "gefs_spr_500mb_rh_stddev": "a wrfout import writes no relative_humidity_500hpa_ensemble_stddev",
+      "gefs_spr_500mb_temperature_stddev": "a wrfout import writes no temperature_500hpa_ensemble_stddev",
+      "gefs_spr_6h_qpf_stddev": "a wrfout import writes no total_precipitation_surface_ensemble_stddev",
+      "gefs_spr_cloud_cover_stddev": "a wrfout import writes no total_cloud_cover_entire_atmosphere_ensemble_stddev",
+      "gefs_spr_mslp_stddev": "a wrfout import writes no pressure_reduced_to_mean_sea_level_mean_sea_level_ensemble_stddev",
+      "gefs_spr_precipitable_water_stddev": "a wrfout import writes no precipitable_water_entire_atmosphere_ensemble_stddev",
+      "heat_index_2m": "no 'heat_index_2m' grid: no wrf-core diagnostic of the wrfout import is stored under this recipe slug",
+      "hgefs_spr_2m_temperature_stddev": "a wrfout import writes no temperature_2m_agl_ensemble_stddev",
+      "hgefs_spr_500mb_height_stddev": "a wrfout import writes no geopotential_height_500hpa_ensemble_stddev",
+      "hgefs_spr_500mb_temperature_stddev": "a wrfout import writes no temperature_500hpa_ensemble_stddev",
+      "hgefs_spr_6h_qpf_stddev": "a wrfout import writes no total_precipitation_surface_ensemble_stddev",
+      "hgefs_spr_mslp_stddev": "a wrfout import writes no pressure_reduced_to_mean_sea_level_mean_sea_level_ensemble_stddev",
+      "href_mean_10m_wind_speed": "a wrfout import writes no wind_speed_10m_agl_ensemble_mean",
+      "href_mean_2m_dewpoint": "a wrfout import writes no dewpoint_2m_agl_ensemble_mean",
+      "href_mean_2m_temperature": "a wrfout import writes no temperature_2m_agl_ensemble_mean",
+      "href_mean_500mb_height": "a wrfout import writes no geopotential_height_500hpa_ensemble_mean",
+      "href_mean_500mb_temperature": "a wrfout import writes no temperature_500hpa_ensemble_mean",
+      "href_mean_cloud_cover": "a wrfout import writes no total_cloud_cover_entire_atmosphere_ensemble_mean",
+      "href_mean_mslp": "a wrfout import writes no pressure_reduced_to_mean_sea_level_mean_sea_level_ensemble_mean",
+      "href_mean_precipitable_water": "a wrfout import writes no precipitable_water_entire_atmosphere_ensemble_mean",
+      "href_mean_visibility": "a wrfout import writes no visibility_surface_ensemble_mean",
+      "href_prob_10m_wind_speed_above_15p4ms": "a wrfout import writes no wind_speed_10m_agl_prob_gt_15400m",
+      "href_prob_10m_wind_speed_above_20p6ms": "a wrfout import writes no wind_speed_10m_agl_prob_gt_20600m",
+      "href_prob_10m_wind_speed_above_25p72ms": "a wrfout import writes no wind_speed_10m_agl_prob_gt_25720m",
+      "href_prob_2m_dewpoint_above_291p48k": "a wrfout import writes no dewpoint_2m_agl_prob_gt_291480m",
+      "href_prob_2m_dewpoint_above_294p26k": "a wrfout import writes no dewpoint_2m_agl_prob_gt_294260m",
+      "href_prob_2m_temperature_below_273p15k": "a wrfout import writes no temperature_2m_agl_prob_lt_273150m",
+      "href_prob_pwat_above_25mm": "a wrfout import writes no precipitable_water_entire_atmosphere_prob_gt_25000m",
+      "href_prob_pwat_above_37p5mm": "a wrfout import writes no precipitable_water_entire_atmosphere_prob_gt_37500m",
+      "href_prob_pwat_above_50mm": "a wrfout import writes no precipitable_water_entire_atmosphere_prob_gt_50000m",
+      "href_prob_uh_2to5km_above_150": "a wrfout import writes no updraft_helicity_2000m_to_5000m_agl_prob_gt_150000m",
+      "href_prob_uh_2to5km_above_25": "a wrfout import writes no updraft_helicity_2000m_to_5000m_agl_prob_gt_25000m",
+      "href_prob_uh_2to5km_above_75": "a wrfout import writes no updraft_helicity_2000m_to_5000m_agl_prob_gt_75000m",
+      "href_prob_visibility_below_1600m": "a wrfout import writes no visibility_surface_prob_lt_1600000m",
+      "href_prob_visibility_below_3200m": "a wrfout import writes no visibility_surface_prob_lt_3200000m",
+      "href_prob_visibility_below_6400m": "a wrfout import writes no visibility_surface_prob_lt_6400000m",
+      "href_sprd_10m_wind_speed": "a wrfout import writes no wind_speed_10m_agl_ensemble_spread",
+      "href_sprd_2m_dewpoint": "a wrfout import writes no dewpoint_2m_agl_ensemble_spread",
+      "href_sprd_2m_temperature": "a wrfout import writes no temperature_2m_agl_ensemble_spread",
+      "href_sprd_500mb_height": "a wrfout import writes no geopotential_height_500hpa_ensemble_spread",
+      "href_sprd_500mb_temperature": "a wrfout import writes no temperature_500hpa_ensemble_spread",
+      "href_sprd_mslp": "a wrfout import writes no pressure_reduced_to_mean_sea_level_mean_sea_level_ensemble_spread",
+      "href_sprd_precipitable_water": "a wrfout import writes no precipitable_water_entire_atmosphere_ensemble_spread",
+      "lapse_rate_0_3km": "no 'lapse_rate_0_3km' grid: no wrf-core diagnostic of the wrfout import is stored under this recipe slug",
+      "lapse_rate_700_500": "no 'lapse_rate_700_500' grid: no wrf-core diagnostic of the wrfout import is stored under this recipe slug",
+      "lifted_index": "no 'lifted_index' grid: no wrf-core diagnostic of the wrfout import is stored under this recipe slug",
+      "lightning_flash_density": "a wrfout import writes no lightning_flash_density_1m_agl",
+      "ml_ecape_derived_cape_ratio": "no 'ml_ecape_derived_cape_ratio' grid: only the heavy import stage computes it, and a default wrfout import does not run that stage",
+      "ml_ecape_native_cape_ratio": "no 'ml_ecape_native_cape_ratio' grid: only the heavy import stage computes it, and a default wrfout import does not run that stage",
+      "mlecape": "no 'mlecape' grid: only the heavy import stage computes it, and a default wrfout import does not run that stage",
+      "mlecin": "no 'mlecin' grid: only the heavy import stage computes it, and a default wrfout import does not run that stage",
+      "mu_ecape_derived_cape_ratio": "no 'mu_ecape_derived_cape_ratio' grid: only the heavy import stage computes it, and a default wrfout import does not run that stage",
+      "mu_ecape_native_cape_ratio": "no 'mu_ecape_native_cape_ratio' grid: only the heavy import stage computes it, and a default wrfout import does not run that stage",
+      "muecape": "no 'muecape' grid: only the heavy import stage computes it, and a default wrfout import does not run that stage",
+      "nbm_qmd_10m_wind_gust_mean": "a wrfout import writes no wind_gust_10m_agl_ensemble_mean",
+      "nbm_qmd_10m_wind_gust_p05": "a wrfout import writes no wind_gust_10m_agl_p5",
+      "nbm_qmd_10m_wind_gust_p10": "a wrfout import writes no wind_gust_10m_agl_p10",
+      "nbm_qmd_10m_wind_gust_p25": "a wrfout import writes no wind_gust_10m_agl_p25",
+      "nbm_qmd_10m_wind_gust_p50": "a wrfout import writes no wind_gust_10m_agl_p50",
+      "nbm_qmd_10m_wind_gust_p75": "a wrfout import writes no wind_gust_10m_agl_p75",
+      "nbm_qmd_10m_wind_gust_p90": "a wrfout import writes no wind_gust_10m_agl_p90",
+      "nbm_qmd_10m_wind_gust_p95": "a wrfout import writes no wind_gust_10m_agl_p95",
+      "nbm_qmd_10m_wind_gust_stddev": "a wrfout import writes no wind_gust_10m_agl_ensemble_stddev",
+      "nbm_qmd_10m_wind_speed_mean": "a wrfout import writes no wind_speed_10m_agl_ensemble_mean",
+      "nbm_qmd_10m_wind_speed_p05": "a wrfout import writes no wind_speed_10m_agl_p5",
+      "nbm_qmd_10m_wind_speed_p10": "a wrfout import writes no wind_speed_10m_agl_p10",
+      "nbm_qmd_10m_wind_speed_p25": "a wrfout import writes no wind_speed_10m_agl_p25",
+      "nbm_qmd_10m_wind_speed_p50": "a wrfout import writes no wind_speed_10m_agl_p50",
+      "nbm_qmd_10m_wind_speed_p75": "a wrfout import writes no wind_speed_10m_agl_p75",
+      "nbm_qmd_10m_wind_speed_p90": "a wrfout import writes no wind_speed_10m_agl_p90",
+      "nbm_qmd_10m_wind_speed_p95": "a wrfout import writes no wind_speed_10m_agl_p95",
+      "nbm_qmd_10m_wind_speed_stddev": "a wrfout import writes no wind_speed_10m_agl_ensemble_stddev",
+      "nbm_qmd_2m_dewpoint_mean": "a wrfout import writes no dewpoint_2m_agl_ensemble_mean",
+      "nbm_qmd_2m_dewpoint_p05": "a wrfout import writes no dewpoint_2m_agl_p5",
+      "nbm_qmd_2m_dewpoint_p10": "a wrfout import writes no dewpoint_2m_agl_p10",
+      "nbm_qmd_2m_dewpoint_p25": "a wrfout import writes no dewpoint_2m_agl_p25",
+      "nbm_qmd_2m_dewpoint_p50": "a wrfout import writes no dewpoint_2m_agl_p50",
+      "nbm_qmd_2m_dewpoint_p75": "a wrfout import writes no dewpoint_2m_agl_p75",
+      "nbm_qmd_2m_dewpoint_p90": "a wrfout import writes no dewpoint_2m_agl_p90",
+      "nbm_qmd_2m_dewpoint_p95": "a wrfout import writes no dewpoint_2m_agl_p95",
+      "nbm_qmd_2m_dewpoint_stddev": "a wrfout import writes no dewpoint_2m_agl_ensemble_stddev",
+      "nbm_qmd_2m_relative_humidity_p05": "a wrfout import writes no relative_humidity_2m_agl_p5",
+      "nbm_qmd_2m_relative_humidity_p10": "a wrfout import writes no relative_humidity_2m_agl_p10",
+      "nbm_qmd_2m_relative_humidity_p25": "a wrfout import writes no relative_humidity_2m_agl_p25",
+      "nbm_qmd_2m_relative_humidity_p50": "a wrfout import writes no relative_humidity_2m_agl_p50",
+      "nbm_qmd_2m_relative_humidity_p75": "a wrfout import writes no relative_humidity_2m_agl_p75",
+      "nbm_qmd_2m_relative_humidity_p90": "a wrfout import writes no relative_humidity_2m_agl_p90",
+      "nbm_qmd_2m_relative_humidity_p95": "a wrfout import writes no relative_humidity_2m_agl_p95",
+      "nbm_qmd_2m_temperature_mean": "a wrfout import writes no temperature_2m_agl_ensemble_mean",
+      "nbm_qmd_2m_temperature_p05": "a wrfout import writes no temperature_2m_agl_p5",
+      "nbm_qmd_2m_temperature_p10": "a wrfout import writes no temperature_2m_agl_p10",
+      "nbm_qmd_2m_temperature_p25": "a wrfout import writes no temperature_2m_agl_p25",
+      "nbm_qmd_2m_temperature_p50": "a wrfout import writes no temperature_2m_agl_p50",
+      "nbm_qmd_2m_temperature_p75": "a wrfout import writes no temperature_2m_agl_p75",
+      "nbm_qmd_2m_temperature_p90": "a wrfout import writes no temperature_2m_agl_p90",
+      "nbm_qmd_2m_temperature_p95": "a wrfout import writes no temperature_2m_agl_p95",
+      "nbm_qmd_2m_temperature_stddev": "a wrfout import writes no temperature_2m_agl_ensemble_stddev",
+      "nbm_qmd_prob_10m_wind_gust_above_17p4911ms": "a wrfout import writes no wind_gust_10m_agl_prob_gt_17491m",
+      "nbm_qmd_prob_10m_wind_gust_above_21p0922ms": "a wrfout import writes no wind_gust_10m_agl_prob_gt_21092m",
+      "nbm_qmd_prob_10m_wind_gust_above_24p6933ms": "a wrfout import writes no wind_gust_10m_agl_prob_gt_24693m",
+      "nbm_qmd_prob_10m_wind_gust_above_28p8089ms": "a wrfout import writes no wind_gust_10m_agl_prob_gt_28809m",
+      "nbm_qmd_prob_10m_wind_gust_above_32p9244ms": "a wrfout import writes no wind_gust_10m_agl_prob_gt_32924m",
+      "nbm_qmd_prob_10m_wind_speed_above_11p3177ms": "a wrfout import writes no wind_speed_10m_agl_prob_gt_11318m",
+      "nbm_qmd_prob_10m_wind_speed_above_15p4333ms": "a wrfout import writes no wind_speed_10m_agl_prob_gt_15433m",
+      "nbm_qmd_prob_10m_wind_speed_above_17p4911ms": "a wrfout import writes no wind_speed_10m_agl_prob_gt_17491m",
+      "nbm_qmd_prob_10m_wind_speed_above_24p6933ms": "a wrfout import writes no wind_speed_10m_agl_prob_gt_24693m",
+      "nbm_qmd_prob_10m_wind_speed_above_8p7456ms": "a wrfout import writes no wind_speed_10m_agl_prob_gt_8746m",
+      "nbm_qmd_prob_2m_dewpoint_above_288p706k": "a wrfout import writes no dewpoint_2m_agl_prob_gt_288706m",
+      "nbm_qmd_prob_2m_dewpoint_above_291p483k": "a wrfout import writes no dewpoint_2m_agl_prob_gt_291483m",
+      "nbm_qmd_prob_2m_dewpoint_above_294p261k": "a wrfout import writes no dewpoint_2m_agl_prob_gt_294261m",
+      "nbm_qmd_prob_2m_dewpoint_above_297p039k": "a wrfout import writes no dewpoint_2m_agl_prob_gt_297039m",
+      "nbm_qmd_prob_2m_dewpoint_below_273p15k": "a wrfout import writes no dewpoint_2m_agl_prob_lt_273150m",
+      "nbm_qmd_prob_2m_temperature_above_299p817k": "a wrfout import writes no temperature_2m_agl_prob_gt_299817m",
+      "nbm_qmd_prob_2m_temperature_above_305p372k": "a wrfout import writes no temperature_2m_agl_prob_gt_305372m",
+      "nbm_qmd_prob_2m_temperature_above_310p928k": "a wrfout import writes no temperature_2m_agl_prob_gt_310928m",
+      "nbm_qmd_prob_2m_temperature_above_316p483k": "a wrfout import writes no temperature_2m_agl_prob_gt_316483m",
+      "nbm_qmd_prob_2m_temperature_below_270p928k": "a wrfout import writes no temperature_2m_agl_prob_lt_270928m",
+      "nbm_qmd_prob_2m_temperature_below_273p15k": "a wrfout import writes no temperature_2m_agl_prob_lt_273150m",
+      "precipitation_type": "a wrfout import writes no categorical_rain_surface, categorical_freezing_rain_surface, categorical_ice_pellets_surface, categorical_snow_surface",
+      "probability_of_precipitation": "a wrfout import writes no probability_of_precipitation_surface",
+      "refs_prob_10m_wind_speed_above_15p4ms": "a wrfout import writes no wind_speed_10m_agl_prob_gt_15400m",
+      "refs_prob_10m_wind_speed_above_20p6ms": "a wrfout import writes no wind_speed_10m_agl_prob_gt_20600m",
+      "refs_prob_10m_wind_speed_above_25p72ms": "a wrfout import writes no wind_speed_10m_agl_prob_gt_25720m",
+      "refs_prob_2m_dewpoint_above_291p48k": "a wrfout import writes no dewpoint_2m_agl_prob_gt_291480m",
+      "refs_prob_2m_dewpoint_above_294p26k": "a wrfout import writes no dewpoint_2m_agl_prob_gt_294260m",
+      "refs_prob_2m_temperature_below_273p15k": "a wrfout import writes no temperature_2m_agl_prob_lt_273150m",
+      "refs_prob_pwat_above_25mm": "a wrfout import writes no precipitable_water_entire_atmosphere_prob_gt_25000m",
+      "refs_prob_pwat_above_37p5mm": "a wrfout import writes no precipitable_water_entire_atmosphere_prob_gt_37500m",
+      "refs_prob_pwat_above_50mm": "a wrfout import writes no precipitable_water_entire_atmosphere_prob_gt_50000m",
+      "refs_prob_qpf_above_100mm": "a wrfout import writes no total_precipitation_surface_prob_gt_100000m",
+      "refs_prob_qpf_above_10mm": "a wrfout import writes no total_precipitation_surface_prob_gt_10000m",
+      "refs_prob_qpf_above_127mm": "a wrfout import writes no total_precipitation_surface_prob_gt_127000m",
+      "refs_prob_qpf_above_12p7mm": "a wrfout import writes no total_precipitation_surface_prob_gt_12700m",
+      "refs_prob_qpf_above_1mm": "a wrfout import writes no total_precipitation_surface_prob_gt_1000m",
+      "refs_prob_qpf_above_25mm": "a wrfout import writes no total_precipitation_surface_prob_gt_25000m",
+      "refs_prob_qpf_above_25p4mm": "a wrfout import writes no total_precipitation_surface_prob_gt_25400m",
+      "refs_prob_qpf_above_2mm": "a wrfout import writes no total_precipitation_surface_prob_gt_2000m",
+      "refs_prob_qpf_above_50mm": "a wrfout import writes no total_precipitation_surface_prob_gt_50000m",
+      "refs_prob_qpf_above_50p8mm": "a wrfout import writes no total_precipitation_surface_prob_gt_50800m",
+      "refs_prob_qpf_above_5mm": "a wrfout import writes no total_precipitation_surface_prob_gt_5000m",
+      "refs_prob_qpf_above_76p2mm": "a wrfout import writes no total_precipitation_surface_prob_gt_76200m",
+      "refs_prob_uh_2to5km_above_150": "a wrfout import writes no updraft_helicity_2000m_to_5000m_agl_prob_gt_150000m",
+      "refs_prob_uh_2to5km_above_25": "a wrfout import writes no updraft_helicity_2000m_to_5000m_agl_prob_gt_25000m",
+      "refs_prob_uh_2to5km_above_75": "a wrfout import writes no updraft_helicity_2000m_to_5000m_agl_prob_gt_75000m",
+      "refs_prob_visibility_below_1600m": "a wrfout import writes no visibility_surface_prob_lt_1600000m",
+      "refs_prob_visibility_below_3200m": "a wrfout import writes no visibility_surface_prob_lt_3200000m",
+      "refs_prob_visibility_below_8049m": "a wrfout import writes no visibility_surface_prob_lt_8049000m",
+      "refs_sprd_10m_wind_speed": "a wrfout import writes no wind_speed_10m_agl_ensemble_spread",
+      "refs_sprd_2m_dewpoint": "a wrfout import writes no dewpoint_2m_agl_ensemble_spread",
+      "refs_sprd_2m_temperature": "a wrfout import writes no temperature_2m_agl_ensemble_spread",
+      "refs_sprd_500mb_height": "a wrfout import writes no geopotential_height_500hpa_ensemble_spread",
+      "refs_sprd_500mb_temperature": "a wrfout import writes no temperature_500hpa_ensemble_spread",
+      "refs_sprd_cloud_cover": "a wrfout import writes no total_cloud_cover_entire_atmosphere_ensemble_spread",
+      "refs_sprd_mslp": "a wrfout import writes no pressure_reduced_to_mean_sea_level_mean_sea_level_ensemble_spread",
+      "refs_sprd_precipitable_water": "a wrfout import writes no precipitable_water_entire_atmosphere_ensemble_spread",
+      "refs_sprd_visibility": "a wrfout import writes no visibility_surface_ensemble_spread",
+      "sb_ecape_derived_cape_ratio": "no 'sb_ecape_derived_cape_ratio' grid: only the heavy import stage computes it, and a default wrfout import does not run that stage",
+      "sb_ecape_native_cape_ratio": "no 'sb_ecape_native_cape_ratio' grid: only the heavy import stage computes it, and a default wrfout import does not run that stage",
+      "sbecape": "no 'sbecape' grid: only the heavy import stage computes it, and a default wrfout import does not run that stage",
+      "sbecin": "no 'sbecin' grid: only the heavy import stage computes it, and a default wrfout import does not run that stage",
+      "sblcl": "no 'sblcl' grid: no wrf-core diagnostic of the wrfout import is stored under this recipe slug",
+      "sbncape": "no 'sbncape' grid: only the heavy import stage computes it, and a default wrfout import does not run that stage",
+      "scp_mu_0_3km_0_6km_proxy": "no 'scp_mu_0_3km_0_6km_proxy' grid: no wrf-core diagnostic of the wrfout import is stored under this recipe slug",
+      "smoke_column": "a wrfout import writes no column_integrated_smoke_entire_atmosphere",
+      "smoke_pm25_native": "a wrfout import writes no smoke_mass_density_8m_agl",
+      "sref_prob_10m_wind_speed_above_12p89ms": "a wrfout import writes no wind_speed_10m_agl_prob_gt_12890m",
+      "sref_prob_10m_wind_speed_above_17p5ms": "a wrfout import writes no wind_speed_10m_agl_prob_gt_17500m",
+      "sref_prob_10m_wind_speed_above_25p78ms": "a wrfout import writes no wind_speed_10m_agl_prob_gt_25780m",
+      "sref_prob_2m_temperature_above_298p8k": "a wrfout import writes no temperature_2m_agl_prob_gt_298800m",
+      "sref_prob_2m_temperature_below_273k": "a wrfout import writes no temperature_2m_agl_prob_lt_273000m",
+      "sref_prob_850mb_temperature_below_273k": "a wrfout import writes no temperature_850hpa_prob_lt_273000m",
+      "sref_prob_visibility_below_1609m": "a wrfout import writes no visibility_surface_prob_lt_1609000m",
+      "sref_prob_visibility_below_3218m": "a wrfout import writes no visibility_surface_prob_lt_3218000m",
+      "sref_prob_visibility_below_402m": "a wrfout import writes no visibility_surface_prob_lt_402000m",
+      "sref_prob_visibility_below_4827m": "a wrfout import writes no visibility_surface_prob_lt_4827000m",
+      "sref_prob_visibility_below_8046m": "a wrfout import writes no visibility_surface_prob_lt_8046000m",
+      "sref_prob_visibility_below_804m": "a wrfout import writes no visibility_surface_prob_lt_804000m",
+      "sref_prob_visibility_below_9654m": "a wrfout import writes no visibility_surface_prob_lt_9654000m",
+      "temperature_advection_700mb": "no 'temperature_advection_700mb' grid: no wrf-core diagnostic of the wrfout import is stored under this recipe slug",
+      "temperature_advection_850mb": "no 'temperature_advection_850mb' grid: no wrf-core diagnostic of the wrfout import is stored under this recipe slug",
+      "theta_e_2m_10m_winds": "no 'theta_e_2m_10m_winds' grid: no wrf-core diagnostic of the wrfout import is stored under this recipe slug",
+      "visibility": "a wrfout import writes no visibility_surface",
+      "vpd_2m": "no 'vpd_2m' grid: no wrf-core diagnostic of the wrfout import is stored under this recipe slug",
+      "wetbulb_2m": "no 'wetbulb_2m' grid: no wrf-core diagnostic of the wrfout import is stored under this recipe slug",
+      "wind_chill_2m": "no 'wind_chill_2m' grid: no wrf-core diagnostic of the wrfout import is stored under this recipe slug"
+    }
+  },
   "products": [
     {
       "name": "10m_wind_0_24h_max"
@@ -274,6 +1080,12 @@
       "name": "cloud_cover_levels"
     },
     {
+      "name": "cloud_ice_column_max"
+    },
+    {
+      "name": "cloud_water_column_max"
+    },
+    {
       "name": "composite_reflectivity"
     },
     {
@@ -359,6 +1171,9 @@
     },
     {
       "name": "gefs_spr_precipitable_water_stddev"
+    },
+    {
+      "name": "graupel_column_max"
     },
     {
       "name": "heat_index_2m"
@@ -473,6 +1288,15 @@
     },
     {
       "name": "href_sprd_precipitable_water"
+    },
+    {
+      "name": "isotherm_height_0c"
+    },
+    {
+      "name": "isotherm_height_minus10c"
+    },
+    {
+      "name": "isotherm_height_minus20c"
     },
     {
       "name": "lapse_rate_0_3km"
@@ -745,6 +1569,9 @@
       "name": "qpf_total"
     },
     {
+      "name": "rain_water_column_max"
+    },
+    {
       "name": "refs_prob_10m_wind_speed_above_15p4ms"
     },
     {
@@ -889,6 +1716,9 @@
       "name": "smoke_pm25_native"
     },
     {
+      "name": "snow_column_max"
+    },
+    {
       "name": "sref_prob_10m_wind_speed_above_12p89ms"
     },
     {
@@ -935,6 +1765,15 @@
     },
     {
       "name": "stp_fixed"
+    },
+    {
+      "name": "supercooled_water_path"
+    },
+    {
+      "name": "supercooled_water_path_0_3km"
+    },
+    {
+      "name": "supercooled_water_path_3_6km"
     },
     {
       "name": "temperature_advection_700mb"

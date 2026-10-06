@@ -4,7 +4,7 @@
 
 import { h } from "./core.js";
 import * as api from "./api.js";
-import { SCREENS, setNoticeBox, notice, errorText } from "./router.js";
+import { SCREENS, setNoticeBox, notice, errorText, forwardedRoute } from "./router.js";
 import { openPalette } from "./palette.js";
 import "./runs.js";
 import "./create.js";
@@ -36,7 +36,7 @@ function parseHash() {
   const raw = (location.hash || "").replace(/^#\/?/, "");
   const at = raw.indexOf("?");
   const [name, ...rest] = (at < 0 ? raw : raw.slice(0, at)).split("/");
-  return { name: name || "wiki", args: rest.map(decodePart), query: at < 0 ? "" : raw.slice(at + 1), raw };
+  return { name: name || "library", args: rest.map(decodePart), query: at < 0 ? "" : raw.slice(at + 1), raw };
 }
 
 // What the sidebar counts: the wiki's kinds and events, and the forecasts on disk. Asked for once, and the
@@ -44,7 +44,7 @@ function parseHash() {
 const counts = { wiki: null, runs: null };
 async function readCounts() {
   const [wiki, runs] = await Promise.all([
-    counts.wiki ? Promise.resolve(counts.wiki) : api.get("/api/wiki").catch(() => null),
+    counts.wiki ? Promise.resolve(counts.wiki) : api.get("/api/library").catch(() => null),
     api.get("/api/runs").catch(() => null),
   ]);
   counts.wiki = wiki;
@@ -66,7 +66,7 @@ function drawSide(side, words, s, here, context) {
   const rows = counts.runs ? counts.runs.runs : [];
   const on = (href) => here === href;
   const kids = [h("h4", {}, ww.wiki_group),
-    sideLink("#/wiki", ww.wiki, { on: on("#/wiki") }),
+    sideLink("#/library", ww.wiki, { on: on("#/library") }),
     sideLink("#/browse", ww.browse, { on: on("#/browse"), n: w ? w.counts.events : null })];
   for (const k of (w && w.phenomena) || []) {
     kids.push(sideLink(`#/kind/${encodeURIComponent(k.id)}`, k.plural || k.title, { on: on(`#/kind/${k.id}`), n: k.count }));
@@ -104,7 +104,7 @@ function frame(words, s, entry, route) {
   search.innerHTML = SEARCH_ICON;
   search.append(h("span", {}, sh.search), h("kbd", {}, sh.search_key));
   search.addEventListener("click", () => openPalette(words));
-  const logo = h("a", { class: "logo", href: "#/wiki" }, h("b", {}), words.screens.app.name);
+  const logo = h("a", { class: "logo", href: "#/library" }, h("b", {}), words.screens.app.name);
   const header = h("header", { class: "hdr" }, logo, crumb, search,
     h("a", { class: "btn", href: "#/create" }, sh.new_forecast));
   const side = h("nav", { class: "side", "aria-label": sh.sections });
@@ -136,7 +136,7 @@ function frame(words, s, entry, route) {
     }
     crumb.replaceChildren(...parts);
   };
-  setCrumbs([[words.wiki.name, "#/wiki"]]);
+  setCrumbs([[words.wiki.name, "#/library"]]);
   return {
     body, right, setTitle, setCrumbs,
     setData: (text) => { data.textContent = text || ""; },
@@ -157,13 +157,16 @@ async function shell() {
   noteEnabled(!!(s.assistant && s.assistant.enabled));
 
   async function route() {
+    // An old address forwards to its new route, and the address bar shows the new one.
+    const moved = forwardedRoute((location.hash || "").replace(/^#\/?/, ""));
+    if (moved !== null) { location.replace(`#/${moved}`); return; }
     const ticket = ++routing;
     if (cleanup) { try { cleanup(); } catch (_) { /* a screen's cleanup never blocks the next */ } }
     cleanup = null;
     const { name, args, query, raw } = parseHash();
-    const screen = SCREENS.has(name) ? name : "wiki";
+    const screen = SCREENS.has(name) ? name : "library";
     const entry = SCREENS.get(screen);
-    const f = frame(words, s, entry, raw || "wiki");
+    const f = frame(words, s, entry, raw || "library");
     f.setTitle(entry.title ? entry.title(words) : "");
     document.body.dataset.screen = screen;
     delete document.body.dataset.ready;

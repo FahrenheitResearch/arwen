@@ -58,9 +58,20 @@ instrumentation patch) -- cite the clean builds instead.
    from METGRID's four- and sixteen-point masked schemes (land-aware
    nearest donors; see `PROVENANCE.md`). The longest proven stock-WRF
    integration on these inputs is 60 seconds.
-2. **Acceptance requires three receipt-bound namelist deltas** on the
-   WRF side (`ra_lw_physics 0->1`, `use_theta_m 0->1`, stock-only
-   `ghg_input=0`); each receipt records them.
+2. **Acceptance requires two receipt-bound namelist deltas** on the
+   WRF side (`ra_lw_physics 0->1`, stock-only `ghg_input=0`), and
+   `use_theta_m = 0` on both sides. The files hold dry potential
+   temperature and say so (`USE_THETA_M = 0`, `THM` equal to `T`,
+   `T_B*` dry-coupled), so a WRF namelist that omits the key (WRF 4's
+   default is 1) stops at WRF's input gate with "use_theta_m values
+   must be consistent". The receipts above were recorded with
+   `use_theta_m 0->1` on exports that declared `USE_THETA_M = 1` over
+   the same dry-coupled boundary rows; WRF read those rows as moist
+   theta, so its specified boundary sat colder than the analysis by
+   theta * a*qv / (1 + a*qv), a = Rv/Rd (2.9 K at 4 g/kg, measured
+   with stock WRF 4.6.1). Those receipts gate file acceptance and a
+   stable advance of 5 to 60 seconds, not boundary values; exports
+   written before 2.8.5 should be written again.
 3. **Certification is confined to a narrow physics/level slice:** the
    WSM6 + YSU + MM5-91 + Noah 49-level combination, plus one 10-second
    Thompson/Morrison gate on a single hash-bound GFS d01-d04 export.

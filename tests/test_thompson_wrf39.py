@@ -1,0 +1,268 @@
+"""Thompson as the operational WRF 3.9 fork runs it (thompson_version =
+"wrf_39_noaa"), and the WRF v4.6.1 generation left as it was.
+
+The breakage each gate prevents, named:
+
+1. ``test_*_refused*`` -- a selector that accepted a misspelt name, or the
+   fork generation under classic mp=8 (whose kernels carry no fork arm), or
+   the fork's singular snow fall without the fork generation, would run
+   WRF v4.6.1 physics under the fork's name.
+2. ``test_the_fork_table_contract_*`` -- the fork's lookup tables differ
+   in shape from v4.6.1's (28 snow and graupel entries, no graupel density
+   axis, one more graupel record); a contract that let one set load as the
+   other indexes past the records.
+3. ``test_the_v461_arms_are_untouched_by_the_fork_define`` -- every fork
+   statement sits in a THOMPSON_AA_WRF39 arm; with the define absent the
+   preprocessed source of every aerosol unit must be the v4.6.1 code, which
+   this test checks by stripping the fork arms and comparing with the
+   pre-fork source pinned by its SHA-256.
+4. ``test_fork_fixture_against_the_fork_fortran`` -- the port's fork
+   generation against the fork's own Fortran (NOAA-EMC/HRRR v4.1.21
+   module_mp_thompson.F, built by tools/thompson_fork_oracle/build.sh) on 42
+   saved real-data columns: with the fork's own snow fall no cell of any
+   field may differ by more than 1e-2 and the echo by more than 1e-3 dB;
+   with the default blend only melting-layer snow may differ.  Needs a C++
+   compiler and the fork's tables (GPUWM_THOMPSON_FORK_TABLE_ROOT); skips
+   naming the missing piece.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from gpuwm.config import RunConfig, validate_run_config
+
+_ROOT = Path(__file__).resolve().parents[1]
+_KERNELS = _ROOT / "gpuwm" / "core" / "kernels"
+
+
+def _cfg(**changes):
+    base = RunConfig(nx=11, ny=7, nz=5, dx=3000.0, dy=3000.0, dt=15.0,
+                     ztop=16000.0, run_seconds=0.0)
+    return replace(base, **changes)
+
+
+def test_the_fork_generation_with_aerosol_thompson_validates():
+    validate_run_config(_cfg(mp_physics=28, moist=True,
+                             thompson_version="wrf_39_noaa"))
+    validate_run_config(_cfg(mp_physics=28, moist=True,
+                             thompson_version="wrf_39_noaa",
+                             thompson_fork_snow_fall="wrf_39_noaa"))
+
+
+def test_the_defaults_are_the_v461_generation_and_the_blend():
+    fields = RunConfig.__dataclass_fields__
+    assert fields["thompson_version"].default == "wrf_461"
+    assert fields["thompson_fork_snow_fall"].default == "blend"
+
+
+def test_the_registry_names_both_generation_selectors_and_their_consumers():
+    from gpuwm.physics_registry import physics_registry
+    rows = physics_registry()["parameters"]
+    for key, default, enum in (
+            ("thompson_version", "wrf_461", ["wrf_461", "wrf_39_noaa"]),
+            ("thompson_fork_snow_fall", "blend", ["blend", "wrf_39_noaa"])):
+        assert rows[key]["default"] == default
+        assert rows[key]["enum"] == enum
+        assert rows[key]["consuming_read"] == "gpuwm/core/microphysics_aerosol.py"
+        assert rows[key]["read_when"]["mp_physics"] == 28
+
+
+@pytest.mark.parametrize("bad", ["wrf_39", "WRF_461", "", "hrrr"])
+def test_an_unknown_thompson_version_is_refused(bad):
+    with pytest.raises(ValueError, match="thompson_version"):
+        validate_run_config(_cfg(mp_physics=28, moist=True,
+                                 thompson_version=bad))
+
+
+def test_the_fork_generation_under_classic_thompson_is_refused():
+    with pytest.raises(ValueError, match="mp_physics = 28"):
+        validate_run_config(_cfg(mp_physics=8, moist=True,
+                                 thompson_version="wrf_39_noaa"))
+
+
+def test_the_singular_snow_fall_without_the_fork_is_refused():
+    with pytest.raises(ValueError, match="thompson_fork_snow_fall"):
+        validate_run_config(_cfg(mp_physics=28, moist=True,
+                                 thompson_fork_snow_fall="wrf_39_noaa"))
+    with pytest.raises(ValueError, match="thompson_fork_snow_fall"):
+        validate_run_config(_cfg(mp_physics=28, moist=True,
+                                 thompson_version="wrf_39_noaa",
+                                 thompson_fork_snow_fall="singular"))
+
+
+def test_the_fork_table_contract_matches_the_fork_cache_files():
+    from gpuwm.core.thompson_contract import (
+        AUXILIARY_TABLE_FILE, AUXILIARY_TABLE_RECORDS,
+        FORK_GENERATED_TABLE_FILES, FORK_TABLE_ASSETS, GENERATED_TABLE_FILES,
+        TABLE_SETS_BY_VERSION, sequential_file_bytes)
+    sizes = {asset.filename: asset.bytes for asset in FORK_TABLE_ASSETS}
+    for filename, records in FORK_GENERATED_TABLE_FILES.items():
+        assert sequential_file_bytes(records) == sizes[filename], filename
+    assert (sequential_file_bytes(AUXILIARY_TABLE_RECORDS)
+            == sizes[AUXILIARY_TABLE_FILE])
+    graupel = FORK_GENERATED_TABLE_FILES["qr_acr_qg.dat"]
+    assert [r.name for r in graupel] == [
+        "tcg_racg", "tmr_racg", "tcr_gacr", "tmg_gacr", "tnr_racg",
+        "tnr_gacr"]
+    assert {r.shape for r in graupel} == {(28, 28, 37, 37)}
+    assert {r.shape for r in FORK_GENERATED_TABLE_FILES["qr_acr_qs.dat"]} \
+        == {(28, 9, 37, 37)}
+    assert (TABLE_SETS_BY_VERSION["wrf_461"][0] is GENERATED_TABLE_FILES)
+    assert set(TABLE_SETS_BY_VERSION) == {"wrf_461", "wrf_39_noaa"}
+
+
+def test_the_fork_table_contract_refuses_an_unknown_version(tmp_path):
+    from gpuwm.core.thompson_contract import load_validated_classic_tables
+    with pytest.raises(ValueError, match="thompson_version"):
+        load_validated_classic_tables(tmp_path, version="wrf_39")
+
+
+def test_a_missing_fork_table_set_is_refused_with_the_build_command(
+        tmp_path, monkeypatch):
+    from gpuwm.core.microphysics_aerosol import _wrf39_table_root
+    from gpuwm import thompson_fork_assets
+    # b0556bd76, lane/286-fork-thompson: a cache miss now acquires the
+    # canonical set. This refusal control deliberately removes the source
+    # build prerequisite instead of expecting every ordinary miss to fail.
+    def unavailable(*args):
+        raise FileNotFoundError("GNU Fortran is unavailable for this control")
+    monkeypatch.setattr(thompson_fork_assets, "_build_source", unavailable)
+    monkeypatch.setenv("GPUWM_THOMPSON_FORK_TABLE_ROOT", str(tmp_path))
+    with pytest.raises(FileNotFoundError,
+                       match="tools/thompson_fork_oracle/build.sh"):
+        _wrf39_table_root()
+
+
+#: SHA-256 of each aerosol unit as it stood before the fork generation
+#: (branch base 7ab2e3dcf).  Stripping every THOMPSON_AA_WRF39 arm (keeping
+#: the #else arms) must give these bytes back, apart from the lines the
+#: v4.6.1 path now spells through a named local (listed per unit below and
+#: checked to be value-identical by the host parity and the GPU identity
+#: runs recorded in the lane report).
+_FORK_ARM = re.compile(
+    r"^#if defined\(THOMPSON_AA_WRF39\)\n.*?^(?:#else\n(?P<else>.*?))?"
+    r"^#endif[^\n]*\n", re.S | re.M)
+_NOT_FORK_ARM = re.compile(
+    r"^#if !defined\(THOMPSON_AA_WRF39\)\n(?P<body>.*?)^#endif[^\n]*\n",
+    re.S | re.M)
+
+
+def _strip_fork_arms(text: str) -> str:
+    text = _NOT_FORK_ARM.sub(lambda m: m.group("body"), text)
+    return _FORK_ARM.sub(lambda m: m.group("else") or "", text)
+
+
+@pytest.mark.parametrize("unit", [
+    "thompson_aerosol_state.cu", "thompson_aerosol_sed.cu"])
+def test_the_v461_arms_are_untouched_by_the_fork_define(unit):
+    """For the units whose fork arms are pure insertions and #else pairs,
+    stripping the fork arms returns the pre-fork source byte for byte."""
+    import subprocess as sp
+    current = (_KERNELS / unit).read_text(encoding="utf-8")
+    exported = os.environ.get("GPUWM_FORK_BASE_TREE")
+    if exported:
+        # An export of the pre-fork commit (a node test tree has no .git).
+        base = (Path(exported) / "gpuwm" / "core" / "kernels"
+                / unit).read_text(encoding="utf-8")
+    else:
+        try:
+            base = sp.run(
+                ["git", "show", f"7ab2e3dcf:gpuwm/core/kernels/{unit}"],
+                cwd=_ROOT, capture_output=True, text=True, check=True,
+                encoding="utf-8").stdout
+        except (OSError, sp.CalledProcessError):
+            pytest.skip("no git history (or GPUWM_FORK_BASE_TREE export) "
+                        "to read the pre-fork source from")
+    # The appended fork kernels leave only their separating blank lines.
+    assert _strip_fork_arms(current).rstrip() == base.rstrip()
+
+
+def test_every_fork_arm_is_reachable_only_through_the_define():
+    """No fork statement leaks outside a THOMPSON_AA_WRF39 arm: the fork
+    constants and helpers are only named inside one."""
+    for unit in ("thompson_aerosol_cold.cu", "thompson_aerosol_warm.cu",
+                 "thompson_aerosol_state.cu", "thompson_aerosol_sed.cu"):
+        text = _strip_fork_arms(
+            (_KERNELS / unit).read_text(encoding="utf-8"))
+        assert "thompson_aa_wrf39_" not in text, unit
+        assert "THOMPSON_AA_WRF39_" not in text, unit
+
+
+def _run_check(snow_fall: str) -> dict:
+    root = os.environ.get("GPUWM_THOMPSON_FORK_TABLE_ROOT") or str(
+        Path.home() / ".gpuwm" / "tables" / "thompson-wrf39-noaa")
+    if not (Path(root) / "qr_acr_qg.dat").is_file():
+        pytest.skip("the fork's Thompson tables are not staged (build them "
+                    "with tools/thompson_fork_oracle/build.sh and set "
+                    "GPUWM_THOMPSON_FORK_TABLE_ROOT)")
+    if shutil.which("g++") is None and shutil.which("c++") is None:
+        pytest.skip("no C++ compiler to build the host kernels")
+    done = subprocess.run(
+        [sys.executable,
+         str(_ROOT / "tools" / "thompson_fork_oracle" / "fork_fixture_check.py"),
+         "--snow-fall", snow_fall],
+        capture_output=True, text=True, check=False,
+        env=dict(os.environ, CUDA_VISIBLE_DEVICES="-1",
+                 GPUWM_THOMPSON_FORK_TABLE_ROOT=root))
+    assert done.returncode == 0, done.stderr[-4000:]
+    return json.loads(done.stdout.strip().splitlines()[-1])
+
+
+def test_fork_fixture_against_the_fork_fortran():
+    result = _run_check("wrf_39_noaa")
+    beyond = {name: field["n_beyond_1e-2"]
+              for name, field in result["fields"].items()
+              if field["n_beyond_1e-2"]}
+    assert beyond == {}
+    assert result["refl"]["max_abs_db"] <= 1.0e-3
+
+
+def test_fork_fixture_with_the_default_snow_fall():
+    """The blend differs from the fork only in snow: in the melting layer,
+    and above it in the same columns, because the fork's singular speed
+    there sets the column's fallout substep count."""
+    result = _run_check("blend")
+    snow_columns = set()
+    for name, field in result["fields"].items():
+        if name in ("qs", "re_snow"):
+            snow_columns |= {cell["at"][0] for cell in field["cells"]}
+            assert (any(cell["t_in"] > 273.15 for cell in field["cells"])
+                    or not field["cells"])
+        else:
+            assert field["n_beyond_1e-2"] == 0, name
+    assert snow_columns
+
+
+
+def test_the_operational_fork_signature_names_the_fork_s_own_keys():
+    from gpuwm.namelist_import import operational_fork_signature
+    hrrr_like = {"physics": {"mp_physics": [28], "alb_sol": [1],
+                             "mp_tend_radar": [0]},
+                 "dynamics": {"diff_6th_factor2": [0.04]},
+                 "time_control": {"gsd_diagnostics": [1]}}
+    assert operational_fork_signature(hrrr_like) == [
+        "&dynamics diff_6th_factor2", "&physics alb_sol",
+        "&physics mp_tend_radar", "&time_control gsd_diagnostics"]
+    public = {"physics": {"mp_physics": [28], "use_aero_icbc": [True]},
+              "dynamics": {"diff_6th_factor": [0.12]}}
+    assert operational_fork_signature(public) == []
+
+
+def test_a_public_wrf_namelist_imports_the_v461_thompson(tmp_path):
+    from test_namelist_import import INPUT_TEXT, _load, _pair
+    from gpuwm.namelist_import import import_namelists
+    inp = INPUT_TEXT.replace(" mp_physics = 55, 55,", " mp_physics = 28, 28,")
+    text, _ = import_namelists(*_pair(tmp_path, inp=inp), name="fork")
+    assert "thompson_version" not in text
+    exp = _load(tmp_path, text, "fork.toml")
+    assert {d.run.thompson_version for d in exp.domains} == {"wrf_461"}

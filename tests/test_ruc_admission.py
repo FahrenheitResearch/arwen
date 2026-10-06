@@ -231,8 +231,15 @@ def test_exactly_the_ratified_templates_select_ruc_and_no_route_overrides_it():
     selecting = sorted(
         template_id for template_id, template in registry["templates"].items()
         if template["components"].get("land_surface") == "ruc-lsm")
+    # 4193eb0da, lane/286-fork-mynn: the explicit GSD4.1 MP28 composition
+    # copies the existing MYNN/RUC row and its already admitted sources.
+    # Its source version changes the PBL/MP/radiation choices, not RUC's
+    # nine-level ingest or the generic route defaults.
     assert selecting == sorted([MYNN_RUC_RTE_RRTMGP_TEMPLATE_ID,
                                 MYNN_RUC_TEMPLATE_ID, RUC_TEMPLATE_ID,
+                                MYNN_GSD41_RUC_TEMPLATE_ID,
+                                "thompson-mp8-mynn-mynn-ruc-monthly-rrtmg-legacy-v1",
+                                "thompson-mp8-mynn-mynn-ruc-monthly-solar-rrtmg-legacy-v1",
                                 *THOMPSON_MYNN_RUC_TEMPLATE_IDS]), (
         f"the RUC templates are {selecting}, which is not the ratified set.  "
         "An UNLISTED RUC row is the breakage: RUC's ingest produces nine "
@@ -245,6 +252,19 @@ def test_exactly_the_ratified_templates_select_ruc_and_no_route_overrides_it():
         "initialization this whole file exists to refuse.  A MISSING row is "
         "the mirror breakage: a ratified suite that stopped being registered "
         "is a menu entry that vanished.")
+    fork = registry["templates"][MYNN_GSD41_RUC_TEMPLATE_ID]
+    base_id = THOMPSON_MYNN_RUC_TEMPLATE_IDS[1]
+    base = registry["templates"][base_id]
+    assert fork["components"]["land_surface"] == base["components"]["land_surface"]
+    assert fork["components"]["microphysics"] == "thompson-aerosol-mp28"
+    assert fork["parameters"]["bl_mynn_version"] == "gsd_41"
+    offered = []
+    for route in registry["runner_routes"].values():
+        for source, declared in route.get("source_template_ids", {}).items():
+            if MYNN_GSD41_RUC_TEMPLATE_ID in declared:
+                offered.append(source)
+                assert base_id in declared, source
+    assert offered
 
     # The control: the same two reads find the scheme that IS selectable, so
     # "no template" above is a fact about RUC and not about this query.
@@ -314,6 +334,8 @@ THOMPSON_MYNN_RUC_TEMPLATE_IDS = (
     "thompson-mp8-mynn-mynn-ruc-dudhia-implemented-unverified-v1",
     "thompson-mp8-mynn-mynn-ruc-rte-rrtmgp-implemented-unverified-v1",
 )
+# 4193eb0da, lane/286-fork-mynn: explicit HRRR GSD4.1 MP28/RUC suite.
+MYNN_GSD41_RUC_TEMPLATE_ID = "thompson-mp28-mynn-gsd41-mynn-ruc-rrtmg-legacy-v1"
 #: The sources whose initializers reach RUC's own soil ingest.  ``20crv3`` is
 #: the MAPPED path and is deliberately absent; see the test below.
 #: Sources whose declared template list still reaches RUC.  v1.1.1

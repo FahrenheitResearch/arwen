@@ -41,7 +41,7 @@ bash tools/gf_wrf461_oracle/build.sh <WRF_SOURCE_ROOT> <BUILD_DIR>
 
 Built and run 2026-08-04 on this workstation's WSL Ubuntu-24.04 (gfortran
 13.3.0, glibc 2.39), the same toolchain family the Noah-MP oracles record as
-`(WSL)`.  These land in `gpuwm/data/gf/oracle/`:
+`(WSL)`.  These land in `tests/data/oracles/gf/`:
 
 | file | contents |
 | --- | --- |

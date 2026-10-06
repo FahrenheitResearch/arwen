@@ -1,0 +1,40 @@
+{
+  "commit": "40ee6058c2fc6624cbfbbe8cf1c20c59e6a45827",
+  "tag": "v4.1.21",
+  "sources": {
+    "module_radiation_driver.F": "7464639e53f6f40b4810943ee9fa21a40b0f53f7525c08cc13b84ae4c7d82801",
+    "module_surface_driver.F": "5aed6cc50973ada58661262ded97d5ce8b1bf5407ad423f3df2f34e64da5612a"
+  },
+  "gfortran": "GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+  "flags": [
+    "-O0",
+    "-ffp-contract=off",
+    "-ffree-line-length-none",
+    "-fcheck=bounds",
+    "-shared",
+    "-fPIC"
+  ],
+  "extract_sha256": "1a8de02b0113cd2ebf17ad784a02b2eba64847854c21f3a72fb8c7f3a237e9fc",
+  "blocks": {
+    "radiation_parameters": [
+      781,
+      789
+    ],
+    "radiation_update": [
+      1038,
+      1063
+    ],
+    "surface_override": [
+      3295,
+      3301
+    ],
+    "surface_deblend": [
+      3307,
+      3316
+    ],
+    "surface_reblend": [
+      3374,
+      3381
+    ]
+  }
+}

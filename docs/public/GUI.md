@@ -1,6 +1,6 @@
-# ArWen in your browser: `gpuwm gui`
+# The Weather Library: `gpuwm gui`
 
-`gpuwm gui` starts a small server on your own computer and opens ArWen's page in
+`gpuwm gui` starts a small server on your own computer and opens the Weather Library in
 your normal browser. It is the graphical door of ArWen 2.8. Nothing is fetched
 from the internet to draw the page, and nothing on it needs a build step.
 
@@ -31,7 +31,7 @@ data, set up once per computer with `gpuwm fetch-geog --datasets wrf`. Until it
 is, **Start** and **Run the best simulation for this event** refuse with that command and write
 nothing.
 
-1. `gpuwm gui`. The page opens on the storm wiki; **New forecast** is in the
+1. `gpuwm gui`. The page opens on its main page; **New forecast** is in the
    sidebar under the forecasts group.
 2. **Where**: click the map near latitude 39, longitude -97 to place the box, and
    pick Small (300 by 300 km). **Next**.
@@ -53,12 +53,12 @@ it the run stops at the prepare stage and the page says so.
 
 ## The pages
 
-The sidebar has the storm wiki, your forecasts, **Machines**, the
+The sidebar has the **Weather Library** group of storm pages, your forecasts, **Machines**, the
 **Assistant** (off until you turn it on) and **Settings**, and a search box
 (Ctrl+K) that finds events, places, forecasts and pages and opens the
 assistant.
 
-- **Storm wiki** opens on its main page: 17 cited events, 11 tropical cyclones and
+- **Weather Library** opens on its main page: 17 cited events, 11 tropical cyclones and
   6 tornadoes, with pages by kind, by place and by recent change. Each event page
   gives its observed facts, its sources and its place on the map, and **Simulate
   this event** offers the best simulation for your card, started by
@@ -85,7 +85,7 @@ assistant.
   forecasts lists the newest 4,000 and says how many there are in all.
 - **New forecast** is five steps beside a map: Where, When, How fine, Physics and
   Review and start. Where takes a click on the map, or **Find an event**, which searches the
-  storm wiki and fills in the event's box, date and length. When takes any date
+  Weather Library and fills in the event's box, date and length. When takes any date
   from 1940 on: a calendar with month and year jumps, a typed date such as
   `1999-05-03`, the hour, and quick picks (the newest run, yesterday, a week ago,
   a year ago). Under it every data source says whether it holds that start and,
@@ -324,7 +324,7 @@ tag (`gpuwm-gui` by default).
 ## The assistant
 
 The assistant is optional, and it is off until you turn it on. Off, nothing is
-downloaded, no model server runs and no card memory is used; the storm wiki,
+downloaded, no model server runs and no card memory is used; the storm pages,
 New forecast, your forecasts, Files and Machines work the same without it. The
 sidebar reads **Assistant (off)** with a line saying to turn it on in
 **Settings**, and Ctrl+K offers the same entry.
@@ -338,8 +338,8 @@ model off the card; **Remove its model** (or `gpuwm assistant off --remove`)
 deletes what it downloaded.
 
 Once on, the panel opens from **Assistant** in the sidebar, or from Ctrl+K and
-then **Open the assistant**. Ask about a storm in the wiki, one of your
-forecasts, or what fits this card. It answers from the storm wiki, the run
+then **Open the assistant**. Ask about a storm in the Weather Library, one of your
+forecasts, or what fits this card. It answers from the Weather Library, the run
 folder and the engine's fit check, and each answer says where it came from. A
 decision it makes shows its options under letters, each with its probability,
 or says the model server gives none. It can fill New forecast for you; nothing

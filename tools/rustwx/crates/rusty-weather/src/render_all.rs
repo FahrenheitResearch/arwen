@@ -382,7 +382,9 @@ fn hour_presentation(
             valid.2,
             valid.3,
             valid.4,
-            rustwx_products::shared_context::model_token(config.model)
+            // A theme may name the model (`text.model_label`).
+            rustwx_render::theme::active_theme()
+                .model_name(&rustwx_products::shared_context::model_token(config.model))
         )),
     })
 }

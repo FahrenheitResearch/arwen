@@ -1,5 +1,7 @@
 use crate::color::Rgba;
+use crate::chrome_plan::{PlanHeaderText, draw_plan_colorbar, draw_plan_header};
 use crate::colorbar;
+use crate::layout_plan::{CanvasPlan, canvas_plan_for};
 use crate::colormap::LeveledColormap;
 use crate::draw;
 use crate::overlay::{
@@ -291,6 +293,10 @@ struct Layout {
     title_factor: f32,
     /// Subtitle and colorbar label size factor from the theme.
     label_factor: f32,
+    /// The planned geometry, when the canvas was sized from the grid
+    /// (`layout_plan`).  The map and bar rectangles above are copied from
+    /// it; the chrome reads its header rows and font sizes.
+    plan: Option<CanvasPlan>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -540,6 +546,7 @@ fn compute_layout(
         halo: presentation.theme.halo_with_alpha(255),
         title_factor: presentation.theme.title_factor(),
         label_factor: presentation.theme.label_factor(),
+        plan: None,
     }
 }
 
@@ -566,7 +573,35 @@ fn compute_effective_layout(
         has_domain_frame,
         presentation.colorbar.orientation,
     );
+    if let Some(plan) = canvas_plan_for(total_w, total_h) {
+        apply_canvas_plan(&mut layout, plan, has_cbar);
+    }
     layout
+}
+
+/// The planned rectangles replace the proportional ones.  Map labels
+/// (contours, extrema, places) keep the chrome text scale they always
+/// had; only the header and the bar read the plan's pixel sizes.
+fn apply_canvas_plan(layout: &mut Layout, plan: CanvasPlan, has_cbar: bool) {
+    layout.map_x = plan.map.x;
+    layout.map_y = plan.map.y;
+    layout.map_w = plan.map.w.max(1);
+    layout.map_h = plan.map.h.max(1);
+    match plan.bar.filter(|_| has_cbar) {
+        Some(bar) => {
+            layout.cbar_x = bar.x;
+            layout.cbar_y = bar.y;
+            layout.cbar_w = bar.w;
+            layout.cbar_h = bar.h;
+        }
+        None => {
+            layout.cbar_x = 0;
+            layout.cbar_y = 0;
+            layout.cbar_w = 0;
+            layout.cbar_h = 0;
+        }
+    }
+    layout.plan = Some(plan);
 }
 
 fn fit_map_viewport_layout_to_extent(
@@ -577,6 +612,9 @@ fn fit_map_viewport_layout_to_extent(
     domain_frame: Option<DomainFrame>,
     extent: Option<&MapExtent>,
 ) {
+    if layout.plan.is_some() {
+        return;
+    }
     if !matches!(domain_frame, Some(frame) if matches!(frame.source, DomainFrameSource::MapViewport))
     {
         return;
@@ -734,6 +772,11 @@ pub fn map_frame_aspect_ratio_for_mode_with_chrome_scale(
     has_title: bool,
     chrome_scale: ChromeScale,
 ) -> f64 {
+    // A planned canvas has one map shape whatever lane asks, so every lane
+    // frames its extent to the rectangle the map is drawn in.
+    if let Some(plan) = canvas_plan_for(total_w, total_h) {
+        return plan.map_aspect;
+    }
     let layout = compute_layout(
         total_w,
         total_h,
@@ -835,7 +878,7 @@ pub(crate) fn legend_ticks(cmap: &LeveledColormap, step: Option<f64>) -> Vec<f64
         .unwrap_or_else(|| pick_ticks(cmap.legend_levels_for_display(), step))
 }
 
-fn colorbar_levels_for_ticks(cmap: &LeveledColormap) -> &[f64] {
+pub(crate) fn colorbar_levels_for_ticks(cmap: &LeveledColormap) -> &[f64] {
     cmap.legend_levels_for_display()
 }
 
@@ -1566,6 +1609,13 @@ fn draw_projected_place_labels(
             if !mask_contains_local_pixel(mask, px, py) {
                 continue;
             }
+        }
+        // A place past the map's edge is not on the map.  The selection
+        // works from the frame's lat/lon box, which a Lambert grid's corners
+        // overhang, and clamping such a place onto the frame line drew a
+        // city marker on the border, as if the city were there.
+        if !(px >= 0.0 && py >= 0.0 && px < layout.map_w as f64 && py < layout.map_h as f64) {
+            continue;
         }
 
         let marker_x = layout.map_x as f64 + px.clamp(0.0, layout.map_w.saturating_sub(1) as f64);
@@ -4329,6 +4379,14 @@ fn draw_barbs(
             {
                 continue;
             }
+            // A planned frame draws no glyph for a calm point: the calm
+            // circle, repeated on a barb lattice over a light-wind area,
+            // read as a grid of dots over the whole map.
+            if layout.plan.is_some()
+                && (overlay.u[idx] as f64).hypot(overlay.v[idx] as f64) < CALM_KT
+            {
+                continue;
+            }
             draw_wind_barb_with_halo(
                 img,
                 overlay,
@@ -4340,6 +4398,10 @@ fn draw_barbs(
         }
     }
 }
+
+/// Below this speed (knots, the unit barbs are drawn in) a barb has no
+/// pennant, half barb or shaft worth drawing.
+const CALM_KT: f64 = 2.5;
 
 fn accept_pixel_spaced_barb(
     occupied_cells: &mut HashMap<(i32, i32), (f64, f64)>,
@@ -4774,6 +4836,18 @@ fn draw_chrome_and_colorbar(
     projection_clip_mask_present: bool,
     _has_title: bool,
 ) -> (u128, u128) {
+    if let Some(plan) = layout.plan.as_ref() {
+        return draw_planned_chrome(
+            img,
+            layout,
+            plan,
+            opts,
+            projected_pixels_ref,
+            domain_frame_rect,
+            domain_clip_rect,
+            projection_clip_mask_present,
+        );
+    }
     let chrome_start = Instant::now();
     let ((chrome_left, chrome_right, chrome_center), (title_y, subtitle_y)) =
         header_anchor(layout, opts, domain_frame_rect);
@@ -4913,90 +4987,15 @@ fn draw_chrome_and_colorbar(
             );
         }
     }
-    if let Some(frame) = opts.presentation.chrome.frame_color {
-        let draw_rectangular_frame = opts.domain_frame.is_none() && !projection_clip_mask_present;
-        if draw_rectangular_frame {
-            let map_right = layout.map_x + layout.map_w.saturating_sub(1);
-            let map_bottom = layout.map_y + layout.map_h.saturating_sub(1);
-            for px in layout.map_x..=map_right.min(img.width().saturating_sub(1)) {
-                if layout.map_y < img.height() {
-                    img.put_pixel(px, layout.map_y, frame.to_image_rgba());
-                }
-                if map_bottom < img.height() {
-                    img.put_pixel(px, map_bottom, frame.to_image_rgba());
-                }
-            }
-            for py in layout.map_y..=map_bottom.min(img.height().saturating_sub(1)) {
-                if layout.map_x < img.width() {
-                    img.put_pixel(layout.map_x, py, frame.to_image_rgba());
-                }
-                if map_right < img.width() {
-                    img.put_pixel(map_right, py, frame.to_image_rgba());
-                }
-            }
-        }
-    }
-
-    if let Some(frame) = opts.domain_frame {
-        if let Some(rect) = domain_frame_rect {
-            if !matches!(frame.source, DomainFrameSource::RasterAlpha) {
-                let frame_style = opts
-                    .presentation
-                    .domain_frame_style(frame.outline_color.into(), frame.outline_width);
-                if frame_style.visible {
-                    draw_local_rect_outline(
-                        img,
-                        layout,
-                        rect,
-                        frame_style.color,
-                        frame_style.width,
-                    );
-                }
-            }
-        }
-    }
-
-    if let Some(domain_boundary) = opts.presentation.domain_boundary {
-        if domain_boundary.visible {
-            if let Some(rect) = domain_clip_rect.filter(|_| domain_frame_rect.is_none()) {
-                draw_local_rect_outline(
-                    img,
-                    layout,
-                    rect,
-                    domain_boundary.color,
-                    domain_boundary.width,
-                );
-            } else {
-                let drew_grid_boundary = match (&opts.projected_grid, projected_pixels_ref) {
-                    (Some(grid), Some(pixel_points)) => draw_projected_grid_boundary(
-                        img,
-                        layout,
-                        grid,
-                        pixel_points,
-                        domain_boundary.color,
-                        domain_boundary.width,
-                    ),
-                    _ => false,
-                };
-                if !drew_grid_boundary {
-                    let map_right = layout.map_x + layout.map_w.saturating_sub(1);
-                    let map_bottom = layout.map_y + layout.map_h.saturating_sub(1);
-                    draw::draw_polyline_aa(
-                        img,
-                        &[
-                            (layout.map_x as f64, layout.map_y as f64),
-                            (map_right as f64, layout.map_y as f64),
-                            (map_right as f64, map_bottom as f64),
-                            (layout.map_x as f64, map_bottom as f64),
-                            (layout.map_x as f64, layout.map_y as f64),
-                        ],
-                        domain_boundary.color,
-                        domain_boundary.width,
-                    );
-                }
-            }
-        }
-    }
+    draw_frame_outlines(
+        img,
+        layout,
+        opts,
+        projected_pixels_ref,
+        domain_frame_rect,
+        domain_clip_rect,
+        projection_clip_mask_present,
+    );
     let chrome_ms = chrome_start.elapsed().as_millis();
 
     let colorbar_start = Instant::now();
@@ -5179,6 +5178,170 @@ fn draw_chrome_and_colorbar(
     (chrome_ms, colorbar_ms)
 }
 
+/// The map's rectangular frame, the domain frame outline and the domain
+/// boundary: shared by the fixed-canvas chrome and the planned chrome.
+fn draw_frame_outlines(
+    img: &mut RgbaImage,
+    layout: &Layout,
+    opts: &RenderOpts,
+    projected_pixels_ref: Option<&[Option<(f32, f32)>]>,
+    domain_frame_rect: Option<LocalRect>,
+    domain_clip_rect: Option<LocalRect>,
+    projection_clip_mask_present: bool,
+) {
+    if let Some(frame) = opts.presentation.chrome.frame_color {
+        let draw_rectangular_frame = opts.domain_frame.is_none() && !projection_clip_mask_present;
+        if draw_rectangular_frame {
+            let map_right = layout.map_x + layout.map_w.saturating_sub(1);
+            let map_bottom = layout.map_y + layout.map_h.saturating_sub(1);
+            for px in layout.map_x..=map_right.min(img.width().saturating_sub(1)) {
+                if layout.map_y < img.height() {
+                    img.put_pixel(px, layout.map_y, frame.to_image_rgba());
+                }
+                if map_bottom < img.height() {
+                    img.put_pixel(px, map_bottom, frame.to_image_rgba());
+                }
+            }
+            for py in layout.map_y..=map_bottom.min(img.height().saturating_sub(1)) {
+                if layout.map_x < img.width() {
+                    img.put_pixel(layout.map_x, py, frame.to_image_rgba());
+                }
+                if map_right < img.width() {
+                    img.put_pixel(map_right, py, frame.to_image_rgba());
+                }
+            }
+        }
+    }
+
+    if let Some(frame) = opts.domain_frame {
+        if let Some(rect) = domain_frame_rect {
+            if !matches!(frame.source, DomainFrameSource::RasterAlpha) {
+                let frame_style = opts
+                    .presentation
+                    .domain_frame_style(frame.outline_color.into(), frame.outline_width);
+                if frame_style.visible {
+                    draw_local_rect_outline(
+                        img,
+                        layout,
+                        rect,
+                        frame_style.color,
+                        frame_style.width,
+                    );
+                }
+            }
+        }
+    }
+
+    if let Some(domain_boundary) = opts.presentation.domain_boundary {
+        if domain_boundary.visible {
+            if let Some(rect) = domain_clip_rect.filter(|_| domain_frame_rect.is_none()) {
+                draw_local_rect_outline(
+                    img,
+                    layout,
+                    rect,
+                    domain_boundary.color,
+                    domain_boundary.width,
+                );
+            } else {
+                let drew_grid_boundary = match (&opts.projected_grid, projected_pixels_ref) {
+                    (Some(grid), Some(pixel_points)) => draw_projected_grid_boundary(
+                        img,
+                        layout,
+                        grid,
+                        pixel_points,
+                        domain_boundary.color,
+                        domain_boundary.width,
+                    ),
+                    _ => false,
+                };
+                if !drew_grid_boundary {
+                    let map_right = layout.map_x + layout.map_w.saturating_sub(1);
+                    let map_bottom = layout.map_y + layout.map_h.saturating_sub(1);
+                    draw::draw_polyline_aa(
+                        img,
+                        &[
+                            (layout.map_x as f64, layout.map_y as f64),
+                            (map_right as f64, layout.map_y as f64),
+                            (map_right as f64, map_bottom as f64),
+                            (layout.map_x as f64, map_bottom as f64),
+                            (layout.map_x as f64, layout.map_y as f64),
+                        ],
+                        domain_boundary.color,
+                        domain_boundary.width,
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The chrome of a planned canvas: the header across the content width,
+/// the frame outlines, and the colour bar at exactly the map's length.
+#[allow(clippy::too_many_arguments)]
+fn draw_planned_chrome(
+    img: &mut RgbaImage,
+    layout: &Layout,
+    plan: &CanvasPlan,
+    opts: &RenderOpts,
+    projected_pixels_ref: Option<&[Option<(f32, f32)>]>,
+    domain_frame_rect: Option<LocalRect>,
+    domain_clip_rect: Option<LocalRect>,
+    projection_clip_mask_present: bool,
+) -> (u128, u128) {
+    let chrome_start = Instant::now();
+    let header = PlanHeaderText::compose(
+        opts.title.as_deref(),
+        opts.colorbar_units.as_deref().filter(|_| opts.colorbar),
+        opts.subtitle_left.as_deref(),
+        opts.subtitle_center.as_deref(),
+        opts.subtitle_right.as_deref(),
+    );
+    if draw_plan_header(
+        img,
+        plan,
+        &header,
+        opts.presentation.chrome.title_color,
+        opts.presentation.chrome.subtitle_color,
+    ) {
+        let full = [header.title.as_str(), header.when.as_deref().unwrap_or(""), header.meta.as_str()]
+            .join(" / ");
+        warn_subtitle_truncated("header", &full, "(cut to fit)");
+    }
+    draw_frame_outlines(
+        img,
+        layout,
+        opts,
+        projected_pixels_ref,
+        domain_frame_rect,
+        domain_clip_rect,
+        projection_clip_mask_present,
+    );
+    let chrome_ms = chrome_start.elapsed().as_millis();
+
+    let colorbar_start = Instant::now();
+    if opts.colorbar {
+        if let Some(bar) = plan.bar {
+            let levels = colorbar_levels_for_ticks(&opts.cmap);
+            if levels.len() >= 2 {
+                let ticks = legend_ticks(&opts.cmap, opts.cbar_tick_step);
+                draw_plan_colorbar(
+                    img,
+                    plan,
+                    bar,
+                    plan.bar_side,
+                    &opts.cmap,
+                    opts.colorbar_mode,
+                    opts.presentation.colorbar,
+                    &ticks,
+                    levels[0],
+                    levels[levels.len() - 1],
+                );
+            }
+        }
+    }
+    (chrome_ms, colorbar_start.elapsed().as_millis())
+}
+
 fn render_to_image_profile_inner(
     data: &[f64],
     ny: usize,
@@ -5219,11 +5382,22 @@ fn render_to_image_profile_inner(
     };
     let projected_pixel_ms = projected_pixel_start.elapsed().as_millis();
     let overlay_padding_px = overlay_frame_padding_px(opts, &layout);
+    let planned_full_frame = layout
+        .plan
+        .is_some_and(|plan| !plan.aspect_clamped && opts.inverse_projected_grid.is_none());
     let domain_frame_rect = match (
         opts.domain_frame,
         opts.projected_grid.as_ref(),
         projected_pixels.as_deref(),
     ) {
+        // A planned map is the grid's own box, edge to edge: the frame is
+        // the whole map rectangle, with no coverage scan that could leave
+        // the last antialiased pixel row outside it.
+        (Some(frame), _, _) if planned_full_frame => compute_domain_frame_rect(
+            DomainFrame { inset_px: 0, ..frame },
+            layout.map_w,
+            layout.map_h,
+        ),
         (Some(frame), Some(grid), Some(pixel_points))
             if matches!(frame.source, DomainFrameSource::ProjectedGrid) =>
         {

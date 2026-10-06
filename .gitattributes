@@ -92,7 +92,7 @@ docs/public/receipts/obsbattery/*.tsv -whitespace
 
 # Bytes kept as their upstream or a recorded digest has them. The public export's
 # `git diff --check` refused their trailing blanks at the 2.8.1 cut battery:
-# WRF v4.7.1's urban tables (gpuwm/data/urban/oracle/bep/oracle-sha256sums.txt pins both),
+# WRF v4.7.1's urban tables (tests/data/oracles/urban/bep/oracle-sha256sums.txt pins both),
 # the generated glibc trig header (tools/glibc_trig_flt32_proof/final-hashes.txt pins it),
 # the WRF driver excerpts the urban oracle compiles, and the UW PBL oracle's retained
 # glibc sources (libm64/upstream-sha256.json pins them) and captured disassembly.
@@ -113,3 +113,17 @@ tools/lake_wrf461_oracle/upstream/** -whitespace
 # ysu.cu by tests/test_terrain_drag_wrf471_parity.py: the 2.8.2 cut battery's
 # `git diff --check` refused its trailing blank line, which the pins record.
 gpuwm/core/kernels/ysu_topo.cuh -whitespace
+
+# The operational HRRR namelists kept verbatim as importer fixtures: their
+# trailing blanks are the published files' own bytes and several are pinned
+# by hash, so the 2.8.6 cut's export whitespace check must not ask for them
+# to be stripped (2026-10-05).
+tests/data/albsol_config/hrrr_wrf.nl -whitespace
+tests/data/hrrr_v4121_namelists/hrrr_namelist.wps -whitespace
+tests/data/hrrr_v4121_namelists/hrrr_wrf.nl -whitespace
+tests/data/hrrr_wrf_v4_1_21.nl -whitespace
+tests/fixtures/namelist/hrrr_wrf-v4.1.21.nl -whitespace
+tests/fixtures/source_requests/hrrr_namelist.wps.c18 -whitespace
+tests/fixtures/source_requests/hrrr_wrf.nl.c18c -whitespace
+# A captured pytest log; excluded from the release (RELEASE-EXCLUDE.txt).
+tools/albsol_score/receipts/tests.log -whitespace

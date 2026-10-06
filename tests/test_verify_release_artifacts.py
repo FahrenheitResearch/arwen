@@ -152,7 +152,7 @@ def test_manylinux_missing_auditwheel_is_a_refusal(tmp_path, monkeypatch):
         linux_build.load_policy(SimpleNamespace(environment={}), tmp_path)
 
 
-@pytest.mark.parametrize("failure", [None, "missing", "probe"])
+@pytest.mark.parametrize("failure", [None, "missing", "probe", "duplicate"])
 def test_manylinux_probes_every_declared_artifact_before_output(tmp_path, monkeypatch, manylinux_policy, failure):
     from gpuwm import doctor
     release = tmp_path / "release"
@@ -162,6 +162,9 @@ def test_manylinux_probes_every_declared_artifact_before_output(tmp_path, monkey
         (release / filename).write_bytes(b"\x7fELF" + _artifact_bytes(artifact, filename, SOURCE_REV))
     if failure == "missing":
         (release / "arwen-tui").unlink()
+    if failure == "duplicate":
+        monkeypatch.setattr(bridge_assets, "BUNDLED_ARTIFACTS",
+                            (*bridge_assets.BUNDLED_ARTIFACTS, bridge_assets.BUNDLED_ARTIFACTS[0]))
     called = []
     monkeypatch.setattr(linux_build.shutil, "which", lambda *args, **kwargs: "readelf")
     def probe(path):
@@ -181,15 +184,26 @@ def test_manylinux_probes_every_declared_artifact_before_output(tmp_path, monkey
             return fields[label.rsplit("-", 1)[1]]
     commands = FixtureCommands()
     if failure:
-        with pytest.raises(linux_build.QualificationError, match="missing declared|executable probe failed"):
+        with pytest.raises(linux_build.QualificationError,
+                           match="missing declared|executable probe failed|repeats a native artifact name"):
             linux_build.qualify_artifacts(release, Path(__file__).resolve().parents[1], SOURCE_REV,
                                           manylinux_policy, commands)
     else:
         result = linux_build.qualify_artifacts(release, Path(__file__).resolve().parents[1], SOURCE_REV,
                                               manylinux_policy, commands)
         assert {r["artifact"] for r in result} == {a.name for a in bridge_assets.BUNDLED_ARTIFACTS}
-        # 31: rw_simradar joined BUNDLED_ARTIFACTS as the thirty-first artifact.
-        assert len(result) == 31
+        assert len(result) == len(bridge_assets.BUNDLED_ARTIFACTS)
+        required = {
+            "grib1_bridge", "gdt101_remap", "gfs_grib2_bridge", "hrrr_grib2_bridge",
+            "grib2_inventory", "grib2_dump", "gpuwm_preprocess_cpu", "rw_fetch",
+            "rw_wrfbatch", "rw_simradar", "rw_nexrad", "rw_odim", "rw_mrms",
+            "rw_stage4", "rw_asos", "rw_goes", "rw_opera", "rw_netcdf",
+            "region_global_dealias", "netcdf_writer", "static_fields",
+            "gpuwm_mapped_engine", "obs_regrid", "obs_score", "rw_mpas_mesh", "rw_mpas_static",
+            "rw_mpas_init", "rw_mpas_geometry", "rw_mpas_hostprep", "rw_mpas_convert", "rw_mpas_lbc", "rw_mlexport",
+            "arwen-tui", "rw_zarr", "rw_isobaric",
+        }
+        assert required <= {r["artifact"] for r in result}
         assert set(called) == {a.name for a in bridge_assets.BUNDLED_ARTIFACTS if a.kind == "executable"}
         assert set(commands.abi_calls) == {bridge_assets.library_abi_for(a.name)[0]
                                           for a in bridge_assets.BUNDLED_ARTIFACTS if a.kind == "library"}
@@ -713,7 +727,7 @@ def _library_artifacts() -> tuple[bridge_assets.BundledArtifact, ...]:
                  if artifact.kind == "library")
 
 
-def test_the_release_ships_five_libraries_with_different_abi_symbols() -> None:
+def test_the_release_ships_six_libraries_with_different_abi_symbols() -> None:
     """The premise of the dispatch: each library has its OWN handshake.
 
     If this ever collapses to one library the dispatch cases below stop
@@ -723,16 +737,20 @@ def test_the_release_ships_five_libraries_with_different_abi_symbols() -> None:
     tape flipped onto it; the fourth is the static-field builder, which
     joined when `build_static` flipped onto the Rust crate by default;
     the fifth is the observation remap, which joined when
-    `gpuwm.verify.obs.regrid` flipped off scipy by default.
+    `gpuwm.verify.obs.regrid` flipped off scipy by default. The sixth is
+    the shared isobaric reader used by pressure-level products and exports.
     """
 
     artifacts = _library_artifacts()
-    assert len(artifacts) == 5, [a.name for a in artifacts]
+    assert {a.name for a in artifacts} == {
+        "gpuwm_preprocess_cpu", "region_global_dealias", "netcdf_writer",
+        "static_fields", "obs_regrid", "obs_score", "rw_isobaric"}
     symbols = {bridge_assets.library_abi_for(a.name)[0] for a in artifacts}
     assert symbols == {"gpuwm_preprocess_cpu_abi_version", "bw_abi_version",
                        "gpuwm_ncwrite_abi_version",
                        "gpuwm_static_abi_version",
-                       "gpuwm_obsregrid_abi_version"}
+                       "gpuwm_obsregrid_abi_version", "gpuwm_obsscore_abi_version",
+                       "gpuwm_isobaric_abi_version"}
 
 
 @pytest.mark.parametrize("platform", bridge_assets.SUPPORTED_PLATFORMS)

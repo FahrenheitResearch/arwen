@@ -137,6 +137,18 @@ pub(crate) fn drop_fieldset(handle: u64) -> bool {
         .is_some()
 }
 
+/// Borrow both inputs under one registry lock without duplicating their arrays.
+pub(crate) fn with_fieldsets<T>(
+    first: u64,
+    second: u64,
+    f: impl FnOnce(&FieldSet, &FieldSet) -> T,
+) -> Result<T, u64> {
+    let registry = FIELDSETS.lock().expect("fieldset registry poisoned");
+    let first_set = registry.get(&first).ok_or(first)?;
+    let second_set = registry.get(&second).ok_or(second)?;
+    Ok(f(first_set, second_set))
+}
+
 /// # Safety
 /// `ptr` must point to `len` readable bytes, or be null when `len` is 0.
 pub(crate) unsafe fn bytes<'a>(ptr: *const u8, len: usize) -> Option<&'a [u8]> {

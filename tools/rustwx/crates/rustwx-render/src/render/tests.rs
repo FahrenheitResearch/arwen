@@ -192,6 +192,7 @@ fn contour_test_layout() -> Layout {
         subtitle_y: 0,
         text_scale: 1,
         label_gap: 14,
+        plan: None,
     }
 }
 
@@ -939,6 +940,7 @@ fn projected_alpha_mask_clears_linework_outside_mask() {
         subtitle_y: 0,
         text_scale: 1,
         label_gap: 1,
+        plan: None,
     };
     let bg = Rgba::new(244, 246, 248);
     let mut img = RgbaImage::from_pixel(6, 6, Rgba::BLACK.to_image_rgba());
@@ -2148,4 +2150,96 @@ fn a_colour_bar_crossing_zero_labels_its_zero_tick_zero() {
         .find(|row| row.0 == ticks[zero])
         .map(|row| row.2.as_str());
     assert_eq!(label, Some("0"));
+}
+
+/// A planned canvas, rendered: the image is the plan's size, the map
+/// rectangle has no row or column of canvas colour in it, the header is
+/// drawn whole inside the canvas, and the colour bar spans exactly the
+/// map's side.  Run for a square, a wide and a tall grid.
+#[test]
+fn a_planned_frame_fills_its_map_and_keeps_its_chrome_inside_the_canvas() {
+    let table = crate::layout_plan::LayoutTable::builtin();
+    for (index, aspect) in [1.0f64, 2.91, 0.399].into_iter().enumerate() {
+        let mut plan = table.plan_map(aspect, crate::layout_plan::SizeClass::Standard, 1.0);
+        // A canvas size no other test renders at, so the registry cannot
+        // hand this plan to an unrelated render.
+        plan.canvas_w += 3 + index as u32;
+        crate::layout_plan::register_canvas_plan(plan);
+        let (nx, ny) = (41usize, ((41.0 / aspect).round() as usize).max(2));
+        let mut x = Vec::with_capacity(nx * ny);
+        let mut y = Vec::with_capacity(nx * ny);
+        let mut data = Vec::with_capacity(nx * ny);
+        for j in 0..ny {
+            for i in 0..nx {
+                x.push(i as f64 * aspect / (nx - 1) as f64);
+                y.push(j as f64 / (ny - 1) as f64);
+                data.push(((i + j) % 3) as f64);
+            }
+        }
+        let mut opts = sample_projected_opts();
+        opts.width = plan.canvas_w;
+        opts.height = plan.canvas_h;
+        opts.colorbar = true;
+        opts.colorbar_units = Some("degF".into());
+        opts.title = Some("2m AGL Temperature (d01 3 km)".into());
+        opts.subtitle_left = Some("Init 05/26 15Z | F002 | Valid 05/26 17Z | WRF".into());
+        opts.subtitle_right = Some("source: ArWen".into());
+        opts.map_extent = Some(MapExtent { x_min: 0.0, x_max: aspect, y_min: 0.0, y_max: 1.0 });
+        opts.projected_grid = Some(ProjectedGrid { x, y, nx, ny });
+        opts.domain_frame = Some(DomainFrame {
+            inset_px: 0,
+            chrome_follows_frame: false,
+            legend_follows_frame: false,
+            source: crate::request::DomainFrameSource::ProjectedGrid,
+            ..DomainFrame::map_viewport_default()
+        });
+        let (image, timing) = render_to_image_profile(&data, ny, nx, &opts);
+        assert_eq!((image.width(), image.height()), (plan.canvas_w, plan.canvas_h), "aspect {aspect}");
+        assert_eq!(
+            (timing.map_x, timing.map_y, timing.map_w, timing.map_h),
+            (plan.map.x, plan.map.y, plan.map.w, plan.map.h),
+            "aspect {aspect}: the drawn map is the planned map"
+        );
+        let canvas = opts.presentation.canvas_background;
+        let is_canvas = |px: u32, py: u32| {
+            let p = image.get_pixel(px, py).0;
+            let c = canvas.to_image_rgba().0;
+            (0..3).all(|k| p[k].abs_diff(c[k]) <= 2)
+        };
+        for py in plan.map.y..plan.map.bottom() {
+            assert!(
+                !(plan.map.x..plan.map.right()).all(|px| is_canvas(px, py)),
+                "aspect {aspect}: map row {py} is all canvas colour"
+            );
+        }
+        for px in plan.map.x..plan.map.right() {
+            assert!(
+                !(plan.map.y..plan.map.bottom()).all(|py| is_canvas(px, py)),
+                "aspect {aspect}: map column {px} is all canvas colour"
+            );
+        }
+        // The header is inked, and nothing is inked in the outer margin.
+        let header_ink = (0..plan.header.h)
+            .flat_map(|py| (0..plan.canvas_w).map(move |px| (px, py)))
+            .filter(|&(px, py)| !is_canvas(px, py))
+            .count();
+        assert!(header_ink > 200, "aspect {aspect}: header drew {header_ink} px");
+        for py in 0..plan.canvas_h {
+            assert!(is_canvas(0, py) && is_canvas(plan.canvas_w - 1, py), "aspect {aspect}: ink on the side edge at row {py}");
+        }
+        // The bar runs the map's full side and not a pixel past it.
+        let bar = plan.bar.unwrap();
+        match plan.bar_side {
+            crate::layout_plan::BarSide::Right => {
+                let mid = bar.x + bar.w / 2;
+                assert!(!is_canvas(mid, bar.y + 1) && !is_canvas(mid, bar.bottom() - 2));
+                assert!(is_canvas(mid, bar.y.saturating_sub(2)) && is_canvas(mid, bar.bottom() + 2));
+            }
+            crate::layout_plan::BarSide::Bottom => {
+                let mid = bar.y + bar.h / 2;
+                assert!(!is_canvas(bar.x + 1, mid) && !is_canvas(bar.right() - 2, mid));
+                assert!(is_canvas(bar.x.saturating_sub(2), mid) && is_canvas(bar.right() + 2, mid));
+            }
+        }
+    }
 }

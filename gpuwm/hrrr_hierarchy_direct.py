@@ -66,6 +66,7 @@ from gpuwm.static.corridor import (
 )
 from gpuwm.static.lambert import grids_from_projection_config
 from gpuwm.core.microphysics_transition import resolve_microphysics_transition
+from gpuwm.wrf_physics_inventory import EXPORT_USE_THETA_M
 
 
 SCHEMA = "gpuwm-native-hrrr-hierarchy-direct-v1"
@@ -79,6 +80,10 @@ _DOMAIN_PREPARATION_OVERRIDES = frozenset({
     "clos_choice", "ishallow",
     "diff_6th_factor", "epssm", "spec_exp", "mp_physics", "moist",
     "moist_cq", "nest_microphysics_transition",
+    # The fork's second filter factor rides with diff_6th_factor beside
+    # it; preparation reads neither
+    # (gpuwm.ingest.prepared_cache.PREPARATION_INERT_RUN_FIELDS).
+    "diff_6th_factor2",
     # Per-domain history cadence.  This is the ladder's whole point -- a
     # 3 km parent written hourly beside a 1 km child written every 15
     # minutes -- and the machinery for it already exists end to end: the
@@ -208,8 +213,13 @@ def _native_experiment(wps_namelist: Path, namelist_input: Path,
                 else {"rrtmg_variant": rrtmg_variant})
     if rrtmg_compatibility is not None:
         keywords["rrtmg_compatibility"] = rrtmg_compatibility
+    # The emission's round trip reads the pair under the same request
+    # source (gpuwm.hrrr_route_inputs.verify_round_trip); one constant, so
+    # the two readings of one pair cannot fill its silences differently.
+    from gpuwm.hrrr_route_inputs import ROUTE_REQUEST_SOURCE
     resolved, report = import_namelists(
         wps_namelist, namelist_input, name="native_hrrr_hierarchy",
+        request_source=ROUTE_REQUEST_SOURCE,
         acknowledgements=tuple(acknowledgements), **keywords)
     # The import is a one-file case: a WUDAPT geog_data_res writes a
     # [static] companion, validated and split off here like every file
@@ -254,10 +264,37 @@ def _require_raw_stock_delta(
     the array only under ``package radar_refl compute_radar_ref==1``.
     At WRF's default the stock arm's history frames carry no REFL_10CM
     at all, and every reflectivity score on that arm is unanswerable.
+
+    ``use_theta_m`` is NOT a delta: both files declare 0.  The engine
+    integrates dry theta and the stock-WRF export holds dry theta
+    (:data:`gpuwm.wrf_physics_inventory.EXPORT_USE_THETA_M`), so a stock
+    namelist that says 1 stops wrf.exe at its input gate.  It was a delta
+    (0 -> 1) while the export declared ``USE_THETA_M = 1``; that pair
+    carried dry-coupled boundary rows under a moist header, which a
+    moist-theta wrf.exe read as a boundary colder than the analysis.
+
+    The fork-only ``alb_sol`` is optional in the native file and must be
+    absent from the stock file. WRF 4.6.1 has no key, so retaining it
+    would stop the Fortran namelist read. Its omission is recorded as
+    an explicit physical difference when the native correction is on.
     """
 
     native = parse_namelist(native_namelist)
     stock = parse_namelist(stock_namelist)
+    from gpuwm.hrrr_route_inputs import STOCK_ALB_SOL_REASON
+
+    native_alb_sol = native.get("physics", {}).get("alb_sol")
+    if "alb_sol" in stock.get("physics", {}):
+        raise ValueError("stock-WRF namelist must omit alb_sol: "
+                         + STOCK_ALB_SOL_REASON)
+    if (native_alb_sol is not None
+            and (not isinstance(native_alb_sol, list)
+                 or len(native_alb_sol) != 1
+                 or type(native_alb_sol[0]) is not int
+                 or native_alb_sol[0] not in (0, 1))):
+        raise ValueError(
+            "native &physics/alb_sol must be omitted or one integer 0 or 1; "
+            f"got {native_alb_sol}")
     try:
         native_max_dom = native["domains"]["max_dom"]
         stock_max_dom = stock["domains"]["max_dom"]
@@ -358,10 +395,21 @@ def _require_raw_stock_delta(
             "native hierarchy namelist must declare one explicit "
             "ra_lw_physics entry per domain, each 0 (longwave off) or 4 "
             f"(RRTMG); got {native_lw}")
+    if (not _same_typed_values(native_theta, [0])
+            or not _same_typed_values(stock_theta, [EXPORT_USE_THETA_M])):
+        raise ValueError(
+            "native and stock namelists must both declare "
+            f"&dynamics/use_theta_m = {EXPORT_USE_THETA_M} (dry theta); "
+            f"got native {native_theta}, stock {stock_theta}. The engine "
+            "integrates dry theta and the stock-WRF files it exports hold "
+            f"dry theta (USE_THETA_M = {EXPORT_USE_THETA_M} on wrfinput "
+            "and wrfbdy), so a stock namelist that says otherwise stops "
+            "wrf.exe at its input gate with 'use_theta_m values must be "
+            "consistent'. A stock namelist generated before the export "
+            "wrote dry theta says use_theta_m = 1: change that line to "
+            f"{EXPORT_USE_THETA_M}, or regenerate the pair")
     stock_lw_expected = [1 if value == 0 else value for value in native_lw]
     if (not _same_typed_values(stock_lw, stock_lw_expected)
-            or not _same_typed_values(native_theta, [0])
-            or not _same_typed_values(stock_theta, [1])
             or "ghg_input" in native["physics"]
             or not _same_typed_values(stock_ghg, [0])
             # do_radar_ref stays FORBIDDEN in the native namelist (the
@@ -379,13 +427,16 @@ def _require_raw_stock_delta(
         raise ValueError(
             "the evidenced raw namelist deltas require ra_lw_physics "
             "0 -> 1 exactly where the native entry is 0 (a native 4 "
-            "carries to the stock arm unchanged), use_theta_m=0 -> 1, "
+            "carries to the stock arm unchanged), "
             "stock-only ghg_input=0, and stock-only do_radar_ref=1")
     normalized_stock = deepcopy(stock)
     normalized_stock["physics"]["ra_lw_physics"] = list(native_lw)
     normalized_stock["physics"].pop("ghg_input")
     normalized_stock["physics"].pop("do_radar_ref")
-    normalized_stock["dynamics"]["use_theta_m"] = list(native_theta)
+    if native_alb_sol is not None:
+        # Only the typed value verified above is normalized. Its actual
+        # absence from stock and disabled stock behavior stay in the receipt.
+        normalized_stock["physics"]["alb_sol"] = list(native_alb_sol)
     if native != normalized_stock:
         differences = []
         for section in sorted(set(native) | set(normalized_stock)):
@@ -396,22 +447,36 @@ def _require_raw_stock_delta(
                     differences.append(f"&{section}/{key}")
         raise ValueError(
             "stock-WRF namelist raw settings differ beyond "
-            "ra_lw_physics 0 -> 1, use_theta_m 0 -> 1, stock-only "
-            "ghg_input=0, and stock-only do_radar_ref=1: "
+            "ra_lw_physics 0 -> 1, stock-only "
+            "ghg_input=0, stock-only do_radar_ref=1, and native-only alb_sol: "
             + ", ".join(differences))
-    return {
-        "schema": "gpuwm-native-to-stock-namelist-delta-v4",
+    receipt = {
+        "schema": "gpuwm-native-to-stock-namelist-delta-v5",
         "status": "PASS",
         "max_dom": max_dom,
         "certified_native_runtime": observed_pins,
         "allowed_deltas": {
             "physics.ra_lw_physics": {
                 "native": list(native_lw), "stock": stock_lw_expected},
-            "dynamics.use_theta_m": {"native": [0], "stock": [1]},
             "physics.ghg_input": {"native": None, "stock": [0]},
             "physics.do_radar_ref": {"native": None, "stock": [1]},
         },
+        "shared_dry_theta": {
+            "dynamics.use_theta_m": [EXPORT_USE_THETA_M]},
     }
+    if native_alb_sol is not None:
+        receipt["allowed_deltas"]["physics.alb_sol"] = {
+            "native": list(native_alb_sol), "stock": None,
+            "stock_effective": 0,
+            "physics_equivalent": native_alb_sol[0] == 0,
+            "reason": STOCK_ALB_SOL_REASON,
+        }
+        if native_alb_sol[0] == 1:
+            receipt["comparison_limitations"] = [
+                "The native arm applies sun-angle land albedo and the "
+                "stock WRF 4.6.1 arm does not. This comparison cannot "
+                "qualify identical land shortwave forcing."]
+    return receipt
 
 
 def _require_raw_wps_contract(
@@ -737,6 +802,14 @@ def _compare_stock_experiment(native_exp, stock_exp) -> None:
                 f"select ra_lw_physics={expected} (RRTM substitutes the "
                 "native arm's disabled longwave; any other native "
                 "longwave carries unchanged)")
+        native_alb_sol = getattr(native_domain.run, "alb_sol", 0)
+        stock_alb_sol = getattr(stock_domain.run, "alb_sol", 0)
+        if (type(native_alb_sol) is not int or native_alb_sol not in (0, 1)
+                or type(stock_alb_sol) is not int or stock_alb_sol != 0):
+            from gpuwm.hrrr_route_inputs import STOCK_ALB_SOL_REASON
+            raise ValueError(
+                "stock-WRF imported configuration must carry alb_sol=0 "
+                "beside native integer 0 or 1: " + STOCK_ALB_SOL_REASON)
     from gpuwm.experiment import experiment_config_document
     native = experiment_config_document(native_exp)
     stock = experiment_config_document(stock_exp)
@@ -748,10 +821,11 @@ def _compare_stock_experiment(native_exp, stock_exp) -> None:
         document.pop("auto_epssm", None)
         for domain in document["domains"]:
             domain["run"]["ra_lw_physics"] = 0
+            domain["run"]["alb_sol"] = 0
     if native != stock:
         raise ValueError(
             "stock-WRF namelist differs from the native hierarchy setup "
-            "beyond the allowed ra_lw_physics 0 -> 1 runtime change")
+            "beyond the allowed longwave and native-only alb_sol runtime changes")
 
 
 def _effective_domain_config(domain) -> dict[str, object]:
@@ -876,11 +950,15 @@ def _source_identity(cpu_bridge: Path) -> dict[str, object]:
     return identity
 
 
-def _surface_state(restored, static_fields, *, sf_surface_physics, num_soil_layers=None):
+def _surface_state(restored, static_fields, *, sf_surface_physics, num_soil_layers=None,
+                   fractional_seaice=False):
     if restored.surface is None:
         return preprocess_land_surface_soil(
             restored.met.fields,
             sf_surface_physics=int(sf_surface_physics),
+            # real.exe keeps the sea-ice fraction under fractional_seaice = 1
+            # (module_soil_pre.F:216-219, :337-343 of the HRRR v4.1.21 fork).
+            fractional_seaice=bool(fractional_seaice),
             num_soil_layers=num_soil_layers,
             soil_type=static_fields["SCT_DOM"],
             deep_soil_temperature=static_fields["TMN"],
@@ -1421,6 +1499,16 @@ def _chained_hierarchy_tail(c) -> dict[str, object]:
         for k in range(count):
             built = time.perf_counter()
             interval = root_stream[k]
+            if posted is not None:
+                # Keep the verified lead provenance beside a nested prefix,
+                # so a fresh root producer retains its original head binding.
+                from gpuwm.ingest.stream_resume import POSTED_PREFIX_DIRNAME
+                source_prefix = (Path(c.root_preparation) / "boundary-stream"
+                                 / POSTED_PREFIX_DIRNAME)
+                target_prefix = writer.stream_path / POSTED_PREFIX_DIRNAME
+                target_prefix.mkdir(parents=True, exist_ok=True)
+                for marker_path in source_prefix.glob("f*.json"):
+                    shutil.copyfile(marker_path, target_prefix / marker_path.name)
             writer.write_segment(k, interval, **({} if posted is None else {
                 "relay_marker": root_stream.consumed_markers()[k]}))
             root_stream.release(k)
@@ -1506,7 +1594,8 @@ def _chained_hierarchy_tail(c) -> dict[str, object]:
         root_soil = _surface_state(
             restored, c.static_fields,
             sf_surface_physics=c.native_exp.root.run.sf_surface_physics,
-            num_soil_layers=c.native_exp.root.run.num_soil_layers)
+            num_soil_layers=c.native_exp.root.run.num_soil_layers,
+            fractional_seaice=int(getattr(c.native_exp.root.run, "fractional_seaice", 0)) == 1)
         children = start_states.reread_children(writer.root, exp=exp)
         result = export_native_hierarchy(
             exp=exp,
@@ -1790,7 +1879,8 @@ def prepare_hrrr_hierarchy(
         root_soil = _surface_state(
             restored, static_fields,
             sf_surface_physics=native_exp.root.run.sf_surface_physics,
-            num_soil_layers=native_exp.root.run.num_soil_layers)
+            num_soil_layers=native_exp.root.run.num_soil_layers,
+            fractional_seaice=int(getattr(native_exp.root.run, "fractional_seaice", 0)) == 1)
         restore_seconds = time.perf_counter() - restore_started
 
         snapshots_started = time.perf_counter()

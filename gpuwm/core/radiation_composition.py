@@ -126,6 +126,11 @@ class ComposedRadiation:
             rthratensw=sw.rthratensw if sw is not None else zero,
             swdown=swdown, glw=lw.glw if lw is not None else fields["glw"],
             gsw=gsw, coszen=coszen, olr=lw.olr if lw is not None else None,
+            # The interpolation fits the scheme's direct beam. Preserve
+            # the original off-mode result while carrying SWDDIR through
+            # compositions with independently selected spectra when on.
+            swddir=(getattr(sw, "swddir", None) if sw is not None
+                    and int(getattr(cfg, "swint_opt", 0)) == 1 else None),
             swddif=getattr(sw, "swddif", None) if sw is not None else None)
 
     def restart_identity(self):
@@ -273,12 +278,27 @@ def make_radiation(cfg, start_time, latitude_deg, longitude_deg, *,
             raise ValueError(f"no radiation engine for selector {selector}")
         if rrtmg_variant(cfg) == RRTMG_VARIANT_LEGACY:
             from gpuwm.core.rrtmg_legacy import RRTMGLegacyRadiation
+            smoke_options = {}
+            manifest = getattr(cfg, "rrtmg_smoke_manifest", "")
+            if shortwave and manifest:
+                from gpuwm.core.rrtmg_smoke_manifest import (
+                    BoundSmokeManifest, validate_smoke_manifest)
+                descriptor = validate_smoke_manifest(manifest, start_time, cfg.nz)
+                descriptor.require_vertical(cfg.eta_levels, cfg.hybrid_opt, cfg.etac, cfg.p_top)
+                if (descriptor.times[-1] - descriptor.start_time).total_seconds() < cfg.run_seconds:
+                    raise ValueError("prescribed smoke does not cover the complete requested run")
+                provider = BoundSmokeManifest(manifest, start_time, latitude_deg, longitude_deg, cfg.nz)
+                provider.require_vertical(cfg.eta_levels, cfg.hybrid_opt, cfg.etac, cfg.p_top)
+                provider.require_coverage(cfg.run_seconds)
+                smoke_options["smoke_provider"] = provider
             return RRTMGLegacyRadiation(*args, p_top=p_top, o3input=cfg.o3input,
                 ozone_parent=ozone_parent, ozone_routing=ozone_routing,
                 longwave=longwave, shortwave=shortwave,
+                aer_opt=int(getattr(cfg, "aer_opt", 0)) if shortwave else 0,
                 trace_gas_overrides=trace_gas_subset(trace_gas_overrides,
                     (LEGACY_LW_GASES if longwave else frozenset())
-                    | (LEGACY_SW_GASES if shortwave else frozenset())) or None)
+                    | (LEGACY_SW_GASES if shortwave else frozenset())) or None,
+                **smoke_options)
         from gpuwm.core.rrtmgp import RRTMGPRadiation, coefficient_gas_names
         selected_gases = trace_gas_overrides
         if trace_gas_overrides:

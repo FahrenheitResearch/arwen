@@ -574,3 +574,19 @@ fn region_and_city_labels_use_compact_names() {
         "Phoenix, AZ"
     );
 }
+
+#[test]
+fn an_interior_label_is_offset_away_from_its_own_marker() {
+    for (placement, sign_x, sign_y) in [
+        (ProjectedLabelPlacement::AboveRight, 1, -1),
+        (ProjectedLabelPlacement::AboveLeft, -1, -1),
+        (ProjectedLabelPlacement::BelowRight, 1, 1),
+        (ProjectedLabelPlacement::BelowLeft, -1, 1),
+    ] {
+        let mut style = broad_domain_place_style(PlaceLabelDomainKind::Region, PlaceCatalogTier::Major);
+        style.label_placement = placement;
+        orient_label_offsets(&mut style);
+        assert_eq!(style.label_offset_x_px.signum(), sign_x, "{placement:?}");
+        assert_eq!(style.label_offset_y_px.signum(), sign_y, "{placement:?}");
+    }
+}

@@ -66,7 +66,7 @@ impl SampleType {
                     "GeoTIFF {path:?}: sample type ({bits} bits, \
                      SampleFormat {format}) is outside the substrate's \
                      decode envelope (u8/u16/i16/i32/f32/f64)"
-                )))
+                )));
             }
         })
     }
@@ -121,6 +121,28 @@ impl ByteReader {
     }
 }
 
+fn decode_lzw_bounded(compressed: &[u8], expected: usize) -> std::result::Result<Vec<u8>, String> {
+    let mut decoder = weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8);
+    let mut raw = vec![0u8; expected + 1];
+    let (mut input, mut output) = (0usize, 0usize);
+    loop {
+        let step = decoder.decode_bytes(&compressed[input..], &mut raw[output..]);
+        input += step.consumed_in;
+        output += step.consumed_out;
+        if output > expected {
+            return Err(format!("decoded more than the declared {expected} bytes"));
+        }
+        match step.status.map_err(|err| err.to_string())? {
+            weezl::LzwStatus::Done => {
+                raw.truncate(output);
+                return Ok(raw);
+            }
+            weezl::LzwStatus::NoProgress => return Err("truncated LZW stream".into()),
+            weezl::LzwStatus::Ok => {}
+        }
+    }
+}
+
 /// One parsed IFD entry with its payload fully fetched.
 #[derive(Debug, Clone)]
 struct TagEntry {
@@ -129,9 +151,7 @@ struct TagEntry {
     payload: Vec<u8>,
 }
 
-const TYPE_SIZES: [usize; 19] = [
-    0, 1, 1, 2, 4, 8, 1, 1, 2, 4, 8, 4, 8, 4, 0, 0, 8, 8, 8,
-];
+const TYPE_SIZES: [usize; 19] = [0, 1, 1, 2, 4, 8, 1, 1, 2, 4, 8, 4, 8, 4, 0, 0, 8, 8, 8];
 
 /// Bytes per value of an IFD field type.
 ///
@@ -172,14 +192,15 @@ pub struct TiffReader {
     pub nodata: Option<f64>,
     pub transform: [f64; 6],
     pub crs: Option<Crs>,
+    cache: std::collections::VecDeque<(usize, Vec<u8>)>,
+    cache_bytes: usize,
+    cache_budget: usize,
 }
 
 impl TiffReader {
     pub fn open(path: &Path) -> Result<TiffReader> {
         let file = File::open(path).map_err(|err| {
-            StaticError::Missing(format!(
-                "high-resolution raster missing: {path:?} ({err})"
-            ))
+            StaticError::Missing(format!("high-resolution raster missing: {path:?} ({err})"))
         })?;
         // Every byte length below this point is computed from a field read
         // off the disk.  `read_at` allocates `vec![0u8; len]` before it
@@ -207,7 +228,10 @@ impl TiffReader {
                     ))
                 })
         };
-        let mut bytes = ByteReader { file, little_endian: true };
+        let mut bytes = ByteReader {
+            file,
+            little_endian: true,
+        };
         let header = bytes.read_at(0, 8)?;
         let little_endian = match &header[0..2] {
             b"II" => true,
@@ -215,7 +239,7 @@ impl TiffReader {
             other => {
                 return Err(invalid(format!(
                     "{path:?} is not a TIFF (byte-order mark {other:?})"
-                )))
+                )));
             }
         };
         bytes.little_endian = little_endian;
@@ -233,16 +257,15 @@ impl TiffReader {
                 }
                 (true, bytes.u64_from(&more[4..12]))
             }
-            other => {
-                return Err(invalid(format!(
-                    "{path:?} is not a TIFF (magic {other})"
-                )))
-            }
+            other => return Err(invalid(format!("{path:?} is not a TIFF (magic {other})"))),
         };
 
-        let mut tags: std::collections::BTreeMap<u16, TagEntry> =
-            std::collections::BTreeMap::new();
-        let (entry_size, count_len) = if big { (20usize, 8usize) } else { (12usize, 2usize) };
+        let mut tags: std::collections::BTreeMap<u16, TagEntry> = std::collections::BTreeMap::new();
+        let (entry_size, count_len) = if big {
+            (20usize, 8usize)
+        } else {
+            (12usize, 2usize)
+        };
         let count_raw = bytes.read_at(first_ifd, count_len)?;
         let entry_count = if big {
             bytes.u64_from(&count_raw)
@@ -262,8 +285,7 @@ impl TiffReader {
             } else {
                 bytes.u32_from(&raw[4..8]) as u64
             };
-            let value_raw =
-                if big { &raw[12..20] } else { &raw[8..12] };
+            let value_raw = if big { &raw[12..20] } else { &raw[8..12] };
             let type_size = type_size(field_type);
             let total = bounded_len("tag payload", count, type_size)?;
             let inline_cap = if big { 8 } else { 4 };
@@ -331,12 +353,12 @@ impl TiffReader {
         };
         let first_int = |tag: u16| get_ints(tag).and_then(|v| v.first().copied());
 
-        let width = first_int(256).ok_or_else(|| {
-            invalid(format!("{path:?}: TIFF has no ImageWidth"))
-        })? as usize;
-        let height = first_int(257).ok_or_else(|| {
-            invalid(format!("{path:?}: TIFF has no ImageLength"))
-        })? as usize;
+        let width = first_int(256)
+            .ok_or_else(|| invalid(format!("{path:?}: TIFF has no ImageWidth")))?
+            as usize;
+        let height = first_int(257)
+            .ok_or_else(|| invalid(format!("{path:?}: TIFF has no ImageLength")))?
+            as usize;
         if width == 0 || height == 0 {
             return Err(invalid(format!(
                 "{path:?}: TIFF declares a {width}x{height} image; the \
@@ -374,31 +396,30 @@ impl TiffReader {
             )));
         }
 
-        let (tiled, block_w, block_h, offsets, byte_counts) =
-            if tags.contains_key(&324) {
-                let tile_w = first_int(322).ok_or_else(|| {
-                    invalid(format!("{path:?}: tiled TIFF lacks TileWidth"))
-                })? as usize;
-                let tile_h = first_int(323).ok_or_else(|| {
-                    invalid(format!("{path:?}: tiled TIFF lacks TileLength"))
-                })? as usize;
-                (
-                    true,
-                    tile_w,
-                    tile_h,
-                    get_ints(324).unwrap_or_default(),
-                    get_ints(325).unwrap_or_default(),
-                )
-            } else {
-                let rows = first_int(278).unwrap_or(height as u64) as usize;
-                (
-                    false,
-                    width,
-                    rows,
-                    get_ints(273).unwrap_or_default(),
-                    get_ints(279).unwrap_or_default(),
-                )
-            };
+        let (tiled, block_w, block_h, offsets, byte_counts) = if tags.contains_key(&324) {
+            let tile_w = first_int(322)
+                .ok_or_else(|| invalid(format!("{path:?}: tiled TIFF lacks TileWidth")))?
+                as usize;
+            let tile_h = first_int(323)
+                .ok_or_else(|| invalid(format!("{path:?}: tiled TIFF lacks TileLength")))?
+                as usize;
+            (
+                true,
+                tile_w,
+                tile_h,
+                get_ints(324).unwrap_or_default(),
+                get_ints(325).unwrap_or_default(),
+            )
+        } else {
+            let rows = first_int(278).unwrap_or(height as u64) as usize;
+            (
+                false,
+                width,
+                rows,
+                get_ints(273).unwrap_or_default(),
+                get_ints(279).unwrap_or_default(),
+            )
+        };
         if block_w == 0 || block_h == 0 {
             // TileWidth/TileLength (322/323) and RowsPerStrip (278) come
             // straight off disk with no floor of their own.  A zero reaches
@@ -430,7 +451,9 @@ impl TiffReader {
                     matrix.len()
                 )));
             }
-            [matrix[0], matrix[1], matrix[3], matrix[4], matrix[5], matrix[7]]
+            [
+                matrix[0], matrix[1], matrix[3], matrix[4], matrix[5], matrix[7],
+            ]
         } else {
             let scale = get_doubles(33550).ok_or_else(|| {
                 invalid(format!(
@@ -438,9 +461,8 @@ impl TiffReader {
                      ModelTransformation"
                 ))
             })?;
-            let tie = get_doubles(33922).ok_or_else(|| {
-                invalid(format!("{path:?}: GeoTIFF lacks ModelTiepoint"))
-            })?;
+            let tie = get_doubles(33922)
+                .ok_or_else(|| invalid(format!("{path:?}: GeoTIFF lacks ModelTiepoint")))?;
             if scale.len() < 2 || tie.len() < 6 {
                 return Err(invalid(format!(
                     "{path:?}: GeoTIFF pixel scale/tiepoint are too short"
@@ -517,45 +539,60 @@ impl TiffReader {
             nodata,
             transform,
             crs,
+            cache: std::collections::VecDeque::new(),
+            cache_bytes: 0,
+            cache_budget: 0,
         })
     }
 
     /// Decode one block (tile or strip) into raw sample bytes.
     fn block_bytes(&mut self, index: usize, rows_in_block: usize) -> Result<Vec<u8>> {
+        if let Some(position) = self.cache.iter().position(|(key, _)| *key == index) {
+            let entry = self.cache.remove(position).unwrap();
+            let raw = entry.1.clone();
+            self.cache.push_back(entry);
+            return Ok(raw);
+        }
         let offset = self.offsets[index];
         let count = self.byte_counts[index] as usize;
+        let expected = self
+            .block_w
+            .checked_mul(rows_in_block)
+            .and_then(|n| n.checked_mul(self.sample.bytes()))
+            .ok_or_else(|| invalid("GeoTIFF block sample count overflow"))?;
+        // A single giant compressed strip cannot be window-decoded by this
+        // tiled substrate. Refuse before either allocation, so a malformed or
+        // whole-image strip cannot recreate the static-stage RSS failure.
+        const MAX_DECODE_BLOCK_BYTES: usize = 64 * 1024 * 1024;
+        if expected > MAX_DECODE_BLOCK_BYTES || count > MAX_DECODE_BLOCK_BYTES {
+            return Err(invalid(format!(
+                "{:?}: TIFF block {index} needs {expected} decoded bytes and {count} encoded bytes, exceeding the 64 MiB static decode budget",
+                self.path
+            )));
+        }
         let compressed = self.bytes.read_at(offset, count)?;
-        let expected =
-            self.block_w * rows_in_block * self.sample.bytes();
         let mut raw = match self.compression {
             1 => compressed,
-            8 | 32946 => miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(
-                &compressed,
-                self.block_w * self.block_h * self.sample.bytes(),
-            )
-            .map_err(|err| {
+            8 | 32946 => {
+                miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&compressed, expected)
+                    .map_err(|err| {
+                        invalid(format!(
+                            "{:?}: deflate block {index} failed to inflate: {err}",
+                            self.path
+                        ))
+                    })?
+            }
+            5 => decode_lzw_bounded(&compressed, expected).map_err(|err| {
                 invalid(format!(
-                    "{:?}: deflate block {index} failed to inflate: {err}",
+                    "{:?}: LZW block {index} failed to decode: {err}",
                     self.path
                 ))
             })?,
-            5 => {
-                let mut decoder = weezl::decode::Decoder::with_tiff_size_switch(
-                    weezl::BitOrder::Msb,
-                    8,
-                );
-                decoder.decode(&compressed).map_err(|err| {
-                    invalid(format!(
-                        "{:?}: LZW block {index} failed to decode: {err}",
-                        self.path
-                    ))
-                })?
-            }
             other => {
                 return Err(invalid(format!(
                     "{:?}: unsupported compression {other}",
                     self.path
-                )))
+                )));
             }
         };
         if raw.len() < expected {
@@ -568,6 +605,15 @@ impl TiffReader {
         }
         raw.truncate(expected);
         self.undo_predictor(&mut raw, rows_in_block);
+        if raw.len() <= self.cache_budget {
+            while self.cache_bytes + raw.len() > self.cache_budget {
+                if let Some((_, old)) = self.cache.pop_front() {
+                    self.cache_bytes -= old.len();
+                }
+            }
+            self.cache_bytes += raw.len();
+            self.cache.push_back((index, raw.clone()));
+        }
         Ok(raw)
     }
 
@@ -590,8 +636,7 @@ impl TiffReader {
                     match self.sample {
                         SampleType::U8 => {
                             for i in 1..row_samples {
-                                raw[start + i] =
-                                    raw[start + i].wrapping_add(raw[start + i - 1]);
+                                raw[start + i] = raw[start + i].wrapping_add(raw[start + i - 1]);
                             }
                         }
                         SampleType::U16 | SampleType::I16 => {
@@ -618,8 +663,7 @@ impl TiffReader {
                         }
                         SampleType::I32 => {
                             let load = |raw: &[u8], at: usize| {
-                                let word: [u8; 4] =
-                                    raw[at..at + 4].try_into().unwrap();
+                                let word: [u8; 4] = raw[at..at + 4].try_into().unwrap();
                                 if le {
                                     u32::from_le_bytes(word)
                                 } else {
@@ -663,8 +707,7 @@ impl TiffReader {
                                 byte_index
                             };
                             assembled[sample_index * sample_bytes + at] =
-                                slice[byte_index * row_samples
-                                    + sample_index];
+                                slice[byte_index * row_samples + sample_index];
                         }
                     }
                     slice.copy_from_slice(&assembled);
@@ -682,23 +725,35 @@ impl TiffReader {
             SampleType::U8 => raw[at] as f64,
             SampleType::U16 => {
                 let pair = [raw[at], raw[at + 1]];
-                (if le { u16::from_le_bytes(pair) } else { u16::from_be_bytes(pair) })
-                    as f64
+                (if le {
+                    u16::from_le_bytes(pair)
+                } else {
+                    u16::from_be_bytes(pair)
+                }) as f64
             }
             SampleType::I16 => {
                 let pair = [raw[at], raw[at + 1]];
-                (if le { i16::from_le_bytes(pair) } else { i16::from_be_bytes(pair) })
-                    as f64
+                (if le {
+                    i16::from_le_bytes(pair)
+                } else {
+                    i16::from_be_bytes(pair)
+                }) as f64
             }
             SampleType::I32 => {
                 let quad: [u8; 4] = raw[at..at + 4].try_into().unwrap();
-                (if le { i32::from_le_bytes(quad) } else { i32::from_be_bytes(quad) })
-                    as f64
+                (if le {
+                    i32::from_le_bytes(quad)
+                } else {
+                    i32::from_be_bytes(quad)
+                }) as f64
             }
             SampleType::F32 => {
                 let quad: [u8; 4] = raw[at..at + 4].try_into().unwrap();
-                (if le { f32::from_le_bytes(quad) } else { f32::from_be_bytes(quad) })
-                    as f64
+                (if le {
+                    f32::from_le_bytes(quad)
+                } else {
+                    f32::from_be_bytes(quad)
+                }) as f64
             }
             SampleType::F64 => {
                 let oct: [u8; 8] = raw[at..at + 8].try_into().unwrap();
@@ -775,16 +830,21 @@ impl TiffReader {
                     for col in col_lo..col_hi {
                         let value = self.sample_to_f64(
                             &raw,
-                            (row - base_row) * self.block_w
-                                + (col - base_col),
+                            (row - base_row) * self.block_w + (col - base_col),
                         );
-                        out[(row - row_off) * win_w + (col - col_off)] =
-                            value;
+                        out[(row - row_off) * win_w + (col - col_off)] = value;
                     }
                 }
             }
         }
         Ok(out)
+    }
+
+    /// Enable a fixed-size decoded-block cache for overlapping warp windows.
+    pub fn set_cache_budget(&mut self, bytes: usize) {
+        self.cache.clear();
+        self.cache_bytes = 0;
+        self.cache_budget = bytes;
     }
 
     /// The band's sample type.
@@ -861,8 +921,7 @@ impl TiffReader {
                     continue;
                 }
                 for row in row_lo..row_hi {
-                    let src = (row - base_row) * self.block_w
-                        + (col_lo - base_col);
+                    let src = (row - base_row) * self.block_w + (col_lo - base_col);
                     let dst = (row - row_off) * win_w + (col_lo - col_off);
                     let len = col_hi - col_lo;
                     out[dst..dst + len].copy_from_slice(&raw[src..src + len]);
@@ -885,14 +944,11 @@ impl TiffReader {
         nodata_override: Option<f64>,
         scale_factor: f64,
     ) -> Result<Raster> {
-        let mut values =
-            self.read_window_raw(col_off, row_off, win_w, win_h)?;
+        let mut values = self.read_window_raw(col_off, row_off, win_w, win_h)?;
         let nodata = nodata_override.or(self.nodata);
         for value in values.iter_mut() {
             let masked = match nodata {
-                Some(sentinel) => {
-                    *value == sentinel || !value.is_finite()
-                }
+                Some(sentinel) => *value == sentinel || !value.is_finite(),
                 None => !value.is_finite(),
             };
             if masked {
@@ -908,7 +964,7 @@ impl TiffReader {
                 return Err(invalid(format!(
                     "raster {:?} has no CRS and declares no crs_override",
                     self.path
-                )))
+                )));
             }
         };
         let t = &self.transform;
@@ -920,7 +976,13 @@ impl TiffReader {
             t[4],
             t[5] + t[3] * col_off as f64 + t[4] * row_off as f64,
         ];
-        Ok(Raster { ny: win_h, nx: win_w, values, transform, crs })
+        Ok(Raster {
+            ny: win_h,
+            nx: win_w,
+            values,
+            transform,
+            crs,
+        })
     }
 }
 
@@ -1052,14 +1114,10 @@ fn parse_geokeys(
                     .find_map(|key| double_keys.get(key).copied())
             };
             let lat_1 = get(&[3078]).ok_or_else(|| {
-                invalid(format!(
-                    "GeoTIFF {path:?}: Albers keys lack StdParallel1"
-                ))
+                invalid(format!("GeoTIFF {path:?}: Albers keys lack StdParallel1"))
             })?;
             let lat_2 = get(&[3079]).ok_or_else(|| {
-                invalid(format!(
-                    "GeoTIFF {path:?}: Albers keys lack StdParallel2"
-                ))
+                invalid(format!("GeoTIFF {path:?}: Albers keys lack StdParallel2"))
             })?;
             let lat_0 = get(&[3081, 3085, 3089]).ok_or_else(|| {
                 invalid(format!(
@@ -1124,11 +1182,17 @@ pub fn read_band1_raw(
         (None, None) => {
             return Err(invalid(format!(
                 "raster {path:?} has no CRS and declares no crs_override"
-            )))
+            )));
         }
     };
     Ok((
-        Raster { ny: h, nx: w, values, transform: reader.transform, crs },
+        Raster {
+            ny: h,
+            nx: w,
+            values,
+            transform: reader.transform,
+            crs,
+        },
         nodata,
     ))
 }
@@ -1150,12 +1214,7 @@ fn cast_sample(value: f64, sample: SampleType, out: &mut Vec<u8>) {
     }
 }
 
-fn apply_predictor(
-    block: &mut [u8],
-    rows: usize,
-    row_samples: usize,
-    sample: SampleType,
-) {
+fn apply_predictor(block: &mut [u8], rows: usize, row_samples: usize, sample: SampleType) {
     let sample_bytes = sample.bytes();
     let row_bytes = row_samples * sample_bytes;
     match sample {
@@ -1166,9 +1225,8 @@ fn apply_predictor(
                 let slice = &mut block[row * row_bytes..(row + 1) * row_bytes];
                 for sample_index in 0..row_samples {
                     for byte_index in 0..sample_bytes {
-                        plane[byte_index * row_samples + sample_index] = slice
-                            [sample_index * sample_bytes
-                                + (sample_bytes - 1 - byte_index)];
+                        plane[byte_index * row_samples + sample_index] =
+                            slice[sample_index * sample_bytes + (sample_bytes - 1 - byte_index)];
                     }
                 }
                 for i in (1..row_bytes).rev() {
@@ -1181,8 +1239,7 @@ fn apply_predictor(
             for row in 0..rows {
                 let start = row * row_bytes;
                 for i in (1..row_samples).rev() {
-                    block[start + i] =
-                        block[start + i].wrapping_sub(block[start + i - 1]);
+                    block[start + i] = block[start + i].wrapping_sub(block[start + i - 1]);
                 }
             }
         }
@@ -1191,13 +1248,8 @@ fn apply_predictor(
                 let start = row * row_bytes;
                 for i in (1..row_samples).rev() {
                     let at = start + i * 2;
-                    let prev = u16::from_le_bytes([
-                        block[at - 2],
-                        block[at - 1],
-                    ]);
-                    let cur =
-                        u16::from_le_bytes([block[at], block[at + 1]])
-                            .wrapping_sub(prev);
+                    let prev = u16::from_le_bytes([block[at - 2], block[at - 1]]);
+                    let cur = u16::from_le_bytes([block[at], block[at + 1]]).wrapping_sub(prev);
                     block[at..at + 2].copy_from_slice(&cur.to_le_bytes());
                 }
             }
@@ -1207,13 +1259,9 @@ fn apply_predictor(
                 let start = row * row_bytes;
                 for i in (1..row_samples).rev() {
                     let at = start + i * 4;
-                    let prev = u32::from_le_bytes(
-                        block[at - 4..at].try_into().unwrap(),
-                    );
-                    let cur = u32::from_le_bytes(
-                        block[at..at + 4].try_into().unwrap(),
-                    )
-                    .wrapping_sub(prev);
+                    let prev = u32::from_le_bytes(block[at - 4..at].try_into().unwrap());
+                    let cur = u32::from_le_bytes(block[at..at + 4].try_into().unwrap())
+                        .wrapping_sub(prev);
                     block[at..at + 4].copy_from_slice(&cur.to_le_bytes());
                 }
             }
@@ -1294,43 +1342,48 @@ fn write_band1_from(
             "cannot write {path:?}: raster is {ny}x{nx} with {count} values"
         )));
     }
+    write_band1_tiles(
+        path,
+        ny,
+        nx,
+        transform,
+        crs,
+        sample,
+        nodata,
+        |col, row, w, h| {
+            Ok((0..h)
+                .flat_map(|j| (0..w).map(move |i| (j, i)))
+                .map(|(j, i)| value_at((row + j) * nx + col + i))
+                .collect())
+        },
+    )
+}
+
+/// Deterministic tile writer. Only one decoded and compressed tile is resident.
+/// The callback supplies the valid part of each 256 by 256 output tile.
+#[allow(clippy::too_many_arguments)]
+pub fn write_band1_tiles(
+    path: &Path,
+    ny: usize,
+    nx: usize,
+    transform: &[f64; 6],
+    crs: &Crs,
+    sample: SampleType,
+    nodata: Option<f64>,
+    mut tile_values: impl FnMut(usize, usize, usize, usize) -> Result<Vec<f64>>,
+) -> Result<()> {
+    if ny == 0 || nx == 0 {
+        return Err(invalid(format!("cannot write {path:?}: empty raster")));
+    }
     let sample_bytes = sample.bytes();
     let tiles_across = nx.div_ceil(WRITE_TILE);
     let tiles_down = ny.div_ceil(WRITE_TILE);
-
-    let mut tile_payloads: Vec<Vec<u8>> =
-        Vec::with_capacity(tiles_across * tiles_down);
-    for tile_row in 0..tiles_down {
-        for tile_col in 0..tiles_across {
-            let mut block: Vec<u8> =
-                Vec::with_capacity(WRITE_TILE * WRITE_TILE * sample_bytes);
-            for row in 0..WRITE_TILE {
-                for col in 0..WRITE_TILE {
-                    let j = tile_row * WRITE_TILE + row;
-                    let i = tile_col * WRITE_TILE + col;
-                    let mut value = if j < ny && i < nx {
-                        value_at(j * nx + i)
-                    } else {
-                        0.0
-                    };
-                    if value.is_nan() {
-                        value = match (nodata, sample) {
-                            (Some(sentinel), _) => sentinel,
-                            (None, SampleType::F32 | SampleType::F64) => {
-                                f64::NAN
-                            }
-                            (None, _) => 0.0,
-                        };
-                    }
-                    cast_sample(value, sample, &mut block);
-                }
-            }
-            apply_predictor(&mut block, WRITE_TILE, WRITE_TILE, sample);
-            tile_payloads.push(
-                miniz_oxide::deflate::compress_to_vec_zlib(&block, 6),
-            );
-        }
-    }
+    let tile_count = tiles_across * tiles_down;
+    // Small rasters retain their exact legacy layout. Large rasters need
+    // BigTIFF because classic tile offsets cannot represent a full mosaic.
+    let big = ny.saturating_mul(nx).saturating_mul(sample_bytes) > 3 * 1024 * 1024 * 1024;
+    let inline_cap = if big { 8 } else { 4 };
+    let entry_size = if big { 20 } else { 12 };
 
     let predictor: u16 = match sample {
         SampleType::F32 | SampleType::F64 => 3,
@@ -1406,30 +1459,56 @@ fn write_band1_from(
     }
 
     // Assemble tags in ascending order (TIFF requirement).
-    let le16 = |values: &[u16]| -> Vec<u8> {
-        values.iter().flat_map(|v| v.to_le_bytes()).collect()
-    };
-    let le32 = |values: &[u32]| -> Vec<u8> {
-        values.iter().flat_map(|v| v.to_le_bytes()).collect()
-    };
-    let le64f = |values: &[f64]| -> Vec<u8> {
-        values.iter().flat_map(|v| v.to_le_bytes()).collect()
-    };
+    let le16 =
+        |values: &[u16]| -> Vec<u8> { values.iter().flat_map(|v| v.to_le_bytes()).collect() };
+    let le32 =
+        |values: &[u32]| -> Vec<u8> { values.iter().flat_map(|v| v.to_le_bytes()).collect() };
+    let le64f =
+        |values: &[f64]| -> Vec<u8> { values.iter().flat_map(|v| v.to_le_bytes()).collect() };
 
-    let tile_count = tile_payloads.len();
     let mut tags: Vec<TagWrite> = vec![
-        TagWrite { tag: 256, field_type: 3, count: 1, data: le16(&[nx as u16]) },
-        TagWrite { tag: 257, field_type: 3, count: 1, data: le16(&[ny as u16]) },
+        TagWrite {
+            tag: 256,
+            field_type: 3,
+            count: 1,
+            data: le16(&[nx as u16]),
+        },
+        TagWrite {
+            tag: 257,
+            field_type: 3,
+            count: 1,
+            data: le16(&[ny as u16]),
+        },
         TagWrite {
             tag: 258,
             field_type: 3,
             count: 1,
             data: le16(&[(sample_bytes * 8) as u16]),
         },
-        TagWrite { tag: 259, field_type: 3, count: 1, data: le16(&[8]) },
-        TagWrite { tag: 262, field_type: 3, count: 1, data: le16(&[1]) },
-        TagWrite { tag: 277, field_type: 3, count: 1, data: le16(&[1]) },
-        TagWrite { tag: 284, field_type: 3, count: 1, data: le16(&[1]) },
+        TagWrite {
+            tag: 259,
+            field_type: 3,
+            count: 1,
+            data: le16(&[8]),
+        },
+        TagWrite {
+            tag: 262,
+            field_type: 3,
+            count: 1,
+            data: le16(&[1]),
+        },
+        TagWrite {
+            tag: 277,
+            field_type: 3,
+            count: 1,
+            data: le16(&[1]),
+        },
+        TagWrite {
+            tag: 284,
+            field_type: 3,
+            count: 1,
+            data: le16(&[1]),
+        },
         TagWrite {
             tag: 317,
             field_type: 3,
@@ -1518,26 +1597,22 @@ fn write_band1_from(
     let mut tag_list = tags;
     tag_list.push(TagWrite {
         tag: 324,
-        field_type: 4,
+        field_type: if big { 16 } else { 4 },
         count: tile_count as u32,
-        data: vec![0; 4 * tile_count],
+        data: vec![0; inline_cap * tile_count],
     });
     tag_list.push(TagWrite {
         tag: 325,
         field_type: 4,
         count: tile_count as u32,
-        data: le32(
-            &tile_payloads
-                .iter()
-                .map(|p| p.len() as u32)
-                .collect::<Vec<_>>(),
-        ),
+        data: vec![0; 4 * tile_count],
     });
     tag_list.sort_by_key(|t| t.tag);
 
-    let ifd_offset = 8u32;
+    let ifd_offset = if big { 16u64 } else { 8u64 };
     let entry_count = tag_list.len();
-    let ifd_size = 2 + entry_count * 12 + 4;
+    let count_size = if big { 8 } else { 2 };
+    let ifd_size = count_size + entry_count * entry_size + if big { 8 } else { 4 };
     let mut extra_offset = ifd_offset as usize + ifd_size;
     let mut extra: Vec<u8> = Vec::new();
     let mut entries: Vec<u8> = Vec::with_capacity(entry_count * 12);
@@ -1546,34 +1621,29 @@ fn write_band1_from(
     // after data placement, so compute the data start now).
     let mut out_of_line_total = 0usize;
     for tag in &tag_list {
-        if tag.data.len() > 4 {
+        if tag.data.len() > inline_cap {
             out_of_line_total += tag.data.len() + (tag.data.len() & 1);
         }
     }
     let data_start = extra_offset + out_of_line_total;
-    let mut tile_offsets: Vec<u32> = Vec::with_capacity(tile_count);
-    let mut cursor = data_start;
-    for payload in &tile_payloads {
-        tile_offsets.push(cursor as u32);
-        cursor += payload.len() + (payload.len() & 1);
-    }
-
-    for tag in &mut tag_list {
-        if tag.tag == 324 {
-            tag.data = le32(&tile_offsets);
-        }
-    }
-
     for tag in &tag_list {
         entries.extend(tag.tag.to_le_bytes());
         entries.extend(tag.field_type.to_le_bytes());
-        entries.extend(tag.count.to_le_bytes());
-        if tag.data.len() <= 4 {
-            let mut inline = [0u8; 4];
+        if big {
+            entries.extend((tag.count as u64).to_le_bytes());
+        } else {
+            entries.extend(tag.count.to_le_bytes());
+        }
+        if tag.data.len() <= inline_cap {
+            let mut inline = vec![0u8; inline_cap];
             inline[..tag.data.len()].copy_from_slice(&tag.data);
             entries.extend(inline);
         } else {
-            entries.extend((extra_offset as u32).to_le_bytes());
+            if big {
+                entries.extend((extra_offset as u64).to_le_bytes());
+            } else {
+                entries.extend((extra_offset as u32).to_le_bytes());
+            }
             extra.extend(&tag.data);
             if tag.data.len() & 1 == 1 {
                 extra.push(0);
@@ -1582,23 +1652,123 @@ fn write_band1_from(
         }
     }
 
-    let mut file: Vec<u8> = Vec::with_capacity(cursor);
-    file.extend(b"II");
-    file.extend(42u16.to_le_bytes());
-    file.extend(ifd_offset.to_le_bytes());
-    file.extend((entry_count as u16).to_le_bytes());
-    file.extend(&entries);
-    file.extend(0u32.to_le_bytes()); // next IFD
-    file.extend(&extra);
-    for payload in &tile_payloads {
-        file.extend(payload);
-        if payload.len() & 1 == 1 {
-            file.push(0);
+    // Reserve the exact legacy header layout, then stream tile payloads.
+    // Rewriting offsets and byte counts after encoding preserves every byte
+    // of the existing writer without retaining the compressed file in RAM.
+    let mut handle = File::create(path)?;
+    handle.write_all(b"II")?;
+    if big {
+        handle.write_all(&43u16.to_le_bytes())?;
+        handle.write_all(&8u16.to_le_bytes())?;
+        handle.write_all(&0u16.to_le_bytes())?;
+        handle.write_all(&ifd_offset.to_le_bytes())?;
+        handle.write_all(&(entry_count as u64).to_le_bytes())?;
+    } else {
+        handle.write_all(&42u16.to_le_bytes())?;
+        handle.write_all(&(ifd_offset as u32).to_le_bytes())?;
+        handle.write_all(&(entry_count as u16).to_le_bytes())?;
+    }
+    handle.write_all(&entries)?;
+    if big {
+        handle.write_all(&0u64.to_le_bytes())?;
+    } else {
+        handle.write_all(&0u32.to_le_bytes())?;
+    }
+    handle.write_all(&extra)?;
+    let mut tile_offsets = Vec::with_capacity(tile_count);
+    let mut tile_counts = Vec::with_capacity(tile_count);
+    let mut cursor = data_start as u64;
+    for tile_row in 0..tiles_down {
+        for tile_col in 0..tiles_across {
+            let col0 = tile_col * WRITE_TILE;
+            let row0 = tile_row * WRITE_TILE;
+            let w = WRITE_TILE.min(nx - col0);
+            let h = WRITE_TILE.min(ny - row0);
+            let values = tile_values(col0, row0, w, h)?;
+            if values.len() != w * h {
+                return Err(invalid("tile callback returned the wrong sample count"));
+            }
+            let mut block = Vec::with_capacity(WRITE_TILE * WRITE_TILE * sample_bytes);
+            for row in 0..WRITE_TILE {
+                for col in 0..WRITE_TILE {
+                    let mut value = if row < h && col < w {
+                        values[row * w + col]
+                    } else {
+                        0.0
+                    };
+                    if value.is_nan() {
+                        value = match (nodata, sample) {
+                            (Some(sentinel), _) => sentinel,
+                            (None, SampleType::F32 | SampleType::F64) => f64::NAN,
+                            (None, _) => 0.0,
+                        };
+                    }
+                    cast_sample(value, sample, &mut block);
+                }
+            }
+            apply_predictor(&mut block, WRITE_TILE, WRITE_TILE, sample);
+            let payload = miniz_oxide::deflate::compress_to_vec_zlib(&block, 6);
+            if !big && cursor > u32::MAX as u64 {
+                return Err(invalid("derived GeoTIFF exceeds classic TIFF offsets"));
+            }
+            tile_offsets.push(cursor);
+            tile_counts.push(payload.len() as u32);
+            handle.write_all(&payload)?;
+            if payload.len() & 1 == 1 {
+                handle.write_all(&[0])?;
+            }
+            cursor += (payload.len() + (payload.len() & 1)) as u64;
         }
     }
-
-    let mut handle = File::create(path)?;
-    handle.write_all(&file)?;
+    let mut extra_cursor = (ifd_offset as usize + ifd_size) as u64;
+    for (index, tag) in tag_list.iter().enumerate() {
+        if tag.tag == 324 || tag.tag == 325 {
+            let data = if tag.tag == 324 {
+                if big {
+                    tile_offsets.iter().flat_map(|v| v.to_le_bytes()).collect()
+                } else {
+                    le32(&tile_offsets.iter().map(|v| *v as u32).collect::<Vec<_>>())
+                }
+            } else {
+                le32(&tile_counts)
+            };
+            let at = if tag.data.len() <= inline_cap {
+                ifd_offset
+                    + count_size as u64
+                    + index as u64 * entry_size as u64
+                    + if big { 12 } else { 8 }
+            } else {
+                extra_cursor
+            };
+            handle.seek(SeekFrom::Start(at))?;
+            handle.write_all(&data)?;
+        }
+        if tag.data.len() > inline_cap {
+            extra_cursor += (tag.data.len() + (tag.data.len() & 1)) as u64;
+        }
+    }
     handle.sync_all()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod bounded_lzw_regression {
+    use super::decode_lzw_bounded;
+    #[test]
+    fn declared_block_size_bounds_lzw_expansion() {
+        let data = vec![42u8; 1024 * 1024];
+        let encoded = weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8)
+            .encode(&data)
+            .unwrap();
+        let error = decode_lzw_bounded(&encoded, 65536).unwrap_err();
+        assert_eq!(error, "decoded more than the declared 65536 bytes");
+    }
+    #[test]
+    fn bounded_lzw_preserves_valid_block_bytes() {
+        let data: Vec<u8> = (0..65536).map(|i| (i % 251) as u8).collect();
+        let encoded = weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8)
+            .encode(&data)
+            .unwrap();
+        assert_eq!(decode_lzw_bounded(&encoded, data.len()).unwrap(), data);
+    }
 }

@@ -1,0 +1,51 @@
+{
+  "parent1077": "1077c6e8abe502aab59de103d7e6d70dbb8588a1",
+  "parent683": "683cd2620e5e0abdd245d5365e29a060a1ba072a",
+  "pins_modified": false,
+  "recipes": {
+    "era5": {
+      "exact_removal_matches_old683": true,
+      "extra_later_bytes": 48,
+      "later1077_sha256": "0801d4de0226b7186b776f869ec35a929eed1351eebf52b679a48061f41c28fb",
+      "old683_sha256": "2c83f8801e8d659843453bbd3ce67539142b64b1fe21945ad07b72856a2bc8ef",
+      "only_extra_lines": [
+        "mosaic_lu = 0",
+        "mosaic_soil = 0",
+        "scalar_pblmix = 0"
+      ]
+    },
+    "gfs": {
+      "exact_removal_matches_old683": true,
+      "extra_later_bytes": 48,
+      "later1077_sha256": "23d3d64e2b7fd272d8dcf4cfcb84bd2304e19e4955363c4b7e1608e9b5258801",
+      "old683_sha256": "ccd5a741ffeb7f81c315d0516f11cdb7ae88444f40d028469dce55653f4aa655",
+      "only_extra_lines": [
+        "mosaic_lu = 0",
+        "mosaic_soil = 0",
+        "scalar_pblmix = 0"
+      ]
+    },
+    "rap": {
+      "exact_removal_matches_old683": true,
+      "extra_later_bytes": 48,
+      "later1077_sha256": "432da8422fecabad8c1559d66b0d82437397eec6240a10fa189ff2498bd62ed3",
+      "old683_sha256": "c25f1fcb76e70960aa0df2d624221752dba99268e6319aee107e635868d3f2cf",
+      "only_extra_lines": [
+        "mosaic_lu = 0",
+        "mosaic_soil = 0",
+        "scalar_pblmix = 0"
+      ]
+    },
+    "rrfs": {
+      "exact_removal_matches_old683": true,
+      "extra_later_bytes": 48,
+      "later1077_sha256": "87613a4e54ed28a6ad326ff94e69a22ec86f20cf0188d43d7af40898ef089b2d",
+      "old683_sha256": "ed632695df69d122ec82f5d80c7e97e0b0c3442df4fd5e188f617e2e86dd6180",
+      "only_extra_lines": [
+        "mosaic_lu = 0",
+        "mosaic_soil = 0",
+        "scalar_pblmix = 0"
+      ]
+    }
+  }
+}

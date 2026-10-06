@@ -1,0 +1,36 @@
+Next MYNN tendency and predictor oracle fixtures.
+Source: NOAA-EMC/HRRR tag v4.1.21, sorc/hrrr_wrfarw.fd/WRFV3.9/phys/module_bl_mynn.F.
+Source SHA256: 42178a22693ad14b1a3adcf3e44be3047f051abf80f3a64c0ce9ed9ac2ec6d8a.
+Built on the node CPU with GNU Fortran at -O0, from the unmodified module.
+
+run_transport_cloud_gsd41.F90 calls mynn_tendencies for 12 columns and 12 layers.
+The first eight reproduce every committed clear-transport output as FP32 bits.
+Four additional columns carry liquid and ice gradients, moist air, a negative
+cloud forcing and enhanced diffusion. Outputs include all three water tendencies
+and theta. The original thl input is recorded as thl0. The legacy thl column keeps
+the earlier clear fixture's convention and is not the cloud-case input.
+
+run_predict_gsd41.F90 calls mym_predict at source levflag 2 for eight columns and
+12 layers. Cases bind the 1e-4 floor, absence of the 150 cap, top Neumann row,
+negative initial TKE, negative production, stronger diffusion and longer step.
+The as-written top solve differs from its adjacent level by one FP32 ULP.
+
+The predictor validates the P20 port. The corrected cloud fixture validates
+P13 and P22 under the explicit source-defect form and the P21 conversion.
+All six tendencies match the source as float bits over 144 levels on an RTX 5090.
+
+Validation: 144 cloud transport rows and 96 predictor rows are finite. All
+8 prior clear columns are unchanged. Uncapped case maximum is 190.9942322;
+floor case minimum is the FP32 representation of 1e-4. Exact hashes and
+validation are retained in the lane's handover receipts.
+SHA256:
+dac3c6a484550b3b29ebdcc0ffa19de5f405f980ea28b2282568802e7d0b9a99  predict-gsd41.csv
+d9d957c008faf81c81919244c20997b47d05563007235289b1b4b6760991606b  transport-cloud-gsd41.csv
+52d960947db3c797d49ce3095183a169cfaec35c6f5e0a0b83ec6c614ec2d71c  run_predict_gsd41.F90
+c62717594327b7bd803fc9f8020b5968dc1b89773f949579ad1fd79fb588a032  run_transport_cloud_gsd41.F90
+
+Adversarial correction: the first harness bound qcd to qsq and carry_ice
+to FLAG_QNC. The corrected call matches the source signature at 2742-2772,
+passes the three variance arrays before tcd/qcd, and puts carry_ice in
+FLAG_QI. All 96 prior clear rows retain every float bit. The corrected
+case 11 consumes the negative cloud forcing and binds condensate clipping.

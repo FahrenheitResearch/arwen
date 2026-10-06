@@ -271,19 +271,125 @@
       "label": "HRRR pressure-level (wrfprs), CONUS",
       "measured": "2026-08-17",
       "hosts": [
-        {"name": "nomads", "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod", "default": true, "retention_hours": 48, "transfer_rank": 1, "why": "the operational server publishes each forecast hour first; 2 day directories present, measured 2026-08-24"},
-        {"name": "aws", "base": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com", "retention_hours": null, "transfer_rank": 0, "posting_delay_minutes": [{"from_lead": 0, "through_lead": 1, "minutes": 3}, {"from_lead": 2, "minutes": 11}], "posting_delay_note": "2026-10-02 metadata proxy: 40 matched AWS/NOMADS Content-Length pairs across five HRRR cycles. First f000/f001 wrfnat and wrfprs objects had at most 101 s extra AWS Last-Modified lag, with corresponding index comparisons up to 139 s over two cycles; a later soil object had 630 s. Rounded allowances, not measured first visibility.", "why": "the AWS Open Data mirror is the unbounded archive; it lags publication, and serves what it has caught up with several times quicker at peak hours"}
+        {
+          "name": "nomads",
+          "base": "https://nomads.ncep.noaa.gov/pub/data/nccf/com/hrrr/prod",
+          "default": true,
+          "retention_hours": 48,
+          "transfer_rank": 1,
+          "why": "the operational server publishes each forecast hour first; 2 day directories present, measured 2026-08-24"
+        },
+        {
+          "name": "aws",
+          "base": "https://noaa-hrrr-bdp-pds.s3.amazonaws.com",
+          "retention_hours": null,
+          "transfer_rank": 0,
+          "posting_delay_minutes": [
+            {
+              "from_lead": 0,
+              "through_lead": 1,
+              "minutes": 3
+            },
+            {
+              "from_lead": 2,
+              "minutes": 11
+            }
+          ],
+          "posting_delay_note": "2026-10-02 metadata proxy: 40 matched AWS/NOMADS Content-Length pairs across five HRRR cycles. First f000/f001 wrfnat and wrfprs objects had at most 101 s extra AWS Last-Modified lag, with corresponding index comparisons up to 139 s over two cycles; a later soil object had 630 s. Rounded allowances, not measured first visibility.",
+          "why": "the AWS Open Data mirror is the unbounded archive; it lags publication, and serves what it has caught up with several times quicker at peak hours"
+        }
       ],
-      "cycle_hours": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+      "cycle_hours": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23
+      ],
       "publication_lag": [
-        {"cycle_hours": [0, 6, 12, 18], "from_lead": 19, "hours": 0.87, "per_lead_hours": 0.0183, "late_hours": 0.85, "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted; hrrr-prs is the hrrr row's wrfprs objects, the same producer): 5 cycles 29 Sep 06Z to 30 Sep 06Z: f019 at + 1 h 14 min to 1 h 43 min, f048 at + 1 h 46 min to 2 h 20 min"},
-        {"cycle_hours": [0, 6, 12, 18], "hours": 0.83, "per_lead_hours": 0.0203, "late_hours": 0.65, "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted; hrrr-prs is the hrrr row's wrfprs objects, the same producer): 5 cycles 29 Sep 06Z to 30 Sep 06Z: f000 at + 51 min to 1 h 02 min, f018 at + 1 h 13 min to 1 h 41 min"},
-        {"cycle_hours": null, "hours": 0.8, "per_lead_hours": 0.0324, "late_hours": 0.95, "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted; hrrr-prs is the hrrr row's wrfprs objects, the same producer): 27 cycles 29 Sep 01Z to 30 Sep 08Z: f000 at + 49 min to 1 h 43 min, f018 at + 1 h 24 min to 1 h 36 min"}
+        {
+          "cycle_hours": [
+            0,
+            6,
+            12,
+            18
+          ],
+          "from_lead": 19,
+          "hours": 0.87,
+          "per_lead_hours": 0.0183,
+          "late_hours": 0.85,
+          "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted; hrrr-prs is the hrrr row's wrfprs objects, the same producer): 5 cycles 29 Sep 06Z to 30 Sep 06Z: f019 at + 1 h 14 min to 1 h 43 min, f048 at + 1 h 46 min to 2 h 20 min"
+        },
+        {
+          "cycle_hours": [
+            0,
+            6,
+            12,
+            18
+          ],
+          "hours": 0.83,
+          "per_lead_hours": 0.0203,
+          "late_hours": 0.65,
+          "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted; hrrr-prs is the hrrr row's wrfprs objects, the same producer): 5 cycles 29 Sep 06Z to 30 Sep 06Z: f000 at + 51 min to 1 h 02 min, f018 at + 1 h 13 min to 1 h 41 min"
+        },
+        {
+          "cycle_hours": null,
+          "hours": 0.8,
+          "per_lead_hours": 0.0324,
+          "late_hours": 0.95,
+          "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted; hrrr-prs is the hrrr row's wrfprs objects, the same producer): 27 cycles 29 Sep 01Z to 30 Sep 08Z: f000 at + 49 min to 1 h 43 min, f018 at + 1 h 24 min to 1 h 36 min"
+        }
       ],
-      "posting": {"shape": "rolling", "ready_check": "objects_and_index", "late_after_minutes": 90, "poll_seconds": 30, "why": "one wrfprs object and its .idx per lead, posted in lead order: f000 from + 49 min, f018 from + 1 h 13 min (synoptic) or 1 h 24 min, f048 from + 1 h 46 min; the 30 Sep 06Z and 07Z runs posted 30 to 55 min late"},
+      "posting": {
+        "shape": "rolling",
+        "ready_check": "objects_and_index",
+        "late_after_minutes": 90,
+        "poll_seconds": 30,
+        "why": "one wrfprs object and its .idx per lead, posted in lead order: f000 from + 49 min, f018 from + 1 h 13 min (synoptic) or 1 h 24 min, f048 from + 1 h 46 min; the 30 Sep 06Z and 07Z runs posted 30 to 55 min late"
+      },
       "ladders": [
-        {"cycle_hours": [0, 6, 12, 18], "steps": [[48, 1]]},
-        {"cycle_hours": null, "steps": [[18, 1]]}
+        {
+          "cycle_hours": [
+            0,
+            6,
+            12,
+            18
+          ],
+          "steps": [
+            [
+              48,
+              1
+            ]
+          ]
+        },
+        {
+          "cycle_hours": null,
+          "steps": [
+            [
+              18,
+              1
+            ]
+          ]
+        }
       ],
       "default_cadence": 1,
       "layout": "flat",
@@ -294,6 +400,13 @@
           "leads": "all",
           "path": "hrrr.{YYYYMMDD}/conus/hrrr.t{HH}z.wrfprsf{FF}.grib2",
           "idx_sidecar": ".idx"
+        },
+        {
+          "role": "vegetation_surface",
+          "primary": false,
+          "leads": "step0",
+          "path": "hrrr.{YYYYMMDD}/conus/hrrr.t{HH}z.wrfsfcf{FF}.grib2",
+          "idx_sidecar": ".idx"
         }
       ],
       "record_subset": {
@@ -302,7 +415,16 @@
       },
       "prep": {
         "source": "hrrr-prs",
-        "supplement": {"from": "every_input", "role": "hrrr_prs_in_band_surface"}
+        "supplement": {
+          "from": "every_input",
+          "role": "hrrr_prs_in_band_surface"
+        },
+        "extra_supplements": [
+          {
+            "from": "role:vegetation_surface",
+            "role": "vegetation_surface_data"
+          }
+        ]
       }
     },
 
@@ -524,6 +646,13 @@
           "leads": "all",
           "path": "hrrr.{YYYYMMDD}/conus/hrrr.t{HH}z.wrfnatf{FF}.grib2",
           "idx_sidecar": ".idx"
+        },
+        {
+          "role": "vegetation_surface",
+          "primary": false,
+          "leads": "step0",
+          "path": "hrrr.{YYYYMMDD}/conus/hrrr.t{HH}z.wrfsfcf{FF}.grib2",
+          "idx_sidecar": ".idx"
         }
       ],
       "record_subset": {
@@ -532,7 +661,13 @@
       },
       "prep": {
         "source": "hrrr-native",
-        "supplement": null
+        "supplement": null,
+        "extra_supplements": [
+          {
+            "from": "role:vegetation_surface",
+            "role": "vegetation_surface_data"
+          }
+        ]
       },
       "donors": [
         {
@@ -1684,18 +1819,6 @@
       "kind": "private_bytes",
       "why": "the 20CRv3 every-member GRIB2 archive is not published on an anonymously readable public endpoint; only the ensemble-MEAN NetCDF distribution is, and a member state is not a mean.",
       "remedy": "bring the member's files yourself into DIR; `gpuwm prep --source 20crv3 --source-root DIR --author-only --author-input-manifest DIR/member-manifest.json` writes the member manifest and prints the --source-manifest pair a standalone `gpuwm prep --source 20crv3` binds, and `gpuwm go CONFIG.toml --data-dir DIR` runs the whole chain from a `gpuwm domain --source 20crv3` config."
-    },
-    "20crv3-cf": {
-      "kind": "not_cycle_shaped",
-      "why": "the NOAA PSL 20CRv3 NetCDF distribution is a per-year, per-variable reanalysis archive with no cycle and no forecast lead, so --cycle/--hours describe nothing in it. It is also missing orography and a land mask entirely, which the packaged profile recovers with tools/build_pressure_level_invariant_supplement.py from files you already hold.",
-      "source_root": {
-        "why": "the folder tools/download_20crv3_native_subset.py writes: one NetCDF file per variable, plus invariant.nc, the orography and land mask it recovers from them.",
-        "inputs": {"match": ["*.nc"], "exclude": ["wilt.nc"], "format": "netcdf"},
-        "supplements": [
-          {"role": "twentycrv3_netcdf_recovered_invariant", "match": ["invariant.nc"], "format": "netcdf", "input": true,
-           "why": "the recovered orography and land mask: an input like every other file, and the terrain supplement the composition binds by this role. wilt.nc is only what it was recovered from, so it is not an input."}
-        ]
-      }
     },
     "mapped": {
       "kind": "generic_adapter",

@@ -24,10 +24,62 @@ network kernel first.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
+
 import numpy as np
 
-from gpuwm.core.kernels import get_kernel
+from gpuwm.core.kernels import get_kernel, get_kernel_int_defines
 from gpuwm.core.state import DTYPE
+
+
+# ---------------------------------------------------------------------------
+# Which Thompson generation the aerosol kernels compile (RunConfig.
+# thompson_version).
+# ---------------------------------------------------------------------------
+#
+# ``wrf_461`` compiles every unit exactly as before, through get_kernel, so
+# its assembled source and binary are the ones every earlier gate measured.
+# ``wrf_39_noaa`` compiles the SAME files with one integer define,
+# THOMPSON_AA_WRF39, whose #if arms carry the operational WRF 3.9 fork's
+# statements (NOAA-EMC/HRRR v4.1.21 module_mp_thompson.F, cited per arm).
+# The define is inserted after thompson_aerosol_common.cuh (kernels/
+# __init__.py module_source_int_defines), so the header carries no #if:
+# its fork variants are separate functions the .cu arms call.
+#
+# The generation is a property of one microphysics call, set by the
+# adapter around it (thompson_version_scope) and read by every launcher
+# through aerosol_kernel, so no launcher signature changes.
+THOMPSON_VERSIONS = ("wrf_461", "wrf_39_noaa")
+WRF39_DEFINES = (("THOMPSON_AA_WRF39", 1),)
+
+_ACTIVE_VERSION: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "gpuwm_thompson_version", default="wrf_461")
+
+
+def active_thompson_version() -> str:
+    """The generation the current microphysics call runs."""
+    return _ACTIVE_VERSION.get()
+
+
+@contextlib.contextmanager
+def thompson_version_scope(version: str):
+    """Run the enclosed launches as ``version`` (one of THOMPSON_VERSIONS)."""
+    if version not in THOMPSON_VERSIONS:
+        raise ValueError(
+            f"thompson_version={version!r} is not one of {THOMPSON_VERSIONS}")
+    token = _ACTIVE_VERSION.set(version)
+    try:
+        yield version
+    finally:
+        _ACTIVE_VERSION.reset(token)
+
+
+def aerosol_kernel(module: str, func: str):
+    """``get_kernel(module, func)`` compiled for the active generation."""
+    if _ACTIVE_VERSION.get() == "wrf_39_noaa":
+        return get_kernel_int_defines(module, func, WRF39_DEFINES)
+    return get_kernel(module, func)
 
 
 # ---------------------------------------------------------------------------

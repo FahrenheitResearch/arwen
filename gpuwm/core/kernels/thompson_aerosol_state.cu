@@ -508,6 +508,20 @@ __device__ __forceinline__ void thompson_aa_state_finalize_impl(
 
     const float rho_local = rho[idx];
 
+#if defined(THOMPSON_AA_WRF39)
+    // fork :3692-3696.  No Nt_c_max on the droplet number (audit T20), and
+    // the aerosol bounds carry the density: 11.1E6/rho and 9999.E6/rho on a
+    // per-kilogram value, naIN1*0.01 unconverted (audit T18).
+    float nc_new = fmaxf(
+        THOMPSON_AA_NC_FLOOR / rho_local,
+        thompson_aa_add(nc[idx], thompson_aa_mul(ncten[idx], dt)));
+    nwfa_out[idx] = fmaxf(THOMPSON_AA_NWFA_FLOOR / rho_local,
+        fminf(THOMPSON_AA_AERO_CEIL / rho_local,
+              thompson_aa_add(nwfa[idx], thompson_aa_mul(nwfaten[idx], dt))));
+    nifa_out[idx] = fmaxf(THOMPSON_AA_NIFA_FLOOR,
+        fminf(THOMPSON_AA_AERO_CEIL / rho_local,
+              thompson_aa_add(nifa[idx], thompson_aa_mul(nifaten[idx], dt))));
+#else
     // (a) :3976
     float nc_new = fmaxf(
         THOMPSON_AA_NC_FLOOR / rho_local,
@@ -520,6 +534,7 @@ __device__ __forceinline__ void thompson_aa_state_finalize_impl(
         thompson_aa_add(nwfa[idx], thompson_aa_mul(nwfaten[idx], dt)));
     nifa_out[idx] = thompson_aa_clamp_nifa(
         thompson_aa_add(nifa[idx], thompson_aa_mul(nifaten[idx], dt)));
+#endif
 
     // (c) :4008-4021
     const float qc_local = qc[idx];
@@ -946,7 +961,13 @@ __device__ __forceinline__ void thompson_aa_calc_effect_rad(
     const float rc = fmaxf(THOMPSON_AA_R1, qc_kg * rho);
     // :5626 + :5627.  is_aerosol_aware is TRUE for mp=28, so :5627's
     // `nc(k) = Nt_c` override does NOT run and the prognostic value stands.
+#if defined(THOMPSON_AA_WRF39)
+    // fork :5246, nc(k) = MAX(R2, nc1d(k)*rho(k)): no 2 per m3 floor and no
+    // Nt_c_max (audit T20).
+    const float nc_m3 = fmaxf(THOMPSON_AA_R2, nc_kg * rho);
+#else
     const float nc_m3 = thompson_aa_clamp_nc(nc_kg * rho);
+#endif
     const float ri = fmaxf(THOMPSON_AA_R1, qi_kg * rho);
     const float ni_m3 = fmaxf(THOMPSON_AA_R2, ni_kg * rho);
     const float rs = fmaxf(THOMPSON_AA_R1, qs_kg * rho);
@@ -963,12 +984,23 @@ __device__ __forceinline__ void thompson_aa_calc_effect_rad(
     if (rc > THOMPSON_AA_R1 && nc_m3 > THOMPSON_AA_R2) {
         *reqc = thompson_aa_eff_rad_cloud(rc, nc_m3);
     }
+#if defined(THOMPSON_AA_WRF39)
+    // fork :5275 and :5315: ice at least 5.01 and snow at least 10 microns
+    // (audit T19).
+    if (ri > THOMPSON_AA_R1 && ni_m3 > THOMPSON_AA_R2) {
+        *reqi = thompson_aa_wrf39_eff_rad_ice(ri, ni_m3);
+    }
+    if (rs > THOMPSON_AA_R1) {
+        *reqs = thompson_aa_wrf39_eff_rad_snow(rs, t_k);
+    }
+#else
     if (ri > THOMPSON_AA_R1 && ni_m3 > THOMPSON_AA_R2) {
         *reqi = thompson_aa_eff_rad_ice(ri, ni_m3);
     }
     if (rs > THOMPSON_AA_R1) {
         *reqs = thompson_aa_eff_rad_snow(rs, t_k);
     }
+#endif
 }
 
 extern "C" __global__ void thompson_aa_effective_radius(
@@ -1025,3 +1057,167 @@ extern "C" __global__ void thompson_aa_effective_radius_metres(
         temperature[idx], pressure[idx], qv[idx], qc[idx], nc[idx],
         qi[idx], ni[idx], qs[idx], &effc[idx], &effi[idx], &effs[idx]);
 }
+
+
+#if defined(THOMPSON_AA_WRF39)
+// ---------------------------------------------------------------------------
+// THE FORK'S GRAUPEL INTERCEPT, a column pass (RunConfig.thompson_version =
+// "wrf_39_noaa", audit T1).
+// ---------------------------------------------------------------------------
+//
+// fork :2031-2054 (at entry), :3110-3133 (after the sources, for the
+// fallout) and :5486-5510 (calc_refl10cm).  With k_0 the highest level at or
+// above 270.65 K, from the top down:
+//   xslw1 = 4.01 + alog10(mvd_r)   above k_0 where rain has mvd_r > 100 um,
+//           0.01                    elsewhere
+//   ygra1 = 4.31 + alog10(max(5.E-5, rg))
+//   zans1 = 3.1 + 100./(300.*xslw1*ygra1/(10./xslw1+1.+0.25*ygra1)
+//                       + 30. + 10.*ygra1)
+//   N0_exp = max(gonv_min, min(10.**zans1, gonv_max)), then the running
+//   minimum from the top: N0 never increases downward.
+// rand1 is zero (no stochastic block in the operational namelist, audit
+// T26).  Every level is visited, graupel or not (rg = R1 placeholder), as
+// the fork's loop is.  n0_out receives N0_exp per level; the consumers form
+// the slope with thompson_aa_wrf39_graupel_slope.
+//
+// ``mode`` selects which of the three passes runs:
+//   1  the entry block (fork :1878-1905): a rain level with no number is
+//      seeded at a 1 mm mean volume diameter, mvd_r clamped to
+//      [37.5 um, 2.5 mm], graupel present where qg > R1;
+//   0  the post-source rebuild (fork :3013-3025): no seed, same clamps;
+//   2  calc_refl10cm (fork :5391-5420): mvd_r = 3.672*ilamr unclamped,
+//      graupel present where qg > R2.  This mode writes the graupel NUMBER
+//      per kilogram, N0_g*ilamg/rho, in place of N0_exp: with it the shared
+//      calc_refl10cm column (refl.cu) forms N0_g*720*ilamg**7*(am_g/900)**2
+//      of the fork's distribution, because that Rayleigh moment is
+//      rg**2/(36*ng) whatever density the kernel assumes.
+// The density is formed from the temperature, pressure and vapour passed
+// in, as each block does.
+extern "C" __global__ void thompson_aa_wrf39_graupel_intercept(
+    const float* __restrict__ qg,
+    const float* __restrict__ qr,
+    const float* __restrict__ nr,
+    const float* __restrict__ temperature,
+    const float* __restrict__ pressure,
+    const float* __restrict__ qv,
+    float* __restrict__ n0_out,
+    int mode, int nz, int ny, int nx)
+{
+    const int column = blockIdx.x * blockDim.x + threadIdx.x;
+    if (column >= ny * nx) return;
+    const int j = column / nx;
+    const int i = column - j * nx;
+
+    int k_0 = 0;
+    for (int k = nz - 1; k >= 0; --k) {
+        if (temperature[IDX3(k, j, i)] >= 270.65f) k_0 = max(k_0, k);
+    }
+    const float am_r = THOMPSON_AA_AM_R;
+    const float mvd_numerator = (3.0f + 0.0f) + 0.672f;
+    double n0_min = THOMPSON_AA_WRF39_GONV_MAX;
+    for (int k = nz - 1; k >= 0; --k) {
+        const size_t idx = IDX3(k, j, i);
+        const float qvk = fmaxf(1.0e-10f, qv[idx]);
+        const float rho = 0.622f * pressure[idx]
+            / (287.04f * temperature[idx] * (qvk + 0.622f));
+        const bool l_qr = qr[idx] > THOMPSON_AA_R1;
+        float mvd_r = 0.0f;
+        if (l_qr) {
+            const float rr = qr[idx] * rho;
+            float rain_number = fmaxf(THOMPSON_AA_R2, nr[idx] * rho);
+            if (mode == 1 && rain_number <= THOMPSON_AA_R2) {
+                // fork :1883-1887.
+                const double lamr_seed = (double)__fdiv_rn(
+                    mvd_numerator, 1.0e-3f);
+                rain_number = (float)((double)thompson_aa_mul(
+                    0.16666667163372040f, rr) * pow(lamr_seed, 3.0)
+                    / (double)am_r);
+            }
+            // lamr = (am_r*crg(3)*org2*nr/rr)**obmr, REAL into DOUBLE.
+            const double lamr = (double)thompson_aa_powf_cr(
+                thompson_aa_div(
+                    thompson_aa_mul(thompson_aa_mul(am_r, 6.0f), rain_number),
+                    rr),
+                THOMPSON_AA_OBMR);
+            mvd_r = (float)((double)mvd_numerator / lamr);
+            if (mode == 2) {
+                // fork :5402, (3.0 + mu_r + 0.672) * ilamr(k), no clamp.
+                mvd_r = (float)((double)mvd_numerator * (1.0 / lamr));
+            } else if (mvd_r > 2.5e-3f) {
+                mvd_r = 2.5e-3f;
+            } else if (mvd_r < thompson_aa_mul(THOMPSON_AA_D0R, 0.75f)) {
+                mvd_r = thompson_aa_mul(THOMPSON_AA_D0R, 0.75f);
+            }
+        }
+        const float graupel_floor = mode == 2 ? THOMPSON_AA_R2
+                                              : THOMPSON_AA_R1;
+        const float rg = qg[idx] > graupel_floor
+            ? qg[idx] * rho : THOMPSON_AA_R1;
+        float xslw1 = 0.01f;
+        if (k > k_0 && l_qr && mvd_r > 100.0e-6f) {
+            xslw1 = thompson_aa_add(4.01f, (float)log10((double)mvd_r));
+        }
+        const float ygra1 = thompson_aa_add(
+            4.31f, (float)log10((double)fmaxf(5.0e-5f, rg)));
+        const float numerator = thompson_aa_mul(
+            thompson_aa_mul(300.0f, xslw1), ygra1);
+        const float denominator = thompson_aa_add(
+            thompson_aa_add(thompson_aa_div(10.0f, xslw1), 1.0f),
+            thompson_aa_mul(0.25f, ygra1));
+        const float sum = thompson_aa_add(
+            thompson_aa_add(thompson_aa_div(numerator, denominator), 30.0f),
+            thompson_aa_mul(10.0f, ygra1));
+        const float zans1 = thompson_aa_add(
+            3.1f, thompson_aa_div(100.0f, sum));
+        double n0_exp = (double)thompson_aa_powf_cr(10.0f, zans1);
+        n0_exp = fmax(THOMPSON_AA_WRF39_GONV_MIN,
+                      fmin(n0_exp, THOMPSON_AA_WRF39_GONV_MAX));
+        n0_min = fmin(n0_exp, n0_min);
+        if (mode == 2) {
+            double lamg, ilamg, n0_g;
+            thompson_aa_wrf39_graupel_slope(
+                (float)n0_min, rg, &lamg, &ilamg, &n0_g);
+            n0_out[idx] = (float)(n0_g * ilamg / (double)rho);
+        } else {
+            n0_out[idx] = (float)n0_min;
+        }
+    }
+}
+
+// fork :3755, the graupel half of the terminal apply: graupel at or below
+// R1 leaves as zero.  The fork carries no graupel number.
+extern "C" __global__ void thompson_aa_wrf39_graupel_finalize(
+    float* __restrict__ qg, int size)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= size) return;
+    if (qg[idx] <= THOMPSON_AA_R1) qg[idx] = 0.0f;
+}
+// fork :587-603: every domain start replaces the surface CCN emission
+// with the analysed lowest-level number. Keep the source's REAL(4)
+// log/power sequence rather than its algebraic 2e-4 approximation.
+extern "C" __global__ void thompson_aa_wrf39_start_emission(
+    const float* __restrict__ nwfa,
+    float* __restrict__ nwfa2d, float dx, float dy, int columns)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= columns) return;
+    const float spacing = sqrtf(thompson_aa_mul(dx, dy));
+    const float relative_spacing = __fdiv_rn(spacing, 20000.0f);
+    float scale = 0.875f;
+    if (relative_spacing < 1.0f) {
+        scale = thompson_aa_mul(thompson_aa_add(0.875f,
+            thompson_aa_mul(0.125f,
+                __fdiv_rn(thompson_aa_sub(20000.0f, spacing), 16000.0f))),
+            relative_spacing);
+    }
+    // A non-positive analysed number has a defined zero emission.
+    const float number = nwfa[idx];
+    if (!(number > 0.0f)) { nwfa2d[idx] = 0.0f; return; }
+    const float exponent = thompson_aa_sub(
+        log10f(thompson_aa_mul(number, 1.0e-6f)), 3.69897f);
+    const float emission = thompson_aa_powf_cr(10.0f, exponent);
+    nwfa2d[idx] = thompson_aa_mul(
+        thompson_aa_mul(emission, scale), 1.0e6f);
+}
+#endif  // THOMPSON_AA_WRF39

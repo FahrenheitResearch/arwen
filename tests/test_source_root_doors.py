@@ -29,7 +29,7 @@ from gpuwm.source_adapters import get_source_adapter
 
 
 LAYOUT_SOURCES = tuple(sorted(
-    source for source in fetch_routes.refusal_ids()
+    source for source in set(fetch_routes.refusal_ids()) | set(fetch_routes.all_fetchable_sources())
     if fetch_routes.source_root_layout(source) is not None))
 CYCLE = datetime(2026, 5, 5, 12)
 

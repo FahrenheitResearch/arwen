@@ -185,6 +185,12 @@ def test_backend_selector_is_explicit_and_rejects_cpu_options_on_cuda(
     # answers explicitly so this contract holds on installs without CuPy too.
     monkeypatch.setattr(
         "gpuwm.ingest.preprocess_backend._gpu_runtime_installed", lambda: True)
+    monkeypatch.setattr(
+        "gpuwm.ingest.preprocess_backend.CudaPreprocessBackend",
+        lambda: SimpleNamespace(name="cuda"))
+    # Selection uses fake presence and backend boundaries only. Keep the
+    # real CUDA_VISIBLE_DEVICES=-1 backstop throughout the CPU test run.
+    monkeypatch.setattr("gpuwm.local_gpu.no_local_gpu", lambda: False)
     assert resolve_preprocess_backend(None).name == "cuda"
     # workers reaches the CUDA backend's host steps (the masked surface
     # fields run in the Rust library under CUDA too); cpu_bridge stays the
@@ -244,6 +250,8 @@ def test_auto_backend_uses_only_the_certified_cuda_runtime_family(
         "gpuwm.ingest.preprocess_backend.ParallelCpuPreprocessBackend",
         lambda **_kwargs: cpu,
     )
+    # Runtime calls and the subprocess probe are all host-only doubles.
+    monkeypatch.setattr("gpuwm.local_gpu.no_local_gpu", lambda: False)
     assert resolve_preprocess_backend("auto", workers=3).name == expected
 
 
@@ -265,6 +273,9 @@ def test_sealed_cpu_distribution_forces_auto_to_cpu_and_blocks_cuda(
         "gpuwm.ingest.preprocess_backend.CudaPreprocessBackend",
         lambda: pytest.fail("sealed CPU-only auto attempted CUDA"),
     )
+    # A fail-only CUDA constructor proves the sealed distribution refuses
+    # CUDA independently of the local-device ban, without opening a device.
+    monkeypatch.setattr("gpuwm.local_gpu.no_local_gpu", lambda: False)
 
     assert resolve_preprocess_backend("auto", workers=8).name == "cpu"
     with pytest.raises(ValueError, match="absent from the sealed"):

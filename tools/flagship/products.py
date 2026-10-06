@@ -116,6 +116,10 @@ class FrameScience:
     uhel_max: np.ndarray | None
     variables: tuple[str, ...]
     metadata: Mapping[str, object]
+    #: How ``height500`` was read: ``"between-interfaces"`` (PH + PHB at
+    #: the layer interfaces, the arithmetic every chart uses) or
+    #: ``"layer-mean"`` for a frame without interface geometry.
+    height500_method: str | None = None
 
 
 def _parse_time(value: str) -> datetime | None:
@@ -380,7 +384,7 @@ def _prepare_frame(frame: Frame) -> FrameScience:
                 "WARNING: model REFL_10CM and wrf-rust dbz column maxima "
                 f"differ by up to {disagreement:.1f} dBZ")
 
-    height500 = temp500 = u500 = v500 = None
+    height500 = temp500 = u500 = v500 = height500_method = None
     if frame.domain in _OUTER_DOMAINS:
         pressure = _wrf_array(wrf_file, frame, "pressure", units="hPa")
         height = _wrf_array(wrf_file, frame, "height", units="dam")
@@ -393,8 +397,15 @@ def _prepare_frame(frame: Frame) -> FrameScience:
         if uvmet.shape != (2, *pressure.shape):
             raise ValueError(
                 f"wrf-rust uvmet shape {uvmet.shape} != {(2, *pressure.shape)}")
-        height500 = _require_map(interplevel(height, pressure, 500.0), shape,
-                                 "wrf-rust height at 500 hPa")
+        # Between layer interfaces: wrf-rust's "height" is the layer mean,
+        # and paired with the mass-level pressure it read 500 hPa about
+        # 5 m high.  A frame without PH, PHB and ZNW keeps that reading.
+        height500 = _interface_height500(frame, shape)
+        height500_method = "between-interfaces"
+        if height500 is None:
+            height500_method = "layer-mean"
+            height500 = _require_map(interplevel(height, pressure, 500.0), shape,
+                                     "wrf-rust height at 500 hPa")
         temp500 = _require_map(interplevel(temp, pressure, 500.0), shape,
                                "wrf-rust temperature at 500 hPa")
         u500 = _require_map(interplevel(uvmet[0], pressure, 500.0), shape,
@@ -416,7 +427,26 @@ def _prepare_frame(frame: Frame) -> FrameScience:
         precip_source=precip_source, dbz_max=dbz_max,
         dbz_disagreement_max=disagreement, dbz_warning=warning,
         height500=height500, temp500=temp500, u500=u500, v500=v500,
-        uhel=uhel, uhel_max=uhel_max, variables=names, metadata=metadata)
+        uhel=uhel, uhel_max=uhel_max, variables=names, metadata=metadata,
+        height500_method=height500_method)
+
+
+def _interface_height500(frame: Frame, shape: tuple[int, int]) -> np.ndarray | None:
+    """The 500 hPa height (dam) read between the frame's layer interfaces
+    by the Rust ``rw-isobaric`` reader (:mod:`gpuwm.isobaric_bridge`), or
+    ``None`` for a frame that lacks PH, PHB, P, PB or ZNW."""
+    from gpuwm import isobaric_bridge
+
+    fields = {name: _read(frame, name)
+              for name in ("P", "PB", "PH", "PHB", "ZNW", "ZNU")}
+    if any(fields[name] is None for name in ("P", "PB", "PH", "PHB", "ZNW")):
+        return None
+    metres = isobaric_bridge.isobaric_heights(
+        fields["PH"], fields["P"] + fields["PB"], (50000.0,),
+        interface_plus=fields["PHB"], eta_interface=fields["ZNW"],
+        eta_mass=fields["ZNU"], per_metre=isobaric_bridge.STANDARD_GRAVITY)[0]
+    return _require_map(metres / 10.0, shape,
+                        "500 hPa height between layer interfaces")
 
 
 def _prepare_domains(frames_by_domain: Mapping[str, Sequence[Frame]]) -> dict[str, list[FrameScience]]:
@@ -797,6 +827,8 @@ def _frame_summary(entry: FrameScience, root: Path) -> dict[str, object]:
         key_fields["DBZ_WRF_RUST_COMPOSITE"] = _stats(entry.dbz_max, "dBZ")
     if entry.height500 is not None:
         diagnostics.extend(("pressure", "height", "temp", "uvmet", "interplevel"))
+        if entry.height500_method is not None:
+            diagnostics.append(f"height500:{entry.height500_method}")
         key_fields["HEIGHT_500_WRF_RUST"] = _stats(entry.height500, "dam")
         key_fields["TEMP_500_WRF_RUST"] = _stats(entry.temp500, "degC")
     if entry.uhel is not None:

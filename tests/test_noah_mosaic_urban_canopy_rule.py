@@ -29,7 +29,7 @@ from gpuwm.core.urban_state import urban_var_init_host
 from gpuwm.core.urban_tables import load_urban_params, urban_category_set
 from gpuwm.verify.noah_mosaic_oracle import load, wrf_to_gpuwm
 
-ROOT = Path(__file__).resolve().parents[1] / "gpuwm/data/noah_mosaic/oracle"
+ROOT = Path(__file__).resolve().parents[1] / "tests/data/oracles/noah_mosaic"
 WRF_INIT_FAMILIES = ("ucm_wrfinit", "ucm_lcz_wrfinit")
 MODIS = load_mosaic_categories("MODIFIED_IGBP_MODIS_NOAH", isurban=13,
                                iswater=17, isice=15)

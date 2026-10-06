@@ -21,7 +21,7 @@ import pytest
 from gpuwm.core.fp32_ulp import fp32_ulp_distance
 from gpuwm.core.uh_diag import mirror_up_heli_max_step_np
 
-ORACLE_DIR = Path(__file__).resolve().parents[1] / "gpuwm" / "data" / "uh" / "oracle"
+ORACLE_DIR = Path(__file__).resolve().parents[1] / "tests" / "data" / "oracles" / "uh"
 
 #: Measured transcription distance, pinned exactly (a later change that
 #: moves ANY output must show up here).

@@ -2250,8 +2250,15 @@ class PreparedTreeWriter:
             # the digest binds.
             head.update({key: basis["tree"][key] for key in (
                 "layout", "domains", "children_artifacts")})
+        from gpuwm.ingest.stream_resume import preserve_child_receipts
+        preserve_child_receipts(self.root, head)
         head["head_sha256"] = head_sha256(head)
         _write_json_atomic(self.stream_path / HEAD_NAME, head)
+        if as_posted is not None:
+            from gpuwm.ingest.stream_resume import POSTED_PREFIX_DIRNAME
+            for lead, marker in dict(as_posted.get("start_markers") or {}).items():
+                _write_json_atomic(self.stream_path / POSTED_PREFIX_DIRNAME
+                                   / posted_lead_marker_name(int(lead)), dict(marker))
         (self.stream_path / SEGMENTS_DIRNAME).mkdir(parents=True, exist_ok=True)
         self.head = head
         self.head_sha256 = head["head_sha256"]
@@ -2467,6 +2474,13 @@ class PreparedTreeWriter:
             validate_posted_member_segment(bound,
                 posted_binding_from_identity(self._cache.identity), index=int(index))
             marker["ensemble_member_input"] = bound
+        if leads is not None and self._posted_markers is not None:
+            from gpuwm.ingest.stream_resume import POSTED_PREFIX_DIRNAME
+            for lead in leads:
+                posted_marker = self._posted_markers.get(int(lead))
+                if posted_marker is not None:
+                    _write_json_atomic(self.stream_path / POSTED_PREFIX_DIRNAME
+                                       / posted_lead_marker_name(int(lead)), dict(posted_marker))
         _write_json_atomic(segment_marker_path(self.root, index), marker)
         self._segments_written += 1
         return marker
@@ -2625,6 +2639,8 @@ class PreparedTreeWriter:
     def publish(self, proof: dict) -> dict:
         """Write ``proof.json`` last (and the tree's rename when unchained)."""
 
+        from gpuwm.ingest.stream_resume import preserve_seal_metadata
+        proof = preserve_seal_metadata(self.root, proof)
         if self.head is None:
             raise RuntimeError("the seal needs its head first")
         sealed_keys = _seal_keys(self.head)

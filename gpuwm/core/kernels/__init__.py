@@ -38,6 +38,9 @@ _ENCODING = "utf-8"
 # This table must stay a literal name -> filenames mapping.  Do not give it
 # filesystem probing, globbing, or any implicit fallback.
 _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
+    "upper_wind_limiter": ("glibc_flt32.cuh",),
+    # Reuse the scalar high-order helpers without moving the order-3 unit.
+    "pd_vertical_sl": ("pd_advection.cu",),
     # Reuse the existing FRH2O device function for cold-start soil water.
     # The forecast's noah module remains unlisted and byte-identical.
     "noah_init": ("noah.cu",),
@@ -102,6 +105,18 @@ _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
     "uwpbl": ("glibc_flt64.cuh", "uwpbl_common.cuh", "uwpbl_wvsat.cuh",
               "uwpbl_vdiff.cuh", "uwpbl_zisocl.cuh", "uwpbl_caleddy.cuh",
               "uwpbl_eddy.cuh", "uwpbl_driver.cuh"),
+    # WRF swint_opt = 1 (module_radiation_driver.F radconst/calc_coszen,
+    # update_swinterp_parameters, interp_sw_radiation of the operational
+    # HRRR fork): LOG and ** are glibc's logf/powf, SIN/COS/ASIN glibc's
+    # sinf/cosf/asinf, graded bitwise against the fork's gfortran/glibc
+    # Fortran by tests/test_swint_interpolation.py.  A new module, so no
+    # existing unit moves.
+    "swint": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh"),
+    # WRF aer_opt = 3 shortwave optics (gt_aod, calc_aerosol_rrtmg_sw of
+    # the operational HRRR fork): EXP is glibc's expf, graded bitwise
+    # against the fork's gfortran/glibc Fortran by
+    # tests/test_rrtmg_aerosol_optics.py.  A new module.
+    "rrtmg_aer3": ("glibc_flt32.cuh",),
     "real_init": ("real_init_common.cuh",),
     # REAL's float64 thermodynamics use the CPU portable library's bits.
     "real_init_math": ("real_init_common.cuh", "portable_libm64.cuh"),
@@ -133,6 +148,13 @@ def _extra_header_text(name: str, kernel_dir: Path = _KDIR) -> str:
                    for header in headers)
 
 
+def _unit_text(name: str, kernel_dir: Path = _KDIR) -> str:
+    """Read a CUDA unit and apply only the active set's registered literals."""
+    from gpuwm.physics_params import edit_kernel_source
+    return edit_kernel_source(
+        name, (Path(kernel_dir) / f"{name}.cu").read_text(encoding=_ENCODING))
+
+
 def module_source(name: str, *, kernel_dir: Path = _KDIR) -> str:
     """The exact source string :func:`load_module` hands to nvrtc.
 
@@ -141,7 +163,7 @@ def module_source(name: str, *, kernel_dir: Path = _KDIR) -> str:
     be the imported package (A193).
     """
     return (_preamble(kernel_dir) + _extra_header_text(name, kernel_dir)
-            + (Path(kernel_dir) / f"{name}.cu").read_text(encoding=_ENCODING))
+            + _unit_text(name, kernel_dir))
 
 
 def module_options(name: str) -> tuple[str, ...]:
@@ -203,6 +225,8 @@ def load_module(name: str):
     # call (route R1) and probes NVRTC's float behaviour under it.
     mod = cp.RawModule(code=src, options=("-std=c++17",), name_expressions=None)
     _compile_observed(mod, f"{MODULE_KEY_ROOT}:{name}")
+    from gpuwm.physics_params import note_compiled
+    note_compiled(name)
     from gpuwm.certify.kernel_manifest import record_module
     record_module(f"{MODULE_KEY_ROOT}:{name}",
                   source=src, options=("-std=c++17",), module=mod)
@@ -235,6 +259,8 @@ def load_module_int_defines(
     mod = cp.RawModule(code=src, options=("-std=c++17",),
                        name_expressions=None)
     _compile_observed(mod, f"{MODULE_KEY_ROOT}:{name}")
+    from gpuwm.physics_params import note_compiled
+    note_compiled(name)
     from gpuwm.certify.kernel_manifest import record_module
     tier = ",".join(f"{key}={value}" for key, value in normalized)
     record_module(f"{MODULE_KEY_ROOT}:{name}[{tier}]",
@@ -261,7 +287,7 @@ def module_source_int_defines(
         prefix = "\n".join(f"#define {key} {value}" for key, value in defines)
     return (_preamble(kernel_dir) + _extra_header_text(name, kernel_dir)
             + prefix + "\n"
-            + (Path(kernel_dir) / f"{name}.cu").read_text(encoding=_ENCODING))
+            + _unit_text(name, kernel_dir))
 
 
 @cuda_cache(maxsize=None)

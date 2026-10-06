@@ -43,7 +43,7 @@ Each `run_<name>` with `BUILD_DIR/fixtures/<name>` as its argument.
 little-endian float32/int32, Fortran order) and `MANIFEST.txt`
 (`name kind rank extents...`).  `gpuwm.verify.urban_oracle.load` reads them;
 `ulp_table` measures a port against them.  Publish a lane's fixtures under
-`gpuwm/data/urban/oracle/<lane>/` with a `PROVENANCE.md`.
+`tests/data/oracles/urban/<lane>/` with a `PROVENANCE.md`.
 
 ## libmvec
 

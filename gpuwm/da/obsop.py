@@ -912,6 +912,22 @@ def _thompson_graupel_number(state, temperature, pressure):
     DA operator runs between calls, so there is no value here for this
     to destroy.
 
+    The graupel MASS is a different matter, and the finalize runs on a
+    private copy of it.  ``launch_classic_graupel_number_finalize`` also
+    carries WRF's terminal graupel zero (module_mp_thompson.F:4058-4063):
+    every ``qg <= R1`` is written as zero IN PLACE.  Inside the call that
+    is a state update the scheme owns; here it rewrote the background the
+    operator observes.  The DA cycle evaluates H_Z(x) on a restored
+    member right after its pending increment is applied (the start
+    composite of a leg 0, which a ``--resume-ensemble`` run has and the
+    same leg of the uninterrupted run does not), so the zero moved the
+    resumed trajectory off the continuous one: every member of a resumed
+    step diverged while the unanalysed control, which carries no
+    sub-R1 residue, stayed bit-identical.  The copy changes neither
+    output: the shadow is formed from identical values, and
+    ``refl10cm_thompson_column`` reads graupel only where ``qg > 1e-6``,
+    far above R1.
+
     Returns ``(temperature, pressure, shadow)`` because the temperature
     the shadow was diagnosed at is the temperature the reflectivity has
     to be diagnosed at; handing the pair on is what keeps the two from
@@ -933,10 +949,15 @@ def _thompson_graupel_number(state, temperature, pressure):
         temperature[...] = (thb + state.thp) * cp.power(
             state.p / DTYPE(c.P0), DTYPE(c.RCP))
     shadow = state.scratch(shape, "mp_thompson_graupel_number_shadow")
+    # A transient copy, not a scratch slot: it is dead when this returns,
+    # and a slot would enter the pinned mp=8 arena layout for a DA-only
+    # temporary.
+    graupel_mass = state.qg.copy()
     launch_classic_graupel_number_init(
-        state.qg, temperature, pressure, state.qv, shadow)
+        graupel_mass, temperature, pressure, state.qv, shadow)
     launch_classic_graupel_number_finalize(
-        state.qg, temperature, pressure, state.qv, shadow)
+        graupel_mass, temperature, pressure, state.qv, shadow)
+    del graupel_mass
     return temperature, pressure, shadow
 
 

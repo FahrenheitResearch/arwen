@@ -647,9 +647,15 @@ def parse_products_rust(spec: str) -> str:
     return ",".join(slugs)
 
 
-def parse_size(spec: str) -> tuple[int, int]:
-    """``1200x900`` -> (width, height); rust-engine output pixels."""
+def parse_size(spec: str) -> tuple[int, int] | None:
+    """``1200x900`` -> (width, height); rust-engine output pixels.
 
+    ``auto`` -> ``None``: the engine sizes each canvas from its domain's
+    own shape, so a square nest is not drawn on a landscape canvas.
+    """
+
+    if spec.strip().lower() == "auto":
+        return None
     parts = spec.lower().split("x")
     if len(parts) != 2:
         raise ValueError(
@@ -1185,7 +1191,7 @@ def require_renderer() -> Path:
 
 
 def render_series_rust(paths, *, products: str, timeidx: int | None,
-                       outdir: Path, size: tuple[int, int],
+                       outdir: Path, size: tuple[int, int] | None,
                        heavy: bool = False,
                        source_label: str | None = None,
                        layout: str = render_layout.DEFAULT_LAYOUT,
@@ -1236,7 +1242,7 @@ def render_series_rust(paths, *, products: str, timeidx: int | None,
     subject = series[-1]
     token = domain_token(_domain_tag(subject), _grid_spacing_m(subject))
     episode = history_episode(subject)
-    width, height = size
+    width, height = size if size is not None else (None, None)
     context = {Path(path).resolve() for path in context_paths}
     wanted_times = ({stamp for path in series if path.resolve() not in context
                      for stamp in _history_series_record(path)[1]}
@@ -1703,7 +1709,7 @@ def _available_window_request(renderer: Path, path: Path, products: str,
 
 
 def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
-                        outdir: Path, size: tuple[int, int],
+                        outdir: Path, size: tuple[int, int] | None,
                         heavy: bool = False,
                         source_label: str | None = None,
                         layout: str = render_layout.DEFAULT_LAYOUT,
@@ -1790,7 +1796,7 @@ def render_wrfouts_rust(paths, *, products: str, timeidx: int | None,
         source_label = default_source_label()
     outdir.mkdir(parents=True, exist_ok=True)
     frames = "all" if timeidx is None else str(timeidx)
-    width, height = size
+    width, height = size if size is not None else (None, None)
     written: list[Path] = []
     failures: list[str] = []
     skipped: list[tuple[str, str]] = []
@@ -3048,7 +3054,7 @@ def _pair_main(args: argparse.Namespace) -> int:
             sheets = compose_pairs(
                 left, right, args.out, title=args.pair_title,
                 subtitle=args.pair_subtitle, left_label=labels[0],
-                right_label=labels[1])
+                right_label=labels[1], theme=args.theme)
         except ValueError as exc:
             print(f"render: {exc}", file=sys.stderr)
             return 2
@@ -3056,6 +3062,114 @@ def _pair_main(args: argparse.Namespace) -> int:
             print(f"render: {sheet}")
         print(f"render: {len(sheets)} pair sheet(s) -> {args.out}")
         return 0
+    finally:
+        _publish_run_dir(args)
+
+
+def _diff_main(args: argparse.Namespace) -> int:
+    """``gpuwm render --diff A_RUN B_RUN``: products as run A minus run B.
+
+    Orchestration only: the frames are paired by their recorded valid time
+    (:mod:`gpuwm.render_difference`), and each pair is drawn
+    by the Rust renderer, which reads both runs, checks that they share
+    the valid time and the grid, and refuses by name when they do not.
+    """
+
+    from gpuwm import render_difference, rustwx
+
+    try:
+        renderer = require_renderer()
+        size = parse_size(args.size)
+        timeidx = parse_timeidx(args.timeidx)
+        products = parse_products_rust(args.products)
+        if args.list_products:
+            raise ValueError("--list-products describes one run; ask it of "
+                             "each run without --diff")
+        if getattr(args, "context_wrfout", ()):
+            raise ValueError("--context-wrfout names one run's history, so it "
+                             "cannot identify which --diff side it continues; "
+                             "include earlier frames in the matching run folder")
+        a_run, b_run = args.diff
+        pairing = render_difference.pair_frames_by_valid_time(
+            render_difference.run_frames(a_run),
+            render_difference.run_frames(b_run),
+            reader=_history_series_record, domain_reader=_domain_tag,
+            series_groups=history_series_groups,
+            timeidx=timeidx,
+            series=getattr(args, "series", False) or Path(a_run).is_dir())
+    except (ValueError, RuntimeError, FileNotFoundError) as exc:
+        print("render: " + explain.render(
+            str(exc), explain=explain.explain_enabled(args),
+            command="gpuwm render"), file=sys.stderr)
+        return 2
+    notice = render_difference.unpaired_notice(pairing)
+    if notice is not None:
+        print(f"render: note: {notice}", file=sys.stderr)
+    if not pairing.pairs:
+        print("render: --diff found no selected valid time both runs hold, so there "
+              "is nothing to difference", file=sys.stderr)
+        return 2
+    labels = tuple(args.diff_labels) if args.diff_labels else (
+        Path(a_run).name or "A", Path(b_run).name or "B")
+    source_label = args.source_label or default_source_label()
+    if getattr(args, "radar_colors", None):
+        os.environ[rustwx.RADAR_COLORS_ENV] = args.radar_colors
+    _claim_run_dir(args, [pair[2] for pair in pairing.pairs])
+    written: list[Path] = []
+    failures: list[str] = []
+    skipped_rows: list[tuple[str, str]] = []
+    try:
+        args.out.mkdir(parents=True, exist_ok=True)
+        for domain, valid, a_file, b_file in pairing.pairs:
+            a_paths, b_paths, a_index = pairing.contexts[(domain, valid)]
+            token = domain_token(_domain_tag(a_file), _grid_spacing_m(a_file))
+            prior_georef = render_georef.read(
+                args.out / render_georef.GEOREF_FILENAME)
+            with scratch_store(args.out) as store:
+                drawn, failed, skipped, differences = (
+                    rustwx.run_renderer_difference(
+                        renderer, a_paths, b_paths, timeidx=a_index, store_root=store,
+                        out_dir=args.out, products=products, labels=labels,
+                        sheet=args.diff_sheet, source_label=source_label,
+                        theme=args.theme,
+                        overlays=args.overlays, annotate=args.annotate,
+                        streamlines=args.streamlines,
+                        width=size[0] if size else None,
+                        height=size[1] if size else None))
+            drawn = render_georef.file_pictures(
+                args.out, drawn,
+                lambda png, token=token: _place_engine_output(
+                    png, args.out, token, args.layout,
+                    episode=history_episode(a_file)),
+                prior=prior_georef)
+            for png in drawn:
+                print(f"render: {png}")
+            for row in differences:
+                print(f"render: difference {row['key']} {valid:%Y-%m-%d %H:%MZ}"
+                      f" bar +/-{row.get('half_range')} {row.get('units', '')}"
+                      f" ({row.get('rule')}) cells={row.get('defined_cells')}"
+                      f" max_abs={row.get('max_abs')}")
+            for slug, reason in skipped:
+                print(f"render: skipped {slug}: {reason}", file=sys.stderr)
+            for failure in failed:
+                print(f"render: failed {failure}", file=sys.stderr)
+            written.extend(drawn)
+            failures.extend(failed)
+            skipped_rows.extend(skipped)
+        from gpuwm.render_receipts import _drawn_family, publish_invocation
+
+        publish_invocation(root=args.out, engine="rust",
+            requested_spec=args.products, written=written,
+            failures=failures,
+            skipped=[(_drawn_family(slug) + "_difference", reason)
+                     for slug, reason in skipped_rows], layout=args.layout,
+            inputs=list(dict.fromkeys(path for pair in pairing.pairs for path in pair[2:])),
+            context_inputs=list(dict.fromkeys(
+                path for sides in pairing.contexts.values()
+                for paths in sides[:2] for path in paths)))
+        print(f"render: {len(written)} difference picture(s) from "
+              f"{len(pairing.pairs)} valid time(s) -> {args.out}")
+        return 1 if failures or not written else 0
     finally:
         _publish_run_dir(args)
 
@@ -3266,6 +3380,26 @@ def render_main(args: argparse.Namespace) -> int:
     if refusal is not None:
         print(f"render: {refusal}", file=sys.stderr)
         return 2
+    comparisons = [name for name in ("pair", "compare", "diff")
+                   if getattr(args, name, None)]
+    if len(comparisons) > 1:
+        print("render: " + ", ".join("--" + name for name in comparisons)
+              + " name separate comparison inputs; choose one comparison",
+              file=sys.stderr)
+        return 2
+    if getattr(args, "compare", None):
+        # A run beside a reference model's own fields: its own engine
+        # (rw_compare), its own product names and its own inputs (frames
+        # or a run folder), so it leaves this handler before any of the
+        # single-run engine resolution below.
+        if args.pair:
+            print("render: --compare draws from history frames and --pair "
+                  "composes already-rendered PNG directories; they do not "
+                  "combine", file=sys.stderr)
+            return 2
+        from gpuwm.render_compare import compare_main
+
+        return compare_main(args)
     if args.pair:
         if args.wrfout:
             print("render: --pair composes already-rendered PNG "
@@ -3273,6 +3407,12 @@ def render_main(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             return 2
         return _pair_main(args)
+    if getattr(args, "diff", None):
+        if args.wrfout:
+            print("render: --diff takes the two runs as A_RUN B_RUN; wrfout "
+                  "arguments do not combine with it", file=sys.stderr)
+            return 2
+        return _diff_main(args)
     if not args.wrfout and args.list_products:
         # "What may I put in --products?" is a question about this build,
         # not about a file, and a forecaster who has not run anything yet
@@ -3625,8 +3765,9 @@ def register_cli(subparsers) -> None:
         "--dpi", type=positive_int, default=150, metavar="N",
         help="PNG resolution, matplotlib engine (default 150)")
     parser.add_argument(
-        "--size", default="1200x900", metavar="WxH",
-        help="output pixels, rust engine (default 1200x900)")
+        "--size", default="auto", metavar="WxH|auto",
+        help="output pixels, rust engine; 'auto' (the default) sizes each "
+             "canvas from its domain's shape, WxH draws a fixed canvas")
     parser.add_argument(
         # None, not the string: the default is resolved at render time
         # by `default_source_label()`, which asks provenance which tree
@@ -3741,6 +3882,22 @@ def register_cli(subparsers) -> None:
     parser.add_argument(
         "--pair-labels", nargs=2, metavar=("LEFT", "RIGHT"),
         help="panel labels (default: the two directory names)")
+    from gpuwm.render_compare import register_arguments
+
+    register_arguments(parser)
+    parser.add_argument(
+        "--diff", nargs=2, metavar=("A_RUN", "B_RUN"), type=Path,
+        help="draw each product as run A minus run B: two folders of wrfout "
+             "frames (or two files), paired by valid time; refused by name "
+             "when the runs do not share a grid (rust engine; no wrfout "
+             "arguments)")
+    parser.add_argument(
+        "--diff-labels", nargs=2, metavar=("A_NAME", "B_NAME"),
+        help="the two runs' names on the difference panels (default: the "
+             "two folder names)")
+    parser.add_argument(
+        "--diff-sheet", action="store_true",
+        help="also draw an A | B | A minus B sheet per product")
     parser.set_defaults(func=render_main)
     return parser
 

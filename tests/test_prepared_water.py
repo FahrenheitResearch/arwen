@@ -142,7 +142,7 @@ def test_true_and_false_native_stock_controls_must_agree(tmp_path):
     from test_hrrr_hierarchy_direct import _raw_runtime_namelist
     native, stock = tmp_path / "native", tmp_path / "stock"
     left = _raw_runtime_namelist(2, longwave=0, theta_m=0)
-    right = _raw_runtime_namelist(2, longwave=1, theta_m=1, ghg_input=0, do_radar_ref=1)
+    right = _raw_runtime_namelist(2, longwave=1, theta_m=0, ghg_input=0, do_radar_ref=1)
     for setting, expected in ((".true.", True), (".false.", False)):
         native.write_text(left.replace("sfcp_to_sfcp = .true.", "sfcp_to_sfcp = " + setting))
         stock.write_text(right.replace("sfcp_to_sfcp = .true.", "sfcp_to_sfcp = " + setting))

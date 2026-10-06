@@ -13,17 +13,24 @@ from types import SimpleNamespace
 
 import pytest
 
-from gpuwm import cyclone_setup, cyclone_sources, runplan, stage_cli, stage_reuse
+from gpuwm import cyclone_setup, cyclone_sources, fetch_routes, runplan, stage_cli, stage_reuse
 from gpuwm.hrrr_prepared_bundle import render_wps_namelist
 from gpuwm.prepared_source_schemas import source_schemas
 from gpuwm.source_adapters import packaged_profile_sources
 from test_stage_reuse_hierarchy import ENGINE, _tree
 from test_stage_seams import _mapped_evidence, _tree_bundle
 
-
 def _mapped_source():
+    # The tiny reuse proof needs a shipped schema, packaged profile and a
+    # route row that its synthetic-source graft can copy. Archive fetchers
+    # outside that route table need their own fixture and supported epoch.
+    schemas = source_schemas()
+    profiles = packaged_profile_sources()
+    routes = fetch_routes.route_ids()
     return next(row["source"] for row in cyclone_sources.source_options()
-                if row["coverage_envelope"] is None
+                if row["source"] in schemas and row["source"] in profiles
+                and row["source"] in routes
+                and row["coverage_envelope"] is None
                 and runplan.source_follow_statics(row["source"])["chain"]
                 == "prepared:staged"
                 and not runplan.drivability_for(row["source"]).get("requires_source_root"))

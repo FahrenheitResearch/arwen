@@ -24,6 +24,7 @@ _CLOCK_FIELDS = ("ticks", "step_ticks", "tick_den", "run_ticks", "step_count", "
 _REBUILT_OWNERS = frozenset({
     "physics", "lateral_boundaries", "_scratch", "_scratch_arena", "_host_setup_state", "_phb_host",
     "_lateral_boundary_device", "_dycore_state_workspace",
+    "_ensemble_surface_state",
 })
 _REBUILT_BOUNDARY_SCRATCH = frozenset({"lbc_forcing_tables", "lbc_evaluated_tables"})
 
@@ -83,7 +84,7 @@ def native_prepared_eligibility(inputs, node=None, *, members=2, restart=None, k
     if members == 1:
         reasons.append("N=1 keeps the ordinary runner and output writer")
     if len(exp.domains) != 1 or _domain_count(inputs) != 1 or exp.root.parent_id != 0:
-        reasons.append("nested domains keep their original parent FORCE and child clock order")
+        reasons.append("the nested native forecast graph lacks qualified member-indexed parent FORCE, child boundary clocks and feedback transactions")
     if node is not None and (node.parent is not None or node.children or node.coupler is not None):
         reasons.append("this initialized node has parent or child coupling")
     if getattr(inputs, "stream_head", None) is not None:

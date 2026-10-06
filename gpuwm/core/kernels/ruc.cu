@@ -2028,6 +2028,17 @@ void ruc_sea_ice_step(
 
 
 // module_sf_ruclsm.F:63-69 sncovfac, read only when isncovr_opt==3.
+// The snow scheme by WRF lineage (ruc_snow, gpuwm/core/ruc_tier.py).  The
+// default compile is WRF v4.0-4.5, which the operational RAP/HRRR branch
+// carries; GPUWM_SNOW_WRF461 compiles WRF v4.6.1.  GPUWM_RUC_SNOW_V461 is the same
+// choice as a value, for the arms written as conditions; the generated
+// fused sfctmp kernel reads it too.
+#ifdef GPUWM_SNOW_WRF461
+#define GPUWM_RUC_SNOW_V461 true
+#else
+#define GPUWM_RUC_SNOW_V461 false
+#endif
+
 __device__ static const real ruc_sncovfac[30] = {
     0.030f, 0.030f, 0.030f, 0.030f, 0.030f,
     0.016f, 0.016f, 0.020f, 0.020f, 0.020f,
@@ -2355,7 +2366,7 @@ void ruc_snow_preparation(
     }
 
     // :1504 - the mosaic flag from the previous step's snow fraction.
-    if (snowfrac < 0.75f) snow_mosaic = one;
+    if (GPUWM_RUC_SNOW_V461 && snowfrac < 0.75f) snow_mosaic = one;
 
     // :1506-1540 fresh snowfall and its density.
     newsn = __fmul_rn(newsnms, delt);
@@ -2427,6 +2438,15 @@ void ruc_snow_preparation(
         infwater = prcpms;
     }
 
+#ifndef GPUWM_SNOW_WRF461
+    // Branch :1675-1679: the critical depths from the density this step
+    // built, and the mosaic flag from the depth before new snow.
+    snhei_crit = __fdiv_rn(critical_depth_coefficient, rhosn);
+    snhei_crit_newsn = __fdiv_rn(new_snow_depth_coefficient, rhosn);
+    snowfrac = fminf(one, __fdiv_rn(snhei, __fmul_rn(2.0f, snhei_crit)));
+    if (snowfrac < 0.75f) snow_mosaic = one;
+#endif
+
     // :1580-1598 fresh snow onto the ground.
     if (newsn > zero) {
         snwe = fmaxf(zero, __fsub_rn(__fadd_rn(snwe, newsn), intersn));
@@ -2453,6 +2473,20 @@ void ruc_snow_preparation(
     if (snhei > zero) {
         // :1603 - snow-covered points use the snow/ice land-use class.
         iland = isice;
+#ifndef GPUWM_SNOW_WRF461
+        // Branch :1708-1719.  isncovr_opt is not read.
+        snowfrac = fminf(one, __fdiv_rn(snhei, __fmul_rn(2.0f, snhei_crit)));
+        if (ivgtyp == urban) snowfrac = fminf(0.75f, snowfrac);
+        if (snowfrac < 0.75f) snow_mosaic = one;
+        if (newsn > zero) {
+            snowfracnewsn = fminf(one, __fdiv_rn(snhei, snhei_crit_newsn));
+        }
+        keep_snow_albedo = zero;
+        if (newsn > zero && snowfracnewsn > 0.99f) {
+            keep_snow_albedo = one;
+            snow_mosaic = zero;
+        }
+#else
         if (isncovr_opt == 1) {
             snowfrac = fminf(
                 one, __fdiv_rn(snhei, __fmul_rn(2.0f, snhei_crit)));
@@ -2493,6 +2527,7 @@ void ruc_snow_preparation(
             keep_snow_albedo = one;
             snow_mosaic = zero;
         }
+#endif
         // :1672-1680 roughness blend toward the snow/ice class.
         if (newsn == zero && znt <= 0.2f && ivgtyp != isice) {
             real snow_roughness = z0tbl[iland - 1];
@@ -2515,7 +2550,10 @@ void ruc_snow_preparation(
                 // :1690-1696 is unreachable: :1662 clears snow_mosaic
                 // whenever keep_snow_albedo is set, so this test can never
                 // pass.  Transcribed to stay faithful.
-                if (keep_snow_albedo > 0.9f && albsn < 0.4f) albsn = 0.7f;
+                // The branch has no 0.7 floor, here or below.
+                if (GPUWM_RUC_SNOW_V461 && keep_snow_albedo > 0.9f && albsn < 0.4f) {
+                    albsn = 0.7f;
+                }
                 emiss = emissn;
             } else {
                 albsn = fmaxf(
@@ -2526,7 +2564,8 @@ void ruc_snow_preparation(
                             __fmul_rn(
                                 __fsub_rn(alb_snow, alb_snow_free), snowfrac)),
                         alb_snow));
-                if (newsn > zero && keep_snow_albedo > 0.9f && albsn < 0.4f) {
+                if (GPUWM_RUC_SNOW_V461 && newsn > zero && keep_snow_albedo > 0.9f
+                    && albsn < 0.4f) {
                     albsn = 0.7f;
                 }
                 emiss = fmaxf(
@@ -3469,9 +3508,12 @@ void ruc_snow_sea_ice_step(
 }
 
 
-// module_sf_ruclsm.F:5046-5072, repeated verbatim at :5587-5610.  :49 fixes
-// isncond_opt = 2, so the constant 0.265/rhocsn branch is dead and the Sturm
-// et al. (1997) effective conductivity always applies.
+// module_sf_ruclsm.F:5046-5072, repeated verbatim at :5587-5610.  The snow
+// scheme by WRF lineage (ruc_snow, gpuwm/core/ruc_tier.py): the default is
+// WRF v4.0-4.5, which the operational RAP/HRRR branch carries (branch
+// :5235, :5738): a constant conductivity, thdifsn = 0.265/rhocsn.
+// GPUWM_SNOW_WRF461 compiles WRF v4.6.1, whose :49 fixes isncond_opt = 2:
+// the Sturm et al. (1997) effective conductivity.
 __device__ __forceinline__
 real ruc_snow_thermal_diffusivity(
     real rhosn,
@@ -3480,6 +3522,9 @@ real ruc_snow_thermal_diffusivity(
     real newsnow,
     real snhei)
 {
+#ifndef GPUWM_SNOW_WRF461
+    return __fdiv_rn(0.265f, rhocsn);
+#endif
     const real fact = 1.0f;
     real keff;
     if (rhosn < 156.0f || (newsnow > 0.0f && rhonewsn < 156.0f)) {
@@ -3962,7 +4007,9 @@ void ruc_snow_temperature_step(
 
         // :5332-5340 skin temperature.
         soilt = ts1;
-        if (nmelt == 1 && snowfrac == one && snwe > zero && soilt > freeze) {
+        // wrf_45 (the branch) has neither freezing clamp on the second pass.
+        if (GPUWM_RUC_SNOW_V461 && nmelt == 1 && snowfrac == one && snwe > zero
+            && soilt > freeze) {
             soilt = fminf(freeze, soilt);
         }
 
@@ -3989,7 +4036,7 @@ void ruc_snow_temperature_step(
             soilt1 = soilt;
             tsob = tso[0];
         }
-        if (nmelt == 1 && snowfrac == one) {
+        if (GPUWM_RUC_SNOW_V461 && nmelt == 1 && snowfrac == one) {
             soilt1 = fminf(freeze, soilt1);
             tso[0] = fminf(freeze, tso[0]);
             tsob = fminf(freeze, tsob);
@@ -4006,7 +4053,18 @@ void ruc_snow_temperature_step(
 
         if (nmelt == 1) break;
 
-        if (soilt > freeze && beta == one && snhei > zero) {
+#ifdef GPUWM_SNOW_WRF461
+        bool melts = soilt > freeze && beta == one && snhei > zero;
+#else
+        // Branch :5586: melt while the pack outlasts the step's evaporation.
+        bool melts = soilt > freeze
+            && __fsub_rn(
+                   snwepr,
+                   __fmul_rn(__fmul_rn(__fmul_rn(beta, epot), ras), delt))
+               > zero
+            && snhei > zero;
+#endif
+        if (melts) {
             // :5414-5553 top melt.
             nmelt = 1;
             soiltfrac = __fadd_rn(
@@ -4014,9 +4072,13 @@ void ruc_snow_temperature_step(
                 __fmul_rn(__fsub_rn(one, snowfrac), soilt));
             qsg = fminf(
                 qsg, __fdiv_rn(ruc_qsn_lookup(soiltfrac, tbq), pp));
+#ifdef GPUWM_SNOW_WRF461
             qvg = __fadd_rn(
                 __fmul_rn(snowfrac, qsg),
                 __fmul_rn(__fsub_rn(one, snowfrac), qvg));
+#else
+            qvg = qsg;  // branch :5590, saturated at melt
+#endif
             // :5419-5421 t3/upflux/xinet are dead: xinet is never read.
             epot = -__fmul_rn(qkms, __fsub_rn(qvatm, qsg));
             q1 = __fmul_rn(epot, ras);
@@ -4082,6 +4144,46 @@ void ruc_snow_temperature_step(
                     __fsub_rn(rain_temperature, soiltfrac)));
             snoh = fmaxf(zero, snoh);
             smelt = __fmul_rn(__fdiv_rn(snoh, xlmelt), milli);
+            // :5530 the Koren et al. (1999) retained fraction, both lineages.
+            real rsmfrac = fminf(
+                0.18f,
+                fmaxf(
+                    0.08f,
+                    __fmul_rn(__fdiv_rn(snwepr, 0.10f), 0.13f)));
+#ifndef GPUWM_SNOW_WRF461
+            {
+                // Branch :5652-5698, straight-line: the cap does not scale
+                // with the step or depend on density, and liquid is
+                // retained whenever the pack is deeper than 1 cm.
+                real available = __fsub_rn(
+                    __fdiv_rn(snwepr, delt),
+                    __fmul_rn(__fmul_rn(beta, epot), ras));
+                smelt = fminf(smelt, available);
+                smelt = fmaxf(zero, smelt);
+                real limit = __fmul_rn(5.6e-8f, meltfactor);
+                limit = __fmul_rn(
+                    limit, fmaxf(one, __fsub_rn(soilt, freeze)));
+                smelt = fminf(smelt, limit);
+                real rr = fmaxf(zero, available);
+                smelt = fminf(smelt, rr);
+                snoh = __fmul_rn(__fmul_rn(smelt, xlmelt), thousand);
+                if (snhei > 0.01f) {
+                    rsm = __fmul_rn(__fmul_rn(rsmfrac, smelt), delt);
+                } else {
+                    rsm = zero;
+                }
+                smelt = fmaxf(zero, __fsub_rn(smelt, __fdiv_rn(rsm, delt)));
+                snwe = fmaxf(
+                    zero,
+                    __fsub_rn(
+                        snwepr,
+                        __fmul_rn(
+                            __fadd_rn(
+                                smelt,
+                                __fmul_rn(__fmul_rn(beta, epot), ras)),
+                            delt)));
+            }
+#else
             real potential = __fmul_rn(__fmul_rn(epot, ras), delt);
             if (epot > zero && snwepr <= potential) {
                 // :5483-5491 all the snow can evaporate; jump to :5518.
@@ -4119,11 +4221,6 @@ void ruc_snow_temperature_step(
             snoh = __fmul_rn(__fmul_rn(smelt, xlmelt), thousand);
             if (smelt > zero) {
                 // :5529-5543 Koren et al. (1999) liquid retention.
-                real rsmfrac = fminf(
-                    0.18f,
-                    fmaxf(
-                        0.08f,
-                        __fmul_rn(__fdiv_rn(snwepr, 0.10f), 0.13f)));
                 if (snhei > 0.01f && rhosn < 350.0f) {
                     rsm = __fmul_rn(__fmul_rn(rsmfrac, smelt), delt);
                 } else {
@@ -4145,9 +4242,11 @@ void ruc_snow_temperature_step(
                                 __fmul_rn(__fmul_rn(beta, epot), ras)),
                             delt)));
             }
+#endif
         } else {
-            // :5557-5567 no melt: sublimation or condensation only.
-            if (snhei != zero && beta == one) {
+            // :5557-5567 no melt: sublimation or condensation only.  The
+            // branch updates any pack and never zeroes one here.
+            if (snhei != zero && (beta == one || !GPUWM_RUC_SNOW_V461)) {
                 epot = -__fmul_rn(qkms, __fsub_rn(qvatm, qsg));
                 snwe = fmaxf(
                     zero,
@@ -4155,7 +4254,7 @@ void ruc_snow_temperature_step(
                         snwepr,
                         __fmul_rn(
                             __fmul_rn(__fmul_rn(beta, epot), ras), delt)));
-            } else {
+            } else if (GPUWM_RUC_SNOW_V461) {
                 snwe = zero;
             }
         }
@@ -4247,16 +4346,19 @@ void ruc_snow_temperature_step(
             __fmul_rn(__fsub_rn(tso[0], soiltfrac), snohg), delt);
         snohg = fmaxf(zero, snohg);
         real smeltg = __fmul_rn(__fdiv_rn(snohg, xlmelt), milli);
-        // :5658-5660 the Egglston bottom-melt limit.
-        if ((rhosn < 350.0f || (newsnow > zero && rhonewsn < 450.0f))
-            && soilt < 283.0f) {
+        // :5658-5660 the Egglston bottom-melt limit; unconditional in the
+        // branch.
+        if (!GPUWM_RUC_SNOW_V461
+            || ((rhosn < 350.0f || (newsnow > zero && rhonewsn < 450.0f))
+                && soilt < 283.0f)) {
             smeltg = fminf(smeltg, 5.8e-9f);
         }
         real rr = __fdiv_rn(snwe, delt);
         smeltg = fminf(smeltg, rr);
         snwe = fmaxf(zero, __fsub_rn(snwe, __fmul_rn(smeltg, delt)));
         snhei = __fdiv_rn(__fmul_rn(snwe, thousand), rhosn);
-        smelt = __fadd_rn(smelt, smeltg);
+        // The branch keeps the bottom melt water out of smelt.
+        if (GPUWM_RUC_SNOW_V461) smelt = __fadd_rn(smelt, smeltg);
         if (snhei > zero) tso[0] = soiltfrac;
     }
 

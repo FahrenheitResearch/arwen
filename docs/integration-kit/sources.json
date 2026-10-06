@@ -1,15 +1,15 @@
 {
   "certification_rule": "certified_stock_wrf requires implemented field/level/cadence policies plus acceptance by unchanged stock wrf.exe within the declared source/domain envelope",
-  "gpuwm_version": "2.7.6",
+  "gpuwm_version": "2.8.5",
   "readiness_rule": "runnable means the strict implementation route exists; stock-WRF certification is a separate exact evidence status",
   "registry_schema": "gpuwm-native-source-adapters-v1",
   "routes": {
     "experiment": "the config-driven experiment route: one experiment TOML with its [case_data] inputs, prepared and integrated in this process (what `gpuwm run CONFIG` executes)",
     "prepared": "the native prepared-cache route: authority, fetch, manifest, preparation, forecast and render, in the documented order (what `gpuwm go CONFIG` executes) -- for sources the config-driven route cannot decode"
   },
-  "runnable_source_count": 19,
+  "runnable_source_count": 23,
   "schema": "gpuwm.run-plan.sources.v1",
-  "source_count": 33,
+  "source_count": 38,
   "sources": [
     {
       "aliases": [],
@@ -45,6 +45,51 @@
       "display_name": "HRRR (native hybrid levels)",
       "fetch": {
         "kind": "legacy_transport",
+        "posting": {
+          "late_after_minutes": 90.0,
+          "poll_seconds": 30.0,
+          "publication_lag": [
+            {
+              "cycle_hours": [
+                0,
+                6,
+                12,
+                18
+              ],
+              "from_lead": 19,
+              "hours": 0.87,
+              "late_hours": 0.85,
+              "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 5 cycles 29 Sep 06Z to 30 Sep 06Z: f019 at + 1 h 14 min to 1 h 43 min, f048 at + 1 h 46 min to 2 h 20 min",
+              "per_lead_hours": 0.0183
+            },
+            {
+              "cycle_hours": [
+                0,
+                6,
+                12,
+                18
+              ],
+              "from_lead": 0,
+              "hours": 0.83,
+              "late_hours": 0.65,
+              "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 5 cycles 29 Sep 06Z to 30 Sep 06Z: f000 at + 51 min to 1 h 02 min, f018 at + 1 h 13 min to 1 h 41 min",
+              "per_lead_hours": 0.0203
+            },
+            {
+              "cycle_hours": null,
+              "from_lead": 0,
+              "hours": 0.8,
+              "late_hours": 0.95,
+              "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 27 cycles 29 Sep 01Z to 30 Sep 08Z: f000 at + 49 min to 1 h 43 min, f018 at + 1 h 24 min to 1 h 36 min",
+              "per_lead_hours": 0.0324
+            }
+          ],
+          "ready_check": "objects_and_index",
+          "shape": "rolling",
+          "streams": true,
+          "table_sha256": "e29085717ec57872f12dcbea255fda7068e4f567bd96f26b4d8136b947cdcd56",
+          "why": "one wrfnat and one wrfprs object with their .idx per lead, posted in lead order: f000 from + 49 min, f018 from + 1 h 13 min (synoptic) or 1 h 24 min, f048 from + 1 h 46 min; the 30 Sep 06Z and 07Z runs posted 30 to 55 min late"
+        },
         "refusal": null,
         "route_id": null
       },
@@ -62,6 +107,7 @@
       "member_set": null,
       "notes": "Certified slice: one CONUS Lambert specified domain, WSM6, YSU, classic MM5 surface layer (option 91), Noah, and an explicit validated shared eta grid; the accepted 49-level profile remains the stock-WRF authority while unlike counts are covered by structural gates; stock-WRF proofs cover 192x160 at 3 km in Oklahoma and Ohio and 1000x1000 at 1 km in Oklahoma.",
       "packaged_profile": null,
+      "record_kind": "forecast",
       "required_products": [
         "sfc",
         "nat"
@@ -121,6 +167,51 @@
       "display_name": "HRRR (pressure levels)",
       "fetch": {
         "kind": "table_route",
+        "posting": {
+          "late_after_minutes": 90.0,
+          "poll_seconds": 30.0,
+          "publication_lag": [
+            {
+              "cycle_hours": [
+                0,
+                6,
+                12,
+                18
+              ],
+              "from_lead": 19,
+              "hours": 0.87,
+              "late_hours": 0.85,
+              "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted; hrrr-prs is the hrrr row's wrfprs objects, the same producer): 5 cycles 29 Sep 06Z to 30 Sep 06Z: f019 at + 1 h 14 min to 1 h 43 min, f048 at + 1 h 46 min to 2 h 20 min",
+              "per_lead_hours": 0.0183
+            },
+            {
+              "cycle_hours": [
+                0,
+                6,
+                12,
+                18
+              ],
+              "from_lead": 0,
+              "hours": 0.83,
+              "late_hours": 0.65,
+              "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted; hrrr-prs is the hrrr row's wrfprs objects, the same producer): 5 cycles 29 Sep 06Z to 30 Sep 06Z: f000 at + 51 min to 1 h 02 min, f018 at + 1 h 13 min to 1 h 41 min",
+              "per_lead_hours": 0.0203
+            },
+            {
+              "cycle_hours": null,
+              "from_lead": 0,
+              "hours": 0.8,
+              "late_hours": 0.95,
+              "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted; hrrr-prs is the hrrr row's wrfprs objects, the same producer): 27 cycles 29 Sep 01Z to 30 Sep 08Z: f000 at + 49 min to 1 h 43 min, f018 at + 1 h 24 min to 1 h 36 min",
+              "per_lead_hours": 0.0324
+            }
+          ],
+          "ready_check": "objects_and_index",
+          "shape": "rolling",
+          "streams": true,
+          "table_sha256": "e29085717ec57872f12dcbea255fda7068e4f567bd96f26b4d8136b947cdcd56",
+          "why": "one wrfprs object and its .idx per lead, posted in lead order: f000 from + 49 min, f018 from + 1 h 13 min (synoptic) or 1 h 24 min, f048 from + 1 h 46 min; the 30 Sep 06Z and 07Z runs posted 30 to 55 min late"
+        },
         "refusal": null,
         "route_id": "hrrr-prs"
       },
@@ -138,6 +229,7 @@
       "member_set": null,
       "notes": "HRRR's public wrfprs product through the GENERIC mapped route: one wrfprs file per valid time carries the 39-level pressure state with its five hydrometeor masses (cloud water, cloud ice, rain, snow, graupel), the surface/2m/10m fields, in-band terrain and the nine-node RUC soil column.  The Lambert CONUS grid, the grid-relative wind rotation and the node soil geometry are declared in the packaged mapping/composition documents -- there is no HRRR decode code on this route.  Distinct from --source hrrr, the certified native hybrid-level route: this profile initialises from the pressure-level analysis, which is smoother near terrain than native levels, and it is not yet accepted by unchanged stock WRF.",
       "packaged_profile": "hrrr-prs-grib2-v1",
+      "record_kind": "forecast",
       "required_products": [
         "wrfprs"
       ],
@@ -177,6 +269,25 @@
       "display_name": "GEM GDPS (Canadian global)",
       "fetch": {
         "kind": "table_route",
+        "posting": {
+          "late_after_minutes": 70.0,
+          "poll_seconds": 30.0,
+          "publication_lag": [
+            {
+              "cycle_hours": null,
+              "from_lead": 0,
+              "hours": 3.8,
+              "late_hours": 0.65,
+              "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 3 cycles 29 Sep 00Z to 30 Sep 00Z: f000 at + 3 h 50 min to 4 h 04 min, f240 at + 4 h 49 min to 5 h 03 min",
+              "per_lead_hours": 0.004
+            }
+          ],
+          "ready_check": "objects",
+          "shape": "rolling",
+          "streams": true,
+          "table_sha256": "e29085717ec57872f12dcbea255fda7068e4f567bd96f26b4d8136b947cdcd56",
+          "why": "about 175 single-message files per lead on dd.weather.gc.ca, no index, posted in lead order: f000 at + 3 h 50 min, f240 at + 4 h 49 min"
+        },
         "refusal": null,
         "route_id": "gem-gdps"
       },
@@ -194,6 +305,7 @@
       "member_set": null,
       "notes": "ECCC's GDPS (GEM global) through the GENERIC mapped route: MSC Datamart's 15 km regular lat-lon GRIB2 product, one single-message JPEG2000-packed file per variable-level, concatenable per valid time.  33 pressure levels (1015..1 hPa), surface/2 m/10 m state, in-band terrain and the single 0-10 cm ISBA soil layer are declared in the packaged mapping/composition documents -- there is no GDPS decode code on this route.  GDPS publishes orography, land mask and the ice analysis at analysis time only; the profile declares them once-per-cycle invariants and the generic engine broadcasts the proven analysis record.  Soil moisture is published as volumetric content, so the anticipated layer-mass derivation was not needed.  Model state is three-hourly; not yet accepted by unchanged stock WRF.",
       "packaged_profile": "gem-gdps-grib2-v1",
+      "record_kind": "forecast",
       "required_products": [
         "15km-latlon0.15"
       ],
@@ -234,6 +346,25 @@
       "display_name": "ICON global 13 km (DWD)",
       "fetch": {
         "kind": "table_route",
+        "posting": {
+          "late_after_minutes": 60.0,
+          "poll_seconds": 30.0,
+          "publication_lag": [
+            {
+              "cycle_hours": null,
+              "from_lead": 0,
+              "hours": 2.64,
+              "late_hours": 0.2,
+              "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 4 cycles 29 Sep 12Z to 30 Sep 06Z: f000 at + 2 h 40 min to 2 h 43 min, f180 at + 3 h 29 min",
+              "per_lead_hours": 0.0045
+            }
+          ],
+          "ready_check": "objects",
+          "shape": "rolling",
+          "streams": true,
+          "table_sha256": "e29085717ec57872f12dcbea255fda7068e4f567bd96f26b4d8136b947cdcd56",
+          "why": "about 116 per-field bz2 objects per lead on opendata.dwd.de, no index, posted in lead order over about 50 min: f000 at + 2 h 40 min, f180 at + 3 h 29 min (29 Sep 12Z to 30 Sep 06Z)"
+        },
         "refusal": null,
         "route_id": "icon-global"
       },
@@ -251,6 +382,7 @@
       "member_set": null,
       "notes": "DWD global R03B07, nominal 13 km, 2,949,120 native cells. A native Rust input normalizer verifies the external grid identity, remaps only the WPS domain plus a halo to 0.125 degrees, and seals raw-to-normalized provenance before prep. 18 pressure levels (30..1000 hPa), TERRA soil and sea ice. Three-hour forcing; 00/12Z to f180, 06/18Z to f120. No observation assimilation or stock-WRF certification is implied.",
       "packaged_profile": "icon-global-grib2-v1",
+      "record_kind": "forecast",
       "required_products": [
         "pressure-level",
         "single-level",
@@ -310,6 +442,38 @@
       "display_name": "ICON-EU (DWD regional)",
       "fetch": {
         "kind": "table_route",
+        "posting": {
+          "late_after_minutes": 60.0,
+          "poll_seconds": 30.0,
+          "publication_lag": [
+            {
+              "cycle_hours": [
+                0,
+                6,
+                12,
+                18
+              ],
+              "from_lead": 0,
+              "hours": 2.65,
+              "late_hours": 0.35,
+              "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 4 cycles 29 Sep 12Z to 30 Sep 06Z: f000 at + 2 h 41 min to 2 h 45 min, f120 at + 3 h 33 min to 3 h 40 min",
+              "per_lead_hours": 0.0072
+            },
+            {
+              "cycle_hours": null,
+              "from_lead": 0,
+              "hours": 2.62,
+              "late_hours": 0.2,
+              "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 4 cycles 29 Sep 09Z to 30 Sep 03Z: f000 at + 2 h 40 min to 2 h 44 min, f048 at + 2 h 56 min to 2 h 58 min",
+              "per_lead_hours": 0.005
+            }
+          ],
+          "ready_check": "objects",
+          "shape": "rolling",
+          "streams": true,
+          "table_sha256": "e29085717ec57872f12dcbea255fda7068e4f567bd96f26b4d8136b947cdcd56",
+          "why": "about 125 per-field bz2 objects per lead on opendata.dwd.de, no index, posted in lead order: f000 at + 2 h 40 min, f120 at + 3 h 33 min"
+        },
         "refusal": null,
         "route_id": "icon-eu"
       },
@@ -327,6 +491,7 @@
       "member_set": null,
       "notes": "DWD open data's ICON-EU regular-lat-lon product set through the GENERIC mapped route: one bz2-wrapped GRIB2 object per field per lead (the acquisition codec stages them transparently), the 20-level pressure ladder, once-per-cycle invariant FR_LAND and HSURF broadcast to every valid time, and the TERRA soil column -- temperature at nine depth nodes, soil water as column-integrated kg m-2 over the eight layers whose exact midpoints are those interior nodes, converted and surface-extended through the closed derivation catalog.  Everything model-shaped is rows in the packaged mapping/composition documents; there is no ICON decode code on this route.  The native icosahedral product set (GDT 101) is refused by the decoder with the grid family named.  Not yet accepted by unchanged stock WRF.",
       "packaged_profile": "icon-eu-regular-grib2-v1",
+      "record_kind": "forecast",
       "required_products": [
         "pressure-level",
         "single-level",
@@ -353,6 +518,102 @@
     },
     {
       "aliases": [
+        "icon-2km",
+        "dwd-icon-d2"
+      ],
+      "composition_requirement": null,
+      "coverage": {
+        "centre_lat": 50.65,
+        "centre_lon": 8.65,
+        "describe": "regular lat/lon window lat 44..57.3, lon 0..17.3",
+        "east": 17.3,
+        "grid": {
+          "east": 17.3,
+          "north": 57.3,
+          "nx": 866,
+          "ny": 666,
+          "south": 44.0,
+          "west": 0.0
+        },
+        "kind": "RegularLatLonWindow",
+        "north": 57.3,
+        "south": 44.0,
+        "west": 0.0
+      },
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "gdt101_remap + vendored grib-core + mapped engine",
+      "default_product": "icosahedral-model-level",
+      "display_name": "ICON-D2 2.2 km (DWD, Germany)",
+      "fetch": {
+        "kind": "table_route",
+        "posting": {
+          "late_after_minutes": 60.0,
+          "poll_seconds": 30.0,
+          "publication_lag": [
+            {
+              "cycle_hours": null,
+              "from_lead": 0,
+              "hours": 0.73,
+              "late_hours": 0.1,
+              "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 8 cycles 29 Sep 09Z to 30 Sep 06Z: f000 at + 44 min, f048 at + 1 h 12 min to 1 h 14 min",
+              "per_lead_hours": 0.0097
+            }
+          ],
+          "ready_check": "objects",
+          "shape": "rolling",
+          "streams": true,
+          "table_sha256": "e29085717ec57872f12dcbea255fda7068e4f567bd96f26b4d8136b947cdcd56",
+          "why": "about 675 per-field and per-level bz2 objects per lead on opendata.dwd.de, no index, posted in lead order at about 0.6 min per lead: f000 at + 44 min, f048 at + 1 h 12 min to 1 h 14 min (eight cycles)"
+        },
+        "refusal": null,
+        "route_id": "icon-d2"
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": 3600.0,
+      "maturity": {
+        "cadence_mapping": "uniform-hourly-forecast-series-v1",
+        "field_mapping": "packaged-rw-wps-icon-d2-grib2-v1",
+        "level_mapping": "65-height-model-level-to-explicit-wrf-eta-v1",
+        "runnable": true,
+        "status": "runnable_mapping_not_stock_wrf_certified",
+        "stock_wrf_gate": "live-unchanged-stock-wrf-gate-pending"
+      },
+      "max_forecast_hour": 48,
+      "member_set": null,
+      "notes": "DWD's convection-permitting ICON-D2, nominal 2.2 km, on its native R19B07 mesh of 542,040 cells over Germany and its neighbours. The same GDT-101 normalization as ICON global remaps the WPS domain plus a 0.25-degree halo to 0.02 degrees and seals raw-to-normalized provenance before prep. 65 height-based model levels with pressure and five condensate species, TERRA soil, once-per-cycle sea ice. Cycles every 3 h, each to f048, hourly forcing. Data: Deutscher Wetterdienst, CC BY 4.0. No observation assimilation or stock-WRF certification is implied.",
+      "packaged_profile": "icon-d2-grib2-v1",
+      "record_kind": "forecast",
+      "required_products": [
+        "model-level",
+        "single-level",
+        "soil-level",
+        "time-invariant",
+        "grid-coordinates"
+      ],
+      "run_plan": {
+        "intent_chain": "prepared:staged",
+        "intent_refusal": null,
+        "intent_routes": [
+          "prepared"
+        ],
+        "intent_supported": true,
+        "requires_source_root": false,
+        "source_root_reason": null
+      },
+      "runner": "mapped_composition_v1",
+      "source_id": "icon-d2",
+      "source_kind": "deterministic_state",
+      "title": "ICON-D2 2.2 km (DWD, Germany)",
+      "upstream_ingest": "native_gdt101_normalization_then_packaged_profile",
+      "upstream_model_id": "icon-d2",
+      "wizard_planable": true
+    },
+    {
+      "aliases": [
         "hrrrak",
         "hrrr-alaska"
       ],
@@ -368,6 +629,7 @@
       "display_name": "HRRR Alaska",
       "fetch": {
         "kind": "none",
+        "posting": null,
         "refusal": "--source hrrr-ak: no fetch route.\n  why: the registry row is not runnable (adapter_mapping_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources hrrr-ak` for this row in full.",
         "route_id": null
       },
@@ -385,6 +647,7 @@
       "member_set": null,
       "notes": "Alaska grid/projection and field contract are not yet mapped.",
       "packaged_profile": null,
+      "record_kind": "forecast",
       "required_products": [
         "sfc",
         "nat"
@@ -422,6 +685,25 @@
       "display_name": "GFS (global, 0.25 degree)",
       "fetch": {
         "kind": "legacy_transport",
+        "posting": {
+          "late_after_minutes": 120.0,
+          "poll_seconds": 30.0,
+          "publication_lag": [
+            {
+              "cycle_hours": null,
+              "from_lead": 0,
+              "hours": 3.51,
+              "late_hours": 1.45,
+              "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 7 cycles 28 Sep 12Z to 30 Sep 00Z: f000 at + 3 h 31 min to 4 h 37 min, f384 at + 5 h 12 min to 6 h 35 min",
+              "per_lead_hours": 0.0043
+            }
+          ],
+          "ready_check": "objects",
+          "shape": "rolling",
+          "streams": true,
+          "table_sha256": "e29085717ec57872f12dcbea255fda7068e4f567bd96f26b4d8136b947cdcd56",
+          "why": "one pgrb2.0p25 object per lead, posted in lead order: f000 at + 3 h 31 min, f384 at + 5 h 12 min; the .idx is the record-count bar after download"
+        },
         "refusal": null,
         "route_id": null
       },
@@ -439,6 +721,7 @@
       "member_set": null,
       "notes": "Certified slice: one specified Lambert domain, GFS pgrb2.0p25 with complete 1000..100-hPa state and exact four Noah soil layers, WSM6, YSU, classic MM5 surface layer (option 91), Noah, and any explicit eta grid whose model top is covered by GFS. Numeric GRIB2 identifiers and both soil fixed surfaces are validated before decode; unchanged stock WRF v4.6.1 accepted the f000/f003 proof and completed a finite model step. The same named-source implementation now accepts namelist-bound static one-way Lambert hierarchies through at least d06; that broader envelope is runnable but remains separately stock-WRF gated.",
       "packaged_profile": null,
+      "record_kind": "forecast",
       "required_products": [
         "pgrb2.0p25"
       ],
@@ -477,6 +760,25 @@
       "display_name": "GDAS analysis (0.25 degree)",
       "fetch": {
         "kind": "legacy_transport",
+        "posting": {
+          "late_after_minutes": 115.0,
+          "poll_seconds": 30.0,
+          "publication_lag": [
+            {
+              "cycle_hours": null,
+              "from_lead": 0,
+              "hours": 6.8,
+              "late_hours": 1.35,
+              "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 7 cycles 28 Sep 12Z to 30 Sep 00Z: f000 at + 6 h 48 min to 7 h 44 min, f009 at + 7 h 00 min to 8 h 00 min",
+              "per_lead_hours": 0.0
+            }
+          ],
+          "ready_check": "objects",
+          "shape": "whole_cycle",
+          "streams": false,
+          "table_sha256": "e29085717ec57872f12dcbea255fda7068e4f567bd96f26b4d8136b947cdcd56",
+          "why": "f000 to f009 post together, within about 16 min, from + 6 h 48 min after the cycle (the 30 Sep 00Z run from + 7 h 44 min); a run is capped at 9 h, so there is nothing to wait for inside a cycle"
+        },
         "refusal": null,
         "route_id": null
       },
@@ -494,6 +796,7 @@
       "member_set": null,
       "notes": "NCEP's analysis cycle through the GENERIC mapped route as a packaged profile: one pgrb2.0p25 file per hourly valid time (f000..f009 -- f010 is a measured 404), each carrying the 33-level isobaric state with direct specific humidity, the surface/2m/10m fields, in-band terrain and the four Noah soil layers bound by their scaled type-106 depth pairs (the integer level key collides between the 0-0.1 m and 0.1-0.4 m layers, so depth-pair rows are the identity).  Soil moisture is an NCEP local-table row selected by octets; no table is asked to name it.  The catalogue is record-for-record byte-identical to GFS pgrb2.0p25 (696/696 MEASURED), so this profile is the GFS shape at a different acquisition path with analysis-cycle semantics: the bytes stamp even f000 a FORECAST (generating process 81 at hour 0, 96 after), and the one analysis-stamped product (pgrb2.1p00.anl) lacks all soil, the land mask and every 2 m/10 m field -- it is not an initialization route and this row does not claim it.  Publication lags the cycle by ~7 h (delayed-cutoff cycle), far later than GFS.  Not yet accepted by unchanged stock WRF.",
       "packaged_profile": "gdas-pgrb2-0p25-grib2-v1",
+      "record_kind": "analysis",
       "required_products": [
         "pgrb2.0p25"
       ],
@@ -531,6 +834,35 @@
       "display_name": "GEFS (global ensemble member)",
       "fetch": {
         "kind": "table_route",
+        "posting": {
+          "late_after_minutes": 120.0,
+          "poll_seconds": 30.0,
+          "publication_lag": [
+            {
+              "cycle_hours": [
+                0
+              ],
+              "from_lead": 390,
+              "hours": 22.3,
+              "late_hours": 0.1,
+              "measured": "2026-09-30, Last-Modified on NOMADS for the 28 and 29 Sep 00Z extension, a day after its f384: f390 at cycle + 24 h 05 to 24 h 07 min, f600 at + 25 h 02 to 25 h 03 min, f840 at + 26 h 07 to 26 h 08 min; the posting watch's listing of 29 Sep 00Z agrees (f390 + 24 h 07 min, f840 + 26 h 08 min)",
+              "per_lead_hours": 0.0045
+            },
+            {
+              "cycle_hours": null,
+              "from_lead": 0,
+              "hours": 3.7,
+              "late_hours": 1.45,
+              "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 7 cycles 28 Sep 12Z to 30 Sep 00Z: f000 at + 3 h 45 min to 4 h 44 min, f384 at + 6 h 02 min to 7 h 24 min",
+              "per_lead_hours": 0.0059
+            }
+          ],
+          "ready_check": "objects_and_index",
+          "shape": "rolling",
+          "streams": true,
+          "table_sha256": "e29085717ec57872f12dcbea255fda7068e4f567bd96f26b4d8136b947cdcd56",
+          "why": "one pgrb2a/pgrb2b pair with their .idx per member and lead, posted in lead order: f000 at + 3 h 45 min, f384 at + 6 h 02 min; the 00Z extension past f384 a day later"
+        },
         "refusal": null,
         "route_id": "gefs"
       },
@@ -548,6 +880,7 @@
       "member_set": "gefs-ensemble-grib2-members-v1",
       "notes": "One MEMBER of NCEP's global ensemble through the GENERIC mapped route.  The member axis is table work: the packaged member set declares all 31 forecasts (control + 30 perturbed), the filename patterns, the byte verification triple, the encoded-size convention (30 EXCLUDES the control) and the geavg/gespr statistic namespace, and `gpuwm-member-prep` stages a verified member with a hash-pinned receipt.  The field axis is table work too: the packaged profile's 31-level ladder is the measured exact union of the pgrb2a and pgrb2b isobaric sets (zero overlap on every variable), so a preparation needs BOTH files of the SAME member per valid time -- pass each pair with --input and the SAME pair again as --supplement: terrain is in band but MIGRATES products (measured: the analysis publishes orography in pgrb2a, every forecast step publishes it in pgrb2b), so only the pair carries it at every valid time.  Every selector pins PDT 1, so a statistic file (PDT 2) or an accumulation twin (PDT 11) can never satisfy a state selector, and the frame assembler's one-GRIB-member rule refuses a cross-member mix.  Noah soil rides the pair under the measured 66-percent ocean bitmap (layer 1 in pgrb2a, layers 2-4 in pgrb2b).  Not yet accepted by unchanged stock WRF.",
       "packaged_profile": "gefs-ensemble-grib2-v1",
+      "record_kind": "forecast",
       "required_products": [
         "pgrb2a",
         "pgrb2b"
@@ -574,7 +907,7 @@
       "aliases": [
         "ai-gfs"
       ],
-      "composition_requirement": "AIGFS publishes no soil temperature or moisture, no land-sea mask, no orography, no skin temperature, no surface pressure (PRMSL only) and no 2 m humidity; the hybrid profile borrows exactly that state from the SAME CYCLE's GDAS 0.25-degree analysis (the caller's one supplement) through the cross-source composition, and a donor from any other cycle or grid refuses by name.",
+      "composition_requirement": "AIGFS publishes no soil temperature or moisture, no land-sea mask, no orography, no skin temperature, no surface pressure (PRMSL only) and no 2 m humidity; the hybrid profile borrows the land-surface state from the SAME CYCLE's GDAS 0.25-degree analysis (the caller's one supplement) through the cross-source composition and derives surface pressure at every lead from AIGFS's own PRMSL at the analysis terrain height, and a donor from any other cycle or grid refuses by name.",
       "coverage": null,
       "credentials": {
         "items": [],
@@ -586,6 +919,25 @@
       "display_name": "AIGFS (NOAA AI global forecast)",
       "fetch": {
         "kind": "table_route",
+        "posting": {
+          "late_after_minutes": 110.0,
+          "poll_seconds": 30.0,
+          "publication_lag": [
+            {
+              "cycle_hours": null,
+              "from_lead": 0,
+              "hours": 3.61,
+              "late_hours": 1.3,
+              "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 7 cycles 28 Sep 12Z to 30 Sep 00Z: f000 at + 3 h 37 min to 4 h 44 min, f384 at + 4 h 13 min to 5 h 19 min",
+              "per_lead_hours": 0.0015
+            }
+          ],
+          "ready_check": "objects_and_index",
+          "shape": "donor_gated",
+          "streams": false,
+          "table_sha256": "e29085717ec57872f12dcbea255fda7068e4f567bd96f26b4d8136b947cdcd56",
+          "why": "every AI lead is posted by + 4 h 13 min to 5 h 19 min, but the same-cycle GDAS donor lands at + 6 h 48 min to 7 h 44 min and the engine refuses a donor from another cycle, so the donor decides the start and nothing is left to wait for"
+        },
         "refusal": null,
         "route_id": "aigfs"
       },
@@ -601,8 +953,9 @@
       },
       "max_forecast_hour": 384,
       "member_set": null,
-      "notes": "NCEP's GraphCast-based 0.25-degree AI forecast as pure table data, RUNNABLE as a HYBRID: the operational atmosphere (six 3-D fields on 13 pressure levels topping at 50 hPa, plus 2 m temperature and 10 m wind) rides the generic mapped route while the seven canonicals the product does not publish are composition_bound to the same-cycle GDAS analysis donor, decoded through the donor's own SHA-256-pinned mapping under the source_cycle_analysis_broadcast clock (one analysis record, carried to every lead, carried times named in the receipt).  The atmosphere-only profile aigfs-nomads-grib2-v1 remains shipped as the solo-refusal record.  ACQUISITION IDENTITY IS PART OF THE PRODUCT: operational bytes are NOMADS-only (SCN 25-89; 10-day rolling window, no filter CGI, no operational S3 mirror), stamped subCentre 0, while the noaa-nws-graphcastgfs-pds bucket serves a DIFFERENT experimental run under identical filenames stamped subCentre 2 -- every profile selector pins subcenter=0, so the imposter refuses by named identity octet instead of silently mixing model versions.  Deterministic (PDT 0/8 only); the PDT-8 precipitation windows are deliberately unselected (duplicate byte-identical tp at f006, shared paramId/level/step from f012).  Not flagged AI in-band: genProcId 137 and the front door are the identity.",
+      "notes": "NCEP's GraphCast-based 0.25-degree AI forecast as pure table data, RUNNABLE as a HYBRID: the operational atmosphere (six 3-D fields on 13 pressure levels topping at 50 hPa, plus 2 m temperature, 10 m wind and PRMSL) rides the generic mapped route while the six land-surface canonicals the product does not publish are composition_bound to the same-cycle GDAS analysis donor, decoded through the donor's own SHA-256-pinned mapping under the source_cycle_analysis_broadcast clock (one analysis record, carried to every lead, carried times named in the receipt).  Surface pressure, which AIGFS does not publish either, is derived at every lead from its own PRMSL and isobaric heights at the analysis terrain height, so the column mass follows the forecast.  The atmosphere-only profile aigfs-nomads-grib2-v1 remains shipped as the solo-refusal record.  ACQUISITION IDENTITY IS PART OF THE PRODUCT: operational bytes are NOMADS-only (SCN 25-89; 10-day rolling window, no filter CGI, no operational S3 mirror), stamped subCentre 0, while the noaa-nws-graphcastgfs-pds bucket serves a DIFFERENT experimental run under identical filenames stamped subCentre 2 -- every profile selector pins subcenter=0, so the imposter refuses by named identity octet instead of silently mixing model versions.  Deterministic (PDT 0/8 only); the PDT-8 precipitation windows are deliberately unselected (duplicate byte-identical tp at f006, shared paramId/level/step from f012).  Not flagged AI in-band: genProcId 137 and the front door are the identity.",
       "packaged_profile": "aigfs-gdas-hybrid-grib2-v1",
+      "record_kind": "forecast",
       "required_products": [
         "pres",
         "sfc"
@@ -641,6 +994,25 @@
       "display_name": "AIGEFS (NOAA AI global ensemble member)",
       "fetch": {
         "kind": "table_route",
+        "posting": {
+          "late_after_minutes": 105.0,
+          "poll_seconds": 30.0,
+          "publication_lag": [
+            {
+              "cycle_hours": null,
+              "from_lead": 0,
+              "hours": 3.85,
+              "late_hours": 1.25,
+              "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 7 cycles 28 Sep 12Z to 30 Sep 00Z: f000 at + 3 h 51 min to 4 h 51 min, f384 at + 4 h 29 min to 5 h 29 min",
+              "per_lead_hours": 0.0016
+            }
+          ],
+          "ready_check": "objects_and_index",
+          "shape": "donor_gated",
+          "streams": false,
+          "table_sha256": "e29085717ec57872f12dcbea255fda7068e4f567bd96f26b4d8136b947cdcd56",
+          "why": "every AI lead is posted by + 4 h 29 min to 5 h 29 min, but the same-cycle GDAS donor lands at + 6 h 48 min to 7 h 44 min and the engine refuses a donor from another cycle, so the donor decides the start and nothing is left to wait for"
+        },
         "refusal": null,
         "route_id": "aigefs"
       },
@@ -658,6 +1030,7 @@
       "member_set": "aigefs-ensemble-grib2-members-v1",
       "notes": "NCEP's operational AI global ensemble (Project EAGLE), 31 members, through the GENERIC mapped route as a CROSS-SOURCE packaged profile.  The member product is a 13-level 0.25-degree dry-dynamical + humidity atmosphere and NOTHING else -- no soil, no land mask, no orography, no skin temperature, no 2 m humidity -- so the packaged mapping declares those six gaps composition_bound and the packaged composition binds them to the shipped physical-analysis donor mapping under source_cycle_analysis_broadcast: the borrowed land state is the SAME cycle's analysis record, carried to every lead and named in the receipt.  Pass --input with ONE member's pres+sfc files (stage them through `gpuwm-member-prep`, whose receipt carries the member identity the byte-identical leaf filenames cannot) and --supplement with the same cycle's 0.25-degree analysis file.  Every packaged selector pins PDT 1, the individual-member template, so deterministic bytes and ensemble mean/spread files refuse at the mapped decode; the packaged member set separately declares the verification contract (typeOfEnsembleForecast 3 on EVERY member including the control -- perturbationNumber 0 is the only control discriminator -- encoded ensemble size 31, octet INCLUDES the control) and the NOMADS-only ensstat statistic namespace.  The mapped route itself cannot know WHICH member a caller intended: that identity lives in the member-prep receipt, not the leaf name.  Runnable, not stock-WRF certified, and the receipt says so.",
       "packaged_profile": "aigefs-member-hybrid-grib2-v1",
+      "record_kind": "forecast",
       "required_products": [
         "sfc/member",
         "pres/member"
@@ -696,6 +1069,7 @@
       "display_name": "Hybrid GEFS",
       "fetch": {
         "kind": "none",
+        "posting": null,
         "refusal": "--source hgefs: no fetch route.\n  why: the registry row is not runnable (member_selection_and_mapping_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources hgefs` for this row in full.",
         "route_id": null
       },
@@ -713,6 +1087,7 @@
       "member_set": null,
       "notes": "",
       "packaged_profile": null,
+      "record_kind": "forecast",
       "required_products": [
         "sfc/member",
         "pres/member"
@@ -750,6 +1125,36 @@
       "display_name": "ECMWF IFS (open data, 0.25 degree)",
       "fetch": {
         "kind": "table_route",
+        "posting": {
+          "late_after_minutes": 60.0,
+          "poll_seconds": 30.0,
+          "publication_lag": [
+            {
+              "cycle_hours": [
+                0,
+                12
+              ],
+              "from_lead": 0,
+              "hours": 7.5,
+              "late_hours": 0.15,
+              "measured": "2026-09-29 and 2026-09-30: every object of the 28 and 29 Sep 00Z and 12Z runs on data.ecmwf.int carries Last-Modified cycle + 7 h 34 min; 2026-09-30 posting watch: the AWS rung's own object times put every lead of the 28 Sep 00Z to 30 Sep 00Z 00/12Z runs on at + 7 h 34 min, within 0.8 min, and the watch first saw the 30 Sep 00Z run whole on data.ecmwf.int from + 7 h 34 min 54 s to 7 h 36 min 36 s",
+              "per_lead_hours": 0.0
+            },
+            {
+              "cycle_hours": null,
+              "from_lead": 0,
+              "hours": 6.4,
+              "late_hours": 0.1,
+              "measured": "same listing: the 06Z and 18Z runs of 28 and 29 Sep post whole at cycle + 6 h 27 min (18Z was still 404 at + 6 h 16 min); the AWS rung's object times agree to 0.6 min",
+              "per_lead_hours": 0.0
+            }
+          ],
+          "ready_check": "objects",
+          "shape": "whole_cycle",
+          "streams": false,
+          "table_sha256": "e29085717ec57872f12dcbea255fda7068e4f567bd96f26b4d8136b947cdcd56",
+          "why": "the files only appear complete: every lead of a run posts within a minute, at + 7 h 34 min for 00/12Z and + 6 h 27 min for 06/18Z"
+        },
         "refusal": null,
         "route_id": "ecmwf-open-data"
       },
@@ -767,6 +1172,7 @@
       "member_set": null,
       "notes": "ECMWF's open-data IFS oper product through the GENERIC mapped route: one 0.25-degree global GDT-0 GRIB2 file per three-hourly step carries the 14-level pressure state (earlier publications carry 13 levels without 10 hPa, spell the soil layers on depth-below-land surfaces and carry no surface geopotential; the mapping's era ladder, record aliases and terrain derivation read them), the surface/2 m/10 m fields, in-band surface geopotential for terrain (converted to metres by the declared unit scale) and the four IFS soil layers, which the source addresses by ordinal on fixed-surface type 151 -- declared through the composition's indexed selector_depth_binding, not code.  2 m humidity derives from the published dewpoint.  Winds are earth-relative; CCSDS (DRT 42) packing decodes through the converged bridge.  LICENSING: this profile is authored against the 0.25-degree open-data distribution (CC-BY-4.0); ECMWF's native 9 km HRES is access-restricted -- a data-licensing fact, not a capability gap.  Snow and sea-ice fields remain policy-controlled (local-table/bitmap semantics not yet bound), and the route is not yet accepted by unchanged stock WRF.",
       "packaged_profile": "ecmwf-open-data-oper-grib2-v1",
+      "record_kind": "forecast",
       "required_products": [
         "oper"
       ],
@@ -790,6 +1196,81 @@
     },
     {
       "aliases": [
+        "ifs-ens",
+        "ecmwf-ensemble"
+      ],
+      "composition_requirement": "One indexed and byte-verified perturbed member supplies its atmosphere and four soil layers. The separate oper control is selected through ensemble_control_source.",
+      "coverage": null,
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "rusty-weather/grib-core",
+      "default_product": "enfo/member",
+      "display_name": "ECMWF ENS (open data, member)",
+      "fetch": {
+        "kind": "table_route",
+        "posting": {
+          "late_after_minutes": 120.0,
+          "poll_seconds": 30.0,
+          "publication_lag": [
+            {
+              "cycle_hours": null,
+              "from_lead": 0,
+              "hours": 6.4,
+              "late_hours": 2.0,
+              "measured": "2026-10-01 00Z S3 listing: f000 last modified +7h40, f102 +7h44. The 6h24 start and 2h late budget conservatively span IFS posting; only positive object and index probes admit data.",
+              "per_lead_hours": 0.0
+            }
+          ],
+          "ready_check": "objects_and_index",
+          "shape": "rolling",
+          "streams": true,
+          "table_sha256": "e29085717ec57872f12dcbea255fda7068e4f567bd96f26b4d8136b947cdcd56",
+          "why": "Individual member records are selected from each posted object and its index; later leads are not needed to admit the verified prefix."
+        },
+        "refusal": null,
+        "route_id": "ecmwf-ens"
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": 10800.0,
+      "maturity": {
+        "cadence_mapping": "uniform-three-hour-forecast-series-v1",
+        "field_mapping": "packaged-rw-wps-ecmwf-ens-open-grib2-v1",
+        "level_mapping": "14-pressure-level-to-explicit-wrf-eta-v2",
+        "runnable": true,
+        "status": "runnable_mapping_not_stock_wrf_certified",
+        "stock_wrf_gate": "live-unchanged-stock-wrf-gate-pending"
+      },
+      "max_forecast_hour": 360,
+      "member_set": "ecmwf-ens-open-grib2-members-v1",
+      "notes": "The current open-data enfo-ef object contains 50 perturbed members. JSON index ranges select one member; the Rust GRIB inventory then verifies every selected message. The mapped member profile reads the same field definitions, including surface-pressure terrain derivation when surface geopotential is absent. The separately published oper-fc control makes 51 trajectories. Fetch-as-posted remains active for each member's forcing series. Historical publication layouts before IFS cycle 50r1 are not declared by this route. Data: ECMWF open data, CC BY 4.0. Not stock-WRF certified.",
+      "packaged_profile": "ecmwf-ens-open-grib2-v1",
+      "record_kind": "forecast",
+      "required_products": [
+        "enfo/member"
+      ],
+      "run_plan": {
+        "intent_chain": "prepared:staged",
+        "intent_refusal": null,
+        "intent_routes": [
+          "prepared"
+        ],
+        "intent_supported": true,
+        "requires_source_root": false,
+        "source_root_reason": null
+      },
+      "runner": "mapped_composition_v1",
+      "source_id": "ecmwf-ens",
+      "source_kind": "ensemble_members",
+      "title": "ECMWF ENS (open data, member)",
+      "upstream_ingest": "declarative_mapping_v1_over_packaged_profile",
+      "upstream_model_id": "ecmwf-ens",
+      "wizard_planable": true
+    },
+    {
+      "aliases": [
         "aifs-v2",
         "aifs-single"
       ],
@@ -805,6 +1286,25 @@
       "display_name": "ECMWF AIFS single (open data)",
       "fetch": {
         "kind": "table_route",
+        "posting": {
+          "late_after_minutes": 60.0,
+          "poll_seconds": 30.0,
+          "publication_lag": [
+            {
+              "cycle_hours": null,
+              "from_lead": 0,
+              "hours": 5.44,
+              "late_hours": 0.25,
+              "measured": "2026-09-30 posting watch: the AWS rung's own object times (S3 LastModified) put every lead of the nine runs 28 Sep 00Z to 30 Sep 00Z on the server at cycle + 5 h 27 min to 5 h 40 min, each run within 3.3 min; data.ecmwf.int's Last-Modified (f000 + 5 h 45 min to f360 + 7 h 34 min, the rule this replaces) is its dissemination schedule, not the posting: it served the 30 Sep 00Z f360 at 07:04Z stamped 07:34Z",
+              "per_lead_hours": 0.0
+            }
+          ],
+          "ready_check": "objects",
+          "shape": "whole_cycle",
+          "streams": false,
+          "table_sha256": "e29085717ec57872f12dcbea255fda7068e4f567bd96f26b4d8136b947cdcd56",
+          "why": "every lead of a run lands within about 3 min, at + 5 h 27 min to 5 h 40 min on the AWS rung (nine runs, 28 to 30 Sep); data.ecmwf.int's per-lead Last-Modified is its dissemination schedule, not the posting"
+        },
         "refusal": null,
         "route_id": "aifs"
       },
@@ -822,6 +1322,7 @@
       "member_set": null,
       "notes": "ECMWF's AI forecast (AIFS single, open data 0.25-degree GRIB2) through the GENERIC mapped route: one file per six-hourly step carries the 13-level pressure state (50-1000 hPa; the extra 10 hPa surfaces outside the declared ladder are admitted-and-ignored, and specific humidity is not published there), the surface/2 m/10 m fields and the two-layer ordinal soil column; the land mask and surface geopotential ride the 0-hour file alone, so every lead takes them from its cycle's 0-hour file, which a later start fetches too.  THREE limits a reader must know.  (1) The soil column reaches 0.28 m: Noah's four layers are WRF's own shallow-column interpolation bracketed by the skin temperature at 0 m and the static deep-soil temperature at 3 m, smoother than a full-depth soil analysis.  (2) No snow state and no sea-ice fraction are published, so runs start bare-ground and open-water everywhere; a winter or polar case should not initialise from this product.  (3) An AI emulator publishes no hydrometeors and its fields are not constrained by a dynamical balance, so spin-up behaviour is not the certified-source baseline.  Not yet accepted by unchanged stock WRF.",
       "packaged_profile": "aifs-single-grib2-v1",
+      "record_kind": "forecast",
       "required_products": [
         "oper"
       ],
@@ -841,6 +1342,194 @@
       "title": "ECMWF AIFS single (open data)",
       "upstream_ingest": "declarative_mapping_v1_over_packaged_profile",
       "upstream_model_id": "aifs",
+      "wizard_planable": true
+    },
+    {
+      "aliases": [
+        "rap-awp130bgrb"
+      ],
+      "composition_requirement": null,
+      "coverage": {
+        "centre_lat": 39.95886037175875,
+        "centre_lon": -98.22026854035477,
+        "describe": "451x337 Lambert grid at 13545 m, truelat 25/25, stand_lon -95",
+        "east": -57.38107004571805,
+        "grid": {
+          "dx_m": 13545.0,
+          "earth_radius_m": 6371229.0,
+          "lat1": 16.281,
+          "lon1": -126.138,
+          "nx": 451,
+          "ny": 337,
+          "stand_lon": -95.0,
+          "truelat1": 25.0,
+          "truelat2": 25.0
+        },
+        "kind": "LambertGridWindow",
+        "north": 58.36535547115609,
+        "south": 16.281000000000034,
+        "west": -139.85612183699237
+      },
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "rusty-weather/grib-core",
+      "default_product": "awp130bgrb",
+      "display_name": "RAP hybrid levels (13 km CONUS)",
+      "fetch": {
+        "kind": "table_route",
+        "posting": {
+          "late_after_minutes": 95.0,
+          "poll_seconds": 30.0,
+          "publication_lag": [
+            {
+              "cycle_hours": null,
+              "from_lead": 0,
+              "hours": 1.5,
+              "late_hours": 1.0,
+              "measured": "Conservative scheduling estimate from the corresponding operational cycle; first-visibility measurements for this product remain pending.",
+              "per_lead_hours": 0.01
+            }
+          ],
+          "ready_check": "objects_and_index",
+          "shape": "rolling",
+          "streams": true,
+          "table_sha256": "e29085717ec57872f12dcbea255fda7068e4f567bd96f26b4d8136b947cdcd56",
+          "why": "One native-level object and its index per lead; objects and index must be available before preparation."
+        },
+        "refusal": null,
+        "route_id": "rap-native"
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": 3600.0,
+      "maturity": {
+        "cadence_mapping": "uniform-hourly-forecast-series-v1",
+        "field_mapping": "packaged-rw-wps-rap-native-grib2-v1",
+        "level_mapping": "50-model-level-explicit-pressure-to-wrf-eta-v1",
+        "runnable": true,
+        "status": "runnable_mapping_not_stock_wrf_certified",
+        "stock_wrf_gate": "live-unchanged-stock-wrf-gate-pending"
+      },
+      "max_forecast_hour": 51,
+      "member_set": null,
+      "notes": "The generic mapped route reads the fifty native hybrid levels published on the 13 km CONUS Lambert grid, including explicit pressure, hydrometeors, aerosol numbers and nine RUC soil nodes. QNWFA/QNIFA use the operational HRRR Vtable's kg-1 semantics for NCEP local parameters 0/13/193 and 0/13/192. The product is horizontally interpolated by its producer; it is not RAP's full rotated native grid. Stock-WRF certification is pending.",
+      "packaged_profile": "rap-native-grib2-v1",
+      "record_kind": "forecast",
+      "required_products": [
+        "awp130bgrb"
+      ],
+      "run_plan": {
+        "intent_chain": "prepared:staged",
+        "intent_refusal": null,
+        "intent_routes": [
+          "prepared"
+        ],
+        "intent_supported": true,
+        "requires_source_root": false,
+        "source_root_reason": null
+      },
+      "runner": "mapped_composition_v1",
+      "source_id": "rap-native",
+      "source_kind": "deterministic_state",
+      "title": "RAP hybrid levels (13 km CONUS)",
+      "upstream_ingest": "declarative_mapping_v1_over_packaged_profile",
+      "upstream_model_id": "rap",
+      "wizard_planable": true
+    },
+    {
+      "aliases": [
+        "hrrr-mapped-native"
+      ],
+      "composition_requirement": null,
+      "coverage": {
+        "centre_lat": 38.4972466510005,
+        "centre_lon": -97.50597669104206,
+        "describe": "1799x1059 Lambert grid at 3000 m, truelat 38.5/38.5, stand_lon -97.5",
+        "east": -60.91719277183785,
+        "grid": {
+          "dx_m": 3000.0,
+          "earth_radius_m": 6371229.0,
+          "lat1": 21.138123,
+          "lon1": -122.719528,
+          "nx": 1799,
+          "ny": 1059,
+          "stand_lon": -97.5,
+          "truelat1": 38.5,
+          "truelat2": 38.5
+        },
+        "kind": "LambertGridWindow",
+        "north": 52.61565330680791,
+        "south": 21.138122999999993,
+        "west": -134.09547973426317
+      },
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "rusty-weather/grib-core",
+      "default_product": "wrfnat",
+      "display_name": "HRRR native hybrid analysis (mapped)",
+      "fetch": {
+        "kind": "table_route",
+        "posting": {
+          "late_after_minutes": 90.0,
+          "poll_seconds": 30.0,
+          "publication_lag": [
+            {
+              "cycle_hours": null,
+              "from_lead": 0,
+              "hours": 1.5,
+              "late_hours": 1.0,
+              "measured": "Conservative scheduling estimate from the corresponding operational cycle; first-visibility measurements for this product remain pending.",
+              "per_lead_hours": 0.01
+            }
+          ],
+          "ready_check": "objects_and_index",
+          "shape": "rolling",
+          "streams": true,
+          "table_sha256": "e29085717ec57872f12dcbea255fda7068e4f567bd96f26b4d8136b947cdcd56",
+          "why": "One native-level object and its index per lead; objects and index must be available before preparation."
+        },
+        "refusal": null,
+        "route_id": "hrrr-native"
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": 3600.0,
+      "maturity": {
+        "cadence_mapping": "uniform-hourly-forecast-series-v1",
+        "field_mapping": "packaged-rw-wps-hrrr-native-grib2-v1",
+        "level_mapping": "50-model-level-explicit-pressure-to-wrf-eta-v1",
+        "runnable": true,
+        "status": "runnable_mapping_not_stock_wrf_certified",
+        "stock_wrf_gate": "live-unchanged-stock-wrf-gate-pending"
+      },
+      "max_forecast_hour": 48,
+      "member_set": null,
+      "notes": "The generic mapped route reads the fifty native hybrid levels from wrfnat, with explicit pressure and aerosol numbers. Its same-cycle wrfprs analysis supplies the nine-node soil column and terrain through a hash-bound composition. This profile supports a native analysis donor independently of the selected lateral forcing source. Stock-WRF certification is pending.",
+      "packaged_profile": "hrrr-native-grib2-v1",
+      "record_kind": "forecast",
+      "required_products": [
+        "wrfnat"
+      ],
+      "run_plan": {
+        "intent_chain": "prepared:staged",
+        "intent_refusal": null,
+        "intent_routes": [
+          "prepared"
+        ],
+        "intent_supported": true,
+        "requires_source_root": false,
+        "source_root_reason": null
+      },
+      "runner": "mapped_composition_v1",
+      "source_id": "hrrr-native",
+      "source_kind": "deterministic_state",
+      "title": "HRRR native hybrid analysis (mapped)",
+      "upstream_ingest": "declarative_mapping_v1_over_packaged_profile",
+      "upstream_model_id": "hrrr",
       "wizard_planable": true
     },
     {
@@ -879,6 +1568,25 @@
       "display_name": "RAP (32 km North America)",
       "fetch": {
         "kind": "table_route",
+        "posting": {
+          "late_after_minutes": 95.0,
+          "poll_seconds": 30.0,
+          "publication_lag": [
+            {
+              "cycle_hours": null,
+              "from_lead": 0,
+              "hours": 0.75,
+              "late_hours": 1.05,
+              "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 32 cycles 29 Sep 01Z to 30 Sep 08Z: f000 at + 47 min to 1 h 25 min, f051 at + 1 h 07 min to 1 h 11 min",
+              "per_lead_hours": 0.005
+            }
+          ],
+          "ready_check": "objects_and_index",
+          "shape": "rolling",
+          "streams": true,
+          "table_sha256": "e29085717ec57872f12dcbea255fda7068e4f567bd96f26b4d8136b947cdcd56",
+          "why": "one awip32 object and its .idx per lead, posted in lead order: a whole cycle lands within about 20 min, f000 at + 47 min, f051 at + 1 h 07 min"
+        },
         "refusal": null,
         "route_id": "rap"
       },
@@ -894,8 +1602,9 @@
       },
       "max_forecast_hour": 51,
       "member_set": null,
-      "notes": "RAP through the GENERIC mapped route as a packaged profile: one awip32 file (AWIPS grid 221, 32 km Lambert, North America) per hourly valid time carries the 39-level pressure state (the HRRR wrfprs ladder, byte for byte), the surface/2m/10m fields, in-band terrain and the nine-node RUC soil column.  Pressure-level humidity is RH and rides the declared RH-to-specific-humidity derivation the GFS profile proved.  There is no RAP decode code on this route.  The 13 km CONUS Lambert products are NOT reachable as tables today and this row does not claim them: awp130pgrb carries no soil/land state, and pairing it with awp130bgrb refuses because both products publish byte-identical surface records that no selector octet separates; the native rotated lat-lon wrfprs product (GDT 32769) is outside the declared grid families.  Not yet accepted by unchanged stock WRF.",
+      "notes": "RAP through the GENERIC mapped route as a packaged profile: one awip32 file (AWIPS grid 221, 32 km Lambert, North America) per hourly valid time carries the 39-level pressure state (the HRRR wrfprs ladder, byte for byte), the surface/2m/10m fields, in-band terrain and the nine-node RUC soil column.  Pressure-level humidity is RH and rides the declared RH-to-specific-humidity derivation the GFS profile proved.  There is no RAP decode code on this route.  The 13 km hybrid product is a separate rap-native table row. The native rotated lat-lon wrfprs product (GDT 32769) is outside the declared grid families.  Not yet accepted by unchanged stock WRF.",
       "packaged_profile": "rap-awip32-grib2-v1",
+      "record_kind": "forecast",
       "required_products": [
         "awip32"
       ],
@@ -931,6 +1640,7 @@
       "display_name": "NAM (12 km North America)",
       "fetch": {
         "kind": "none",
+        "posting": null,
         "refusal": "--source nam: no fetch route.\n  why: the registry row is not runnable (adapter_mapping_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources nam` for this row in full.",
         "route_id": null
       },
@@ -948,6 +1658,7 @@
       "member_set": null,
       "notes": "",
       "packaged_profile": null,
+      "record_kind": "forecast",
       "required_products": [
         "awip12"
       ],
@@ -983,6 +1694,7 @@
       "display_name": "HiResW (high-resolution window)",
       "fetch": {
         "kind": "none",
+        "posting": null,
         "refusal": "--source hiresw: no fetch route.\n  why: the registry row is not runnable (member_selection_and_mapping_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources hiresw` for this row in full.",
         "route_id": null
       },
@@ -1000,6 +1712,7 @@
       "member_set": null,
       "notes": "",
       "packaged_profile": null,
+      "record_kind": "forecast",
       "required_products": [
         "arw_2p5km/conus"
       ],
@@ -1035,6 +1748,7 @@
       "display_name": "HREF (high-resolution ensemble products)",
       "fetch": {
         "kind": "none",
+        "posting": null,
         "refusal": "--source href: no fetch route.\n  why: the registry row is not runnable (explicit_composition_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources href` for this row in full.",
         "route_id": null
       },
@@ -1052,6 +1766,7 @@
       "member_set": null,
       "notes": "",
       "packaged_profile": null,
+      "record_kind": "forecast",
       "required_products": [
         "ensprod/conus/sprd"
       ],
@@ -1085,6 +1800,7 @@
       "display_name": "SREF (short-range ensemble products)",
       "fetch": {
         "kind": "none",
+        "posting": null,
         "refusal": "--source sref: no fetch route.\n  why: the registry row is not runnable (explicit_composition_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources sref` for this row in full.",
         "route_id": null
       },
@@ -1102,6 +1818,7 @@
       "member_set": null,
       "notes": "",
       "packaged_profile": null,
+      "record_kind": "forecast",
       "required_products": [
         "ensprod/pgrb212/mean_3hrly"
       ],
@@ -1135,6 +1852,7 @@
       "display_name": "RTMA (real-time mesoscale analysis)",
       "fetch": {
         "kind": "none",
+        "posting": null,
         "refusal": "--source rtma: no fetch route.\n  why: the registry row is not runnable (explicit_composition_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources rtma` for this row in full.",
         "route_id": null
       },
@@ -1152,6 +1870,7 @@
       "member_set": null,
       "notes": "",
       "packaged_profile": null,
+      "record_kind": "forecast",
       "required_products": [
         "2dvaranl_ndfd"
       ],
@@ -1185,6 +1904,7 @@
       "display_name": "URMA (unrestricted mesoscale analysis)",
       "fetch": {
         "kind": "none",
+        "posting": null,
         "refusal": "--source urma: no fetch route.\n  why: the registry row is not runnable (explicit_composition_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources urma` for this row in full.",
         "route_id": null
       },
@@ -1202,6 +1922,7 @@
       "member_set": null,
       "notes": "",
       "packaged_profile": null,
+      "record_kind": "forecast",
       "required_products": [
         "2dvaranl_ndfd"
       ],
@@ -1237,6 +1958,7 @@
       "display_name": "NBM (National Blend of Models)",
       "fetch": {
         "kind": "none",
+        "posting": null,
         "refusal": "--source nbm: no fetch route.\n  why: the registry row is not runnable (explicit_composition_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources nbm` for this row in full.",
         "route_id": null
       },
@@ -1254,6 +1976,7 @@
       "member_set": null,
       "notes": "",
       "packaged_profile": null,
+      "record_kind": "forecast",
       "required_products": [
         "core/co"
       ],
@@ -1309,6 +2032,25 @@
       "display_name": "RRFS (operational 3 km CONUS)",
       "fetch": {
         "kind": "table_route",
+        "posting": {
+          "late_after_minutes": 90.0,
+          "poll_seconds": 30.0,
+          "publication_lag": [
+            {
+              "cycle_hours": null,
+              "from_lead": 0,
+              "hours": 1.2,
+              "late_hours": 0.8,
+              "measured": "2026-09-30 posting watch (each object's own time on the ladder head: directory listings and HEAD, leads HEADed as they posted): 5 cycles 29 Sep 06Z to 30 Sep 06Z: f000 at + 1 h 13 min to 1 h 49 min, f084 at + 2 h 53 min to 3 h 29 min",
+              "per_lead_hours": 0.0198
+            }
+          ],
+          "ready_check": "objects_and_index",
+          "shape": "rolling",
+          "streams": true,
+          "table_sha256": "e29085717ec57872f12dcbea255fda7068e4f567bd96f26b4d8136b947cdcd56",
+          "why": "one prslev and one 2dfld object with their .idx per lead, posted in lead order over about 1 h 40 min; its f000 alone spreads 36 min (+ 1 h 13 min to 1 h 49 min), so the budget is 90 min"
+        },
         "refusal": null,
         "route_id": "rrfs"
       },
@@ -1324,8 +2066,9 @@
       },
       "max_forecast_hour": 84,
       "member_set": null,
-      "notes": "RRFS -- HRRR's operational successor, flowing today on noaa-rrfs-ops-pds and NOMADS rrfs/v1.0 (implementation date 2026-10-06) -- through the GENERIC mapped route as a packaged profile.  The 3 km CONUS grid is bit-for-bit HRRR's Lambert (every geolocating octet identical, measured from real bytes), so the HRRR wrfprs machinery carries it; RRFS's own facts are table data: a 45-level pressure ladder (70 hPa where HRRR has 75, 2 hPa top, no 1013.2 hPa entry) and the state split across a prslev/2dfld file PAIR -- prslev alone carries zero surface fields and zero soil, so both products are required and both files are passed per valid time.  SPFH is direct; the nine-node RUC soil column is octet-identical to HRRR's.  There is no RRFS decode code on this route.  NOT reachable today and not claimed by this row: the natlev native-level product, the 3 km North-America rotated grid, the thinned subset files and every per-member ensemble file exist only in the frozen prototype bucket noaa-rrfs-pds (halted 2026-08-12 by design) with no live front door; the relocatable firewx nest changes grid daily.  The ops bucket currently lists 6 days and whether that is rolling retention or feed age is not yet distinguishable.  Not yet accepted by unchanged stock WRF.",
+      "notes": "RRFS -- HRRR's operational successor, flowing today on noaa-rrfs-ops-pds and NOMADS rrfs/v1.0 through the GENERIC mapped route as a packaged profile.  The 3 km CONUS grid is bit-for-bit HRRR's Lambert (every geolocating octet identical, measured from real bytes), so the HRRR wrfprs machinery carries it; RRFS's own facts are table data: a 45-level pressure ladder (70 hPa where HRRR has 75, 2 hPa top, no 1013.2 hPa entry) and the state split across a prslev/2dfld file PAIR -- prslev alone carries zero surface fields and zero soil, so both products are required and both files are passed per valid time.  SPFH is direct; the nine-node RUC soil column is octet-identical to HRRR's.  There is no RRFS decode code on this route.  NOT reachable today and not claimed by this row: the natlev native-level product, the 3 km North-America rotated grid and the thinned subset files exist only in the frozen prototype bucket noaa-rrfs-pds (halted 2026-08-12 by design) with no live front door; the relocatable firewx nest changes grid daily. The public rrfsens member subset has its own rrfs-ens row; its 250 hPa top and missing land state do not replace this full-column route. Not yet accepted by unchanged stock WRF.",
       "packaged_profile": "rrfs-prslev-2dfld-grib2-v1",
+      "record_kind": "forecast",
       "required_products": [
         "prslev",
         "2dfld"
@@ -1350,6 +2093,99 @@
     },
     {
       "aliases": [
+        "rrfsens"
+      ],
+      "composition_requirement": "The public member column stops at 250 hPa and publishes no soil temperature, soil moisture, skin temperature or land mask. A complete upper atmosphere and explicit land-state composition are required before these members can initialize a normal full-column run. No automatic top lowering.",
+      "coverage": {
+        "centre_lat": 38.4972466510005,
+        "centre_lon": -97.50597669104206,
+        "describe": "1799x1059 Lambert grid at 3000 m, truelat 38.5/38.5, stand_lon -97.5",
+        "east": -60.91719277183785,
+        "grid": {
+          "dx_m": 3000.0,
+          "earth_radius_m": 6371229.0,
+          "lat1": 21.138123,
+          "lon1": -122.719528,
+          "nx": 1799,
+          "ny": 1059,
+          "stand_lon": -97.5,
+          "truelat1": 38.5,
+          "truelat2": 38.5
+        },
+        "kind": "LambertGridWindow",
+        "north": 52.61565330680791,
+        "south": 21.138122999999993,
+        "west": -134.09547973426317
+      },
+      "credentials": {
+        "items": [],
+        "required": false,
+        "summary": "this registry row declares no credential requirement"
+      },
+      "decoder": "rusty-weather/grib-core",
+      "default_product": "prslevnomads+2dfldnomads/member",
+      "display_name": "RRFS ensemble (public member subset)",
+      "fetch": {
+        "kind": "table_route",
+        "posting": {
+          "late_after_minutes": 120.0,
+          "poll_seconds": 30.0,
+          "publication_lag": [
+            {
+              "cycle_hours": null,
+              "from_lead": 0,
+              "hours": 1.7,
+              "late_hours": 2.0,
+              "measured": "2026-10-01/02 00Z member1 f000 lists at+1h44/+1h45; whole member lists publish throughf060. The 2h budget is conservative, with positive object and index probes required.",
+              "per_lead_hours": 0.0
+            }
+          ],
+          "ready_check": "objects_and_index",
+          "shape": "rolling",
+          "streams": true,
+          "table_sha256": "e29085717ec57872f12dcbea255fda7068e4f567bd96f26b4d8136b947cdcd56",
+          "why": "Each member pressure and surface pair is posted per lead; prefix completeness requires both products and their indexes."
+        },
+        "refusal": null,
+        "route_id": "rrfs-ens"
+      },
+      "file_family": "GRIB2",
+      "forcing_interval_seconds": 3600.0,
+      "maturity": {
+        "cadence_mapping": "pending",
+        "field_mapping": "pending",
+        "level_mapping": "pending",
+        "runnable": false,
+        "status": "explicit_composition_required",
+        "stock_wrf_gate": "not_run"
+      },
+      "max_forecast_hour": 60,
+      "member_set": "rrfs-ops-subset-grib2-members-v1",
+      "notes": "Five real member trajectories, m001 through m005, are posted in rrfsens.YYYYMMDD/CC on the operational-layout AWS bucket and NOMADS v1.0. Member 1 pressure and surface samples carry PDT 1, perturbation number 1, ensemble type 3 and size 5. The subset supplies 14 pressure levels from 250 to 1000 hPa. Acquisition and byte identity are implemented; complete initialization is not. Ensemble statistics remain the separate REFS source and cannot substitute for a member.",
+      "packaged_profile": null,
+      "record_kind": "forecast",
+      "required_products": [
+        "prslevnomads",
+        "2dfldnomads"
+      ],
+      "run_plan": {
+        "intent_chain": null,
+        "intent_refusal": "'rrfs-ens' declares no runnable implementation route (status 'explicit_composition_required'). Choose a runnable source from gpuwm sources.",
+        "intent_routes": [],
+        "intent_supported": false,
+        "requires_source_root": false,
+        "source_root_reason": null
+      },
+      "runner": null,
+      "source_id": "rrfs-ens",
+      "source_kind": "ensemble_members",
+      "title": "RRFS ensemble (public member subset)",
+      "upstream_ingest": "registry_only",
+      "upstream_model_id": "rrfs-ens",
+      "wizard_planable": false
+    },
+    {
+      "aliases": [
         "rrfsa"
       ],
       "composition_requirement": null,
@@ -1364,6 +2200,7 @@
       "display_name": "RRFS-A (frozen prototype feed)",
       "fetch": {
         "kind": "none",
+        "posting": null,
         "refusal": "--source rrfs-a: no fetch route.\n  why: the registry row is not runnable (adapter_mapping_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources rrfs-a` for this row in full.",
         "route_id": null
       },
@@ -1381,6 +2218,7 @@
       "member_set": null,
       "notes": "Frozen prototype feed (noaa-rrfs-pds, halted 2026-08-12 by design); the live operational feed is the `rrfs` row.  rusty-weather ingest is mature; WRF state/soil mapping remains gated.",
       "packaged_profile": null,
+      "record_kind": "forecast",
       "required_products": [
         "prs-conus"
       ],
@@ -1414,6 +2252,7 @@
       "display_name": "RRFS public prototype",
       "fetch": {
         "kind": "none",
+        "posting": null,
         "refusal": "--source rrfs-public: no fetch route.\n  why: the registry row is not runnable (adapter_mapping_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources rrfs-public` for this row in full.",
         "route_id": null
       },
@@ -1431,6 +2270,7 @@
       "member_set": null,
       "notes": "",
       "packaged_profile": null,
+      "record_kind": "forecast",
       "required_products": [
         "prs-conus"
       ],
@@ -1466,6 +2306,7 @@
       "display_name": "REFS (RRFS ensemble products)",
       "fetch": {
         "kind": "none",
+        "posting": null,
         "refusal": "--source refs: no fetch route.\n  why: the registry row is not runnable (explicit_composition_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources refs` for this row in full.",
         "route_id": null
       },
@@ -1483,6 +2324,7 @@
       "member_set": null,
       "notes": "",
       "packaged_profile": null,
+      "record_kind": "forecast",
       "required_products": [
         "mean-conus"
       ],
@@ -1518,6 +2360,7 @@
       "display_name": "RRFS fire-weather nest",
       "fetch": {
         "kind": "none",
+        "posting": null,
         "refusal": "--source rrfs-firewx: no fetch route.\n  why: the registry row is not runnable (explicit_composition_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources rrfs-firewx` for this row in full.",
         "route_id": null
       },
@@ -1535,6 +2378,7 @@
       "member_set": null,
       "notes": "",
       "packaged_profile": null,
+      "record_kind": "forecast",
       "required_products": [
         "2dfld-firewx",
         "prs-firewx"
@@ -1572,6 +2416,7 @@
       "display_name": "WRF archive (ARW history)",
       "fetch": {
         "kind": "none",
+        "posting": null,
         "refusal": "--source wrf: no fetch route.\n  why: the registry row is not runnable (wrf_archive_mapping_required); nothing in this ArWen could read the bytes a download produced.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources wrf` for this row in full.",
         "route_id": null
       },
@@ -1589,6 +2434,7 @@
       "member_set": null,
       "notes": "",
       "packaged_profile": null,
+      "record_kind": "forecast",
       "required_products": [
         "surface"
       ],
@@ -1637,6 +2483,26 @@
       "display_name": "ERA5 reanalysis (ECMWF)",
       "fetch": {
         "kind": "legacy_transport",
+        "posting": {
+          "late_after_minutes": null,
+          "poll_seconds": null,
+          "providers": {
+            "arco": {
+              "late_after_minutes": null,
+              "poll_seconds": null,
+              "ready_check": null,
+              "shape": "archive",
+              "streams": false,
+              "why": "the keyless ARCO copy is an archive: every hour already exists or does not, and the store declares its own end (valid_time_stop_era5t) and grows in whole days, so a window before that end starts at once and one past it is refused with the end date"
+            }
+          },
+          "publication_lag": [],
+          "ready_check": null,
+          "shape": "brokered",
+          "streams": false,
+          "table_sha256": "e29085717ec57872f12dcbea255fda7068e4f567bd96f26b4d8136b947cdcd56",
+          "why": "the default provider, the Copernicus CDS, is a keyed job API: the file exists only when the job finishes and there is no object to HEAD, so the fetch runs its job and a run starts when the job's file verifies"
+        },
         "refusal": null,
         "route_id": null
       },
@@ -1654,6 +2520,7 @@
       "member_set": null,
       "notes": "Certified slice: one specified Lambert domain, WSM6, YSU, classic MM5 surface layer (option 91), Noah, an explicit validated eta coordinate, a model top covered by the supplied pressure levels, a uniformly spaced combined GRIB1 series beginning at f00, and explicit hash-bound WPS geometry/static/orography inputs. Unchanged stock WRF v4.6.1 accepted the 250x200 at 12 km, 12-hour proof products and completed a finite model step. The named-source hierarchy route now accepts namelist-bound static one-way Lambert layouts through at least d06 using invariant SOILGEO or exact per-domain source orography; that broader envelope is not yet stock-WRF certified.",
       "packaged_profile": null,
+      "record_kind": "reanalysis",
       "required_products": [
         "pressure-level",
         "single-level",
@@ -1709,7 +2576,8 @@
       "display_name": "ERA5 reanalysis (native 137 model levels)",
       "fetch": {
         "kind": "refused",
-        "refusal": "--source era5-l137: no fetch route.\n  why: ERA5 model-level data is served by the Copernicus Climate Data Store as a queued MARS request (dataset reanalysis-era5-complete, levtype=ml, levelist=1/to/137), not as files at a predictable URL: there is no cycle-and-lead path for a fetch to resolve, and the request runs under your own CDS account. The same is true of the pressure-level/single-level analysis this source borrows its land surface from, so both files arrive the same way.\n  remedy: bring the bytes yourself -- `gpuwm prep --source era5-l137 --source-root DIR --source-manifest DIR/SHA256SUMS --source-manifest-sha256 <digest>` is the designed door for a source this ArWen cannot download.",
+        "posting": null,
+        "refusal": "--source era5-l137: no fetch route.\n  why: ERA5 model-level data is served by the Copernicus Climate Data Store as a queued MARS request (dataset reanalysis-era5-complete, levtype=ml, levelist=1/to/137), not as files at a predictable URL: there is no cycle-and-lead path for a fetch to resolve, and the request runs under your own CDS account. The pressure-level/single-level analysis this source borrows its land surface from does have a fetch door, `gpuwm fetch --source era5 --retrieve`, which writes it into the same folder.\n  remedy: bring the bytes yourself into one folder DIR (era5-combined.grib is what `gpuwm fetch --source era5 --cycle CYCLE --hours HOURS --area AREA --retrieve --out DIR` writes there); `gpuwm prep --source era5-l137 --source-root DIR --experiment-config CONFIG.toml --wps-namelist CONFIG.namelist.wps` binds that folder's files itself, and `gpuwm go CONFIG.toml --data-dir DIR` runs the whole chain from a `gpuwm domain --source era5-l137` config.",
         "route_id": null
       },
       "file_family": "GRIB2",
@@ -1726,6 +2594,7 @@
       "member_set": null,
       "notes": "The native vertical state, as pure table data: 137 hybrid sigma-pressure model levels whose A/B interface coefficients ride IN BAND in the GRIB2 Section-4 coordinate-values (pv) octets -- 276 values, read from the producer's own record rather than from a per-model coefficient table.  Pressure is materialized as p = A + B*ps against the borrowed surface pressure and geopotential height is integrated hydrostatically from the borrowed terrain, because the model-level product publishes z only at level 1 and a 3-D height borrow would be cross-ladder.  lnsp is NOT consumed: unit transforms are affine, there is no exp, and surface pressure is borrowed exactly instead of approximated.  Measured on real Copernicus CDS bytes: the Rust engine and the Python reference produce byte-identical air_pressure and geopotential_height (max ULP 0) and the preparation reaches rc 0 with wrfinput/wrfbdy written.  Not yet accepted by unchanged stock WRF, and this row does not certify ERA5 model-level requests on other grids or level subsets: the mapping's ladder is the full 1..137 set.",
       "packaged_profile": "era5-model-level-l137-grib2-v1",
+      "record_kind": "reanalysis",
       "required_products": [
         "model-level atmosphere (all 137 levels)",
         "same-hour pressure-level/single-level analysis"
@@ -1738,7 +2607,7 @@
         ],
         "intent_supported": true,
         "requires_source_root": true,
-        "source_root_reason": "ERA5 model-level data is served by the Copernicus Climate Data Store as a queued MARS request (dataset reanalysis-era5-complete, levtype=ml, levelist=1/to/137), not as files at a predictable URL: there is no cycle-and-lead path for a fetch to resolve, and the request runs under your own CDS account. The same is true of the pressure-level/single-level analysis this source borrows its land surface from, so both files arrive the same way."
+        "source_root_reason": "ERA5 model-level data is served by the Copernicus Climate Data Store as a queued MARS request (dataset reanalysis-era5-complete, levtype=ml, levelist=1/to/137), not as files at a predictable URL: there is no cycle-and-lead path for a fetch to resolve, and the request runs under your own CDS account. The pressure-level/single-level analysis this source borrows its land surface from does have a fetch door, `gpuwm fetch --source era5 --retrieve`, which writes it into the same folder."
       },
       "runner": "mapped_composition_v1",
       "source_id": "era5-l137",
@@ -1766,7 +2635,8 @@
       "display_name": "20CRv3 reanalysis (member, GRIB2)",
       "fetch": {
         "kind": "refused",
-        "refusal": "--source 20crv3: no fetch route.\n  why: the 20CRv3 every-member GRIB2 archive is not published on an anonymously readable public endpoint; only the ensemble-MEAN NetCDF distribution is, and a member state is not a mean.\n  remedy: bring the bytes yourself -- `gpuwm prep --source 20crv3 --source-root DIR --source-manifest DIR/SHA256SUMS --source-manifest-sha256 <digest>` is the designed door for a source this ArWen cannot download.",
+        "posting": null,
+        "refusal": "--source 20crv3: no fetch route.\n  why: the 20CRv3 every-member GRIB2 archive is not published on an anonymously readable public endpoint; only the ensemble-MEAN NetCDF distribution is, and a member state is not a mean.\n  remedy: bring the member's files yourself into DIR; `gpuwm prep --source 20crv3 --source-root DIR --author-only --author-input-manifest DIR/member-manifest.json` writes the member manifest and prints the --source-manifest pair a standalone `gpuwm prep --source 20crv3` binds, and `gpuwm go CONFIG.toml --data-dir DIR` runs the whole chain from a `gpuwm domain --source 20crv3` config.",
         "route_id": null
       },
       "file_family": "GRIB2",
@@ -1783,6 +2653,7 @@
       "member_set": null,
       "notes": "Runnable exact-member profile with filename-plus-hash-manifest member identity, packaged mapping/composition/provenance authorities, paired pressure/surface inputs, and native one-way Lambert hierarchy export through the mapping's max_dom=4. The route is not yet accepted by unchanged stock WRF and does not certify other 20CR products, arbitrary members mixed in one run, or a larger domain count.",
       "packaged_profile": "20crv3-member-grib2-v1",
+      "record_kind": "reanalysis",
       "required_products": [
         "pressure-level",
         "surface",
@@ -1823,8 +2694,9 @@
       "default_product": "si-subdaily-pressure+surface+subsurface",
       "display_name": "20CRv3 reanalysis (ensemble mean, NetCDF)",
       "fetch": {
-        "kind": "refused",
-        "refusal": "--source 20crv3-cf: no fetch route.\n  why: the NOAA PSL 20CRv3 NetCDF distribution is a per-year, per-variable reanalysis archive with no cycle and no forecast lead, so --cycle/--hours describe nothing in it. It is also missing orography and a land mask entirely, which the packaged profile recovers with tools/build_pressure_level_invariant_supplement.py from files you already hold.\n  remedy: bring the bytes yourself -- `gpuwm prep --source 20crv3-cf --source-root DIR --source-manifest DIR/SHA256SUMS --source-manifest-sha256 <digest>` is the designed door for a source this ArWen cannot download.",
+        "kind": "none",
+        "posting": null,
+        "refusal": "--source 20crv3-cf: no fetch route.\n  why: no acquisition route is registered for this source, so this ArWen has no way to download its bytes.  20crv3-cf IS runnable: bring the files yourself and the prepared route reads them.\n  remedy: bring the files yourself and name each one to `gpuwm prep --source 20crv3-cf`; `gpuwm sources 20crv3-cf` lists the products its preparation reads.\n  see: `gpuwm sources` for what each registered source can do today, or `gpuwm sources 20crv3-cf` for this row in full.",
         "route_id": null
       },
       "file_family": "NetCDF-CF",
@@ -1839,15 +2711,16 @@
       },
       "max_forecast_hour": 0,
       "member_set": null,
-      "notes": "The publicly downloadable form of 20CRv3: NOAA PSL's sub-daily NetCDF SI series, decoded through the Rust rw_netcdf bridge with no per-source decode code -- the mapping, composition and provenance documents are packaged and pinned by SHA-256. Three-hourly analyses on 21 common pressure levels (1000-100 hPa; the humidity file stops at 100 hPa while the others reach 1 hPa, and the mapping declares the intersection), a complete surface state, and the exact four Noah soil layers. TWO limits a reader must know. (1) It is the ENSEMBLE MEAN analysis, not a member: it is smoother than any single 20CRv3 trajectory, and where a member state is wanted the route is --source 20crv3 over the every-member GRIB2 archive. The registry's refusal of GEFS/HREF/SREF means does not apply here for a stated reason -- those are FORECAST ensembles whose mean is not a dynamically balanced trajectory, while this is an analysis at its own valid time and is the only 20CRv3 form NOAA distributes as NetCDF -- but the difference is a judgement worth reading before a study depends on it. (2) PSL publishes no orography and no land mask for 20CRv3, so both are recovered from 20CRv3's own published fields by tools/build_pressure_level_invariant_supplement.py and carried as a supplement whose provenance document states the method and the divergence. Not yet accepted by unchanged stock WRF.",
+      "notes": "The publicly downloadable form of 20CRv3: NOAA PSL's sub-daily NetCDF SI/MO series, fetched through gpuwm fetch --source 20crv3-cf and decoded through the Rust rw_netcdf bridge with no per-source decode code -- the mapping, composition and provenance documents are packaged and pinned by SHA-256. Three-hourly analyses on 21 common pressure levels (1000-100 hPa; the humidity file stops at 100 hPa while the others reach 1 hPa, and the mapping declares the intersection), a complete surface state, and the exact four Noah soil layers. TWO limits a reader must know. (1) It is the ENSEMBLE MEAN analysis, not a member: it is smoother than any single 20CRv3 trajectory, and where a member state is wanted the route is --source 20crv3 over the every-member GRIB2 archive. The registry's refusal of GEFS/HREF/SREF means does not apply here for a stated reason -- those are FORECAST ensembles whose mean is not a dynamically balanced trajectory, while this is an analysis at its own valid time and is the only 20CRv3 form NOAA distributes as NetCDF -- but the difference is a judgement worth reading before a study depends on it. (2) Native fetch binds PSL's published time-invariant surface height and land fraction to every primary time through Rust exact coordinate subsetting. Soil temperature and moisture use the four published Noah layers; ocean initialization uses published skin temperature as an explicit SST proxy. No separate sub-daily SST is published. Not yet accepted by unchanged stock WRF.",
       "packaged_profile": "20crv3-netcdf-v1",
+      "record_kind": "reanalysis",
       "required_products": [
         "prsSI",
         "sfcSI",
         "2mSI",
         "10mSI",
         "subsfcSI",
-        "recovered invariant supplement"
+        "published invariant supplement"
       ],
       "run_plan": {
         "intent_chain": "prepared:staged",
@@ -1856,8 +2729,8 @@
           "prepared"
         ],
         "intent_supported": true,
-        "requires_source_root": true,
-        "source_root_reason": "the NOAA PSL 20CRv3 NetCDF distribution is a per-year, per-variable reanalysis archive with no cycle and no forecast lead, so --cycle/--hours describe nothing in it. It is also missing orography and a land mask entirely, which the packaged profile recovers with tools/build_pressure_level_invariant_supplement.py from files you already hold."
+        "requires_source_root": false,
+        "source_root_reason": null
       },
       "runner": "mapped_composition_v1",
       "source_id": "20crv3-cf",
@@ -1884,7 +2757,8 @@
       "display_name": "Generic mapped source (rw-wps mapping v1)",
       "fetch": {
         "kind": "refused",
-        "refusal": "--source mapped: no fetch route.\n  why: `mapped` is the generic declarative adapter, not a product: it names no publisher, no bucket and no file grammar, so there is nothing for a fetch to resolve. It is the door for bytes you already have.\n  remedy: bring the bytes yourself -- `gpuwm prep --source mapped --source-root DIR --source-manifest DIR/SHA256SUMS --source-manifest-sha256 <digest>` is the designed door for a source this ArWen cannot download.",
+        "posting": null,
+        "refusal": "--source mapped: no fetch route.\n  why: `mapped` is the generic declarative adapter, not a product: it names no publisher, no bucket and no file grammar, so there is nothing for a fetch to resolve. It is the door for bytes you already have.\n  remedy: supply the mapping and composition documents beside the files: `gpuwm prep --source mapped --source-format FORMAT --mapping MAPPING.json --composition COMPOSITION.json --provenance ROLE=PROVENANCE.json --input FILE --supplement ROLE=FILE --author-input-manifest inputs.json --experiment-config CONFIG.toml --wps-namelist CONFIG.namelist.wps --geog-root WPS_GEOG --output-root PREPARED`.",
         "route_id": null
       },
       "file_family": "GRIB1/GRIB2/NetCDF",
@@ -1901,6 +2775,7 @@
       "member_set": null,
       "notes": "Strict canonical decoding, exact-subset mixed-product composition, source-frame packing, native initialization, and atomic WRF export are implemented. Historical v1 ERA5 GRIB1, GFS GRIB2, and ERA5 NetCDF single-domain gates passed unchanged WRF v4.6.1. The current canonical-LF GFS GRIB2 contract also passed an unchanged WRF v4.6.1 d01 through d04 gate after replacing 2 m dewpoint with the downloaded RH2 contract and binding GRIB2 local-table authority. The superseded GFS hierarchy evidence remains explicitly invalidated. New mappings remain fail-closed to the explicit field, selector, soil, cadence, target, decoder, manifest, and composition contracts. General explicit descriptor/Vtable import and exact manifest authoring are available without adding a named adapter, but their result is validated, not automatically stock-WRF certified; this is not a claim that arbitrary undeclared GRIB/NetCDF is scientifically complete.",
       "packaged_profile": null,
+      "record_kind": "forecast",
       "required_products": [
         "mapping-declared-inputs"
       ],

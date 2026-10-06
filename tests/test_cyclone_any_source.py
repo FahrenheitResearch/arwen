@@ -26,7 +26,7 @@ from gpuwm.core.track_boundary import boundary_reason
 from gpuwm.cyclone_seed import seed_cyclone, source_inventory
 from gpuwm.starter_template import render_tables
 
-from cyclone_preset_fit import center, holds_the_preset_root
+from cyclone_preset_fit import center, cycle_for, holds_the_preset_root
 
 POINT = (18., -65.)
 CYCLE = "2026090900"
@@ -390,8 +390,8 @@ def test_every_listed_source_says_how_its_chain_feeds_a_moving_nest():
 
 def _planned(source):
     sizing = dw.SizingBudget(32., 30 * dw.GIB, None, "fixture")
-    return tc.plan_cyclone(cycle=CYCLE, point=POINT, sizing=sizing,
-                           forcing_source=source, tiles="off")
+    return tc.plan_cyclone(cycle=cycle_for(source, CYCLE), point=POINT,
+                           sizing=sizing, forcing_source=source, tiles="off")
 
 
 def _missing_corridor_source(monkeypatch):
@@ -473,8 +473,8 @@ def _candidate_points() -> list[tuple[float, float]]:
 
 def _planned_at(source, point):
     sizing = dw.SizingBudget(32., 30 * dw.GIB, None, "fixture")
-    return tc.plan_cyclone(cycle=CYCLE, point=point, sizing=sizing,
-                           forcing_source=source, tiles="off")
+    return tc.plan_cyclone(cycle=cycle_for(source, CYCLE), point=point,
+                           sizing=sizing, forcing_source=source, tiles="off")
 
 
 def _planned_anywhere(source):
@@ -610,7 +610,8 @@ def test_the_limit_is_stated_once_on_the_human_channel(monkeypatch, capsys):
                         lambda args: (budget, None, False))
 
     def _run(source):
-        args = parser.parse_args(["cyclone-setup", "--cycle", CYCLE,
+        args = parser.parse_args(["cyclone-setup", "--cycle",
+                                  cycle_for(source, CYCLE),
                                   "--point=18,-65", "--vram-gib", "32",
                                   "--tiles", "off", "--source", source])
         assert tc.main(args) == 0

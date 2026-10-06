@@ -1,14 +1,17 @@
 pub mod advisory;
+pub mod chrome_plan;
 mod color;
 mod colorbar;
 mod colormap;
 mod colormaps;
 mod contour_fill;
+pub mod difference;
 mod draw;
 mod error;
 mod features;
 pub mod footer;
 pub mod georeference;
+pub mod layout_plan;
 pub mod mesh_cells;
 mod overlay;
 mod panel;
@@ -28,6 +31,10 @@ pub use contour_fill::{
     build_projected_contour_geometry, build_projected_contour_geometry_profile,
 };
 pub use error::RustwxRenderError;
+pub use layout_plan::{
+    BarSide, CanvasPlan, LayoutMode, LayoutTable, PlanRect, SectionPlan, SheetPlan, SizeClass,
+    auto_layout_active, canvas_plan_for, layout_mode, register_canvas_plan, set_layout_mode,
+};
 pub use rasterize::{cuda_rasterize_stats, print_cuda_rasterize_stats_if_enabled};
 
 /// Always a no-op in this port (the upstream cuda feature was stripped);
@@ -106,6 +113,10 @@ use crate::render::{
     trim_vertical_canvas_whitespace,
 };
 pub use crate::text::{format_tick, format_tick_labels};
+// The text primitives a SHEET of finished panels writes its shared header
+// with (`rw_compare`): the same font owner and the same pixel sizes the
+// panels' own titles use, so a header band does not bring a second face.
+pub use crate::text::{draw_text, draw_text_bold, text_width, text_width_bold};
 pub use crate::theme::{
     FooterTheme, MeshTheme, PresentationTheme, RenderTheme, RenderThemeFile, THEME_ENV,
     active_theme, install_theme,
@@ -128,6 +139,76 @@ fn trim_vertical_canvas_whitespace_enabled() -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+/// On a planned canvas a masked field (echo, rain, rotation tracks: the
+/// fields drawn as cells over a basemap) whose grid cell spans the
+/// table's `sharp_cell_px` or more is sampled nearest, so a coarse grid
+/// shows its cells instead of an interpolated blur that claims detail the
+/// grid does not have.  Nearest is also the cheaper fill.
+fn planned_cells_draw_sharp(request: &MapRenderRequest, masked: bool) -> bool {
+    if !masked {
+        return false;
+    }
+    let Some(plan) = layout_plan::canvas_plan_for(request.width, request.height) else {
+        return false;
+    };
+    let shape = &request.field.grid.shape;
+    let cells_x = shape.nx.saturating_sub(1).max(1) as f64;
+    let cells_y = shape.ny.saturating_sub(1).max(1) as f64;
+    let px_per_cell = (plan.map.w as f64 / cells_x).min(plan.map.h as f64 / cells_y);
+    plan.sharp_cell_px > 0.0 && px_per_cell >= plan.sharp_cell_px
+}
+
+/// The whole-number factor a planned size class draws place labels at: 1
+/// on a standard or phone frame and on every fixed canvas, 2 on a large one.
+fn planned_label_factor(width: u32, height: u32) -> u32 {
+    layout_plan::canvas_plan_for(width, height)
+        .map(|plan| plan.scale.round().max(1.0) as u32)
+        .unwrap_or(1)
+}
+
+/// The text scale step that draws a label `factor` times its size.  The
+/// text table grows 4 px a step from 12 px (`text::font_size_px`), so
+/// doubling a 12 px label is three steps, not one: one step drew a large
+/// frame's labels at 16 px beside a header twice the standard size.
+fn planned_label_text_scale(scale: u32, factor: u32) -> u32 {
+    let scale = scale.max(1);
+    if factor <= 1 {
+        return scale;
+    }
+    let px = (12 + (scale - 1) * 4) * factor;
+    1 + (px - 12).div_ceil(4)
+}
+
+/// A place label's ink under the active theme: unchanged unless the theme
+/// replaces the white halo, in which case a near-black ink takes the
+/// theme's contour ink so the text reads on the halo it now sits on.
+fn themed_label_ink(theme: theme::PresentationTheme, requested: Rgba) -> Rgba {
+    if theme.halo.is_some() {
+        theme.substitute_dark_ink(requested)
+    } else {
+        requested
+    }
+}
+
+/// The domain frame a planned canvas draws: flush with the map (the map
+/// IS the grid, so there is no margin to inset into), never steering the
+/// header or the bar (the plan places them), and, when the grid's aspect
+/// was clamped, not clearing the band past the grid: that band shows
+/// basemap, never blank canvas.
+fn planned_domain_frame(frame: Option<DomainFrame>, width: u32, height: u32) -> Option<DomainFrame> {
+    let Some(plan) = layout_plan::canvas_plan_for(width, height) else {
+        return frame;
+    };
+    frame.map(|frame| DomainFrame {
+        inset_px: 0,
+        clear_outside: frame.clear_outside && !plan.aspect_clamped,
+        legend_follows_frame: false,
+        chrome_follows_frame: false,
+        source: DomainFrameSource::ProjectedGrid,
+        ..frame
+    })
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -499,6 +580,26 @@ impl RustRenderer {
         png_options: &PngWriteOptions,
         plot_style: StaticPlotStyle,
     ) -> Result<RenderSaveTiming, RustwxRenderError> {
+        // A run difference (`difference.rs`) sees every finished product
+        // here, whichever lane built it, so one hook covers every family.
+        // With no difference in progress this is one uncontended lock.
+        if let Some(outcome) =
+            difference::intercept(request, output_path.as_ref(), png_options, plot_style)
+        {
+            return outcome;
+        }
+        self.save_drawn_png(request, output_path.as_ref(), png_options, plot_style)
+    }
+
+    /// Draw `request` and write it to `output_path`: the save path with no
+    /// difference hook in front of it.
+    pub(crate) fn save_drawn_png(
+        self,
+        request: &MapRenderRequest,
+        output_path: &Path,
+        png_options: &PngWriteOptions,
+        plot_style: StaticPlotStyle,
+    ) -> Result<RenderSaveTiming, RustwxRenderError> {
         let total_start = Instant::now();
         let (bytes, state_timing, png_timing) =
             with_render_state_profile_with_style(request, plot_style, |data, ny, nx, opts| {
@@ -522,7 +623,12 @@ impl RustRenderer {
                 // is retired only when no pixel survives.
                 let mut moved_x: i64 = 0;
                 let mut moved_y: i64 = 0;
+                // A planned canvas was sized for its map: there is no
+                // padding for a pass to find, and the map stays exactly
+                // where the plan put it.
+                let planned = layout_plan::canvas_plan_for(opts.width, opts.height).is_some();
                 let image = match opts.domain_frame {
+                    _ if planned => image,
                     Some(frame) if matches!(frame.source, DomainFrameSource::MapViewport) => {
                         let (cropped, (crop_left, crop_top)) = crop_canvas_whitespace(
                             &image,
@@ -543,7 +649,7 @@ impl RustRenderer {
                     }
                     None => image,
                 };
-                let trimmed = if trim_vertical_canvas_whitespace_enabled() {
+                let trimmed = if !planned && trim_vertical_canvas_whitespace_enabled() {
                     let (trimmed, crop_top) = trim_vertical_canvas_whitespace(
                         &image,
                         opts.presentation.canvas_background,
@@ -617,7 +723,7 @@ impl RustRenderer {
                     },
                 ))
             })?;
-        let path = output_path.as_ref();
+        let path = output_path;
         let write_start = Instant::now();
         std::fs::write(path, bytes).map_err(|source| RustwxRenderError::WriteFile {
             path: path.display().to_string(),
@@ -641,6 +747,122 @@ impl RustRenderer {
 
 pub fn render_png(request: &MapRenderRequest) -> Result<Vec<u8>, RustwxRenderError> {
     RustRenderer.render_png(request)
+}
+
+/// The header text of a planned sheet: what a single map's header would
+/// carry.  `units` falls back to the first member's field units.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SheetHeader<'a> {
+    pub title: Option<&'a str>,
+    pub units: Option<&'a str>,
+    pub subtitle_left: Option<&'a str>,
+    pub subtitle_center: Option<&'a str>,
+    pub subtitle_right: Option<&'a str>,
+}
+
+/// Draw a multi-panel sheet on its plan (`LayoutTable::plan_sheet`): each
+/// member map at one cell's size, a label strip over each, the map header
+/// across the top, and one colour bar shared by every member (members of
+/// one sheet share a scale).  The members must be sized to
+/// `sheet.member`; their own titles and bars are not drawn.
+pub fn render_planned_sheet(
+    sheet: &SheetPlan,
+    members: &[MapRenderRequest],
+    labels: &[String],
+    header: SheetHeader<'_>,
+) -> Result<RgbaImage, RustwxRenderError> {
+    if members.len() > sheet.cells.len() {
+        return Err(RustwxRenderError::TooManyPanels {
+            actual: members.len(),
+            capacity: sheet.cells.len(),
+        });
+    }
+    register_canvas_plan(sheet.member);
+    struct Chrome {
+        canvas: Rgba,
+        title: Rgba,
+        meta: Rgba,
+        cmap: LeveledColormap,
+        mode: LegendMode,
+        colorbar: presentation::ColorbarPresentation,
+        ticks: Vec<f64>,
+        units: String,
+    }
+    let mut chrome: Option<Chrome> = None;
+    let mut images = Vec::with_capacity(members.len());
+    for (index, request) in members.iter().enumerate() {
+        if (request.width, request.height) != (sheet.member.canvas_w, sheet.member.canvas_h) {
+            return Err(RustwxRenderError::PanelSizeMismatch {
+                index,
+                expected_width: sheet.member.canvas_w,
+                expected_height: sheet.member.canvas_h,
+                actual_width: request.width,
+                actual_height: request.height,
+            });
+        }
+        let image = with_render_state(request, |data, ny, nx, opts| {
+            if chrome.is_none() {
+                chrome = Some(Chrome {
+                    canvas: if opts.background == Rgba::WHITE {
+                        opts.presentation.canvas_background
+                    } else {
+                        opts.background
+                    },
+                    title: opts.presentation.chrome.title_color,
+                    meta: opts.presentation.chrome.subtitle_color,
+                    cmap: opts.cmap.clone(),
+                    mode: opts.colorbar_mode,
+                    colorbar: opts.presentation.colorbar,
+                    ticks: render::legend_ticks(&opts.cmap, opts.cbar_tick_step),
+                    units: opts.colorbar_units.clone().unwrap_or_default(),
+                });
+            }
+            Ok(native_render_to_image(data, ny, nx, opts))
+        })?;
+        images.push(image);
+    }
+    let Some(chrome) = chrome else {
+        return Ok(RgbaImage::new(sheet.canvas_w, sheet.canvas_h));
+    };
+    let mut canvas = RgbaImage::from_pixel(sheet.canvas_w, sheet.canvas_h, chrome.canvas.to_image_rgba());
+    for (index, image) in images.iter().enumerate() {
+        let cell = sheet.cells[index];
+        image::imageops::replace(&mut canvas, image, i64::from(cell.x), i64::from(cell.y));
+        if let Some(label) = labels.get(index).map(|label| label.trim()).filter(|l| !l.is_empty()) {
+            let strip = sheet.labels[index];
+            let size = sheet.label_px;
+            let baseline = strip.y as f32 + strip.h as f32 * 0.72;
+            let top = (baseline - text::ascent_px(size, true)).round() as i32;
+            text::draw_text_px(&mut canvas, label, strip.x as i32, top, chrome.title, size, true);
+        }
+    }
+    let units = header.units.map(str::to_string).unwrap_or(chrome.units);
+    let header_text = chrome_plan::PlanHeaderText::compose(
+        header.title,
+        Some(units.as_str()),
+        header.subtitle_left,
+        header.subtitle_center,
+        header.subtitle_right,
+    );
+    chrome_plan::draw_plan_header(&mut canvas, &sheet.frame, &header_text, chrome.title, chrome.meta);
+    if let Some(bar) = sheet.bar {
+        let levels = render::colorbar_levels_for_ticks(&chrome.cmap);
+        if levels.len() >= 2 {
+            chrome_plan::draw_plan_colorbar(
+                &mut canvas,
+                &sheet.frame,
+                bar,
+                sheet.bar_side,
+                &chrome.cmap,
+                chrome.mode,
+                chrome.colorbar,
+                &chrome.ticks,
+                levels[0],
+                levels[levels.len() - 1],
+            );
+        }
+    }
+    Ok(canvas)
 }
 
 pub fn render_image(request: &MapRenderRequest) -> Result<RgbaImage, RustwxRenderError> {
@@ -695,6 +917,9 @@ pub fn save_rgba_png_profile_with_options<P: AsRef<Path>>(
     output_path: P,
     png_options: &PngWriteOptions,
 ) -> Result<RenderSaveTiming, RustwxRenderError> {
+    if let Some(refusal) = difference::refuse_composed(output_path.as_ref()) {
+        return Err(refusal);
+    }
     let total_start = Instant::now();
     let (bytes, png_encode_ms) = encode_rgba_png_profile_with_options(image, png_options);
     let path = output_path.as_ref();
@@ -775,12 +1000,19 @@ fn with_render_state_profile_with_style<T>(
         build_colormap(
             themed_scale.as_ref().unwrap_or(&request.scale),
             ColormapBuildOptions {
-                render_density: plot_style.render_density(request.render_density),
+                // A difference panel keeps the stepped bands it asked for
+                // under every plot style (`difference::drawing_stepped`).
+                render_density: if difference::drawing_stepped() {
+                    request.render_density
+                } else {
+                    plot_style.render_density(request.render_density)
+                },
                 legend: request.legend,
             },
         )
     };
     let category_map = cmap.categories;
+    let cell_sharp = planned_cells_draw_sharp(request, cmap.mask_below.is_some());
     let projected_domain = request.projected_domain.as_ref();
     let default_title = default_title(&request.field);
 
@@ -881,6 +1113,10 @@ fn with_render_state_profile_with_style<T>(
             });
         }
 
+        // A size class past standard draws its labels at the class's
+        // scale, the way it draws the header and the bar: a large frame
+        // kept standard-size place labels, a quarter of the type around them.
+        let label_factor = planned_label_factor(request.width, request.height);
         let mut projected_place_labels = Vec::with_capacity(request.projected_place_labels.len());
         for place_label in &request.projected_place_labels {
             projected_place_labels.push(ProjectedPlaceLabelOverlay {
@@ -889,18 +1125,27 @@ fn with_render_state_profile_with_style<T>(
                 label: place_label.label.clone(),
                 priority: place_label.priority,
                 style: crate::overlay::ProjectedPlaceLabelStyle {
-                    marker_radius_px: place_label.style.marker_radius_px,
+                    marker_radius_px: place_label.style.marker_radius_px * label_factor,
                     marker_fill: place_label.style.marker_fill.into(),
-                    marker_outline: place_label.style.marker_outline.into(),
-                    marker_outline_width: place_label.style.marker_outline_width,
-                    label_color: place_label.style.label_color.into(),
+                    // A dark theme swaps the white halo for its surface; the
+                    // near-black label and marker inks follow to the
+                    // theme's ink, or the label is dark text on a dark halo.
+                    marker_outline: themed_label_ink(
+                        presentation.theme,
+                        place_label.style.marker_outline.into(),
+                    ),
+                    marker_outline_width: place_label.style.marker_outline_width * label_factor,
+                    label_color: themed_label_ink(
+                        presentation.theme,
+                        place_label.style.label_color.into(),
+                    ),
                     label_halo: presentation
                         .theme
                         .substitute_white_halo(place_label.style.label_halo.into()),
-                    label_halo_width_px: place_label.style.label_halo_width_px,
-                    label_scale: place_label.style.label_scale,
-                    label_offset_x_px: place_label.style.label_offset_x_px,
-                    label_offset_y_px: place_label.style.label_offset_y_px,
+                    label_halo_width_px: place_label.style.label_halo_width_px * label_factor,
+                    label_scale: planned_label_text_scale(place_label.style.label_scale, label_factor),
+                    label_offset_x_px: place_label.style.label_offset_x_px * label_factor as i32,
+                    label_offset_y_px: place_label.style.label_offset_y_px * label_factor as i32,
                     label_placement: place_label.style.label_placement,
                     label_bold: place_label.style.label_bold,
                 },
@@ -1007,12 +1252,12 @@ fn with_render_state_profile_with_style<T>(
             },
             supersample_sharpen: !category_map
                 && plot_style.supersample_sharpen(request.supersample_sharpen),
-            raster_sample_mode: if category_map {
+            raster_sample_mode: if category_map || cell_sharp {
                 RasterSampleMode::Nearest
             } else {
                 request.raster_sample_mode
             },
-            domain_frame: request.domain_frame,
+            domain_frame: planned_domain_frame(request.domain_frame, request.width, request.height),
             map_extent: projected_domain.map(|domain| MapExtent {
                 x_min: domain.extent.x_min,
                 x_max: domain.extent.x_max,

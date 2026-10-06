@@ -114,11 +114,12 @@ def decode_initial_analysis(request, *, output_parent, grids, valid_time,
     from gpuwm.mapped_source import load_mapping
     from gpuwm.source_authorities import (
         packaged_authorities, packaged_contributing_mappings, packaged_profile,
+        packaged_provenance_files,
     )
     profile = packaged_profile(request["profile"])
     authorities = packaged_authorities(request["profile"])
     contributing = packaged_contributing_mappings(request["profile"])
-    provenance = {str(profile["provenance_role"]): authorities["provenance"]}
+    provenance = dict(packaged_provenance_files(request["profile"]))
     decoder_args = {k: (decoders or {}).get(k) for k in (
         "grib1_bridge", "grib2_inventory", "grib2_dump")}
     Path(output_parent).mkdir(parents=True, exist_ok=True)
@@ -161,6 +162,9 @@ def decode_initial_analysis(request, *, output_parent, grids, valid_time,
             }
             for index, (_, value) in enumerate(sorted(contributing.items())):
                 evidence[f"contributing-{index}.json"] = Path(value).read_bytes()
+            for role, value in sorted(provenance.items()):
+                if value != authorities["provenance"]:
+                    evidence[f"{role}.json"] = Path(value).read_bytes()
             receipt = {
                 "schema": RECEIPT_SCHEMA, "source": request["source"],
                 "valid_time": valid_time.isoformat(),
@@ -185,7 +189,8 @@ def validate_initial_evidence(prepared_root, receipt, *, valid_time):
     """Verify donor authorities without requiring the original raw data."""
     from gpuwm.source_adapters import get_source_adapter
     from gpuwm.source_authorities import (
-        packaged_authority_sha256, packaged_contributing_sha256, packaged_profile,
+        packaged_authority_sha256, packaged_contributing_provenance_sha256,
+        packaged_contributing_sha256, packaged_profile,
     )
     required_receipt = {"schema", "source", "valid_time", "evidence", "aerosol_source"}
     if (not isinstance(receipt, dict)
@@ -219,6 +224,14 @@ def validate_initial_evidence(prepared_root, receipt, *, valid_time):
     contributing = {f"contributing-{index}.json": digest for index, (_, digest)
                     in enumerate(sorted(packaged_contributing_sha256(adapter.packaged_profile).items()))}
     required.update(contributing)
+    # A contributor that carries its own provenance document is pinned to its
+    # packaged bytes exactly as the primary one is. Breakage prevented: a
+    # wrong vegetation donor provenance whose receipt digest was rewritten to
+    # match passed this check, attributing the start to evidence nobody shipped.
+    contributor_provenance = {
+        f"{role}.json": digest for role, digest
+        in sorted(packaged_contributing_provenance_sha256(adapter.packaged_profile).items())}
+    required.update(contributor_provenance)
     if not isinstance(files, dict) or not required <= set(files):
         raise ValueError("initial analysis evidence inventory is incomplete")
     for name, digest in files.items():
@@ -231,7 +244,7 @@ def validate_initial_evidence(prepared_root, receipt, *, valid_time):
     for role in ("mapping", "composition", "provenance"):
         if files[f"{role}.json"] != pins[role]:
             raise ValueError(f"initial analysis {role} differs from its packaged authority")
-    for name, expected in contributing.items():
+    for name, expected in (*contributing.items(), *contributor_provenance.items()):
         if files[name] != expected:
             raise ValueError(f"initial analysis {name} differs from its packaged authority")
     manifest = _json_object((root / "input-manifest.json").read_bytes(), "input manifest")
@@ -242,6 +255,22 @@ def validate_initial_evidence(prepared_root, receipt, *, valid_time):
     provenance_role = str(packaged_profile(adapter.packaged_profile)["provenance_role"])
     provenance_row = provenance.get(provenance_role) if isinstance(provenance, dict) else None
     if not isinstance(provenance_row, dict) or provenance_row.get("sha256") != files["provenance.json"]:
+        raise ValueError("initial analysis input manifest binds different provenance")
+    # The decode's manifest binds every composition provenance role: a role
+    # with its own pinned document binds that document, every other role the
+    # primary provenance (gpuwm.source_authorities.packaged_provenance_files).
+    bindings = _json_object((root / "composition.json").read_bytes(), "composition").get(
+        "field_sources") or {}
+    if not isinstance(bindings, dict) or any(not isinstance(b, dict) for b in bindings.values()):
+        raise ValueError("initial analysis composition has unreadable field_sources")
+    expected_rows = {str(binding.get("provenance_role")): files["provenance.json"]
+                     for binding in bindings.values()}
+    expected_rows[provenance_role] = files["provenance.json"]
+    expected_rows.update({name[:-len(".json")]: files[name] for name in contributor_provenance})
+    if (set(provenance) != set(expected_rows)
+            or any(not isinstance(provenance[role], dict)
+                   or provenance[role].get("sha256") != digest
+                   for role, digest in expected_rows.items())):
         raise ValueError("initial analysis input manifest binds different provenance")
     from gpuwm.mapped_composition import (
         INPUT_MANIFEST_SCHEMA, RECEIPT_SCHEMA as COMPOSITION_RECEIPT_SCHEMA,

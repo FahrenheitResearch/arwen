@@ -269,7 +269,13 @@ def prepare_wrf_run(run, directory: Path, *, run_seconds: float | None = None,
             mminlu=str(attrs['MMINLU']), iswater=int(attrs['ISWATER']),
             islake=int(attrs['ISLAKE']), isice=int(attrs['ISICE']),
             isoilwater=int(attrs['ISOILWATER']), fractional_seaice=fractional_seaice,
-            soil_temperature=restored.raw['TSLB'], sst=restored.raw.get('SST'))
+            soil_temperature=restored.raw['TSLB'], sst=restored.raw.get('SST'),
+            # real.exe already wrote the monthly ALBBCK (fraction, water
+            # 0.08) and SNOALB into wrfinput; under usemonalb landuse_init
+            # leaves them in place, so they are handed over as they are.
+            usemonalb=bool(getattr(cfg, 'usemonalb', False)),
+            albbck_monthly=restored.raw.get('ALBBCK'),
+            snoalb=restored.raw.get('SNOALB'))
         static = {name:restored.raw[name] for name in ('LANDMASK','LU_INDEX','ISLTYP','MAPFAC_M','MAPFAC_U','MAPFAC_V','F','E')}
         static['HGT_M'] = restored.raw['HGT']
         bundles.append(WrfDomainBundle(domain.grid_id, restored, MappingProxyType(static),

@@ -20,9 +20,13 @@ The only implemented combination (anything else fails closed, at import
 where the key is explicit and at prep/engine entries regardless):
 `icloud=1`, `cldovrlp=2` (McICA maximum-random), `idcor=0`, `o3input=2`
 (CAM climatology), `ghg_input=0` (analytic year formulas; no CAMtr
-reader), `aer_opt=0` (zero aerosol — the CUDA SW composition REJECTS
-anything else rather than silently discarding aerosol optics; SW-audit
-item 1), `swint_opt=0`, no eclipse/slope/SSiB/CAMMGMP. Intentionally
+reader), `aer_opt` 0 (zero aerosol) or 3 (the operational HRRR fork's
+Thompson aerosol shortwave optics, `gpuwm/core/rrtmg_aerosol_optics.py`,
+mp_physics=28 only; the batched CUDA SW composition REJECTS 1 and 2
+rather than silently discarding aerosol optics, SW-audit item 1; the
+longwave takes no aerosol in that fork), `swint_opt` 0 or 1 (the
+radiation driver's surface shortwave interpolation, `gpuwm/core/swint.py`,
+held by the physics driver), no eclipse/slope/SSiB/CAMMGMP. Intentionally
 rejected WRF modes confirmed fail-closed by the SW audit: `inflag=1`,
 `iceflag=1`, `icpr=0`, `icld=0`.
 
@@ -157,10 +161,21 @@ pyproject + import-time fail-closed guards in
 bitwise contract). LW-4 — Fu `*1.0315` THEN cap `min(140, x)`:
 docstring fixed; ported code already correct and fixture-gated.
 LW-5 — multi-column gates shipped with the engines. SW-1 — CUDA
-compositions reject `aer_opt != 0`. SW-2 — raw div/sqrt non-subnormal
+compositions reject `aer_opt != 0`; narrowed by lane 286-aer-swint: the
+batched entry takes `aer_opt = 3` with caller-supplied per-band optics
+(held word for word to the per-column NumPy composition by
+`tests/test_rrtmg_aerosol_optics.py`) and still rejects 1 and 2, and
+the per-column CUDA twin still rejects every nonzero value. SW-2 — raw div/sqrt non-subnormal
 invariant added to the `rrtmg_sw.cu` header contract; no in-kernel
 assert (a kernel edit would force a full re-gate; the route is closed
-at the API). SW-3 — `test_reftra_vrtqdr_sw` now parametrizes over
+at the API for `aer_opt` 1 and 2). The `aer_opt = 3` optics that now
+reach the asymmetry-combination division carry their range proof
+instead: the fork's own number floors and the smallest table entries
+bound the numerator below by 6.3e-16 times the layer mass in kg m-2, so
+it is a normal float32 for any layer heavier than 1.9e-23 kg m-2, and
+the layer above the model top is exactly zero
+(`gpuwm/core/rrtmg_aerosol_optics.py`,
+`tests/test_rrtmg_aerosol_optics.py`). SW-3 — `test_reftra_vrtqdr_sw` now parametrizes over
 `RT_CASES` (both archives), so the seven synthetic RT taps gate (they
 pass). SW-4 — night-GSW docstring corrected (see §3).
 

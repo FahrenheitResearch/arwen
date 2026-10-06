@@ -123,7 +123,7 @@ def test_explicit_width_is_not_narrowed_to_make_admission_pass(
 def test_rank_binding_is_immutable_and_refuses_existing_wrong_scratch():
     from gpuwm.io.restart import classify_state_attr
 
-    cfg = SimpleNamespace(nx=800, ny=600, nz=50)
+    cfg = SimpleNamespace(nx=800, ny=600, nz=50, bl_mynn_version="wrf_461")
     state = SimpleNamespace(_scratch={})
     assert mynn.bind_mynn_rank_chunk(state, cfg, 32768) == 32768
     assert mynn.bind_mynn_rank_chunk(state, cfg, 32768) == 32768
@@ -138,7 +138,7 @@ def test_rank_binding_is_immutable_and_refuses_existing_wrong_scratch():
 
 
 def test_binding_prices_and_walks_only_columns_present_in_a_small_rank():
-    cfg = SimpleNamespace(nx=32, ny=16, nz=50)
+    cfg = SimpleNamespace(nx=32, ny=16, nz=50, bl_mynn_version="wrf_461")
     state = SimpleNamespace(_scratch={})
     assert mynn.bind_mynn_rank_chunk(state, cfg, 32768) == 512
     assert state._mynn_rank_column_chunk == 512

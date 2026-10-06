@@ -581,12 +581,13 @@ def test_a_whole_geotiff_is_fetched_once_and_held_to_its_pins(tmp_path):
     assert again.cache_hit is True
     assert len(calls) == 1
 
-    # A cached payload whose recorded digest no longer matches the pin is
-    # refused and removed, not read.
+    # A changed pin causes a new fetch and rejects its unpublished bytes.
+    # The prior verified payload survives a replacement that fails integrity.
     with pytest.raises(ValueError, match="SHA-256"):
         fetch_landcover(_pinned_row(payload, pinned_sha256="0" * 64), 2018,
                         tmp_path, urlopen=urlopen)
-    assert not raster.path.exists()
+    assert raster.path.read_bytes() == payload
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize("override, words", [

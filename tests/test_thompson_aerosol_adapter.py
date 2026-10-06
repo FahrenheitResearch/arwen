@@ -298,7 +298,8 @@ def _record_adapter_call(monkeypatch, *, refl_due: bool = False,
         adapter, "_thompson_table_root", lambda: "host-call-graph-fixture")
 
     state = _HostState() if state is None else state
-    cfg = SimpleNamespace(mp_physics=28, no_mp_heating=0, mp_tend_lim=10.0)
+    cfg = SimpleNamespace(mp_physics=28, no_mp_heating=0, mp_tend_lim=10.0,
+                          thompson_version="wrf_461", thompson_fork_snow_fall="blend")
     diagnostics = adapter._apply_thompson_aerosol(
         state, cfg, 10.0, refl_10cm_due=refl_due)
     return calls, state, diagnostics, classic_owner, aerosol_owner
@@ -783,7 +784,8 @@ def test_required_state_fields_fail_closed(monkeypatch, missing):
         adapter, "_thompson_table_root", lambda: "host-guard-fixture")
     with pytest.raises(ValueError, match=f"mp=28 state lacks .*{missing}"):
         adapter._apply_thompson_aerosol(
-            state, SimpleNamespace(mp_physics=28), 10.0)
+            state, SimpleNamespace(mp_physics=28, thompson_version="wrf_461",
+                                   thompson_fork_snow_fall="blend"), 10.0)
 
 
 def test_scratch_slots_match_the_preflight_registry_exactly(monkeypatch):
@@ -1358,7 +1360,8 @@ def _build_case(xp, name):
         xp, before)
     state = _ColumnState(
         xp, before, surface, pressure, theta, geopotential)
-    cfg = SimpleNamespace(mp_physics=28, no_mp_heating=0, mp_tend_lim=10.0)
+    cfg = SimpleNamespace(mp_physics=28, no_mp_heating=0, mp_tend_lim=10.0,
+                          thompson_version="wrf_461", thompson_fork_snow_fall="blend")
     del thompson_table_root
     return state, cfg, float(surface["dt_s"]), before, after, surface, report
 

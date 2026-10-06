@@ -1993,6 +1993,13 @@ fn build_windowed_render_request(
     });
     render_request.projected_lines = projected.lines.clone();
     render_request.projected_polygons = projected.polygons.clone();
+    // gpuwm divergence (VENDOR.md): a regular lat/lon grid draws through
+    // the map's inverse raster, as the direct lane's panel beside it does.
+    // Without it a global field's contour bands closed across the whole
+    // map at the date line, and a regional crop framed itself to the strip
+    // inscribed in its curved footprint.  `None` for every projected grid
+    // (HRRR, WRF Lambert), whose pictures this leaves byte-identical.
+    render_request.inverse_raster_projection = projected.inverse_raster_projection.clone();
     render_request
 }
 

@@ -451,6 +451,10 @@ def selection_carrier(config):
         return None
     if getattr(config, "terrain_smoothing", ()):
         return config
+    if getattr(config, "static_source", None) is not None:
+        # A configuration's static source (gpuwm.static.external_source)
+        # is read by every selection the carrier reaches.
+        return config
     if (getattr(config, "enabled", False)
             and getattr(config, "fields", "auto") != "terrain"):
         return config
@@ -477,7 +481,9 @@ def catalog_with_smoothing(inner, config):
     if inner is not None and selection_carrier(config) is not None and (
             selection_carrier(held) is None
             or (getattr(config, "terrain_smoothing", ())
-                and not getattr(held, "terrain_smoothing", ()))):
+                and not getattr(held, "terrain_smoothing", ()))
+            or (getattr(config, "static_source", None) is not None
+                and getattr(held, "static_source", None) is None)):
         return SimpleNamespace(**{**vars(inner), "static_highres": config})
     return inner
 
