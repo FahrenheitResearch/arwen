@@ -1,5 +1,6 @@
 {
   "baseline_revision": "6c2dd153566c1b838820e9edbc63feac22ed1b22",
   "control_module_sha256": "1fb835ae781d344aaba216838e0eca4571566679876a3466052f20de006a1faa",
-  "namelist": "949f3921022710753766f1206f60bcf38859f7105cd4ae5a85c794bb182f961d"
+  "namelist": "df30238953eedd909db77dad5eb6e72faea5df572b9cf51755d18e1fc88341cb",
+  "namelist_reemitted": "2.8.6: the importer carries ref_lat/ref_lon exactly when ref_x/ref_y name the default centre cell; 6c2dd1535 emitted ref_lat = 38.49999999999998 on Linux and 38.5 on Windows. The digest is the one both platforms now emit; nothing else in the import changed."
 }

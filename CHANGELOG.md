@@ -85,6 +85,7 @@ Fixed:
 - Windowed products (6 h precipitation and the other accumulation and maximum windows) on a regular latitude-longitude grid, such as a WOOF Global or GFS map, are drawn the way the direct products beside them are. A whole-globe 6 h precipitation map no longer streaks across the globe where rain crosses the date line, and a regional crop (North America, Europe) no longer shrinks the precipitation panel to a thin strip. Projected grids (HRRR, WRF Lambert) draw byte-identical pictures, as do the direct products.
 - Scalar transport at vertical order 5 (`v_sca_adv_order = 5`, the HRRR recipes) no longer creates mass. Its positive-definite final stage read the downstream cell at face Courant numbers up to 1, drained empty cells, and the zero clamp turned the drained amount into new water; every such face now takes the upwind flux, as WRF 4.7.1 does. In a 12 h 3 km forecast the clamps had added 181,000 t of cloud ice; now 25 t. Answers change for order-5 runs; order 3, the generic default, is unchanged.
 - The GF, New Tiedtke, urban, UH and Noah mosaic oracle fixtures moved from the package to the source repository's `tests/data`, so the platform wheels fit PyPI's 100 MB file limit again.
+- A WPS namelist whose `ref_x`/`ref_y` name the grid centre imports to the same bytes on Linux and Windows: `ref_lat` and `ref_lon` are carried exactly instead of through a projection round trip (Linux had emitted 38.49999999999998 for 38.5).
 
 ## 2.8.5 (2026-10-03)
 

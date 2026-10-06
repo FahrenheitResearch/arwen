@@ -19,7 +19,7 @@ restart_interval_s = 300000.0
 
 [projection]
 map_proj = "lambert"
-ref_lat = 38.49999999999998
+ref_lat = 38.5
 ref_lon = -97.5
 truelat1 = 38.5
 truelat2 = 38.5

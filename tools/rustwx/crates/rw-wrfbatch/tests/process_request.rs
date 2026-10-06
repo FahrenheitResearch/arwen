@@ -4,11 +4,16 @@ use rw_wrfbatch::process_request::{ProcessRequest, REQUEST_SCHEMA, process, sha2
 use std::path::PathBuf;
 
 struct Scratch(PathBuf);
+// Tests in this file run on parallel threads of one process; two of them read the same clock
+// tick on the 2.8.6 public Windows runner, shared one directory, and one's Drop removed it under
+// the other. The counter makes every scratch root distinct.
+static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 impl Scratch {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
-            "arwen-full-wrf-request-{}-{}",
+            "arwen-full-wrf-request-{}-{}-{}",
             std::process::id(),
+            NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

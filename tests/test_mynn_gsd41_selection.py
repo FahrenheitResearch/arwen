@@ -60,47 +60,25 @@ def test_go_authors_a_fork_configuration_that_round_trips(tmp_path):
 def test_named_import_emitted_bytes_select_the_pbl_source(
         tmp_path, monkeypatch, fork_thompson):
     import hashlib
-    import math
     from gpuwm.namelist_import import import_namelists
     from gpuwm.experiment import build_experiment
     from gpuwm.physics_source_defaults import with_physics_selector_comment
-    from gpuwm.static.lambert import LambertGrid
     fixtures = Path(__file__).parent / "fixtures/source_requests"
     expected = (fixtures / "mynn-gsd41-hrrr-import.toml").read_bytes()
     # 188ffdf41, lane/sw-excess, adds only the named NOAA cloud-optics
     # selector to this MYNN fixture. Retain the original capture hash after
     # removing that one exact row; no other historical byte may change.
+    # 2.8.6 re-pins both digests for one row: the importer now carries
+    # ref_lat exactly at the default centre cell, so the capture's Linux
+    # 38.49999999999998 reads 38.5 on every platform, and the 3-ULP
+    # ij_to_latlon shim this test carried for Windows is retired with it.
     assert hashlib.sha256(expected).hexdigest() == (
-        "fcd7a70ee44d70354e1173387421af647143a5f2a59340992e45557a9e0437fa")
+        "e53de4d42b1ffc6ee7c9a64ae2553f7166d011da599ec7f374400770eb83d4b3")
     radiation_row = b'rrtmg_cloud_optics_form = "noaa_wrf39"\n'
     assert expected.count(radiation_row) == 1
     assert hashlib.sha256(expected.replace(radiation_row, b"")).hexdigest() == (
-        "8a3f89f5665eb43caf6b19fb4045a94f2e51b3e7f301b864ae718cf26df11abf")
-    retained_projection = tomllib.loads(expected.decode())["projection"]
-    scalar_calls = []
-    real_ij_to_latlon = LambertGrid.ij_to_latlon
-
-    def retained_root_centre(grid, x, y):
-        actual = real_ij_to_latlon(grid, x, y)
-        if ((grid.e_we, grid.e_sn) != (1800, 1060)
-                or not isinstance(x, float) or not isinstance(y, float)):
-            return actual
-        assert (x, y) == (900.0, 530.0)
-        assert (grid.known_x, grid.known_y) == (900.0, 530.0)
-        # 44d0be583, lane/286-fork-mynn, captured the immutable Linux
-        # scalar in this complete byte pin. The Windows host returns 38.5,
-        # exactly 3 binary64 ULP above that capture. Execute the real
-        # transform within that measured ceiling, then supply its retained
-        # scalar input to this selector-byte proof. Projection oracle tests
-        # remain independent; no runtime math or emitted-text normalizer.
-        latitude = retained_projection["ref_lat"]
-        longitude = retained_projection["ref_lon"]
-        assert abs(float(actual[0]) - latitude) <= 3 * math.ulp(latitude)
-        assert float(actual[1]) == longitude
-        scalar_calls.append(tuple(float(value) for value in actual))
-        return latitude, longitude
-
-    monkeypatch.setattr(LambertGrid, "ij_to_latlon", retained_root_centre)
+        "20bcb69f93ee79ea3679dbc74209820cd7e3d13a73e0fd5ba7689fa56cc13f46")
+    assert tomllib.loads(expected.decode())["projection"]["ref_lat"] == 38.5
     path = tmp_path / "hrrr_wrf.nl"
     # ac415b50c, lane/ruc-evap-gap: retain its explicit old RUC overrides
     # while the current named HRRR defaults select prescribed monthly fields.
@@ -120,8 +98,6 @@ def test_named_import_emitted_bytes_select_the_pbl_source(
                        " rdlai2d = .false.,\n usemonalb = .false.,\n"),
         selectors))
     text, _ = import_namelists(fixtures / "hrrr_namelist.wps.c18", path)
-    # Import refusal discovery and final translation each resolve the root.
-    assert len(scalar_calls) == 2
     # The immutable earlier pin predates these explicit RUC control rows.
     # SOILPROP already defaulted to wrf_45; its emitted row is redundant.
     # Check each row before removing it for the historical comparison.

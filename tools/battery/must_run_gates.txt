@@ -56,7 +56,12 @@ tests/test_gf_driver_parity.py
 tests/test_gf_shallow_parity.py
 
 # --- MYNN, against tools/mynn_wrf461_oracle/ and tools/mynn_pbl_wrf461_oracle/
-tests/test_mynn_dmp_sibling.py
+# test_default_dmp_still_launches_the_original_module (2.8.6) imports
+# gpuwm.core.mynn_pbl_gpu, which imports cupy at module scope, so it skips
+# on a runner without cupy (public CI 37456404124); it runs in the release
+# gate's Stage 1, whose environment has cupy. The three source-pin tests
+# in the file still may not skip.
+tests/test_mynn_dmp_sibling.py  skips<=1
 tests/test_mynn_surface.py
 # WRF scalar_pblmix against its committed WRF Fortran column fixtures (CPU
 # only): a missing fixture must fail, not silently remove the comparison.

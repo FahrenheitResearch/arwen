@@ -1033,6 +1033,14 @@ def a44_worker(monkeypatch):
 
     monkeypatch.setattr(streaming, "_host_total_bytes",
                         lambda: _A44_HOST_BYTES)
+    # The worker's free RAM too: since 2.8.6 go budgets the preparation against
+    # MemAvailable, and the public CI runner (12.86 GiB available) refused the
+    # fitted domain that this dedicated worker admits.
+    from gpuwm.ingest import host_decode_window
+    monkeypatch.setattr(host_decode_window, "available_host_bytes",
+                        lambda: _A44_HOST_BYTES)
+    monkeypatch.setattr(preflight, "host_available_bytes",
+                        lambda: _A44_HOST_BYTES)
 
     def _probe(*_args, **_kwargs):
         return {"free_bytes": _A44_FREE_BYTES, "total_bytes": int(32 * GIB),

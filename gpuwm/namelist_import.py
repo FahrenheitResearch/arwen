@@ -3359,14 +3359,20 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                    else float(ref_x_values[0]))
         known_y = (float(e_sn[0]) / 2.0 if ref_y_values is None
                    else float(ref_y_values[0]))
-        declared_grid = projection_class(map_proj)(
-            ref_lat=ref_lat, ref_lon=ref_lon, truelat1=truelat1,
-            truelat2=truelat2, stand_lon=stand_lon,
-            dx=root_dx, dy=root_dy,
-            e_we=int(e_we[0]), e_sn=int(e_sn[0]),
-            known_x=known_x, known_y=known_y)
-        centre_lat, centre_lon = declared_grid.ij_to_latlon(
-            float(e_we[0]) / 2.0, float(e_sn[0]) / 2.0)
+        if (known_x, known_y) == (float(e_we[0]) / 2.0, float(e_sn[0]) / 2.0):
+            # Already the default centre cell: the round trip is the identity,
+            # and computing it anyway left platform libm bits in ref_lat
+            # (38.49999999999998 on Linux, 38.5 on Windows for a declared 38.5).
+            centre_lat, centre_lon = ref_lat, ref_lon
+        else:
+            declared_grid = projection_class(map_proj)(
+                ref_lat=ref_lat, ref_lon=ref_lon, truelat1=truelat1,
+                truelat2=truelat2, stand_lon=stand_lon,
+                dx=root_dx, dy=root_dy,
+                e_we=int(e_we[0]), e_sn=int(e_sn[0]),
+                known_x=known_x, known_y=known_y)
+            centre_lat, centre_lon = declared_grid.ij_to_latlon(
+                float(e_we[0]) / 2.0, float(e_sn[0]) / 2.0)
         projection["ref_lat"] = float(centre_lat)
         projection["ref_lon"] = float(centre_lon)
         for key, values in (("ref_x", ref_x_values), ("ref_y", ref_y_values)):

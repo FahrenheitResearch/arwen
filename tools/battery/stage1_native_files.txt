@@ -60,3 +60,9 @@ tests/test_ensemble_posted_physical.py # gpuwm_preprocess_cpu, named by GPUWM_EN
 tests/test_ensemble_source_preparation.py # gpuwm_preprocess_cpu, named by GPUWM_ENSEMBLE_PREPARATION_BRIDGE, and netcdf-writer prepare posted member sources in 6 of its 16 tests.
 tests/test_ensemble_native_review.py # gpuwm_preprocess_cpu supplies the portable libm its one humidity reference test pins.
 tests/test_flagship_tools.py # rw-isobaric (the tools/rustwx cdylib) reads the 500 hPa height between layer interfaces; 1 of its 27 tests refuses by name without it.
+tests/test_ruc_soil_wiring.py # gpuwm_preprocess_cpu initializes Noah and RUC soil columns in Rust since 2.8.6; 17 of its 29 tests need it (public CI 37456404124, windows-2025).
+tests/test_real_init.py # gpuwm_preprocess_cpu initializes Noah soil layers and snow in Rust since 2.8.6; 5 of its 65 tests need it.
+tests/test_ruc_fork_configuration_doors.py # gpuwm_preprocess_cpu prepares the shipped HRRR configuration recipes through go's front door in 2 of its 14 tests.
+tests/test_noah_initialization_guard.py # gpuwm_preprocess_cpu's Noah cold-init entries are the code under test.
+tests/test_ensemble_batch_product_spool.py # netcdf-writer writes the spooled ensemble products in 1 of its 13 tests.
+tests/test_fetch_analysis_first.py # the vendored Rust fetch backbone orders the analysis-hour downloads in 5 of its 13 tests.
