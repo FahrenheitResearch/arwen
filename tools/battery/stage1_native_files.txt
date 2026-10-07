@@ -4,6 +4,17 @@
 # its separate native Rust job tests the declared Cargo packages on Windows.
 # This is a platform partition, not a skip budget. Every row must remain in
 # stage1_files.txt and in the Linux selection. Each row names its dependency.
+#
+# A native-dependent file missing from this list passes the private Linux
+# gate, where every native is built, and fails only on the public Windows
+# runner (public CI 37665304517 at 2.8.7: 81 failures and 19 errors in 12
+# files). The release battery catches that on Linux with
+#   python tools/battery/emulate_windows_cpu_partition.py --work-dir <scratch>/winpart
+# which runs the Windows selection of Stage 1 from a fresh clone and virtual
+# environment with every GPUWM_* variable cleared and HOME empty, so no
+# native artifact is reachable. It is not a Stage 1 entry (it runs Stage 1);
+# the integrator runs it on the candidate beside the Stage 1 leg and requires
+# 0 failures.
 
 tests/test_analyzed_scalar_boundaries.py # rw_netcdf decodes analyzed NetCDF fields.
 tests/test_atmospheric_window.py # gpuwm_preprocess_cpu prepares each forcing slot.
@@ -75,3 +86,16 @@ tests/test_urban_ucm_wrf461_parity.py # C++ compiles the shared-source SLUCM hos
 tests/test_urban_ucm_host.py # C++ compiles the shared-source SLUCM host twin against every WRF column variant.
 tests/test_highres_urban_fraction.py # static-fields computes the land-cover area and URBPARM built-fraction product.
 tests/test_bnu_soil_geog.py # static-fields executes the baseline soil-category carrier.
+
+# Public CI 37665304517 (windows-2025 cpu, 2.8.7) found these native-dependent files outside the partition.
+tests/test_chem_hrrr_smoke_ic.py # the vendored Rust fetch backbone records extras and refetches a changed selector; 1 of its 21 tests needs it.
+tests/test_chem_outputs.py # gpuwm_preprocess_cpu evaluates the chemistry output diagnostics; 9 of its 23 tests need it.
+tests/test_chem_remap_operators.py # gpuwm_preprocess_cpu executes the hybrid-pressure chemistry remap operators; 19 of its 21 tests need it.
+tests/test_grib2_stack.py # gpuwm_preprocess_cpu stacks GRIB2 records and grib2_inventory and grib2_dump read them back; 20 of its 21 tests need them.
+tests/test_obs_allradar.py # rw_superob superobs and merges each site's radar contribution; 9 of its 16 tests need it.
+tests/test_obs_front_doors_are_shipped.py # rw_airnow answers the AirNow front door with its native fixture bytes; 2 of its 39 tests need it.
+tests/test_obs_path_bundle10.py # rw_superob superobs the constant-wind velocity volume its operator is checked against; 1 of its 12 tests needs it.
+tests/test_obs_superob_window.py # rw_superob executes the windowed superob and merge; all 11 tests need it.
+tests/test_sfire_wrfout_io.py # netcdf-writer writes the fire history output; 4 of its 6 tests need it.
+tests/test_wrf_direct.py # netcdf-writer, the default wrfinput/wrfbdy engine, writes the exported WRF pair; 19 of its 100 tests need it.
+tests/test_wrfinput_theta_records.py # rw_netcdf decodes the wrfinput and wrfbdy theta records; 4 of its 16 tests need it.

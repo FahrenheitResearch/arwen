@@ -679,7 +679,7 @@
    "reason": "Actual focused collection through record_list_census._collect after registering the native LW extension guard regression in both CPU lists; includes the affected list-manifest and census parameterization counts. Existing full-record commit/date and all unrelated file counts remain unchanged. This is a partial measurement, not a full battery recollection."
   },
   {
-   "recorded_at_commit": "f1e8f6652b4cfcd8921b44679283e149c1b21521",
+   "recorded_at_commit": "caf3876e8fceb51ac8d59d1887b3aedd2fb35d13",
    "recorded_on": "2026-10-02",
    "scope": "Actual node-2 collection of the added CPU portability regression; previous full census provenance remains unchanged.",
    "counts": {
@@ -1489,7 +1489,7 @@
   "increases": "test_doctor_door_probes 9 (new, stage1), test_excluded_subsystem_label_pin 1 (new, always), test_fastfix_selector 69->70 (one more always entry), test_battery_list_census 2771->2775 (four more census rows), and the merged lanes' own additions: 4135ec9ee advect receipts (wrf471 15->17, legacy 7->8, recapture 10->11), 16daa607d fetch_aws_policy 34->35, 18f990bc0 devices_memory_pools 37->41, f88054cfb initial_source 54->63, 2700ebe71 ensemble_batch_product_spool 11->13, and 57672f393 (c6 native decline) test_gpu_shard_manifest 569->571 (stage1), re-recorded after merging integrate/2.8.6 dcbc2e0dd; then ee612a4e8 listed test_nest_step_growth_advisory (5) and test_smag2d_index32_dispatch (14) on stage1 without census rows, which this re-record adds, with test_stage1_manifest 1302->1306, test_gpu_shard_manifest 571->573 and test_battery_list_census 2775->2783 following the lists",
   "forward_merge": "lane/cut286-doctor-battery-merge forward-merged integrate/2.8.6 ed2b14e7d into the lane tip 6e452705c and re-recorded in the merge commit itself: python -m tools.battery.record_list_census run twice to its fixed point, then --check, on a git archive of the merged tree (git tree a2170a61b), node-2, Python 3.13.15, GPUWM_NO_LOCAL_GPU=1. recorded_at_commit names the integrate tip that was merged, because the merge commit does not exist until this file is in it. One row moved and it rose: tests/test_diffusion_drivers_wrf471_parity.py 4->5 on stage1 (201f94bd3, the Blackwell receipt case from the merged 5090 leg lane). No row fell. Totals: stage1 21990, always 5529."
  },
- "recorded_at_commit": "f1e8f6652b4cfcd8921b44679283e149c1b21521",
+ "recorded_at_commit": "caf3876e8fceb51ac8d59d1887b3aedd2fb35d13",
  "recorded_on": "2026-10-07",
  "legs": {
   "stage1": {

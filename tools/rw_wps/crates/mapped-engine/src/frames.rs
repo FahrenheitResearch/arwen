@@ -2531,16 +2531,36 @@ mod tests {
         // zero's prepared result until the other five have been sent, so
         // the writer must commit a full batch with no work left in flight.
         // There are seven further frames to admit after that batch.
+        //
+        // Frame zero's job waits on the engine's pool, and that pool can
+        // be one thread wide: threads::tests narrows the process-wide pool
+        // to one worker for good, and this test may build its pool after
+        // that.  A job that only blocked then held the one worker frames
+        // four and five need, and its 10 s wait expired whenever the test
+        // order fell that way (public CI 37665304517, native ubuntu-24.04;
+        // 2 of 6 runs on node-4).  So the waiting job runs the pool's
+        // queued work itself until the five have been sent, and sleeps on
+        // the condition only while nothing is queued; the 10 ms there is
+        // how often it looks for newly queued work, which does not signal
+        // this condition, not a deadline.
         let sent = Arc::new((Mutex::new(0usize), Condvar::new()));
         let signal = sent.clone();
         let hook: PipelinePreparedHook = Arc::new(move |index, before_send| {
             let (count, changed) = &*signal;
             if index == 0 && before_send {
-                let count = count.lock().unwrap();
-                let (count, timeout) = changed.wait_timeout_while(count,
-                    std::time::Duration::from_secs(10), |n| *n < 5).unwrap();
-                assert!(!timeout.timed_out() && *count == 5,
-                    "the controlled prepared batch did not finish");
+                // Reached only if a regression never admits frames four
+                // and five; it turns that hang into a named failure.
+                let backstop = std::time::Instant::now() + std::time::Duration::from_secs(300);
+                while *count.lock().unwrap() < 5 {
+                    if !matches!(rayon::yield_now(), Some(rayon::Yield::Executed)) {
+                        let waiting = count.lock().unwrap();
+                        drop(changed.wait_timeout_while(waiting,
+                            std::time::Duration::from_millis(10), |n| *n < 5).unwrap());
+                    }
+                    assert!(std::time::Instant::now() < backstop,
+                        "the controlled prepared batch did not finish: frames four and five were never admitted");
+                }
+                assert_eq!(*count.lock().unwrap(), 5, "the controlled prepared batch did not finish");
             } else if (1..=5).contains(&index) && !before_send {
                 *count.lock().unwrap() += 1;
                 changed.notify_all();

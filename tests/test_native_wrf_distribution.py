@@ -1725,6 +1725,25 @@ else:
     environment["RW_WPS_STAGED_ROOT"] = str(staged)
     environment["RW_WPS_TESTS"] = str(ROOT / "tests")
     environment["RW_WPS_WORK"] = str(tmp_path)
+    # The radar-grid fixture superobs its volume before the writer under
+    # test sees it, and since 2.8.7 superob refuses rather than falls back
+    # to numpy when rw-superob is absent.  The staged tree is Python only,
+    # so the library's own ladder there searches a tools/rustwx with no
+    # build in it and the fixture died before reaching the writer (public
+    # CI 37665304517, cpu ubuntu-24.04 and windows-2025).  Where this
+    # checkout built the library, the fixture uses that build.  publish.yml's
+    # test job and the Windows cpu job build no natives and run this file;
+    # there the fixture states the numpy reference opt-out the library
+    # documents.  Either way the subject, the staged writer or its named
+    # refusal, is unchanged.
+    from gpuwm.obs import superob_bridge
+    try:
+        built = superob_bridge.resolve_superob_bridge()
+    except superob_bridge.SuperobBridgeMissing:
+        environment[superob_bridge.SUPEROB_PYTHON_ENV] = "1"
+    else:
+        environment[superob_bridge.SUPEROB_BRIDGE_ENV] = str(built)
+        environment.pop(superob_bridge.SUPEROB_PYTHON_ENV, None)
     completed = subprocess.run(
         [sys.executable, "-P", "-c", script],
         cwd=tmp_path,

@@ -259,6 +259,60 @@ def test_native_partition_refuses_uncovered_unexplained_or_duplicate_rows(tmp_pa
     assert message in capsys.readouterr().err
 
 
+# --- the Windows cpu partition, emulated on any host -------------------------
+# Public CI 37665304517 failed 12 native-dependent files on the windows-2025
+# cpu job that no private leg ran without natives.  The emulation that now
+# catches that class must hide every native route and select what the job
+# selects.
+
+def test_the_windows_partition_emulation_reaches_no_native_route(tmp_path):
+    from tools.battery import emulate_windows_cpu_partition as emulation
+    scripts = "Scripts" if os.name == "nt" else "bin"
+    gate = tmp_path / "gate-venv"
+    environ = {"PATH": os.pathsep.join([str(gate / scripts), str(tmp_path / "system")]),
+               "VIRTUAL_ENV": str(gate), "LANG": "C.UTF-8",
+               "GPUWM_CPU_PREPROCESS_BRIDGE": "a", "GPUWM_ENSEMBLE_PREPARATION_BRIDGE": "a",
+               "GPUWM_NCWRITE_BRIDGE": "a", "GPUWM_SUPEROB_BRIDGE": "a", "GPUWM_RW_NETCDF": "a",
+               "RUSTWX_ASSETS_DIR": "a", "XDG_CACHE_HOME": "a", "PYTHONPATH": "a", "CARGO_TARGET_DIR": "a"}
+    home, venv = tmp_path / "home", tmp_path / "venv"
+    env = emulation.emulated_environment(environ, home, venv)
+    assert [key for key in env if key.startswith(("GPUWM_", "RUSTWX_", "XDG_"))] == ["GPUWM_NO_LOCAL_GPU"]
+    assert env["GPUWM_NO_LOCAL_GPU"] == "1" and env["CUDA_VISIBLE_DEVICES"] == ""
+    assert "PYTHONPATH" not in env and "CARGO_TARGET_DIR" not in env
+    assert env["HOME"] == env["USERPROFILE"] == str(home) and env["VIRTUAL_ENV"] == str(venv)
+    assert env["PATH"].split(os.pathsep) == [str(venv / scripts), str(tmp_path / "system")]
+    assert env["LANG"] == "C.UTF-8"
+
+
+def test_the_windows_partition_emulation_names_every_in_tree_native_directory(tmp_path):
+    from tools.battery import emulate_windows_cpu_partition as emulation
+    built = ["tools/rustwx/target", "tools/rw_wps/crates/target", "libexec/bridges", "gpuwm/libexec/bridges"]
+    assert emulation.reachable_native_directories(tmp_path) == []
+    for name in built:
+        (tmp_path / name).mkdir(parents=True)
+    (tmp_path / "tools/rustwx/src").mkdir()
+    assert emulation.reachable_native_directories(tmp_path) == sorted(tmp_path / name for name in built)
+
+
+def test_the_windows_partition_emulation_never_removes_a_directory_it_did_not_make(tmp_path, capsys):
+    from tools.battery import emulate_windows_cpu_partition as emulation
+    kept = tmp_path / "work" / "kept.txt"
+    kept.parent.mkdir()
+    kept.write_text("not the emulation's\n", encoding="utf-8")
+    assert emulation.main(["--work-dir", str(kept.parent)]) == 2
+    assert "is not empty" in capsys.readouterr().err
+    assert kept.read_text(encoding="utf-8") == "not the emulation's\n"
+
+
+def test_the_windows_partition_emulation_selects_what_the_cpu_job_selects(ci):
+    from tools.battery import emulate_windows_cpu_partition as emulation
+    assert emulation.cpu_leg(ROOT, "windows")["os"] == "windows-2025"
+    assert emulation.cpu_leg(ROOT, "linux")["os"] == "ubuntu-24.04"
+    assert f'-m "{emulation.CPU_JOB_MARKERS}"' in _runs(ci["jobs"]["cpu"])
+    header = (ROOT / run_stage1.NATIVE_MANIFEST).read_text(encoding="utf-8")
+    assert "python tools/battery/emulate_windows_cpu_partition.py --work-dir" in header
+
+
 # --- oracles ----------------------------------------------------------------
 
 def test_the_oracles_job_hands_the_list_to_the_runner_not_to_a_shell(ci):

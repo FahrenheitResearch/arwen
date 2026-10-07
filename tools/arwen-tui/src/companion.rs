@@ -1285,12 +1285,21 @@ mod request_queue_regressions {
         let python=PathBuf::from(env::var_os("GPUWM_TUI_TEST_PYTHON").expect("set test Python path"));
         let root=env::temp_dir().join(format!("arwen-companion-startup-{}-{}",std::process::id(),now_ms()));
         fs::create_dir(&root).unwrap();let root=root.canonicalize().unwrap();
+        // Python start-up on a loaded windows-2025 runner (a cold interpreter
+        // importing from a fresh temp tree) has passed the 10 s this test used
+        // to allow for the start marker (public CI 37665304517, native
+        // windows-2025).  Every wait below ends on its event (the start
+        // marker, the job's exit) and fails at once if the worker exits
+        // early; this budget bounds only a worker that does neither.  The
+        // fixture's own Python gates use the same budget, so neither side
+        // gives up while the other is still within it.
+        const BUDGET:Duration=Duration::from_secs(120);
         let package=root.join("gpuwm");fs::create_dir(&package).unwrap();
         // Gate package import so the real worker has not written process.json
         // when Job::start returns. No model is run and no Job handle is forged.
-        fs::write(package.join("__init__.py"),"from pathlib import Path\nimport time\ngate=Path(__file__).parent.parent/'allow-worker'\ndeadline=time.monotonic()+15\nwhile not gate.exists():\n if time.monotonic()>deadline: raise RuntimeError('fixture import gate timed out')\n time.sleep(0.01)\n").unwrap();
+        fs::write(package.join("__init__.py"),format!("from pathlib import Path\nimport time\ngate=Path(__file__).parent.parent/'allow-worker'\ndeadline=time.monotonic()+{}\nwhile not gate.exists():\n if time.monotonic()>deadline: raise RuntimeError('fixture import gate timed out')\n time.sleep(0.01)\n",BUDGET.as_secs())).unwrap();
         fs::copy(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../gpuwm/tui_worker.py"),package.join("tui_worker.py")).unwrap();
-        fs::write(package.join("cli.py"),"from pathlib import Path\nimport time\ndef main(argv):\n gate=Path(__file__).parent.parent/'finish'\n deadline=time.monotonic()+15\n while not gate.exists():\n  if time.monotonic()>deadline: return 2\n  time.sleep(0.01)\n return 0\n").unwrap();
+        fs::write(package.join("cli.py"),format!("from pathlib import Path\nimport time\ndef main(argv):\n gate=Path(__file__).parent.parent/'finish'\n deadline=time.monotonic()+{}\n while not gate.exists():\n  if time.monotonic()>deadline: return 2\n  time.sleep(0.01)\n return 0\n",BUDGET.as_secs())).unwrap();
         struct OwnedTestJob(crate::job::Job);
         impl Drop for OwnedTestJob {fn drop(&mut self){let _=self.0.stop();let _=self.0.stop();let _=self.0.poll();}}
         let mut owned=OwnedTestJob(crate::job::Job::start_with_module_path(&python,"run-plan",&[root.join("plan.json").display().to_string(),"--execute".into()],&root.join("job"),&root,Some(&root)).unwrap());
@@ -1298,7 +1307,7 @@ mod request_queue_regressions {
         assert!(!job.dir.join("process.json").exists());
         let starting=job_status(job,&root);assert_eq!(starting["state"],"starting");assert!(starting.get("progress_error").is_none());
         fs::write(root.join("allow-worker"),b"").unwrap();
-        let deadline=Instant::now()+Duration::from_secs(10);
+        let deadline=Instant::now()+BUDGET;
         while !job.dir.join("start").is_file(){assert!(job.poll().unwrap().is_none());assert!(Instant::now()<deadline,"{}",job.log_tail(20));std::thread::sleep(Duration::from_millis(10));}
         let process_path=job.dir.join("process.json");let process=fs::read(&process_path).unwrap();
         fs::remove_file(&process_path).unwrap();
@@ -1307,6 +1316,7 @@ mod request_queue_regressions {
         std::thread::sleep(Duration::from_millis(510));
         let mismatched=job_status(job,&root);assert_eq!(mismatched["state"],"running");assert!(mismatched["progress_error"].as_str().unwrap().contains("does not match its launch command"));
         fs::write(&process_path,&process).unwrap();fs::write(root.join("finish"),b"").unwrap();
+        let deadline=Instant::now()+BUDGET;
         while job.poll().unwrap().is_none(){assert!(Instant::now()<deadline,"{}",job.log_tail(20));std::thread::sleep(Duration::from_millis(10));}
         assert_eq!(job.outcome,Some(0));fs::remove_file(&process_path).unwrap();
         std::thread::sleep(Duration::from_millis(510));
