@@ -171,7 +171,23 @@ fn grid(n: usize) -> LaunchConfig {
 
 impl GpuPost {
     /// Open device `ordinal` and load the kernels.
+    ///
+    /// A machine with no NVIDIA driver library is an `Err`, not a panic:
+    /// cudarc's dynamic loader panics on its first driver call when neither
+    /// `libcuda`/`nvcuda` loads, which took `--post-device auto` (the GRIB2
+    /// export default) down instead of to the CPU on such a machine, and
+    /// failed the GPU tests' own no-card skip on public CI.  The probe is
+    /// cudarc's, over the same library names its loader tries; with the
+    /// library present nothing changes.
     pub fn open(ordinal: usize) -> Result<Self, GpuError> {
+        // SAFETY: loads (and drops) the driver library by name; no symbol
+        // is called.
+        if !unsafe { cudarc::driver::sys::is_culib_present() } {
+            return Err(GpuError::Driver {
+                operation: "open CUDA device",
+                message: "no NVIDIA driver library (libcuda/nvcuda) could be loaded".into(),
+            });
+        }
         let ctx = CudaContext::new(ordinal).map_err(drv("open CUDA device"))?;
         let name = ctx.name().map_err(drv("device name"))?;
         let (major, minor) = ctx.compute_capability().map_err(drv("compute capability"))?;

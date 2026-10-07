@@ -243,7 +243,18 @@ fn wrfout_rows() -> std::collections::HashMap<String, (String, String)> {
 fn the_fileless_catalog_says_which_products_a_wrfout_can_ever_draw() {
     let rows = wrfout_rows();
     let selectable = rusty_weather::render_all::known_product_slugs();
-    assert_eq!(rows.len(), selectable.len(), "one row per selectable slug");
+    // The coupled fire's maps (fire_perimeter, fire_ros, fire_heat_flux,
+    // `sfire::PRODUCTS`) are selectable too: `--products` and `all`/`direct`
+    // route them to the SFIRE renderer, `selectable_slugs=` counts them, and
+    // a5bbff276 (lane/ec-sfire, merged in 3a5020327) gave each its own
+    // fileless WRFOUT row.  They are not in the rusty-weather vocabulary.
+    let fire: Vec<&str> = rw_wrfbatch::sfire::PRODUCTS.iter().map(|row| row.0).collect();
+    assert_eq!(fire, ["fire_perimeter", "fire_ros", "fire_heat_flux"]);
+    for slug in &fire {
+        assert!(!selectable.iter().any(|known| known.as_str() == *slug), "{slug}");
+        assert_eq!(rows[*slug].0, "eligible", "{slug}: {:?}", rows[*slug]);
+    }
+    assert_eq!(rows.len(), selectable.len() + fire.len(), "one row per selectable slug");
     // The General preset's three that never drew: no wrfout import writes
     // their fields.
     for slug in ["10m_wind_gusts", "precipitation_type", "cloud_cover"] {

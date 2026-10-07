@@ -140,6 +140,25 @@ fn graticule_labels(lat:&[f32],lon:&[f32],shape:[usize;2]) -> Vec<crate::annotat
     labels
 }
 
+/// `<out>/<domain>/<product>/<valid-day>/<slug>_<stamp>.png`, the layout the
+/// weather maps write ([`crate::panel::layout_path`]): a WRF valid time
+/// `2025-01-07_18:00:00` files as `20250107/fire_ros_20250107T180000.png`.
+/// Every component is built from the frame's time rather than copied from
+/// it, so a character Windows refuses in a file name (`<>:"/\|?*` or a
+/// control character) cannot reach the path: the time's `-` and `:` are
+/// dropped, its `_` becomes `T`, and any other character that is not ASCII
+/// alphanumeric becomes `_`.
+pub(crate) fn map_path(out_dir:&Path,folder:&str,slug:&str,time:&str) -> PathBuf {
+    let date=time.chars().take(10).filter(|c|c.is_ascii_digit()).collect::<String>();
+    let stamp=time.trim().chars().filter_map(|c|match c {
+        '-'|':'=>None,'_'=>Some('T'),c if c.is_ascii_alphanumeric()=>Some(c),_=>Some('_'),
+    }).collect::<String>();
+    let product=crate::panel::safe_component(slug,"product");
+    out_dir.join(crate::panel::safe_component(folder,"native_grid")).join(&product)
+        .join(if date.is_empty() {"undated"} else {&date})
+        .join(format!("{product}_{stamp}.png"))
+}
+
 pub struct RenderConfig<'a> {
     pub inputs:&'a [PathBuf],pub out_dir:&'a Path,pub frame:Option<usize>,
     pub width:u32,pub height:u32,pub source_label:&'a str,
@@ -173,8 +192,6 @@ pub fn render(products:&[String],config:&RenderConfig<'_>) -> Result<(usize,usiz
         // The run's domain folder, named as the weather products name it
         // (`d01-1km`), so fire and smoke maps of one domain share a folder.
         let folder=crate::domain_naming::domain_folder(&domain,attr("DX"));
-        let date=time.chars().take(10).filter(|c|c.is_ascii_digit()).collect::<String>();
-        let stamp=time.replace(['-',':'],"").replace('_',"T");
         for slug in products {
             let (_,variable,title,units)=PRODUCTS.iter().find(|row|row.0==slug).ok_or_else(||format!("Unknown fire product {slug}"))?;
             if attr("IFIRE")==Some(0.) {
@@ -223,7 +240,7 @@ pub fn render(products:&[String],config:&RenderConfig<'_>) -> Result<(usize,usiz
                     subtitle_center:Some(format!("{domain} | {grid_label}")),subtitle_right:format!("{time} UTC"),
                     width:config.width,height:config.height,contours,colorbar:*units!="1",
                     overlays:Some(&overlays),annotations:config.annotations,
-                    out_path:config.out_dir.join(&folder).join(slug).join(&date).join(format!("{slug}_{stamp}.png"))},Some(pixels))
+                    out_path:map_path(config.out_dir,&folder,slug,&time)},Some(pixels))
             })();
             match result {
                 Ok((output,reference))=>{
@@ -291,7 +308,9 @@ mod tests {
         let nonce=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
         let folder=std::env::temp_dir().join(format!("sfire-folder-{nonce}"));
         std::fs::create_dir(&folder).unwrap();
-        let path=folder.join("wrfout_d01_2025-01-07_18:00:00");
+        // WRF's `nocolons` spelling: a name holding `:` cannot be created
+        // on Windows (os error 123), which failed this test on windows-2025.
+        let path=folder.join("wrfout_d01_2025-01-07_18_00_00");
         let mut schema=Schema::new(NcFormat::Offset64);
         let record=schema.def_dim("Time",0,true).unwrap();
         let chars=schema.def_dim("DateStrLen",19,false).unwrap();
@@ -326,9 +345,29 @@ mod tests {
             source_label:"WOOF",overlays:None,annotations:None}).unwrap();
         assert_eq!((rendered,failed),(1,0));
         // `d01-1km`, the folder the same run's smoke and weather maps take.
-        assert!(folder.join("d01-1km").join("fire_ros").is_dir());
+        assert!(folder.join("d01-1km").join("fire_ros").join("20250107").join("fire_ros_20250107T180000.png").is_file());
         assert!(!folder.join("d01").exists());
         std::fs::remove_dir_all(folder).unwrap();
+    }
+    /// A fire map's path holds no character Windows refuses in a file name,
+    /// for the WRF valid time spellings and for a malformed one.
+    #[test]
+    fn fire_map_paths_hold_no_character_windows_refuses() {
+        let forbidden=|c:char|matches!(c,'<'|'>'|':'|'"'|'/'|'\\'|'|'|'?'|'*') || c.is_control();
+        let root=Path::new("out");
+        for (slug,_,_,_) in PRODUCTS {
+            for (folder,time) in [("d01-1km","2025-01-07_18:00:00"),("d02-333m","2025-01-07_18_00_00"),
+                ("native_grid","2025-01-07T18:00:00Z"),("d01","2025/01/07 18:00:00<>|?*\"\\\u{0}\t")] {
+                let path=map_path(root,folder,slug,time);
+                let parts:Vec<String>=path.strip_prefix(root).unwrap().components()
+                    .map(|part|part.as_os_str().to_string_lossy().into_owned()).collect();
+                assert_eq!(parts.len(),4,"{path:?}");
+                for part in &parts {assert!(!part.is_empty() && !part.chars().any(forbidden),"{slug} {time:?}: {part:?}");}
+            }
+        }
+        // The spelling the fire maps have always had on Linux.
+        assert_eq!(map_path(root,"d01-1km","fire_ros","2025-01-07_18:00:00"),
+            root.join("d01-1km").join("fire_ros").join("20250107").join("fire_ros_20250107T180000.png"));
     }
     #[test]
     fn zero_fire_keeps_terrain_context_and_positive_ros_keeps_legend_color() {
