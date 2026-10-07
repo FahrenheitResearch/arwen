@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from gpuwm.config import RunConfig
+from gpuwm.config import CHEM_RUN_FIELDS, RunConfig
 from gpuwm.core.model import restart_identity_payload
 from gpuwm.experiment import (
     DomainConfig, ExperimentConfig, VerticalConfig,
@@ -33,9 +33,16 @@ def _experiment(**overrides):
 
 
 def _historical_schema(exp):
-    """A record with the complete staged fields, before these three existed."""
+    """The public off schema, before the three radiation controls existed."""
     domain = exp.domains[0]
-    old_fields = [field for field in fields(domain.run) if field.name not in OPTIONS]
+    assert domain.run.chem_sets == ""
+    neutral = {"ruc_irrigation": "wrf_461", "ruc_qvg_cold_start": "wrf",
+               "ruc_2m_diagnostic": "flux", "ruc_snow": "wrf_461"}
+    for name, default in neutral.items():
+        assert getattr(domain.run, name) == default
+    # A synthetic dataclass does not run RunConfig's public omission rules.
+    omitted = set(OPTIONS) | set(CHEM_RUN_FIELDS) | set(neutral)
+    old_fields = [field for field in fields(domain.run) if field.name not in omitted]
     old_type = make_dataclass("HistoricalRunConfig", [(field.name, field.type) for field in old_fields])
     old_run = old_type(**{field.name: getattr(domain.run, field.name) for field in old_fields})
     return replace(exp, domains=(replace(domain, run=old_run),))
@@ -63,7 +70,21 @@ def test_off_radiation_options_keep_complete_public_document_bytes():
     documents = {"domain": domain_config_document(exp.root),
                  "experiment": experiment_config_document(exp),
                  "restart_identity": restart_identity_payload(exp)}
+    neutral_later_fields = {
+        "thompson_version": "wrf_461",
+        "thompson_fork_snow_fall": "blend",
+        "rrtmg_cloud_optics_form": "wrf_461",
+        "rrtmg_smoke_manifest": "",
+    }
+    for field, default in neutral_later_fields.items():
+        assert getattr(exp.root.run, field) == default
     for name, document in documents.items():
+        # Later neutral controls are omitted by the actual current serializers.
+        # Their defaults and absence are explicit; every older byte stays pinned.
+        runs = ([document["run"]] if name == "domain" else
+                [domain["run"] for domain in document["domains"]])
+        for run in runs:
+            assert not set(neutral_later_fields) & set(run)
         old = control["documents"][name]
         payload = old["utf8"].encode("utf-8")
         assert len(payload) == old["bytes"]

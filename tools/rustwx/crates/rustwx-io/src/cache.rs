@@ -964,13 +964,16 @@ mod tests {
     }
 
     fn temp_cache_root() -> PathBuf {
+        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "rustwx_io_cache_test_{}_{unique}",
-            std::process::id()
+            "rustwx_io_cache_test_{}_{unique}-{}",
+            std::process::id(),
+            NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ))
     }
 

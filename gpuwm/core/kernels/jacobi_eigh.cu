@@ -71,6 +71,24 @@
 // precisely what letkf.py consumes -- A^-1 and A^-1/2 -- and it is the
 // invariant tests/test_jacobi_eigh_gpu.py asserts.
 //
+// The global-work tier (JACOBI_GLOBAL_WORK), for k above 64
+// ------------------------------------------------------------
+// Two k x k float64 working copies fit the opt-in shared-memory limit of
+// every targeted architecture only up to k = 64.  Above that the SAME
+// algorithm runs with work[] and vecs[] in a global scratch slab the launcher
+// owns (2 M*M reals per matrix in flight), and only the O(M) rotation,
+// diagonal, sign and permutation scratch stays in shared.  Every arithmetic
+// expression, the pair ordering, the threshold, the sort network and the
+// canonical sign are the same lines of this file, so the answer is fixed by
+// the input alone, run to run and card to card, exactly as for the shared
+// tiers.  What moves is only which thread owns which element in the right
+// rotation (c): there the element index walks the pairs of one ROW first, so
+// a warp touches one row of the slab rather than one column; each element's
+// arithmetic is untouched by that choice.  Without the define this file
+// compiles to the shared tiers exactly as before.  Before this tier an
+// ensemble above 64 members fell back to cuSOLVER, which is not
+// bit-reproducible across cards.
+//
 // Status word, per matrix
 // -----------------------
 //    > 0   converged, in that many sweeps
@@ -145,7 +163,11 @@ extern "C" __global__ void jacobi_eigh_batched(
     jreal *__restrict__ w_out,
     jreal *__restrict__ v_out,
     int *__restrict__ status_out,
-    const long long n_matrices)
+    const long long n_matrices
+#ifdef JACOBI_GLOBAL_WORK
+    , jreal *global_work
+#endif
+    )
 {
     extern __shared__ unsigned char jacobi_smem[];
 
@@ -166,11 +188,22 @@ extern "C" __global__ void jacobi_eigh_batched(
     // then, after every matrix's real block, the integer scratch:
     //   perm[M]    the ascending permutation
     //   flag[1]    "a rotation happened" / "input was not finite"
+#ifdef JACOBI_GLOBAL_WORK
+    // work[] and vecs[] live in this matrix's own stretch of the slab; the
+    // shared partition keeps only the O(M) scratch below.  One matrix per
+    // block (the launcher never pairs this define with JACOBI_TPB 32).
+    const int reals_per_matrix = 3 * JACOBI_M;
+    jreal *shared_reals = (jreal *)jacobi_smem;
+    jreal *work = global_work + mat * (2LL * JACOBI_M * JACOBI_M);
+    jreal *vecs = work + JACOBI_M * JACOBI_M;
+    jreal *cosv = shared_reals + (long long)slot * reals_per_matrix;
+#else
     const int reals_per_matrix = 2 * JACOBI_M * JACOBI_M + 3 * JACOBI_M;
     jreal *shared_reals = (jreal *)jacobi_smem;
     jreal *work = shared_reals + (long long)slot * reals_per_matrix;
     jreal *vecs = work + JACOBI_M * JACOBI_M;
     jreal *cosv = vecs + JACOBI_M * JACOBI_M;
+#endif
     jreal *sinv = cosv + JACOBI_M / 2;
     jreal *diag = sinv + JACOBI_M / 2;
     jreal *sign = diag + JACOBI_M;
@@ -287,8 +320,13 @@ extern "C" __global__ void jacobi_eigh_batched(
             //     eigenvectors.  Pairs own disjoint COLUMNS.
             for (int idx = tid; idx < (JACOBI_M / 2) * JACOBI_M;
                  idx += JACOBI_TPB) {
+#ifdef JACOBI_GLOBAL_WORK
+                const int r = idx / (JACOBI_M / 2);
+                const int i = idx - r * (JACOBI_M / 2);
+#else
                 const int i = idx / JACOBI_M;
                 const int r = idx - i * JACOBI_M;
+#endif
                 int p, q;
                 jacobi_pair(sweep_round, i, &p, &q);
                 const jreal cs = cosv[i];

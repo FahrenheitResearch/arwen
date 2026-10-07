@@ -1,0 +1,302 @@
+[
+  {
+    "name": "so2",
+    "optics": null
+  },
+  {
+    "name": "sulf",
+    "optics": {
+      "wrfchem_component": "sulfate",
+      "wrf_order": 1,
+      "size_treatment": "modal",
+      "target": 0,
+      "conversion": "ppmv_sulfate",
+      "mass_multiplier": 1.0,
+      "aitken_fraction": 0.25,
+      "hygroscopic": true,
+      "merra_type": "sulfate",
+      "merra_bin": null,
+      "secondary_target": 1,
+      "secondary_multiplier": 0.375,
+      "from": "chem/module_optical_averaging.F:3928-4016"
+    }
+  },
+  {
+    "name": "dms",
+    "optics": null
+  },
+  {
+    "name": "msa",
+    "optics": {
+      "wrfchem_component": "msa",
+      "wrf_order": 3,
+      "size_treatment": "modal",
+      "target": 7,
+      "conversion": "ppmv_sulfate",
+      "mass_multiplier": 1.0,
+      "aitken_fraction": 0.25,
+      "hygroscopic": true,
+      "merra_type": "msa",
+      "merra_bin": null,
+      "secondary_target": null,
+      "secondary_multiplier": null,
+      "from": "chem/module_optical_averaging.F:3928-4016"
+    }
+  },
+  {
+    "name": "p25",
+    "optics": {
+      "wrfchem_component": "other_inorganic",
+      "wrf_order": 4,
+      "size_treatment": "modal",
+      "target": 2,
+      "conversion": "ug_kg",
+      "mass_multiplier": 1.0,
+      "aitken_fraction": 0.25,
+      "hygroscopic": true,
+      "merra_type": "other_inorganic",
+      "merra_bin": null,
+      "secondary_target": null,
+      "secondary_multiplier": null,
+      "from": "chem/module_optical_averaging.F:3928-4016"
+    }
+  },
+  {
+    "name": "bc1",
+    "optics": {
+      "wrfchem_component": "black_carbon",
+      "wrf_order": 5,
+      "size_treatment": "modal",
+      "target": 5,
+      "conversion": "ug_kg",
+      "mass_multiplier": 1.0,
+      "aitken_fraction": 0.25,
+      "hygroscopic": false,
+      "merra_type": "black_carbon",
+      "merra_bin": null,
+      "secondary_target": null,
+      "secondary_multiplier": null,
+      "from": "chem/module_optical_averaging.F:3928-4016"
+    }
+  },
+  {
+    "name": "bc2",
+    "optics": {
+      "wrfchem_component": "black_carbon",
+      "wrf_order": 6,
+      "size_treatment": "modal",
+      "target": 6,
+      "conversion": "ug_kg",
+      "mass_multiplier": 1.0,
+      "aitken_fraction": 0.25,
+      "hygroscopic": true,
+      "merra_type": "black_carbon",
+      "merra_bin": null,
+      "secondary_target": null,
+      "secondary_multiplier": null,
+      "from": "chem/module_optical_averaging.F:3928-4016"
+    }
+  },
+  {
+    "name": "oc1",
+    "optics": {
+      "wrfchem_component": "organic_carbon",
+      "wrf_order": 7,
+      "size_treatment": "modal",
+      "target": 3,
+      "conversion": "ug_kg",
+      "mass_multiplier": 1.8,
+      "aitken_fraction": 0.25,
+      "hygroscopic": false,
+      "merra_type": "organic_carbon",
+      "merra_bin": null,
+      "secondary_target": null,
+      "secondary_multiplier": null,
+      "from": "chem/module_optical_averaging.F:3928-4016"
+    }
+  },
+  {
+    "name": "oc2",
+    "optics": {
+      "wrfchem_component": "organic_carbon",
+      "wrf_order": 8,
+      "size_treatment": "modal",
+      "target": 4,
+      "conversion": "ug_kg",
+      "mass_multiplier": 1.8,
+      "aitken_fraction": 0.25,
+      "hygroscopic": true,
+      "merra_type": "organic_carbon",
+      "merra_bin": null,
+      "secondary_target": null,
+      "secondary_multiplier": null,
+      "from": "chem/module_optical_averaging.F:3928-4016"
+    }
+  },
+  {
+    "name": "dust_1",
+    "optics": {
+      "wrfchem_component": "dust",
+      "wrf_order": 9,
+      "size_treatment": "fixed_bin",
+      "distribution_table": "dustfrc_goc9bin",
+      "distribution_bin": 0,
+      "bin_radius_um": [
+        0.1,
+        1.0
+      ],
+      "hygroscopic": true,
+      "merra_type": "dust",
+      "merra_bin": 1,
+      "from": "chem/module_optical_averaging.F:3928-4016"
+    }
+  },
+  {
+    "name": "dust_2",
+    "optics": {
+      "wrfchem_component": "dust",
+      "wrf_order": 10,
+      "size_treatment": "fixed_bin",
+      "distribution_table": "dustfrc_goc9bin",
+      "distribution_bin": 1,
+      "bin_radius_um": [
+        1.0,
+        1.8
+      ],
+      "hygroscopic": true,
+      "merra_type": "dust",
+      "merra_bin": 2,
+      "from": "chem/module_optical_averaging.F:3928-4016"
+    }
+  },
+  {
+    "name": "dust_3",
+    "optics": {
+      "wrfchem_component": "dust",
+      "wrf_order": 11,
+      "size_treatment": "fixed_bin",
+      "distribution_table": "dustfrc_goc9bin",
+      "distribution_bin": 2,
+      "bin_radius_um": [
+        1.8,
+        3.0
+      ],
+      "hygroscopic": true,
+      "merra_type": "dust",
+      "merra_bin": 3,
+      "from": "chem/module_optical_averaging.F:3928-4016"
+    }
+  },
+  {
+    "name": "dust_4",
+    "optics": {
+      "wrfchem_component": "dust",
+      "wrf_order": 12,
+      "size_treatment": "fixed_bin",
+      "distribution_table": "dustfrc_goc9bin",
+      "distribution_bin": 3,
+      "bin_radius_um": [
+        3.0,
+        6.0
+      ],
+      "hygroscopic": true,
+      "merra_type": "dust",
+      "merra_bin": 4,
+      "from": "chem/module_optical_averaging.F:3928-4016"
+    }
+  },
+  {
+    "name": "dust_5",
+    "optics": {
+      "wrfchem_component": "dust",
+      "wrf_order": 13,
+      "size_treatment": "fixed_bin",
+      "distribution_table": "dustfrc_goc9bin",
+      "distribution_bin": 4,
+      "bin_radius_um": [
+        6.0,
+        10.0
+      ],
+      "hygroscopic": true,
+      "merra_type": "dust",
+      "merra_bin": 5,
+      "from": "chem/module_optical_averaging.F:3928-4016"
+    }
+  },
+  {
+    "name": "seas_1",
+    "optics": {
+      "wrfchem_component": "sea_salt",
+      "wrf_order": 14,
+      "size_treatment": "fixed_bin",
+      "distribution_table": "seasfrc_goc9bin",
+      "distribution_bin": 0,
+      "bin_radius_um": [
+        0.1,
+        0.5
+      ],
+      "hygroscopic": true,
+      "merra_type": "sea_salt",
+      "merra_bin": 1,
+      "from": "chem/module_optical_averaging.F:3928-4016"
+    }
+  },
+  {
+    "name": "seas_2",
+    "optics": {
+      "wrfchem_component": "sea_salt",
+      "wrf_order": 15,
+      "size_treatment": "fixed_bin",
+      "distribution_table": "seasfrc_goc9bin",
+      "distribution_bin": 1,
+      "bin_radius_um": [
+        0.5,
+        1.5
+      ],
+      "hygroscopic": true,
+      "merra_type": "sea_salt",
+      "merra_bin": 2,
+      "from": "chem/module_optical_averaging.F:3928-4016"
+    }
+  },
+  {
+    "name": "seas_3",
+    "optics": {
+      "wrfchem_component": "sea_salt",
+      "wrf_order": 16,
+      "size_treatment": "fixed_bin",
+      "distribution_table": "seasfrc_goc9bin",
+      "distribution_bin": 2,
+      "bin_radius_um": [
+        1.5,
+        5.0
+      ],
+      "hygroscopic": true,
+      "merra_type": "sea_salt",
+      "merra_bin": 3,
+      "from": "chem/module_optical_averaging.F:3928-4016"
+    }
+  },
+  {
+    "name": "seas_4",
+    "optics": {
+      "wrfchem_component": "sea_salt",
+      "wrf_order": 17,
+      "size_treatment": "fixed_bin",
+      "distribution_table": "seasfrc_goc9bin",
+      "distribution_bin": 3,
+      "bin_radius_um": [
+        5.0,
+        10.0
+      ],
+      "hygroscopic": true,
+      "merra_type": "sea_salt",
+      "merra_bin": 4,
+      "from": "chem/module_optical_averaging.F:3928-4016"
+    }
+  },
+  {
+    "name": "p10",
+    "optics": null
+  }
+]

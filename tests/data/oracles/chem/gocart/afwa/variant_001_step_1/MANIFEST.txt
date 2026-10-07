@@ -1,0 +1,54 @@
+alt f4 3 38 3 2
+t_phy f4 3 38 3 2
+moist f4 4 38 3 2 7
+xlat f4 2 38 2
+xlong f4 2 38 2
+dustin_before f4 3 38 2 5
+seasin_before f4 3 38 2 5
+step i4 0
+start_month i4 0
+num_soil_layers i4 0
+chem_before f4 4 38 3 2 20
+edust_before f4 4 38 1 2 6
+eseas_before f4 4 38 1 2 5
+tot_edust_before f4 2 38 2
+xland f4 2 38 2
+isltyp i4 2 38 2
+u10 f4 2 38 2
+v10 f4 2 38 2
+smois f4 3 38 4 2
+erod f4 3 38 2 3
+erod_dri f4 3 38 2 3
+rho_phy f4 3 38 3 2
+dz8w f4 3 38 3 2
+u_phy f4 3 38 3 2
+v_phy f4 3 38 3 2
+snowh f4 2 38 2
+vegfra f4 2 38 2
+lai_vegmask f4 2 38 2
+ust f4 2 38 2
+znt f4 2 38 2
+clay_wrf f4 2 38 2
+sand_wrf f4 2 38 2
+clay_nga f4 2 38 2
+sand_nga f4 2 38 2
+p8w f4 3 38 3 2
+z_at_w f4 3 38 3 2
+dt f4 0
+g f4 0
+dx f4 0
+alpha f4 0
+gamma f4 0
+smtune f4 0
+ustune f4 0
+switches i4 1 5
+chem_opt i4 0
+dust_opt i4 0
+seas_opt i4 0
+chem_after f4 4 38 3 2 20
+edust_after f4 4 38 1 2 6
+eseas_after f4 4 38 1 2 5
+afwa_dustloft f4 2 38 2
+tot_dust f4 3 38 3 2
+tot_edust_after f4 2 38 2
+vis_dust f4 3 38 3 2

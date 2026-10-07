@@ -48,8 +48,13 @@ _TABLE_ORDER = ("experiment", "projection", "shared")
 #: document that dropped the block would run that root unperturbed under
 #: the bubbles' name, and one that could not be written stopped the
 #: root preparation of every perturbed tree.
+#: ``devices`` rides with it too: the forecast reads its card placement
+#: from the published authority, and a document that could not carry
+#: the table stopped the root preparation of every multi-card HRRR run
+#: after its fetch ("unsupported experiment table(s) ['devices']",
+#: measured on configs/recipes/hrrr_v4_gsd41.toml on two cards).
 _COMPANION_TABLES = ("case_data", "static", "ingest", "perturbation",
-                     "simulated_radar")
+                     "simulated_radar", "devices")
 
 #: Long numeric arrays (eta ladders) wrap at this many values per line.
 _ARRAY_WRAP = 5

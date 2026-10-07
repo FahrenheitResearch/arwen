@@ -22,6 +22,10 @@ def _config(**overrides):
         "dx_km": 3.0, "dy_km": 3.0, "rim_width": 2,
         "fields": [{"name": "theta", "amplitude": 1.0,
                     "length_scale_km": 6.0}],
+        # ``_state`` carries no vertical coordinate, so the production
+        # default (mass_balance = "hydrostatic") refuses it by name; the
+        # balance is tested in tests/test_da_perturb.py on a column state.
+        "mass_balance": "none",
     }
     payload.update(overrides)
     return perturb.PerturbationConfig.from_mapping(payload)
@@ -43,49 +47,71 @@ def _state(nz=8, ny=32, nx=32):
 # -------------------------------------------------- F-05 vertical FFT seam
 
 
-def test_the_vertical_seam_correlation_is_reported_and_is_not_exp_minus_two():
-    """The cap was justified by exp(-(nz/2)^2/(2 Lv^2)) ~ 0.14.
-
-    That number is the correlation at the MAXIMUM circular separation.  On
-    a periodic column the top and bottom levels are ONE interval apart, so
-    the seam correlation is about exp(-1/(2 Lv^2)) -- 0.98 at the admitted
-    cap, which is "locked together", not "near 0.14".
-    """
+def test_the_vertical_crop_removes_the_artificial_seam_correlation():
+    """A padded independent-noise domain separates the physical endpoints."""
 
     nz, scale = 24, 6.0
     report = perturb.vertical_wrap_correlations(nz, scale)
-    assert report["top_to_bottom_seam"] == pytest.approx(0.983, abs=0.005)
-    assert report["adjacent_interior"] == pytest.approx(0.984, abs=0.005)
-    # The old claim, for contrast.
-    assert report["top_to_bottom_seam"] > 5.0 * math.exp(-2.0)
-    # Even the half-column value -- the quantity the cap DOES bound --
-    # exceeds the Gaussian figure, because the periodic images contribute
-    # covariance.  0.27 exactly (a single sampled draw measured 0.297).
-    assert report["half_column"] == pytest.approx(0.270, abs=0.01)
-    assert report["half_column"] > 1.9 * math.exp(-2.0)
+    assert report["top_to_bottom_seam"] == pytest.approx(
+        math.exp(-(nz - 1) ** 2 / (2.0 * scale ** 2)), abs=1e-12)
+    assert report["adjacent_interior"] == pytest.approx(
+        math.exp(-1.0 / (2.0 * scale ** 2)), abs=1e-12)
+    assert report["half_column"] == pytest.approx(math.exp(-2.0), abs=1e-12)
+    assert report["fft_levels"] == 72
+    assert report["periodic_seam_in_physical_column"] is False
 
 
 def test_the_reported_wrap_correlation_matches_a_measured_draw():
-    """Analytic, but checked against the sample it describes."""
+    """Pool ensemble moments and price the horizontal sample dependence.
 
-    nz, ny, nx, scale = 24, 32, 32, 6.0
+    Separate per-draw spatial correlation coefficients remove each draw's
+    low-frequency mean and normalize by its sampled variance.  Their mean
+    is not the ensemble covariance reported in provenance.  Pool raw
+    moments before centering and normalization, across independent draws.
+    """
+
+    nz, ny, nx, scale = 24, 64, 64, 6.0
+    draws = 64
     analytic = perturb.vertical_wrap_correlations(nz, scale)
-    seam, adjacent, half = [], [], []
-    for seed in range(24):
+    pairs = (("top_to_bottom_seam", nz - 1),
+             ("adjacent_interior", 1), ("half_column", nz // 2))
+    # First moments, second moments, cross moment for each level pair.
+    totals = np.zeros((len(pairs), 5), dtype=np.float64)
+    for seed in range(draws):
         field, info = perturb.gaussian_random_field(
             (nz, ny, nx), seed=seed, name="theta", dx_km=3.0, dy_km=3.0,
             length_scale_km=6.0, vertical_scale_levels=scale, xp=np)
         assert info["vertical_wrap"] == analytic
         values = np.asarray(field, dtype=np.float64)
-        flat = values.reshape(nz, -1)
-        seam.append(np.corrcoef(flat[0], flat[-1])[0, 1])
-        adjacent.append(np.corrcoef(flat[0], flat[1])[0, 1])
-        half.append(np.corrcoef(flat[0], flat[nz // 2])[0, 1])
-    assert np.mean(seam) == pytest.approx(analytic["top_to_bottom_seam"],
-                                          abs=0.03)
-    assert np.mean(adjacent) == pytest.approx(analytic["adjacent_interior"],
-                                              abs=0.03)
-    assert np.mean(half) == pytest.approx(analytic["half_column"], abs=0.06)
+        first = values[0]
+        for index, (_, lag) in enumerate(pairs):
+            second = values[lag]
+            totals[index] += (first.sum(), second.sum(), (first ** 2).sum(),
+                              (second ** 2).sum(), (first * second).sum())
+
+    # For a stationary periodic Gaussian field, the variance of the pooled
+    # cross moment includes sum_lag rho_h(lag)^2.  Separability gives a product
+    # of these horizontal sums, not ny*nx independent spatial samples.
+    squared_correlation_area = 1.0
+    for extent in (ny, nx):
+        modes = 2.0 * np.pi * np.fft.fftfreq(extent)
+        power = np.exp(-0.5 * (modes * (6.0 / 3.0)) ** 2)
+        correlation = np.fft.ifft(power).real
+        correlation /= correlation[0]
+        squared_correlation_area *= float(np.sum(correlation ** 2))
+    effective_samples = draws * ny * nx / squared_correlation_area
+    assert effective_samples > 20000
+    moments = totals / (draws * ny * nx)
+    for index, (key, _) in enumerate(pairs):
+        mean_a, mean_b, moment_a, moment_b, cross = moments[index]
+        covariance = cross - mean_a * mean_b
+        variance_a = moment_a - mean_a ** 2
+        variance_b = moment_b - mean_b ** 2
+        measured = covariance / math.sqrt(variance_a * variance_b)
+        # Gaussian correlation sampling error, including spatial dependence.
+        # At zero correlation this is below the previous absolute 0.03 bound.
+        tolerance = 4.0 * (1.0 - analytic[key] ** 2) / math.sqrt(effective_samples)
+        assert measured == pytest.approx(analytic[key], abs=tolerance)
 
 
 def test_every_perturbation_record_carries_the_wrap_figure():
@@ -295,3 +321,90 @@ def test_a_pair_this_call_would_create_is_still_refused():
                             "threshold_kg_kg": 1.0e-8}])
     with pytest.raises(ValueError, match="CREATED"):
         perturb.apply_perturbations(state, 20260911, cfg)
+
+
+# ------------------------------------------------ the lognormal factor's mean
+
+
+def test_clipped_lognormal_log_mean_matches_a_monte_carlo_draw():
+    """``exp(a clip(g) - c)`` has mean 1; ``c`` is what the helper returns.
+
+    At the storm-scale amplitude 0.7 the uncorrected factor's mean is
+    1.27 (analytic, 2.5-sigma clip), which was the condensate the
+    ensemble mean gained before any observation on the 2024-05-21 crop
+    (module draw: 1.262).  Pure numpy, no field structure: the helper's
+    arithmetic alone.
+    """
+
+    rng = np.random.default_rng(20261006)
+    g = rng.standard_normal(2_000_000)
+    for amplitude in (0.7, 0.3, 0.05):
+        c = perturb.clipped_lognormal_log_mean(amplitude, 2.5)
+        raw = np.exp(amplitude * np.clip(g, -2.5, 2.5))
+        assert abs(raw.mean() - math.exp(c)) < 3.0e-3 * math.exp(c)
+        corrected = raw * math.exp(-c)
+        assert abs(corrected.mean() - 1.0) < 3.0e-3
+    assert abs(math.exp(perturb.clipped_lognormal_log_mean(0.7, 2.5))
+               - 1.26765) < 1.0e-4
+    assert perturb.clipped_lognormal_log_mean(0.0, 2.5) == 0.0
+    # An array of amplitudes (a tapered rim) is evaluated per element.
+    table = perturb.clipped_lognormal_log_mean(
+        np.array([[0.0, 0.35], [0.7, 0.0]]), 2.5)
+    assert table.shape == (2, 2)
+    assert table[0, 0] == 0.0 and table[1, 1] == 0.0
+    assert abs(table[1, 0] - perturb.clipped_lognormal_log_mean(0.7, 2.5)) == 0.0
+
+
+def _members_mean_factor(build_state, seed_count, cfg, field):
+    """Ensemble mean of ``field / background`` over the untapered interior."""
+
+    total = None
+    for seed in range(seed_count):
+        state = build_state()
+        background = np.array(getattr(state, field), copy=True)
+        perturb.apply_perturbations(state, 1000 + seed, cfg)
+        ratio = np.asarray(getattr(state, field), np.float64) / background
+        total = ratio if total is None else total + ratio
+    mean = total / seed_count
+    # rim_width 2 with the default taper: the interior is untapered.
+    return mean[:, 6:-6, 6:-6]
+
+
+def test_lognormal_species_perturbation_keeps_the_ensemble_mean_mass():
+    """24 members at sigma 0.7: the mean mass is the background's, not 1.27x.
+
+    Species factors multiply mass and number by the same number, so the
+    mean of the NUMBER is checked too.  The tolerance is sampling noise
+    (24 members on a few hundred 6 km blobs), far below the 27% the
+    uncorrected factor carried.
+    """
+
+    def build():
+        state = _species_state(nz=4, ny=40, nx=40, mass=5.0e-4, number=2.0e8)
+        return state
+
+    cfg = _config(species=[{"mass_field": "qc", "amplitude": 0.7,
+                            "length_scale_km": 6.0, "clip_sigmas": 2.5,
+                            "threshold_kg_kg": 1.0e-8}])
+    for field in ("qc", "nc"):
+        mean = _members_mean_factor(build, 24, cfg, field)
+        assert abs(float(mean.mean()) - 1.0) < 0.06, float(mean.mean())
+    record = perturb.apply_perturbations(build(), 7, cfg)["species"][0]
+    assert record["mean_preserving"] is True
+    assert abs(record["mean_log_correction_max"]
+               - perturb.clipped_lognormal_log_mean(0.7, 2.5)) < 1.0e-12
+
+
+def test_lognormal_vapour_perturbation_keeps_the_ensemble_mean():
+    """The same correction on the lognormal ``qv`` field."""
+
+    def build():
+        state = _state(nz=4, ny=40, nx=40)
+        state.qv[...] = np.float32(1.0e-4)
+        return state
+
+    cfg = _config(rh_cap=1.0, fields=[
+        {"name": "qv", "amplitude": 0.7, "length_scale_km": 6.0,
+         "mode": "lognormal", "clip_sigmas": 2.5}])
+    mean = _members_mean_factor(build, 24, cfg, "qv")
+    assert abs(float(mean.mean()) - 1.0) < 0.06, float(mean.mean())

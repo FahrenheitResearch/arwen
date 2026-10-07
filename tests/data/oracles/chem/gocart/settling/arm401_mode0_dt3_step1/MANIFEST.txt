@@ -1,0 +1,18 @@
+chem_in f4 4 3 48 2 20
+accum_in f4 3 3 2 5
+temp f4 3 3 48 2
+pressure f4 3 3 48 2
+dz f4 3 3 48 2
+rho f4 3 3 48 2
+qv f4 3 3 48 2
+rh_requested f4 2 3 2
+dt f4 0
+gravity f4 0
+dyn_visc f4 0
+radius_bits i4 2 2 9
+density_bits i4 2 2 9
+nsteps i4 3 3 2 9
+chem_opt i4 0
+chem_out f4 4 3 48 2 20
+accum_out f4 3 3 2 5
+velocity f4 3 3 2 5

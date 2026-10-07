@@ -414,6 +414,10 @@ pub enum CanonicalField {
     /// Cloud liquid water in a column, or a layer of it, where the air
     /// is colder than 0 C, g m-2.
     SupercooledLiquidWaterPath,
+    Pm25Dry,
+    DustMassConcentration,
+    OzoneConcentration,
+    AerosolOpticalDepth550,
 }
 
 impl CanonicalField {
@@ -454,6 +458,11 @@ impl CanonicalField {
             Self::SmokeMassDensity => "smoke_mass_density",
             Self::ColumnIntegratedSmoke => "column_integrated_smoke",
             Self::DownwardShortwaveRadiationFlux => "downward_shortwave_radiation_flux",
+            Self::Pm25Dry => "pm25_dry",
+            Self::DustMassConcentration => "dust_mass_concentration",
+            Self::OzoneConcentration => "ozone_concentration",
+            Self::AerosolOpticalDepth550 => "aerosol_optical_depth_550",
+
             Self::CloudWaterMixingRatio => "cloud_water_mixing_ratio",
             Self::RainWaterMixingRatio => "rain_water_mixing_ratio",
             Self::CloudIceMixingRatio => "cloud_ice_mixing_ratio",
@@ -500,6 +509,11 @@ impl CanonicalField {
             Self::SmokeMassDensity => "Smoke Mass Density",
             Self::ColumnIntegratedSmoke => "Column-Integrated Smoke",
             Self::DownwardShortwaveRadiationFlux => "Downward Shortwave Radiation Flux",
+            Self::Pm25Dry => "Dry PM2.5",
+            Self::DustMassConcentration => "Dust Mass Concentration",
+            Self::OzoneConcentration => "Ozone Concentration",
+            Self::AerosolOpticalDepth550 => "550 nm Aerosol Optical Depth",
+
             Self::CloudWaterMixingRatio => "Cloud Water Mixing Ratio",
             Self::RainWaterMixingRatio => "Rain Water Mixing Ratio",
             Self::CloudIceMixingRatio => "Cloud Ice Mixing Ratio",
@@ -539,6 +553,11 @@ impl CanonicalField {
             Self::SmokeMassDensity => "kg/m^3",
             Self::ColumnIntegratedSmoke => "kg/m^2",
             Self::DownwardShortwaveRadiationFlux => "W/m^2",
+            Self::Pm25Dry => "ug/m^3",
+            Self::DustMassConcentration => "ug/m^3",
+            Self::OzoneConcentration => "ppb",
+            Self::AerosolOpticalDepth550 => "1",
+
             Self::CloudWaterMixingRatio
             | Self::RainWaterMixingRatio
             | Self::CloudIceMixingRatio
@@ -844,6 +863,11 @@ impl FieldSelector {
     pub fn native_units(self) -> &'static str {
         if matches!(self.product, FieldProduct::Probability(_)) {
             return "%";
+        }
+        if self.field == CanonicalField::TotalPrecipitation
+            && self.vertical == VerticalSelector::AltitudeMeters(0)
+        {
+            return "mm";
         }
         self.field.native_units()
     }

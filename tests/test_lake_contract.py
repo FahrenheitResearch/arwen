@@ -69,3 +69,21 @@ def test_lake_fixture_and_upstream_hashes_are_bound():
     manifest = json.loads((ORACLE / "manifest.json").read_text())
     for name, expected in manifest["files"].items():
         assert hashlib.sha256((ROOT / name).read_bytes()).hexdigest() == expected, name
+
+
+def test_lake_arena_holds_every_live_lake_array():
+    # Breakage: the device lake arrays live in an arena of LAKE_ARENA_SLOTS
+    # 8-byte slots per thread; a transcription that declares more than that
+    # would trap mid-forecast, and two slot counts that disagree would size
+    # the launcher's arena below what the kernel takes.  The bound is every
+    # LakeStorage of the transcription plus the larger entry point's own.
+    from gpuwm.core.lake import LAKE_ARENA_SLOTS, lake_arena_bytes, LAKE_LAUNCH_COLUMNS
+    kernels = ROOT / "gpuwm/core/kernels"
+    count = lambda text: sum(int(n) for n in re.findall(r"LakeStorage<\w+,(\d+)>", text))
+    entry = (kernels / "lake.cu").read_text()
+    init, step = entry.split('void lake_step_columns(', 1)
+    bound = count((kernels / "lake_wrf.cuh").read_text()) + max(count(init), count(step))
+    declared = re.search(r"#define LAKE_ARENA_SLOTS (\d+)", (kernels / "lake_support.cuh").read_text())
+    assert int(declared.group(1)) == LAKE_ARENA_SLOTS == bound
+    assert lake_arena_bytes(10) == 10 * bound * 8
+    assert lake_arena_bytes(10**7) == LAKE_LAUNCH_COLUMNS * bound * 8

@@ -382,14 +382,17 @@ mod tests {
     use crate::writer::NcWriter;
 
     fn temp_dir(stem: &str) -> PathBuf {
+        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let mut path = std::env::temp_dir();
         path.push(format!(
-            "gpuwm-ncpatch-{stem}-{}-{}",
+            "gpuwm-ncpatch-{stem}-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ));
         std::fs::create_dir_all(&path).unwrap();
         path

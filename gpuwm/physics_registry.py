@@ -1966,6 +1966,13 @@ def _parameter_error(spec: Mapping[str, object], value: object) -> str | None:
         reason = spec.get("unimplemented_reason")
         detail = f": {reason}" if isinstance(reason, str) and reason else ""
         return f"is declared but not implemented{detail}"
+    # A declared null default is the knob's "unset" value (diff_6th_factor2:
+    # null takes the scheme's own factor), and validate_run_config accepts
+    # it.  Refusing it made plan review refuse the registry's own default
+    # on every route that allows the key (tests/test_authority_agreement.py,
+    # 186 plans on tools.prepared_domain_tree_forecast).
+    if value is None and "default" in spec and spec["default"] is None:
+        return None
     expected = spec.get("type")
     if expected == "boolean":
         valid = isinstance(value, bool)
@@ -3299,6 +3306,43 @@ def validate_physics_plan(
                                                  "dominant")))
         except ValueError as exc:
             errors.append(_issue("noah-mosaic-pairing", base_path, str(exc)))
+        # The stochastic-pattern consumers, by the same law: spp_conv=1 and
+        # spp_pbl=1 are offered on routes whose templates select no Grell-
+        # Freitas or MYNN, and the run door refuses a pattern no scheme reads
+        # (gpuwm.config.validate_spp_config).  Plan review called 340 such
+        # plans launchable (tests/test_authority_agreement.py).
+        from gpuwm.config import validate_spp_config
+        try:
+            validate_spp_config(SimpleNamespace(
+                spp_conv=settings.get("spp_conv", 0),
+                spp_pbl=settings.get("spp_pbl", 0),
+                spp_lsm=settings.get("spp_lsm", 0),
+                cu_physics=settings.get("cu_physics", 0),
+                bl_pbl_physics=settings.get("bl_pbl_physics", 0),
+                sf_sfclay_physics=settings.get("sf_sfclay_physics", 0),
+                sf_surface_physics=settings.get("sf_surface_physics", 0)))
+        except ValueError as exc:
+            errors.append(_issue("spp-consumer", base_path, str(exc)))
+        # Two more run-door couplings on the same footing.  A template that
+        # writes scalar_pblmix=1 (the gsd41 HRRR template) offered every
+        # microphysics override as launchable although the scalar mixing
+        # reads Thompson-aerosol fields only, and offered spp_pbl=1 on its
+        # gsd_41 MYNN, which has no stochastic kernels; both were refused
+        # at the run door (36 plans, tests/test_authority_agreement.py).
+        from gpuwm.config import (validate_mynn_generation_spp,
+                                  validate_scalar_pblmix_consumer)
+        coupled = SimpleNamespace(
+            scalar_pblmix=settings.get("scalar_pblmix", 0),
+            bl_pbl_physics=settings.get("bl_pbl_physics", 0),
+            mp_physics=settings.get("mp_physics", 0),
+            bl_mynn_version=settings.get("bl_mynn_version", "wrf_461"),
+            spp_pbl=settings.get("spp_pbl", 0))
+        for law in (validate_scalar_pblmix_consumer,
+                    validate_mynn_generation_spp):
+            try:
+                law(coupled)
+            except (ValueError, NotImplementedError) as exc:
+                errors.append(_issue("pbl-coupling", base_path, str(exc)))
 
         # AUDIT R-005, and it runs HERE -- after every source of a setting
         # and before the constraint battery below -- because the value it

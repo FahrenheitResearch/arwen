@@ -74,7 +74,7 @@ def test_a_plan_round_trips_through_the_loader_with_paths_made_absolute(
     assert len(plan.sha256) == 64
     # Every run option the route declares is resolved, present or not.
     assert set(plan.run_options) == {
-        "device", "dry_run", "restart", "health_debug", "verify_visuals",
+        "device", "dry_run", "restart", "health_debug", "grib2", "verify_visuals",
         "geog_root", "render_products", "render_section", "keep_checkpoints", "input_cycle",
         # The ensemble option every route carries; absent means one forecast.
         "ensemble"}

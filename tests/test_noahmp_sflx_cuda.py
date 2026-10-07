@@ -46,7 +46,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 _KDIR = os.path.join(_ROOT, "gpuwm", "core", "kernels")
-_DATA = os.path.join(_ROOT, "gpuwm", "data", "noahmp", "oracle")
+_DATA = os.path.join(_ROOT, "tests", "data", "oracles", "noahmp")
 KERNEL = os.path.join(_KDIR, "noahmp_sflx.cu")
 ERROR_CSV = os.path.join(_DATA, "noahmp-sflx-error.csv")
 SFLX_CSV = os.path.join(_DATA, "noahmp-sflx.csv")

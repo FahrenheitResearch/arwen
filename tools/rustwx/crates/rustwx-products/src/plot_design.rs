@@ -254,6 +254,15 @@ pub fn operational_fill_scale_for_recipe_in(
         });
     }
 
+    let chem_scale = match recipe.style {
+        RenderStyle::AirQualityPm25 => Some(rustwx_render::theme::air_quality_scale(false)),
+        RenderStyle::AirQualityOzone => Some(rustwx_render::theme::air_quality_scale(true)),
+        RenderStyle::AerosolOpticalDepth => Some(rustwx_render::theme::aerosol_sequential_scale(true)),
+        RenderStyle::DustConcentration => Some(rustwx_render::theme::aerosol_sequential_scale(false)),
+        _ => None,
+    };
+    if let Some(scale) = chem_scale { return ColorScale::Discrete(scale); }
+
     let discrete = match recipe.style {
         RenderStyle::WeatherTemperature => {
             let (lo, hi, step, crop_f) = match filled_selector.vertical {

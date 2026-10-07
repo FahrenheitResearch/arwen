@@ -18,6 +18,9 @@
 
 pub mod annotate;
 pub mod compare;
+pub mod coverage;
+pub mod nowcast_frames;
+pub mod da_sheet;
 pub mod verification;
 pub mod verification_io;
 pub mod verification_render;
@@ -25,6 +28,8 @@ pub mod station_overlay;
 pub mod panel;
 pub mod ensemble_products;
 pub mod ensemble_reduce;
+pub mod sfire;
+pub mod domain_naming;
 
 #[path = "grib_import.rs"]
 pub mod grib_import;

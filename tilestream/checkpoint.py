@@ -361,6 +361,11 @@ def restart_scalars(header: Mapping[str, Any]) -> dict:
                                   driver["call_counts"].items()}
         scalars["ysu_nan_guard_fires"] = int(driver["ysu_nan_guard_fires"])
         scalars["microphysics_updates"] = int(driver["microphysics_updates"])
+        if "fire" in driver:
+            from tilestream.sfire import GRID_CLOCKS
+            scalars["fire_clocks"] = {key: driver["fire"]["grid"][key] for key in GRID_CLOCKS}
+            scalars["fire_header"] = {key: driver[key] for key in
+                                     ("fire", "fire_setup_identity", "fire_setup_fingerprint")}
         # The carrier contract's records travel with the clock for the same
         # reason the counters do: the freshness law
         # (gpuwm/core/radiation_carriers.py) reads produced-at stamps
@@ -413,6 +418,8 @@ def driver_restart_header(scalars: Mapping[str, Any]) -> dict | None:
         if "surface_radiation_policy" in scalars:
             driver_header["surface_radiation_policy"] = str(
                 scalars["surface_radiation_policy"])
+    if driver_header is not None and "fire_header" in scalars:
+        driver_header.update(scalars["fire_header"])
     return driver_header
 
 

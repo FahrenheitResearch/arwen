@@ -1832,6 +1832,16 @@ enum Stage<'a> {
     Panicked(Box<dyn std::any::Any + Send>),
 }
 
+// Per-invocation test control for completion order. It is absent from
+// production builds and cannot affect the decoded fields or stream bytes.
+#[cfg(test)]
+type PipelinePreparedHook = std::sync::Arc<dyn Fn(usize, bool) + Send + Sync>;
+#[cfg(test)]
+std::thread_local! {
+    static PIPELINE_PREPARED_HOOK: std::cell::RefCell<Option<PipelinePreparedHook>> =
+        std::cell::RefCell::new(None);
+}
+
 /// The one writer body, for one lane or many.
 #[allow(clippy::too_many_arguments)]
 fn write_frameset_core(
@@ -1936,6 +1946,8 @@ fn pipeline<'s>(
     let mut planned: BTreeMap<usize, Result<PlannedFrame<'s>>> = BTreeMap::new();
     let mut prepared: BTreeMap<usize, PreparedFrame> = BTreeMap::new();
     let mut halted: Option<(usize, crate::refusal::Refusal)> = None;
+    #[cfg(test)]
+    let prepared_hook = PIPELINE_PREPARED_HOOK.with(|hook| hook.borrow().clone());
     let outcome = loop {
         while halted.is_none() && started < count && decoded < lanes && started - committed < depth {
             let (index, sender) = (started, sender.clone());
@@ -1963,6 +1975,12 @@ fn pipeline<'s>(
             break Err(halted.take().expect("just matched").1);
         }
         if outstanding == 0 {
+            // A complete prepared batch can free admission only after
+            // the start loop saw a full depth. Re-enter that loop before
+            // declaring a stall when there is now another frame to admit.
+            if halted.is_none() && started < count && decoded < lanes && started - committed < depth {
+                continue;
+            }
             break Err(frame_invalid(format!(
                 "the frame writer stalled at valid time {committed} of {count} with no work in flight")));
         }
@@ -1993,12 +2011,19 @@ fn pipeline<'s>(
             match outcome.and_then(|frame| committer.window_for(&frame).map(|window| (frame, window))) {
                 Ok((frame, window)) => {
                     let sender = sender.clone();
+                    #[cfg(test)]
+                    let prepared_hook = prepared_hook.clone();
                     scope.spawn(move |_| {
                         if abandoned.load(Ordering::Relaxed) { return; }
                         let stage = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            Stage::Prepared(prepare_frame(plan, frame, window, decode_window))
+                            let prepared = prepare_frame(plan, frame, window, decode_window);
+                            #[cfg(test)]
+                            if let Some(hook) = &prepared_hook { hook(index, true); }
+                            Stage::Prepared(prepared)
                         })).unwrap_or_else(Stage::Panicked);
                         let _ = sender.send(stage);
+                        #[cfg(test)]
+                        if let Some(hook) = &prepared_hook { hook(index, false); }
                     });
                     outstanding += 1;
                 }
@@ -2471,6 +2496,70 @@ mod tests {
             std::fs::remove_dir_all(&many).unwrap();
         }
         std::fs::remove_dir_all(&one).unwrap();
+    }
+
+    #[test]
+    fn a_full_prepared_batch_reopens_admission_after_its_last_commit() {
+        use std::sync::{Arc, Condvar, Mutex};
+        let (mapping, mut collection, _) = netcdf_golden();
+        let first = collection.source_cycles.keys().next().unwrap().clone();
+        let template = crate::engine::carve_valid_time(&mut collection, &first);
+        let cycle = *template.source_cycles.values().next().unwrap();
+        let slices: Vec<_> = (0..13).map(|hour| {
+            let time = cycle + chrono::Duration::hours(hour * 6);
+            let mut collection = template.clone();
+            collection.source_cycles = BTreeMap::from([((time, None), cycle)]);
+            collection.direct = collection.direct.into_iter().map(|((_, member, name), mut value)| {
+                value.valid_time = time;
+                ((time, member, name), value)
+            }).collect();
+            Mutex::new(Some(collection))
+        }).collect();
+        let series = SeriesSummary {
+            source_cycles: slices.iter().flat_map(|slot| {
+                slot.lock().unwrap().as_ref().unwrap().source_cycles.clone()
+            }).collect(),
+            grid_fingerprint: template.grid_fingerprint.clone(), lead_batch: false,
+        };
+        let one = scratch("full-batch-one");
+        let many = scratch("full-batch-many");
+        let serial = |index: usize, _: &FrameKey| Ok(slices[index].lock().unwrap().as_ref().unwrap().clone());
+        write_frameset_core(&one, &mapping, &series, &BTreeMap::new(), false,
+            None, &|_| None, 1, &serial).unwrap();
+
+        // Four lanes allow six decoded/prepared frames in all. Hold frame
+        // zero's prepared result until the other five have been sent, so
+        // the writer must commit a full batch with no work left in flight.
+        // There are seven further frames to admit after that batch.
+        let sent = Arc::new((Mutex::new(0usize), Condvar::new()));
+        let signal = sent.clone();
+        let hook: PipelinePreparedHook = Arc::new(move |index, before_send| {
+            let (count, changed) = &*signal;
+            if index == 0 && before_send {
+                let count = count.lock().unwrap();
+                let (count, timeout) = changed.wait_timeout_while(count,
+                    std::time::Duration::from_secs(10), |n| *n < 5).unwrap();
+                assert!(!timeout.timed_out() && *count == 5,
+                    "the controlled prepared batch did not finish");
+            } else if (1..=5).contains(&index) && !before_send {
+                *count.lock().unwrap() += 1;
+                changed.notify_all();
+            }
+        });
+        PIPELINE_PREPARED_HOOK.with(|slot| *slot.borrow_mut() = Some(hook));
+        let outcome = write_frameset_core(&many, &mapping, &series, &BTreeMap::new(), false,
+            None, &|_| None, 4, &|index, _| {
+                Ok(slices[index].lock().unwrap().take().expect("each frame is pulled once"))
+            });
+        PIPELINE_PREPARED_HOOK.with(|slot| *slot.borrow_mut() = None);
+        outcome.unwrap();
+        assert_eq!(*sent.0.lock().unwrap(), 5);
+        for name in ["frames.json", "frames.f64"] {
+            assert_eq!(std::fs::read(one.join(name)).unwrap(),
+                std::fs::read(many.join(name)).unwrap(), "{name} differs from serial output");
+        }
+        std::fs::remove_dir_all(one).unwrap();
+        std::fs::remove_dir_all(many).unwrap();
     }
 
     #[test]

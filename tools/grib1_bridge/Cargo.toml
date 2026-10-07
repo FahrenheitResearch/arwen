@@ -27,10 +27,10 @@ rayon = "1"
 sha2 = "0.10"
 
 # See tools/rustwx/Cargo.toml for the reasoning: these artifacts are
-# package data in a platform wheel measured against PyPI's 100 MB cap,
-# and debug symbols are the cheapest weight to give back.  The
-# source-revision stamp and the `gpuwm_preprocess_cpu_abi_version`
-# export both survive stripping -- one is .rodata, the other is an
-# export table entry.
+# package data in a platform wheel measured against PyPI's 100,000,000-
+# byte limit, and the static symbol table is the cheapest weight to give
+# back.  The source-revision stamp and the
+# `gpuwm_preprocess_cpu_abi_version` export both survive a symbol strip:
+# one is .rodata, the other is a .dynsym entry, which stripping keeps.
 [profile.release]
-strip = "debuginfo"
+strip = "symbols"

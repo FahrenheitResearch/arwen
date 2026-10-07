@@ -245,17 +245,30 @@ def _stratified_sounding(z):
 
 
 @requires_gpu
-def test_open_at_rest_stays_at_rest():
-    # Open BCs + w-damping on an at-rest balanced state must be bitwise
-    # identical to the periodic run (the only w signal is the Phase-1 FP32
-    # discrete-balance residual, present in both).
+def test_open_at_rest_stays_at_rest(monkeypatch):
+    # Open BCs + w-damping on an at-rest balanced state must add nothing:
+    # the only w signal is the Phase-1 FP32 discrete-balance residual.
+    # Since 890e2523a a radiative open domain forms rhs_ph with WRF's
+    # native operation order (slow_geopotential_open) at every point, the
+    # interior included, while a periodic domain keeps the fused default
+    # slow_geopotential, so the two residuals round differently in w and
+    # php (1.5e-11 in w, 5.4e-9 in php after 50 steps, measured on an
+    # RTX 5070 Ti).  The periodic reference therefore forms rhs_ph with
+    # that same native kernel, both boundaries closed so its stencils wrap,
+    # and the open run must equal it bit for bit: the open rows, radiation
+    # and w-damping contribute exactly nothing.
     import cupy as cp
     from gpuwm.config import RunConfig
+    from gpuwm.core import dycore
     from gpuwm.core.dycore import run_steps
     from gpuwm.core.grid import make_base_state, make_vertical_coord
     from gpuwm.core.state import init_at_rest
 
-    def run(open_bc):
+    def native_rhs_ph(state, cfg, ww, *, add_vertical):
+        dycore._launch_open_geopotential(state, cfg, ww,
+                                         add_vertical=add_vertical)
+
+    def run(open_bc, native=False):
         cfg = RunConfig(nx=16, ny=8, nz=10, dx=500.0, dy=500.0, ztop=8000.0,
                         dt=2.0, run_seconds=0.0,
                         open_x=open_bc, open_y=open_bc,
@@ -264,11 +277,20 @@ def test_open_at_rest_stays_at_rest():
         base = make_base_state(coord, _stratified_sounding, p_surf=cfg.p_surf,
                                ztop=cfg.ztop)
         s = init_at_rest(cfg, coord, base)
-        run_steps(s, cfg, 50)
+        with monkeypatch.context() as patch:
+            if native:
+                patch.setattr(dycore, "_launch_slow_geopotential",
+                              native_rhs_ph)
+            run_steps(s, cfg, 50)
         return s
 
-    s_open, s_per = run(True), run(False)
+    s_open, s_native, s_per = run(True), run(False, native=True), run(False)
     for name in ("u", "v", "w", "thp", "php", "mup"):
+        np.testing.assert_array_equal(cp.asnumpy(getattr(s_open, name)),
+                                      cp.asnumpy(getattr(s_native, name)))
+    # The fields rhs_ph does not round stay identical to the default
+    # periodic run as well.
+    for name in ("u", "v", "thp", "mup"):
         np.testing.assert_array_equal(cp.asnumpy(getattr(s_open, name)),
                                       cp.asnumpy(getattr(s_per, name)))
     assert float(cp.abs(s_open.u).max()) < 1e-5

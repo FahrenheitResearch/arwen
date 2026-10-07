@@ -140,7 +140,7 @@ def _save_time_t(state):
     if getattr(state, 'tke', None) is not None:
         names.append('tke')
     pairs = tuple((getattr(state, name), getattr(state, name + '0'))
-                  for name in names)
+                  for name in names) + _chem_time_pairs(state)
     launch = _prepare_bookkeeping(state, pairs)
     if launch is None:
         for src, dst in pairs:
@@ -667,10 +667,6 @@ def _validate_geopotential_config(cfg: RunConfig, nx: int, ny: int) -> None:
         raise ValueError(
             f"h_sca_adv_order must be 2 or 5, got {cfg.h_sca_adv_order}")
     if cfg.h_sca_adv_order == 5:
-        if cfg.open_x or cfg.open_y:
-            raise NotImplementedError(
-                "h_sca_adv_order=5 with radiative open boundaries is not "
-                "wired (periodic and specified only)")
         if nx < FIFTH_ORDER_STENCIL_AXIS or ny < FIFTH_ORDER_STENCIL_AXIS:
             raise ValueError(
                 f"h_sca_adv_order=5 needs nx, ny >= 7 (7-point stencil), "
@@ -682,6 +678,9 @@ def _launch_slow_geopotential(state: DomainState, cfg: RunConfig,
     """Apply fused vertical/g*w and horizontal geopotential RHS terms."""
     nz, ny, nx = state.p.shape
     _validate_geopotential_config(cfg, nx, ny)
+    if (cfg.open_x or cfg.open_y) and not _boundary_forced(cfg):
+        _launch_open_geopotential(state, cfg, ww, add_vertical=add_vertical)
+        return
     rdx, rdy = 1.0 / cfg.dx, 1.0 / cfg.dy
     kernel = get_kernel("dycore", "slow_geopotential")
     n = nz * ny * nx
@@ -705,6 +704,9 @@ def _launch_slow_geopotential_faces(state: DomainState, cfg: RunConfig,
     """Apply horizontal geopotential advection with supplied face masses."""
     nz, ny, nx = state.p.shape
     _validate_geopotential_config(cfg, nx, ny)
+    if (cfg.open_x or cfg.open_y) and not _boundary_forced(cfg):
+        _launch_open_geopotential(state, cfg, state.w, add_vertical=False, mux=mux, muy=muy)
+        return
     rdx, rdy = 1.0 / cfg.dx, 1.0 / cfg.dy
     kernel = get_kernel("dycore", "slow_geopotential_faces")
     n = nz * ny * nx
@@ -719,6 +721,21 @@ def _launch_slow_geopotential_faces(state: DomainState, cfg: RunConfig,
             np.int32(_boundary_y(cfg)), np.int32(_boundary_forced(cfg)),
             np.int32(cfg.h_sca_adv_order), np.int32(state.phb.ndim == 3),
             np.int32(nz), np.int32(ny), np.int32(nx)))
+
+
+def _launch_open_geopotential(state, cfg, ww, *, add_vertical, mux=None, muy=None):
+    nz, ny, nx = state.p.shape
+    n = nz * ny * nx
+    supplied = mux is not None
+    get_kernel("dycore", "slow_geopotential_open")(((n + 255) // 256,), (256,),
+        (state.rph_t, ww, state.w, state.u, state.v, state.php, state.phb,
+         state.mup, state.mub2d, state.rdnw, state.fnm, state.fnp,
+         state.c1f, state.c2f, state.cfn, state.cfn1, state.msft, state.msfu, state.msfv,
+         mux if supplied else state.mup, muy if supplied else state.mup,
+         DTYPE(0.25 / cfg.dx), DTYPE(0.25 / cfg.dy), np.int32(state.has_msf),
+         np.int32(cfg.open_x), np.int32(cfg.open_y), np.int32(supplied),
+         np.int32(add_vertical), np.int32(cfg.h_sca_adv_order), np.int32(state.phb.ndim == 3),
+         np.int32(nz), np.int32(ny), np.int32(nx)))
 
 
 def _launch_slow_geopotential_vertical(state: DomainState,
@@ -1650,7 +1667,37 @@ def _smag2d_specs(state: DomainState, km, kh, *, time_t: bool = False,
         specs += [(field(name), None, kh, state.c1h, state.c2h,
                    "smag_r" + name, "")
                   for name in extra_moist_species(state)]
+    chem = getattr(state, "chem", None)
+    if chem is not None:
+        # WRF's chem array mixes like the scalar arrays: horizontal_diffusion_s
+        # (module_diffusion_em.F:3054-3070), vertical_diffusion_s under PBL
+        # off (:4409-4421) and the 6th-order filter in rk_scalar_tend
+        # (module_em.F:1421), each held once per step in chem_tend.
+        specs += [(getattr(state, row.time_attr if time_t
+                           else row.state_attr),
+                   None, kh, state.c1h, state.c2h,
+                   "smag_r" + row.state_attr, "")
+                  for row in chem.transported]
     return specs
+
+
+def _chem_time_pairs(state) -> tuple:
+    """The chem rows' ``(field, chem0_<row>)`` pairs for ``_save_time_t``.
+
+    Saved in the same one bookkeeping launch as the other time-t copies;
+    empty on a chem-off state, so its pair table and launch are unchanged.
+    """
+    chem = getattr(state, "chem", None)
+    return () if chem is None else chem.time_pairs(state)
+
+
+def chem_mix2_exempt_slots(state: DomainState, cfg: RunConfig
+                           ) -> frozenset[str]:
+    """Chem rows' carrying slots under ``chem_mix2_off`` (horizontal only)."""
+    chem = getattr(state, "chem", None)
+    if chem is None or not cfg.chem_mix2_off:
+        return frozenset()
+    return frozenset("smag_r" + row.state_attr for row in chem.transported)
 
 
 def diff6_exempt_slots(cfg: RunConfig) -> frozenset[str]:
@@ -1670,9 +1717,17 @@ def diff6_exempt_slots(cfg: RunConfig) -> frozenset[str]:
     whose field happens to share a shape with a moist one.
     """
 
-    if not cfg.moist_mix6_off:
-        return frozenset()
-    return frozenset("smag_r" + name for name in WRF_MOIST_ARRAY_SPECIES)
+    exempt = frozenset()
+    if cfg.moist_mix6_off:
+        exempt = frozenset("smag_r" + name for name in WRF_MOIST_ARRAY_SPECIES)
+    if getattr(cfg, "chem_mix6_off", False) and getattr(cfg, "chem_sets", ()):
+        # WRF's chem_mix6_off (Registry.EM_COMMON:2894) gates the chem array
+        # the same way, rk_scalar_tend's mix6_off argument for chem
+        # (solve_em.F:2497).
+        from gpuwm.chem_table import load as load_chem_table
+        exempt |= frozenset("smag_r" + row.state_attr for row in
+                            load_chem_table(cfg).transported)
+    return exempt
 
 
 # The four rows WRF filters from ``rk_tendency`` (dyn_em/module_em.F:882,
@@ -1712,6 +1767,15 @@ def _diff6_factor(cfg: RunConfig, slot: str) -> float:
     """
     if not diff6_fork(cfg) or slot in _DIFF6_FACTOR1_SLOTS:
         return _clock_scaled_diff6_factor(cfg)
+    if getattr(cfg, "chem_sets", "") and slot.startswith("smag_rchem_"):
+        from gpuwm.chem_table import catalog
+
+        row = catalog().species.get(slot[len("smag_rchem_"):])
+        if row is not None and row.wrf_array == "tracer":
+            # The fork passes factor1 to rk_scalar_tend for its tracer
+            # array (solve_em.F:2831), while chem takes factor2. Shared
+            # arena storage does not merge those Registry array semantics.
+            return _clock_scaled_diff6_factor(cfg)
     factor2 = (DIFF6_FACTOR2_FORK_DEFAULT if cfg.diff_6th_factor2 is None
                else float(cfg.diff_6th_factor2))
     return _clock_scale_factor(cfg, factor2, "diff_6th_factor2")
@@ -1930,9 +1994,15 @@ def _compute_wrf_smag_tendencies(state: DomainState, cfg: RunConfig,
 
     # D11 occupied smag_rw; it is dead after both horizontal-momentum calls.
     # Scalars use fresh H1/H2 fluxes in diff6_x/y for each field.
+    # chem_mix2_off drops the chem array's HORIZONTAL mixing only
+    # (module_diffusion_em.F:3054); vertical_diffusion_2's chem loop
+    # (:4409-4421) has no such gate, so the rows stay in the vertical pass.
+    mix2_exempt = chem_mix2_exempt_slots(state, cfg)
     for f, _tend, xk, _c1, _c2, slot, stag in specs[2:]:
         buf = state.scratch(f.shape, slot)
         buf[...] = 0
+        if slot in mix2_exempt:
+            continue
         launch_wrf_smag2d_hd(state, cfg, f, xk, buf, stagger=stag,
                              time_t=time_t,
                              full_theta=(slot == "smag_rth"))
@@ -3675,7 +3745,7 @@ def close_periodic_alias(state: DomainState, cfg: RunConfig) -> None:
 
 def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
          mass_flux_observer=None, mass_flux_accumulator=None,
-         refl_10cm_due: bool = False) -> None:
+         refl_10cm_due: bool = False, fire_history_due: bool = False) -> None:
     """Advance ``state`` one full RK3 step of length ``cfg.dt``.
 
     ``acoustic=True`` (default) runs the full ARW split-explicit loop: per
@@ -3695,6 +3765,8 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
     ``refl_10cm_due`` is the history-step flag threaded to microphysics;
     the active scheme computes and stashes radar reflectivity before its
     finish-stage theta writeback and the post-microphysics EOS refresh.
+    ``fire_history_due`` is the independent history alarm for firebrand
+    landing likelihood and counters, including vapor-only fire cases.
 
     Config-gated physics (no-ops with the defaults): with ``km_opt=1``,
     constant-K diffusion joins every stage's slow tendencies when
@@ -3768,27 +3840,14 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
     # same shared question the loaders ask rather than restating it (the
     # two used to be separate transcriptions of one rule).
     validate_km_opt(cfg)
-    if cfg.km_opt in (2, 3, 4) and (cfg.khdif > 0.0 or cfg.kvdif > 0.0):
-        raise ValueError(
-            f"km_opt={cfg.km_opt} selects WRF Smagorinsky mixing; "
-            "khdif/kvdif are constant-K controls for km_opt=1 and cannot "
-            "also be active")
     if cfg.mp_physics != 0 and getattr(state, "h_diabatic", None) is None:
         raise ValueError(
             f"mp_physics={cfg.mp_physics} requires cfg.moist=True: the "
             "state carries no h_diabatic array for the retained "
             "microphysics heating")
-    if cfg.open_x or cfg.open_y:
-        # getattr: the CPU-only guard test drives step() with a stub state
-        # that carries just ht/qv (tests/test_config.py).
-        if cfg.terrain_opt != 0 or bool((state.ht != 0).any()):
-            raise NotImplementedError(
-                "terrain + open lateral boundaries is not wired: "
-                "set_w_surface and the advance_w_phi kinematic surface BC "
-                "difference ht with unconditional periodic wraps, which "
-                "would couple the two open boundaries through the terrain "
-                "slope")
-    if ((cfg.open_x or cfg.open_y or _boundary_forced(cfg))
+    # Surface_w and acoustic advance_w_phi receive physical boundary flags;
+    # their open-face terrain donors no longer wrap through the opposite side.
+    if (cfg.km_opt == 1 and (cfg.open_x or cfg.open_y or _boundary_forced(cfg))
             and (cfg.khdif > 0.0 or cfg.kvdif > 0.0)):
         raise NotImplementedError(
             "constant-K diffusion (khdif/kvdif > 0) + open or specified "
@@ -3833,6 +3892,21 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
     if stochastic_binding is not None:
         physics_tendencies = stochastic_binding.after_nonmicrophysics(
             state, cfg, physics_tendencies)
+    if getattr(state, "chem", None) is not None:
+        # Native SFIRE emits into tracers before RK transport. The common
+        # chem driver owns its source ledger and refreshes affected time-t
+        # copies, which native rk_update_scalar copies after fire on RK1.
+        from gpuwm.core.chem_driver import chem_pre_transport
+        chem_pre_transport(state, cfg, cfg.dt)
+
+    # DA incremental analysis update (gpuwm.da.iau.IauForcing): the analysis
+    # increment as held coupled tendencies beside the physics', every RK
+    # stage, like WRF's analysis-nudging slot.  A state without an attached
+    # forcing takes the same object back and the step is unchanged.
+    if getattr(state, "_iau_forcing", None) is not None:
+        from gpuwm.da.iau import fold_step_tendencies
+        physics_tendencies = fold_step_tendencies(state, cfg,
+                                                  physics_tendencies)
 
     if not acoustic:
         if state.qv is not None:
@@ -3957,7 +4031,12 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
         # time-averaged mass fluxes as the moist scalars (WRF
         # rk_scalar_tend for tke, solve_em.F:2362-2399), so a dry TKE run
         # accumulates sumflux too.
-        scalars = moist or getattr(state, "tke", None) is not None
+        chem = getattr(state, "chem", None)
+        # Chem species advect with the same acoustic time-averaged fluxes
+        # (WRF rk_scalar_tend for chem, solve_em.F:2476-2500), so a chem run
+        # accumulates sumflux even on a dry state.
+        scalars = (moist or getattr(state, "tke", None) is not None
+                   or chem is not None)
         if scalars:
             ru_m = state.scratch((nzs, nys, nxs + 1), "rk_ru_m")
             rv_m = state.scratch((nzs, nys + 1, nxs), "rk_rv_m")
@@ -4028,6 +4107,16 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
                     fixed_tendency=state.scratch(
                         state.p.shape, "smag_rtke"),
                     **scalar_implicit)
+            if chem is not None:
+                # WRF chem_scalar_advance (solve_em.F:2466-2616), after the
+                # moist and TKE scalars exactly as WRF orders them.
+                from gpuwm.core.chem_transport import (
+                    advance_chem_stage, chem_fixed_tendencies)
+                advance_chem_stage(
+                    state, cfg, ru_m, rv_m, ww_m, nsub * dtau,
+                    final=(istage == len(stages) - 1),
+                    fixed_tendencies=chem_fixed_tendencies(state, cfg),
+                    **scalar_implicit)
         apply_open_zero_gradient(state, cfg)          # radiative-open BCs
     # km_opt=2 budget: one device reduction over the completed step, taken
     # here because state.mup is still the mass the final RK scalar update
@@ -4059,6 +4148,19 @@ def step(state: DomainState, cfg: RunConfig, *, acoustic: bool = True,
             state.physics.accept_microphysics(
                 microphysics_result, dt=cfg.dt)
         update_diagnostics(state, cfg.hypsometric_opt)  # after the RK loop)
+    fire = getattr(getattr(state, "physics", None), "fire", None)
+    spotting = getattr(fire, "spotting", None)
+    if spotting is not None:
+        # Native solve_em calls spotting after its completed atmosphere and
+        # tracer solve/halos; the external chemistry operator follows it.
+        spotting.advance_atmosphere(state, cfg, fire, dt=cfg.dt,
+                                     history_alarm=fire_history_due)
+    if getattr(state, "chem", None) is not None:
+        # WRF calls chem_driver after solve_em (share/solve_interface.F),
+        # i.e. after the whole dynamics and microphysics step and before
+        # the clock advances; tiles and nests reach it through this step.
+        from gpuwm.core.chem_driver import chem_step
+        chem_step(state, cfg, cfg.dt)
     close_periodic_alias(state, cfg)
     state.elapsed_seconds += cfg.dt
 

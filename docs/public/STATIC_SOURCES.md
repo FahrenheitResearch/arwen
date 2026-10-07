@@ -65,3 +65,32 @@ A retained local copy preserves the pin while a durable mirror is pending.
 Configurations whose source metadata declares no static source, and
 configurations whose defaulted row is on another projection, retain the
 existing static builder and configuration output.
+
+The WPS geography builder also accepts the `bnu_soil_30s` dataset token.
+It selects the alternative 16-category top and bottom soil maps distributed
+by NCAR, with 30 arc-second scalar categorical pixels. The existing Rust
+category sampler builds the soil fractions and dominant categories.
+
+```console
+gpuwm fetch-geog --datasets bnu_soiltype_top,bnu_soiltype_bot --root GEOG_ROOT
+```
+
+Select it independently for each domain in `namelist.wps`:
+
+```fortran
+geog_data_res = 'bnu_soil_30s+default', 'bnu_soil_30s+default',
+```
+
+Token priority is field-specific. This selection changes only soil categories
+and fractions; the other fields use the later token or the established
+default. It does not override a published static source that supplies soil
+on its own grid. The archive rows use the upstream NCAR source automatically
+because the mirror does not carry these archives.
+
+When high-resolution terrain and land cover are enabled, retain the selected
+WPS soil maps with `soil_source = "wps-geog"` in `[static.highres]`.
+The overlay skips SoilGrids downloads and reconciles soil water categories
+with its land mask in Rust. Land cells with valid soil retain the source
+fractions exactly; newly resolved land with water soil takes the nearest
+valid land-soil cell. The omitted option keeps the established SoilGrids
+overlay and its existing configuration bytes.

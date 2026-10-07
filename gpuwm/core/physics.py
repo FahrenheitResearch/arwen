@@ -44,6 +44,8 @@ from gpuwm.config import (CUMULUS_ADVECTIVE_FORCING_SCHEMES,
                           NOAHMP_OPTIONS_WITHOUT_CONSUMER,
                           RUC_OPTION_IDENTITY,
                           SASE_PBL_SCHEME, UW_PBL_SCHEME, RunConfig,
+                          mynn_mixscalars_active,
+                          mynn_mixscalars_driver_value,
                           radiation_enabled, radiation_scheme_ids,
                           soil_layer_count)
 from gpuwm.core import constants as c
@@ -1147,6 +1149,14 @@ class RadiationResult:
     # (gpuwm.core.topo_radiation.request_surface_diffuse).
     swddir: cp.ndarray | None = None
     swddif: cp.ndarray | None = None
+    # CLDFRA, the cloud fraction this radiation call radiated through
+    # (Registry.EM_COMMON:1699, ``irh``: WRF writes it to history and
+    # restart).  (nz, ny, nx), 0-1: the driver's icloud=1 cal_cldfra1
+    # field after the MYNN subgrid-cloud merge, the array WRF's radiation
+    # driver leaves in grid%cldfra.  None from a scheme that computes no
+    # cloud fraction (Dudhia alone, the analytic proxy); a scheme that
+    # declares ``publishes_cldfra`` must supply it on every call.
+    cldfra: cp.ndarray | None = None
 
 
 @dataclass
@@ -1493,7 +1503,6 @@ def couple_ysu_tendencies(state: DomainState, cfg: RunConfig,
     # WRF phy_bl_ten adds RQIBLTEN exactly when the moist set carries ice
     # (module_physics_addtendc.F, IF(F_QI) branch); schemes that mix ice
     # return dqi and it couples like the other moist scalars.
-    dqi = ysu.get("dqi")
     rqi = None if dqi is None else chm * dqi
 
     # WRF's boundary-forced loop bounds omit the physical outer cell and
@@ -1714,6 +1723,9 @@ class PhysicsDriver:
     # failed in compute() reading flags that only __init__ set.
     _spp_flags: dict = {}
     spp_patterns: dict = {}
+    # The SFIRE coupler exists only at ifire 2 (build_physics_driver); a
+    # driver built around __init__ has none, the same as a fire-off run.
+    fire = None
 
     @property
     def microphysics_init_receipt(self) -> dict[str, object]:
@@ -1807,6 +1819,7 @@ class PhysicsDriver:
     urban = None
     urban_coupler = None
     _urban_cfg = None
+    surface_energy_diag = False
     #: Whether the last radiation call handed over SWDDIR/SWDDIF itself.
     _swdd_from_scheme = False
 
@@ -1817,6 +1830,7 @@ class PhysicsDriver:
                  ruc_params=None, glw_provenance="declared",
                  carriers=None):
         self.state = state
+        self.surface_energy_diag = bool(cfg.surface_energy_diag)
         self._spp_flags = {
             key: int(getattr(cfg, f"spp_{key}"))
             for key in ("conv", "pbl", "lsm")}
@@ -1826,6 +1840,9 @@ class PhysicsDriver:
             "lsm": (soil_layer_count(cfg), cfg.ny, cfg.nx)}
         self.spp_patterns = {}
         self.cam_ozone = None
+        self.fire = None
+        self.fire_tendencies = (PhysicsTendencies.zeros(state)
+                                if int(getattr(cfg, "ifire", 0)) == 2 else None)
         # WRF's slope_rad carrier; initialize_physics attaches it where
         # WRF would adjust the surface shortwave (restart: rebuilt).
         self.topo_shortwave = None
@@ -2015,10 +2032,26 @@ class PhysicsDriver:
             if self.radiation_active and getattr(
                 self.radiation_callable, "publishes_olr", False)
             else None)
+        # CLDFRA, the radiation cloud fraction, on OLR's terms: the buffer
+        # exists exactly when the attached radiation scheme declares it
+        # computes one (``publishes_cldfra``), it is filled in place on
+        # every due radiation call and held between calls, it is zero
+        # before the first call (WRF's t=0 frame carries the same zero,
+        # CLDFRA being a zero-initialised ``misc`` array written before
+        # the first radiation step), and a restart carries it
+        # (restart.DRIVER_CHECKPOINT_ONLY_ATTRS) so a resumed run's frames
+        # before its first post-restart radiation call publish the held
+        # field rather than zeros.  Output-only: no physics reads it.
+        self.cldfra = (
+            cp.zeros(state.p.shape, dtype=DTYPE)
+            if self.radiation_active and getattr(
+                self.radiation_callable, "publishes_cldfra", False)
+            else None)
         self.tendencies = (
             self.pbl_tendencies
-            if (not (radiation_enabled(cfg) or cfg.cu_physics)
-                or physics_reuses_pbl_composition(cfg))
+            if (self.fire_tendencies is None and
+                (not (radiation_enabled(cfg) or cfg.cu_physics)
+                 or physics_reuses_pbl_composition(cfg)))
             else PhysicsTendencies.zeros(
                 state, optional_components=composed_components))
         self.last_ysu: dict[str, cp.ndarray] | None = None
@@ -2499,8 +2532,8 @@ class PhysicsDriver:
         if "gsw" in self.fields:
             if result.gsw is None:
                 raise ValueError(
-                    "RUC requires radiation-time GSW from the radiation "
-                    "callable")
+                    "RUC or a chem process reads radiation-time GSW, and "
+                    "the radiation callable returned none")
             self.fields["gsw"][...] = _checked_array(
                 result.gsw, (ny, nx), "radiation GSW")
         if "coszen" in self.fields:
@@ -2579,6 +2612,16 @@ class PhysicsDriver:
                     "but returned no OLR (TOA outgoing longwave)")
             self.olr[...] = _checked_array(
                 result.olr, (ny, nx), "radiation OLR")
+        if self.cldfra is not None:
+            if result.cldfra is None:
+                raise ValueError(
+                    "the attached radiation callable declares "
+                    "publishes_cldfra but returned no CLDFRA (radiation "
+                    "cloud fraction)")
+            # Validated view copied straight into the held buffer: one
+            # (nz, ny, nx) copy, not _checked_array's extra owned copy.
+            self.cldfra[...] = _validated_array(
+                result.cldfra, (nz, ny, nx), "radiation CLDFRA")
         # WRF's slope_rad / topo_shading: what the radiation driver leaves
         # for the surface driver (diffuse fraction, solar geometry, shadow
         # mask).  None on every domain that does not turn slope_rad on.
@@ -2939,8 +2982,11 @@ class PhysicsDriver:
                 "footprint's roof/wall/road temperatures and urban "
                 "fractions")
         if self.pbl_raw_rates:
+            active_rates = self.pbl_raw_rates
+            if getattr(state, "qi", None) is None:
+                active_rates = {name: value for name, value in active_rates.items() if name != "dqi"}
             self.pbl_tendencies = couple_ysu_tendencies(
-                state, cfg, self.pbl_raw_rates)
+                state, cfg, active_rates)
             self.pbl_tendencies.materialize(
                 _pbl_optional_tendency_components(cfg))
             if "dw" in self.pbl_raw_rates:
@@ -2959,12 +3005,12 @@ class PhysicsDriver:
 
     def _compose_tendencies(self, cfg: RunConfig) -> None:
         """Compose held PBL/radiation/cumulus components in WRF order."""
-        if not (self.radiation_active or self.cu_physics):
+        if not (self.radiation_active or self.cu_physics or self.fire_tendencies is not None):
             # This identity path keeps Phase-3 YSU-only runs bit-compatible.
             self.tendencies = self.pbl_tendencies
             return
         pbl = self.pbl_tendencies
-        if physics_reuses_pbl_composition(cfg):
+        if self.fire_tendencies is None and physics_reuses_pbl_composition(cfg):
             # bldt=0 mechanically replaces pbl immediately before every call
             # to this composer.  Reusing that fresh stack is safe exactly
             # once; positive cadence keeps the separate historical target.
@@ -3015,6 +3061,11 @@ class PhysicsDriver:
                     value += source
             else:
                 setattr(target, name, None)
+        # Native fire_tendency already includes dry column mass. phy_fr_ten
+        # adds it directly, after the ordinary physics tendency slots.
+        if self.fire_tendencies is not None:
+            target.rtheta += self.fire_tendencies.rtheta
+            target.rqv += self.fire_tendencies.rqv
 
     def _run_sfclay(self, atmosphere: Mapping[str, cp.ndarray],
                     cfg: RunConfig) -> None:
@@ -3357,8 +3408,16 @@ class PhysicsDriver:
                 continue  # the canonical GF/New Tiedtke lane was filled above
             source = rates.get(name)
             target[...] = 0.0 if source is None else source
-        return couple_ysu_tendencies(
-            self.state if state is None else state, cfg, rates)
+        active_state = self.state if state is None else state
+        # A scheme's zero ice placeholder is not a prognostic ice slot.
+        # WRF phy_bl_ten consumes RQIBLTEN only under F_QI. Keeping the
+        # placeholder changed the checkpoint manifest after the first call.
+        # Only a slot that carries the placeholder is copied without it, so
+        # every other slot reaches the coupling as the same mapping.
+        active_rates = (rates if (getattr(active_state, "qi", None) is not None
+                                  or "dqi" not in rates) else
+                        {name: value for name, value in rates.items() if name != "dqi"})
+        return couple_ysu_tendencies(active_state, cfg, active_rates)
 
     def _apply_gwd(self, drag, cfg: RunConfig,
                    rates: Mapping[str, cp.ndarray],
@@ -3963,12 +4022,18 @@ class PhysicsDriver:
         # their consuming read; a default buried in the solver would make
         # that citation false, and the run's own receipt would not record
         # which identity it used.
-        # Stage B (W4 full admission): under the mixscalars key the runtime
-        # stages the mp=28 qn family into the driver.  The validator has
-        # already pinned the combo (bl_pbl_physics=5, mp_physics=28,
-        # bldt=0), so the attribute reads cannot miss.
+        # Stage B (W4 full admission): under an ACTIVE mixscalars key the
+        # runtime stages the qn family into the driver.  Active means the
+        # microphysics carries the whole family (config.mynn_mixscalars_active:
+        # MYNN_QN_FAMILY_SCHEMES).  With a scheme that carries no number
+        # species the key is inert exactly as WRF's flag-gated solves are,
+        # nothing is staged and the driver runs its key-0 path; a scheme
+        # WRF would mix in part never reaches here (the validator refuses
+        # it by name, config.MYNN_QN_FLAG_SPECIES).  The validator pins
+        # bldt=0 for the active case, so the attribute reads cannot miss.
         qn_scalars = None
-        if cfg.bl_mynn_mixscalars == 1 or cfg.scalar_pblmix == 1:
+        mixing_qn = mynn_mixscalars_active(cfg) or cfg.scalar_pblmix == 1
+        if mixing_qn:
             qn_scalars = {name: getattr(self.state, name)
                           for name in ("nc", "ni", "nwfa", "nifa")}
         column_chunk = getattr(self.state, "_mynn_rank_column_chunk", None)
@@ -3997,7 +4062,7 @@ class PhysicsDriver:
             bl_mynn_edmf=cfg.bl_mynn_edmf,
             bl_mynn_edmf_mom=cfg.bl_mynn_edmf_mom,
             bl_mynn_edmf_tke=cfg.bl_mynn_edmf_tke,
-            bl_mynn_mixscalars=cfg.bl_mynn_mixscalars,
+            bl_mynn_mixscalars=mynn_mixscalars_driver_value(cfg),
             bl_mynn_cloudmix=cfg.bl_mynn_cloudmix,
             bl_mynn_mixqt=cfg.bl_mynn_mixqt,
             bl_mynn_output=cfg.bl_mynn_output,
@@ -4013,7 +4078,7 @@ class PhysicsDriver:
         validate_mynn_tendencies(out)
         self.pbl_tendencies = self._couple_pbl_slot(
             cfg, out, atmosphere=atmosphere)
-        if cfg.bl_mynn_mixscalars == 1 or cfg.scalar_pblmix == 1:
+        if mixing_qn:
             # WRF couples RQN*BLTEN through the same calculate_phy_tend
             # multiply and add_a2a bounds as every other A-grid scalar
             # rate (module_physics_addtendc.F).  Held as plain-attribute
@@ -5061,7 +5126,11 @@ class PhysicsDriver:
                         and self.cam_ozone.mode == "legacy-root"):
                     from gpuwm.core.radiation_composition import legacy_radiation_adapter
                     legacy = legacy_radiation_adapter(self.radiation_callable)
-                    self.o3rad.set(legacy._o33d_grid)
+                    # Device to device: the adapter keeps its field on the
+                    # card and a host round trip would copy the same bytes.
+                    import cupy as _cp
+                    _cp.copyto(self.o3rad, legacy.o33d_device())
+                    legacy.o33d_share(self.o3rad)
                     self.call_counts["cam_ozone"] += 1
                     self.carriers.declare("o3rad", source="cam_ozone",
                                           model_time=state.elapsed_seconds)
@@ -5258,6 +5327,31 @@ class PhysicsDriver:
                     self.call_counts["sase"] += 1
             else:
                 self.pbl_tendencies = PhysicsTendencies.zeros(state)
+
+        # WRF fire_driver follows surface/PBL and precedes cumulus on every
+        # atmospheric step, independently of the surface/PBL call cadence.
+        if self.fire is not None:
+            if atmosphere is None:
+                atmosphere = _prepare_atmosphere(state)
+            self.fields["psfc"][...] = atmosphere["p_interface"][0]
+            if (cfg.fmoist_run and cfg.sf_sfclay_physics == 0
+                    and cfg.sf_surface_physics == 0):
+                # No surface package writes T2/Q2 in this configuration.
+                # The original zero-K allocation is an invalid moisture
+                # forcing. Diagnose the no-exchange near-ground proxy
+                # from the current atmospheric column before consumption.
+                from gpuwm.core.sfire_ideal import diagnose_moisture_surface
+                diagnose_moisture_surface(atmosphere, state.cf1, state.cf2,
+                                          state.cf3, self.fields)
+            fire_surface = dict(self.fields,
+                rainc=self._zero_accumulator() if self.rainc is None else self.rainc,
+                rainnc=self.microphysics.rainnc)
+            th, qv = self.fire.advance(state, cfg, atmosphere, now, float(cfg.dt), fire_surface)
+            from gpuwm.core.sfire_coupler import _launch as fire_launch
+            fire_launch("sfire_stage_tendencies", th.size,
+                (th, qv, state.msft, self.fire_tendencies.rtheta, self.fire_tendencies.rqv,
+                 np.int32(th.size), np.int32(state.mup.size), np.int32(state.has_msf)))
+            self.call_counts["fire"] += 1
 
         # WRF cumulus follows the PBL call and its rates are held until the
         # next STEP* event, exactly like radiation.
@@ -5628,6 +5722,7 @@ def initialize_physics(
         state: DomainState, cfg: RunConfig, *, landmask=1.0, tsk=300.0,
         soil_temperature=285.0, soil_moisture=0.30, liquid_moisture=None,
         ivgtyp=10, isltyp=6, vegfra=50.0, tmn=285.0, xice=0.0, snow=0.0,
+        canwat=0.0,
         snow_depth=0.0, sst=None,
         swdown=None, glw=None, pblh=0.0, mavail=1.0,
         landuse=None, xland=None, xice_threshold=None,
@@ -5640,12 +5735,23 @@ def initialize_physics(
         frc_urb2d=None, terrain_drag_static=None,
         landusef=None, soilctop=None, lakemask=None,
         lake_depth=None, lake_depth_flag=None, lake_iswater=None,
-        lake_mask_flag=None) -> PhysicsDriver:
+        lake_mask_flag=None, lsm_cold_start=True, fire_static_data=None,
+        fire_grid_spec=None) -> PhysicsDriver:
     """Allocate and attach persistent physics state and scheme callables.
 
     An mp-only configuration also receives a driver: microphysics itself is
     post-RK3, but its precipitation accumulators and REFL_10CM handoff live
     on this object.
+
+    ``lsm_cold_start=False`` allocates the land-surface carriers and skips
+    the scheme's one-time cold start over them (``ruclsminit`` for RUC,
+    ``NOAHMP_INIT`` + ``SNOW_INIT`` for Noah-MP).  It is for a buffer whose
+    every carrier is about to be gathered from a prepared store
+    (:func:`gpuwm.core.streaming.prepared_tile_state_factory`): the cold
+    start would run over poison geography and be overwritten, and on RUC it
+    is a host column loop that cost HRRR's 1.9 million columns about a
+    minute of idle cards per rank, rank after rank, at every launch.  A
+    domain that will be integrated from these inputs keeps the default.
 
     Inputs accept scalars or arrays broadcastable to ``(ny,nx)``; soil
     inputs accept scalars, four-element profiles, or ``(4,ny,nx)`` arrays.
@@ -5893,6 +5999,7 @@ def initialize_physics(
         "isltyp": _as_2d(isltyp, shape, "isltyp", dtype=cp.int32),
         "vegfra": _as_2d(vegfra, shape, "vegfra"),
         "tmn": _as_2d(tmn, shape, "tmn"),
+        "canwat": _as_2d(canwat, shape, "canwat"),
         "xice": _as_2d(xice, shape, "xice"),
         # ``swdown=None`` allocates the same zeros the 0.0 default
         # allocated, so every existing trajectory is byte-identical; what
@@ -5923,9 +6030,13 @@ def initialize_physics(
     if int(cfg.sf_surface_physics) in (3, 4):
         for name in SURFACE_PRECIPITATION_FIELDS:
             f[name] = cp.zeros(shape, dtype=DTYPE)
-    if int(cfg.sf_surface_physics) == 3:
-        # GSW is updated only at radiation cadence and consumed by RUC
-        # unchanged between those calls.
+    from gpuwm.core.chem_context import chem_physics_reads
+    if (int(cfg.sf_surface_physics) == 3
+            or "gsw" in chem_physics_reads(cfg)):
+        # GSW is updated only at radiation cadence and consumed unchanged
+        # between those calls by RUC and by WRF-Chem's Wesely deposition,
+        # whose stomatal resistance reads grid%gsw
+        # (chem/module_dep_simple.F, srad).
         f["gsw"] = cp.zeros(shape, dtype=DTYPE)
     if int(cfg.sf_surface_physics) == 4:
         # COSZEN has the same radiation cadence.  A radiation-free in-process
@@ -6347,6 +6458,21 @@ def initialize_physics(
                            ruc_params=ruc_params,
                            glw_provenance=glw_provenance,
                            carriers=carriers)
+    if int(getattr(cfg, "ifire", 0)) == 2:
+        from gpuwm.core.sfire_coupler import FireCoupler
+        if fire_static_data is None and cfg.fire_static:
+            from gpuwm.static.sfire import load_fire_static
+            fire_static_data = load_fire_static(cfg.fire_static, expected_grid_spec=fire_grid_spec)
+        if fire_static_data is not None and "ZNT" in fire_static_data:
+            f["znt"][...] = cp.asarray(fire_static_data["ZNT"], dtype=DTYPE)
+        if (cfg.fmoist_run and cfg.sf_sfclay_physics == 0
+                and cfg.sf_surface_physics == 0):
+            from gpuwm.core.sfire_ideal import diagnose_moisture_surface
+            atmosphere = _prepare_atmosphere(state)
+            diagnose_moisture_surface(atmosphere, state.cf1, state.cf2,
+                                      state.cf3, f)
+        driver.fire = FireCoupler(state, cfg, f, fire_static_data)
+        driver.call_counts["fire"] = 0
     if cam_ozone is not None:
         driver.cam_ozone = cam_ozone
     # CLASSIFICATION RECEIPT: which source decided XLAND and how many
@@ -6374,13 +6500,21 @@ def initialize_physics(
             "glacier_columns": int(masks["glacier"].sum()),
         })
     driver.surface_classification = surface_classification
-    if int(cfg.sf_surface_physics) == 3:
+    if getattr(state, "chem", None) is not None:
+        # The chem processes' mass-grid geometry (DESIGN 2.5): the fire
+        # process remaps satellite fire pixels onto these points and the
+        # GSL fire-type rules read them.  Exported only on a chem domain, so
+        # a chem-off driver's fields and allocations are what they were.
+        from gpuwm.core.chem_geometry import export_chem_geometry
+        export_chem_geometry(f, radiation_latitude, radiation_longitude,
+                             state=state, start_time=radiation_start_time)
+    if int(cfg.sf_surface_physics) == 3 and lsm_cold_start:
         # ruclsminit runs once, before the first step, where
         # module_physics_init.F runs it.  Without it SH2O is whatever the
         # caller supplied for SMOIS and SMFR3D is zero everywhere, which
         # asserts a frozen-soil content of exactly none on a frozen column.
         ruc_cold_start(f, params=ruc_params)
-    if int(cfg.sf_surface_physics) == 4:
+    if int(cfg.sf_surface_physics) == 4 and lsm_cold_start:
         # NOAHMP_INIT/SNOW_INIT run once, before the first step, exactly
         # where module_physics_init.F runs them.  Without this every carrier
         # is at the zeros allocated above, and TV = TG = 0 K is not a cold
@@ -6436,6 +6570,12 @@ def initialize_physics(
         # module_physics_init.F:3294-3356 (Noah) and :3437 (Noah-MP) run
         # them.  ``frc_urb2d`` is the input file's urban fraction when it
         # carries one; absent, urban_var_init takes the table's.
+        if (int(cfg.sf_urban_physics) == 1 and frc_urb2d is None
+                and terrain_drag_static is not None):
+            # Source-neutral preparation passes its static carrier here.
+            # Read its built-area estimate only under an urban selector;
+            # explicit wrfinput fractions retain their own authority.
+            frc_urb2d = terrain_drag_static.get("FRC_URB2D")
         _attach_urban(driver, state, cfg, f,
                       noahmp_params=noahmp_params,
                       landuse_dataset=landuse_dataset,

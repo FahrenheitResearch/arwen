@@ -17,7 +17,9 @@ all three, at the defaults and with each default-off field moved.  CPU only.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -131,16 +133,17 @@ DEFAULT_OFF = frozenset({
     "v_sca_adv_order", "v_mom_adv_order", "h_mom_adv_order",
     "swint_opt", "aer_opt", "rrtmg_cloud_optics_form", "rrtmg_smoke_manifest",
     "alb_sol",
+    # Output-only surface energy carriers, dropped by the echo when off.
+    "surface_energy_diag",
 })
 
 
-def _echoes(cfg, monkeypatch, tmp_path, *, surface_receipt=None) -> dict[str, dict]:
-    """The ``config`` each of the three writers puts in its header."""
-    from tilestream import checkpoint, physics_inventory, restart_stream
-
+def _checkpoint_state(cfg, monkeypatch):
+    """The same bound NumPy-backed setup for echo and restore witnesses."""
     state, driver = _shim_driver_state(cfg, monkeypatch)
-    if cfg.aer_opt:
-        # The active legacy adapter has a real stock identity even though
+    if cfg.ra_rrtmg_variant == "rrtmg_legacy" and (
+            cfg.ra_physics > 0 or cfg.ra_lw_physics > 0 or cfg.ra_sw_physics > 0):
+        # The selected legacy adapter has a real stock identity even though
         # these CPU tests never execute radiation. Bind its required setup
         # just as the restart identity fixture binds the modern adapter.
         from gpuwm.core.rrtmg_legacy import RRTMGLegacyRadiation
@@ -149,8 +152,6 @@ def _echoes(cfg, monkeypatch, tmp_path, *, surface_receipt=None) -> dict[str, di
         for name in ("start_time", "latitude_deg", "longitude_deg"):
             setattr(radiation, name, getattr(setup, name))
         driver.radiation_callable = radiation
-    if surface_receipt is not None:
-        state._ensemble_surface_state = surface_receipt
     if cfg.sf_surface_physics == 2:
         driver.noah_params = _identity_bound_physics_state(
             cfg, monkeypatch)[1].noah_params
@@ -164,6 +165,16 @@ def _echoes(cfg, monkeypatch, tmp_path, *, surface_receipt=None) -> dict[str, di
             categories=MosaicCategories(isurban=13, isice=15, iswater=17,
                                         natural=7, lcz=()))
     _fill_setup(state)
+    return state, driver
+
+
+def _echoes(cfg, monkeypatch, tmp_path, *, surface_receipt=None) -> dict[str, dict]:
+    """The ``config`` each of the three writers puts in its header."""
+    from tilestream import checkpoint, physics_inventory, restart_stream
+
+    state, _driver = _checkpoint_state(cfg, monkeypatch)
+    if surface_receipt is not None:
+        state._ensemble_surface_state = surface_receipt
     paths = {"resident": restart.write_restart(
         tmp_path / "resident.npz", state, cfg)}
     # After the resident write, which seeds diff_opt = 1's thermal
@@ -198,8 +209,142 @@ def test_every_writer_echoes_the_defaults_alike(monkeypatch, tmp_path):
     # written before the field existed, and every other field is echoed.
     assert not DEFAULT_OFF & set(expected)
     # Output export options are not checkpointed forecast settings.
-    assert "verify_visuals" not in expected
-    assert set(expected) == {f.name for f in dataclasses.fields(cfg)} - DEFAULT_OFF
+    assert not {"grib2", "grib2_out", "verify_visuals"} & set(expected)
+    from gpuwm.config import CHEM_RUN_FIELDS, FIRE_RUN_FIELDS
+    assert set(expected) == ({f.name for f in dataclasses.fields(cfg)}
+                             - DEFAULT_OFF - set(CHEM_RUN_FIELDS)
+                             - set(FIRE_RUN_FIELDS))
+
+
+def test_inactive_fire_does_not_change_prior_checkpoint_identity():
+    """ifire 0 omits the whole fire block, so pre-fire headers still match."""
+    from dataclasses import replace
+    from gpuwm.config import FIRE_RUN_FIELDS
+
+    cfg = _cfg()
+    prior = dataclasses.asdict(cfg)
+    for name in FIRE_RUN_FIELDS:
+        prior.pop(name)
+    unused = replace(cfg, fire_num_ignitions=2, sr_x=4, sr_y=4)
+    assert restart.configuration_echo(unused) == restart.configuration_echo(cfg)
+    restart._require_config_match(prior, unused, "fire-off-checkpoint")
+
+
+@pytest.mark.parametrize("live", [{"ifire": 2, "sr_x": 4, "sr_y": 4}])
+def test_active_fire_refuses_a_fire_off_checkpoint_both_ways(live):
+    from gpuwm.config import FIRE_RUN_FIELDS
+
+    off = restart.configuration_echo(_cfg())
+    assert not set(FIRE_RUN_FIELDS) & set(off)
+    on = _cfg(**live)
+    with pytest.raises(restart.RestartMismatchError, match="ifire"):
+        restart._require_config_match(off, on, "fire-off-to-on")
+    on_echo = restart.configuration_echo(on)
+    assert set(FIRE_RUN_FIELDS) <= set(on_echo)
+    with pytest.raises(restart.RestartMismatchError, match="ifire"):
+        restart._require_config_match(on_echo, _cfg(), "fire-on-to-off")
+
+
+def test_every_writer_echoes_active_chemistry_alike(monkeypatch, tmp_path):
+    from gpuwm.config import CHEM_RUN_FIELDS
+
+    cfg = _cfg(chem_sets="tracer_test")
+    expected = restart.configuration_echo(cfg)
+    assert set(CHEM_RUN_FIELDS) <= expected.keys()
+    for road, echo in _echoes(cfg, monkeypatch, tmp_path).items():
+        assert echo == expected, road
+
+
+def test_inactive_chemistry_does_not_change_prior_checkpoint_identity():
+    from dataclasses import replace
+    from gpuwm.config import CHEM_RUN_FIELDS
+
+    cfg = _cfg()
+    prior = dataclasses.asdict(cfg)
+    for name in CHEM_RUN_FIELDS:
+        prior.pop(name)
+    unused = replace(cfg, chem_adv_opt=2, kemit=17, dust_alpha=3.0,
+                     aer_ra_feedback=1)
+    assert restart.configuration_echo(unused) == restart.configuration_echo(cfg)
+    restart._require_config_match(prior, unused, "chemistry-off-checkpoint")
+
+
+@pytest.mark.parametrize("chem_sets", ["", "tracer_test"])
+def test_every_writer_default_fork_echo_is_admitted(
+        monkeypatch, tmp_path, chem_sets):
+    cfg = _cfg(chem_sets=chem_sets)
+    for road, echo in _echoes(cfg, monkeypatch, tmp_path).items():
+        restart._require_config_match(echo, cfg, tmp_path / f"{road}.npz")
+
+
+def test_default_fork_checkpoint_restores_the_actual_resident_words(
+        monkeypatch, tmp_path):
+    from test_restart import _fill_serialized
+
+    cfg = _cfg()
+    state, _ = _shim_driver_state(cfg, monkeypatch)
+    _fill_setup(state)
+    _fill_serialized(state, seed=20261004)
+    expected = {name: getattr(state, name).tobytes()
+                for name in restart.serialized_state_attrs(state)
+                if getattr(state, name, None) is not None}
+    path = restart.write_restart(tmp_path / "default-fork.npz", state, cfg)
+    header = restart.read_restart_header(path)
+    assert not {"diff_6th_form", "diff_6th_factor2", "upper_wind_limiter_form",
+                "mp_zero_out", "mp_zero_out_all", "mp_zero_out_thresh"} & set(header["config"])
+    fresh, _ = _shim_driver_state(cfg, monkeypatch)
+    _fill_setup(fresh)
+    restart.restore_restart(path, fresh, cfg)
+    for name, value in expected.items():
+        assert getattr(fresh, name).tobytes() == value, name
+
+
+@pytest.mark.parametrize("stored,live,field", [
+    ({}, {"diff_6th_form": "noaa_wrf39"}, "diff_6th_form"),
+    ({}, {"diff_6th_factor2": 0.04}, "diff_6th_factor2"),
+    ({}, {"upper_wind_limiter_form": "noaa_wrf39"}, "upper_wind_limiter_form"),
+    ({}, {"mp_zero_out": 1}, "mp_zero_out"),
+    ({"mp_zero_out": 1}, {"mp_zero_out": 1, "mp_zero_out_all": 1}, "mp_zero_out_all"),
+    ({"mp_zero_out": 1}, {"mp_zero_out": 1, "mp_zero_out_thresh": 2.0e-8}, "mp_zero_out_thresh"),
+])
+def test_nondefault_fork_checkpoint_changes_still_refuse(stored, live, field):
+    echo = restart.configuration_echo(_cfg(**stored))
+    with pytest.raises(restart.RestartMismatchError, match=field):
+        restart._require_config_match(echo, _cfg(**live), "changed-fork-checkpoint")
+    reverse = restart.configuration_echo(_cfg(**live))
+    with pytest.raises(restart.RestartMismatchError, match=field):
+        restart._require_config_match(reverse, _cfg(**stored), "changed-fork-checkpoint")
+
+
+def test_inactive_zero_out_controls_follow_the_writer_omission_rule():
+    cfg = _cfg(mp_zero_out=0, mp_zero_out_all=1, mp_zero_out_thresh=2.0e-8)
+    echo = restart.configuration_echo(cfg)
+    restart._require_config_match(echo, _cfg(), "inactive-zero-out-checkpoint")
+
+
+@pytest.mark.parametrize("case", ["generic_dry", "non_feature_moist"])
+@pytest.mark.parametrize("inactive_nondefaults", [False, True])
+def test_chemistry_off_emitted_config_bytes_match_recovery_staging(
+        case, inactive_nondefaults):
+    """Actual checkpoint configuration JSON is unchanged by the opt-in block."""
+    from gpuwm.config import RunConfig
+
+    baseline = json.loads((Path(__file__).parent / "data" /
+                           "aq_off_emitted_config_bytes.json").read_text())
+    assert baseline["staging_sha"] == "00bbfcf9a91723125b4a1328248e90b66e611256"
+    row = baseline["cases"][case]
+    cfg = RunConfig(**row["constructor"])
+    if inactive_nondefaults:
+        cfg = dataclasses.replace(cfg, chem_adv_opt=2, kemit=17,
+                                  dust_alpha=3.0, aer_ra_feedback=1)
+    encoded = json.dumps(restart.configuration_echo(cfg), sort_keys=True,
+                         separators=(",", ":"), allow_nan=False).encode()
+    assert encoded == row["config_json"].encode()
+    assert hashlib.sha256(encoded).hexdigest() == row["config_sha256"]
+    digest = json.dumps(restart._configuration_digest_values(
+        dataclasses.asdict(cfg)), sort_keys=True,
+        separators=(",", ":"), allow_nan=False).encode()
+    assert digest == row["digest_json"].encode()
 
 
 def test_every_writer_echoes_prescribed_source_identity_alike(monkeypatch, tmp_path):
@@ -401,7 +546,7 @@ def test_unread_zero_out_parameters_do_not_block_an_off_restart(tmp_path):
     restart._require_config_match(restart.configuration_echo(cfg), cfg, tmp_path / "state.npz")
 
 
-@pytest.mark.parametrize("option,default", [("verify_visuals", True)])
+@pytest.mark.parametrize("option,default", [("grib2", False), ("verify_visuals", True)])
 def test_output_choices_preserve_every_actual_writer_echo(monkeypatch, tmp_path, option, default):
     """Output options stay outside the configuration in all three headers."""
     from gpuwm.runplan import PLAN_SCHEMA, build_plan, resolve_plan

@@ -385,7 +385,10 @@ _NOT_FDLIBM = {
     # to float, standing for glibc 2.43's correctly rounded atan2f
     # (CORE-MATH); no FDLIBM reduction is transcribed.
     "terrain_drag.cu": ("td_atan2f",),
+    # The unused optical stub calls the CUDA builtin without transcribing libm.
+    "chem_optics.cu": ("chem_log10f",),
     "glibc_trig_flt32.cuh": ("glibc_atanf",),    # CORE-MATH s_atanf.c, a8066a5, MIT
+    "sfire_libm.cuh": ("sfire_tanhf",),          # CORE-MATH s_tanhf.c, b1ecd83, MIT (NOTICE)
     "p3.cu": ("p3_log10",),                      # (float)log10((double)x)
     "thompson_aerosol_warm.cu": ("thompson_aa_log10f_cr",),
     "ruc.cu": ("ruc_log10f_rn", "ruc_expm1f_glibc"),
@@ -501,6 +504,7 @@ UPSTREAM_TOKENS = {
     "MPAS": "Los Alamos National Security",
     "WPS": "WRF Preprocessing System",
     "WRF": "public domain",
+    "UPP": "NOAA EMC Unified Post Processor (UPP)",
 }
 
 #: Cited Fortran sources with NO counterpart in the WRF distribution, so they
@@ -540,6 +544,8 @@ def test_every_upstream_a_first_party_crate_transcribes_is_notified() -> None:
     for name in sorted(cited):
         if name.startswith("mpas_"):
             projects.add("MPAS")
+        elif name in {"INITPOST.F", "MDL2P.F", "params.F"}:
+            projects.add("UPP")
         elif name in _WPS_ONLY:
             projects.add("WPS")
         elif (name.startswith("module_") or name.startswith("mp_")

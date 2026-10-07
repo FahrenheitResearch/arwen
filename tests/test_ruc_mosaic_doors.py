@@ -97,7 +97,11 @@ def test_soil_only_does_not_require_land_fraction_or_landuse_identity():
     np.testing.assert_array_equal(result["soilctop"], static["SOILCTOP"])
 
 
-@pytest.mark.parametrize("name,category", [("LANDUSEF", "land_cat"),
+# real.exe's spelling (land_cat_stag, what WOOF's own stock-WRF export and
+# every WRF 4.x wrfinput carry) and geo_em's (land_cat).
+@pytest.mark.parametrize("name,category", [("LANDUSEF", "land_cat_stag"),
+                                         ("SOILCTOP", "soil_cat_stag"),
+                                         ("LANDUSEF", "land_cat"),
                                          ("SOILCTOP", "soil_cat")])
 def test_wrfinput_uses_reader_axes_and_keeps_real_exe_fractions(
         monkeypatch, name, category):

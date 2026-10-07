@@ -362,7 +362,7 @@ EQUIVALENT: dict[str, str] = {
         "SNEQV is 50 mm, so QSNSUB takes all of QVAP at 6128 and QSEVA is "
         "exactly 0.0; QDEW is 0.0 so QSNFRO takes it and QSDEW is exactly 0.0.  "
         "The increment is exactly zero, and the gate is unobservable.  "
-        "gpuwm/data/noahmp/oracle/noahmp-water.csv constrains the same "
+        "tests/data/oracles/noahmp/noahmp-water.csv constrains the same "
         "statement on a column where it is not.",
     "arg/ficeold":
         "FICEOLD reaches SNOWWATER's COMPACT and is read only by the melt "

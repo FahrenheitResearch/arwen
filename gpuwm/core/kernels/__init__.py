@@ -41,6 +41,9 @@ _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
     "upper_wind_limiter": ("glibc_flt32.cuh",),
     # Reuse the scalar high-order helpers without moving the order-3 unit.
     "pd_vertical_sl": ("pd_advection.cu",),
+    "sfire_coupling": ("glibc_trig_flt32.cuh",),
+    "sfire_ideal": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh", "sfire_libm.cuh"),
+    "sfire_ideal_atmos": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh"),
     # Reuse the existing FRH2O device function for cold-start soil water.
     # The forecast's noah module remains unlisted and byte-identical.
     "noah_init": ("noah.cu",),
@@ -48,6 +51,15 @@ _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
     "portable_libm64_grade": ("portable_libm64.cuh",),
     "vert_interp": ("glibc_flt32.cuh",),
     "thompson_cold_start": ("glibc_flt32.cuh", "portable_libm64.cuh"),
+    "chem_prep": ("glibc_flt32.cuh",),
+    "chem_dust": ("glibc_flt32.cuh",),
+    "chem_seasalt": ("glibc_flt32.cuh",),
+    "chem_rrtmgp_aerosol": ("glibc_flt32.cuh",),
+    "chem_sulfur": ("glibc_flt32.cuh",),
+    "chem_ageing": ("glibc_flt32.cuh",),
+    "chem_settling": ("glibc_flt32.cuh",),
+    "chem_drydep_gocart": ("glibc_flt32.cuh",),
+    "chem_optics": ("glibc_flt32.cuh",),
     "thompson_aerosol_probe": ("thompson_aerosol_common.cuh",),
     "thompson_aerosol_state": ("thompson_aerosol_common.cuh",),
     "thompson_aerosol_sat": ("thompson_aerosol_common.cuh",),
@@ -76,6 +88,9 @@ _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
     "ruc": ("glibc_flt32.cuh",),
     "lake": ("glibc_flt32.cuh", "lake_support.cuh", "lake_wrf.cuh"),
     "gf": ("glibc_flt32.cuh",),
+    # WRF-Chem Wesely gas dry deposition: rc/depvel read exp, log and pow,
+    # and glibc's float forms are what the gfortran column oracle ran.
+    "chem_drydep_wesely": ("glibc_flt32.cuh",),
     # New Tiedtke: scale_fac reads log(dxref/dx), and glibc's logf is not
     # CUDA's.  Prep stage only so far; cumastrn will add exp and pow.
     "ntiedtke": ("glibc_flt32.cuh",),
@@ -120,6 +135,8 @@ _EXTRA_HEADERS: dict[str, tuple[str, ...]] = {
     "real_init": ("real_init_common.cuh",),
     # REAL's float64 thermodynamics use the CPU portable library's bits.
     "real_init_math": ("real_init_common.cuh", "portable_libm64.cuh"),
+    "chem_fire": ("glibc_flt32.cuh",),
+    "chem_plumerise": ("glibc_flt32.cuh",),
 }
 
 #: Read-only view for tests and freeze receipts.

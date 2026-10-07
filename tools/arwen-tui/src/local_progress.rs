@@ -296,7 +296,9 @@ mod tests{
     fn write(path:&Path,value:&Value){fs::write(path,serde_json::to_vec_pretty(value).unwrap()).unwrap();}
     struct Fixture{root:PathBuf,job:PathBuf,config:PathBuf,plan:PathBuf,run:PathBuf,command:Vec<String>,expected:Value}
     fn fixture(hosted:bool)->Fixture{
-        let path=std::env::temp_dir().join(format!("local-progress-{}",crate::remote::stamp()));fs::create_dir_all(&path).unwrap();let root=path.canonicalize().unwrap();
+        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let path=std::env::temp_dir().join(format!("local-progress-{}-{}",crate::remote::stamp(), NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));fs::create_dir_all(&path).unwrap();let root=path.canonicalize().unwrap();
         let job=root.join("job");let run=root.join("run");fs::create_dir(&job).unwrap();fs::create_dir(&run).unwrap();
         let config=root.join("case.toml");fs::write(&config,"[experiment]\nstart_time=2013-05-20T00:00:00\nrun_seconds=21600\nrestart_interval_s=3600\n[[domain]]\ngrid_id=1\nhistory_interval_s=3600\n[[domain]]\ngrid_id=2\nhistory_interval_s=900\n[[domain]]\ngrid_id=3\nhistory_interval_s=900\n").unwrap();
         let sha=digest(&fs::read(&config).unwrap());let plan=root.join("plan.json");write(&plan,&json!({"schema":"gpuwm.run-plan.v1","config":{"path":config},"output_root":run}));

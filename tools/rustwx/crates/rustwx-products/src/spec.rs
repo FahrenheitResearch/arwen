@@ -845,6 +845,10 @@ fn derived_entry_notes(slug: &str, experimental: bool) -> Vec<String> {
 
 fn render_style_name(style: RenderStyle) -> &'static str {
     match style {
+        RenderStyle::AirQualityPm25 => "air_quality_pm25",
+        RenderStyle::AirQualityOzone => "air_quality_ozone",
+        RenderStyle::AerosolOpticalDepth => "aerosol_optical_depth",
+        RenderStyle::DustConcentration => "dust_concentration",
         RenderStyle::WeatherCape => "weather_cape",
         RenderStyle::WeatherCin => "weather_cin",
         RenderStyle::WeatherReflectivity => "weather_reflectivity",

@@ -46,7 +46,7 @@ _STUB_DEFAULT_FIELD = "thp"
 #: grid spacing is a property of the grid, and a second copy in the
 #: ensemble TOML is a place for the two to disagree silently -- with the
 #: length scale, which is expressed in kilometres, absorbing the error.
-GRID_SUPPLIED_KEYS = ("dx_km", "dy_km")
+GRID_SUPPLIED_KEYS = ("dx_km", "dy_km", "hypsometric_opt")
 
 
 @dataclass(frozen=True)
@@ -58,16 +58,19 @@ class ResolvedPerturbation:
     detail: Mapping[str, object]
 
     def __call__(self, state, seed: int, cfg: Mapping[str, object],
-                 *, grid_spacing_km=None):
-        return self.apply(state, seed, cfg, grid_spacing_km=grid_spacing_km)
+                 *, grid_spacing_km=None, hypsometric_opt=None):
+        return self.apply(state, seed, cfg, grid_spacing_km=grid_spacing_km,
+                          hypsometric_opt=hypsometric_opt)
 
 
-def _noop(state, seed, cfg, *, grid_spacing_km=None):  # noqa: ARG001
+def _noop(state, seed, cfg, *, grid_spacing_km=None,
+          hypsometric_opt=None):  # noqa: ARG001
     return {"applied": False, "reason": "perturbation = none"}
 
 
 def _stub(state, seed: int, cfg: Mapping[str, object], *,
-          grid_spacing_km=None):  # noqa: ARG001 - uniform hook signature
+          grid_spacing_km=None,
+          hypsometric_opt=None):  # noqa: ARG001 - uniform hook signature
     """Seeded Gaussian noise on one field.  A stand-in, not a method.
 
     Deterministic in ``seed`` alone: the same seed produces the same
@@ -121,7 +124,7 @@ def _da_lane_adapter(module, entry) -> Callable[..., object]:
     """
 
     def apply(state, seed: int, cfg: Mapping[str, object], *,
-              grid_spacing_km=None):
+              grid_spacing_km=None, hypsometric_opt=None):
         options = dict(cfg or {})
         stated = sorted(key for key in GRID_SUPPLIED_KEYS if key in options)
         if stated:
@@ -129,8 +132,9 @@ def _da_lane_adapter(module, entry) -> Callable[..., object]:
                 f"[ensemble.perturbation_options] states "
                 f"{', '.join(stated)}, which the engine supplies from the "
                 "domain the member runs on. Remove it: two sources for the "
-                "grid spacing is a place for them to disagree, and the "
-                "length_scale_km would silently absorb the difference.")
+                "grid spacing (or the hypsometric option the mass balance "
+                "integrates with) is a place for them to disagree, and "
+                "the length_scale_km would silently absorb the difference.")
         if grid_spacing_km is None:
             raise ValueError(
                 f"{DA_LANE} needs the member's grid spacing and none was "
@@ -139,6 +143,8 @@ def _da_lane_adapter(module, entry) -> Callable[..., object]:
         dx_km, dy_km = (float(value) for value in grid_spacing_km)
         options["dx_km"] = dx_km
         options["dy_km"] = dy_km
+        if hypsometric_opt is not None:
+            options["hypsometric_opt"] = int(hypsometric_opt)
         config = module.PerturbationConfig.from_mapping(options)
         return entry(state, seed, config)
 

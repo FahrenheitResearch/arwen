@@ -91,13 +91,22 @@ def test_the_checkpoint_echo_drops_both_at_their_default():
     assert "swint_opt" not in echo and "aer_opt" not in echo
     echo = restart.configuration_echo(_cfg(swint_opt=1, aer_opt=3, **_HRRR))
     assert echo["swint_opt"] == 1 and echo["aer_opt"] == 3
-    fields = [f.name for f in dataclasses.fields(RunConfig)]
-    offset = fields.index("bl_mynn_cloud_tendency_form") + 1
-    assert fields[offset:] == ["swint_opt", "aer_opt", "alb_sol",
-                              "thompson_version", "thompson_fork_snow_fall",
-                              "rrtmg_cloud_optics_form", "rrtmg_smoke_manifest"]
-    assert RunConfig.__dataclass_fields__["thompson_version"].default == "wrf_461"
-    assert RunConfig.__dataclass_fields__["thompson_fork_snow_fall"].default == "blend"
+    from gpuwm.config import CHEM_RUN_FIELDS, FIRE_RUN_FIELDS
+    names = [field.name for field in dataclasses.fields(RunConfig)]
+    # The keyword-only fire block follows the chem block.
+    names = names[:-len(FIRE_RUN_FIELDS)]
+    assert names[-len(CHEM_RUN_FIELDS):] == list(CHEM_RUN_FIELDS)
+    names = names[:-len(CHEM_RUN_FIELDS)]
+    start = names.index("swint_opt")
+    assert names[start - 1:] == [
+        "bl_mynn_cloud_tendency_form", "swint_opt", "aer_opt", "alb_sol",
+        "thompson_version", "thompson_fork_snow_fall",
+        "rrtmg_cloud_optics_form", "rrtmg_smoke_manifest",
+        "surface_energy_diag"]
+    for name, default in {"thompson_version": "wrf_461",
+            "thompson_fork_snow_fall": "blend", "rrtmg_cloud_optics_form": "wrf_461",
+            "rrtmg_smoke_manifest": ""}.items():
+        assert RunConfig.__dataclass_fields__[name].default == default
 
 
 @pytest.mark.parametrize("kind,words", [

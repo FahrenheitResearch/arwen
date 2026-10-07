@@ -1032,15 +1032,18 @@ mod tests {
     const GOLDEN_CDF5: &[u8] = include_bytes!("../tests/goldens/golden_cdf5.nc");
 
     fn tmp_path(name: &str) -> std::path::PathBuf {
+        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let mut p = std::env::temp_dir();
         p.push(format!(
-            "rw-store-nc-classic-{}-{}-{}",
+            "rw-store-nc-classic-{}-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos(),
-            name
+            name,
+            NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ));
         p
     }

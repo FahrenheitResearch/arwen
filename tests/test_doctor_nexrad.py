@@ -178,11 +178,14 @@ def test_the_bundle_prose_counts_the_artifacts_it_actually_carries():
 
     The count and ``gpuwm.bridge_assets`` prose move together when a
     consumer joins or leaves the bundle. The native tools added in 2.8.6
-    bring it to thirty-seven artifacts.
+    brought it to thirty-seven artifacts with the UPP-derived GRIB2
+    exporter held out; 2.8.7's clean-room exporter and the radar superob
+    bring it to thirty-nine, the nowcast frames converter to forty, and the
+    air-quality program's AirNow reader and ensemble reducer to forty-two.
     """
 
-    assert len(bridge_assets.BUNDLED_ARTIFACTS) == 37
-    assert "thirty-seven artifacts" in bridge_assets.__doc__
+    assert len(bridge_assets.BUNDLED_ARTIFACTS) == 42
+    assert "forty-two artifacts" in bridge_assets.__doc__
     for stale in ("eight artifacts", "nine artifacts", "nine files",
                   "ten artifacts", "ten files", "eleven artifacts",
                   "eleven files", "fourteen artifacts", "fourteen files",
@@ -202,7 +205,10 @@ def test_the_bundle_prose_counts_the_artifacts_it_actually_carries():
                   "thirty artifacts", "thirty files",
                   "thirty-one artifacts", "thirty-one files",
                   "thirty-two artifacts", "thirty-two files",
-                  "thirty-eight artifacts", "thirty-eight files"):
+                  "thirty-seven artifacts", "thirty-seven files",
+                  "thirty-eight artifacts", "thirty-eight files",
+                  "thirty-nine artifacts", "thirty-nine files",
+                  "forty artifacts", "forty files"):
         # Match the complete count, so "eight" does not reject "twenty-eight".
         assert re.search(r"(?<![a-z-])" + re.escape(stale) + r"(?![a-z-])",
                          bridge_assets.__doc__) is None

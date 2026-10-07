@@ -34,6 +34,12 @@ pub struct ObservationProduct {
     pub forecast_time: u32,
     pub valid_time_basis: ObservationTimeBasis,
     pub missing_values: Vec<f64>,
+    /// The subset of the flags that mean nothing was observed at all (MRMS
+    /// composite `-999`, outside radar coverage; QPE `-3` no coverage and
+    /// `-1` missing), as against an observed nothing (`-99`, no echo).
+    /// Both draw no colour; only these draw the no-coverage grey.
+    #[serde(default)]
+    pub unobserved_values: Vec<f64>,
     pub time: TimePolicy,
     pub accumulation_seconds: Option<u32>,
 }
@@ -104,6 +110,9 @@ pub struct ObservationField {
     pub candidate: String,
     pub sha256: String,
     pub missing_cells: usize,
+    /// `true` where the source observed nothing (see
+    /// [`ObservationProduct::unobserved_values`]), on the source grid.
+    pub unobserved: Vec<bool>,
 }
 
 /// The filename narrows acquisition; the decoded message remains authoritative.
@@ -200,6 +209,17 @@ fn mask_value(value: f64, product: &ObservationProduct) -> f32 {
     }
 }
 
+/// A source value that says nothing was observed there: a flag the table
+/// lists as unobserved, or no number at all.  Flags are matched to within
+/// a thousandth, the precision a GRIB2 packing reproduces them to.
+fn unobserved_value(value: f64, product: &ObservationProduct) -> bool {
+    !value.is_finite()
+        || product
+            .unobserved_values
+            .iter()
+            .any(|flag| (value - flag).abs() <= 1.0e-3)
+}
+
 fn decode(
     raw: &[u8],
     origin: &str,
@@ -268,6 +288,10 @@ fn decode(
             values[range].rotate_left(index + 1);
         }
     }
+    let unobserved: Vec<bool> = values
+        .iter()
+        .map(|value| unobserved_value(*value, product))
+        .collect();
     let values: Vec<_> = values
         .into_iter()
         .map(|value| mask_value(value, product))
@@ -285,6 +309,7 @@ fn decode(
         candidate: candidate.to_string(),
         sha256: rw_nexrad::s3::hex_sha256(raw),
         missing_cells,
+        unobserved,
     })
 }
 
@@ -542,6 +567,34 @@ mod tests {
         assert!(mask_value(-99.0, refc).is_nan());
         assert!(mask_value(-999.0, refc).is_nan());
         assert_eq!(mask_value(-10.0, refc), -10.0);
+    }
+
+    #[test]
+    fn no_coverage_is_unobserved_and_no_echo_is_an_observation() {
+        let rows = specifications().unwrap();
+        let refc = &rows[0].products[0];
+        assert!(unobserved_value(-999.0, refc), "MRMS -999: outside radar coverage");
+        assert!(unobserved_value(-999.0004, refc), "a packed flag still matches");
+        assert!(unobserved_value(f64::NAN, refc));
+        assert!(!unobserved_value(-99.0, refc), "MRMS -99: a radar saw no echo");
+        assert!(!unobserved_value(-10.0, refc));
+        assert!(!unobserved_value(35.0, refc));
+        let qpe = &rows[0].products[1];
+        for flag in [-3.0, -1.0] {
+            assert!(unobserved_value(flag, qpe));
+        }
+        assert!(!unobserved_value(0.0, qpe), "zero is observed dry");
+        for row in &rows {
+            for product in &row.products {
+                for flag in &product.unobserved_values {
+                    assert!(
+                        product.missing_values.contains(flag),
+                        "{}: unobserved flag {flag} must also draw no colour",
+                        product.product
+                    );
+                }
+            }
+        }
     }
 
     #[test]

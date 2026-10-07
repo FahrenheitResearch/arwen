@@ -382,6 +382,14 @@ def is_checkpointed(key: str) -> bool:
     zeroed and ``restore_restart`` never writes them.
     """
     head, _, rest = key.partition("/")
+    if head == 'diag':
+        return False
+    if head == 'transport':
+        from tilestream.sfire_smoke import OLD_MU_KEY
+        from gpuwm.state_serialization_contract import CHEM_TIME_PREFIX
+        if key == OLD_MU_KEY or key.startswith('transport/sfire_smoke/' + CHEM_TIME_PREFIX):
+            return False
+        raise ValueError('unknown transport operand cannot be silently dropped from a checkpoint')
     if head != "scratch":
         return True
     from gpuwm.io import restart
@@ -472,7 +480,11 @@ def streaming_manifest(state) -> dict[str, object]:
     :meth:`gpuwm.core.streaming.StreamedDomain.publish` and its gate name it
     and because the name says which of the two questions is being asked.
     """
-    return carrier_manifest(state)
+    result = carrier_manifest(state)
+    if getattr(state, 'chem', None) is not None:
+        from tilestream.sfire_smoke import transport_fields
+        result.update(transport_fields(state))
+    return result
 
 
 def streaming_inventory(obj, names=None) -> dict[str, object]:
@@ -514,6 +526,12 @@ def carrier_scalars(state) -> dict[str, object]:
         out["call_counts"] = dict(driver.call_counts)
         out["ysu_nan_guard_fires"] = int(driver.ysu_nan_guard_fires)
         out["microphysics_updates"] = int(driver.microphysics_updates)
+        fire = getattr(driver, "fire", None)
+        if fire is not None:
+            from tilestream.sfire import clock_values
+            out["fire_clocks"] = clock_values(fire)
+            from tilestream.sfire import header_values
+            out["fire_header"] = header_values(driver)
         contract = getattr(driver, "carriers", None)
         if contract is not None:
             out["carriers"] = contract.state()
@@ -595,6 +613,16 @@ def set_carrier_scalars(state, values) -> None:
         driver.call_counts.update(values["call_counts"])
         driver.ysu_nan_guard_fires = int(values["ysu_nan_guard_fires"])
         driver.microphysics_updates = int(values["microphysics_updates"])
+        if "fire_clocks" in values:
+            from tilestream.sfire import restore_clocks
+            restore_clocks(driver.fire, values["fire_clocks"])
+            if "fire_header" in values:
+                import copy
+                from tilestream.sfire import GRID_DIAGNOSTICS
+                driver.fire._streamed_header = copy.deepcopy(values["fire_header"])
+                record = values["fire_header"]["fire"]["grid"]
+                for key in GRID_DIAGNOSTICS:
+                    setattr(driver.fire.grid, key, tuple(record[key]) if key == "last_ignited_counts" else record[key])
         contract = getattr(driver, "carriers", None)
         stored = values.get("carriers")
         if contract is not None and stored is not None:
@@ -629,7 +657,7 @@ def set_carrier_scalars(state, values) -> None:
 #: under ``output_only`` so that is a stated consequence rather than a
 #: surprise.
 OUTPUT_ONLY_DRIVER_ATTRS: tuple[str, ...] = (
-    "olr", "hmix_k_diag", "sase_flux_diag", "last_sase_ledger",
+    "olr", "cldfra", "hmix_k_diag", "sase_flux_diag", "last_sase_ledger",
 )
 
 

@@ -117,9 +117,10 @@ def _fortran_w_faces(w, rom, vert_order):
 def test_fields_default_to_the_ladder_every_earlier_run_took():
     from gpuwm.config import RunConfig
     names = [f.name for f in dataclasses.fields(RunConfig)]
-    first_order = names.index("v_sca_adv_order")
-    assert names[first_order:first_order + 3] == [
-        "v_sca_adv_order", "v_mom_adv_order", "h_mom_adv_order"]
+    start = names.index("v_sca_adv_order")
+    assert names[start - 1:start + 4] == [
+        "upper_wind_limiter_form", "v_sca_adv_order", "v_mom_adv_order",
+        "h_mom_adv_order", "ruc_irrigation"]
     cfg = RunConfig(nx=8, ny=8, nz=8, dx=1000.0, dy=1000.0, ztop=8000.0, dt=5.0, run_seconds=0.0)
     assert (cfg.v_sca_adv_order, cfg.v_mom_adv_order, cfg.h_mom_adv_order) == (3, 3, 5)
 

@@ -873,35 +873,37 @@ def test_the_runtime_refl_gates_are_reached_through_the_named_constant():
         assert "mp_physicsin(1,6,8,10,18)" not in normalized, relative
         assert "mp_physicsnotin(1,6,8,10,18)" not in normalized, relative
 
-    import ast
-    from collections import Counter
-
-    class GateReads(ast.NodeVisitor):
-        def __init__(self):
-            self.functions = []
-            self.reads = Counter()
-
-        def visit_FunctionDef(self, node):
-            self.functions.append(node.name)
-            self.generic_visit(node)
-            self.functions.pop()
-
-        visit_AsyncFunctionDef = visit_FunctionDef
-
-        def visit_Name(self, node):
-            if node.id == "REFL_10CM_MICROPHYSICS":
-                self.reads[self.functions[-1] if self.functions else "<module>"] += 1
-
-    gates = GateReads()
-    gates.visit(ast.parse((REPO / "gpuwm/runtime.py").read_text(encoding="utf-8")))
-    # Case output now has distinct capture, streamed and resident handoffs.
-    # Pin their owning functions instead of conflating the added handoffs
-    # with imports or string references in a whole-module occurrence count.
-    assert gates.reads == {
-        "write_case_output": 3,
-        "integrate_prepared_case": 1,
-        "_submit_tree_history_frame": 1,
-    }
+    tree = ast.parse((REPO / "gpuwm/runtime.py").read_text(encoding="utf-8"))
+    imports = [node for node in tree.body if isinstance(node, ast.ImportFrom)
+               and node.module == "gpuwm.core.physics_inventory"
+               and any(alias.name == "REFL_10CM_MICROPHYSICS"
+                       for alias in node.names)]
+    assert len(imports) == 1
+    # Case output now has separate ensemble-capture, streamed, and ordinary
+    # resident consumers. Each uses the same admission inventory, along with
+    # the substep schedule and the tree history handoff.
+    gates = {}
+    for function in tree.body:
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        references = [node for node in ast.walk(function)
+                      if isinstance(node, ast.Name)
+                      and node.id == "REFL_10CM_MICROPHYSICS"]
+        if references:
+            gates[function.name] = len(references)
+            comparisons = [node for node in ast.walk(function)
+                           if isinstance(node, ast.Compare)
+                           and any(isinstance(value, ast.Name)
+                                   and value.id == "REFL_10CM_MICROPHYSICS"
+                                   for value in node.comparators)]
+            assert len(comparisons) == len(references), function.name
+            assert all(isinstance(node.left, ast.Attribute)
+                       and node.left.attr == "mp_physics"
+                       and len(node.ops) == 1
+                       and isinstance(node.ops[0], ast.In)
+                       for node in comparisons), function.name
+    assert gates == {"write_case_output": 3, "integrate_prepared_case": 1,
+                     "_submit_tree_history_frame": 1}
 
 
 def test_the_prepared_runner_consumes_the_mp28_refl_handoff():

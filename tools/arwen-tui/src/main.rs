@@ -8388,13 +8388,16 @@ mod tests {
     }
 
     fn loaded_app(text: &str) -> App {
+        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let dir = env::temp_dir().join(format!(
-            "arwen-ui-controls-{}-{}",
+            "arwen-ui-controls-{}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ));
         fs::create_dir(&dir).unwrap();
         let path = dir.join("experiment.toml");

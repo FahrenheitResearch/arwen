@@ -134,6 +134,11 @@ def test_withhold_takes_the_gated_fields_from_the_solve_without_the_batch():
         assert np.array_equal(out[f][..., ~columns],
                               increments[f][..., ~columns])
     assert np.array_equal(out["u"], increments["u"])
+    # A field no gate rewrites is passed through, not copied: a second
+    # whole-ensemble float64 copy of every analysed field was host memory
+    # the gated solves never needed.  The rewritten ones are fresh arrays.
+    assert out["u"] is increments["u"]
+    assert out["thp"] is not increments["thp"]
     assert receipt["solves"][0]["columns"] == 9
 
 
@@ -568,3 +573,74 @@ def test_an_ab_bundle_replays_the_gate_it_recorded():
     replay = module.build_config({"config": recorded}, "host")
     assert replay.velocity_dispersion_ratio is None
     assert replay.velocity_dispersion_batch_ratio is None
+
+
+def test_a_point_batch_is_reindexed_into_each_withheld_solve_box():
+    """A conventional point batch (whole-grid flat indices) beside gated Vr:
+    each zone's cut solve must receive it re-indexed into the box with no
+    window -- the device solver refuses a point batch with a window -- and
+    holding only the points the box keeps; in the zone the solve equals the
+    whole-domain solve without the withheld batches.  The Iowa da-obs-iau
+    cycle (2026-10-06) stopped on exactly this at its first analysis."""
+    from dataclasses import replace
+
+    from gpuwm.da.letkf import LetkfConfig, PointSet, analyze, point_batch
+    from gpuwm.da.radar_assimilation import letkf_grid_geometry
+
+    members, nz, ny, nx = 5, NZ, 30, 30
+    grid = letkf_grid_geometry(_grid_sized(ny, nx))
+    loc = Localization(horizontal_m=9000.0, vertical_m=3000.0)
+    sites = [(4, 4), (25, 25), (15, 15)]
+    batches = [_column_batch(members, f"vr:R{k}", site, nz=nz, ny=ny, nx=nx,
+                             localization=loc, seed=k, radius=4)
+               for k, site in enumerate(sites)]
+    rng = np.random.default_rng(7)
+    cells = [(0, 3, 6), (1, 5, 5), (2, 14, 16), (0, 26, 24), (1, 28, 2)]
+    flat = np.sort(np.ravel_multi_index(tuple(np.array(cells).T), (nz, ny, nx)))
+    points = PointSet(flat_index=flat, values=rng.standard_normal(flat.size),
+                      errors=np.full(flat.size, 1.0),
+                      simulated=rng.standard_normal((members, flat.size)))
+    batches.append(point_batch("conventional:surface-temperature",
+                               (nz, ny, nx), points, localization=loc))
+    prior = {f: rng.standard_normal((members, nz, ny, nx))
+             for f in ("thp", "qv", "u")}
+    config = LetkfConfig(localization=loc, analysis_fields=("thp", "qv", "u"),
+                         rtps_alpha=0.0)
+    joint = analyze(prior, batches, grid, config)
+    gates = []
+    for k, (j, i) in enumerate(sites[:2]):
+        columns = np.zeros((ny, nx), bool)
+        columns[max(0, j - 5):j + 6, max(0, i - 5):i + 6] = True
+        gates.append(DispersionGate(batch=f"vr:R{k}", fields=("thp", "qv"),
+                                    columns=columns))
+    seen_points = []
+
+    def solve(gated_prior, kept, fields, geometry):
+        shape = next(iter(gated_prior.values())).shape[1:]
+        for b in kept:
+            if b.points is None:
+                continue
+            assert b.window is None
+            idx = np.asarray(b.points.flat_index)
+            assert idx.size == int(np.count_nonzero(b.mask))
+            assert idx.size == 0 or int(idx.max()) < int(np.prod(shape))
+            assert np.shape(b.mask) == tuple(shape)
+            seen_points.append(int(idx.size))
+        return analyze(gated_prior, kept, geometry,
+                       replace(config, analysis_fields=tuple(fields)))
+
+    out, receipt = withhold(solve, prior, batches, joint, gates,
+                            ("thp", "qv", "u"), geometry=grid,
+                            localization=loc)
+    assert receipt["solves"] and seen_points
+    assert min(seen_points) < flat.size          # some box dropped points
+    for entry in receipt["solves"]:
+        held = set(entry["withheld"])
+        zone = np.ones((ny, nx), bool)
+        for gate in gates:
+            zone &= gate.columns == (gate.batch in held)
+        whole = analyze(prior, [b for b in batches if b.name not in held],
+                        grid, replace(config, analysis_fields=("thp", "qv")))
+        for f in ("thp", "qv"):
+            np.testing.assert_allclose(out[f][..., zone], whole[f][..., zone],
+                                       rtol=0, atol=1e-12)

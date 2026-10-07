@@ -396,7 +396,8 @@ def test_the_default_fetch_stages_the_soil_archive_too():
     sub = parser.add_subparsers(dest="cmd")
     geog_assets.register_cli(sub)
     args = parser.parse_args(["fetch-geog"])
-    assert parse_datasets(args.datasets) == geog_assets.geog_datasets()
+    assert parse_datasets(args.datasets) == tuple(
+        a.dataset for a in geog_assets.GEOG_ARCHIVES if a.fetch_by_default)
     assert "soilgrids" in parse_datasets(args.datasets)
 
 
@@ -410,9 +411,11 @@ def test_a_consumer_name_selects_that_doors_datasets():
         geog_assets.GEOG_CONSUMER_MESH)
     # and it composes with explicit names, in canonical order
     assert parse_datasets("wrf,soilgrids") == tuple(
-        archive.dataset for archive in geog_assets.GEOG_ARCHIVES if archive.required_by)
+        archive.dataset for archive in geog_assets.GEOG_ARCHIVES
+        if archive.required_by and archive.fetch_by_default)
     explicit = "wrf,soilgrids,lake_depth,bnu_soiltype_top,bnu_soiltype_bot"
-    assert parse_datasets(explicit) == geog_assets.geog_datasets()
+    assert parse_datasets(explicit) == tuple(
+        a.dataset for a in geog_assets.GEOG_ARCHIVES if a.fetch_by_default)
 
 
 def test_resolve_source_defaults_and_bundle_rules():

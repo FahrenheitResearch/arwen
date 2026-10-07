@@ -51,7 +51,9 @@ _prepare_fields = cp.ElementwiseKernel(
     float za = __fdiv_rn(__fadd_rn(phb[phb_full ? above : k + 1], php[above]), gravity);
     dz = __fsub_rn(za, zb);
     """,
-    "morrison_prepare_fields", options=("--ftz=true",))
+    # FTZ comes from CuPy's own -ftz=true; a second spelling is refused
+    # by NVRTC 12 (see gpuwm/core/mynn_pbl_gpu.py).
+    "morrison_prepare_fields")
 
 def launch_morrison(theta, qv, qc, qr, qi, qs, qg,
                     nc, nr, ni, ns, ng, rho, pii, pressure, dz,

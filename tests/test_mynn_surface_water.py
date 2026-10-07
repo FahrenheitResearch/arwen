@@ -104,7 +104,7 @@ from gpuwm.core.mynn_surface import (
 )
 
 
-ORACLE_DIR = Path(__file__).parents[1] / "gpuwm" / "data" / "mynn" / "oracle"
+ORACLE_DIR = Path(__file__).parents[1] / "tests" / "data" / "oracles" / "mynn"
 WATER_ORACLE = ORACLE_DIR / "surface-layer-water.csv"
 LEAF_ORACLE = ORACLE_DIR / "surface-layer-water-leaf.csv"
 HARNESS = (

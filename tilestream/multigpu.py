@@ -398,11 +398,12 @@ def forced_halo(cfg) -> int:
     """The halo a SPECIFIED (boundary-forced) decomposition needs.
 
     :func:`tilestream.realcase.halo_for`'s quarantine arithmetic, reused
-    rather than restated: the per-step dependency radius plus
-    ``max(spec_zone, relax_zone)``, because on a seam side the boundary
-    kernel writes that many cells of fiction into the window before the step
-    starts to propagate, and the halo is what keeps every owned cell out of
-    its reach.  See realcase.py's module docstring for the proof shape.
+    rather than restated: the per-step dependency radius plus ``spec_zone``
+    (:func:`tilestream.realcase.seam_fiction_width`), because on a seam
+    side the specified-zone write puts that many cells of fiction into the
+    window before the step starts to propagate (the relaxation band is
+    masked there), and the halo is what keeps every owned cell out of its
+    reach.  See realcase.py's module docstring for the proof shape.
     """
     from tilestream import realcase as _realcase
 
@@ -435,9 +436,10 @@ def validate_forced_plan(cfg, specs, halo: int, boundaries, *,
             "on the ranked road (tilestream.ranks with its nest hook), "
             "or use external specified forcing")
     if getattr(cfg, "nested", False):
-        # The nest's boundary application writes the same perimeter frame a
+        # The nest's boundary application writes the same specified zone a
         # specified domain's does, from rolling tables that are zeros on a
-        # seam side, so the halo must cover that frame (ranked_halo adds it).
+        # seam side, and its relaxation band is masked there too, so the
+        # halo covers spec_zone cells (ranked_halo adds them).
         need = forced_halo(cfg)
         if enforce_halo and int(halo) < need:
             raise MultiGPUError(
@@ -463,10 +465,11 @@ def validate_forced_plan(cfg, specs, halo: int, boundaries, *,
         raise MultiGPUError(
             f"halo={int(halo)} is below the forced-decomposition radius "
             f"{need} (= dependency radius {int(_harness.halo_radius(cfg))} + "
-            f"max(spec_zone={int(cfg.spec_zone)}, "
-            f"relax_zone={int(cfg.relax_zone)})): a seam-side boundary "
-            "application writes that many cells of fiction before the step "
-            "propagates it, so a narrower halo lets it reach owned cells.  "
+            f"seam fiction {need - int(_harness.halo_radius(cfg))}, the "
+            f"specified zone's spec_zone={int(cfg.spec_zone)} cells): a "
+            "seam-side specified-zone write puts that many cells of fiction "
+            "into the window before the step propagates it, so a narrower "
+            "halo lets it reach owned cells.  "
             "Use halo=None (the default derives the padded radius).")
     if (int(boundaries.spec_zone) != int(cfg.spec_zone)
             or int(boundaries.relax_zone) != int(cfg.relax_zone)):

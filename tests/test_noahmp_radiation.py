@@ -1,6 +1,6 @@
 """max_ulp-0 gate for the Noah-MP shortwave-radiation leaves.
 
-Every row of every fixture under ``gpuwm/data/noahmp/oracle/`` was produced by
+Every row of every fixture under ``tests/data/oracles/noahmp/`` was produced by
 the unmodified (visibility-patched only) WRF-4.6.1 module; see
 ``tools/noahmp_wrf461_oracle/build_radiation.sh``.  Inputs and outputs are
 stored as IEEE-754 binary32 bit patterns, so nothing here parses a decimal.
@@ -30,7 +30,7 @@ from gpuwm.core.noahmp_radiation import (
     twostream,
 )
 
-ORACLE = Path(__file__).resolve().parents[1] / "gpuwm" / "data" / "noahmp" / "oracle"
+ORACLE = Path(__file__).resolve().parents[1] / "tests" / "data" / "oracles" / "noahmp"
 
 F = np.float32
 

@@ -425,10 +425,17 @@ def _run_render(command: Sequence[str], *,
     environment = _stage_env()
     if env_overrides:
         environment.update(env_overrides)
+    # popen_options(): the render dies with the process that started it,
+    # its own group or not.  The group keeps a Stop's SIGINT away from a
+    # render mid-organisation (above); it was never meant to let a render
+    # outlive a forecast killed by pid (gpuwm.parent_death).
+    from gpuwm.parent_death import popen_options
+
     process = subprocess.Popen(
         list(command), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, errors="replace", cwd=str(_stage_cwd()),
-        env=environment, **(_own_group_options() if own_group else {}))
+        env=environment, **(_own_group_options() if own_group else {}),
+        **popen_options())
     setattr(process, _OWN_GROUP_ATTRIBUTE, bool(own_group))
     ident = threading.get_ident()
     with _RUNNING_LOCK:
@@ -934,6 +941,10 @@ class FirstProducts:
             written = finished_pictures(scratch, iter_rendered(scratch),
                                         completed.returncode)
             if not written:
+                from gpuwm.render_receipts import preserve_inactive_fire_skip
+                with self._publish:
+                    if preserve_inactive_fire_skip(scratch, render_dir, completed.returncode):
+                        return
                 # Not a failure.  The cold-start frame carries no
                 # REFL_10CM -- no microphysics call precedes it, a
                 # registered deviation -- so a run whose only product is

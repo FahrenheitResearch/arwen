@@ -3138,6 +3138,10 @@ class RRTMGPRadiation:
     #: decide whether the run's wrfout carries the field.  Unannotated on
     #: purpose: this is a class constant, not a dataclass field.
     publishes_olr = True
+    #: The icloud=1 cloud fraction is built for every call whichever
+    #: spectra run, so the driver's held CLDFRA output buffer exists for
+    #: every RTE+RRTMGP configuration.  Class constant, as above.
+    publishes_cldfra = True
 
     start_time: datetime
     latitude_deg: object
@@ -3983,6 +3987,12 @@ class RRTMGPRadiation:
         if not self.longwave:
             result.glw = fields["glw"]
             result.olr = None
+        # CLDFRA: the icloud=1 fraction after the MYNN merge, the one both
+        # spectra radiated through (read only by the path and mask
+        # builders above), back on the model grid for the driver's held
+        # output buffer.  Computed on every call whatever the spectra.
+        result.cldfra = cp.ascontiguousarray(
+            cldfra.reshape(ny, nx, nz).transpose(2, 0, 1))
         # Release hook.  The shipped SharedRRTMGPChunkWorkspace has no
         # ``on_call_end``, so it keeps its persistent behaviour with no
         # branch and no cost; a workspace that CAN hand its bytes back

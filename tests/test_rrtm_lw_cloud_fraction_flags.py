@@ -208,7 +208,10 @@ def _run_adapter_capturing_solver_inputs(monkeypatch, *, mp_physics):
 def test_the_adapter_wires_the_registry_pair_not_hardcoded_booleans():
     """Source-level: the call site cannot regress to literal flags."""
 
-    source = inspect.getsource(RRTMLongwaveRadiation.longwave)
+    # The body moved into longwave_with_cloud_fraction when the adapter
+    # began returning the CLDFRA it radiated through (RULINGS 1, 2.8.7);
+    # longwave is now a three-value view of it.
+    source = inspect.getsource(RRTMLongwaveRadiation.longwave_with_cloud_fraction)
     assert "legacy_cloud_fraction_flags" in source, (
         "the RRTM longwave adapter no longer resolves cal_cldfra1's flags "
         "from the Registry package membership helper in "

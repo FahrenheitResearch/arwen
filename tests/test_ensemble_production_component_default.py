@@ -220,6 +220,42 @@ def test_singleton_keeps_its_original_door_without_component_receipts(tmp_path, 
     assert "prepared_component_admission" not in result
 
 
+@pytest.mark.parametrize("chem_sets", ["smoke", "gocart_primary,smoke", "cams_aq"])
+def test_active_chemistry_component_decline_keeps_original_reason_and_never_calls_factory(
+        tmp_path, monkeypatch, chem_sets):
+    from gpuwm.ensemble import production, prepared_nested_batch
+    from gpuwm.ensemble.prepared_component_reservation import plan_prepared_component_reservation
+    from gpuwm.ensemble.suite_capabilities import plan_suite
+    session, runner, inputs, collector, events, _ = fixture(tmp_path, monkeypatch)
+    inputs.experiment = replace(inputs.experiment, domains=tuple(
+        replace(domain, run=replace(domain.run, chem_sets=chem_sets))
+        for domain in inputs.experiment.domains))
+    # Keep the real chemistry routing declaration and actual cold reservation.
+    # Numerical estimates are the complete declared CPU runner envelopes.
+    monkeypatch.setattr("gpuwm.ensemble.suite_capabilities.plan_suite", plan_suite)
+    def cold_plan(values, *, card, **kwargs):
+        decision = plan_prepared_component_reservation(values,
+            ordinary_forecast_bytes={member: 100 for member in values},
+            fixed_bytes={key: 0 for key in ("collector", "stochastic", "cuda_owners", "allocator_margin")},
+            evidence={key: "complete original CPU callback fixture envelope" for key in
+                ("ordinary", "collector", "stochastic", "cuda_owners", "allocator_margin")},
+            available_bytes=card.available_bytes)
+        assert not decision.eligible and decision.reservation is None
+        return None, decision.ordinary_reason
+    monkeypatch.setattr(production, "_prepared_component_route_plan", cold_plan)
+    monkeypatch.setattr(prepared_nested_batch, "ProductionNestedPackFactory",
+        lambda *args, **kwargs: pytest.fail("active chemistry called a component factory"))
+    result = session.run_prepared(runner, inputs)
+    assert result["members_completed"] == [0, 1] and collector.finished
+    assert not any(event[0] == "component" for event in events)
+    assert result["prepared_component_waves"] == []
+    assert all(not row["eligible"] and "active chemistry" in row["ordinary_reason"]
+               for row in result["prepared_component_admission"])
+    assert all(any("species arrays, source-hour caches and mass ledger" in reason for reason in row["reasons"])
+               for row in result["ordinary_fallback_reasons"])
+    assert result["member_results"][0]["result"]["backend"] == "ordinary_concurrent_members"
+
+
 @pytest.mark.parametrize("source_kind,component", [("ordinary", True), ("posted", False)])
 def test_concrete_source_owner_keeps_its_original_lifetime_and_durable_manifest(tmp_path, monkeypatch, source_kind, component):
     session, runner, inputs, _, events, _ = fixture(tmp_path, monkeypatch, source_kind=source_kind)

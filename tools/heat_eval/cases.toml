@@ -1,0 +1,68 @@
+# Cases for the nowcast radar-heating evaluation (WOOF in the HRRR
+# configuration).  Rows, not code: a new case is a new row.  Picked and
+# checked in Downloads/STORMSCOPE-HEATING-2026-10-06/cases-and-scoring.md;
+# every object listed there answered an anonymous HEAD on 2026-10-06.
+#
+# role:  decision  scored by the decision rule
+#        anchor    regression check only (rule 6), tuned against before
+#        reserve   used only when a decision case fails gate G3
+# order: the order the box runs cases in (anchor first).
+
+schema = "gpuwm.heat-eval-cases.v1"
+
+[defaults]
+start_hour = 18                 # t0: the HRRR analysis every arm but B starts from
+boundary_cycle_offset_hours = -3   # RAP 15Z boundaries for an 18Z start
+boundary_cadence_hours = 3
+forecast_hours = 18             # arms A, C and E run to t0 + 18 h
+hrrr_reference_hours = 18       # the HRRR column: its own wrfsfc f01 to f18
+g3_growth = 1.5                 # gate G3: 35 dBZ area at t0+3 h over t0
+g3_threshold_dbz = 35.0
+
+[[case]]
+id = "c5-20261001"
+date = "2026-10-01"
+role = "anchor"
+order = 1
+goes_east = "noaa-goes19"
+region = "Central US and Gulf"
+
+[[case]]
+id = "c1-20240521"
+date = "2024-05-21"
+role = "decision"
+order = 2
+goes_east = "noaa-goes16"
+region = "Iowa, Minnesota, Wisconsin"
+
+[[case]]
+id = "c4-20260822"
+date = "2026-08-22"
+role = "decision"
+order = 3
+goes_east = "noaa-goes19"
+region = "Ohio Valley and mid-South, plus Colorado"
+
+[[case]]
+id = "c2-20250314"
+date = "2025-03-14"
+role = "decision"
+order = 4
+goes_east = "noaa-goes16"
+region = "Missouri, Iowa, Nebraska, Kansas, Arkansas"
+
+[[case]]
+id = "c3-20260802"
+date = "2026-08-02"
+role = "decision"
+order = 5
+goes_east = "noaa-goes19"
+region = "Georgia, South Carolina, West Virginia, Pennsylvania"
+
+[[case]]
+id = "r1-20260928"
+date = "2026-09-28"
+role = "reserve"
+order = 6
+goes_east = "noaa-goes19"
+region = "DA build-line reserve"

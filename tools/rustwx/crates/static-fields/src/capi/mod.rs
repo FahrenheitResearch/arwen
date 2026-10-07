@@ -23,6 +23,7 @@
 pub mod build;
 pub mod grid;
 pub mod highres;
+pub mod sfire;
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;

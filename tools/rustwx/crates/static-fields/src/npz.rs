@@ -17,7 +17,7 @@ use crate::error::{Result, StaticError};
 use crate::types::{Field, FieldSet};
 
 /// CRC-32 (IEEE, reflected), the polynomial zlib/`zipfile` use.
-fn crc32(bytes: &[u8]) -> u32 {
+pub(crate) fn crc32(bytes: &[u8]) -> u32 {
     let mut table = [0u32; 256];
     for (i, entry) in table.iter_mut().enumerate() {
         let mut c = i as u32;
@@ -90,13 +90,28 @@ struct Member {
 /// fields exactly as CPython's `zipfile` writes them for small files
 /// (version 20, flags 0, no data descriptor, classic end record).
 pub fn write_deterministic_npz(path: &Path, fields: &FieldSet) -> Result<()> {
+    write_deterministic_npz_extra(path,fields,&std::collections::BTreeMap::new())
+}
+
+/// Write native arrays with additional portable metadata members. Ordinary
+/// field-only calls retain the existing byte-deterministic archive contract.
+pub fn write_deterministic_npz_extra(path:&Path,fields:&FieldSet,
+    extra:&std::collections::BTreeMap<String,Vec<u8>>) -> Result<()> {
     let mut payload: Vec<u8> = Vec::new();
     let mut members: Vec<Member> = Vec::new();
-
-    // BTreeMap iterates in sorted name order, matching sorted(fields).
+    let mut entries=Vec::new();
     for (name, field) in &fields.fields {
-        let data = npy_bytes(field);
-        let member_name = format!("{name}.npy");
+        entries.push((format!("{name}.npy"),npy_bytes(field)));
+    }
+    for (name,data) in extra {
+        if entries.iter().any(|(existing,_)|existing==name) {
+            return Err(StaticError::Invalid(format!("NPZ metadata duplicates array member {name}")));
+        }
+        entries.push((name.clone(),data.clone()));
+    }
+    if !extra.is_empty() {entries.sort_by(|a,b|a.0.cmp(&b.0));}
+    if entries.len()>u16::MAX as usize {return Err(StaticError::Invalid("NPZ classic ZIP member count exceeds 65535".into()));}
+    for (member_name,data) in entries {
         if member_name.len() > u16::MAX as usize {
             return Err(StaticError::Invalid(format!(
                 "NPZ member name too long: {member_name:?}"
@@ -109,7 +124,7 @@ pub fn write_deterministic_npz(path: &Path, fields: &FieldSet) -> Result<()> {
                  seal writes classic ZIP records"
             ))
         })?;
-        let offset = payload.len() as u32;
+        let offset = u32::try_from(payload.len()).map_err(|_|StaticError::Invalid("NPZ classic ZIP offsets exceed 4 GiB".into()))?;
         // local file header
         payload.extend_from_slice(&0x0403_4B50u32.to_le_bytes());
         payload.extend_from_slice(&20u16.to_le_bytes()); // version needed
@@ -127,7 +142,7 @@ pub fn write_deterministic_npz(path: &Path, fields: &FieldSet) -> Result<()> {
         members.push(Member { name: member_name, crc, size, offset });
     }
 
-    let central_start = payload.len() as u32;
+    let central_start = u32::try_from(payload.len()).map_err(|_|StaticError::Invalid("NPZ classic ZIP offsets exceed 4 GiB".into()))?;
     for member in &members {
         payload.extend_from_slice(&0x0201_4B50u32.to_le_bytes());
         payload.push(20); // create version
@@ -149,7 +164,7 @@ pub fn write_deterministic_npz(path: &Path, fields: &FieldSet) -> Result<()> {
         payload.extend_from_slice(&member.offset.to_le_bytes());
         payload.extend_from_slice(member.name.as_bytes());
     }
-    let central_size = payload.len() as u32 - central_start;
+    let central_size = u32::try_from(payload.len()).map_err(|_|StaticError::Invalid("NPZ classic ZIP offsets exceed 4 GiB".into()))?-central_start;
     payload.extend_from_slice(&0x0605_4B50u32.to_le_bytes());
     payload.extend_from_slice(&0u16.to_le_bytes()); // this disk
     payload.extend_from_slice(&0u16.to_le_bytes()); // central-dir disk

@@ -1,0 +1,168 @@
+{
+  "schema": "gpuwm.chem.cams-boundary-fragment.v1",
+  "note": "The CAMS global forecast's aerosol mixing ratios as boundary entries of the GOCART rows, with their bin weights and derivation (from lane/aq-cams). tools/chem_gocart/make_gocart_rows.py appends each entry to the named row's 'boundary' list; the shared so2 row's Wesely block and CAMS entry are in the generator itself.",
+  "entries": {
+    "dust_1": {
+      "source": "cams-global",
+      "fields": [
+        "dust_0p03_0p55um",
+        "dust_0p55_0p9um",
+        "dust_0p9_20um"
+      ],
+      "weights": [
+        1.0,
+        1.0,
+        0.0339752864
+      ],
+      "conversion": "kg_kg_moist_to_ug_kg_dry",
+      "provenance": "CAMS dust bins are radius 0.03-0.55, 0.55-0.9 and 0.9-20 um (ADS variable names); GOCART's are 0.1-1.0, 1.0-1.8, 1.8-3.0, 3.0-6.0 and 6.0-10.0 um (phys/module_data_gocart_dust.F:33-34). Mass is taken as uniform in ln(r) inside each CAMS bin, the assumption WRF-Chem's own PM sums make inside GOCART bins (chem/module_gocart_aerosols.F:97-99, d_2_5 = ln(2.5/2)/ln(3.6/2)). Mass outside GOCART's range goes to the nearest GOCART bin (below 0.1 um to dust_1, 10-20 um to dust_5), so the column mass is conserved. A declared data choice: WRF-Chem defines no map from CAMS bins."
+    },
+    "dust_2": {
+      "source": "cams-global",
+      "fields": [
+        "dust_0p9_20um"
+      ],
+      "weights": [
+        0.189541786
+      ],
+      "conversion": "kg_kg_moist_to_ug_kg_dry",
+      "provenance": "CAMS dust bins are radius 0.03-0.55, 0.55-0.9 and 0.9-20 um (ADS variable names); GOCART's are 0.1-1.0, 1.0-1.8, 1.8-3.0, 3.0-6.0 and 6.0-10.0 um (phys/module_data_gocart_dust.F:33-34). Mass is taken as uniform in ln(r) inside each CAMS bin, the assumption WRF-Chem's own PM sums make inside GOCART bins (chem/module_gocart_aerosols.F:97-99, d_2_5 = ln(2.5/2)/ln(3.6/2)). Mass outside GOCART's range goes to the nearest GOCART bin (below 0.1 um to dust_1, 10-20 um to dust_5), so the column mass is conserved. A declared data choice: WRF-Chem defines no map from CAMS bins."
+    },
+    "dust_3": {
+      "source": "cams-global",
+      "fields": [
+        "dust_0p9_20um"
+      ],
+      "weights": [
+        0.164724392
+      ],
+      "conversion": "kg_kg_moist_to_ug_kg_dry",
+      "provenance": "CAMS dust bins are radius 0.03-0.55, 0.55-0.9 and 0.9-20 um (ADS variable names); GOCART's are 0.1-1.0, 1.0-1.8, 1.8-3.0, 3.0-6.0 and 6.0-10.0 um (phys/module_data_gocart_dust.F:33-34). Mass is taken as uniform in ln(r) inside each CAMS bin, the assumption WRF-Chem's own PM sums make inside GOCART bins (chem/module_gocart_aerosols.F:97-99, d_2_5 = ln(2.5/2)/ln(3.6/2)). Mass outside GOCART's range goes to the nearest GOCART bin (below 0.1 um to dust_1, 10-20 um to dust_5), so the column mass is conserved. A declared data choice: WRF-Chem defines no map from CAMS bins."
+    },
+    "dust_4": {
+      "source": "cams-global",
+      "fields": [
+        "dust_0p9_20um"
+      ],
+      "weights": [
+        0.223517072
+      ],
+      "conversion": "kg_kg_moist_to_ug_kg_dry",
+      "provenance": "CAMS dust bins are radius 0.03-0.55, 0.55-0.9 and 0.9-20 um (ADS variable names); GOCART's are 0.1-1.0, 1.0-1.8, 1.8-3.0, 3.0-6.0 and 6.0-10.0 um (phys/module_data_gocart_dust.F:33-34). Mass is taken as uniform in ln(r) inside each CAMS bin, the assumption WRF-Chem's own PM sums make inside GOCART bins (chem/module_gocart_aerosols.F:97-99, d_2_5 = ln(2.5/2)/ln(3.6/2)). Mass outside GOCART's range goes to the nearest GOCART bin (below 0.1 um to dust_1, 10-20 um to dust_5), so the column mass is conserved. A declared data choice: WRF-Chem defines no map from CAMS bins."
+    },
+    "dust_5": {
+      "source": "cams-global",
+      "fields": [
+        "dust_0p9_20um"
+      ],
+      "weights": [
+        0.388241464
+      ],
+      "conversion": "kg_kg_moist_to_ug_kg_dry",
+      "provenance": "CAMS dust bins are radius 0.03-0.55, 0.55-0.9 and 0.9-20 um (ADS variable names); GOCART's are 0.1-1.0, 1.0-1.8, 1.8-3.0, 3.0-6.0 and 6.0-10.0 um (phys/module_data_gocart_dust.F:33-34). Mass is taken as uniform in ln(r) inside each CAMS bin, the assumption WRF-Chem's own PM sums make inside GOCART bins (chem/module_gocart_aerosols.F:97-99, d_2_5 = ln(2.5/2)/ln(3.6/2)). Mass outside GOCART's range goes to the nearest GOCART bin (below 0.1 um to dust_1, 10-20 um to dust_5), so the column mass is conserved. A declared data choice: WRF-Chem defines no map from CAMS bins."
+    },
+    "seas_1": {
+      "source": "cams-global",
+      "fields": [
+        "sea_salt_0p03_0p5um",
+        "sea_salt_0p5_5um"
+      ],
+      "weights": [
+        0.23255814,
+        0.0695007154
+      ],
+      "conversion": "kg_kg_moist_to_ug_kg_dry",
+      "provenance": "CAMS sea-salt bins (radius 0.03-0.5, 0.5-5, 5-20 um) and mass are stated at 80 % relative humidity. Dry radius = r80/1.99 and dry mass = mass80/4.3, the CAMS/IFS convention for converting its sea salt to dry matter (the 4.3 mass factor with sea-salt densities 2160 dry and 1182 kg m-3 wet gives the 1.99 radius ratio). GOCART sea-salt bins are dry radius 0.1-0.5, 0.5-1.5, 1.5-5.0, 5.0-10.0 um (chem/module_data_gocart_seas.F:2-3). Mass uniform in ln(r) inside each CAMS bin, out-of-range mass to the nearest GOCART bin. A declared data choice."
+    },
+    "seas_2": {
+      "source": "cams-global",
+      "fields": [
+        "sea_salt_0p5_5um"
+      ],
+      "weights": [
+        0.110958431
+      ],
+      "conversion": "kg_kg_moist_to_ug_kg_dry",
+      "provenance": "CAMS sea-salt bins (radius 0.03-0.5, 0.5-5, 5-20 um) and mass are stated at 80 % relative humidity. Dry radius = r80/1.99 and dry mass = mass80/4.3, the CAMS/IFS convention for converting its sea salt to dry matter (the 4.3 mass factor with sea-salt densities 2160 dry and 1182 kg m-3 wet gives the 1.99 radius ratio). GOCART sea-salt bins are dry radius 0.1-0.5, 0.5-1.5, 1.5-5.0, 5.0-10.0 um (chem/module_data_gocart_seas.F:2-3). Mass uniform in ln(r) inside each CAMS bin, out-of-range mass to the nearest GOCART bin. A declared data choice."
+    },
+    "seas_3": {
+      "source": "cams-global",
+      "fields": [
+        "sea_salt_0p5_5um",
+        "sea_salt_5_20um"
+      ],
+      "weights": [
+        0.0520989928,
+        0.11543819
+      ],
+      "conversion": "kg_kg_moist_to_ug_kg_dry",
+      "provenance": "CAMS sea-salt bins (radius 0.03-0.5, 0.5-5, 5-20 um) and mass are stated at 80 % relative humidity. Dry radius = r80/1.99 and dry mass = mass80/4.3, the CAMS/IFS convention for converting its sea salt to dry matter (the 4.3 mass factor with sea-salt densities 2160 dry and 1182 kg m-3 wet gives the 1.99 radius ratio). GOCART sea-salt bins are dry radius 0.1-0.5, 0.5-1.5, 1.5-5.0, 5.0-10.0 um (chem/module_data_gocart_seas.F:2-3). Mass uniform in ln(r) inside each CAMS bin, out-of-range mass to the nearest GOCART bin. A declared data choice."
+    },
+    "seas_4": {
+      "source": "cams-global",
+      "fields": [
+        "sea_salt_5_20um"
+      ],
+      "weights": [
+        0.11711995
+      ],
+      "conversion": "kg_kg_moist_to_ug_kg_dry",
+      "provenance": "CAMS sea-salt bins (radius 0.03-0.5, 0.5-5, 5-20 um) and mass are stated at 80 % relative humidity. Dry radius = r80/1.99 and dry mass = mass80/4.3, the CAMS/IFS convention for converting its sea salt to dry matter (the 4.3 mass factor with sea-salt densities 2160 dry and 1182 kg m-3 wet gives the 1.99 radius ratio). GOCART sea-salt bins are dry radius 0.1-0.5, 0.5-1.5, 1.5-5.0, 5.0-10.0 um (chem/module_data_gocart_seas.F:2-3). Mass uniform in ln(r) inside each CAMS bin, out-of-range mass to the nearest GOCART bin. A declared data choice."
+    },
+    "oc1": {
+      "source": "cams-global",
+      "fields": [
+        "organic_matter_hydrophobic"
+      ],
+      "weights": [
+        0.555555556
+      ],
+      "conversion": "kg_kg_moist_to_ug_kg_dry",
+      "provenance": "CAMS carries organic MATTER; GOCART's oc rows carry organic CARBON and its PM sums multiply them back by oc_mfac = 1.8 (chem/module_data_gocartchem.F:20, chem/module_gocart_aerosols.F:120), so OC = OM/1.8. Hydrophobic to oc1, hydrophilic to oc2, as GOCART ages oc1 into oc2 (chem/module_gocart_aerosols.F:6-75)."
+    },
+    "oc2": {
+      "source": "cams-global",
+      "fields": [
+        "organic_matter_hydrophilic"
+      ],
+      "weights": [
+        0.555555556
+      ],
+      "conversion": "kg_kg_moist_to_ug_kg_dry",
+      "provenance": "CAMS carries organic MATTER; GOCART's oc rows carry organic CARBON and its PM sums multiply them back by oc_mfac = 1.8 (chem/module_data_gocartchem.F:20, chem/module_gocart_aerosols.F:120), so OC = OM/1.8. Hydrophobic to oc1, hydrophilic to oc2, as GOCART ages oc1 into oc2 (chem/module_gocart_aerosols.F:6-75)."
+    },
+    "bc1": {
+      "source": "cams-global",
+      "fields": [
+        "black_carbon_hydrophobic"
+      ],
+      "weights": [
+        1.0
+      ],
+      "conversion": "kg_kg_moist_to_ug_kg_dry",
+      "provenance": "Hydrophobic black carbon to bc1, hydrophilic to bc2, as GOCART ages bc1 into bc2 (chem/module_gocart_aerosols.F:6-75)."
+    },
+    "bc2": {
+      "source": "cams-global",
+      "fields": [
+        "black_carbon_hydrophilic"
+      ],
+      "weights": [
+        1.0
+      ],
+      "conversion": "kg_kg_moist_to_ug_kg_dry",
+      "provenance": "Hydrophobic black carbon to bc1, hydrophilic to bc2, as GOCART ages bc1 into bc2 (chem/module_gocart_aerosols.F:6-75)."
+    },
+    "sulf": {
+      "source": "cams-global",
+      "fields": [
+        "sulphate"
+      ],
+      "weights": [
+        1.0
+      ],
+      "conversion": "kg_kg_moist_to_ppmv_dry",
+      "provenance": "CAMS sulphate aerosol mass mixing ratio (as SO4) to GOCART's sulf in ppmv with the row's molar mass (SO4, 96.0576 g/mol, chem/module_gocart_aerosols.F:85) and mwdry 28.966."
+    }
+  }
+}

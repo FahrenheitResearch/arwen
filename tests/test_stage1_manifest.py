@@ -439,3 +439,29 @@ def test_this_tree_is_classified_the_way_its_builder_says() -> None:
         assert reason is None
     else:
         assert reason is not None and "tilestream/rescued-tools/**" in reason
+
+
+def test_sfire_cpu_contracts_remain_on_stage1() -> None:
+    """Dropping these entries would omit SFIRE configuration, input, geometry, restart and history contracts."""
+    required = {
+        "tests/test_sfire.py",
+        "tests/test_sfire_clock.py",
+        "tests/test_sfire_committed_snapshot.py",
+        "tests/test_sfire_coordinate_authority.py",
+        "tests/test_sfire_core.py",
+        "tests/test_sfire_debug_runtime.py",
+        "tests/test_sfire_fuel_table.py",
+        "tests/test_sfire_inactive_restart_identity.py",
+        "tests/test_sfire_namelist.py",
+        "tests/test_sfire_native_input.py",
+        "tests/test_sfire_negative_burn_gpu.py",
+        "tests/test_sfire_restart_io.py",
+        "tests/test_sfire_smoke.py",
+        "tests/test_sfire_smoke_tile_contract.py",
+        "tests/test_sfire_source_cache.py",
+        "tests/test_sfire_tile_geometry.py",
+        "tests/test_sfire_wrfinput.py",
+        "tests/test_sfire_wrfout_io.py",
+    }
+    missing = sorted(required - set(_entries()))
+    assert not missing, (f"{missing} have no required SFIRE battery leg")

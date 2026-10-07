@@ -5,7 +5,8 @@ import tomllib
 import pytest
 
 from gpuwm.domain_wizard import render_config
-from test_audit_parent_generic_bytes import assert_old_bytes, controls
+from test_audit_parent_generic_bytes import (
+    assert_old_bytes, assert_old_recipe_bytes, controls)
 
 
 PARENT = "7ab2e3dcf59acb668015e3172feefc0418ee91b3"
@@ -38,4 +39,7 @@ def test_thompson_generic_config_bytes_match_original_parent(key, tmp_path):
     shared = tomllib.loads(emitted)["shared"]
     assert "thompson_version" not in shared
     assert "thompson_fork_snow_fall" not in shared
-    assert_old_bytes(PARENT, pins, key, emitted)
+    if key.startswith("recipe/"):
+        assert_old_recipe_bytes(PARENT, pins, key.split("/", 1)[1], emitted)
+    else:
+        assert_old_bytes(PARENT, pins, key, emitted)

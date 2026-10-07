@@ -481,7 +481,9 @@ class AsosSurfaceSource:
         return str(self.record.get("station_table_sha256", ""))
 
 
-__all__ = ["AsosSurfaceSource", "DEFAULT_MATCH_SECONDS",
+from gpuwm.obs.aq_airnow import AirNowStationSource
+
+__all__ = ["AirNowStationSource", "AsosSurfaceSource", "DEFAULT_MATCH_SECONDS",
            "MrmsCompositeSource", "OperaCompositeSource",
            "QUANTITY_COMPOSITE_REFLECTIVITY",
            "QUANTITY_PRECIPITATION_ACCUMULATION", "Stage4PrecipSource"]

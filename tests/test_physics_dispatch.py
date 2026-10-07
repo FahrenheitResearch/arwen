@@ -140,6 +140,7 @@ def _cpu_driver(monkeypatch, *, sf_sfclay_physics, sf_surface_physics,
         # since 614632b77.
         ruc_2m_diagnostic="flux")
     driver = object.__new__(physics.PhysicsDriver)
+    driver.swint = None
     driver.state = state
     driver.fields = {
         name: np.full((1, 2), value, np.float32)

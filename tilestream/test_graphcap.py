@@ -71,6 +71,54 @@ def test_a_ledger_defers_the_read_and_the_drain_raises():
     assert seen == [0x5]
 
 
+def test_concurrent_members_keep_their_own_ledger_and_leak_none():
+    """Each thread sees and records into only the ledger it installed, and
+    out-of-order exits across threads leave no ledger behind.
+
+    Concurrent ensemble members each wrap their domain step in ``deferring``
+    with their own step ledger.  This replays the interleave measured on the
+    2.8.7 gate (A enters, B enters, A leaves, B leaves): with one
+    process-wide slot A's site recorded into B's ledger, A's exit cleared
+    B's, and B's exit then restored A's ledger for the rest of the process,
+    so every later health site deferred into a ledger nobody drains.
+    """
+    import threading
+
+    import cupy as cp
+
+    from gpuwm.core import health_ledger
+
+    ledgers = {name: health_ledger.HealthLedger(label=f"member {name}")
+               for name in ("a", "b")}
+    order = [threading.Event() for _ in range(4)]
+    seen = {}
+
+    def member(name, enter_after, entered, leave_after, left):
+        if enter_after is not None:
+            order[enter_after].wait(10)
+        with health_ledger.deferring(ledgers[name]):
+            order[entered].set()
+            order[leave_after].wait(10)
+            seen[name] = health_ledger.active()
+            assert health_ledger.read_status(
+                cp.zeros(1, dtype=cp.uint32), site=f"member {name}",
+                describe=lambda flags: None) == 0
+        order[left].set()
+        seen[name + "-after"] = health_ledger.active()
+
+    a = threading.Thread(target=member, args=("a", None, 0, 1, 2))
+    b = threading.Thread(target=member, args=("b", 0, 1, 2, 3))
+    a.start()
+    b.start()
+    a.join(30)
+    b.join(30)
+    assert all(event.is_set() for event in order)
+    assert seen["a"] is ledgers["a"] and seen["b"] is ledgers["b"]
+    assert ledgers["a"].records == 1 and ledgers["b"].records == 1
+    assert seen["a-after"] is None and seen["b-after"] is None
+    assert health_ledger.active() is None
+
+
 def test_a_clean_tile_must_not_erase_a_dirty_tile_s_flag():
     """THE control for the accumulate.  Fails if ``record`` ever stores.
 

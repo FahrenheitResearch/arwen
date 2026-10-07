@@ -815,6 +815,10 @@ tests/test_urban_default_off_identity.py
 tests/test_urban_noah_hook_wrf471_parity.py
 tests/test_urban_ucm_noah_wrf471_parity.py
 tests/test_urban_ucm_driver.py
+# Original WRF v4.6.1 words and the prepared-fraction driver mutation
+# prevent silently replacing mixed urban built area with table defaults.
+tests/test_urban_ucm_wrf461_parity.py
+tests/test_urban_prepared_fraction.py
 tests/test_urban_bep_wrf471_parity.py
 tests/test_urban_bep_couple_wrf471_parity.py
 tests/test_urban_bem_wrf471_parity.py
@@ -1017,6 +1021,53 @@ tests/test_physics_params_gpu.py
 tests/test_physics_params_kernel_isolation.py
 
 
+# Optional smoke and composition programs, per-cut.
+tests/test_chem_transport.py
+tests/test_chem_vertmx_wrf471_parity.py
+tests/test_chem_advect_mono_wrf471_parity.py
+tests/test_chem_bdy_wrf471_parity.py
+tests/test_chem_prep_wrf471_parity.py
+tests/test_chem_outputs.py
+tests/test_chem_fire_emissions.py
+tests/test_chem_plumerise_frp_parity.py
+tests/test_chem_plumerise_wrf471_parity.py
+tests/test_chem_wetdep_ls_wrf471_parity.py
+tests/test_chem_mp_coupling.py
+tests/test_chem_inventory_wrf471_parity.py
+tests/test_chem_settling_wrf471_parity.py
+tests/test_chem_drydep_wrf471_parity.py
+tests/test_chem_dust_wrf471_parity.py
+tests/test_chem_afwa_wrf471_parity.py
+tests/test_chem_seasalt_wrf471_parity.py
+tests/test_chem_rrtmgp_aerosol_parity.py
+tests/test_chem_sulfur_wrf471_parity.py
+tests/test_chem_ageing_wrf471_parity.py
+tests/test_chem_optics_wrf471_parity.py
+tests/test_chem_wesely_wrf471_parity.py
+
+tests/test_chem_current_engine.py
+
+# AQ child birth, changed-footprint initialization, source-owner release and
+# checkpoint continuation are device-only and must run on every cut.
+tests/test_chem_nest_lifecycle.py
+
+# Fork scalar-group clearing and diffusion must retain active chemistry while
+# weather-only groups keep their current behavior on every cut.
+tests/test_chem_fork_integration.py
+
+# Native RUC fork device oracles and combined-driver selector controls.
+tests/test_ruc_fork_gpu.py
+tests/test_ruc_merged_driver_gpu.py
+
+# MYNN generation and cloud transport keep every fork oracle word, and
+# solar albedo reaches the coupled radiation and checkpoint paths.
+tests/test_mynn_gsd41.py
+tests/test_mynn_massflux_gsd41.py
+tests/test_mynn_predict_gsd41.py
+tests/test_mynn_water_gsd41.py
+tests/test_solar_albedo_cuda.py
+tests/test_solar_albedo_integration.py
+
 # swint_opt = 1 and aer_opt = 3 kernels (lane 286-aer-swint): swint.cu and
 # rrtmg_aer3.cu against the stored HRRR-fork oracles at max ULP 0, and the
 # batched SW engine with aerosol against the per-column NumPy composition;
@@ -1042,10 +1093,6 @@ tests/test_rrtmg_legacy_wiring.py
 # retain all four accepted GSD4.1 numerical GPU scopes on shard 1.
 # Prevents radius loss and incompatible source phase merges; no CPU
 # numerical coverage is claimed by this enrollment.
-tests/test_mynn_gsd41.py
-tests/test_mynn_massflux_gsd41.py
-tests/test_mynn_predict_gsd41.py
-tests/test_mynn_water_gsd41.py
 
 # ef8325e32, lane/sw-excess (delivered at 188ffdf41): prescribed smoke
 # device oracles and the actual legacy surface SW adapter are shard 1 gates.
@@ -1058,6 +1105,29 @@ tests/test_rrtmg_smoke_adapter_gpu.py
 # GPU-only. Retain its measured 61 device cases on shard 1; CPU closing
 # collection selects zero cases and this repair does not execute them.
 tests/test_thompson_aerosol_adapter.py
+tests/test_sfire_atm_wrf471_parity.py
+tests/test_sfire_clock_gpu.py
+tests/test_sfire_dated_perimeter_gpu.py
+tests/test_sfire_debug_runtime.py
+tests/test_sfire_driver_wrf471_parity.py
+tests/test_sfire_geographic_wrf471_parity.py
+tests/test_sfire_ideal_atmos_wrf471_parity.py
+tests/test_sfire_ideal_geometry_wrf471_parity.py
+tests/test_sfire_ideal_landuse_wrf471_parity.py
+tests/test_sfire_moisture_driver_wrf471_parity.py
+tests/test_sfire_moisture_surface_wrf471_parity.py
+tests/test_sfire_negative_burn_gpu.py
+tests/test_sfire_open_geopotential_wrf471_parity.py
+tests/test_sfire_ranked_gpu.py
+tests/test_sfire_preflight_price_gpu.py
+tests/test_sfire_restart_coupled_gpu.py
+tests/test_sfire_smoke.py
+tests/test_sfire_smoke_tiled_gpu.py
+tests/test_sfire_spotting_streamed_gpu.py
+tests/test_sfire_spotting_wrf471_parity.py
+tests/test_sfire_tilestream_gpu.py
+tests/test_sfire_wind_wrf471_parity.py
+tests/test_sfire_wrf471_parity.py
 
 # SHARD-2-BEGIN
 tests/test_gf_deep_cuda.py

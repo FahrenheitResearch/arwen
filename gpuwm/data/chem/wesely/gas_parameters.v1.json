@@ -1,0 +1,112 @@
+{
+  "o3": {
+    "arm": "ozone",
+    "from": {
+      "hstar": "chem/module_dep_simple.F:2176",
+      "dhr": "chem/module_dep_simple.F:2453",
+      "f0": "chem/module_dep_simple.F:2671",
+      "dvj": "chem/module_dep_simple.F:2880",
+      "dratio": "chem/module_dep_simple.F:3482-3484",
+      "arm": "chem/module_dep_simple.F:1044-1057",
+      "scpr23": "chem/module_dep_simple.F:3482-3488"
+    },
+    "hstar": 0.0113,
+    "dhr": 2300.0,
+    "f0": 1.0,
+    "dvj": 0.175,
+    "dratio": 1.4243965148925781,
+    "scpr23": 1.1456435918807983
+  },
+  "no2": {
+    "arm": "general",
+    "from": {
+      "hstar": "chem/module_dep_simple.F:2184",
+      "dhr": "chem/module_dep_simple.F:2460",
+      "f0": "chem/module_dep_simple.F:2668",
+      "dvj": "chem/module_dep_simple.F:2886",
+      "dratio": "chem/module_dep_simple.F:3482-3484",
+      "arm": "chem/module_dep_simple.F:965-1038",
+      "scpr23": "chem/module_dep_simple.F:3482-3488"
+    },
+    "hstar": 0.0064,
+    "dhr": 2500.0,
+    "f0": 0.1,
+    "dvj": 0.147,
+    "dratio": 1.6957101821899414,
+    "scpr23": 1.2868561744689941
+  },
+  "co": {
+    "arm": "general",
+    "from": {
+      "hstar": "chem/module_dep_simple.F:2177",
+      "dhr": "chem/module_dep_simple.F:2467",
+      "f0": "chem/module_dep_simple.F:2678",
+      "dvj": "chem/module_dep_simple.F:2894",
+      "dratio": "chem/module_dep_simple.F:3482-3484",
+      "arm": "chem/module_dep_simple.F:965-1038",
+      "scpr23": "chem/module_dep_simple.F:3482-3488"
+    },
+    "hstar": 0.0082,
+    "dhr": 0.0,
+    "f0": 0.0,
+    "dvj": 0.189,
+    "dratio": 1.3188856840133667,
+    "scpr23": 1.088346004486084
+  },
+  "so2": {
+    "arm": "sulfur_dioxide",
+    "from": {
+      "hstar": "chem/module_dep_simple.F:2198",
+      "dhr": "chem/module_dep_simple.F:2475",
+      "f0": "chem/module_dep_simple.F:2687",
+      "dvj": "chem/module_dep_simple.F:2902",
+      "dratio": "chem/module_dep_simple.F:3482-3484",
+      "arm": "chem/module_dep_simple.F:1081-1150",
+      "scpr23": "chem/module_dep_simple.F:3482-3488"
+    },
+    "hstar": 253000.0,
+    "dhr": 5816.0,
+    "f0": 0.0,
+    "dvj": 0.126,
+    "dratio": 1.9783283472061157,
+    "role": "so2",
+    "scpr23": 1.42613685131073
+  },
+  "nh3": {
+    "arm": "ammonia",
+    "from": {
+      "hstar": "chem/module_dep_simple.F:2212",
+      "dhr": "chem/module_dep_simple.F:2489",
+      "f0": "chem/module_dep_simple.F:2701",
+      "dvj": "chem/module_dep_simple.F:2916",
+      "dratio": "chem/module_dep_simple.F:3482-3484",
+      "arm": "chem/module_dep_simple.F:1154-1287",
+      "scpr23": "chem/module_dep_simple.F:3482-3488"
+    },
+    "hstar": 10400.0,
+    "dhr": 3660.0,
+    "f0": 0.0,
+    "dvj": 0.227,
+    "dratio": 1.0981030464172363,
+    "role": "nh3",
+    "scpr23": 0.9632173776626587
+  },
+  "hno3": {
+    "arm": "general",
+    "from": {
+      "hstar": "chem/module_dep_simple.F:2209",
+      "dhr": "chem/module_dep_simple.F:2486",
+      "f0": "chem/module_dep_simple.F:2698",
+      "dvj": "chem/module_dep_simple.F:2913",
+      "dratio": "chem/module_dep_simple.F:3482-3484",
+      "arm": "chem/module_dep_simple.F:965-1038",
+      "scpr23": "chem/module_dep_simple.F:3482-3488"
+    },
+    "hstar": 26900000000000.0,
+    "dhr": 8684.0,
+    "f0": 0.0,
+    "dvj": 0.126,
+    "dratio": 1.9783283472061157,
+    "scpr23": 1.42613685131073
+  }
+}

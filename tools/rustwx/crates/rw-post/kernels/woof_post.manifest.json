@@ -1,0 +1,91 @@
+{
+  "abi_revision": 2,
+  "artifacts": [
+    {
+      "architecture": "sm_100",
+      "bytes": 1961824,
+      "file": "woof_post_sm100.cubin",
+      "sha256": "974a384936cc7b4fe54e9ded57b8f4bd94c183683ed1c4f3dd0dbab0ad3503db"
+    },
+    {
+      "architecture": "sm_120",
+      "bytes": 1916584,
+      "file": "woof_post_sm120.cubin",
+      "sha256": "f78a573e51d1f3208fd40adb58ed4e69e9e53f0163748d9fa24b6fdd218cdc24"
+    },
+    {
+      "architecture": "compute_75 PTX fallback",
+      "bytes": 1245489,
+      "file": "woof_post.ptx",
+      "sha256": "02c9f8754271c5f735c12f4c2e9e38ccea7f4837a2f7c1aa91e37abc4b84ab56"
+    }
+  ],
+  "generator": "NVIDIA NVRTC 13.4",
+  "kernel_set": "woof_post",
+  "kernels": [
+    "woof_post_state_v1",
+    "woof_post_surface_v1",
+    "woof_post_rotate_v1",
+    "woof_post_libm_probe_v1",
+    "woof_post_math64_probe_v1",
+    "woof_post_thermo_probe_v1",
+    "woof_post_b_column",
+    "woof_post_b_mem_inputs",
+    "woof_post_b_restrict",
+    "woof_post_b_jacobi",
+    "woof_post_b_prolong",
+    "woof_post_b_mem_column",
+    "woof_post_b_smooth",
+    "woof_post_b_copy64",
+    "woof_post_b_store_f32",
+    "woof_severe_parcels_v1",
+    "woof_severe_winds_v1",
+    "woof_severe_indices_v1",
+    "woof_post_e_fields_v1",
+    "woof_post_d_fields_v1",
+    "woof_post_d_ir_v1"
+  ],
+  "options": [
+    "--ftz=false",
+    "--prec-sqrt=true",
+    "--prec-div=true",
+    "--fmad=false",
+    "--std=c++17"
+  ],
+  "ptx_virtual_architecture": "compute_75",
+  "sources": [
+    {
+      "file": "woof_post.cu",
+      "sha256": "1911109038a90238f626b72ff0f8ee9e9bd8fcb65ce201fb5a60ce01d317318b"
+    },
+    {
+      "file": "woof_math.cuh",
+      "sha256": "fa8b5dc3779271b9fca059eae589a5272cd89866eba676acc387acb481ebec3b"
+    },
+    {
+      "file": "post_group_a.cu",
+      "sha256": "aa686afa1ca6f6b676a76e584820d26d15428c9cd53f8729ae953c23a4e39b85"
+    },
+    {
+      "file": "post_common.cuh",
+      "sha256": "3a66bf9daea63c5695382baacb4310a61973d313dffe1faf05940776f0deeb18"
+    },
+    {
+      "file": "severe_c.cu",
+      "sha256": "695360c47042e39bc13fbd87824672708a1ce139cf0b5bf28c66ace8c5b66750"
+    },
+    {
+      "file": "group_e.cu",
+      "sha256": "556ee3890887b13852b04c21062b8df102106b581f829ad1c24887dbbbb35f7b"
+    },
+    {
+      "file": "group_d.cu",
+      "sha256": "297ab42b69ef46ef8574b671d46774d92a8b38c6136ef2ea2a2a811adc7fae0e"
+    },
+    {
+      "file": "group_b.cu",
+      "sha256": "00b46819077a7f887c7ee40d5c28e4801f9ff675c64aca9ebd0bed2c26677678"
+    }
+  ],
+  "translation_unit_sha256": "dc42c56783bf91aa8091e89d3e754dba0597aa6fabc885016e4615553803b591"
+}

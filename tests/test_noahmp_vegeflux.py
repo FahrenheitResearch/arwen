@@ -1,6 +1,6 @@
 """max_ulp 0 gate for the Noah-MP VEGE_FLUX subtree against the WRF v4.6.1 oracle.
 
-The fixture in ``gpuwm/data/noahmp/oracle/noahmp-vegeflux.csv`` was produced by
+The fixture in ``tests/data/oracles/noahmp/noahmp-vegeflux.csv`` was produced by
 ``tools/noahmp_wrf461_oracle/build_vegeflux.sh`` from the pinned WRF tree with
 nothing but a ``private::`` -> ``public::`` accessibility lift.  Every value is
 stored as its IEEE-754 binary32 bit pattern, so equality here is bitwise; there
@@ -22,7 +22,7 @@ from gpuwm.core.noahmp_vegeflux import (
 )
 
 FIXTURE = (pathlib.Path(__file__).resolve().parents[1]
-           / "gpuwm" / "data" / "noahmp" / "oracle" / "noahmp-vegeflux.csv")
+           / "tests" / "data" / "oracles" / "noahmp" / "noahmp-vegeflux.csv")
 
 NSNOW = 3
 NSOIL = 4

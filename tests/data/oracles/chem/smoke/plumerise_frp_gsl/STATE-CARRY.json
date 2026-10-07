@@ -1,0 +1,238 @@
+{
+  "seconds": 461.86849835305475,
+  "experiments": {
+    "all": {
+      "w": {
+        "cases": 132,
+        "max_ulp": 1343554297,
+        "words": 5934
+      },
+      "t": {
+        "cases": 132,
+        "max_ulp": 1343554297,
+        "words": 5934
+      },
+      "qv": {
+        "cases": 132,
+        "max_ulp": 1343554297,
+        "words": 5934
+      },
+      "qc": {
+        "cases": 132,
+        "max_ulp": 1343554297,
+        "words": 5934
+      },
+      "qh": {
+        "cases": 132,
+        "max_ulp": 1343554297,
+        "words": 5934
+      },
+      "qi": {
+        "cases": 132,
+        "max_ulp": 1343554297,
+        "words": 5934
+      },
+      "radius": {
+        "cases": 132,
+        "max_ulp": 1343554297,
+        "words": 5934
+      }
+    },
+    "carry": {
+      "w": {
+        "cases": 22,
+        "max_ulp": 1112958266,
+        "words": 1590
+      },
+      "t": {
+        "cases": 22,
+        "max_ulp": 1133936551,
+        "words": 4150
+      },
+      "qv": {
+        "cases": 22,
+        "max_ulp": 1017355341,
+        "words": 4150
+      },
+      "radius": {
+        "cases": 22,
+        "max_ulp": 1168375326,
+        "words": 4150
+      },
+      "qc": {
+        "cases": 6,
+        "max_ulp": 1009157524,
+        "words": 988
+      },
+      "qh": {
+        "cases": 6,
+        "max_ulp": 996317835,
+        "words": 920
+      },
+      "qi": {
+        "cases": 6,
+        "max_ulp": 991173989,
+        "words": 708
+      }
+    },
+    "w": {
+      "w": {
+        "cases": 132,
+        "max_ulp": 1343554297,
+        "words": 5934
+      }
+    },
+    "t": {
+      "t": {
+        "cases": 132,
+        "max_ulp": 1343554297,
+        "words": 5934
+      }
+    },
+    "qv": {
+      "qv": {
+        "cases": 132,
+        "max_ulp": 1343554297,
+        "words": 5934
+      }
+    },
+    "qc": {
+      "qc": {
+        "cases": 132,
+        "max_ulp": 1343554297,
+        "words": 5934
+      }
+    },
+    "qh": {
+      "qh": {
+        "cases": 132,
+        "max_ulp": 1343554297,
+        "words": 5934
+      }
+    },
+    "qi": {
+      "qi": {
+        "cases": 132,
+        "max_ulp": 1343554297,
+        "words": 5934
+      }
+    },
+    "sc": {},
+    "vth": {},
+    "vti": {},
+    "rho": {},
+    "txs": {},
+    "est": {},
+    "qsat": {},
+    "wc": {},
+    "wt": {},
+    "tt": {},
+    "qvt": {},
+    "qct": {},
+    "qht": {},
+    "qit": {},
+    "sct": {},
+    "vctr1": {},
+    "vctr2": {},
+    "vt3dc": {},
+    "vt3df": {},
+    "vt3dk": {},
+    "vt3dg": {},
+    "scr1": {},
+    "pke": {},
+    "the": {},
+    "thve": {},
+    "thee": {},
+    "pe": {},
+    "te": {},
+    "qvenv": {},
+    "dne": {},
+    "ucon": {},
+    "vcon": {},
+    "thtcon": {},
+    "rvcon": {},
+    "picon": {},
+    "tmpcon": {},
+    "zcon": {},
+    "zzcon": {},
+    "dqsdz": {},
+    "visc": {},
+    "viscosity": {},
+    "tstpf": {},
+    "n": {},
+    "nm1": {},
+    "l": {},
+    "cvh": {},
+    "cvi": {},
+    "adiabat": {},
+    "wbar": {},
+    "vhrel": {},
+    "virel": {},
+    "ztop": {},
+    "area": {},
+    "rsurf": {},
+    "alpha": {},
+    "radius": {
+      "radius": {
+        "cases": 132,
+        "max_ulp": 1343554297,
+        "words": 5934
+      }
+    },
+    "heating": {},
+    "fmoist": {},
+    "bload": {},
+    "dt": {},
+    "time": {},
+    "tdur": {},
+    "mintime": {},
+    "mdur": {},
+    "maxtime": {},
+    "upe": {},
+    "vpe": {},
+    "vel_e": {},
+    "vel_p": {},
+    "rad_p": {},
+    "vel_t": {},
+    "rad_t": {},
+    "ztop_": {},
+    "testval": {},
+    "carry_reverse": {
+      "w": {
+        "cases": 24,
+        "max_ulp": 2151647085,
+        "words": 1878
+      },
+      "t": {
+        "cases": 78,
+        "max_ulp": 1133886373,
+        "words": 5802
+      },
+      "qv": {
+        "cases": 78,
+        "max_ulp": 981799107,
+        "words": 5248
+      },
+      "radius": {
+        "cases": 78,
+        "max_ulp": 1151020392,
+        "words": 5802
+      },
+      "qc": {
+        "cases": 10,
+        "max_ulp": 1009157524,
+        "words": 1278
+      },
+      "qh": {
+        "cases": 10,
+        "max_ulp": 996317835,
+        "words": 1176
+      },
+      "qi": {
+        "cases": 10,
+        "max_ulp": 991173989,
+        "words": 876
+      }
+    }
+  }
+}

@@ -51,7 +51,7 @@ from gpuwm.core import streaming as streaming_module
 from gpuwm.io import history_selection as history_selection_module
 from gpuwm import simulated_radar_config as simulated_radar_module
 from gpuwm.config_keys import KeyRow, key_rows
-from gpuwm.config import (DEFAULT_COLUMN_CHUNK,
+from gpuwm.config import (DEFAULT_COLUMN_CHUNK, RADAR_HEATING_OFF, RadarHeatingConfig,
                           EXPLICIT_HORIZONTAL_DIFFUSION_LIMIT,
                           EPSSM_AUTO,
                           GRELL_FAMILY_DEFAULTS, GRELL_FREITAS_CU_PHYSICS,
@@ -278,6 +278,8 @@ _SHARED_FORBIDDEN = {
 #: So no namelist-driven route can produce a per-domain isfflx, and none
 #: should: a config that uses it has left WRF-expressible territory and
 #: cannot be round-tripped back to a namelist.
+from gpuwm.sfire_config import FIRE_DOMAIN_FIELDS
+
 _DOMAIN_RUN_OVERRIDES = (
     # clos_choice/ishallow ride with cu_physics: per-domain because the
     # scheme they configure is, and inert (validated zero) on any domain
@@ -347,6 +349,7 @@ _DOMAIN_RUN_OVERRIDES = (
     # frame, so a tree can carry the horizontal viscosity on the domain
     # whose mixing is being read and leave it off the rest.
     "hmix_k_diag",
+    "surface_energy_diag",
     # LES-nest inflow seeding (P3): per-domain because the mechanism IS
     # per-edge -- it perturbs one child's rolling nest-boundary tables,
     # validate_run_config refuses it on a non-nested domain, and like
@@ -392,7 +395,7 @@ _DOMAIN_RUN_OVERRIDES = (
     # (gpuwm.core.terrain_drag); the GSL suite tapers itself with each
     # domain's grid length, so a column is the natural shape.
     "topo_wind", "gwd_opt",
-)
+) + FIRE_DOMAIN_FIELDS
 
 #: Per-domain vertical keys are REJECTED outright (F1 amendment: the
 #: vertical grid is single-sourced from ExperimentConfig.vertical, so
@@ -1408,6 +1411,11 @@ class ExperimentConfig:
     output: "object" = history_selection_module.FULL
     #: Radar products observe saved history and do not change restart state.
     simulated_radar: simulated_radar_module.SimulatedRadarOptions = simulated_radar_module.OFF
+    #: The resolved [radar_heating] table (:class:`gpuwm.config.RadarHeatingConfig`).
+    #: OFF when absent, and then absent from every document and identity.
+    #: Present, it binds the restart identity (minus the windows path), so a
+    #: checkpoint written heated cannot resume under other heating or none.
+    radar_heating: "RadarHeatingConfig" = RADAR_HEATING_OFF
     #: grid_ids whose ``mix_isotropic`` was CHOSEN BY THE MODEL because
     #: the config left it unset or wrote the ``"auto"`` sentinel (ArWen's
     #: 2026-08-16 auto-switch ruling; ``resolve_auto_mix_isotropic``).
@@ -1468,6 +1476,9 @@ class ExperimentConfig:
             raise ValueError(
                 "feedback must be 0 (one-way) or 1 (experimental "
                 f"two-way), got {self.feedback!r}.")
+        if (any(dc.run.fire_smoke for dc in self.domains)
+                and not any(dc.run.ifire == 2 for dc in self.domains)):
+            raise ValueError("bulk SFIRE smoke needs an actual ifire=2 source domain in the tree")
         if self.smooth_option not in SMOOTH_OPTION_OPTIONS:
             raise ValueError(
                 "smooth_option must be 0 (none), 1 (sm121) or 2 (smdsm), "
@@ -1832,6 +1843,19 @@ def build_experiment_from_config_tables(raw: dict, *, source: str,
     if fetch_table is not None:
         from gpuwm.fetch import validate_fetch_hints
         validate_fetch_hints(fetch_table, source=source)
+        # A run that starts from HRRR with smoke on takes HRRR-Smoke's
+        # smoke as its start state and edge values (the source's row).
+        from gpuwm.config import apply_route_chem_sources
+        apply_route_chem_sources(raw, fetch_table)
+        # A configuration that names an operational-fork source (hrrr*,
+        # rap*) and omits a scheme-generation selector runs that source's
+        # generation, not the generic WRF v4.6.1 one: the door's carried
+        # experiment.toml predated these selectors and silently ran the
+        # v4.6.1 surface layer and Thompson against HRRR's own analysis
+        # (gpuwm.physics_source_defaults.GENERATION_SELECTORS).  Written
+        # keys are kept as written.
+        from gpuwm.physics_source_defaults import fill_omitted_generation_selectors
+        fill_omitted_generation_selectors(raw, fetch_table)
     case_table = raw.pop("case_data", None)
     if case_table is not None:
         from gpuwm.case_data import build_case_data
@@ -3204,7 +3228,7 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
     """Validate a parsed experiment TOML dict and build the config."""
     known_tables = ("experiment", "shared", "projection", "domain",
                     "relocation", "perturbation", "tiles", "devices", "output", "simulated_radar",
-                    "spectral_numerics", "physics_params")
+                    "spectral_numerics", "physics_params", "radar_heating")
     # [ingest] is INGEST POLICY, and it is validated-and-dropped HERE
     # rather than added to the companion list above.  The companion
     # tables declare INPUTS: dropping one loses a setting, so the caller
@@ -3495,6 +3519,17 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         raw.get("output"), source=source)
     simulated_radar = simulated_radar_module.SimulatedRadarOptions.from_mapping(
         raw.get("simulated_radar"), source=source)
+    # ---- [radar_heating] ---------------------------------------------
+    # Absent is OFF and changes no document, fingerprint or argv.  Present,
+    # it is honored by the deterministic prepared door
+    # (gpuwm.da.forecast_heating) and refused by every route that does not
+    # attach it (forecast_heating.require_routed, asked by
+    # execute_experiment), never ignored.  A relative windows root is
+    # anchored at the config file's own directory.
+    source_path = Path(str(source))
+    radar_heating = RadarHeatingConfig.from_mapping(
+        raw.get("radar_heating"), source=source,
+        base_dir=source_path.parent if source_path.is_file() else None)
 
     # ---- [shared] ------------------------------------------------------
     shared = dict(raw.get("shared", {}))
@@ -4251,6 +4286,15 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         if epssm_auto:
             kw.pop("epssm", None)
             auto_epssm_ids.append(grid_id)
+        # The chem name lists may arrive from TOML as arrays; RunConfig
+        # stores them as one comma-separated string (as load_config does).
+        # [shared]-only: every domain of a tree carries the same chem sets,
+        # because a nest's chem boundary is its parent's field.
+        from gpuwm.config import apply_chem_set_defaults, join_chem_name_lists
+        join_chem_name_lists(kw)
+        # The sets' own scheme defaults (smoke: washout on, hourly plume),
+        # for keys this configuration leaves unset, as load_config does.
+        apply_chem_set_defaults(kw)
         # The full legacy invariant battery applies to every per-domain
         # RunConfig (p5t1 review F1): same checks, same messages as
         # load_config.
@@ -4459,6 +4503,7 @@ def build_experiment(raw: dict, source: str) -> ExperimentConfig:
         physics_mode=physics_mode,
         perturbation=perturbation,
         tiles=tiles, devices=devices, output=output, simulated_radar=simulated_radar,
+        radar_heating=radar_heating,
         spectral_numerics=spectral_numerics,
         auto_epssm=tuple(sorted(auto_epssm_ids)),
         physics_params=physics_params)
@@ -5327,9 +5372,17 @@ def _public_config_value(value):
     if isinstance(value, StreamingOptions):
         return value.to_mapping()
     if is_dataclass(value):
+        from gpuwm.config import CHEM_RUN_FIELDS
+        inert_chem = (frozenset(CHEM_RUN_FIELDS)
+                      if isinstance(value, RunConfig) and not value.chem_sets
+                      else frozenset())
+        if isinstance(value, RunConfig):
+            from gpuwm.config import inert_fire_fields
+            inert_chem = inert_chem | frozenset(inert_fire_fields(value))
         document = {item.name: _public_config_value(getattr(value, item.name))
                     for item in fields(value)
-                    if not (isinstance(value, FollowConfig)
+                    if item.name not in inert_chem
+                    and not (isinstance(value, FollowConfig)
                             and value.field != "attribute" and item.name in ATTRIBUTE_KEYS)}
         run_document = (document if isinstance(value, RunConfig) else
                         document.get("run") if isinstance(value, DomainConfig) else None)
@@ -5345,7 +5398,8 @@ def _public_config_value(value):
                                   ("thompson_version", "wrf_461"),
                                   ("thompson_fork_snow_fall", "blend"),
                                   ("rrtmg_cloud_optics_form", "wrf_461"),
-                                  ("rrtmg_smoke_manifest", "")):
+                                  ("rrtmg_smoke_manifest", ""),
+                                  ("surface_energy_diag", False)):
                 if run_document.get(name, default) == default:
                     run_document.pop(name, None)
         return document
@@ -5378,4 +5432,9 @@ def experiment_config_document(exp: ExperimentConfig) -> dict[str, object]:
         document.pop("devices", None)
     if not exp.simulated_radar.enabled:
         document.pop("simulated_radar", None)
+    heating = getattr(exp, "radar_heating", None)
+    if heating is None or not heating.enabled:
+        document.pop("radar_heating", None)
+    else:
+        document["radar_heating"] = heating.to_mapping()
     return document

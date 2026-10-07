@@ -1,0 +1,8 @@
+{
+  "schema": "gpuwm.chem.set.v1",
+  "name": "sfire_smoke_mixed",
+  "description": "Bulk SFIRE source and tracer transport with the existing PBL-produced vertical diffusivity.",
+  "wrf_chem_opt": null,
+  "wrf_tracer_opt": null,
+  "provenance": "WRF4.7.1 tracer_opt3 bulk fire smoke; no satellite hourly emissions, additional plume solver or PM2.5 claim."
+}

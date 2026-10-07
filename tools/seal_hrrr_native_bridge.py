@@ -73,11 +73,13 @@ def main():
     gate = dict(
         line.split("\t", 1)
         for line in (args.root / "gate.txt").read_text().splitlines())
+    from gpuwm.ingest.native_supplements import gate_optional_hybrid_fields
+    optional_hybrid = gate_optional_hybrid_fields(gate)
     required = {
         "status": "PASS",
         "forecast_hours": ",".join(map(str, hours)),
         "series_count": str(len(hours)),
-        "atmosphere_selected_per_time": "561",
+        "atmosphere_selected_per_time": str(561 + 50 * len(optional_hybrid)),
         "soil_selected_per_time": "18",
         "window_shape": args.expected_window_shape,
     }
@@ -107,7 +109,8 @@ def main():
         if not (args.root / "supplement-inventory.tsv").is_file():
             raise ValueError("native supplement publication lacks its GRIB selection receipt")
     for hour in hours:
-        for role, expected_files in (("atmosphere", 22 + len(fields)),
+        for role, expected_files in (("atmosphere", 22 + len(fields)
+                                      + len(optional_hybrid)),
                                      ("soil", 2 + len(soil_surface_fields))):
             directory = args.root / f"{role}-f{hour:02d}"
             files = sorted(directory.glob("*.f32le"))

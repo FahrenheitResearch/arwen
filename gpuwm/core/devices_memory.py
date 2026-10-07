@@ -144,11 +144,35 @@ def frame_snapshot_budget(cfg) -> int:
             if full_inventory_bytes <= FRAME_SNAPSHOT_LIMIT_BYTES else 0)
 
 
+def rank_lake_column_bounds(specs, lake_mask):
+    """Per rank, the lake-eligible columns inside its compute window.
+
+    THE BREAKAGE THIS PREVENTS (open-defects ledger A13, 2026-10-05): a
+    rank's sparse CLM lake work arrays (``lake/columns``, ``lake/static``,
+    ``lake/gather_work``, forcing, outputs, the arena) are allocated at the
+    rank's own lake column count (``gpuwm.core.lake.LakeModel``), but
+    admission priced them at every column of the rank: 0.75 GiB of price
+    per 2x2 rank of the HRRR grid, part of the refusal of full HRRR on four
+    32 GB cards.  ``lake_mask`` is any 2-D array that is nonzero wherever
+    the run's ``lakemask`` can be 1 (an upper bound is enough; a smaller
+    count is never charged).  Windows wrap on periodic axes like a gather.
+    """
+    import numpy as np
+    mask = np.asarray(lake_mask) != 0
+    ny, nx = mask.shape
+    counts = []
+    for spec in specs:
+        rows = np.arange(spec.cj0, spec.cj0 + spec.cny) % ny
+        cols = np.arange(spec.ci0, spec.ci0 + spec.cnx) % nx
+        counts.append(int(mask[np.ix_(rows, cols)].sum()))
+    return counts
+
+
 def estimate_devices(exp, *, options=None, max_map_factor=1.0,
                      forcing_intervals=None, forcing_interval_seconds=3600.0,
                      vram_gib=None, profile=None, inventory=None,
                      geography=None, source=None, profiles=None, budgets=None,
-                     streaming_boundaries=False):
+                     streaming_boundaries=False, lake_mask=None):
     """Price rank resident envelopes, packed bands, template, and pinned host.
 
     The lazy rank APIs own halo and decomposition validation. No device is
@@ -156,7 +180,9 @@ def estimate_devices(exp, *, options=None, max_map_factor=1.0,
     frame snapshots use only the space left by the required allocations in
     ``budgets``; the returned rank limits also bound their runtime buffers.
     A preparation head uses one reusable device interval while retaining
-    the complete host series as its segments arrive.
+    the complete host series as its segments arrive.  ``lake_mask`` (see
+    :func:`rank_lake_column_bounds`) prices each rank's sparse lake arrays
+    at its own lake columns instead of every column.
     """
     from gpuwm.core import preflight as pf
     from gpuwm.core.streaming import ranked_halo, ranked_specs
@@ -172,6 +198,12 @@ def estimate_devices(exp, *, options=None, max_map_factor=1.0,
                                 "(estimate_devices_tree prices a tree)")
     options = exp.devices if options is None else options
     cfg = exp.root.run
+    # The byte bound each device rank's pool margin carries (A13), or
+    # None when the measured ratio must stand: this suite matches an
+    # itemization-gap row, or has no rank-scale receipt
+    # (pf.rank_pool_residue_cap_bytes, pf.RANK_POOL_RESIDUE_SUITES).
+    rank_cap = pf.rank_pool_residue_cap_bytes([cfg])
+    rank_basis = pf.rank_pool_residue_basis([cfg])
     if options.enabled:
         from gpuwm.core.devices import validate_ranked_physics
         validate_ranked_physics(cfg)
@@ -192,8 +224,12 @@ def estimate_devices(exp, *, options=None, max_map_factor=1.0,
     cards = {dev: {"card": dev, "ranks": [], "resident_bytes": 0,
                    "seam_bytes": 0, "template_bytes": 0,
                    "frame_snapshot_bytes": 0} for dev in ids}
+    lake_counts = (None if lake_mask is None
+                   or int(getattr(cfg, "sf_lake_physics", 0) or 0) != 1
+                   else rank_lake_column_bounds(specs, lake_mask))
+
     def resident(run, dev=None, *, tile_buffer=False, loader=False,
-                 mynn_chunk=None):
+                 mynn_chunk=None, lake_columns=None):
         local = replace(exp, devices=DEVICES_OFF,
                         domains=(replace(exp.root, run=run),))
         from gpuwm.boundary_fields import source_boundary_species
@@ -204,7 +240,18 @@ def estimate_devices(exp, *, options=None, max_map_factor=1.0,
                 forcing_interval_seconds=forcing_interval_seconds,
                 vram_gib=vram_gib, profile=(profile if profiles is None else profiles.get(dev)),
                 boundary_species=source_boundary_species(source),
-                tile_buffer=tile_buffer)
+                tile_buffer=tile_buffer,
+                lake_columns=(None if lake_columns is None
+                              else {int(exp.root.grid_id): int(lake_columns)}),
+                # A device rank's pool margin is bounded in bytes (A13):
+                # the ratio was measured on 3.5-11 GiB single-card
+                # subtotals, and on 25-28 GiB ranks every pool receipt
+                # measured the residue it prices at 0.40-0.72 GiB.  The
+                # loader slab and the retained template are small
+                # resident domains and keep the ratio; so does a suite
+                # an itemization-gap row raised the headroom for
+                # (rank_cap is None: pf.rank_pool_residue_cap_bytes).
+                pool_residue_cap_bytes=(None if loader else rank_cap))
         if loader:
             # The store loader never attaches device lateral boundaries:
             # its slabs only restore and initialize the cached analysis.
@@ -234,7 +281,9 @@ def estimate_devices(exp, *, options=None, max_map_factor=1.0,
         # required allocations on its physical card. Loader slabs retain
         # their existing resident policy.
         estimate = resident(run, dev, tile_buffer=True,
-                            mynn_chunk=initial_mynn_chunk)
+                            mynn_chunk=initial_mynn_chunk,
+                            lake_columns=(None if lake_counts is None
+                                          else lake_counts[rank]))
         cards[dev]["ranks"].append(rank)
         cards[dev]["resident_bytes"] += estimate.peak_envelope_bytes
         if inventory is None:
@@ -249,6 +298,8 @@ def estimate_devices(exp, *, options=None, max_map_factor=1.0,
                 flags=SimpleNamespace(c_contiguous=True))
                 for key, array in inventory.items() if array.ndim >= 2})
         ranks.append({"rank": rank, "card": dev, "compute_shape": [spec.cny, spec.cnx],
+                      **({} if lake_counts is None
+                         else {"lake_columns_bound": lake_counts[rank]}),
                       "interior_shape": [spec.interior_ny, spec.interior_nx],
                       "resident_bytes": estimate.peak_envelope_bytes})
         if initial_mynn_chunk is not None:
@@ -289,8 +340,20 @@ def estimate_devices(exp, *, options=None, max_map_factor=1.0,
     cards[ids[0]]["template_bytes"] = template.domains[0].resident_bytes
     loader = resident(tile_config(cfg, cfg.nx, rows), ids[0], loader=True).peak_envelope_bytes
     for row in cards.values():
+        # WHAT THE CARD NEEDS, kept apart from what it is given (open-defects
+        # ledger A3c, 2026-10-05).  Below, the MYNN workspace is widened into
+        # whatever the budget leaves, which is a speed choice that never
+        # changes a byte; the admitted total therefore tracks the card's size,
+        # not the forecast's need.  Read as a need, it made the 1 km runs look
+        # like 105 KB per column on 8 x RTX 5090 against 75.5 on 3 x RTX PRO
+        # 6000, and that figure went into the CONUS box count.  The required
+        # price is the narrowest MYNN width every run may fall back to, which
+        # is also the only price that refuses a forecast.
+        row["required_resident_bytes"] = row["resident_bytes"]
         required = sum(row[key] for key in
                        ("resident_bytes", "seam_bytes", "template_bytes"))
+        row["required_bytes"] = (max(required, loader) if row["card"] == ids[0]
+                                 else required)
         budget = None if budgets is None else budgets.get(row["card"])
         if budget is not None and len(mynn_candidates) > 1:
             # Rank threads spend the same Python dispatch and validation
@@ -301,7 +364,9 @@ def estimate_devices(exp, *, options=None, max_map_factor=1.0,
             for candidate in reversed(mynn_candidates[1:]):
                 proposed = {rank: resident(
                     rank_runs[rank], row["card"], tile_buffer=True,
-                    mynn_chunk=candidate).peak_envelope_bytes
+                    mynn_chunk=candidate,
+                    lake_columns=(None if lake_counts is None
+                                  else lake_counts[rank])).peak_envelope_bytes
                     for rank in row["ranks"]}
                 candidate_resident = sum(proposed.values())
                 candidate_required = required - row["resident_bytes"] + candidate_resident
@@ -327,11 +392,30 @@ def estimate_devices(exp, *, options=None, max_map_factor=1.0,
                 remaining -= limit
             row["frame_snapshot_bytes"] = sum(
                 ranks[rank]["frame_snapshot_bytes"] for rank in row["ranks"])
+        row["mynn_widening_bytes"] = (row["resident_bytes"]
+                                      - row["required_resident_bytes"])
         row["total_bytes"] = sum(row[key] for key in
                                  ("resident_bytes", "seam_bytes", "template_bytes",
                                   "frame_snapshot_bytes"))
         if row["card"] == ids[0]:
             row["total_bytes"] = max(row["total_bytes"], loader)
+    columns = int(cfg.nx) * int(cfg.ny)
+    footprint = {
+        "columns": columns,
+        "required_bytes": sum(row["required_bytes"] for row in cards.values()),
+        "admitted_bytes": sum(row["total_bytes"] for row in cards.values()),
+        "mynn_widening_bytes": sum(row["mynn_widening_bytes"]
+                                   for row in cards.values()),
+        "basis": ("required = every card at the narrowest MYNN width "
+                  "(what refuses a forecast and what capacity planning may "
+                  "use); admitted = with the MYNN workspace widened into "
+                  "free memory and frame snapshots, which change speed and "
+                  "overlap, never bytes"),
+    }
+    footprint["required_kb_per_column"] = round(
+        footprint["required_bytes"] / columns / 1000, 2)
+    footprint["admitted_kb_per_column"] = round(
+        footprint["admitted_bytes"] / columns / 1000, 2)
     # Same shape products used by prepared_store's allocation guard. With a
     # bundle this is its own exact manifest; before preparation use the census.
     if inventory is None:
@@ -376,6 +460,9 @@ def estimate_devices(exp, *, options=None, max_map_factor=1.0,
     host_boundary = pf.lbc_host_series_bytes(cfg, intervals, source=source)
     return {"options": options.to_json(), "grid": list(options.resolved_grid(cfg.nx, cfg.ny)),
             "halo": halo, "rank_shapes": ranks, "cards": list(cards.values()),
+            "rank_pool_residue_bound_bytes": rank_cap,
+            "rank_pool_headroom": pf.forecast_pool_headroom([cfg]),
+            "rank_pool_basis": rank_basis,
             "host_store_bytes": store + geo, "host_staging_bytes": staging,
             "host_staging_basis": (
                 "one pinned band per explicit host channel; full-band upper "
@@ -383,7 +470,8 @@ def estimate_devices(exp, *, options=None, max_map_factor=1.0,
             "host_boundary_bytes": host_boundary,
             "host_physics_bytes": host_physics,
             "host_bytes": store + geo + staging + host_boundary + host_physics,
-            "host_basis": basis}
+            "host_basis": basis,
+            "footprint": footprint}
 
 
 def tree_grid_as_root(dc):
@@ -489,6 +577,7 @@ def estimate_devices_tree(exp, *, split_ids=None, forcing_intervals=None,
 
 
 def devices_gate(estimate, *, budgets=None, host_budget=None):
+    from gpuwm.core import preflight as pf
     lines = []
     refused = False
     for row in estimate["cards"]:
@@ -505,13 +594,43 @@ def devices_gate(estimate, *, budgets=None, host_budget=None):
                 f"= {row['total_bytes']/GIB:.2f} GiB; budget "
                 + ("unknown" if budget is None else f"{budget/GIB:.2f} GiB"))
             continue
+        widened = row.get("mynn_widening_bytes", 0)
         lines.append(
             f"card {row['card']}: {verdict}: resident {row['resident_bytes']/GIB:.2f} GiB "
-            f"+ seams {row['seam_bytes']/GIB:.2f} GiB "
+            + (f"(of which {widened/GIB:.2f} GiB is MYNN workspace widened "
+               "into free memory) " if widened else "")
+            + f"+ seams {row['seam_bytes']/GIB:.2f} GiB "
             f"+ template {row['template_bytes']/GIB:.2f} GiB "
             f"+ frame snapshots {row['frame_snapshot_bytes']/GIB:.2f} GiB "
             f"= {row['total_bytes']/GIB:.2f} GiB; budget "
             + ("unknown" if budget is None else f"{budget/GIB:.2f} GiB"))
+    if "rank_pool_residue_bound_bytes" in estimate:
+        # The price above is traceable to its measurement: each rank's
+        # pool margin is the measured ratio or the byte bound, whichever
+        # is smaller, and the line names the receipts it rests on; a
+        # suite an itemization-gap row raised the headroom for carries
+        # no bound and the line says why.
+        headroom = float(estimate.get("rank_pool_headroom",
+                                      pf.FORECAST_POOL_HEADROOM))
+        bound = estimate["rank_pool_residue_bound_bytes"]
+        lines.append(
+            (f"ranks: pool margin per rank is min(x{headroom:.2f} "
+             f"of the itemized pool, {bound/GIB:.2f} GiB): "
+             if bound is not None else
+             f"ranks: pool margin per rank is x{headroom:.2f} of the "
+             "itemized pool, no byte bound: ")
+            + f"{estimate.get('rank_pool_basis', '')}")
+    footprint = estimate.get("footprint")
+    if footprint:
+        # The capacity figure a reader may scale up, beside the admitted one
+        # that fills each card (open-defects ledger A3c).
+        lines.append(
+            f"devices: {footprint['required_kb_per_column']:.1f} KB per column "
+            f"required ({footprint['required_bytes']/GIB:.2f} GiB over "
+            f"{footprint['columns']} columns), "
+            f"{footprint['admitted_kb_per_column']:.1f} KB admitted; the "
+            "difference is MYNN workspace and frame snapshots fitted to free "
+            "memory, which change speed, never bytes")
     host_over = host_budget is not None and estimate["host_bytes"] > host_budget
     refused |= host_over
     lines.append(f"host: {'REFUSED' if host_over else 'PRICED'}: pinned store "

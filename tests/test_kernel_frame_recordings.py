@@ -287,6 +287,21 @@ def test_parameter_scaler_has_a_measured_production_source_and_frame():
             "parameter shader source changed; re-read driver attributes before replacing its profile")
 
 
+@pytest.mark.parametrize("module", ["pd_vertical_sl", "upper_wind_limiter"])
+def test_production_dycore_frames_keep_their_measured_composed_source(module):
+    from gpuwm.core import kernel_frame_recordings as kfr, kernels
+
+    recording = kfr.SM120_NVRTC_13_4_92
+    assert recording.platform_key == ("120", "13.4.92")
+    assert recording.frames[module] == pf.KERNEL_MAX_LOCAL_SIZE_BYTES[module] == 0
+    assert module not in pf.UNMEASURED_KERNEL_MODULES
+    assert kernels.module_options(module) == ("-std=c++17",)
+    assert hashlib.sha256(kernels.module_source(module).encode()).hexdigest() \
+        == kfr.DYCORE_FRAME_MEASURED_SOURCE_SHA256[module], (
+            f"{module} composed source changed; read actual driver attributes "
+            "during a forecast before replacing its frame recording")
+
+
 def test_every_noahmp_composed_recording_is_its_own_platform_and_stays_out_of_the_standalone_tables():
     """The Noah-MP composed units are priced from their own table.
 

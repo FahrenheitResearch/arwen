@@ -697,8 +697,12 @@ def _unit_transform(variable, name: str) -> tuple[float, float]:
 
 
 def _check_projection(geometry, statics):
-    from gpuwm.static.projection import WPS_MAP_PROJ_NAMES, projection_class
+    from gpuwm.static.projection import (WPS_MAP_PROJ_NAMES,
+                                         WRF_LATLON_MAP_PROJ, latlon_refusal,
+                                         projection_class)
     code = geometry["map_proj"]
+    if code == WRF_LATLON_MAP_PROJ and code not in WPS_MAP_PROJ_NAMES:
+        raise MetgridRefusal(f"MAP_PROJ={code}: {latlon_refusal()}")
     if code not in WPS_MAP_PROJ_NAMES:
         raise MetgridRefusal(f"MAP_PROJ={code} has no native projected-grid implementation; prepare a Lambert, polar, or Mercator grid")
     try:

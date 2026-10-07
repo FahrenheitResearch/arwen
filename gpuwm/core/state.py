@@ -330,6 +330,8 @@ def refresh_model_time(state, clock, *, kernel_launch: bool = False,
     else:
         ticks = clock.ticks + (clock.step_ticks if after_step else 0)
         value = ticks / clock.tick_den
+    from gpuwm.core.sfire_clock import bind_state_clock
+    bind_state_clock(state,value)
     state.elapsed_seconds = value
     # The domain's own ACTIVATION EPOCH, from the same tick authority.
     # A physics driver counts WRF's ITIMESTEP, and ITIMESTEP is 1 on a
@@ -952,6 +954,14 @@ class DomainState:
             # window the run actually folded.
             self.scratch((ny, nx), "uh_follow_window")
             self.scratch((ny, nx), "uh_spawn_window")
+
+        # Chem species (gpuwm/core/chem_state.py): the ``chem_<row>`` /
+        # ``chem0_<row>`` arena views and ``self.chem``, allocated ONLY when
+        # the run names chem sets.  A chem-off state gains no attribute, so
+        # its object graph, restart inventory and footprint are unchanged.
+        if getattr(cfg, "chem_sets", ()):
+            from gpuwm.core.chem_state import attach_chem_state
+            attach_chem_state(self, cfg, xp)
 
     def load_base(self, coord: VerticalCoord, base: BaseState, *, native_host=False) -> None:
         """Copy the float64 setup-time coordinate/base arrays to device FP32."""

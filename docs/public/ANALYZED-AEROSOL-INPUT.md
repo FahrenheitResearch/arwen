@@ -3,6 +3,16 @@
 `mp28_aerosol_source = "analysis"` requires both water-friendly and ice-friendly
 aerosol number mixing ratios on every initial and lateral boundary frame.
 Missing fields stop preparation rather than substitute a climatology.
+On the native HRRR route the bridge reads the pair only for a configuration
+that requests it (this key, or `use_rap_aero_icbc`); any other configuration
+never selects it, so a masked or partial pair cannot stop it. For a
+configuration that requests it, a pair published with a GRIB2 bitmap (masked
+points, as NCEP publishes PMTF on hybrid level 1 at some leads of some cycles)
+is not read: no fill for masked points exists. When the bridge sees the mask
+before it declares the pair (the first lead of a series decoded as posted, any
+lead of a window inventoried whole), its `gate.txt` records the pair as
+`optional_hybrid_withheld` with its reason and the run stops with that reason;
+a later lead masked as posted stops the bridge at that lead, naming it.
 The source mapping declares `water_friendly_aerosol_number` and
 `ice_friendly_aerosol_number`, both in `kg-1`. The regular source join carries
 them as QNWFA and QNIFA through the existing scalar interpolation and specified

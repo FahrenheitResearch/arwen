@@ -10,7 +10,7 @@
  * Build and run on the oracle host (glibc 2.39, x86-64):
  *
  *     gcc -O2 -ffp-contract=off -o dump_atanf dump_atanf_reference.c -lm
- *     ./dump_atanf > gpuwm/data/noahmp/oracle/glibc-atanf-fp32.csv
+ *     ./dump_atanf > tests/data/oracles/noahmp/glibc-atanf-fp32.csv
  *
  * The exhaustive check that this transcription IS glibc's algorithm -- all
  * 4,278,190,082 non-NaN FP32 inputs, 0 mismatches -- is recorded in

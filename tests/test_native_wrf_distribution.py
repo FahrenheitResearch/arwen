@@ -523,6 +523,30 @@ def test_standalone_python_project_excludes_forecast_executor(tmp_path):
     assert "gpuwm/core/nest_fields.py" in files
     assert "gpuwm/core/ozone_contract.py" in files
     assert "gpuwm/core/inflow_perturbation.py" in files
+    assert "gpuwm/ensemble/surface_controls.py" in files
+    assert "gpuwm/ensemble/member_variants.py" in files
+    environment = os.environ.copy()
+    environment.update(PYTHONPATH=str(staged), CUDA_VISIBLE_DEVICES="",
+                       GPUWM_NO_LOCAL_GPU="1", PYTHONDONTWRITEBYTECODE="1")
+    script = """
+from pathlib import Path
+from gpuwm.ensemble import member_variants, surface_controls
+assert Path(surface_controls.__file__).resolve().is_relative_to(Path.cwd())
+assert Path(member_variants.__file__).resolve().is_relative_to(Path.cwd())
+assert surface_controls.shared_surface_options(
+    {"kind": "surface-state", "sst_offset_k": [-1.0, 1.0]}, 2
+) == {"kind": "surface-state", "sst_offset_k": [-1.0, 1.0]}
+variants = member_variants.normalize_member_variants([
+    {"name": "land_a", "physics": {"sf_surface_physics": 2, "num_soil_layers": 4}},
+    {"name": "land_b", "physics": {"sf_surface_physics": 3, "num_soil_layers": 9},
+     "surface": {"soil_moisture_scale": 0.9, "sst_offset_k": 1.0}},
+], 2)
+assert variants[0]["physics"] == {"sf_surface_physics": 2, "num_soil_layers": 4}
+assert variants[1]["surface"]["sst_offset_k"] == 1.0
+"""
+    completed = subprocess.run([sys.executable, "-P", "-c", script], cwd=staged,
+                               env=environment, capture_output=True, text=True, check=False)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "gpuwm/core/attribute_tracking.py" in files
     assert "gpuwm/toml_document.py" in files
     assert "gpuwm/prepared_source_schemas.py" in files
@@ -1274,6 +1298,58 @@ def test_standalone_scan_reads_from_gpuwm_import_verify(tmp_path):
         "module": "gpuwm.verify",
         "kind": "from",
     }]
+
+
+def test_standalone_fire_static_keeps_metadata_without_forecast_commands(tmp_path):
+    staged = tmp_path / "rw-wps-python"
+    _stage_or_skip(staged)
+    for name in ("fire_ideal.py", "sfire_debug.py"):
+        assert not (staged / "gpuwm" / name).exists()
+    for name in ("core/sfire_clock.py", "io/sfire_schema.py",
+                 "static/sfire.py", "ingest/wrfinput_sfire.py"):
+        assert (staged / "gpuwm" / name).is_file(), name
+    import tomllib
+    project = tomllib.loads((staged / "pyproject.toml").read_text())
+    assert project["project"]["scripts"]["gpuwm-sfire-static"] == (
+        "gpuwm.static.sfire:main")
+    script = r"""
+import importlib.abc, pathlib, sys
+root = pathlib.Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(root))
+class NoCuPy(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.partition('.')[0] == 'cupy':
+            raise ImportError('standalone fire-static metadata must not require CuPy')
+sys.meta_path.insert(0, NoCuPy())
+from gpuwm.core import sfire_clock
+from gpuwm.io import sfire_schema, wrf_output_schema
+from gpuwm.static import sfire
+from gpuwm.ingest import wrfinput_sfire
+for module in (sfire_clock, sfire_schema, wrf_output_schema, sfire, wrfinput_sfire):
+    assert pathlib.Path(module.__file__).resolve().is_relative_to(root)
+assert 'NFUEL_CAT' in sfire_schema.SFIRE_REGISTRY_FIELDS
+assert 'FIRE_AREA' in wrf_output_schema.HISTORY_FIELDS_BY_NETCDF_NAME
+try: sfire.main(['--help'])
+except SystemExit as stopped: assert stopped.code == 0
+else: raise AssertionError('the staged static helper did not expose its CLI')
+"""
+    result = subprocess.run([sys.executable, "-I", "-c", script, str(staged)],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_standalone_native_smoke_forecast_annotation_still_guards_staging(
+        tmp_path, monkeypatch):
+    import tools.build_rw_wps_release as release
+    key = ("gpuwm/ingest/wrfinput.py", "gpuwm.core.chem_sfire")
+    _stage_or_skip(tmp_path / "ready")
+    monkeypatch.setattr(release, "_OPTIONAL_STAGED_IMPORTS", {
+        name: reason for name, reason in release._OPTIONAL_STAGED_IMPORTS.items()
+        if name != key})
+    with pytest.raises(RuntimeError, match="unresolved internal imports") as refused:
+        _stage_or_skip(tmp_path / "missing-annotation")
+    assert "gpuwm.core.chem_sfire" in str(refused.value)
+    assert "gpuwm/ingest/wrfinput.py" in str(refused.value)
 
 
 def _finish_a_staged_preparation(tmp_path, preamble=""):

@@ -216,6 +216,7 @@ __all__ = [
     "reconcile_inventories",
     "restart_bytes",
     "write_streamed_restart",
+    "prepare_streamed_restart",
 ]
 
 
@@ -656,7 +657,32 @@ def write_streamed_restart(path, store, cfg, *, scalars, setup,
                            check_pinned: bool = True,
                            tree_header: dict | None = None,
                            extra_scratch_slots=(), stochastic_binding=None) -> StreamedRestartInfo:
-    """Write a gpuwm restart file from a pinned host store. No device state.
+    """Write a gpuwm restart file from a pinned host store now.
+
+    :func:`prepare_streamed_restart` followed at once by its publication;
+    see that function for the contract.
+    """
+    return prepare_streamed_restart(
+        path, store, cfg, scalars=scalars, setup=setup,
+        template_state=template_state, run_trackers=run_trackers, drop=drop,
+        check_pinned=check_pinned, tree_header=tree_header,
+        extra_scratch_slots=extra_scratch_slots,
+        stochastic_binding=stochastic_binding)()
+
+
+def prepare_streamed_restart(path, store, cfg, *, scalars, setup,
+                             template_state, run_trackers=None, drop=(),
+                             check_pinned: bool = True,
+                             tree_header: dict | None = None,
+                             extra_scratch_slots=(), stochastic_binding=None):
+    """Snapshot a gpuwm restart file of a pinned host store. No device state.
+
+    Every refusal, the header and the member list are decided HERE; the
+    returned callable performs only the ``np.savez``/``fsync``/rename and
+    returns the :class:`StreamedRestartInfo`.  The payload is the store's
+    own arrays, not copies, so the caller must not let anything write the
+    store until the callable has returned (the ranked road holds that with
+    :meth:`tilestream.ranks.RankedRun.add_store_guard`).
 
     ``store`` is the streamed domain: ``{restart member name: host array}``,
     the same mapping ``run_tiled`` integrates.  ``scalars`` is the DOMAIN's
@@ -816,30 +842,32 @@ def write_streamed_restart(path, store, cfg, *, scalars, setup,
             header["array_manifest"][key] = {"shape": list(host.shape), "dtype": str(host.dtype)}
             payload[key] = host
     header_seconds = time.perf_counter() - t0
-
-    t1 = time.perf_counter()
     body = {restart._HEADER_KEY: np.frombuffer(
         json.dumps(header, allow_nan=False).encode("utf-8"), dtype=np.uint8)}
     body.update(payload)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(path.name + ".tmp")
-    try:
-        with temp.open("wb") as stream:
-            np.savez(stream, **body)
-        restart.fsync_file(temp)
-        os.replace(temp, path)
-    except BaseException:
-        temp.unlink(missing_ok=True)
-        raise
-    serialize_seconds = time.perf_counter() - t1
 
-    return StreamedRestartInfo(
-        path=path, members=len(payload),
-        bytes=sum(int(a.nbytes) for a in payload.values()),
-        seconds=header_seconds + serialize_seconds,
-        header_seconds=header_seconds, serialize_seconds=serialize_seconds,
-        device_copies=stochastic_copies, dropped=drop,
-        elapsed_seconds=header["elapsed_seconds"], header=header)
+    def publish() -> StreamedRestartInfo:
+        t1 = time.perf_counter()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_name(path.name + ".tmp")
+        try:
+            with temp.open("wb") as stream:
+                np.savez(stream, **body)
+            restart.fsync_file(temp)
+            os.replace(temp, path)
+        except BaseException:
+            temp.unlink(missing_ok=True)
+            raise
+        serialize_seconds = time.perf_counter() - t1
+        return StreamedRestartInfo(
+            path=path, members=len(payload),
+            bytes=sum(int(a.nbytes) for a in payload.values()),
+            seconds=header_seconds + serialize_seconds,
+            header_seconds=header_seconds, serialize_seconds=serialize_seconds,
+            device_copies=stochastic_copies, dropped=drop,
+            elapsed_seconds=header["elapsed_seconds"], header=header)
+
+    return publish
 
 
 def _utcnow() -> str:

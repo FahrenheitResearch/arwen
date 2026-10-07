@@ -23,6 +23,46 @@ from gpuwm.core.lake_schema import (
 
 LAKE_RESTART_FIELDS = ("lake_columns", "lake_static", "lake_latitude")
 
+#: 8-byte arena slots one lake column thread holds at most; must equal
+#: ``LAKE_ARENA_SLOTS`` in kernels/lake_support.cuh (tests/test_lake_contract.py).
+LAKE_ARENA_SLOTS = 1283
+#: Columns one lake launch steps at once, and so the arena's width.  The
+#: arena replaced a per-thread local frame that CUDA backed for every
+#: resident thread of the card (3.3 GiB on an RTX 5090); at this width it
+#: holds 0.31 GiB, and a domain with fewer lake columns holds less.
+LAKE_LAUNCH_COLUMNS = 32768
+
+
+def lake_arena_bytes(columns: int) -> int:
+    """Device bytes of the arena a lake model with ``columns`` columns holds."""
+    return min(max(int(columns), 0), LAKE_LAUNCH_COLUMNS) * LAKE_ARENA_SLOTS * 8
+
+
+def lake_arena(columns: int, held=None):
+    """The arena for ``columns`` lake columns, reusing ``held`` when it fits."""
+    import cupy as cp
+
+    size = lake_arena_bytes(columns)
+    if held is not None and int(held.nbytes) == size:
+        return held
+    return cp.empty(max(size, 8), cp.uint8)
+
+
+def launch_lake_columns(kernel, n: int, args: tuple, arena) -> None:
+    """Launch a lake column kernel over ``n`` columns, one arena width at a time.
+
+    ``args`` are the kernel's own arguments through ``errors``; the launch
+    window and the arena are appended.  Columns are independent, so the
+    windows change no column's arithmetic.
+    """
+    import numpy as np
+
+    n = int(n)
+    for col0 in range(0, n, LAKE_LAUNCH_COLUMNS):
+        count = min(LAKE_LAUNCH_COLUMNS, n - col0)
+        kernel(((count + 31) // 32,), (32,),
+               (*args, np.int32(col0), np.int32(count), arena))
+
 
 @dataclass
 class LakeModel:
@@ -42,6 +82,7 @@ class LakeModel:
     errors: Any
     _step_kernel: Any = None
     _needs_refresh: bool = False
+    _arena: Any = None
     #: WRF's xice_threshold as module_surface_driver.F:1365-1368 selects it
     #: (0.5, or 0.02 under fractional_seaice = 1); lakeini and lake read
     #: the same value the land-surface seam runs.
@@ -68,6 +109,8 @@ class LakeModel:
             self.forcing = cp.empty((LAKE_FORCING_WORDS, n), cp.float32)
             self.output = cp.empty((LAKE_OUTPUT_WORDS, n), cp.float32)
             self.errors = cp.empty(n, cp.int32)
+            self._arena = None
+            self._arena = lake_arena(n)
         self.indices = indices
         cp.take(fields["lake_columns"].reshape(LAKE_STATE_WORDS, -1),
                 indices, axis=1, out=self.columns)
@@ -113,10 +156,12 @@ class LakeModel:
         self.forcing[12] = self.latitude
         if self._step_kernel is None:
             self._step_kernel = get_kernel("lake", "lake_step_columns")
-        self._step_kernel(((n + 31) // 32,), (32,),
-                          (n, self.forcing, self.columns, self.static,
-                           self.output, cp.float32(dt),
-                           cp.float32(self.xice_threshold), self.errors))
+        self._arena = lake_arena(n, self._arena)
+        launch_lake_columns(
+            self._step_kernel, n,
+            (n, self.forcing, self.columns, self.static, self.output,
+             cp.float32(dt), cp.float32(self.xice_threshold), self.errors),
+            self._arena)
         self.check_errors()
         fields["lake_columns"].reshape(LAKE_STATE_WORDS, -1)[:, self.indices] = self.columns
         for row, (name, _) in enumerate(LAKE_OUTPUT_LAYOUT):
@@ -241,10 +286,12 @@ def initialize_lake(
                 "thickness of a lake column from them, so one value that "
                 "is not finite makes that column's whole initial profile "
                 "not finite")
-        get_kernel("lake", "lake_init_columns")(
-            ((n + 31) // 32,), (32,),
+        owner._arena = lake_arena(n, owner._arena)
+        launch_lake_columns(
+            get_kernel("lake", "lake_init_columns"), n,
             (n, seed, owner.columns, owner.static, int(use_lakedepth), depth_flag,
-             cp.float32(lakedepth_default), cp.float32(threshold), owner.errors))
+             cp.float32(lakedepth_default), cp.float32(threshold), owner.errors),
+            owner._arena)
         owner.check_errors()
         fields["lake_columns"].reshape(LAKE_STATE_WORDS, -1)[:, indices] = owner.columns
         fields["lake_static"].reshape(LAKE_STATIC_WORDS, -1)[:, indices] = owner.static

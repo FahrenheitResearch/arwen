@@ -637,10 +637,14 @@ def _gpu_generate_subcolumns(ncol, nlay, ngpt, icld, permuteseed, irng,
     # (generate_stochastic_clouds lines 2424-2427 / _make_seeds).
     pm0 = play_d[:, 0] * _PMID_SCALE
     pm1 = play_d[:, 1] * _PMID_SCALE
-    if bool((pm0 < pm1).any()):
-        raise ValueError(
-            "MCICA_SUBCOL: KISSVEC SEED GENERATOR REQUIRES PMID FROM "
-            "BOTTOM FOUR LAYERS.")
+    def _seed_verdict(bad):
+        if bool(bad):
+            raise ValueError(
+                "MCICA_SUBCOL: KISSVEC SEED GENERATOR REQUIRES PMID FROM "
+                "BOTTOM FOUR LAYERS.")
+    # Read now, or once per radiation call (deferred_device_checks).
+    from gpuwm.core.deferred_device_checks import check
+    check((pm0 < pm1).any(), _seed_verdict)
     del pm0, pm1
 
     srcs = {}

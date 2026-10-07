@@ -1,0 +1,7 @@
+# Vegetation-only cross-source certificate
+
+These nine metadata files are unchanged artifacts from the preliminary real HRRR pressure-level preparation completed at 2026-10-04T06:19:32Z. The Python producer was staging `e62a72e480d7dafff7381db4c9d35eca22285a87`, with its independent GRIB/preprocess and static libraries. The canonical decoder recorded in the manifest was the cached artifact stamped `fc5b34e26efcbcba73291323ea723b5a5c0e0637`, SHA256 `6a1ed079c2157ef2330fe4eff214648ac97cf0b1292165c056a4d6dae9204b0c`. Its native inputs differ from staging, so this preparation is not final-cut forecast evidence. Final qualification rebuilds the decoder and re-prepares the forecast independently. The old metadata remains the exact reader-defect reproducer.
+
+The preparation has an in-band terrain supplement and a separate surface vegetation donor. The public reader selected cross-source terrain validation merely because the vegetation binding existed, then dereferenced a nonexistent terrain binding. The recovery selects the terrain branch by the presence of the terrain binding and still checks the separate vegetation donor. The regression also refuses failed terrain or donor alignment and a changed donor mapping digest.
+
+Original proof SHA256: `505684d69ca5bfe51fe866eda2f4e1ffb7f97e78c7c042e30868fddf51b0aa94`. No raw meteorology, prepared arrays, simulation outputs or credentials are in this deck. Absolute paths are retained provenance and are not required input files for this metadata regression.

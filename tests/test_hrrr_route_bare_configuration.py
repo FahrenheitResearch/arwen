@@ -67,10 +67,15 @@ def _experiment(config):
                                 source=str(config))
 
 
-def _moist_cq_the_namelists_cannot_state(raw):
-    """The explicit verification opt-out has no WRF namelist spelling."""
+def _relax_w_the_namelists_cannot_state(raw):
+    """The nest-style boundary relaxation of w has no WRF namelist spelling.
 
-    raw["shared"]["moist_cq"] = False
+    (moist_cq = false was this example until the forecast read it from
+    the TOML: it joined ROUTE_FORECAST_TOML_FIELDS, so it no longer
+    refuses.)
+    """
+
+    raw["shared"]["relax_w"] = True
 
 
 def _drive_chain(plan, config, exp, monkeypatch, observer=None):
@@ -166,7 +171,7 @@ def _front_door_sees_the_gpu_runtime(monkeypatch):
 def test_the_dry_run_and_the_real_run_refuse_what_the_namelists_cannot_carry(
         tmp_path, monkeypatch, capsys):
     plan, config = _authored(tmp_path)
-    _bare(config, keep_wps=True, edit=_moist_cq_the_namelists_cannot_state)
+    _bare(config, keep_wps=True, edit=_relax_w_the_namelists_cannot_state)
     exp = _experiment(config)
     capsys.readouterr()
 
@@ -186,7 +191,7 @@ def test_the_dry_run_and_the_real_run_refuse_what_the_namelists_cannot_carry(
 
     assert len(dry) == 1
     for said in (dry[0], real[0], str(chain.value)):
-        assert "moist_cq" in said
+        assert "relax_w" in said
         assert "namelist.input" in said or "namelist_input" in said
         assert '[fetch] source = "hrrr-prs"' in said
     # The same sentence at both doors, and the real run refused before it

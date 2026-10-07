@@ -72,6 +72,8 @@ from gpuwm.core.thompson_aerosol_sed import (
     VERTICAL_LEVEL_BOUNDS,
     launch_aa_cloud_sedimentation,
     launch_aa_final_phase_cleanup,
+    launch_aa_ice_sedimentation_accumulate,
+    launch_aa_rain_sedimentation_accumulate,
 )
 from gpuwm.core.thompson_aerosol_state import (
     AEROSOL_CEILING,
@@ -93,6 +95,7 @@ from gpuwm.core.thompson_aerosol_state import (
     launch_aerosol_working_cloud,
     launch_aerosol_working_number,
     launch_tau1_density,
+    launch_terminal_rain_ice,
     zero_aerosol_accumulators,
 )
 from gpuwm.core.thompson_aerosol_warm import (
@@ -118,6 +121,7 @@ AEROSOL_LAUNCHERS: dict[str, tuple[str, ...]] = {
         "launch_aerosol_working_number",
         "launch_aerosol_working_cloud",
         "launch_aerosol_state_finalize",
+        "launch_terminal_rain_ice",
         "launch_aerosol_surface_emission",
         "launch_aerosol_init_profile",
         "launch_aerosol_effective_radius",
@@ -137,12 +141,18 @@ AEROSOL_LAUNCHERS: dict[str, tuple[str, ...]] = {
     ),
     "gpuwm.core.thompson_aerosol_sed": (
         "launch_aa_cloud_sedimentation",
+        "launch_aa_ice_sedimentation_accumulate",
+        "launch_aa_rain_sedimentation_accumulate",
         "launch_aa_final_phase_cleanup",
     ),
 }
 
 #: The classic (frozen mp=8) launchers the mp=28 adapter reuses UNCHANGED.
 #: Listed here for the call-order gate only; they are NOT re-exported.
+#: The v4.6.1 generation's rain and ice fallout are its own accumulator
+#: kernels (launch_aa_rain/ice_sedimentation_accumulate) and the fork's are
+#: its own THOMPSON_AA_WRF39 kernels, so no classic rain or ice launcher is
+#: reused.
 #:
 #: Every name is verified above to contain no aerosol reference:
 #: module_mp_thompson.F:3790-3936 (the four reused fallout blocks) has no
@@ -154,10 +164,18 @@ REUSED_CLASSIC_LAUNCHERS: tuple[str, ...] = (
     "launch_classic_graupel_number_finalize",
     "launch_hydrometeor_column_mask",
     "launch_graupel_fallout_column_mask",
-    "launch_ice_sedimentation",
     "launch_snow_sedimentation",
     "launch_graupel_sedimentation",
-    "launch_rain_sedimentation",
+)
+
+#: What the fork generation (thompson_version = "wrf_39_noaa") reuses on top
+#: of its own rain, ice, snow and graupel fallout: the two column masks.  Its
+#: rain fallout is the classic in-place pass copied into a THOMPSON_AA_WRF39
+#: arm with the fork's surface test (launch_wrf39_rain_sedimentation, fork
+#: :3556, audit T21), so the classic rain launcher is no longer reused.
+WRF39_REUSED_CLASSIC_LAUNCHERS: tuple[str, ...] = (
+    "launch_hydrometeor_column_mask",
+    "launch_graupel_fallout_column_mask",
 )
 
 #: Classic launchers that carry WRF's **Cooper (1986)** deposition nucleation
@@ -208,6 +226,7 @@ __all__ = [
     "PROFILE_FILL_EPS",
     "R1",
     "REUSED_CLASSIC_LAUNCHERS",
+    "WRF39_REUSED_CLASSIC_LAUNCHERS",
     "SAT_MODULE",
     "SED_MODULE",
     "STATE_MODULE",
@@ -219,6 +238,8 @@ __all__ = [
     "launch_aa_cold_network",
     "launch_aa_cold_network_from_owner",
     "launch_aa_final_phase_cleanup",
+    "launch_aa_ice_sedimentation_accumulate",
+    "launch_aa_rain_sedimentation_accumulate",
     "launch_aerosol_effective_radius",
     "launch_aerosol_entry_cloud_number",
     "launch_aerosol_entry_snapshot",
@@ -235,6 +256,7 @@ __all__ = [
     "launch_grid",
     "launch_ncten_balance",
     "launch_tau1_density",
+    "launch_terminal_rain_ice",
     "load_aerosol_device_tables",
     "validate_fields",
     "validate_fp64_fortran_table",

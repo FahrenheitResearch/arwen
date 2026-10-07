@@ -1,0 +1,149 @@
+{
+  "schema": "sfire-driver-burn-capture-v1",
+  "shape": [
+    482,
+    482
+  ],
+  "domain": [
+    1,
+    480,
+    1,
+    480
+  ],
+  "source_snapshot": "bcdf63a499b57126454177360430b49dd64b1c2a",
+  "native_input": {
+    "shape": [
+      482,
+      482
+    ],
+    "native_layout": "Fortran x fast, C row-major y/x captured words",
+    "time_now": 1177.5,
+    "physical_argmin_i": 283,
+    "physical_argmin_j": 237,
+    "source_capture_sha256": "cb0fa34c69da95c7dd94d0f665c60017c723b0599749e29b64517fefe346c715",
+    "input_sha256": {
+      "after_fuel_frac.bin": "af17e4b3528f52bfdd63a702f52af89cac00acf66929c8f09bf310b694987450",
+      "after_burnt_area_dt.bin": "d2e6aff9c303241700d83e95842bb221c871bf514287ff3ff7051fe965c23d64",
+      "after_tign.bin": "a7965370240b819e321b72651aa137bfc6fe068bad1cf8a28eff4ddd30fea165",
+      "after_fuel_time.bin": "8b4c225e77fbc2f8cb1547889704c6521316ec7cc267a34839d34ebd83fddf2b",
+      "after_lfn.bin": "2cc27d4091630ac5d9d961fe450c2d77f2ee6b4a98e4beb7982578d276033585",
+      "before_fuel_frac.bin": "756ae78c4a8f8bedbcc3ae23419c41368085239b6a234fb2efffe145c597d4d1"
+    }
+  },
+  "native_build": {
+    "compile_command": [
+      "nice",
+      "-n",
+      "10",
+      "gfortran",
+      "-O0",
+      "-ffree-line-length-none",
+      "-fno-fast-math",
+      "-ffp-contract=off",
+      "-I",
+      "${SFIRE_WORK}/oracle-build",
+      "${SFIRE_WORK}/negative-burn-oracle/negative_burn_oracle.F90",
+      "${SFIRE_WORK}/oracle-build/stub_wrf.o",
+      "${SFIRE_WORK}/oracle-build/module_model_constants.o",
+      "${SFIRE_WORK}/oracle-build/module_wrf_error.o",
+      "${SFIRE_WORK}/oracle-build/module_fr_fire_util.o",
+      "${SFIRE_WORK}/oracle-build/module_fr_fire_phys.o",
+      "${SFIRE_WORK}/oracle-build/module_fr_fire_core.o",
+      "-o",
+      "${SFIRE_WORK}/negative-burn-oracle/negative_burn_oracle"
+    ],
+    "exit_code": 0,
+    "source_sha256": "a49c0ffcca94074e131042c886518eb6a692bf94bb6ce816816388413b235c70",
+    "objects_sha256": {
+      "stub_wrf.o": "caa11b1aadd691acb65b15e87c033f1afe7a8afe455243ac580806d2c65a973a",
+      "module_model_constants.o": "301defba973fa4f6b16b243392e0ee101fbde3221fbd8b4acb3c28a0b8cd2e3b",
+      "module_wrf_error.o": "622876e7ed1036fccb614eadf88931023fd4d6ba662b8b545cfd718370f6a7fd",
+      "module_fr_fire_util.o": "ab11f9efc8c62a18ce6a78dd2e0b6b38887745c3633026900652cf72cc8993c0",
+      "module_fr_fire_phys.o": "e228430245132f084b662d0fef0c6f1e446eacd86fac4cf42b0bf40396957fec",
+      "module_fr_fire_core.o": "0662149bc4c88edcbb8e1601126570cf3e5cb49c6d9a69fb5e9d5bff0630849d"
+    },
+    "executable_sha256": "2e0928c0c4e0f94dbb1ab575411973b325677f0e201af8dc2f7508129d687ac1",
+    "correction": "conditional finite(next) and next>old then next=old; preserve NaN and infinities",
+    "compiler": "GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+    "edge_words": 32
+  },
+  "fixture_sha256": "2c9ef7b815aaf0992945fef3231f5a0e50d0f821afdc05628fabe7abf9ae322f",
+  "fixture_bytes": 12050,
+  "arrays": {
+    "old": {
+      "shape": [
+        482,
+        482
+      ],
+      "dtype": "float32",
+      "sha256": "756ae78c4a8f8bedbcc3ae23419c41368085239b6a234fb2efffe145c597d4d1"
+    },
+    "next": {
+      "shape": [
+        482,
+        482
+      ],
+      "dtype": "float32",
+      "sha256": "af17e4b3528f52bfdd63a702f52af89cac00acf66929c8f09bf310b694987450"
+    },
+    "raw_burnt": {
+      "shape": [
+        482,
+        482
+      ],
+      "dtype": "float32",
+      "sha256": "d2e6aff9c303241700d83e95842bb221c871bf514287ff3ff7051fe965c23d64"
+    },
+    "fixed_fuel": {
+      "shape": [
+        482,
+        482
+      ],
+      "dtype": "float32",
+      "sha256": "2d5ba3fec85b1a028c780a42f732e38978d5e66280334442519bd4a2c51904f4"
+    },
+    "fixed_burnt": {
+      "shape": [
+        482,
+        482
+      ],
+      "dtype": "float32",
+      "sha256": "7dc135f29550047fd2db2fe87b3ca26e9ee1fe550d7d91b5d2f4309c7e6814b9"
+    },
+    "edge_old": {
+      "shape": [
+        8
+      ],
+      "dtype": "float32",
+      "sha256": "f0a718888f1769f354b09a7c8fc213e814bc11dd5d213debc49cf6bc66597934"
+    },
+    "edge_next": {
+      "shape": [
+        8
+      ],
+      "dtype": "float32",
+      "sha256": "9b6640a78c811c8c940a08b7a59066cdb0a9d1d79b5ad02b81ce375b58ce79e9"
+    },
+    "edge_fixed_fuel": {
+      "shape": [
+        8
+      ],
+      "dtype": "float32",
+      "sha256": "2f7d90693930b70a21fa54517733936eccebc57724d9a6069209b2eadd05969f"
+    },
+    "edge_fixed_burnt": {
+      "shape": [
+        8
+      ],
+      "dtype": "float32",
+      "sha256": "0bc5e3f25501f86e49623432a92c8b745b8d1d93b952b89bfe087cb15c83502b"
+    }
+  },
+  "native_correction": "finite(next) and next>old then next=old before native burn difference",
+  "raw_negative_cells": 1,
+  "raw_negative_min": -1.4901161193847656e-08,
+  "raw_fuel_words": 230400,
+  "raw_burn_words": 230400,
+  "raw_gpu_different_words": 0,
+  "corrected_fuel_changed_words": 1
+}

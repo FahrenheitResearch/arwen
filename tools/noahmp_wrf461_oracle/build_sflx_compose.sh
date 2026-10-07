@@ -23,7 +23,7 @@
 #
 # ERROR evaluates no transcendental at any option setting -- its body is nine
 # add/multiply statements -- so the libmvec hazard recorded in
-# gpuwm/data/noahmp/oracle/PROVENANCE-soilwater.md cannot arise.  Stage 5
+# tests/data/oracles/noahmp/PROVENANCE-soilwater.md cannot arise.  Stage 5
 # checks that claim rather than asserting it.
 #
 # The only change made to phys/module_sf_noahmplsm.F is the accessibility lift

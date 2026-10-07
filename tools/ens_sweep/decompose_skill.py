@@ -42,14 +42,17 @@ from pathlib import Path
 import numpy as np
 
 from score_free_forecast import (COLUMN_THRESHOLD_DBZ, HALF_WIDTH_CELLS,
-                                 THRESHOLD_DBZ, observed_composite)
+                                 THRESHOLD_DBZ, fss_observed,
+                                 observed_composite)
+
+#: The observed-column mask of the frame being scored, set per frame by
+#: ``main`` so every FSS below is over the columns a radar measured.
+_COVERAGE = {"mask": None}
 
 
 def fss(field: np.ndarray, observed: np.ndarray) -> float:
-    from gpuwm.verify.field_metrics import fss_distance
-
-    return 1.0 - fss_distance(field, observed, threshold=THRESHOLD_DBZ,
-                              half_width=HALF_WIDTH_CELLS)
+    return fss_observed(field, observed, _COVERAGE["mask"],
+                        HALF_WIDTH_CELLS)
 
 
 def load_stack(composites: Path, leg: int, members: int) -> np.ndarray:
@@ -101,7 +104,8 @@ def main() -> int:
     frames = [{"lead_minutes": 15 * (i + 1), "obs": path}
               for i, path in enumerate(args.obs)]
     for frame in frames:
-        frame["observed"], _ = observed_composite(frame["obs"])
+        frame["observed"], _, frame["coverage"] = observed_composite(
+            frame["obs"], with_coverage=True)
 
     runs = {}
     for members in args.members:
@@ -132,6 +136,7 @@ def main() -> int:
             leg = args.first_free_leg + index
             stack = load_stack(composites, leg, members)
             observed = frame["observed"]
+            _COVERAGE["mask"] = frame["coverage"]
 
             # Depth 1 -- the statistic that does not average away.
             singles = [fss(stack[m], observed) for m in range(members)]

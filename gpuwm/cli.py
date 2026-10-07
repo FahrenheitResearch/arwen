@@ -102,12 +102,15 @@ domain_register_cli = _lazy_register("gpuwm.domain_wizard")
 cyclone_setup_register_cli = _lazy_register("gpuwm.cyclone_setup")
 downscale_register_cli = _lazy_register("gpuwm.downscale")
 fetch_register_cli = _lazy_register("gpuwm.fetch")
+fire_static_register_cli = _lazy_register("gpuwm.static.sfire")
+fire_ideal_register_cli = _lazy_register("gpuwm.fire_ideal")
 geog_register_cli = _lazy_register("gpuwm.geog_assets")
 go_register_cli = _lazy_register("gpuwm.go_cli")
 speedrun_register_cli = _lazy_register("gpuwm.speedrun_cli")
 ingest_register_cli = _lazy_register("gpuwm.ingest.preflight")
 mesh_register_cli = _lazy_register("gpuwm.mpas_mesh")
 ml_export_register_cli = _lazy_register("gpuwm.ml_export")
+grib2_export_register_cli = _lazy_register("gpuwm.grib2_export")
 multi_run_register_cli = _lazy_register("gpuwm.multi_run")
 obs_register_cli = _lazy_register("gpuwm.obs.cli")
 render_register_cli = _lazy_register("gpuwm.render")
@@ -271,7 +274,7 @@ _LONG_RUNNING_COMMANDS = frozenset({
     # The unbundled stages run for exactly as long as the welded ones
     # they were split out of: preprocessing is minutes of static build,
     # the forecast is the forecast.
-    "prep", "sim", "warm-kernels",
+    "prep", "sim", "warm-kernels", "fire-ideal",
     # `gpuwm ensemble` is `go` by another name; argparse stores the name
     # the reader typed, so the alias needs its own row to get the notice.
     "ensemble",
@@ -414,6 +417,8 @@ def build_parser(*, render_only: bool = False) -> argparse.ArgumentParser:
         func=lambda args: args.ingest_preflight_handler(args)
         or check_main(args))
     fetch_register_cli(sub)
+    fire_static_register_cli(sub)
+    fire_ideal_register_cli(sub)
     cds_credentials_register_cli = _lazy_register("gpuwm.cds_credentials")
     cds_credentials_register_cli(sub)
     companion_query_register_cli = _lazy_register("gpuwm.companion_query")
@@ -439,6 +444,7 @@ def build_parser(*, render_only: bool = False) -> argparse.ArgumentParser:
     # beside render, the other door that turns history files into a
     # product.
     ml_export_register_cli(sub)
+    grib2_export_register_cli(sub)
     simulated_radar_register_cli(sub)
     verification_visuals_register_cli(sub)
     enprod_register_cli(sub)
@@ -836,7 +842,12 @@ def _dispatch_argv(argv: list[str] | None = None) -> int:
                   or getattr(args, "readiness", False)))
             or (args.command == "sim"
                 and getattr(args, "print_command", False)))
-        if not _spends_nothing:
+        # `go --prepare-only` fetches and prepares on the CPU backends and
+        # stops before the forecast, so the GPU runtime it would refuse
+        # for is the forecast's (go_cli._prepare_only_needs_no_card).
+        _prepares_only = (args.command == "go"
+                          and getattr(args, "prepare_only", False))
+        if not _spends_nothing and not _prepares_only:
             capabilities.require_for_command(args.command)
         # --no-memory-gate reaches every process this command starts: the
         # forecast stage `go` runs, the worker `run` supervises, the runner

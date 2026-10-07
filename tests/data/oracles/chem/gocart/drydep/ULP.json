@@ -1,0 +1,134 @@
+{
+  "arm300_step1": {
+    "ddvel": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 36
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 180
+    },
+    "aer_res": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 36
+    },
+    "rmol_used": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 36
+    }
+  },
+  "arm300_step2": {
+    "ddvel": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 36
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 180
+    },
+    "aer_res": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 36
+    },
+    "rmol_used": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 36
+    }
+  },
+  "arm300_step3": {
+    "ddvel": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 36
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 180
+    },
+    "aer_res": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 36
+    },
+    "rmol_used": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 36
+    }
+  },
+  "arm401_step1": {
+    "ddvel": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 36
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 180
+    },
+    "aer_res": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 36
+    },
+    "rmol_used": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 36
+    }
+  },
+  "arm401_step2": {
+    "ddvel": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 36
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 180
+    },
+    "aer_res": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 36
+    },
+    "rmol_used": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 36
+    }
+  },
+  "arm401_step3": {
+    "ddvel": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 36
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 180
+    },
+    "aer_res": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 36
+    },
+    "rmol_used": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 36
+    }
+  }
+}

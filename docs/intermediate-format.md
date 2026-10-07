@@ -197,6 +197,7 @@ Keyed by **canonical name** (§3). Each entry:
 | `location` | `mass`, `u_face`, `v_face`, `surface`, `soil`. |
 | `staggering` | `none`, `x`, `y`, `z`. |
 | `missing` | `{"kind":"reject"}` refuses any gap; `{"kind":"value","value":0.0}` fills; `{"kind":"attribute","name":"_FillValue"}` reads the marker from a named attribute (NetCDF only). |
+| `published_levels` | GRIB only, optional, hydrometeor mass mixing ratios only (`cloud_water_mixing_ratio`, `rain_water_mixing_ratio`, `cloud_ice_mixing_ratio`, `snow_mixing_ratio`, `graupel_or_hail_mixing_ratio`). `{"levels": [...], "absent": "zero"}` names the declared `vertical.levels` the publisher writes the field on; a file missing one of those still refuses by name, and on every other declared level the field is zero (a record there is read when a file carries one). One ladder is chosen for every stacked field, so without it a mass published on part of the ladder would refuse the file or take temperature, humidity and wind off the levels above it. GFS/GDAS pgrb2.0p25 writes its five masses on 22 of its 33 isobaric levels (50 to 1000 hPa without 70 hPa) and its packaged mapping declares exactly those. The field keeps `{"kind":"reject"}` and a zero unit offset, and `levels` must be a strict subset of `vertical.levels`. |
 | `derivation` | Names a `derivations` entry instead of `selectors`. |
 | `when_absent` | GRIB2 `terrain_height` only, beside its `selectors`: how terrain is derived when the composition's terrain files carry no terrain record at all. See §2.6. |
 

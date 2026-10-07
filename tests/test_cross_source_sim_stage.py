@@ -196,3 +196,52 @@ def test_real_cross_source_receipt_also_binds_caller_authored_authorities(prepar
         paths, authority, member = validate()
         assert authority["mapping_sha256"] == manifest["mapping_sha256"]
         assert member is None
+
+
+@pytest.mark.parametrize("tamper", [None, "donor_alignment", "donor_mapping", "terrain_alignment"])
+def test_real_vegetation_only_binding_keeps_independent_terrain_certificate(tmp_path, tamper):
+    """Real preparation has a vegetation donor and an in-band terrain source.
+
+    The terrain alignment remains the primary source's certificate; the
+    donor still has to pass its own alignment and mapping checks. This
+    metadata deck contains no raw input or prepared numerical arrays.
+    """
+    fixture = ROOT / "tests" / "data" / "hrrr_prs_vegetation"
+    prepared = tmp_path / "prepared"
+    shutil.copytree(fixture / "source-evidence", prepared / "source-evidence")
+    proof = json.loads((fixture / "proof.json").read_text(encoding="utf-8"))
+    manifest_path = prepared / "source-evidence" / "input-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    composition = json.loads((prepared / "source-evidence" / "composition.json").read_text(encoding="utf-8"))
+    assert composition["field_sources"]
+    assert all("terrain_height" not in binding["fields"]
+               for binding in composition["field_sources"].values())
+    receipt = proof["source_composition"]
+    if tamper == "donor_alignment":
+        receipt["contributing_sources"][0]["alignment"]["status"] = "FAIL"
+    elif tamper == "donor_mapping":
+        receipt["contributing_sources"][0]["mapping"]["sha256"] = "0" * 64
+    elif tamper == "terrain_alignment":
+        receipt["alignment"]["status"] = "FAIL"
+    if tamper:
+        content = dict(receipt)
+        content.pop("receipt_content_sha256")
+        receipt["receipt_content_sha256"] = hashlib.sha256(
+            runner._canonical(content).encode("utf-8")).hexdigest()
+        proof["proof_content_sha256"] = _canonical_hash(proof)
+
+    def validate():
+        return runner._validate_packaged_mapped_evidence(
+            prepared_root=prepared, proof=proof, manifest=manifest,
+            manifest_sha256=_sha256(manifest_path), source="hrrr-prs",
+            experiment_config=fixture / "configs" / "off-base.toml",
+            wps_namelist=fixture / "configs" / "off-base.namelist.wps")
+
+    if tamper:
+        with pytest.raises(ValueError, match="contributing|alignment"):
+            validate()
+    else:
+        paths, authority, member = validate()
+        assert paths["mapped_composition"].is_file()
+        assert authority["composition_sha256"] == manifest["composition_sha256"]
+        assert member is None

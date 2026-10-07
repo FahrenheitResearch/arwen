@@ -2253,7 +2253,9 @@ mod tests {
         assert_eq!(view.status.as_ref().unwrap()["state"], "running");
     }
     fn controller() -> Controller {
-        let directory = std::env::temp_dir().join(format!("arwen-node-controller-{}", stamp()));
+        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let directory = std::env::temp_dir().join(format!("arwen-node-controller-{}-{}", stamp(), NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
         let mut controller = Controller::load(&directory);
         let n = node();
         controller.store.active = Some(n.id.clone());

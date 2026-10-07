@@ -829,13 +829,16 @@ mod tests {
     }
 
     fn fixture_directory() -> PathBuf {
+        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "ensemble-match-test-{}-{stamp}",
-            std::process::id()
+            "ensemble-match-test-{}-{stamp}-{}",
+            std::process::id(),
+            NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ));
         std::fs::create_dir_all(&path).unwrap();
         path
@@ -868,6 +871,8 @@ mod tests {
         let text = schema.def_dim("DateStrLen", 19, false).unwrap();
         let ny = schema.def_dim("south_north", 8, false).unwrap();
         let nx = schema.def_dim("west_east", 8, false).unwrap();
+        let nz = schema.def_dim("bottom_top", 1, false).unwrap();
+        let theta = schema.def_var("T", NcType::Float, &[time, nz, ny, nx]).unwrap();
         schema
             .put_global_attr("MAP_PROJ", AttrValue::Ints(vec![1]))
             .unwrap();
@@ -917,6 +922,7 @@ mod tests {
                 VarData::Char(format!("2000-01-01_{hour:02}:00:00").as_bytes()),
             )
             .unwrap();
+        writer.write_record(0, theta, VarData::F32(&[0.0; 64])).unwrap();
         for (name, id) in ids {
             let values = (0..64)
                 .map(|k| {

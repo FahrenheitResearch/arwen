@@ -6,9 +6,13 @@ leg through ``execute_experiment`` and detaches it before the leg's restart
 set is written.  These cells run that sequence on the hand-built tree the
 join tests use (``tests/test_da_cycle_join_gpu.py``: a 33 x 33 x 49 parent
 with WSM6, land and radiation, four 15 s steps): the forcing is read on
-every step, it heats the observed column, and the restart set writes only
-once it is detached -- with it attached the restart owner refuses the
-unclassified attribute, which is why the driver detaches in a ``finally``.
+every step, it heats the observed column, and a restart set written
+while it is attached carries none of it: since e30746bd1 the forcing is
+INFRA in the restart manifest (gpuwm.io.restart), rebuilt from its windows
+by whoever attaches it, and resuming inside a forced period is refused at
+the door instead (gpuwm.da.forecast_heating.resume_plan,
+tests/test_forecast_heating.py).  The driver still detaches in a
+``finally``.
 """
 from __future__ import annotations
 
@@ -80,18 +84,24 @@ def test_a_forced_leg_reads_the_forcing_every_step_and_heats_the_echo(
     assert root.is_file()
 
 
-def test_a_set_written_with_the_forcing_attached_is_refused(tmp_path):
+def test_a_set_written_with_the_forcing_attached_carries_none_of_it(tmp_path):
+    """The refusal this cell pinned was retired by e30746bd1 (the forcing
+    became INFRA, so a checkpoint written mid-forcing no longer raised
+    RestartManifestError); what holds now is that the set is written and
+    no array of the forcing reaches it."""
+    from test_da_cycle_join_gpu import _members
     from gpuwm.da import radar_tten
-    from gpuwm.io.restart import RestartManifestError
 
     exp, model, state, forcing, _echo = _forced_leg(tmp_path)
     try:
         _run(model)
-        with pytest.raises(RestartManifestError,
-                           match=radar_tten.STATE_ATTRIBUTE):
-            _checkpoint(model, tmp_path / "attached", LEG_SECONDS)
+        root = _checkpoint(model, tmp_path / "attached", LEG_SECONDS)
     finally:
         radar_tten.detach(state)
+    assert root.is_file()
+    keys = [key for arrays in _members(root).values() for key in arrays]
+    assert keys
+    assert not [key for key in keys if "radar_tten" in key], keys
 
 
 def test_the_cycle_driver_forces_a_real_member_through_its_door(

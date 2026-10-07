@@ -18,6 +18,7 @@ def _assert_words(actual, expected, *, err_msg=""):
 def test_complete_lake_cuda_column_history_matches_wrf():
     import cupy as cp
     from gpuwm.core.kernels import get_kernel, module_options, module_source
+    from gpuwm.core.lake import lake_arena, launch_lake_columns
 
     # Breakage: x<0?-x:x preserves -0 and signed NaNs, and an FTZ ABS
     # instruction can erase a smallest subnormal. Probe the production
@@ -53,12 +54,13 @@ extern "C" __global__ void lake_abs_probe(const unsigned int* a,
         errors = cp.zeros(n, cp.int32)
         init = get_kernel("lake", "lake_init_columns")
         step = get_kernel("lake", "lake_step_columns")
-        init((1,), (32,), (n, seed, columns, static, 1, 1, np.float32(50), np.float32(0.5), errors))
+        arena = lake_arena(n)
+        launch_lake_columns(init, n, (n, seed, columns, static, 1, 1, np.float32(50), np.float32(0.5), errors), arena)
         assert not cp.asnumpy(errors).any()
         _assert_words(cp.asnumpy(columns), reference["initial_state"])
         _assert_words(cp.asnumpy(static), reference["reference_static"])
         for i in range(300):
-            step((1,), (32,), (n, forcing, columns, static, output, np.float32(30), np.float32(0.5), errors))
+            launch_lake_columns(step, n, (n, forcing, columns, static, output, np.float32(30), np.float32(0.5), errors), arena)
             assert not cp.asnumpy(errors).any()
             _assert_words(cp.asnumpy(columns), reference["trace_state"][i], err_msg=f"step {i+1} state")
             _assert_words(cp.asnumpy(output), reference["trace_output"][i], err_msg=f"step {i+1} output")
@@ -69,13 +71,14 @@ extern "C" __global__ void lake_abs_probe(const unsigned int* a,
 def test_complete_lake_cuda_default_depth_controls_match_wrf():
     import cupy as cp
     from gpuwm.core.kernels import get_kernel
+    from gpuwm.core.lake import lake_arena, launch_lake_columns
 
     with np.load(ORACLE / "initialization.npz") as reference:
         seed=cp.asarray(reference["seed"]);n=seed.shape[1]
         columns=cp.zeros((131,n),cp.float32);static=cp.zeros((71,n),cp.float32);errors=cp.zeros(n,cp.int32)
         for i,default in enumerate(reference["defaults"]):
-            get_kernel("lake","lake_init_columns")((1,),(32,),
-                (n,seed,columns,static,0,0,np.float32(default),np.float32(0.5),errors))
+            launch_lake_columns(get_kernel("lake","lake_init_columns"),n,
+                (n,seed,columns,static,0,0,np.float32(default),np.float32(0.5),errors),lake_arena(n))
             assert not cp.asnumpy(errors).any()
             _assert_words(cp.asnumpy(columns),reference["reference_state"][i])
             _assert_words(cp.asnumpy(static),reference["reference_static"][i])
@@ -128,3 +131,36 @@ def test_lake_runtime_preserves_nonlake_cells_and_frozen_mask_conversion():
         owner.invalidate_columns()
         owner.step(f,{},dt=30,precipitation=cp.zeros(shape,cp.float32))
         assert owner.column_count==0
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_lake_launch_windows_and_arena_width_change_no_word(monkeypatch):
+    # Breakage: the lake arena is sized to one launch window, and a column
+    # stepped in a later window, or beside a different neighbour count, must
+    # hold the words a single whole launch holds.  The oracle trace is the
+    # one-window result; three windows of 5, 5 and 2 columns must match it.
+    import cupy as cp
+    import gpuwm.core.lake as lake
+    from gpuwm.core.kernels import get_kernel
+
+    monkeypatch.setattr(lake, "LAKE_LAUNCH_COLUMNS", 5)
+    with np.load(ORACLE / "columns.npz") as reference:
+        seed = cp.asarray(reference["seed"])
+        forcing = cp.asarray(reference["forcing"])
+        n = seed.shape[1]
+        columns = cp.zeros((131, n), cp.float32)
+        static = cp.zeros((71, n), cp.float32)
+        output = cp.zeros((9, n), cp.float32)
+        errors = cp.zeros(n, cp.int32)
+        arena = lake.lake_arena(n)
+        assert arena.nbytes == 5 * lake.LAKE_ARENA_SLOTS * 8
+        lake.launch_lake_columns(get_kernel("lake", "lake_init_columns"), n,
+            (n, seed, columns, static, 1, 1, np.float32(50), np.float32(0.5), errors), arena)
+        _assert_words(cp.asnumpy(columns), reference["initial_state"])
+        for i in range(20):
+            lake.launch_lake_columns(get_kernel("lake", "lake_step_columns"), n,
+                (n, forcing, columns, static, output, np.float32(30), np.float32(0.5), errors), arena)
+            assert not cp.asnumpy(errors).any()
+            _assert_words(cp.asnumpy(columns), reference["trace_state"][i], err_msg=f"step {i+1} state")
+            _assert_words(cp.asnumpy(output), reference["trace_output"][i], err_msg=f"step {i+1} output")

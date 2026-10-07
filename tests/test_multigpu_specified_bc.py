@@ -276,10 +276,23 @@ def test_corner_rank_sees_the_resident_corner_values():
 # the forced halo, and the refusals
 # --------------------------------------------------------------------------
 
-def test_forced_halo_is_radius_plus_frame_width():
+def test_forced_halo_is_radius_plus_seam_fiction():
+    """The relaxation band is masked on a seam, so the halo pays only the
+    unmasked specified zone: ``spec_zone`` cells, one at WRF's
+    ``spec_zone=1``, never the relaxation frame.  The 2x1 split of a 3 km
+    specified crop ran 12 h byte-identical at that halo (tilestream.realcase
+    module docstring, which also says why it is not ``spec_zone - 1``)."""
+    from dataclasses import replace
+    from tilestream import realcase
     cfg = forced_cfg()
-    assert mg.forced_halo(cfg) == (harness.halo_radius(cfg)
-                                   + max(cfg.spec_zone, cfg.relax_zone))
+    assert cfg.spec_zone == 1 and cfg.relax_zone >= 2
+    assert realcase.seam_fiction_width(cfg) == 1
+    assert mg.forced_halo(cfg) == harness.halo_radius(cfg) + 1
+    assert mg.forced_halo(cfg) < (harness.halo_radius(cfg)
+                                  + max(cfg.spec_zone, cfg.relax_zone))
+    wide = replace(cfg, spec_zone=3)
+    assert realcase.seam_fiction_width(wide) == 3
+    assert mg.forced_halo(wide) == harness.halo_radius(wide) + 3
 
 
 def test_validate_accepts_a_correct_forced_plan():
@@ -313,12 +326,27 @@ def test_refuses_nested_forcing():
 
 
 def test_refuses_quarantine_defeating_halo():
-    """The dependency radius alone is NOT enough on a forced plan."""
+    """A halo below the forced radius is refused by name.
+
+    At spec_zone=1 the forced radius is the bare dependency radius plus the
+    one specified-zone cell a seam still writes (the relaxation band is
+    masked there), so radius + 1 passes and the bare radius is refused; a
+    wider specified zone raises the floor to radius + spec_zone, so
+    radius + 1 is refused there.
+    """
+    from dataclasses import replace
     cfg = forced_cfg()
     bare = harness.halo_radius(cfg)
-    specs = mg.plan_split(NX, NY, bare, gx=2, gy=1, periodic=False)
+    need = bare + 1
+    specs = mg.plan_split(NX, NY, need, gx=2, gy=1, periodic=False)
+    mg.validate_forced_plan(cfg, specs, need, synthetic_boundaries())
     with pytest.raises(mg.MultiGPUError, match="forced-decomposition"):
         mg.validate_forced_plan(cfg, specs, bare, synthetic_boundaries())
+    wide = replace(cfg, spec_zone=3, spec_bdy_width=8)
+    with pytest.raises(mg.MultiGPUError, match="spec_zone=3"):
+        mg.validate_forced_plan(wide, specs, need,
+                                synthetic_boundaries(spec_zone=3,
+                                                     spec_bdy_width=8))
     mg.validate_forced_plan(cfg, specs, bare, synthetic_boundaries(),
                             enforce_halo=False)
 

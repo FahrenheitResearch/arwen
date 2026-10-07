@@ -48,7 +48,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from tools.da_sweep_score import half_width_cells, metric_constants  # noqa: E402
+from tools.da_sweep_score import (COVERAGE_RULE, half_width_cells,  # noqa: E402
+                                  metric_constants, observed_coverage,
+                                  scored_fss)
 
 #: The metric definitions, taken from the scorer of record rather than
 #: restated.  ``tools/da_sweep_score.py`` is the scorer of record: it
@@ -77,25 +79,36 @@ DX_KM = 3.0
 HALF_WIDTH_CELLS = half_width_cells(DX_KM, _CONST)
 
 
-def observed_composite(path: Path) -> tuple[np.ndarray, np.ndarray]:
-    """``(composite dBZ, echo mask)`` from a gpuwm-obs.radar-grid.v1 file."""
+def observed_composite(path: Path, *, with_coverage: bool = False):
+    """``(composite dBZ, echo mask)`` from a gpuwm-obs.radar-grid.v1 file.
+
+    ``with_coverage`` appends the observed-column mask
+    (:func:`tools.da_sweep_score.observed_coverage`, ``None`` for a file
+    with no clear-air census) so FSS is scored where a radar looked.
+    """
     import netCDF4 as nc
 
     with nc.Dataset(path) as handle:
         z_obs = np.asarray(handle.variables["z_obs"][:], np.float64)
         z_mask = np.asarray(handle.variables["z_mask"][:]).astype(bool)
+        coverage, _source = observed_coverage(handle)
     filled = np.where(z_mask, z_obs, MISSING_OBS_FILL_DBZ)
+    if with_coverage:
+        return filled.max(axis=0), z_mask.any(axis=0), coverage
     return filled.max(axis=0), z_mask.any(axis=0)
 
 
-def score_frame(forecast: np.ndarray, observed: np.ndarray,
-                echo: np.ndarray) -> dict:
-    from gpuwm.verify.field_metrics import fss_distance
+def fss_observed(forecast: np.ndarray, observed: np.ndarray,
+                 coverage, half_width: int = HALF_WIDTH_CELLS) -> float:
+    """FSS over the observed columns, rounded to four places."""
+    return scored_fss(forecast, observed, threshold=THRESHOLD_DBZ,
+                      half_width=half_width, coverage=coverage)
 
-    distance = fss_distance(forecast, observed, threshold=THRESHOLD_DBZ,
-                            half_width=HALF_WIDTH_CELLS)
+
+def score_frame(forecast: np.ndarray, observed: np.ndarray,
+                echo: np.ndarray, coverage=None) -> dict:
     return {
-        "fss30_27km": round(1.0 - distance, 4),
+        "fss30_27km": fss_observed(forecast, observed, coverage),
         "cols_gt35_in_echo": int((forecast >= COLUMN_THRESHOLD_DBZ)[echo].sum()),
     }
 
@@ -120,7 +133,8 @@ def main() -> int:
     frames = []
     for index in range(args.frames):
         leg = args.first_free_leg + index
-        observed, echo = observed_composite(args.obs[index])
+        observed, echo, coverage = observed_composite(args.obs[index],
+                                                      with_coverage=True)
         record: dict = {
             "leg": leg,
             "lead_minutes": 15 * (index + 1),
@@ -135,10 +149,12 @@ def main() -> int:
 
         # THE published metric, verified to reproduce the addendum.
         record["ensemble_mean"] = score_frame(stack_arr.mean(axis=0),
-                                              observed, echo)
+                                              observed, echo, coverage)
         # Reported beside it, never in place of it.
-        record["member0"] = score_frame(stack_arr[0], observed, echo)
-        per_member = [score_frame(stack_arr[m], observed, echo)["fss30_27km"]
+        record["member0"] = score_frame(stack_arr[0], observed, echo,
+                                        coverage)
+        per_member = [score_frame(stack_arr[m], observed, echo,
+                                  coverage)["fss30_27km"]
                       for m in range(args.members)]
         record["member_fss"] = {
             "mean": round(float(np.mean(per_member)), 4),
@@ -150,14 +166,16 @@ def main() -> int:
         if control_path.is_file():
             control = np.asarray(np.load(control_path)["refl_colmax"],
                                  np.float64)
-            record["control"] = score_frame(control, observed, echo)
+            record["control"] = score_frame(control, observed, echo,
+                                            coverage)
         frames.append(record)
 
     payload = {
-        "schema": "gpuwm-da.ensemble-sweep-score.v1",
+        "schema": "gpuwm-da.ensemble-sweep-score.v2",
         "definitions": {
-            "fss": ("gpuwm.verify.field_metrics.fss_distance, FSS = 1 - "
-                    f"distance, threshold {THRESHOLD_DBZ:g} dBZ, half "
+            "validity_mask": COVERAGE_RULE,
+            "fss": ("tools.da_sweep_score.scored_fss over the observed "
+                    f"columns, threshold {THRESHOLD_DBZ:g} dBZ, half "
                     f"width {HALF_WIDTH_CELLS} cells "
                     f"({(2 * HALF_WIDTH_CELLS + 1) * DX_KM:g} km box at "
                     f"{DX_KM:g} km dx)"),

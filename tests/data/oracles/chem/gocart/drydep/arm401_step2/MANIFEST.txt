@@ -1,0 +1,17 @@
+chem f4 4 6 50 6 20
+rho f4 3 6 50 6
+rmol_in f4 2 6 6
+rmol_used f4 2 6 6
+aer_res f4 2 6 6
+ust f4 2 6 6
+znt f4 2 6 6
+pbl f4 2 6 6
+hfx f4 2 6 6
+xland f4 2 6 6
+dt f4 0
+chem_opt i4 0
+numgas i4 0
+accum_in f4 3 6 6 5
+ddvel f4 3 6 6 20
+accum_out f4 3 6 6 5
+depvelocity f4 2 6 6

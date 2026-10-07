@@ -109,7 +109,7 @@ fn sampled_terrain(
 }
 
 /// Crop an extended plane to the mass grid.
-fn crop_grid(dom: &DomainSampler<'_>, g: &Grid2) -> Grid2 {
+pub(crate) fn crop_grid(dom: &DomainSampler<'_>, g: &Grid2) -> Grid2 {
     let mut data = Vec::with_capacity(dom.ny * dom.nx);
     for j in 0..dom.ny {
         let row = (j + dom.halo) * dom.nxe + dom.halo;

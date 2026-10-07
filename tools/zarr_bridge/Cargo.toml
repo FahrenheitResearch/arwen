@@ -33,7 +33,11 @@ openssl = { version = "=0.10.81", features = ["vendored"] }
 
 # netcrust carries a self-contained path dependency chain for NetCDF/HDF5.
 
+# Same reasoning as tools/rustwx: a bridge binary is package data
+# measured against PyPI's per-file limit, and the static symbol table is
+# the cheapest weight to give back; the source-revision stamp and the ABI
+# marker are .rodata and survive a symbol strip.
 [profile.release]
 lto = "thin"
 codegen-units = 1
-strip = "debuginfo"
+strip = "symbols"

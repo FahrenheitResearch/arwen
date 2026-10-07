@@ -935,7 +935,7 @@ FIXTURE_SHA256 = {
 
 def _fixture():
     directory = Path(os.environ.get('UWPBL_ORACLE_DIR')
-                     or ROOT/'gpuwm/data/uwpbl/oracle')
+                     or ROOT/'tests/data/oracles/uwpbl')
     stem = directory/'cases-sub35'
     for suffix in ('.bin', '.manifest'):
         if not Path(str(stem)+suffix).is_file():
@@ -1004,7 +1004,7 @@ def test_packaged_subnormal_fixture_words():
     if os.environ.get('UWPBL_ORACLE_DIR'):
         pytest.skip('Fixture hashes apply to the packaged files')
     for name, expected in FIXTURE_SHA256.items():
-        assert hashlib.sha256((ROOT/'gpuwm/data/uwpbl/oracle'/name).read_bytes()).hexdigest() == expected
+        assert hashlib.sha256((ROOT/'tests/data/oracles/uwpbl'/name).read_bytes()).hexdigest() == expected
 
 
 def test_float32_boundary_site_counts():

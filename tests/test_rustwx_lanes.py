@@ -65,7 +65,17 @@ def test_the_ensemble_marker_is_the_built_binary_s_own_answer():
     probe = subprocess.run([str(_ENSEMBLE), "--abi"], capture_output=True,
                            text=True, errors="replace", timeout=60)
     assert probe.returncode == 0, probe.stderr
-    assert probe.stdout.strip() == rustwx_lanes.ENSEMBLE_ABI_MARKER
+    # Since 356c94560 the binary names the revision it was built from on a
+    # second line.  The contract is the first line alone; comparing the
+    # whole answer refused this checkout's own build, so `gpuwm enprod
+    # --engine rust` refused to draw.  The probe the doors use must accept
+    # the build this checkout made.
+    lines = probe.stdout.strip().splitlines()
+    assert lines[0] == rustwx_lanes.ENSEMBLE_ABI_MARKER
+    assert all(line.startswith("GPUWM_BRIDGE_SOURCE_REV=")
+               for line in lines[1:]) and len(lines) <= 2, lines
+    usable, evidence = rustwx_lanes.probe_ensemble_bin(_ENSEMBLE)
+    assert usable, evidence
 
 
 @needs_obsgrid
@@ -152,6 +162,99 @@ def test_a_binary_answering_the_right_contract_is_accepted(monkeypatch,
             stderr=""))
     ok, evidence = rustwx_lanes.probe_obsgrid_bin(tmp_path / "rw_obsgrid")
     assert ok is True, evidence
+
+
+_HEAD = "a" * 40
+_OTHER = "b" * 40
+
+
+def _stamped_ensemble(monkeypatch, tmp_path, *, built_from, printed=None,
+                      declare=False):
+    """An ``rw_ensbatch`` outside this tree, answering ``--abi`` stamped.
+
+    The bytes carry the stamp the way a built binary does, because the
+    shared check (:func:`gpuwm.provenance_gate.bridge_tree_match`) reads
+    it there; the checkout is a stand-in at ``_HEAD``.
+    """
+
+    from gpuwm import bridges, provenance_gate
+
+    binary = tmp_path / "elsewhere" / "rw_ensbatch"
+    binary.parent.mkdir()
+    binary.write_bytes(b"\x7fELF" + provenance_gate.ABI_SOURCE_REV_PREFIX
+                       .encode("ascii") + built_from.encode("ascii"))
+    tree = tmp_path / "checkout"
+    tree.mkdir()
+    monkeypatch.setattr(provenance_gate, "resolve", lambda: SimpleNamespace(
+        install_kind="editable", source_root=str(tree),
+        package_path=str(tree / "gpuwm"), git={"commit_full": _HEAD}))
+    if declare:
+        monkeypatch.setenv(rustwx_lanes.ENSEMBLE_ENV, str(binary))
+    else:
+        monkeypatch.delenv(rustwx_lanes.ENSEMBLE_ENV, raising=False)
+    monkeypatch.setattr(bridges, "launchable", lambda path: (True, "ok"))
+    answer = (f"{rustwx_lanes.ENSEMBLE_ABI_MARKER}\n"
+              f"GPUWM_BRIDGE_SOURCE_REV={printed or built_from}\n")
+    monkeypatch.setattr(
+        rustwx_lanes.subprocess, "run",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout=answer,
+                                        stderr=""))
+    return binary
+
+
+def test_a_stamped_answer_from_this_checkout_s_revision_is_accepted(
+        monkeypatch, tmp_path):
+    """The revision line is not part of the contract (2.8.7 enprod refusal)."""
+
+    binary = _stamped_ensemble(monkeypatch, tmp_path, built_from=_HEAD)
+    usable, evidence = rustwx_lanes.probe_ensemble_bin(binary)
+    assert usable, evidence
+
+
+def test_a_stamped_answer_from_another_checkout_is_refused_naming_both(
+        monkeypatch, tmp_path):
+    """Splitting the stamp off must not open the door the compare guarded."""
+
+    binary = _stamped_ensemble(monkeypatch, tmp_path, built_from=_OTHER)
+    usable, evidence = rustwx_lanes.probe_ensemble_bin(binary)
+    assert usable is False
+    assert _OTHER in evidence and _HEAD in evidence, evidence
+    assert "another checkout" in evidence
+    assert "cargo build" in evidence
+
+
+def test_a_declared_stamped_binary_is_the_caller_s_choice(monkeypatch,
+                                                          tmp_path):
+    """Named through the override, as the renderer gate treats one."""
+
+    binary = _stamped_ensemble(monkeypatch, tmp_path, built_from=_OTHER,
+                               declare=True)
+    usable, evidence = rustwx_lanes.probe_ensemble_bin(binary)
+    assert usable, evidence
+
+
+def test_only_the_stamp_line_is_split_off_the_contract(monkeypatch,
+                                                       tmp_path):
+    """Any other extra line still fails the exact comparison."""
+
+    from gpuwm import bridges
+
+    monkeypatch.setattr(bridges, "launchable", lambda path: (True, "ok"))
+    for answer in (
+            f"{rustwx_lanes.ENSEMBLE_ABI_MARKER}\nsomething-else\n",
+            f"GPUWM_BRIDGE_SOURCE_REV={_HEAD}\n"
+            f"{rustwx_lanes.ENSEMBLE_ABI_MARKER}\n",
+            f"{rustwx_lanes.ENSEMBLE_ABI_MARKER}\n"
+            f"GPUWM_BRIDGE_SOURCE_REV={_HEAD}\n"
+            f"GPUWM_BRIDGE_SOURCE_REV={_HEAD}\n"):
+        monkeypatch.setattr(
+            rustwx_lanes.subprocess, "run",
+            lambda *a, _answer=answer, **k: SimpleNamespace(
+                returncode=0, stdout=_answer, stderr=""))
+        usable, evidence = rustwx_lanes.probe_ensemble_bin(
+            tmp_path / "rw_ensbatch")
+        assert usable is False, answer
+        assert "--abi does not match the contract" in evidence
 
 
 def test_an_override_naming_a_missing_file_is_a_hard_error(monkeypatch,

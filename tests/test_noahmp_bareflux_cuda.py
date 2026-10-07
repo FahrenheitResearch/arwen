@@ -46,7 +46,7 @@ from gen_bareflux_cases import (                              # noqa: E402
     ARRAY_FIELDS, INT_FIELDS, NSNOW, NSOIL, OUT_FIELDS, REAL_FIELDS,
 )
 
-_DATA = os.path.join(_ROOT, "gpuwm", "data", "noahmp", "oracle")
+_DATA = os.path.join(_ROOT, "tests", "data", "oracles", "noahmp")
 FIXTURE = os.path.join(_DATA, "noahmp-bareflux.csv")
 LIBM_FIXTURE = os.path.join(_DATA, "noahmp-bareflux-libm.csv")
 ESAT_FIXTURE = os.path.join(_DATA, "noahmp-bareflux-esat.csv")

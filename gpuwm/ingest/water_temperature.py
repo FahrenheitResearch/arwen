@@ -682,6 +682,11 @@ class WaterTemperatureStatics:
     lake: np.ndarray
     lake_category: int | None
     policy: str
+    #: The route's daily-mean 2 m air temperature for inland water the
+    #: source does not resolve (:class:`gpuwm.ingest.horiz.DailyMeanAirTemperature`,
+    #: WRF's TAVGSFC); ``None`` takes each forcing time's own 2 m air
+    #: temperature there.
+    inland_air_temperature: object = None
 
     @classmethod
     def for_route(cls, *, route, policy, landmask, lu_index, landuse_attrs,

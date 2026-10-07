@@ -51,4 +51,9 @@ pub mod plan;
 pub use error::RegridError;
 pub use geometry::{EARTH_RADIUS_M, arc_from_chord, chord_from_arc, unit_vectors};
 pub use kdtree::{KdTree, Neighbour};
-pub use plan::{Method, RegridPlan, apply_plan, build_plan, unreachable_destination_cells};
+// Extensive emission callers retain apply_sum's unreachable/masked mass receipt;
+// fire-power callers use apply_touch_sum (see its doc comment).
+pub use plan::{
+    Method, RegridPlan, apply_plan, apply_sum, apply_touch_sum, build_plan,
+    unreachable_destination_cells,
+};

@@ -76,6 +76,7 @@ use projection::{
     reference_latitude_for_projection_variant,
 };
 pub use projection::{
+    build_full_domain_projected_map_with_projection, full_domain_panel_resolved_projection,
     build_natural_projected_map_with_projection,
     build_natural_projected_map_with_projection_and_basemap_padding, build_projected_map,
     build_projected_map_with_projection, build_requested_projected_map_with_projection,

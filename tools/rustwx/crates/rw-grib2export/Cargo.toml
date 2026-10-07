@@ -1,0 +1,37 @@
+# WOOF native GRIB2 exporter (2.8.7, clean room, Apache-2.0).
+#
+# Reads WRF-format WOOF histories, computes every product with the
+# clean-room post-processor `rw-post` (GPU by default, CPU reference path),
+# and packs WMO FM 92 GRIB2 Edition 2 messages with the vendored wx-core
+# writer.  History discovery (folders, gzip, ZIP) and the archive writer
+# are shared with `rw-mlexport`.  No UPP or HRRR-post code is involved.
+[package]
+name = "rw-grib2export"
+version = "0.1.0"
+build = "build.rs"
+edition.workspace = true
+license = "Apache-2.0"
+publish.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "rw_grib2export"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rw_grib2export"
+path = "src/bin/rw_grib2export.rs"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+netcrust = { path = "../../vendor/netcrust" }
+rayon.workspace = true
+rw-mlexport = { path = "../rw-mlexport" }
+rw-post = { path = "../rw-post" }
+# `definitions = renderer`: the product renderer's own diagnostics, through
+# the renderer's own call (src/renderer.rs).
+rw-wrfbatch = { path = "../rw-wrfbatch" }
+serde.workspace = true
+serde_json.workspace = true
+wx-core = { path = "../../vendor/wx-core", version = "0.3.10", default-features = false }
+wrf-core = { git = "https://github.com/FahrenheitResearch/wrf-rust.git", rev = "93bd2ca670c13fec35bcfc27a58108e6fd71c627", package = "wrf-core", default-features = false, features = ["pure-rust-reader"] }

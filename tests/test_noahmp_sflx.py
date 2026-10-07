@@ -1,6 +1,6 @@
 """Bitwise gate for the Noah-MP NOAHMP_SFLX composition.
 
-The whole-column fixture ``gpuwm/data/noahmp/oracle/noahmp-sflx.csv`` is the
+The whole-column fixture ``tests/data/oracles/noahmp/noahmp-sflx.csv`` is the
 only artefact in this tree built by calling the **byte-unmodified**
 ``phys/module_sf_noahmplsm.F``: NOAHMP_SFLX is one of the module's two public
 entry points, so its harness needs no visibility lift at all.  Every other
@@ -58,7 +58,7 @@ from gpuwm.core.noahmp_sflx import (EnergyBalanceError, NIGHT_ALBEDO,
                                     sflx_pre)
 
 REPO = Path(__file__).resolve().parent.parent
-ORACLE = REPO / "gpuwm" / "data" / "noahmp" / "oracle"
+ORACLE = REPO / "tests" / "data" / "oracles" / "noahmp"
 SFLX_CSV = ORACLE / "noahmp-sflx.csv"
 ENERGY_CSV = ORACLE / "noahmp-energy.csv"
 

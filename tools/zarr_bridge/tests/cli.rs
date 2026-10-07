@@ -7,8 +7,10 @@ struct Fixture(PathBuf);
 
 impl Fixture {
     fn new() -> Self {
+        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        let path = std::env::temp_dir().join(format!("rw-zarr-cli-{}-{nonce}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("rw-zarr-cli-{}-{nonce}-{}", std::process::id(), NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
         fs::create_dir(&path).unwrap();
         let fixture = Self(path);
         let store = fixture.0.join("store");

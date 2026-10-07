@@ -183,13 +183,16 @@ def _rewrite_restart_archive(path, output, edit):
 
 
 def _shim_driver_state(cfg, monkeypatch):
-    """NumPy-backed PhysicsDriver with no scheme callables or surface fields."""
+    """NumPy-backed PhysicsDriver with required surface outputs and no callables."""
     import gpuwm.core.physics as physics
 
     state = _shim_state(cfg, monkeypatch)
     monkeypatch.setattr(physics, "cp", _NumpyCupyShim)
+    fields = ({name: np.zeros(state.mup.shape, dtype=np.float32)
+               for name in physics.MYNN_SURFACE_OUTPUTS}
+              if cfg.sf_sfclay_physics == physics.MYNN_SFCLAY_SCHEME else {})
     driver = physics.PhysicsDriver(
-        state, cfg, fields={}, sfclay_result=None, noah_params=None)
+        state, cfg, fields=fields, sfclay_result=None, noah_params=None)
     state.physics = driver
     return state, driver
 
@@ -3820,8 +3823,14 @@ def test_a_tree_resumes_with_an_output_only_switch_changed(
         monkeypatch, forcing_count=2, run_seconds=7200.0, payload_seed=61,
         run_overrides={name: after})
     _bind_tree_identity(resumed)
-    assert (resumed.experiment_fingerprint
-            != restart.read_restart_header(root_path)["experiment_fingerprint"])
+    from gpuwm.core.model import RESTART_TOLERATED_RUN_FIELDS
+    written = restart.read_restart_header(root_path)["experiment_fingerprint"]
+    if name in RESTART_TOLERATED_RUN_FIELDS:
+        # Tolerated outright (surface_energy_diag, lane/sf-landsurface): it
+        # never enters the identity payload, so the fingerprints agree.
+        assert resumed.experiment_fingerprint == written
+    else:
+        assert resumed.experiment_fingerprint != written
 
     info = restart.restore_tree_restart(root_path, resumed)
 

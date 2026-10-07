@@ -1766,28 +1766,53 @@ def _surface_coupling_warnings(registry: dict) -> None:
 #:     absolute difference.
 #:   * ``wp08-freeze`` and ``wp08-nusweep`` were published for the first time.
 #:
-#: THE UNEXCEPTIONED CLEAN SET.  18 of 22: sixteen of the nineteen spec'd
-#: ``aero-*`` fixtures plus ``wp08-freeze`` and ``wp08-melt``.  ``wp08-freeze``
-#: joined on 2026-09-23 when the rain fallout was handed WRF's L_qr (see the
-#: note on MP28_G3_RESIDUALS).  The 1.4.1 merge did NOT change
-#: this set -- ``aero-reduces-to-classic`` still needs level 6 taken in ULPs
-#: -- but it did retire the OTHER allowance that fixture rested on, so the
-#: gated count of 18 now costs one allowance instead of two.  This tuple is asserted EQUAL to
-#: the gate's own ``_G3_UNEXCEPTIONED_CLEAN`` by
+#: THE UNEXCEPTIONED CLEAN SET.  22 of 22, since the 2.8.6 accumulator
+#: rework: every committed fixture clears the flat 2.0e-6 / 2.0e-4 dB gate on
+#: all 23 compared quantities with nothing held out.  It was 18 of 22 before
+#: it (sixteen of the nineteen spec'd ``aero-*`` fixtures plus
+#: ``wp08-freeze`` and ``wp08-melt``); the four that joined are
+#: ``aero-cloud-freeze-nc``, ``aero-cold-overlap``, ``aero-reduces-to-classic``
+#: and ``wp08-nusweep``, and the note on MP28_G3_RESIDUALS says what closed
+#: each.  This tuple is asserted EQUAL to the gate's own
+#: ``_G3_UNEXCEPTIONED_CLEAN`` by
 #: ``tests/test_physics_md_aerosol_claims.py::
 #: test_the_published_clean_counts_are_the_gates_own_counts``, so it cannot be
 #: a transcription that drifts.
 MP28_G3_CLEAN = (
-    "aero-ccn-activate", "aero-ccn-sweep", "aero-drop-evap",
+    "aero-ccn-activate", "aero-ccn-sweep", "aero-cloud-freeze-nc",
+    "aero-cold-overlap", "aero-drop-evap",
     "aero-ice-demott-dep", "aero-ice-demott-idxin", "aero-ice-koop",
     "aero-init-profile", "aero-nc-accrete", "aero-nc-auto", "aero-nc-cap",
-    "aero-nc-effrad", "aero-nc-sed", "aero-scav-frozen", "aero-scav-rain",
+    "aero-nc-effrad", "aero-nc-sed", "aero-reduces-to-classic",
+    "aero-scav-frozen", "aero-scav-rain",
     "aero-sfc-emit", "aero-warm-overlap", "wp08-freeze", "wp08-melt",
+    "wp08-nusweep",
 )
 
 #: Fixtures that do NOT clear 2e-6 on every field, with every field that
-#: misses and its measured maximum relative difference.  THREE of
-#: twenty-two.
+#: misses and its measured maximum relative difference.  NONE of twenty-two
+#: since the 2.8.6 accumulator rework.
+#:
+#: WHAT CLOSED THEM.  WRF's mp_thompson never writes a hydrometeor during the
+#: call: every process adds to a running tendency (qcten, qrten, nrten,
+#: qiten, niten), every stage reads X1d + Xten*DT, and the terminal apply
+#: (module_mp_thompson.F:3972-4053) rounds each species once, with the size
+#: bounds after the :3943-3966 phase cleanup.  The port applied each stage to
+#: the state in turn, so a species was rounded once per stage, and the rain
+#: and ice fallout it shared with mp=8 folded the terminal size bounds in
+#: before the freeze.  mp=28 (v4.6.1 generation) now carries those five
+#: tendencies, runs the :3033-3055 / :3070-3091 balances in tendency form,
+#: has its own tendency-form rain and ice fallout, applies once in a terminal
+#: kernel, and takes the cold network's rain-conservation ratio as REAL as
+#: :1615 declares it.  Measured on the shipped adapter, RTX 5090 and RTX 4090
+#: identical: aero-cloud-freeze-nc qc 4.926e-06 -> 0 (bit-exact);
+#: aero-cold-overlap qc / nc / effc at level 4 and qr / nr at level 6 -> 0;
+#: wp08-nusweep qr 4.642e-06 -> 5.532e-07; aero-reduces-to-classic qr / nr at
+#: level 6 bit-exact, retiring the near-cancellation allowance.  The frozen
+#: mp=8 kernel file thompson.cu is unchanged.
+#:
+#: THE TEXT BELOW IS THE RECORD OF WHAT CLOSED, kept because the numbers are
+#: still quoted as history in the public documents.
 #:
 #: ``aero-cold-overlap``'s 1.000e+00 rows are the accurate publication of a
 #: sub-ulp disagreement and are recorded rather than allowanced.  MEASURED
@@ -1857,13 +1882,7 @@ MP28_G3_CLEAN = (
 #: Level 0 nr went 2.724e-06 (34 ulp) to 4.006e-07 (5 ulp) on a card (RTX
 #: 4090 and RTX 5090 alike; 8.012e-08, 1 ulp, on the host build of the
 #: kernels) and the fixture left this table.
-MP28_G3_RESIDUALS: dict[str, dict[str, float]] = {
-    "aero-cloud-freeze-nc": {"qc": 4.926e-06},
-    "aero-cold-overlap": {
-        "qc": 1.000e+00, "nc_per_kg": 1.000e+00, "effc_m": 8.102e-01,
-        "qr": 4.443e-05, "nr_per_kg": 1.261e-04},
-    "wp08-nusweep": {"qr": 4.642e-06},
-}
+MP28_G3_RESIDUALS: dict[str, dict[str, float]] = {}
 
 #: The one fixture that clears the gate only through a carved-out bound, and
 #: the ONE FIELD that bound still covers.
@@ -1912,10 +1931,10 @@ MP28_G3_CARVED_OUT: dict[str, dict[str, float]] = {
     # The full sequence, none of it a widening: 2.5e-03 on {qr, nr_per_kg}
     # -> 1.0e-04 -> (qr deleted, nr 1.0e-05) -> GONE.
     #
-    # aero-reduces-to-classic is still NOT in MP28_G3_CLEAN: it still needs
-    # _NEAR_CANCELLATION_LEVELS, which holds 0-based level 6 to 32 ULP of the
-    # entry value rather than to a relative bound, and that is now the port's
-    # only remaining departure from the flat gate anywhere in the deck.
+    # aero-reduces-to-classic joined MP28_G3_CLEAN at the 2.8.6 accumulator
+    # rework: _NEAR_CANCELLATION_LEVELS, which held 0-based level 6 to 32 ULP
+    # of the entry value, is retired because that level is now bit-exact
+    # against WRF in qr and nr.  No departure from the flat gate remains.
 }
 
 MP28_OPTION_ID = "thompson-aerosol-mp28"
@@ -2069,66 +2088,42 @@ def _thompson_aerosol_mp28(registry: dict) -> None:
                 "carved_out_bound": {
                     name: dict(fields)
                     for name, fields in sorted(MP28_G3_CARVED_OUT.items())},
-                # The gate's SECOND relaxation, published because an
-                # unpublished one is indistinguishable from a hidden one.
-                # It is not a widened tolerance: it is a different metric at
-                # one level where the relative one is below float32
-                # resolution, and it is bound to the gate's own constants by
+                # The gate's SECOND relaxation, RETIRED by the 2.8.6
+                # accumulator rework.  Kept as a record with no fixtures so a
+                # reader of an older registry finds where it went; it is
+                # bound to the gate's own constants by
                 # tests/test_physics_registry.py::
                 # test_mp28_publishes_the_near_cancellation_relaxation_too.
                 "near_cancellation_bound": {
-                    "fixtures": {"aero-reduces-to-classic": [6]},
+                    "fixtures": {},
                     "ulps_of_entry_value": 32.0,
-                    "measured": {
-                        "aero-reduces-to-classic": {
-                            "qr_ulp": 0.585, "nr_per_kg_ulp": 0.159}},
-                    "why": (
-                        "aero-reduces-to-classic level 6 enters with qr = "
-                        "3.1695777e-07 kg/kg and evaporates 99.958% of it in "
-                        "one 10 s step, so the surviving value is the "
-                        "difference of two nearly equal float32 numbers and "
-                        "the relative error in the difference is the "
-                        "relative error in the rate amplified by 1/(1 - "
-                        "0.99958) = 2370 -- which puts a 2e-06 relative gate "
-                        "below the float32 resolution of the entry value "
-                        "itself. The bound is therefore stated in ULPS OF "
-                        "THE ENTRY VALUE. This level used to be skipped "
-                        "outright; it is bounded rather than skipped because "
-                        "mp=28 now produces 1.3384e-10 there against WRF's "
-                        "1.3426e-10, where it used to produce exactly 0."),
+                    "measured": {},
+                    "retired": (
+                        "aero-reduces-to-classic level 6 used to be held to "
+                        "32 ulps of the entry value (measured 0.585 qr / "
+                        "0.159 nr) because 99.958% of the level's rain "
+                        "evaporates in one 10 s step. The 2.8.6 accumulator "
+                        "rework applies qrten/nrten once, as WRF does, and "
+                        "the level is now bit-exact against WRF in qr and "
+                        "nr, so the bound buys nothing."),
                 },
-                # EVERY DEPARTURE FROM THE FLAT GATE, NAMED.  ONE, on one
-                # fixture, and it is needed for that one fixture.
-                # Published here because an unpublished allowance is
-                # indistinguishable from a hidden one, and because every one
-                # that ever moved in this port moved STRICTER.
-                #
-                # THIS LIST WAS THREE, THEN TWO, AND IS NOW ONE.  The
-                # 1.4.1 merge retired ``_END_TO_END_BOUNDS``: it carried
-                # aero-reduces-to-classic's nr_per_kg at 2.5e-03, then
-                # 1.0e-04, then 1.0e-05, and the inherited mp=8 rain
-                # sedimentation reconciliations (5e4af4e3, cb765336) took
-                # the residual it covered from 5.700e-06 to 4.146e-07 --
-                # inside the flat 2.0e-06 gate -- so the dict buys nothing
-                # and is now empty.  Before that, ``_REFL_DB_BOUNDS``
-                # was RETIRED, not relaxed: it carried aero-reduces-to-
-                # classic at 1.0e-02 dB, then 1.0e-03 dB, and WP-13a's
-                # level-wise sedimentation density took the residual it
-                # covered to 3.242e-05 dB -- inside the flat 2.0e-4 dB gate
-                # -- so the dict buys nothing and is now empty.  The gate's
-                # own ``_G3_ALLOWANCES`` is the authority and
-                # tests/test_physics_registry.py::
+                # EVERY DEPARTURE FROM THE FLAT GATE, NAMED.  NONE since the
+                # 2.8.6 accumulator rework; every one that ever existed is in
+                # retired_allowances, and every one moved STRICTER before it
+                # went.  The gate's own ``_G3_ALLOWANCES`` is the authority
+                # and tests/test_physics_registry.py::
                 # test_mp28_evidence_publishes_the_allowances_the_gate_
                 # actually_has reads it back.
-                "allowances": [
+                "allowances": [],
+                "retired_allowances": [
                     {"name": "near_cancellation_bound",
                      "gate_constant": "_NEAR_CANCELLATION_LEVELS",
                      "fixtures": ["aero-reduces-to-classic"],
-                     "was": "level 6 skipped outright",
-                     "is": "level 6 held to 32 ulps of the entry value",
-                     "direction": "strictly more than the skip asserted"},
-                ],
-                "retired_allowances": [
+                     "was": "level 6 held to 32 ulps of the entry value",
+                     "is": None,
+                     "direction": "retired by the 2.8.6 accumulator rework; "
+                                  "the level is bit-exact against WRF in qr "
+                                  "and nr"},
                     {"name": "carved_out_bound",
                      "gate_constant": "_END_TO_END_BOUNDS",
                      "fixtures": ["aero-reduces-to-classic"],
@@ -2148,20 +2143,19 @@ def _thompson_aerosol_mp28(registry: dict) -> None:
                 ],
                 # The two counts, stated separately, because conflating them
                 # is how a port claims a clean number it did not earn.
-                "clean_unexceptioned": 18,
-                "clean_as_gated": 19,
+                "clean_unexceptioned": 22,
+                "clean_as_gated": 22,
                 "clean_counts_note": (
-                    "18 of 22 clear a FLAT 2.0e-6 relative / 2.0e-4 dB gate "
+                    "22 of 22 clear a FLAT 2.0e-6 relative / 2.0e-4 dB gate "
                     "on all 23 quantities with no bounds dict, no excluded "
-                    "level and no per-fixture carve-out -- 16 of the 19 "
-                    "spec'd aero-* fixtures plus wp08-freeze and wp08-melt. "
-                    "19 of 22 clear "
-                    "it with the ONE allowance above applied; that allowance "
-                    "buys exactly one fixture, aero-reduces-to-classic, and "
-                    "is required for it. The second allowance this note used "
-                    "to name was retired at the 1.4.1 merge and is in "
-                    "retired_allowances. clean_fixtures below is the "
-                    "UNEXCEPTIONED list."),
+                    "level and no per-fixture carve-out -- all 19 spec'd "
+                    "aero-* fixtures plus wp08-freeze, wp08-melt and "
+                    "wp08-nusweep -- since the 2.8.6 accumulator rework. "
+                    "The gated count is the same 22 of 22: there is no "
+                    "allowance left, and the three that ever existed are in "
+                    "retired_allowances. A clean column deck is not a "
+                    "forecast validation; the maturity stays "
+                    "implemented-unverified on the forecast evidence."),
                 # No longer None.  docs/public/wrf-comparison/
                 # mp28-matched-trajectory.md is a matched IDEALIZED forecast
                 # against unmodified WRF v4.6.1, and it publishes its own
@@ -2518,42 +2512,33 @@ def _thompson_aerosol_mp28(registry: dict) -> None:
             "bounded is NOT correct: a scheme with a systematically wrong "
             "activation rate passes every one of those checks for two hours. "
             "The bounds are WRF's, but they are clamps, not answers.",
-            "THE COLUMN EVIDENCE IS NOT CLEAN, and the numbers are published "
-            "rather than summarised. Driven end to end through the shipped "
+            "THE COLUMN EVIDENCE IS CLEAN; THE FORECAST EVIDENCE IS NOT. "
+            "Driven end to end through the shipped "
             "adapter, 22 fixtures x 23 quantities, at a flat 2.0e-6 relative "
-            "/ 2.0e-4 dB gate with nothing held out: 18 of 22 clear every "
-            "quantity (16 of the 19 spec'd aero-* fixtures, plus wp08-freeze "
-            "and wp08-melt). "
-            "aero-reduces-to-classic clears only through the port's ONE "
-            "surviving named allowance -- 0-based level 6 held to 32 ulps of "
-            "its entry value instead of the relative metric, measured 0.585 "
-            "(qr) and 0.159 (nr) -- taking the gated count to 19 of 22. The "
-            "relative bound that used to sit beside it was RETIRED at the "
-            "1.4.1 merge: the mp=8 lane's two rain sedimentation "
-            "reconciliations (5e4af4e3, cb765336), inherited in the frozen "
-            "kernel mp=28 shares for fallout, took level 5's nr from "
-            "5.700e-06 to 4.146e-07, inside the flat gate. THREE MISS "
-            "OUTRIGHT -- aero-cold-overlap qc 1.000e+00 / nc 1.000e+00 / "
-            "effc 8.102e-01 (all three are ONE branch flip at 0-based level "
-            "4, where WRF ends with 1.4551915228366852e-11 kg/kg of cloud "
-            "water -- exactly one float32 ulp of the entry value -- and "
-            "gpuwm ends at exactly zero, so the qc1d <= R1 test at "
-            "phys/module_mp_thompson.F:4007 sends "
-            "the two implementations down opposite arms and a relative "
-            "metric reports full scale on a one-ulp difference) plus "
-            "nr 1.261e-04 / qr 4.443e-05 at level 6; "
-            "aero-cloud-freeze-nc qc 4.926e-06; wp08-nusweep qr 4.642e-06 "
-            "(2.3x the gate). wp08-freeze, which missed at nr 2.724e-06, "
-            "left the list on 2026-09-23 when the rain fallout was handed "
-            "WRF's L_qr (level 0 now 1 ulp from WRF). Every one of "
-            "the surviving residuals now sits where the field is either "
-            "CREATED FROM ZERO inside the step or driven to near-total "
-            "consumption; after the aero-ice-koop withdrawal recorded at the "
-            "end of this warning there is no surviving residual in the "
-            "rate-disagreement class at all. That is stated, not "
-            "used: no bound is relaxed for it. WHAT MOVED SINCE THE LAST "
-            "PUBLISHED SET, and it is a REAL PORT FIX this time -- TWO of "
-            "them, both in mp=28-owned kernels. WP-13a restored WRF's "
+            "/ 2.0e-4 dB gate with nothing held out: 22 of 22 clear every "
+            "quantity (all 19 spec'd aero-* fixtures, plus wp08-freeze, "
+            "wp08-melt and wp08-nusweep), with no allowance anywhere, on an "
+            "RTX 5090 and an RTX 4090 identically. The 2.8.6 accumulator "
+            "rework closed the last four: WRF's mp_thompson never writes a "
+            "hydrometeor during the call -- every process adds to qcten, "
+            "qrten, nrten, qiten or niten and the terminal apply "
+            "(phys/module_mp_thompson.F:3972-4053) rounds each species once, "
+            "with the size bounds after the :3943-3966 phase cleanup -- "
+            "while the port applied each stage in place and so rounded a "
+            "species once per stage. mp=28 now carries the five tendencies "
+            "and applies them once, and takes the cold network's "
+            "rain-conservation ratio as REAL as :1615 declares it. "
+            "aero-cloud-freeze-nc qc 4.926e-06 -> bit-exact; "
+            "aero-cold-overlap qc / nc / effc at level 4 (one float32 ulp "
+            "of cloud flipping the qc1d <= R1 test at :4007) and nr "
+            "1.261e-04 / qr 4.443e-05 at level 6 -> bit-exact; "
+            "wp08-nusweep qr 4.642e-06 -> 5.532e-07; "
+            "aero-reduces-to-classic level 6 bit-exact in qr and nr, which "
+            "retired the port's last named allowance (32 ulps of the entry "
+            "value). The frozen mp=8 kernel file is unchanged. A clean "
+            "single-call deck is not a forecast validation: the maturity "
+            "stays implemented-unverified. BEFORE THAT, TWO REAL PORT "
+            "FIXES, both in mp=28-owned kernels. WP-13a restored WRF's "
             "LEVEL-WISE sedimentation density: WRF forms the "
             "working rain mass and number twice -- "
             "phys/module_mp_thompson.F:3237-3238 from the :3193 TAU+1 "
@@ -2582,7 +2567,7 @@ def _thompson_aerosol_mp28(registry: dict) -> None:
             "reverting that one line also loses all four of "
             "aero-ice-demott-idxin's improvements, two of which are bitwise; "
             "in ulps of the entry value the move is 1.477 -> 1.789. "
-            "AND WHAT MOVED BEFORE THAT, WHICH WAS NOT "
+            "AND WHAT MOVED BEFORE THOSE, WHICH WAS NOT "
             "A PHYSICS FIX: aero-ice-koop, published by four waves of this "
             "registry as the port's largest genuine physics gap at qi "
             "1.612e-03 / ni 1.764e-03 / effi 5.093e-05, now measures "
@@ -2650,16 +2635,21 @@ def _thompson_aerosol_mp28(registry: dict) -> None:
             "current WIF route. Runtime coupling is not evidence of a "
             "matched real-data or nested WRF forecast.",
             "MYNN aerosol-number mixing is optional. bl_mynn_mixscalars=0 "
-            "is the default. Setting it to 1 mixes nc/nwfa/nifa using the "
-            "WRF qn solves, and is admitted only with bl_pbl_physics=5, "
-            "mp_physics=28 and bldt=0. This is component code verification, "
-            "not validation against observations.",
+            "is the default (WRF v4.6.1 Registry.EM_COMMON:2479). Setting "
+            "it to 1 mixes nc/ni/nwfa/nifa using the WRF qn solves under "
+            "bl_pbl_physics=5 with mp_physics=28 (then bldt=0 is required); "
+            "under a microphysics with no number species (mp_physics 0, 1, "
+            "6) the key is WRF's no-op and the key-0 path runs; under a "
+            "scheme WRF mixes only in part (8, 9, 10, 16, 18, 50) it is "
+            "refused by name (config.MYNN_QN_FLAG_SPECIES). This is "
+            "component code verification, not validation against "
+            "observations.",
             "PBL number mixing is selectable for mp_physics=28 with MYNN: "
             "scalar_pblmix=1 applies WRF post-PBL diffusion through exch_h "
             "to nc/ni/nwfa/nifa; bl_mynn_mixscalars=1 instead selects "
-            "MYNN scalar plume transport. Both default to 0 and require "
-            "bldt=0. WRF disables the former when the latter is active, "
-            "so selecting both is refused.",
+            "MYNN scalar plume transport. Both default to 0 and, when they "
+            "mix, require bldt=0. WRF disables the former when the latter "
+            "is active, so selecting both is refused.",
             "MIXED NESTING uses the registered transition policy. Entry "
             "into mp_physics=28 from a non-aerosol parent requires a declared "
             "aerosol source; same-scheme nesting carries the parent state. "
@@ -3986,6 +3976,10 @@ _REFLECTIVITY_SCHEME_DIAGNOSTIC = {
     9: "gpuwm.core.milbrandt2.reflectivity (the scheme's own Zet block, "
        "lifted into gpuwm/core/kernels/milbrandt2_zet.cu because it "
        "updates nothing; that file carries the WRF citation)",
+    50: "gpuwm.core.p3_device.reflectivity (the Z half of the scheme's own "
+        "final diagnostics, replayed on local copies in "
+        "gpuwm/core/kernels/p3_zdiag.cu because the forecast loop also "
+        "updates the state; that file carries the WRF citation)",
 }
 
 
@@ -6139,9 +6133,13 @@ def build(registry: dict) -> dict:
             "MYNN scalar plume transport is selected by bl_mynn_mixscalars=1. "
             "WRF post-PBL local diffusion is selected by scalar_pblmix=1 "
             "(phys/module_pbl_driver.F:2251,2641-2844). Both mix the "
-            "mp_physics=28 nc/ni/nwfa/nifa family, default to 0 and require "
-            "bldt=0. WRF's check_a_mundo disables scalar_pblmix when "
-            "bl_mynn_mixscalars=1, so that joint request is refused."),
+            "mp_physics=28 nc/ni/nwfa/nifa family, default to 0 and, when "
+            "they mix, require bldt=0; bl_mynn_mixscalars=1 is WRF's no-op "
+            "under a microphysics with no number species and is refused by "
+            "name under one WRF mixes only in part "
+            "(config.MYNN_QN_FLAG_SPECIES). WRF's check_a_mundo disables "
+            "scalar_pblmix when bl_mynn_mixscalars=1, so that joint request "
+            "is refused."),
     }
     mynn["extensions"]["radiation_cloud_merge"] = {
         "activation": "bl_pbl_physics=5 and icloud_bl>0",

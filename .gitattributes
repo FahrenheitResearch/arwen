@@ -127,3 +127,30 @@ tests/fixtures/source_requests/hrrr_namelist.wps.c18 -whitespace
 tests/fixtures/source_requests/hrrr_wrf.nl.c18c -whitespace
 # A captured pytest log; excluded from the release (RELEASE-EXCLUDE.txt).
 tools/albsol_score/receipts/tests.log -whitespace
+# The chem oracle fixtures (tests/data/oracles/chem, graded by tests/test_chem_*_wrf471_parity.py):
+# raw little-endian float32 dumps of the pinned Fortran, never diffed or merged as text.
+tests/data/oracles/chem/**/*.bin binary
+# The smoke plume fixtures' manifests and digest lists are compared byte for
+# byte by tests/test_chem_plumerise_*_parity.py, so no checkout rewrites them.
+tests/data/oracles/chem/smoke/**/MANIFEST.txt -text
+tests/data/oracles/chem/smoke/**/oracle-sha256sums.txt -text
+# Pinned WRF PM oracle sources retain the upstream bytes, including blanks.
+tools/chem_wrf471_oracle/reference-pm/gen_scalar_indices.c -whitespace
+tools/chem_wrf471_oracle/reference-pm/module_model_constants.F -whitespace
+
+# Pinned native spotting references preserve exact upstream checksum bytes.
+tools/sfire_wrf471_oracle/reference/spotting/module_firebrand_spotting.F -whitespace
+tools/sfire_wrf471_oracle/reference/spotting/module_firebrand_spotting_mpi.F -whitespace
+
+# Verbatim WRF v4.7.1 SFIRE sources, namelists and Registry rows the SFIRE oracles build and
+# compare against, and the WRF patch applied to them: their whitespace is WRF's own and must
+# stay byte for byte (the 2.8.7 cut's export whitespace check refused them, 2026-10-07).
+tools/sfire_wrf471_oracle/reference/** -whitespace
+tools/sfire_wrf471_oracle/*.patch -whitespace
+tools/sfire_coupled_ideal/**/reference/** -whitespace
+# NVRTC output embedded by hash in rw-post's kernel manifest; regenerated, never hand-edited.
+tools/rustwx/crates/rw-post/kernels/*.ptx -whitespace
+# Sources whose exact bytes are pinned by GPU-measured receipts (SFIRE WRF 4.7.1 parity and the
+# merged diff_opt1 attribution); a whitespace edit would invalidate those receipts.
+gpuwm/core/kernels/sfire_moisture.cu -whitespace
+gpuwm/core/sfire_fuel_data.py -whitespace

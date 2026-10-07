@@ -553,6 +553,56 @@ def bridge_tree_match(bridge, *, env_var: str,
         revisions[0] if revisions else None, detail)
 
 
+#: The line a stamped bridge prints after its ``--abi`` contract line
+#: (``rw_ensbatch`` does since 356c94560): the source revision it was
+#: built from, the same ``GPUWM_BRIDGE_SOURCE_REV`` stamp its bytes carry.
+ABI_SOURCE_REV_PREFIX = "GPUWM_BRIDGE_SOURCE_REV="
+
+
+def split_abi_answer(stdout: str | None) -> tuple[str, str | None]:
+    """``(contract, revision)`` of one ``--abi`` answer.
+
+    The contract is what a probe compares exactly; the revision is not
+    part of it.  Comparing the whole answer as one string refused this
+    checkout's own ``rw_ensbatch`` as "a build from another checkout"
+    once the binary printed its stamp, so ``gpuwm enprod --engine rust``
+    refused to draw.  Only a LAST line carrying the prefix, and only
+    one such line, is split off; any other extra line stays in the
+    contract text and fails the exact comparison as before.
+    """
+
+    lines = [line.strip() for line in (stdout or "").strip().splitlines()]
+    stamped = [line.startswith(ABI_SOURCE_REV_PREFIX) for line in lines]
+    if len(lines) >= 2 and stamped[-1] and not any(stamped[:-1]):
+        return ("\n".join(lines[:-1]).strip(),
+                lines[-1][len(ABI_SOURCE_REV_PREFIX):])
+    return (stdout or "").strip(), None
+
+
+def abi_revision_refusal(bridge, revision: str, *, env_var: str,
+                         prov: Provenance | None = None) -> str | None:
+    """Why a bridge whose ``--abi`` printed ``revision`` is not this tree's.
+
+    ``None`` when it is.  Decided by :func:`bridge_tree_match`, the one
+    stamp check the renderer gate and ``gpuwm doctor`` already use, so a
+    lane probe cannot judge provenance differently from them: a binary
+    inside this source root or this wheel, one named through ``env_var``,
+    or one stamped with this checkout's HEAD passes; a binary found
+    elsewhere and built from another revision is refused, naming both
+    revisions.  The breakage it prevents is the one the exact ``--abi``
+    comparison was there for: a build from another checkout drawing
+    this tree's ensemble panels with its own catalog.
+    """
+
+    match = bridge_tree_match(bridge, env_var=env_var, prov=prov)
+    if match.matched or match.verdict == "absent":
+        return None
+    head = match.engine_commit or "an unknown commit"
+    return (f"its --abi names source revision {revision or 'nothing'} "
+            f"while this checkout is at {head} ({match.basis}) -- it is a "
+            f"build from another checkout")
+
+
 def renderer_bridge_refusal(bridge, *, env_var: str | None = None,
                             prov: Provenance | None = None,
                             match: BridgeMatch | None = None) -> str | None:
@@ -710,12 +760,14 @@ def announce_for_main(command: str, *, explain: bool = False,
 
 
 __all__ = [
+    "ABI_SOURCE_REV_PREFIX",
     "BANNER_ENV", "BRIDGE_VERDICTS", "BridgeMatch", "DIAGNOSTIC_COMMANDS",
-    "RECEIPT_SCHEMA", "announce", "announce_for_main", "banner_enabled",
+    "RECEIPT_SCHEMA", "abi_revision_refusal", "announce",
+    "announce_for_main", "banner_enabled",
     "borrowed_version_origin", "bridge_tree_match",
     "executing_version", "receipt_block", "renderer_bridge_refusal",
     "require_consistent_version", "require_matched_renderer",
     "require_version_identity",
-    "reset_announcement", "version_identity_refusal",
+    "reset_announcement", "split_abi_answer", "version_identity_refusal",
     "warn_borrowed_version",
 ]

@@ -22,6 +22,7 @@
         "forecast_time": 0,
         "valid_time_basis": "reference_time",
         "missing_values": [-99.0, -999.0],
+        "unobserved_values": [-999.0],
         "time": {"kind": "nearest", "tolerance_seconds": 120},
         "accumulation_seconds": null
       },
@@ -39,6 +40,7 @@
         "forecast_time": 0,
         "valid_time_basis": "reference_time",
         "missing_values": [-1.0, -3.0],
+        "unobserved_values": [-1.0, -3.0],
         "time": {"kind": "exact_hour_end"},
         "accumulation_seconds": 3600
       }

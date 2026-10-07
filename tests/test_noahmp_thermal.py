@@ -1,6 +1,6 @@
 """gpuwm-vs-WRF parity for the Noah-MP *thermal* leaf group.
 
-``gpuwm/data/noahmp/oracle/noahmp-thermal.csv`` is produced by
+``tests/data/oracles/noahmp/noahmp-thermal.csv`` is produced by
 ``tools/noahmp_wrf461_oracle/build_thermal.sh`` from a *scratch copy* of the
 pinned WRF v4.6.1 tree carrying only
 ``patches/noahmp-lsm-leaf-visibility.patch`` (50 ``private ::`` ->
@@ -41,7 +41,7 @@ from gpuwm.core.noahmp_thermal import THERMAL_EVALUATORS
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-ORACLE_DIR = REPO_ROOT / "gpuwm" / "data" / "noahmp" / "oracle"
+ORACLE_DIR = REPO_ROOT / "tests" / "data" / "oracles" / "noahmp"
 THERMAL_CSV = ORACLE_DIR / "noahmp-thermal.csv"
 THERMAL_DISC_CSV = ORACLE_DIR / "noahmp-thermal-discrimination.csv"
 LEAVES_CSV = ORACLE_DIR / "noahmp-leaves.csv"

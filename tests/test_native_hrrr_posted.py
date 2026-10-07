@@ -428,11 +428,16 @@ def test_the_producer_starts_the_posted_decoder_mode(tmp_path):
         cycle="2026-09-30 12:00:00", window=(0, 1, 0, 1), workers="2",
         log=tmp_path / "decoder.log", admissions=tmp_path / "admitted")
     assert producer.admissions == tmp_path / "admitted"
+    # The command start() launches (decoder_argv): the posted mode, its
+    # admission folder in the decoder's ADMIT_DIR slot.
+    argv = producer.decoder_argv()
+    assert argv[1] == "--series-workers-posted"
+    assert argv[6] == str(tmp_path / "admitted")
     import inspect
     from tools import hrrr_pipeline
 
     source = inspect.getsource(hrrr_pipeline.HrrrPipelineProducer.start)
-    assert '"--series-workers-posted"' in source
+    assert "self.argv = self.decoder_argv()" in source
 
 
 def test_a_decoder_that_failed_ends_the_wait_for_a_lead_not_posted(tmp_path):

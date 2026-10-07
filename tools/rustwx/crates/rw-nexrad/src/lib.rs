@@ -20,11 +20,19 @@
 //! `mod` lines for one `use`, and no item moved, changed signature, or
 //! changed behavior.
 //!
+//! [`grid_ref`] is the radar latent heating door: raw volumes decoded and
+//! gridded onto a model grid, every radar together, in one call.
+//! [`grid_composite`] is its 2D sibling: nowcast or observed composite
+//! frames (`gpuwm-obs.nowcast-frames.v1`) expanded onto the same grid and
+//! written in the same window format.
+//!
 //! [`decode`] and [`live`] are genuinely NEXRAD-specific and are exported
 //! only so the binary can keep reaching them through the same path as their
 //! siblings.
 
 pub mod decode;
+pub mod grid_composite;
+pub mod grid_ref;
 pub mod live;
 pub mod pack;
 pub mod s3;

@@ -339,6 +339,22 @@ cpu  tools/rustwx  rw-mpas  3  --test radar_history_contract
 # first green run, 2026-10-01: 12 across the lib.
 cpu  tools/rustwx  rw-isobaric  12
 
+# rw-post: THIS project's crate, the clean-room post-processor that
+# replaces the held-out exporter modules (Group B so far: pressure-level
+# fields, sea-level pressure, precipitable water).  A wrong weight here
+# moves every exported pressure level and sea-level pressure, and a stale
+# kernel artifact would make the card disagree with the CPU path.  The CPU
+# suite checks closed-form isothermal columns, the membrane solver on a
+# harmonic field, the kernel constants against the reference and the
+# CUBIN/PTX hashes against their sources.  Floor first 11 (2026-10-05);
+# raised to 29 across the lib at the 2.8.7 merge-and-accept run, which
+# carries groups A to E, simulated_ir and the B1 analytic-height test.
+cpu  tools/rustwx  rw-post  29
+# The CUDA path must equal the CPU path bit for bit, or a frame exported on
+# a card differs from the same frame exported on a CPU-only install.  Needs
+# a card; 1 test, first green on an RTX 5090 (sm_120), 2026-10-05.
+gpu  tools/rustwx  rw-post  1  --lib -- --ignored
+
 # rw-mlexport: THIS project's crate, the binary behind `gpuwm ml-export`.
 # A training dataset is read by code nobody here watches, so a wrong
 # number does not crash, it trains a model on it.  The suite writes
@@ -351,6 +367,32 @@ cpu  tools/rustwx  rw-isobaric  12
 # mean, and the refusals.  Floor is its green run of 2026-10-01: 27 lib +
 # 11 in tests/export_roundtrip.rs.
 cpu  tools/rustwx  rw-mlexport  38
+
+# rw-grib2export: THIS project's crate, the clean-room GRIB2 exporter
+# behind `export-grib2`, `go --grib2`, run_options.grib2 and `render
+# --grib2-out` (2.8.7).  A GRIB2 file is read by tools nobody here
+# watches, so a wrong code, level or grid point does not crash, it puts a
+# field in the wrong place on someone else's map.  The suite packs planes
+# with missing cells through the exporter's own message builder and decodes
+# them again (codes, both fixed surfaces, bitmap, every value within half
+# the packing quantum, complex and simple packing), places a Lambert grid
+# south row first, refuses a rotated latitude-longitude grid it cannot
+# encode, keeps the catalog ids unique and the request refusals named.
+# The independent-decoder proof (ecCodes over every message of a real WOOF
+# frame) is the lane receipt, not this leg.  Floor first 8 (2026-10-05);
+# raised to 19 across the lib at the 2.8.7 merge-and-accept run (the
+# restored options, octet 14, extrema windows and simulated_ir identity).
+cpu  tools/rustwx  rw-grib2export  19
+
+# rw-superob: THIS project's crate, the Rust port of gpuwm/obs/superob.py
+# (2.8.7): gate geometry, placement on the target grid, the per-cell
+# accumulators, correlation-coefficient QC, the velocity alias masks, the
+# clear-air census, the multi-radar merge and the region-global dealias of
+# each sweep, behind the C ABI gpuwm/obs/superob_bridge.py loads.  Every
+# radar observation the DA assimilates comes out of it, so a wrong cell
+# does not crash, it moves an analysis.  Floor is its first green run,
+# 2026-10-07, Rust 1.94.0 on Linux: 4 across the lib.
+cpu  tools/rustwx  rw-superob  4
 
 # rw-libm: THIS project's crate, the transcendentals the WPS orographic
 # projection uses in place of the platform C library.  f32::powf and

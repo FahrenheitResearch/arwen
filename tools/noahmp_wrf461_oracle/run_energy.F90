@@ -24,7 +24,7 @@
 !   value= decimal rendering, for humans; hex is authoritative
 !
 ! Cases 1-4 reproduce, argument for argument, the four columns already pinned
-! whole-column in gpuwm/data/noahmp/oracle/noahmp-sflx.csv: the same MPTABLE
+! whole-column in tests/data/oracles/noahmp/noahmp-sflx.csv: the same MPTABLE
 ! row, the same forcing, the same SNOW_INIT topology, and the same NOAHMP_SFLX
 ! prologue (ATM, the DZSNSO/TROOT reductions, PHENOLOGY, the DVEG=4 FVEG rule,
 ! PRECIP_HEAT) evaluated by calling WRF's own routines.  That makes the ENERGY

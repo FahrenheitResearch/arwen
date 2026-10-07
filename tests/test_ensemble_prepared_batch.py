@@ -48,6 +48,35 @@ def test_native_route_keeps_the_original_initialized_clock_and_suite():
     assert not native_prepared_eligibility(inputs, node, members=1).eligible
 
 
+@pytest.mark.parametrize("chem_sets", ["smoke", "gocart_primary,smoke", "cams_aq"])
+def test_active_chemistry_keeps_original_members_before_native_packing(chem_sets, monkeypatch):
+    from gpuwm.ensemble.suite_capabilities import plan_suite
+
+    inputs, node = _source()
+    node.cfg.run = replace(node.cfg.run, chem_sets=chem_sets)
+    before = vars(node.cfg.run).copy()
+    original_driver = node.state.physics
+    plan = plan_suite(node.cfg.run, members=10)
+    assert plan.mode == "member_local" and not plan.uses_native_batch
+    assert any("species arrays, source-hour caches and mass ledger" in reason
+               for reason in plan.native_fallback_reasons)
+    decision = native_prepared_eligibility(inputs, node, members=10)
+    assert not decision.eligible and decision.receipt()["fallback"] == "ordinary_member_runner"
+    assert any("active chemistry" in reason for reason in decision.reasons)
+    monkeypatch.setattr(BatchedDomainState, "from_prepared",
+                        lambda *a, **k: pytest.fail("active chemistry reached native state packing"))
+    assert prepare_native_member_batch(inputs, node, members=10, available_bytes=0, array_module=np) is None
+    assert node.state.physics is original_driver and vars(node.cfg.run) == before
+
+
+def test_inactive_chemistry_controls_leave_the_default_native_route_unchanged():
+    inputs, node = _source()
+    original = native_prepared_eligibility(inputs, node, members=10).receipt()
+    node.cfg.run = replace(node.cfg.run, chem_sets="", chem_adv_opt=2, dust_opt=3,
+                           aerosol_mp_coupling="diagnose", chem_sources="cams-global")
+    assert native_prepared_eligibility(inputs, node, members=10).receipt() == original
+
+
 def test_native_snapshot_rebuilds_only_registered_boundary_mirrors_without_changing_original_tables():
     inputs, node = _source()
     state = node.state

@@ -50,8 +50,12 @@ one card. A split parent needs its nests split too (see the refusals below).
   (2.25 km 288 x 288 parent, 750 m 216 x 216 nest) it was 250 drains and 250
   copies back per grid over 2 h. Reading only the coupler's windows from the
   slabs is the next step for nested speed.
-- A split nest's halo also covers the boundary frame (`max(spec_zone,
-  relax_zone)`), as a specified root's does.
+- A split nest's halo covers the same seam fiction a specified root's does:
+  the dependency radius plus `spec_zone` (one cell at the standard
+  `spec_zone = 1`). The relaxation frame is masked on a seam side, so it is
+  not paid. Measured on a 3 km HRRR-lattice crop split 2x1: halo 20 against
+  the former 28 (and 22 and 19 as probes), every hourly history
+  byte-identical over 12 h across all four and the one-card run.
 
 Refused by name on a tree, before anything restores:
 
@@ -71,6 +75,26 @@ tree split: the plan names each grid's road (`d01 split 1x2, d02 split 1x2`, or
 download, and the count reaches the tree runner. `gpuwm check TREE --devices N`
 prints the same per-card prices, grid by grid. A bundle already prepared runs
 split through `gpuwm sim PREPARED --devices-table JSON`, as a single domain does.
+
+## What a card needs and what it is given
+
+Each card's admission line prices state, seams and the loader template at the
+narrowest MYNN workspace width (8,192 columns per rank). That price is the one
+that refuses a forecast. Room left on the card then goes to a wider MYNN
+workspace (up to 98,304 columns per rank), which makes the boundary layer
+faster and never changes a byte, and then to frame snapshots. The line names
+the widened part (`of which N GiB is MYNN workspace widened into free
+memory`). A closing `devices:` line gives both figures per model column:
+`required` for capacity planning and `admitted` for what this box holds. The
+receipt carries both as `footprint`. Measured for one 1 km grid (1800 x 1400 x
+50, HRRR physics), the required figure is 60.9, 65.6, 68.7 and 82.9 KB per
+column on 2, 3, 4 and 8 cards. On 8 x RTX 5090 the admitted figure is 101.8,
+because the MYNN workspace widens into the rest of each card. More cards cost
+more per column for three reasons: the halo cells each slab repeats (27 cells
+wide when those figures were taken; 6% extra columns on 3 cards, 13% on 8),
+the fixed per-card tables and allocator headroom, and the seam buffers. The
+halo no longer pays the relaxation frame (19 cells on that grid against the
+27, about 30% less halo), so the repeated columns and the price fall with it.
 
 ## Output
 

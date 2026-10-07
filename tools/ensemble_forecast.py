@@ -166,7 +166,8 @@ def _parse_args(argv=None):
              "without it the legs are forecast-only and the assimilation "
              "slot stays null")
     cycle.add_argument(
-        "--positivity", default="clip", choices=("clip", "reject", "none"),
+        "--positivity", default="mean-preserving",
+        choices=("mean-preserving", "clip", "reject", "none"),
         help="policy bounding analysed hydrometeors below zero "
              "(default: clip, which ADDS mass and reports how much)")
     cycle.add_argument(

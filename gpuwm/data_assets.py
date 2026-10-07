@@ -23,14 +23,24 @@ the same bytes reach the same call sites at the same relative path.
 ``tests/test_companion_distribution.py`` hashes a moved member through
 this resolver against a recorded SHA-256 to keep that literal.
 
+The 2.8.7 line crossed the cap again: three new native executables put
+the manylinux wheel at about 105 MB.  Two single archives moved out with
+them -- the bundled historical case catalog (2.73 MB) and the WRF v4.6.1
+SPP oracle captures (2.51 MB), both incompressible ZIPs -- beside the
+kernel-set trim in ``rw-post``.  The air-quality line then put it at
+106.4 MB, and the WRF-Chem Mie tables (``chem/optics``, 1.00 MB
+compressed) moved out beside the Linux bridges' symbol strip.
+
 The shape of the rule
 ---------------------
-:data:`COMPANION_TREES` names DIRECTORIES, never filenames.  An
-enumeration of files here would drift behind the tree the way
+:data:`COMPANION_TREES` names DIRECTORIES wherever a whole directory
+moves.  An enumeration of files would drift behind the tree the way
 ``package-data`` once drifted 52 files behind it; a directory rule cannot,
 because a table added beside its siblings is already covered.  Moving the
 next directory out is one entry in that tuple plus the ``git mv`` -- no
-new call site, no new code path.
+new call site, no new code path.  A single FILE is named only when its
+directory keeps other members in this wheel (the case-catalog schema and
+examples, the SPP ULP receipts), and the same prefix rule resolves it.
 
 The refusals
 ------------
@@ -63,15 +73,22 @@ COMPANION_PACKAGE = "gpuwm_data"
 #: relative paths.  Everything else under ``gpuwm/data`` still ships
 #: inside the ``gpuwm`` wheel and is resolved by :func:`package_data_root`.
 #:
-#: Both entries are bulk reference tables with a single loader each --
+#: The two directories are bulk reference tables with a single loader each --
 #: ``gpuwm.core.rrtmgp.DATA_DIR`` and
 #: ``gpuwm.physics_compat.packaged_thompson_table_root`` -- which is why
 #: they were chosen over the same number of megabytes spread across the
 #: oracle directories: the split had to be measurable in the wheel and
-#: invisible everywhere else.
+#: invisible everywhere else.  The two files each have one reader too:
+#: ``gpuwm.case_catalog.builtin_catalog_path`` and the SPP consumer gate
+#: (tests/test_spp_consumers.py).  ``chem/optics`` has one loader,
+#: ``gpuwm.core.chem_optics.data_dir``, and its parity gate
+#: (tests/test_chem_optics_wrf471_parity.py).
 COMPANION_TREES: tuple[str, ...] = (
     "rrtmgp",
     "thompson/tables",
+    "case-catalog/historical.zip",
+    "spp/native-wrf461.zip",
+    "chem/optics",
 )
 
 #: In-package data root: ``<site-packages>/gpuwm/data``.
@@ -195,8 +212,10 @@ def _refuse_missing(detail: str) -> "ModuleNotFoundError":
         f"gpuwm REFUSES to resolve packaged reference data: the "
         f"{COMPANION_DISTRIBUTION} distribution is not importable "
         f"({detail}).  It carries the RRTMGP k-distribution and "
-        f"cloud-optics tables and the Thompson microphysics lookup "
-        f"tables -- so without it every radiation scheme and every "
+        f"cloud-optics tables, the Thompson microphysics lookup "
+        f"tables, the WRF-Chem aerosol optics tables and the bundled "
+        f"historical case catalog -- so without "
+        f"it every radiation scheme and every "
         f"mp_physics=8/28 run fails at table load, and `gpuwm check` "
         f"cannot complete a preflight.  It is a HARD dependency of "
         f"gpuwm and a plain `pip install gpuwm` installs it; this state "

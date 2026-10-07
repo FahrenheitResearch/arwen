@@ -435,7 +435,7 @@ def test_the_identity_route_copies_every_mass_point_exactly():
     lat, lon = grid.latlon_mass()
     # Without the declaration the same target is refused: its outermost
     # row has no parabolic neighbour past the grid.
-    with pytest.raises(ValueError, match="four-point interpolation halo"):
+    with pytest.raises(ValueError, match="bilinear donor cell"):
         _projected_index_geometry(snapshot, lat, lon)
     plan = _ProjectedCpuPlan(snapshot, lat, lon, None, identity=True)
     assert plan.route == "identity"

@@ -53,7 +53,7 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 _KDIR = os.path.join(_ROOT, "gpuwm", "core", "kernels")
-_DATA = os.path.join(_ROOT, "gpuwm", "data", "noahmp", "oracle")
+_DATA = os.path.join(_ROOT, "tests", "data", "oracles", "noahmp")
 FIXTURE = os.path.join(_DATA, "noahmp-water.csv")
 PROBE = os.path.join(_DATA, "noahmp-water-libm.csv")
 

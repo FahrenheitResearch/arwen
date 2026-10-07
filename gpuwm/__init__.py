@@ -46,6 +46,71 @@ import time as _time
 LAUNCH_MONOTONIC = _time.monotonic()
 LAUNCH_UNIX_MS = int(_time.time() * 1000)
 
+def _no_numpy_huge_page_advice() -> None:
+    """Stop numpy advising the kernel to back its arrays with huge pages.
+
+    numpy calls ``madvise(MADV_HUGEPAGE)`` on every large array it
+    allocates.  On a host whose transparent-huge-page defrag is
+    ``madvise`` (box E: ``always defer defer+madvise [madvise] never``),
+    each such allocation then compacts memory synchronously; with most of
+    a 723 GB host in page cache the compaction mostly fails and retries.
+    Measured there on the 9 km CONUS DA controller: 14,770 s of kernel
+    time against 448 s of user time in one analysis, every card idle,
+    compact_stall 28 M; a member worker stalled the same way decoding its
+    radar file.  Without the advice the kernel still uses huge pages
+    where it can do so cheaply; array contents are unchanged.
+
+    ``NUMPY_MADVISE_HUGEPAGE`` is set for this process and every child it
+    starts unless the caller already set it, which is honoured either
+    way; numpy reads it at import, so a numpy imported before gpuwm is
+    switched through its own setter too.
+    """
+    import os
+    import sys
+
+    value = os.environ.setdefault("NUMPY_MADVISE_HUGEPAGE", "0")
+    numpy = sys.modules.get("numpy")
+    if numpy is None or value.strip() not in ("0", ""):
+        return
+    for owner in ("_core", "core"):
+        setter = getattr(getattr(getattr(numpy, owner, None), "multiarray",
+                                 None), "_set_madvise_hugepage", None)
+        if setter is not None:
+            try:
+                setter(False)
+            except Exception:
+                pass
+            return
+
+
+_no_numpy_huge_page_advice()
+
+
+def _die_with_launcher() -> None:
+    """Arm the parent-pid watchdog a launching gpuwm process asked for.
+
+    Here because every stage is ``python -m gpuwm.<module>`` and imports
+    this package first, so one line covers the forecast supervisor and
+    every other stage a chain starts.  It does nothing unless a gpuwm
+    launcher set :data:`gpuwm.parent_death.PARENT_ENV` for this process.
+    THE BREAKAGE: a ``gpuwm go`` killed by pid left its forecast
+    supervisor alive, reparented to init, holding 63.9 GB on a card for
+    43 minutes (box B, 2026-10-07).  See :mod:`gpuwm.parent_death`.
+    """
+
+    import os
+
+    if "GPUWM_PARENT_DEATH_PID" not in os.environ:
+        return
+    try:
+        from gpuwm.parent_death import arm_from_environment
+    except ImportError:
+        return
+    arm_from_environment()
+
+
+_die_with_launcher()
+
 from importlib import metadata as _metadata  # noqa: E402
 from pathlib import Path as _Path  # noqa: E402
 

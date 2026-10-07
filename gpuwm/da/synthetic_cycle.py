@@ -676,7 +676,8 @@ def run_gate(outdir, cfg: GateConfig | None = None) -> dict:
 
     result = run_cycles(ens_cfg, ens_root, n_cycles=2,
                         cycle_seconds=cfg.leg_seconds, runner=runner,
-                        assimilate=assimilate, positivity="clip")
+                        assimilate=assimilate,
+                        positivity="mean-preserving")
     if result.status != "COMPLETE":
         raise RuntimeError(f"cycling did not complete: {result.status}")
 
@@ -841,6 +842,7 @@ def run_gate(outdir, cfg: GateConfig | None = None) -> dict:
                 assimilation["negative_points_total"],
             "mass_added_by_clip_total":
                 assimilation["mass_added_by_clip_total"],
+            "mass_added_total": assimilation.get("mass_added_total", 0.0),
             "increment_contract": sorted(
                 {receipt["contract"] for receipt in
                  assimilation["receipts"]}),

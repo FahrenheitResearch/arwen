@@ -1,6 +1,6 @@
 """Bitwise gate for the Noah-MP driver cold start.
 
-Replays ``gpuwm/data/noahmp/oracle/noahmp-driver.csv`` through
+Replays ``tests/data/oracles/noahmp/noahmp-driver.csv`` through
 :mod:`gpuwm.core.noahmp_driver` and requires ``max_ulp 0`` on every emitted
 column of every case, then re-runs the fixture's own structural validator so
 the CSV cannot drift underneath the port.
@@ -46,7 +46,7 @@ from gpuwm.core.noahmp_driver import (
 )
 
 REPO = Path(__file__).resolve().parent.parent
-FIXTURE = REPO / "gpuwm" / "data" / "noahmp" / "oracle" / "noahmp-driver.csv"
+FIXTURE = REPO / "tests" / "data" / "oracles" / "noahmp" / "noahmp-driver.csv"
 VALIDATOR = (REPO / "tools" / "noahmp_wrf461_oracle"
              / "validate_driver_oracle.py")
 

@@ -47,6 +47,7 @@ pub mod fieldmap;
 pub mod geometry;
 pub mod history;
 pub mod hostprep;
+pub mod hosttables;
 pub mod init;
 pub mod lbc;
 pub mod mesh;

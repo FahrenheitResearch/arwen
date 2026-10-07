@@ -100,6 +100,28 @@ def discover_run_directory(directory: str | Path
     return directory, namelist, inputs, bdy
 
 
+def refuse_latlon_files(metadata: Mapping[int, object]) -> None:
+    """Refuse a WRF-input or met_em handoff on a lat-lon grid, by name.
+
+    Asked first, from the files' own ``MAP_PROJ``, before anything is
+    read as a grid: the reconstituted namelist would carry the files'
+    metre DX and no pole, and every check after it would be reading a
+    lat-lon grid (WRF 6) as a conformal one.
+    """
+    from gpuwm.static.projection import (
+        implemented_projections, is_latlon_map_proj, latlon_refusal)
+
+    if _MAP_PROJ_NAMES[6] in implemented_projections():
+        return
+    for grid_id in sorted(metadata):
+        item = metadata[grid_id]
+        value = item.global_attributes.get("MAP_PROJ")
+        if value is not None and is_latlon_map_proj(value):
+            raise ValueError(
+                f"{item.path} declares MAP_PROJ={int(float(value))}: "
+                f"{latlon_refusal()}")
+
+
 def synthesize_wps_namelist(metadata: Mapping[int, WrfinputMetadata]) -> str:
     """Write the ``&share``/``&geogrid`` facts out of the wrfinput files.
 
@@ -124,6 +146,7 @@ def synthesize_wps_namelist(metadata: Mapping[int, WrfinputMetadata]) -> str:
                 "that carry the domain layout; real.exe stamps every one "
                 "of them, so this file was not written by real.exe or was "
                 "rewritten by a tool that dropped them")
+    refuse_latlon_files(metadata)
     map_proj = int(float(root.global_attributes["MAP_PROJ"]))
     if map_proj not in _MAP_PROJ_NAMES:
         raise ValueError(
@@ -364,6 +387,7 @@ def resolve_wrfinput_run(directory: str | Path, *, name: str | None = None,
                 f"{item.path} declares GRID_ID={item.grid_id} but is named "
                 f"for domain {grid_id}; the file and its name disagree "
                 "about which domain it initializes")
+    refuse_latlon_files(metadata)
     identities = {grid_id: read_wrfinput_identity(path) for grid_id, path in inputs.items()}
     landuse_identity = None
     for item in metadata.values():

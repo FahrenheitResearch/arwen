@@ -1,0 +1,1850 @@
+{
+  "source": "WRF v4.7.1",
+  "commit": "f52c197ed39d12e087d02c50f412d90d418f6186",
+  "tar_sha256": "0826f8878aa787e016586b6e3b43896c8467570b7cca47741b5e16d2f4def0ae",
+  "compiler": "GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+  "libc": "ldd (Ubuntu GLIBC 2.43-2ubuntu2.4) 2.43",
+  "flags": "-O0 -cpp -ffp-contract=off -fcheck=all -fbacktrace -ffree-form -ffree-line-length-none -DDM_PARALLEL -I ${SFIRE_WORK}/wind-port/mpi-dev/sdk/usr/lib/x86_64-linux-gnu/fortran/gfortran-mod-16/openmpi -I ${SFIRE_WORK}/wind-port/mpi-dev/sdk/usr/lib/x86_64-linux-gnu/openmpi/include",
+  "source_sha256sums": "916bb9cd7b4405a49a4d1bcd4ae0adf98c33e568d55edf7956d1fb2afd4b3a21  phys/module_firebrand_spotting_mpi.F\n",
+  "oracle_sha256sums": "60e67773050adeb25e9e170c834644086576b463882a676b5b32bc2c66b66994  spotting_mpi_services.F90\n356c540fdb149214197c43aab9f014f59ced4e0ff2e350e318d68e64981dfa29  run_spotting_mpi.F90\n31fdd5927e047fd190f62e46d5deb61e03238f0e65d6128cbc8d3540b95e2919  build_spotting_mpi.sh\n",
+  "reference_kind": "byte-unmodified original WRF",
+  "layout": "2D (j,i); 3D (k,j,i); little-endian f4/i4; scalar rank zero",
+  "cases": {
+    "spotting_mpi/rank_0": {
+      "sha256": "f9e8e043b180dd7f0738549b5b3e0c5961de50ef47c2dc49ae080e465cf3485e",
+      "native_stream_sha256": {
+        "rank": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "tile": "57d15968d9955a9f6d773a323f2b43277671895725ec9b4e6ae286dbf08eea44",
+        "neighbors": "a482bdcf1b9da2e634faa1d517d3c16548be3be6ec445ba7b4120d76ef51125b",
+        "mask": "cabc815ba8d506cb6a1b4584f545ba7c6013f3475326621a13f10eabf891e900",
+        "x": "f28baca506981ea6684174122dcfae395c91593e444343bc06066a46365eba29",
+        "y": "77300bfb56e8d97446244fe8c748dd7d06cbd1828b6d9ed7f938f7c388d36a48",
+        "z": "653ff6afa8f247e8c8a41eb540adc6102caa79b6fdca1706a59787337b4dbd32",
+        "mass": "8250700b53de4fe59ee3bf73a814942112a13cc96122cf4c92478c33f4393249",
+        "diam": "a937b9de6c57cc56862e9343b7c6f8472db2447b52fb837a51b43b6079c558c6",
+        "effd": "7b15f9f1994ec6771e1e1cdce1bf5e160272fba989d5780965d6ecd7ea449ba4",
+        "temp": "3362351475a702b53910bafba40b38a7eba1b6b04734e7b5e5f4e158f4a45188",
+        "velocity": "12de414bb6bed90a8b092e965e8c8ee61eaea9fd95a9afab68b4416562c458b4",
+        "id": "eb203a1c0f15328be1b15dc68ff5ee95930c0043b3173e669475d00e39b87f64",
+        "source": "eb203a1c0f15328be1b15dc68ff5ee95930c0043b3173e669475d00e39b87f64",
+        "life": "eb203a1c0f15328be1b15dc68ff5ee95930c0043b3173e669475d00e39b87f64",
+        "received_counts": "b2b20a57fbf359431b1939d501ede89c2e6170ed5da5da704547468f00c0c4fe",
+        "received_x": "6bf984949e3554706d335bf32d833dfc478f59904926ebaa2634f4ad0b9c0ec7",
+        "received_y": "ff20a3287d1b5cd9a42932455fe942c168e464de5a08c8cfd928aa31079458c4",
+        "received_z": "e9e461a8a6111544cbaa3d682d7e04cd2aa560e0cc98de6710bf0c480057a62f",
+        "received_mass": "80400704ee7ba4533f6e9993421ad61891c02a1217345d8c7246094af8d3b92c",
+        "received_diam": "9a5edded92953671eaabad1d9d1c3f9c2b7923534c99c062dbb42093775d9a8a",
+        "received_effd": "a9850f9495e54154ad9672ca818e7d4c13ccc0a494c7231d17ef375711b18b09",
+        "received_temp": "2797e843ddbd0c470550ff14094168121b75f1aea1f42173ce1a9f060fb237c9",
+        "received_velocity": "9cf40780642dc5c504f4f40d7ad28b26092d16b7d200f0567192961f7c883afa",
+        "received_id": "3ae3511ae60ca97305e9c107f757fb7b4364d0a43207008c0b7bb5fd08169f43",
+        "received_source": "2cee2545fb1e5d615d66c0d90d2fbcba4c52a82c853b3c453193418ac6a5077d",
+        "received_life": "30148ae2d555935f8b658bc6838ad078e2c71ec03d674d2cac01ae2dadab5912",
+        "received_scalar": "cc3708cd20f554e80b6c76986b04c96f9f574b9f520773811eb7fcb8a93e6721",
+        "received_integer": "0623ccb9b1619bd388284a438034d8cb6431964ba727d8b1c450303105735488"
+      },
+      "arrays": {
+        "rank": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "tile": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "neighbors": {
+          "shape": [
+            8
+          ],
+          "dtype": "<i4"
+        },
+        "mask": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "x": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "y": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "z": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "mass": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "diam": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "effd": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "temp": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "velocity": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "id": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "source": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "life": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "received_counts": {
+          "shape": [
+            8
+          ],
+          "dtype": "<i4"
+        },
+        "received_x": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_y": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_z": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_mass": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_diam": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_effd": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_temp": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_velocity": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_id": {
+          "shape": [
+            6
+          ],
+          "dtype": "<i4"
+        },
+        "received_source": {
+          "shape": [
+            6
+          ],
+          "dtype": "<i4"
+        },
+        "received_life": {
+          "shape": [
+            6
+          ],
+          "dtype": "<i4"
+        },
+        "received_scalar": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "received_integer": {
+          "shape": [],
+          "dtype": "<i4"
+        }
+      }
+    },
+    "spotting_mpi/rank_1": {
+      "sha256": "410022a69584daaa7f01be3f65f3fda6652f8df8da731a7cc8241c3bf42a510d",
+      "native_stream_sha256": {
+        "rank": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "tile": "042789d787af2b74e6511f6b2dd8e46266d2ce8297887a7a21dbddd897fac855",
+        "neighbors": "94c2925b026f3c28b4ad1a2f4128f113ba7191fc8896ed71ad04250ff24ccf05",
+        "mask": "cabc815ba8d506cb6a1b4584f545ba7c6013f3475326621a13f10eabf891e900",
+        "x": "474ee142f1c08f2e40a33444d74614eb7e04a8c803d5b40125e67546a7ecdc00",
+        "y": "77300bfb56e8d97446244fe8c748dd7d06cbd1828b6d9ed7f938f7c388d36a48",
+        "z": "653ff6afa8f247e8c8a41eb540adc6102caa79b6fdca1706a59787337b4dbd32",
+        "mass": "cd28fda6693774a3ac6431694c1215b45fc86c4f96b6be612cae736226712fcc",
+        "diam": "a937b9de6c57cc56862e9343b7c6f8472db2447b52fb837a51b43b6079c558c6",
+        "effd": "7b15f9f1994ec6771e1e1cdce1bf5e160272fba989d5780965d6ecd7ea449ba4",
+        "temp": "bed949d3cf901258385aeff0e5e42c29d4b25664ba8d3d3ebde7f240e8961a46",
+        "velocity": "12de414bb6bed90a8b092e965e8c8ee61eaea9fd95a9afab68b4416562c458b4",
+        "id": "978abd71b4dd9147c24af587de4fab5edbea50bc74014d172f91745d662b0920",
+        "source": "381996b795612921f7496a283982a131089887e1a3f7b82c32e68c2a156d4e28",
+        "life": "c9dbcd3829d6904452988f270db701fbcd19f691555eb93d43a9f69a93e6a0fc",
+        "received_counts": "bd6c13799977f621f73f0b05cdfaa36fdbe681ef3962ad739e52d07cc0e8a24c",
+        "received_x": "9fd0dfa778ec4a3ea78992619e8a6130790a0bc7cd19bd21bcc3de472c7b7d0b",
+        "received_y": "0c60571b08bc431f2b8c4ef1850b286af2baf9f971438a117eeb57bb641b2336",
+        "received_z": "413e2fe57ff6dfb5cfed93ad79fc377427fd6ae9470f533c73c459127c05b08d",
+        "received_mass": "e201dd3e243757f4ff3030898393cf455ef7ada02fcf9e7cbbbecbf68c12951f",
+        "received_diam": "4290aa3e998dad2961c11d4756f997f61af88dff524f2d4c9e03a7c1b7722586",
+        "received_effd": "993229fca589c52fc951640211260ed9000c572281bb818409802ad983efed58",
+        "received_temp": "a5dbe6bc41a7b30285e8de852a8a7055da0c4deecad6029b5bccfd1da9859b6b",
+        "received_velocity": "744261f20d45ef1e2ee068c69935299777a0a8f03c08cdd879ebf53f21dddc7b",
+        "received_id": "f2b3ab7befa51b89e3ea30db6f5e72ab6a59ec624a75b5f6f945995f16632ef0",
+        "received_source": "bbbed852df196351fd281470e2f43fde7b832813d078b27d75050e59fe260cbf",
+        "received_life": "98b11f8232c2e3ae4acd26bd2bdfb1213307ee29c675beac446734f326813397",
+        "received_scalar": "55b51bbfa89c63511da11a52068292b17b6644163afdaf734beee7bcaf33b6e3",
+        "received_integer": "84fc05949dc1e486652a4ed316afb6434e9437eb30b714594a1d0b4205776602"
+      },
+      "arrays": {
+        "rank": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "tile": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "neighbors": {
+          "shape": [
+            8
+          ],
+          "dtype": "<i4"
+        },
+        "mask": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "x": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "y": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "z": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "mass": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "diam": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "effd": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "temp": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "velocity": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "id": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "source": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "life": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "received_counts": {
+          "shape": [
+            8
+          ],
+          "dtype": "<i4"
+        },
+        "received_x": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_y": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_z": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_mass": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_diam": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_effd": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_temp": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_velocity": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_id": {
+          "shape": [
+            10
+          ],
+          "dtype": "<i4"
+        },
+        "received_source": {
+          "shape": [
+            10
+          ],
+          "dtype": "<i4"
+        },
+        "received_life": {
+          "shape": [
+            10
+          ],
+          "dtype": "<i4"
+        },
+        "received_scalar": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "received_integer": {
+          "shape": [],
+          "dtype": "<i4"
+        }
+      }
+    },
+    "spotting_mpi/rank_2": {
+      "sha256": "56e17cb6def33c1af8adb939296978bcce8b33d1fe6e7bad291ca515454deed3",
+      "native_stream_sha256": {
+        "rank": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "tile": "e3989c950ab0137e743cb105116fb8a74ac2944220a82e29532968ab96b6b78d",
+        "neighbors": "c6c4e1a55558edb3c46904b5124b191b34c194df3f951f0b3f5662cad18b5da0",
+        "mask": "cabc815ba8d506cb6a1b4584f545ba7c6013f3475326621a13f10eabf891e900",
+        "x": "3e19def21adf04dcdc30b30e900deec4a40ec740da1aefb7b2d90c10bc81ac97",
+        "y": "77300bfb56e8d97446244fe8c748dd7d06cbd1828b6d9ed7f938f7c388d36a48",
+        "z": "653ff6afa8f247e8c8a41eb540adc6102caa79b6fdca1706a59787337b4dbd32",
+        "mass": "cafd6972b9729e2b32e548e3075574aacff90a8c21e33459383a229645f33429",
+        "diam": "a937b9de6c57cc56862e9343b7c6f8472db2447b52fb837a51b43b6079c558c6",
+        "effd": "7b15f9f1994ec6771e1e1cdce1bf5e160272fba989d5780965d6ecd7ea449ba4",
+        "temp": "10b20b4d740cd9f60c636d8c401dad3429aae79751b96a34403da9eecae93b60",
+        "velocity": "12de414bb6bed90a8b092e965e8c8ee61eaea9fd95a9afab68b4416562c458b4",
+        "id": "c61945945f8d1eca020f75d106c603b68c90b37bb1838dbd83aba8134190d6cc",
+        "source": "5d026d5c842c2271dc4d1d2510b242b3cbdf652a337a822a2b49a3a415e8b335",
+        "life": "eca32a0ebef399c3b147139f9c1ef241050372e67ccf946bde70f96088f6a0b9",
+        "received_counts": "fbdfdbd3f11d39a900d551e95a90d50254c3ba50131bc3a3431106d6b930f7c4",
+        "received_x": "e9c644b7d57502752f71b2a4c6980e4ed46cb33c1c0966d978ad78b4985eec9d",
+        "received_y": "ff20a3287d1b5cd9a42932455fe942c168e464de5a08c8cfd928aa31079458c4",
+        "received_z": "13cce6c6b221491d9494a28732685c9e19454b31954228ae163fc61b4105df3d",
+        "received_mass": "00f5d2c59c85f8fb7ad65c765df3dcbbf62291599885624908444582321aa8b8",
+        "received_diam": "13104fc547c0d9c792d08d29c9a490b34d0824aae4bc7e4526472066523db22b",
+        "received_effd": "0573b7c15caa9edafe45fc91bd78f432888152fee68fe225d63215353de1410d",
+        "received_temp": "175850b3207c5d12bb5ac5ba7bb0fa9832d2f299091ced26f26d5e2ccf0f2aed",
+        "received_velocity": "faadaffa6cd3f4a542fe830097608fe05e1399febc614f3df3e40cb12122934e",
+        "received_id": "0cecb1f0ed6f308f5e2e657e2fe8da0e615e87974e8cbbe320514f360d303c70",
+        "received_source": "c5e82b8826d3551c1cc6883434e80779cdca5950377502a0413fc114848701fd",
+        "received_life": "7ddeac8503222321217a75d0b7abb24bb7cf9bdeee11d1d582c2ef154fb3b85e",
+        "received_scalar": "ef796ac09d71934d42ce039e1dc0f04085f9627c417263c950c05e627273ac81",
+        "received_integer": "7d8e29fa389a36cca29bc0f07a7892dddd6f9070b9e33d12dce8ce3569f81810"
+      },
+      "arrays": {
+        "rank": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "tile": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "neighbors": {
+          "shape": [
+            8
+          ],
+          "dtype": "<i4"
+        },
+        "mask": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "x": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "y": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "z": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "mass": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "diam": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "effd": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "temp": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "velocity": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "id": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "source": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "life": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "received_counts": {
+          "shape": [
+            8
+          ],
+          "dtype": "<i4"
+        },
+        "received_x": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_y": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_z": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_mass": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_diam": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_effd": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_temp": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_velocity": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_id": {
+          "shape": [
+            6
+          ],
+          "dtype": "<i4"
+        },
+        "received_source": {
+          "shape": [
+            6
+          ],
+          "dtype": "<i4"
+        },
+        "received_life": {
+          "shape": [
+            6
+          ],
+          "dtype": "<i4"
+        },
+        "received_scalar": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "received_integer": {
+          "shape": [],
+          "dtype": "<i4"
+        }
+      }
+    },
+    "spotting_mpi/rank_3": {
+      "sha256": "54c9adf42f060c742cbab98512257ae99e6ce728bbd937e7560f36468015a20e",
+      "native_stream_sha256": {
+        "rank": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "tile": "b35c64b578c4bf25364bc46f53da78bac67fab453b10d6f0ca2e2b9a661a8645",
+        "neighbors": "6f4cdaaba967fe414bc1a015a8d2787b9377a20609d8cbd7935f588e7f6ec101",
+        "mask": "cabc815ba8d506cb6a1b4584f545ba7c6013f3475326621a13f10eabf891e900",
+        "x": "f28baca506981ea6684174122dcfae395c91593e444343bc06066a46365eba29",
+        "y": "8a949ed1b78242931f4806b0dc6d1ae45a01687528a53fa29054144c77dc64f2",
+        "z": "653ff6afa8f247e8c8a41eb540adc6102caa79b6fdca1706a59787337b4dbd32",
+        "mass": "f59b764f52dcdc697bfb075547c8e9d140e3bd9481e591f4f1d64bc6d0c487b7",
+        "diam": "a937b9de6c57cc56862e9343b7c6f8472db2447b52fb837a51b43b6079c558c6",
+        "effd": "7b15f9f1994ec6771e1e1cdce1bf5e160272fba989d5780965d6ecd7ea449ba4",
+        "temp": "37c63e26c146c687841f7e2573cfa2813e3e1631ad558d4b0ebadd2fbcdb951d",
+        "velocity": "12de414bb6bed90a8b092e965e8c8ee61eaea9fd95a9afab68b4416562c458b4",
+        "id": "b039292bbb6e216ee0d6930a755a23b8bc32a82ddc9475f8956e0400bd21137a",
+        "source": "fa2c2a641f6e5c699051cba0370937bb4c165c7f7a48357e6bee28719d6c9e1f",
+        "life": "c4bb2dad38d2cbd81cf475259e4d3d1b13ebf32115d0507fe9822387e1589223",
+        "received_counts": "5e0f963b1433eb3e5f0d2f5782fc11e5f8f757408c6cfe708d8948c0a4ab01a1",
+        "received_x": "653cf2b32ac687d11b3c3caef7b7d4389f1461bbeb1a44a3e36c3b99ff92a357",
+        "received_y": "ddf78d9201d06681cb1d779241a251d30b8ae06f44f3025397a31d853ec6feb5",
+        "received_z": "ccb6d37c5600522c480e557e28386212632a547949fb31978ba3cec20347d073",
+        "received_mass": "e765c2e0e3938e41700d609cb341dc1684a746e5436d79f0aa6546027734aa66",
+        "received_diam": "b654ca4de8a42226963ab14b78ce93fecc814e18f2936c0810aed5f03908b93c",
+        "received_effd": "971c37bf1852ecf780d37e54d3f57fed95b36411a5abffd2a03c09db0e031361",
+        "received_temp": "560a013fde085fb2816073949f68eb39dbde6dffaa08dd226dcf89d531a40a88",
+        "received_velocity": "af2a2a80a95989b02d8f1191a1e1ed9e8e75506256a8790674ca9fb9afd29439",
+        "received_id": "16ad5c25a528445b68756c776a4f569a4042bc40a97efdc6e6090f4b16508d43",
+        "received_source": "b9abf4793d21339261f698edf663a9d2a2f70d8c3266ab9a1cc05add2094dd45",
+        "received_life": "d2f51f0f21b5c8ebcc1ee0e40a7300e9d5ee63f99ffc8861976cc00d154b2007",
+        "received_scalar": "9aab29b8d2d588475512e75267b21d257810f1455b18db9b7bd4db69256fd6c4",
+        "received_integer": "eba09f2f48f209cfa2dfbf19fc678d755d05559671eceda0164f3e080cb49765"
+      },
+      "arrays": {
+        "rank": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "tile": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "neighbors": {
+          "shape": [
+            8
+          ],
+          "dtype": "<i4"
+        },
+        "mask": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "x": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "y": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "z": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "mass": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "diam": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "effd": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "temp": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "velocity": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "id": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "source": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "life": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "received_counts": {
+          "shape": [
+            8
+          ],
+          "dtype": "<i4"
+        },
+        "received_x": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_y": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_z": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_mass": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_diam": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_effd": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_temp": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_velocity": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_id": {
+          "shape": [
+            10
+          ],
+          "dtype": "<i4"
+        },
+        "received_source": {
+          "shape": [
+            10
+          ],
+          "dtype": "<i4"
+        },
+        "received_life": {
+          "shape": [
+            10
+          ],
+          "dtype": "<i4"
+        },
+        "received_scalar": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "received_integer": {
+          "shape": [],
+          "dtype": "<i4"
+        }
+      }
+    },
+    "spotting_mpi/rank_4": {
+      "sha256": "222652219c954f76bb9cd0721b86a96e237a58a1947dfe40f99dde517b25b65f",
+      "native_stream_sha256": {
+        "rank": "fb5e512425fc9449316ec95969ebe71e2d576dbab833d61e2a5b9330fd70ee02",
+        "tile": "f2ba54fd8920f216a5d5f4fc00f04d7dfbc5b871b55ff1dae543131dd8765533",
+        "neighbors": "ee15d5b4eb74702a8a510b5e956386ad32e4a7e0b0efd21f1754327b53fd27b6",
+        "mask": "cabc815ba8d506cb6a1b4584f545ba7c6013f3475326621a13f10eabf891e900",
+        "x": "474ee142f1c08f2e40a33444d74614eb7e04a8c803d5b40125e67546a7ecdc00",
+        "y": "8a949ed1b78242931f4806b0dc6d1ae45a01687528a53fa29054144c77dc64f2",
+        "z": "653ff6afa8f247e8c8a41eb540adc6102caa79b6fdca1706a59787337b4dbd32",
+        "mass": "0b784fa4c56407176436eec89b043a3d1e7c269dc995e710db82a46d18ff752a",
+        "diam": "a937b9de6c57cc56862e9343b7c6f8472db2447b52fb837a51b43b6079c558c6",
+        "effd": "7b15f9f1994ec6771e1e1cdce1bf5e160272fba989d5780965d6ecd7ea449ba4",
+        "temp": "48b90876b8b44423305e3a53e12aa1be5bf0872bfffe80dff0284c53af86fbd9",
+        "velocity": "12de414bb6bed90a8b092e965e8c8ee61eaea9fd95a9afab68b4416562c458b4",
+        "id": "eb8ddf6b291dbb325055e886b4f9243bad72dfa4c5968561d156f4e2fc5c2377",
+        "source": "c8bc78cd562c4aae7c0d73b1510bc22205d20c357920596ee7eb0a457a3f7cf2",
+        "life": "3b8a59a7f269b2403eb91bb89eb9455cf82a1b2857611ac717e1086f791958d8",
+        "received_counts": "22ffe24b8eb9d05332c85641e905a570a35718ea1544a2a2f06e071adc9beddb",
+        "received_x": "551b17b5518df3cc4c7a4c55b1594094d3a3a087ec42ec2c8a731f041ccaa26a",
+        "received_y": "8c29cf47f1c291e4bad7761241b9271b2ff6b943cb74795b7794605c9da90405",
+        "received_z": "a10c74fba8ee001e1a9e8484ab082ee37cb5339c50a8d66667219a0911f7a930",
+        "received_mass": "b05d41ecef37db6cdeae8ab8cc1766f1ebef6ffca3258eded911b2aec4152f8c",
+        "received_diam": "20f257ac66c3b54013d027dc8d74b999059966971d32de7f2b065fb454e0c661",
+        "received_effd": "1d07616914a02b3b5a707ab8becf47598ad4e0b282f4625e8aafd4f18a04c910",
+        "received_temp": "7902fab2fc1a7af55492d6b971ab267075430836be63edae189db9e01e42c1d4",
+        "received_velocity": "0981c958f90b0cc954b21da82dad7542508782f605c4d08b6c9e686d978a08ec",
+        "received_id": "cdebbec78a5d62c311fc20246e6a673bd88bce3810fc446da9f3616aa54cbbde",
+        "received_source": "dfdc69afab5f9e32eaccb470b69dc751650ed4945a4c5c6ed689db1a48ab5db9",
+        "received_life": "d8b08a88d10f368fa50a210381b067062ed1aff3dadc4fc30e8150e1b1903b9c",
+        "received_scalar": "640b12e8ddbaa5604e9b0ab61650309a46bd0da9d9f5f89558a1ab47bda39e1f",
+        "received_integer": "447e12701a0d03cf90a4ad7f02f1a045b35d284e26fe520440edb116d76bf700"
+      },
+      "arrays": {
+        "rank": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "tile": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "neighbors": {
+          "shape": [
+            8
+          ],
+          "dtype": "<i4"
+        },
+        "mask": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "x": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "y": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "z": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "mass": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "diam": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "effd": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "temp": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "velocity": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "id": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "source": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "life": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "received_counts": {
+          "shape": [
+            8
+          ],
+          "dtype": "<i4"
+        },
+        "received_x": {
+          "shape": [
+            16
+          ],
+          "dtype": "<f4"
+        },
+        "received_y": {
+          "shape": [
+            16
+          ],
+          "dtype": "<f4"
+        },
+        "received_z": {
+          "shape": [
+            16
+          ],
+          "dtype": "<f4"
+        },
+        "received_mass": {
+          "shape": [
+            16
+          ],
+          "dtype": "<f4"
+        },
+        "received_diam": {
+          "shape": [
+            16
+          ],
+          "dtype": "<f4"
+        },
+        "received_effd": {
+          "shape": [
+            16
+          ],
+          "dtype": "<f4"
+        },
+        "received_temp": {
+          "shape": [
+            16
+          ],
+          "dtype": "<f4"
+        },
+        "received_velocity": {
+          "shape": [
+            16
+          ],
+          "dtype": "<f4"
+        },
+        "received_id": {
+          "shape": [
+            16
+          ],
+          "dtype": "<i4"
+        },
+        "received_source": {
+          "shape": [
+            16
+          ],
+          "dtype": "<i4"
+        },
+        "received_life": {
+          "shape": [
+            16
+          ],
+          "dtype": "<i4"
+        },
+        "received_scalar": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "received_integer": {
+          "shape": [],
+          "dtype": "<i4"
+        }
+      }
+    },
+    "spotting_mpi/rank_5": {
+      "sha256": "dca92d13352e353a506f1fee737d692b335f5b3b2799891287c7a4f79780d9f9",
+      "native_stream_sha256": {
+        "rank": "2594b6a92ebfb1c3312deb7d01c015fb95e9fbe9bd7bc6b527af07813ec7b910",
+        "tile": "07dcd46043a3d5f5a94816dc17dd81efe96c384e20640c318cd1db87599b6a25",
+        "neighbors": "949aa335772597e8b85c4a80e666958617ad3583f9d009fb8006bd49f986f00a",
+        "mask": "cabc815ba8d506cb6a1b4584f545ba7c6013f3475326621a13f10eabf891e900",
+        "x": "3e19def21adf04dcdc30b30e900deec4a40ec740da1aefb7b2d90c10bc81ac97",
+        "y": "8a949ed1b78242931f4806b0dc6d1ae45a01687528a53fa29054144c77dc64f2",
+        "z": "653ff6afa8f247e8c8a41eb540adc6102caa79b6fdca1706a59787337b4dbd32",
+        "mass": "98761dbc28b33394f0a4122eec529f784fa616a699d741ee8c044cf059da9742",
+        "diam": "a937b9de6c57cc56862e9343b7c6f8472db2447b52fb837a51b43b6079c558c6",
+        "effd": "7b15f9f1994ec6771e1e1cdce1bf5e160272fba989d5780965d6ecd7ea449ba4",
+        "temp": "b9088fc1923087cd652fbaee25e15c8ace9742973a1bf95515e9f077abd8c37f",
+        "velocity": "12de414bb6bed90a8b092e965e8c8ee61eaea9fd95a9afab68b4416562c458b4",
+        "id": "cf97717c8903f83137c286083cd32ac0ef34533cb4960c12176a99062f6ab79e",
+        "source": "c728e26fa879bc828e5e7d6625b101e42dff0fb7fdb295010a2e77d2f43af5e1",
+        "life": "dd1bad72732d1798df838e5a2085597ad53d98958ab584219123b22f6b9959a3",
+        "received_counts": "97ee7d54dd1f6349240b608e373c8905c181b5c19a674d65abe44bbcad6f763a",
+        "received_x": "947cd8c3a0e1ea16d1321c007ba2b617e91658bd37680737d6dc8a72b2f85bfd",
+        "received_y": "ddf78d9201d06681cb1d779241a251d30b8ae06f44f3025397a31d853ec6feb5",
+        "received_z": "38cd21caf86fc0f2d0f486eae7719a5da4698f5edb9a4b2fb24e3eb8348c8fa5",
+        "received_mass": "398ec54a8021fb86eefb16be5dc07ebfbd888367d8ea62a350c0430ec2aee7fb",
+        "received_diam": "17e6d010d8aa15a5f93d6e9ed617835ff98a4e4bbc3f297462d60ac06f683726",
+        "received_effd": "c0ec777373138293598d89b5815e96c6f24995704be7345a912c42fe72f44681",
+        "received_temp": "ca8ea8b9161ba7eaa561d3b7ba676253bc7315aac41bcba44ca553ac8e8a3f8d",
+        "received_velocity": "48fcd9b70317594170946e1dcc175e9b143d5e4bd878abe979086109517e9377",
+        "received_id": "62ce45600c03fddcc80b5d4380ba0f3c2483b6dbfa8e77c4b661a654fb9b785b",
+        "received_source": "712da4d5cd8e9477276c5a571b1b8216cb6169e6c7836dda8fee7479dbe86bd0",
+        "received_life": "1f8373ed53dd8eea3a897b14d4c043a5582bd79a72bd4edf695c78f39fb67756",
+        "received_scalar": "a947788f104c785355135a3bf8765ef890fa1f3fc6b3a9fe7f7fadb9fb68039b",
+        "received_integer": "44b34ba1e158565cd98b8b42da82ab3da3855b9828ef66847eed4a66a20c22b4"
+      },
+      "arrays": {
+        "rank": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "tile": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "neighbors": {
+          "shape": [
+            8
+          ],
+          "dtype": "<i4"
+        },
+        "mask": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "x": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "y": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "z": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "mass": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "diam": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "effd": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "temp": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "velocity": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "id": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "source": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "life": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "received_counts": {
+          "shape": [
+            8
+          ],
+          "dtype": "<i4"
+        },
+        "received_x": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_y": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_z": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_mass": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_diam": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_effd": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_temp": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_velocity": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_id": {
+          "shape": [
+            10
+          ],
+          "dtype": "<i4"
+        },
+        "received_source": {
+          "shape": [
+            10
+          ],
+          "dtype": "<i4"
+        },
+        "received_life": {
+          "shape": [
+            10
+          ],
+          "dtype": "<i4"
+        },
+        "received_scalar": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "received_integer": {
+          "shape": [],
+          "dtype": "<i4"
+        }
+      }
+    },
+    "spotting_mpi/rank_6": {
+      "sha256": "765622a083b9c7e5af06b1b4b2595916dff4aac0cd65b14e636aa50a3780c69f",
+      "native_stream_sha256": {
+        "rank": "7aa8ca4a02506da9133d8f889678b76f716ce45d02e22fdb7b70a15e56a0eff8",
+        "tile": "01147f948b40453ae4533d8135b1221789bead98ed436a00ffa0ca999e6d14c3",
+        "neighbors": "5a6d35c6283ea1b47d99b15d555c114e9ae8fe037bede99bf3d56024a7717d60",
+        "mask": "cabc815ba8d506cb6a1b4584f545ba7c6013f3475326621a13f10eabf891e900",
+        "x": "f28baca506981ea6684174122dcfae395c91593e444343bc06066a46365eba29",
+        "y": "3a464d0d3cea24aab97768da2c0b99e9141aa70c6569016b1d6d4d7a886aeea5",
+        "z": "653ff6afa8f247e8c8a41eb540adc6102caa79b6fdca1706a59787337b4dbd32",
+        "mass": "2ad89a717b5b951b4778d049684898bc5a1e75913713d03ccf13dbb3e393795a",
+        "diam": "a937b9de6c57cc56862e9343b7c6f8472db2447b52fb837a51b43b6079c558c6",
+        "effd": "7b15f9f1994ec6771e1e1cdce1bf5e160272fba989d5780965d6ecd7ea449ba4",
+        "temp": "3ad4581bb97acfa81aeed0eabe932ca029396049714a21aa7c9f8a727c567e8b",
+        "velocity": "12de414bb6bed90a8b092e965e8c8ee61eaea9fd95a9afab68b4416562c458b4",
+        "id": "cb10307fe745ba73bc6d1806b6b5e873407b53e0f9be9fbd2d3c6d79306d2fee",
+        "source": "d7b3f96de46c607b3c4aca90fb853d6fb35649632d19ec1d5a64cd519408e112",
+        "life": "15a1ed17e6adc677c8d7af5a4bf7ba310017f6b8296ecd0f56164aaa9af1afea",
+        "received_counts": "6cc5fb4f9ab5da7240df6907cf1aa21b26df56a295602789d8fc9193b38d619c",
+        "received_x": "6bf984949e3554706d335bf32d833dfc478f59904926ebaa2634f4ad0b9c0ec7",
+        "received_y": "17544905e419b05c6047aa987b72e43fd453b81417b192a931c39a1f703c5182",
+        "received_z": "5075e2cce840d23237a3bdb5d6dbbd524e75ceba6915dd9ca908fe142846a254",
+        "received_mass": "c827aa045c5f1fff90d8d8dfcdc71d5f442187b9c05f288be2fc58fc127c0e67",
+        "received_diam": "40c96858bd52bf9adb4ddb3e6b866e7aac961c4a5c721edacca882ba7b6315e3",
+        "received_effd": "eba12907d64608934a83cbfc8302e1881e9d94754b565f107a084056d953459b",
+        "received_temp": "db770f2de6e27828eaf45abab8c67232484d60a03fd411499962682fd5999d8a",
+        "received_velocity": "27fea7226084d9b6ec48e09ef8cad685c68e1fe34e719987148909db56321a48",
+        "received_id": "a7bd13084484ff0d1741da980d2c21dab4e62d6d20f56d7034bf25d2307fd1ec",
+        "received_source": "c290542daad73242a8d04e4ffc6aeb6c6e3ef489b2c209a7805b04b05ddb24c1",
+        "received_life": "a963e5fcf98d2564820b0fc4b1a906abf3aef7d83b9bfb561730621bdf3d3725",
+        "received_scalar": "f8de989d74089e6a1ca6fa7762c45c479dd7abdaf9291f24e76dee41ba9ff259",
+        "received_integer": "f59d756696b2089fca5969fdfde2674e333765e1dad0a51c8ebbc63f351c4ca5"
+      },
+      "arrays": {
+        "rank": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "tile": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "neighbors": {
+          "shape": [
+            8
+          ],
+          "dtype": "<i4"
+        },
+        "mask": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "x": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "y": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "z": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "mass": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "diam": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "effd": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "temp": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "velocity": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "id": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "source": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "life": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "received_counts": {
+          "shape": [
+            8
+          ],
+          "dtype": "<i4"
+        },
+        "received_x": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_y": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_z": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_mass": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_diam": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_effd": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_temp": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_velocity": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_id": {
+          "shape": [
+            6
+          ],
+          "dtype": "<i4"
+        },
+        "received_source": {
+          "shape": [
+            6
+          ],
+          "dtype": "<i4"
+        },
+        "received_life": {
+          "shape": [
+            6
+          ],
+          "dtype": "<i4"
+        },
+        "received_scalar": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "received_integer": {
+          "shape": [],
+          "dtype": "<i4"
+        }
+      }
+    },
+    "spotting_mpi/rank_7": {
+      "sha256": "fc91024ccaff8a7eb1281358d69ae218df2717275de9cb53e7c9c4390d13c396",
+      "native_stream_sha256": {
+        "rank": "e8613f5a5bc9f9feeda32a8e7c80b69dd4878e47b6a91723fb15eb84236b6a2b",
+        "tile": "1cec8d3f6abacb98d99b296d49806edc9bd24efa73b174e9c04be3b3ed4026d3",
+        "neighbors": "11fca81ae19cb2546bc07b7b0996082bd2bd2a34f9d95076e3d4f3dd354d7fb2",
+        "mask": "cabc815ba8d506cb6a1b4584f545ba7c6013f3475326621a13f10eabf891e900",
+        "x": "474ee142f1c08f2e40a33444d74614eb7e04a8c803d5b40125e67546a7ecdc00",
+        "y": "3a464d0d3cea24aab97768da2c0b99e9141aa70c6569016b1d6d4d7a886aeea5",
+        "z": "653ff6afa8f247e8c8a41eb540adc6102caa79b6fdca1706a59787337b4dbd32",
+        "mass": "5307601050e27c0578a88ca9e337795645b5169e7d5a5e152989c1fefff21609",
+        "diam": "a937b9de6c57cc56862e9343b7c6f8472db2447b52fb837a51b43b6079c558c6",
+        "effd": "7b15f9f1994ec6771e1e1cdce1bf5e160272fba989d5780965d6ecd7ea449ba4",
+        "temp": "0a749f55679ea04c2987f014ae4eec00c8f81a4f3fb358d4fb28261d4d99e961",
+        "velocity": "12de414bb6bed90a8b092e965e8c8ee61eaea9fd95a9afab68b4416562c458b4",
+        "id": "f1d39de1a1bc79fa55842bb21b271bb31426d514c3137b3333ed253ad18f94a0",
+        "source": "76f171c750d7a4075f51b9b58505de2f43095b8eb570f2c523efea46d9eacb15",
+        "life": "a0330e7d8670a3793434d243e5b04262439f7c656ececc80c1a9976200d03f6b",
+        "received_counts": "3f6b1543049fb91506ac5e412b3816b8ee656897e022952a14d1c91108c4c29e",
+        "received_x": "9fd0dfa778ec4a3ea78992619e8a6130790a0bc7cd19bd21bcc3de472c7b7d0b",
+        "received_y": "9642a6c921bb34c91ef52c2e621237f7e472736c0e57aa4e8c2866152e8ea59e",
+        "received_z": "af36b2a6a695b3c626912525a2d1486d42345fa150442eb0c484567b000b98e3",
+        "received_mass": "87cd4cd507f53c74599c5404614918efd8c79030ac87b6161fa294dc25ed08c9",
+        "received_diam": "c90c984b56104d2e0cab658528de2be2f64934d101623dd89f14059d622758d3",
+        "received_effd": "d3d0d56bf716671595eed650aecc13abf9d2f42b568dd89aaa00712b30d3d0a2",
+        "received_temp": "d67d969e5b211b8b3f11b42e206a7e7495aa6607c9bcb6d298bedee36848dece",
+        "received_velocity": "edded68ac5eb39d78f868a752ede2841251bb8811fc4fab45b5a66abbfb1ddcf",
+        "received_id": "7a6075229f22e2a9e2f07a06e621d9f58158930c1167c2ff1b0d1b3cd2fef1a4",
+        "received_source": "4c8e077b64aa89d21a9950dcf74457379474cc29d8302ec02525b47f85a83647",
+        "received_life": "fb35e9478b2dd14f04f030ffc1177b04541f0e6978d1044900a1320529596000",
+        "received_scalar": "4995e016e25d14b22e3cec236d84cfb502c2d831472e759b0c1810cf589c3131",
+        "received_integer": "a376d173ece243d587f352f04307fb971f10cdbc9b9d850e8ecbd414a586fa3c"
+      },
+      "arrays": {
+        "rank": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "tile": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "neighbors": {
+          "shape": [
+            8
+          ],
+          "dtype": "<i4"
+        },
+        "mask": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "x": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "y": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "z": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "mass": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "diam": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "effd": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "temp": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "velocity": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "id": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "source": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "life": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "received_counts": {
+          "shape": [
+            8
+          ],
+          "dtype": "<i4"
+        },
+        "received_x": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_y": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_z": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_mass": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_diam": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_effd": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_temp": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_velocity": {
+          "shape": [
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "received_id": {
+          "shape": [
+            10
+          ],
+          "dtype": "<i4"
+        },
+        "received_source": {
+          "shape": [
+            10
+          ],
+          "dtype": "<i4"
+        },
+        "received_life": {
+          "shape": [
+            10
+          ],
+          "dtype": "<i4"
+        },
+        "received_scalar": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "received_integer": {
+          "shape": [],
+          "dtype": "<i4"
+        }
+      }
+    },
+    "spotting_mpi/rank_8": {
+      "sha256": "250a6c275206441d17f5080ee82ae3dc9af6415a1aeb2cbfbf82b06421e5840f",
+      "native_stream_sha256": {
+        "rank": "dc765660b06ee03dd16fd7ca5b957e8c805161ac2c4af28c5a100ab2ab432ca1",
+        "tile": "f7ac8cc7f3abb6a967ceabdf94c1780292aba7685b4e6541fa340d6da954a35a",
+        "neighbors": "164236bafe63b856f9c2f47862a88f397c6d63bdaf853698dd0bff741ba25bb8",
+        "mask": "cabc815ba8d506cb6a1b4584f545ba7c6013f3475326621a13f10eabf891e900",
+        "x": "3e19def21adf04dcdc30b30e900deec4a40ec740da1aefb7b2d90c10bc81ac97",
+        "y": "3a464d0d3cea24aab97768da2c0b99e9141aa70c6569016b1d6d4d7a886aeea5",
+        "z": "653ff6afa8f247e8c8a41eb540adc6102caa79b6fdca1706a59787337b4dbd32",
+        "mass": "c9b06405da1106d99353903b265c0fded9fce92533a87760b7b78b91d5399ce1",
+        "diam": "a937b9de6c57cc56862e9343b7c6f8472db2447b52fb837a51b43b6079c558c6",
+        "effd": "7b15f9f1994ec6771e1e1cdce1bf5e160272fba989d5780965d6ecd7ea449ba4",
+        "temp": "e9e50db7c3c31ffef30db059218c914aff386dffe5ccd1e826f034519262b01d",
+        "velocity": "12de414bb6bed90a8b092e965e8c8ee61eaea9fd95a9afab68b4416562c458b4",
+        "id": "739acdb9d4e8728fa550350409526c78197aba731444484771d23358b747308f",
+        "source": "88475d68e75fe663e00e3bca1389923df2fbbf93357732f312db4f58c358a48f",
+        "life": "3b0720845749b0f08e84eee4b145742583d950a2e545a2d51d5510d5f359d978",
+        "received_counts": "51414b91e014ab48e3d4663b6eed0aff8539d1ea82e7f7e4762e238fb5855bc4",
+        "received_x": "e9c644b7d57502752f71b2a4c6980e4ed46cb33c1c0966d978ad78b4985eec9d",
+        "received_y": "17544905e419b05c6047aa987b72e43fd453b81417b192a931c39a1f703c5182",
+        "received_z": "cfa41f67816a67efe8779cd5883d8da57a4e3420dcf9e6691bb8b13338a5f8aa",
+        "received_mass": "a63b54ea2467afec9b110f33b9a6d56686448aa35d08760a70e6a8395dda3d3f",
+        "received_diam": "1f8f6cc9abe9514244836eb01f38ca0d42985deeefcdd1c9cc57ef1187db76c5",
+        "received_effd": "018f676f5e6994c585325735e000273b91e891c6f14accaf7d8198195bcd53ea",
+        "received_temp": "bc40a6d4ee309c1fdf8c48dba46b93614f8b0a0161eb01ea4198882d9ada56f6",
+        "received_velocity": "dab07257009f5dda48e1d8f5c0429dbfff7ff59ca9daf7e342d0eece0d834c83",
+        "received_id": "f2f6398e4f06659a75333de2a0355b60f7bc75c0c2407ee2ea559899366c312c",
+        "received_source": "d89f100cfc80daa7b2353b724de56304377f94fe5175514b23f92e0269eaedd8",
+        "received_life": "bbbdc4f6558b4100e727f5589b3c6feb78488f78096715f1fee8ed380e5bd4c5",
+        "received_scalar": "0caed0cb30847c8ba6d8f7fe9d58a2c71135d607945c186d1df9565d645fb876",
+        "received_integer": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865"
+      },
+      "arrays": {
+        "rank": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "tile": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "neighbors": {
+          "shape": [
+            8
+          ],
+          "dtype": "<i4"
+        },
+        "mask": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "x": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "y": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "z": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "mass": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "diam": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "effd": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "temp": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "velocity": {
+          "shape": [
+            18
+          ],
+          "dtype": "<f4"
+        },
+        "id": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "source": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "life": {
+          "shape": [
+            18
+          ],
+          "dtype": "<i4"
+        },
+        "received_counts": {
+          "shape": [
+            8
+          ],
+          "dtype": "<i4"
+        },
+        "received_x": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_y": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_z": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_mass": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_diam": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_effd": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_temp": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_velocity": {
+          "shape": [
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "received_id": {
+          "shape": [
+            6
+          ],
+          "dtype": "<i4"
+        },
+        "received_source": {
+          "shape": [
+            6
+          ],
+          "dtype": "<i4"
+        },
+        "received_life": {
+          "shape": [
+            6
+          ],
+          "dtype": "<i4"
+        },
+        "received_scalar": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "received_integer": {
+          "shape": [],
+          "dtype": "<i4"
+        }
+      }
+    }
+  }
+}

@@ -17,8 +17,11 @@ def test_ranked_plan_acoustic_ceiling_and_forcing():
     options = DeviceOptions(count=2, ids=(0, 0))
     halo = streaming.ranked_halo(cfg)
     from gpuwm.core.adaptive_clock import acoustic_step_ceiling
+    # The 9-cell relaxation frame is masked on a seam and no longer paid;
+    # at spec_zone=1 the slab halo is the padded dependency radius plus the
+    # one specified-zone cell a seam still writes.
     assert halo == harness.halo_radius(replace(cfg,
-        time_step_sound=acoustic_step_ceiling(cfg))) + 9
+        time_step_sound=acoustic_step_ceiling(cfg))) + 1
     specs = streaming.ranked_specs(cfg, options, halo=halo)
     assert [(s.i0, s.i1, s.j0, s.j1) for s in specs] == [
         (0, 898, 0, 1057), (898, 1797, 0, 1057)]
@@ -111,18 +114,23 @@ def test_builder_refuses_unbound_forcing_and_nests():
         build(None, replace(cfg, nested=True), None)
 
 
-def test_nested_ranked_halo_pays_the_boundary_frame():
-    """A nest's slabs carry the same seam frame a specified domain's do.
+def test_nested_ranked_halo_pays_the_seam_fiction():
+    """A nest's slabs carry the same seam fiction a specified domain's do.
 
-    The nest's boundary application writes max(spec_zone, relax_zone) cells
-    from its parent's rolling tables, which are zeros on a seam side, so the
-    halo must keep that frame off owned cells, as for a specified domain.
+    The nest's relaxation band is masked on a seam side like a specified
+    domain's (its parent's rolling tables are zeros there), so the halo
+    pays only the unmasked specified zone: spec_zone cells, one at
+    spec_zone=1, three at spec_zone=3.  The 4-cell relaxation frame is no
+    longer paid.
     """
     cfg = replace(multigpu.forced_config(160, 120, 8), specified=False,
                   nested=True, relax_zone=4, spec_zone=1)
     from gpuwm.core.adaptive_clock import acoustic_step_ceiling
     bare = harness.halo_radius(replace(cfg, time_step_sound=acoustic_step_ceiling(cfg)))
-    assert streaming.ranked_halo(cfg) == bare + 4
+    assert streaming.ranked_halo(cfg) == bare + 1
+    assert streaming.ranked_halo(replace(cfg, spec_zone=3)) == bare + 3
+    # Neither nested nor specified: no seam writes anything, nothing is paid.
+    assert streaming.ranked_halo(replace(cfg, nested=False)) == bare
     specs = streaming.ranked_specs(cfg, DeviceOptions(count=2, ids=(0, 0)),
                                    halo=streaming.ranked_halo(cfg))
     with pytest.raises(multigpu.MultiGPUError, match="nested forcing is not wired"):
@@ -147,7 +155,7 @@ def test_store_frame_downloads_exactly_what_fields_reads():
     read = set(re.findall(r'store\["([^"]+)"\]', source))
     declared = {key for keys in StoreFrame._DERIVED_INPUTS.values() for key in keys}
     assert read == declared, (read, declared)
-    assert set(StoreFrame._DERIVED_INPUTS) == {"T", "P", "PSFC"}
+    assert set(StoreFrame._DERIVED_INPUTS) == {"T", "P", "PSFC", "FS_GEN_IDMAX"}
 
 
 def test_deferred_frame_waits_then_assembles_once():

@@ -39,7 +39,11 @@ def _column_document(shape):
     j0, i0 = ny // 2 - 2, nx // 2 - 2
     echo[nz // 5: 2 * nz // 3, j0:j0 + 5, i0:i0 + 5] = 1
     z[echo == 1] = 45.0
-    return {"variables": {"z_obs": z, "z_mask": echo,
+    # "dims" as gpuwm.obs.radar_grid writes it: the driver's control Vr
+    # innovation reads the grid shape from it before the radar loop
+    # (control_vr_innovations, since 30c53c5f7), radars or none.
+    return {"dims": {"level": nz, "south_north": ny, "west_east": nx},
+            "variables": {"z_obs": z, "z_mask": echo,
                           "z0_mask": (1 - echo).astype(np.int8)},
             "clear_air_source": "finite_below_floor", "radars": []}
 
@@ -114,7 +118,10 @@ def observed_drive(monkeypatch, tmp_path, *, obs_legs, free_legs, shape,
 
     _events, report = _drive(
         monkeypatch, tmp_path, legs=free_legs,
-        extra_argv=(*argv, "--no-hotstart", "--radar-tten"),
+        # The stub states carry no prognostic arrays for additive
+        # inflation to draw on; these tests are about the radar forcing.
+        extra_argv=(*argv, "--no-hotstart", "--radar-tten",
+                    "--additive-inflation", "0", "--echo-noise", "0"),
         experiment=experiment, **drive_kwargs)
     return json.loads(report.read_text(encoding="utf-8"))
 

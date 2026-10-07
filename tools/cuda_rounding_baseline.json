@@ -665,7 +665,7 @@
    },
    {
     "file": "gpuwm/core/kernels/jacobi_eigh.cu",
-    "sha256": "7e24eff5cf84ff6895e251aab6165d5e866c1eadfd3e4f33a740d5932631c23c"
+    "sha256": "d2b39cfd26606a85b5f810bfca9fc576d39f8b33a9f256531b4a64f76978bcbd"
    },
    {
     "file": "gpuwm/core/kernels/kessler.cu",
@@ -3611,7 +3611,7 @@
    "assessment": "static_diagnostic_only",
    "coverage": "compiled",
    "dataflow_differences": {
-    "sha256": "e216859f238941441cfcd171c9bf0932cc2c7716d3d5c57be737005534f2d1fc",
+    "sha256": "b64efc7af505712270b5deb89853e9594fcb959b428e1967513fae07d1189fcf",
     "sites": {
      "100": 5
     }
@@ -3624,7 +3624,7 @@
    },
    "errors": {},
    "native_dataflow_differences": {
-    "sha256": "9dbdb358eb108e4557753ae5f9787e3ad0227f6c1a8e6c85230fec44254e8239",
+    "sha256": "ef367b7fa7a2387845e702cbf12082317c51ad1d6f69db42607d49bb0dea38c8",
     "sites": {
      "100": 12
     }
@@ -3652,7 +3652,7 @@
      "-arch=compute_120"
     ]
    },
-   "source_sha256": "bb54a19884d6a288734af427f5f0bd1d70e1f10ab0955474fb30138c9a514aba"
+   "source_sha256": "ce5e429627ee73e852a65993c063050bcbd2bef394a439b219b878423ff7be12"
   },
   "kernels:kessler": {
    "assessment": "static_diagnostic_only",

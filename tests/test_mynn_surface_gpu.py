@@ -14,7 +14,7 @@ from _toolchain_rows import toolchain_row
 from gpuwm.core.fp32_ulp import fp32_ulp_distance
 
 
-ORACLE_DIR = Path(__file__).parents[1] / "gpuwm" / "data" / "mynn" / "oracle"
+ORACLE_DIR = Path(__file__).parents[1] / "tests" / "data" / "oracles" / "mynn"
 ORACLE = ORACLE_DIR / "surface-layer.csv"
 WIDE_ORACLE = ORACLE_DIR / "surface-layer-wide.csv"
 WRAPPER_ORACLE = ORACLE_DIR / "surface-layer-wrapper.csv"
@@ -254,6 +254,16 @@ NARROW_ULP_BY_TOOLCHAIN = {
 #: integrate/2.8 9dbb4a2db.
 NARROW_ULP_BY_TOOLCHAIN[("120", (12, 9))] = (
     NARROW_ULP_BY_TOOLCHAIN[("120", (13, 4))])
+#: sm_89 reads the sm_120 row.  Since the cross-architecture rounding pins
+#: (xnode-identity, ecbd106a9 and the A146 __fdiv_rn spellings) the RTX 4090
+#: returns the RTX 5090's words for every output these gates compare:
+#: 16,518 words, zero differing, NVRTC 13.4, 2026-10-05.  The default row,
+#: recorded before those pins, no longer describes it: it failed 31 gates
+#: on the RTX 4090 with no kernel change.  MEASURED on node-1's RTX 4090
+#: under NVRTC 12.9, 13.3 and 13.4: every gate passes on the sm_120 row.
+NARROW_ULP_BY_TOOLCHAIN[("89", (12, 9))] = NARROW_ULP_BY_TOOLCHAIN[("120", (13, 4))]
+NARROW_ULP_BY_TOOLCHAIN[("89", (13, 3))] = NARROW_ULP_BY_TOOLCHAIN[("120", (13, 4))]
+NARROW_ULP_BY_TOOLCHAIN[("89", (13, 4))] = NARROW_ULP_BY_TOOLCHAIN[("120", (13, 4))]
 
 
 #: ``WIDE_ULP`` per compiler where a compiler reads it differently, keyed
@@ -288,6 +298,10 @@ WIDE_ULP_BY_TOOLCHAIN = {
 #: A167: as for NARROW_ULP_BY_TOOLCHAIN above.
 WIDE_ULP_BY_TOOLCHAIN[("120", (12, 9))] = (
     WIDE_ULP_BY_TOOLCHAIN[("120", (13, 4))])
+#: sm_89: as for NARROW_ULP_BY_TOOLCHAIN above.
+WIDE_ULP_BY_TOOLCHAIN[("89", (12, 9))] = WIDE_ULP_BY_TOOLCHAIN[("120", (13, 4))]
+WIDE_ULP_BY_TOOLCHAIN[("89", (13, 3))] = WIDE_ULP_BY_TOOLCHAIN[("120", (13, 4))]
+WIDE_ULP_BY_TOOLCHAIN[("89", (13, 4))] = WIDE_ULP_BY_TOOLCHAIN[("120", (13, 4))]
 
 
 #: ``WRAPPER_ULP`` per compiler where a compiler reads it differently, keyed
@@ -332,6 +346,10 @@ WRAPPER_ULP_BY_TOOLCHAIN = {
 #: A167: as for NARROW_ULP_BY_TOOLCHAIN above.
 WRAPPER_ULP_BY_TOOLCHAIN[("120", (12, 9))] = (
     WRAPPER_ULP_BY_TOOLCHAIN[("120", (13, 4))])
+#: sm_89: as for NARROW_ULP_BY_TOOLCHAIN above.
+WRAPPER_ULP_BY_TOOLCHAIN[("89", (12, 9))] = WRAPPER_ULP_BY_TOOLCHAIN[("120", (13, 4))]
+WRAPPER_ULP_BY_TOOLCHAIN[("89", (13, 3))] = WRAPPER_ULP_BY_TOOLCHAIN[("120", (13, 4))]
+WRAPPER_ULP_BY_TOOLCHAIN[("89", (13, 4))] = WRAPPER_ULP_BY_TOOLCHAIN[("120", (13, 4))]
 
 
 #: module_sf_mynn.F:1027-1044.  With ISFFLX<1 WRF assigns these thirteen

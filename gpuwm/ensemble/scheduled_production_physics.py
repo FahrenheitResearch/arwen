@@ -102,7 +102,7 @@ def production_physics_memory_plan(drivers, configs, *, reuse_original_workspace
         value = getattr(driver.state, name, None)
         if value is not None:
             bank(namespace + ":state", name, value.shape, value.dtype.str)
-    for name in ("rthratenlw", "rthratensw"):
+    for name in ("rthratenlw", "rthratensw", "cldfra"):
         bank(namespace + ":returned", name, (nz, ny, nx), joined=False)
     for name in ("swdown", "glw", "gsw", "coszen", "olr", "swddir", "swddif"):
         bank(namespace + ":returned", name, (ny, nx), joined=False)

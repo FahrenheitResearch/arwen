@@ -105,6 +105,57 @@ def test_adaptive_resident_banks_preserve_configs_and_retained_original_words():
     assert not np.shares_memory(bank.u, nodes[0].state.u)
 
 
+@pytest.mark.parametrize("chem_sets", ["smoke", "gocart_primary,smoke", "cams_aq"])
+@pytest.mark.parametrize("field_names", [None, ("u",)])
+def test_active_chemistry_cannot_enter_full_or_edge_only_component_banks(
+        monkeypatch, chem_sets, field_names):
+    from gpuwm.ensemble import prepared_nested_batch
+    nodes = _bank_nodes()
+    nodes[1].cfg.run = replace(nodes[1].cfg.run, chem_sets=chem_sets)
+    configs = [vars(node.cfg.run).copy() for node in nodes]
+    original = [node.state.u.tobytes() for node in nodes]
+    monkeypatch.setattr(prepared_nested_batch, "state_array_specs",
+                        lambda *args, **kwargs: pytest.fail("active chemistry reached bank inventory"))
+    with pytest.raises(BatchStateUnsupported, match="species arrays, source-hour caches and mass ledger"):
+        _domain_bank_plan(nodes, shared_fields=(), array_module=np, field_names=field_names)
+    assert [vars(node.cfg.run) for node in nodes] == configs
+    assert [node.state.u.tobytes() for node in nodes] == original
+
+
+@pytest.mark.parametrize("chem_sets", ["smoke", "gocart_primary,smoke", "cams_aq"])
+def test_active_chemistry_component_fallback_executes_original_callbacks_and_owners(chem_sets):
+    references = [_actual_capture(member, dispatch=False) for member in range(2)]
+    captures = [_actual_capture(member) for member in range(2)]
+    owners = []
+    for model, _, _ in captures:
+        for node in model.walk_parent_first():
+            node.cfg = replace(node.cfg, run=replace(node.cfg.run, chem_sets=chem_sets))
+            species = np.array([17, 29], dtype=np.uint32)
+            source_hours, ledger = {"hour": object()}, object()
+            node.state.chem = species
+            node.state._chem_source_hour_cache = source_hours
+            node.state._chem_mass_ledger = ledger
+            owners.append((node.state, species, species.tobytes(), source_hours, ledger))
+    class ForbiddenFactory:
+        def memory_plans(self, *args):
+            pytest.fail("active chemistry reached packed component pricing")
+        def prepare(self, *args, **kwargs):
+            pytest.fail("active chemistry constructed packed component state")
+    batch = PreparedHybridNestedBatch([row[2] for row in captures],
+        ordinary_forecast_bytes={0: 4096, 1: 8192}, available_bytes=20000,
+        ordinary_memory_evidence="complete original CPU callback fixture envelopes",
+        pack_factory=ForbiddenFactory(), array_module=np, completion_wait=lambda: None)
+    assert not batch.banks and not batch.plans and batch.packed is None
+    result = batch.execute()
+    assert all(not row["packed"] for row in result["operations"])
+    assert any("active chemistry" in reason for reason in result["fallback_reasons"])
+    for (original, trace, _), (model, actual_trace, _) in zip(references, captures, strict=True):
+        assert _state(model) == _state(original) and actual_trace == trace
+    for state, species, words, source_hours, ledger in owners:
+        assert state.chem is species and species.tobytes() == words
+        assert state._chem_source_hour_cache is source_hours and state._chem_mass_ledger is ledger
+
+
 @pytest.mark.parametrize("name,moved", [("v_sca_adv_order", 5), ("v_mom_adv_order", 5),
                                        ("h_mom_adv_order", 3)])
 def test_advection_order_changes_refuse_before_live_bank_copy(name, moved):

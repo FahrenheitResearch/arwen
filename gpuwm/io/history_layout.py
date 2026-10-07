@@ -16,6 +16,8 @@ from gpuwm.core.physics_inventory import (PHYSICS_SLOT_DISPATCH,
                                           REFL_10CM_MICROPHYSICS,
                                           physics_driver_required)
 from gpuwm.io.wrf_output_schema import SCHEME_OUTPUT_FIELDS
+from gpuwm.io.sfire_schema import (SFIRE_VOLUME_FIELDS, SFIRE_CLASS_FIELDS,
+                                   sfire_history_shapes)
 
 CORE_DIRECT_STATE_FIELDS = {
     "U": "u", "V": "v", "W": "w", "PH": "php", "MU": "mup",
@@ -29,6 +31,17 @@ _OUTPUT_FIELDS = {
     "U10": "u10", "V10": "v10", "UST": "ust", "HFX": "hfx",
     "QFX": "qfx", "LH": "lh", "PBLH": "pblh",
     "GRDFLX": "grdflx", "PSIM": "psim", "PSIH": "psih",
+}
+
+# WRF Registry names for the single-layer canopy's component energy.
+# Grid HFX/LH/GRDFLX already include the rural blend; these retain the
+# canopy-only terms so its energy split can be diagnosed independently.
+_SLUCM_OUTPUT_FIELDS = {
+    "FRC_URB2D": "frc_urb2d", "SH_URB": "sh_urb2d",
+    "LH_URB": "lh_urb2d", "G_URB": "g_urb2d",
+    "RN_URB": "rn_urb2d", "TS_URB": "ts_urb2d",
+    "TR_URB": "tr_urb2d", "TB_URB": "tb_urb2d",
+    "TG_URB": "tg_urb2d", "TC_URB": "tc_urb2d",
 }
 
 
@@ -47,7 +60,10 @@ _SASE_FLUX_DIAG_OUTPUT = {"SASE_FQV_VENT": "fqv_vent",
 
 _Z_STAGGERED_MASS_FIELDS = frozenset(
     SCHEME_OUTPUT_FIELDS[key].netcdf_name
-    for key in ("el_pbl", "exch_h", "exch_m"))
+    for key in ("el_pbl", "exch_h", "exch_m")) | SFIRE_VOLUME_FIELDS
+
+# Metadata follows the same table-driven inventory as live chemistry output.
+CHEM_VAR_META: dict[str, tuple[str, str]] = {}
 
 
 def live_state_history_fields(state) -> dict[str, object]:
@@ -140,6 +156,12 @@ def live_state_history_fields(state) -> dict[str, object]:
         runner = (dispatch or {}).get("bl_pbl_physics")
         fields["TKE_SHINHONG" if runner == "_run_shinhong"
                else "TKE_SASE"] = e_sgs
+
+    if getattr(state, "chem", None) is not None:
+        from gpuwm.core.chem_history import history_fields as chem_history
+        for name, (array, description, units) in chem_history(state).items():
+            fields[name] = array
+            CHEM_VAR_META[name] = (description, units)
 
     p_top = getattr(state, "p_top", None)
     if p_top is not None:
@@ -257,7 +279,7 @@ def live_state_history_fields(state) -> dict[str, object]:
     for output_name, field_name in (
             ("SNOW", "snow"), ("SNOWH", "snowh"),
             ("SNOWC", "snowc"), ("TSLB", "tslb"),
-            ("SMOIS", "smois"), ("SH2O", "sh2o"),
+            ("SMOIS", "smois"), ("SH2O", "sh2o"), ("CANWAT", "canwat"),
             # The land/soil IDENTITY the five rows above are the STATE of.
             # Same gate, same dict, same presence guard -- and the reason
             # they are here rather than left in memory is that a wrfout is
@@ -309,6 +331,15 @@ def physics_history_fields(physics) -> dict[str, object]:
     """
     output = {name: physics.fields[field]
               for name, field in _OUTPUT_FIELDS.items()}
+    if getattr(physics, "surface_energy_diag", False):
+        output.update(ALBEDO=physics.fields["albedo"],
+                      EMISS=physics.fields["emiss"])
+        if "gsw" in physics.fields:
+            output["GSW"] = physics.fields["gsw"]
+    urban = getattr(physics, "urban", None)
+    if urban is not None and urban.option == 1:
+        output.update({name: urban.fields[field]
+                       for name, field in _SLUCM_OUTPUT_FIELDS.items()})
     # Per-level radiative heating, output-only.  Both are live 3D
     # arrays (allocated :1869-1870, populated :2297-2300) that the
     # step consumes and then discards; the theta budget cannot be
@@ -372,6 +403,13 @@ def physics_history_fields(physics) -> dict[str, object]:
         # zero when nothing produced them, and this follows that.
         if physics.olr is not None:
             output["OLR"] = physics.olr
+        # CLDFRA, the cloud fraction the radiation radiated through, on
+        # OLR's terms: present exactly when the attached scheme declares it
+        # computes one, held from the most recent radiation call between
+        # calls (the writer's attributes say so).
+        cldfra = getattr(physics, "cldfra", None)
+        if cldfra is not None:
+            output["CLDFRA"] = cldfra
     output["RAINC"] = (physics._zero_accumulator() if physics.rainc is None
                        else physics.rainc)
     output["RAINSH"] = physics._zero_accumulator()
@@ -383,6 +421,9 @@ def physics_history_fields(physics) -> dict[str, object]:
                  else getattr(microphysics, attribute, None))
         output[name] = (physics._zero_accumulator() if value is None
                         else value)
+    fire = getattr(physics, "fire", None)
+    if fire is not None:
+        output.update(fire.output_fields())
     return output
 
 
@@ -463,6 +504,7 @@ def produced_history_shapes(cfg, *, include_reflectivity: bool = True
             live_fields["swnorm"] = carrier(surface)
         physics = SimpleNamespace(
             fields=live_fields, state=state, mp_physics=cfg.mp_physics,
+            surface_energy_diag=bool(cfg.surface_energy_diag),
             microphysics=SimpleNamespace(),
             scheme_dispatch={name: table.get(int(getattr(cfg, name)))
                              for name, table in PHYSICS_SLOT_DISPATCH.items()},
@@ -471,11 +513,18 @@ def produced_history_shapes(cfg, *, include_reflectivity: bool = True
             radiation_active=radiation_enabled(cfg),
             topo_shortwave=object() if topography else None,
             olr=carrier(surface) if "olr" in allocated else None,
+            cldfra=carrier(mass) if "cldfra" in allocated else None,
             rainc=carrier(surface) if cfg.cu_physics else None,
             rthratenlw=carrier(mass), rthratensw=carrier(mass),
             _zero_accumulator=lambda: carrier(surface),
             _sase_output_pblh=lambda: carrier(surface),
         )
+        fire_shapes = sfire_history_shapes(cfg)
+        physics.fire = (SimpleNamespace(output_fields=lambda: {
+            name: carrier(shape) for name, shape in fire_shapes.items()}) if fire_shapes else None)
+        if int(cfg.sf_urban_physics) == 1:
+            physics.urban = SimpleNamespace(option=1, fields={
+                field: carrier(surface) for field in _SLUCM_OUTPUT_FIELDS.values()})
         if physics.sase_active and cfg.sase_flux_diag:
             physics.sase_flux_diag = {
                 key: carrier(allocated[f"sase_flux_diag/{key}"])
@@ -517,6 +566,11 @@ def produced_history_shapes(cfg, *, include_reflectivity: bool = True
             and cfg.mp_physics in REFL_10CM_MICROPHYSICS):
         frame["REFL_10CM"] = carrier(mass)
     shapes = {name: tuple(value.shape) for name, value in frame.items()}
+    if cfg.chem_sets:
+        from gpuwm.core.chem_history import history_schema
+        for name, (shape, description, units) in history_schema(cfg).items():
+            shapes[name] = shape
+            CHEM_VAR_META[name] = (description, units)
     for name in _Z_STAGGERED_MASS_FIELDS:
         if shapes.get(name) == mass:
             shapes[name] = full

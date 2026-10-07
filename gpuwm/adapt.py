@@ -690,9 +690,17 @@ def _check_group_inventory(
         axes = tuple(field["source_axes"])
         if "vertical" in axes:
             observed = [float(row["level_value"]) for row in matched]
+            # A field declared on part of the ladder (published_levels,
+            # gpuwm.mapped_source) is required on those levels only; the
+            # decoder fills the others with zero.
+            published = field.get("published_levels")
+            required_levels = vertical_levels if published is None else tuple(
+                level for level in vertical_levels
+                if any(math.isclose(level, float(value), abs_tol=1e-9)
+                       for value in published["levels"]))
             missing = [
                 level
-                for level in vertical_levels
+                for level in required_levels
                 if not any(
                     math.isclose(level, value, abs_tol=1e-9)
                     for value in observed

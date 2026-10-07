@@ -598,7 +598,13 @@ def prepare_metem_run(run, directory, *, run_seconds=None, preprocess_backend=No
             if max(np.max(np.abs(lat-case.statics['XLAT_M'])), np.max(np.abs((lon-case.statics['XLONG_M']+180)%360-180))) > .005:
                 raise ValueError(f'{case.path.name}: met_em coordinates disagree with the resolved domain-tree layout')
             series[index] = met_em_series_identity(case)
+            # grid=: the mass-point lat/lon just checked against the
+            # met_em file.  An mp=28 run on the WIF climatology builds
+            # nwfa/nifa from it; without it a met_em lacking QNWFA/QNIFA
+            # refused "could not derive the model mass-point
+            # latitudes/longitudes" while holding them.
             result = initialize_real(case.snapshot, cfg, coord, case.terrain,
+                grid={'XLAT_M': lat, 'XLONG_M': lon},
                 source_orography=case.source_orography, p_top=exp.vertical.p_top,
                 preprocess_backend=backend, state_backend='preprocess',
                 boundary_only=index != 0,

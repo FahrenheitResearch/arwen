@@ -263,7 +263,9 @@ def test_sealed_urban_carrier_reads_back_to_the_carrier_it_sealed(
     assert (echo["urban_legend"], echo["use_wudapt_lcz"]) == ("urban", lcz)
     # The table reader alone still refuses them: they are no
     # [static.highres] key.
-    with pytest.raises(ValueError, match="does not have a key 'urban_legend'"):
+    # (The refusal lists every unknown key; with lane/sf-landsurface the
+    # SLUCM echo also records urban_fraction, listed first.)
+    with pytest.raises(ValueError, match="does not have a key .*'urban_legend'"):
         parse_static_table({"highres": {k: v for k, v in echo.items()
                                         if k != "terrain_smoothing"}},
                            source="sealed", base_dir=tmp_path)
@@ -273,11 +275,24 @@ def test_sealed_urban_carrier_reads_back_to_the_carrier_it_sealed(
     assert back == cfg
     assert static_highres_identity(back) == static_highres_identity(cfg)
     assert prepared_highres_settings_match(echo, back)
-    # Without the run, the legend still reads back (the echo records the
-    # legend, not which urban model ran), and so does the identity.
+    # Without the run, the legend still reads back.  The identity follows
+    # it only for SLUCM (option 1): since ae393b7c3 (lane/sf-landsurface)
+    # a SLUCM carrier records its urban_fraction algorithm, so its content
+    # names its model, and a carrier is identified by its urban model as
+    # well as its legend (coordinator ruling, 2026-10-07).  A BEP/BEM
+    # carrier's echo names no model, so a run-less read reads it as SLUCM
+    # and its identity differs by exactly that record; restores and
+    # rebuilds pass run_config, as above.
     alone = parse_sealed_static_highres(echo, source="sealed", base_dir=tmp_path)
     assert (alone.sf_urban_physics, alone.use_wudapt_lcz) == (1, lcz)
-    assert static_highres_identity(alone) == static_highres_identity(cfg)
+    if option == 1:
+        assert static_highres_identity(alone) == static_highres_identity(cfg)
+    else:
+        differs = {key for key in set(static_highres_identity(alone))
+                   | set(static_highres_identity(cfg))
+                   if static_highres_identity(alone).get(key)
+                   != static_highres_identity(cfg).get(key)}
+        assert differs == {"urban_fraction"}, differs
     assert landcover_legend(landcover, sf_urban_physics=alone.sf_urban_physics,
                             use_wudapt_lcz=alone.use_wudapt_lcz) \
         == landcover_legend(landcover, sf_urban_physics=option,
@@ -325,16 +340,36 @@ def test_a_restore_under_another_urban_legend_is_refused_by_name(
         assert f"sf_urban_physics = {requested[0]}" in message
 
 
-def test_another_urban_model_on_the_same_legend_restores(tmp_path):
-    # The legend, not the option, is what the statics were prepared for.
+def test_a_slucm_carrier_restores_only_under_slucm_on_the_same_legend(tmp_path):
+    """A carrier whose content depends on the urban model is identified by
+    the model as well as the legend (coordinator ruling, 2026-10-07).
+
+    Since ae393b7c3 (lane/sf-landsurface) a SLUCM carrier (option 1) seals
+    its urban_fraction algorithm: the built fractions SLUCM reads.  Reused
+    under BEP or BEP+BEM on the same legend those fractions would be read
+    wrong, so the reader refuses; under SLUCM it restores.  Carriers of the
+    two models whose content does not depend on the model still move
+    between them on the same legend.
+    """
     from gpuwm.static.highres_production import parse_sealed_static_highres
-    cfg = HighresStaticConfig(True, tmp_path / "cache", sf_urban_physics=1,
+    slucm = HighresStaticConfig(True, tmp_path / "cache", sf_urban_physics=1,
+                                use_wudapt_lcz=1)
+    with pytest.raises(ValueError, match="urban fraction algorithm"):
+        parse_sealed_static_highres(
+            _sealed(slucm), source="sealed", base_dir=tmp_path,
+            run_config=SimpleNamespace(sf_urban_physics=3, use_wudapt_lcz=1))
+    same = parse_sealed_static_highres(
+        _sealed(slucm), source="sealed", base_dir=tmp_path,
+        run_config=SimpleNamespace(sf_urban_physics=1, use_wudapt_lcz=1))
+    assert (same.sf_urban_physics, same.use_wudapt_lcz) == (1, 1)
+    assert static_highres_identity(same) == static_highres_identity(slucm)
+    bep = HighresStaticConfig(True, tmp_path / "cache", sf_urban_physics=3,
                               use_wudapt_lcz=1)
-    run = SimpleNamespace(sf_urban_physics=3, use_wudapt_lcz=1)
-    back = parse_sealed_static_highres(_sealed(cfg), source="sealed",
-                                       base_dir=tmp_path, run_config=run)
-    assert (back.sf_urban_physics, back.use_wudapt_lcz) == (3, 1)
-    assert static_highres_identity(back) == static_highres_identity(cfg)
+    back = parse_sealed_static_highres(
+        _sealed(bep), source="sealed", base_dir=tmp_path,
+        run_config=SimpleNamespace(sf_urban_physics=2, use_wudapt_lcz=1))
+    assert (back.sf_urban_physics, back.use_wudapt_lcz) == (2, 1)
+    assert static_highres_identity(back) == static_highres_identity(bep)
 
 
 @pytest.mark.parametrize("keys", [

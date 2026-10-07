@@ -1014,18 +1014,20 @@ def test_the_native_grid_takes_the_identity_window_and_the_trim_does_not():
     assert not window.matches_record(
         {key: value for key, value in document.items() if key != "route"})
 
-    # The one-row trim is NOT the native grid, and on this route it is
-    # still refused: the two descriptions of the native grid drift apart
-    # by 0.35 cells at the north-east corner (MEASURED), so the trimmed
-    # grid's far u faces project past 1797.5 and their parabolic halo
-    # leaves the grid.  A two-row trim takes the interpolated route it
+    # The one-row trim is NOT the native grid.  Its outermost u and v
+    # faces sit within a cell of HRRR's edge, where the four-point
+    # parabolic stencil has no neighbour; there WPS metgrid falls through
+    # to four-point bilinear, whose cell is inside, so the trim takes the
+    # interpolated route with the whole grid as its window (it was
+    # refused, which refused configs/recipes/hrrr_v4_gsd41.toml on
+    # --source hrrr).  A two-row trim takes the interpolated route it
     # always took, with a halo on every side.
     from gpuwm.ingest.hrrr_target import native_grid_identity
-    from gpuwm.ingest.source_coverage import SourceCoverageRefusal
 
     assert not native_grid_identity(_native_target(nx=1797, ny=1057).grid())
-    with pytest.raises(SourceCoverageRefusal, match="leaves HRRR coverage"):
-        required_hrrr_source_window(_native_target(nx=1797, ny=1057))
+    one_row = required_hrrr_source_window(_native_target(nx=1797, ny=1057))
+    assert one_row.route == "interpolated"
+    assert one_row.bridge_tuple() == (0, 1798, 0, 1058)
     trimmed = required_hrrr_source_window(_native_target(nx=1795, ny=1055))
     assert trimmed.route == "interpolated"
     assert "route" not in trimmed.to_dict()
@@ -1053,3 +1055,54 @@ def test_the_target_document_round_trips_the_identity_window(tmp_path):
 def test_nearby_full_grids_are_not_native_identity(changes):
     from gpuwm.ingest.hrrr_target import native_grid_identity
     assert not native_grid_identity(_native_target(**changes).grid())
+
+
+def test_a_stencil_past_hrrrs_edge_takes_metgrids_bilinear_fallback():
+    """WPS sixteen_pt finds a point outside the source and the interp
+    sequence falls through to four_pt.  The projected operators do the
+    same for exactly those targets and nothing else."""
+
+    from gpuwm.ingest.hrrr import (_metgrid_edge_fallback,
+                                   _parabolic_stencil_leaves_window)
+
+    rng = np.random.default_rng(7)
+    field = rng.uniform(250.0, 300.0, (2, 6, 7)).astype(np.float32)
+    ix = np.array([[0, 2, 5]], dtype=np.int32)
+    iy = np.array([[2, 2, 2]], dtype=np.int32)
+    fx = np.full((1, 3), 0.25, dtype=np.float32)
+    fy = np.full((1, 3), 0.5, dtype=np.float32)
+    edge = _parabolic_stencil_leaves_window(ix, iy, 7, 6, identity=False)
+    assert edge.tolist() == [[True, False, True]]
+    assert _parabolic_stencil_leaves_window(ix, iy, 7, 6, identity=True) is None
+    sentinel = np.full((2, 1, 3), -1.0, dtype=np.float32)
+    result = _metgrid_edge_fallback(sentinel, field, edge, iy, ix, fy, fx, np)
+    for column in (0, 2):
+        j, i = int(iy[0, column]), int(ix[0, column])
+        lower = 0.75 * field[:, j, i] + 0.25 * field[:, j, i + 1]
+        upper = 0.75 * field[:, j + 1, i] + 0.25 * field[:, j + 1, i + 1]
+        np.testing.assert_allclose(result[:, 0, column],
+                                   0.5 * lower + 0.5 * upper, rtol=1e-6)
+    assert (result[:, 0, 1] == -1.0).all()
+    assert (sentinel == -1.0).all()
+
+
+def test_the_one_row_trim_maps_hrrr_with_no_halo_past_its_edge():
+    """The trimmed grid's projected plan is built on the whole-grid window
+    (it used to raise "lacks the four-point interpolation halo") and a
+    uniform field maps to itself at every target, edge rows included."""
+
+    from gpuwm.ingest.hrrr import _ProjectedCpuPlan
+
+    target = _native_target(nx=1797, ny=1057)
+    window = required_hrrr_source_window(target)
+    snapshot = HrrrNativeSnapshot(
+        valid_time=datetime(2026, 10, 2, 21), forecast_hour=0,
+        i_start=window.i_start, j_start=window.j_start,
+        ny=window.ny, nx=window.nx, fields={})
+    lat, lon = target.grid().latlon_u()
+    plan = _ProjectedCpuPlan(snapshot, lat, lon, None)
+    assert plan.route == "interpolated"
+    assert plan.edge is not None and plan.edge.any()
+    field = np.full((window.ny, window.nx), 287.5, dtype=np.float32)
+    mapped = plan.apply(field)
+    np.testing.assert_allclose(mapped, 287.5, rtol=0.0, atol=1e-4)

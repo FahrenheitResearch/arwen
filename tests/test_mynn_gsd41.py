@@ -164,7 +164,7 @@ def test_dew_flux_is_deleted_by_wrf461_and_applied_by_gsd41():
 # generation's own Fortran (tools/mynn_pbl_gsd41_oracle, GNU Fortran -O0).
 # ---------------------------------------------------------------------------
 
-ORACLE_DIR = ROOT / "gpuwm" / "data" / "mynn" / "oracle"
+ORACLE_DIR = ROOT / "tests" / "data" / "oracles" / "mynn"
 _GSD41_CASES, _GSD41_NZ = 12, 14
 
 

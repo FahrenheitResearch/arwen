@@ -122,20 +122,24 @@ G3_GATE = 2.0e-6
 #:     RTX 5090; 8.012e-08 on the host build of the kernels).
 #:   * ``aero-cloud-freeze-nc``'s effc_m and ``aero-ice-demott-idxin``'s qc
 #:     fell inside the gate and left the table.
-_PUBLISHED_G3: dict[str, dict[str, float]] = {
-    "aero-cloud-freeze-nc": {"qc": 4.9256e-06},
-    "aero-cold-overlap": {
-        "qc": 1.0000e+00, "nc_per_kg": 1.0000e+00, "effc_m": 8.1018e-01,
-        "nr_per_kg": 1.2613e-04, "qr": 4.4426e-05},
-    "wp08-nusweep": {"qr": 4.6424e-06},
-}
+#:
+#: AND NOW EMPTY.  The 2.8.6 accumulator rework (WRF's qcten, qrten, nrten,
+#: qiten and niten carried through every stage and applied once, mp=28's
+#: own tendency-form rain and ice fallout, the cold network's REAL
+#: rain-conservation ratio) closed the three rows that were left:
+#: aero-cloud-freeze-nc qc 4.9256e-06 -> 0, aero-cold-overlap
+#: qc / nc_per_kg / effc_m / nr_per_kg / qr -> 0, and wp08-nusweep qr
+#: 4.6424e-06 -> 5.532e-07, all on an RTX 5090 and an RTX 4090 alike.
+_PUBLISHED_G3: dict[str, dict[str, float]] = {}
 
 #: Fixtures that clear :data:`G3_GATE` on EVERY compared field.  Membership is
 #: asserted for equality, not containment: a fixture that starts clearing the
 #: gate must be moved here in the same change that updates the evidence
 #: document, or the document silently understates the port.
 #:
-#: 19 of 22.  ``wp08-freeze`` joined when the rain fallout was handed WRF's
+#: 22 of 22 since the 2.8.6 accumulator rework, which added
+#: ``aero-cloud-freeze-nc``, ``aero-cold-overlap`` and ``wp08-nusweep``.
+#: Before it: 19 of 22.  ``wp08-freeze`` joined when the rain fallout was handed WRF's
 #: L_qr.  ``aero-drop-evap`` and ``aero-ice-demott-idxin`` joined at
 #: WP-13a.  ``aero-reduces-to-classic`` joined at the 1.4.1 merge, and it is
 #: worth being exact about why, because this file used to name it as the
@@ -149,6 +153,8 @@ _PUBLISHED_G3: dict[str, dict[str, float]] = {
 _G3_CLEAN_FIXTURES = (
     "aero-ccn-activate",
     "aero-ccn-sweep",
+    "aero-cloud-freeze-nc",
+    "aero-cold-overlap",
     "aero-drop-evap",
     "aero-ice-demott-dep",
     "aero-ice-demott-idxin",
@@ -166,6 +172,7 @@ _G3_CLEAN_FIXTURES = (
     "aero-warm-overlap",
     "wp08-freeze",
     "wp08-melt",
+    "wp08-nusweep",
 )
 
 #: THE FIXTURE DECK, PARTITIONED, because the deck grew and the published
@@ -281,7 +288,10 @@ def test_the_set_of_fixtures_clearing_the_gate_is_exactly_what_is_published():
     closing a residual fails here until ``_G3_CLEAN_FIXTURES``, the
     ``_PUBLISHED_G3`` row and the document's table are all updated together.
 
-    MEASURED: 19 of 22 clean under this file's gate, 17 of the 19 spec'd
+    MEASURED: 22 of 22 clean under this file's gate since the 2.8.6
+    accumulator rework, which also retired the near-cancellation exclusion
+    discussed below, so this file's count and the adapter's unexceptioned
+    count coincide again.  Before it: 19 of 22 clean under this file's gate, 17 of the 19 spec'd
     fixtures plus ``wp08-freeze`` and ``wp08-melt``.  ``wp08-freeze`` joined
     when the rain fallout was handed WRF's L_qr.  ``aero-drop-evap`` and
     ``aero-ice-demott-idxin`` joined when WP-13a restored WRF's level-wise
@@ -308,7 +318,7 @@ def test_the_set_of_fixtures_clearing_the_gate_is_exactly_what_is_published():
         rather than the 3.155e-03 the adapter's UNEXCEPTIONED table reports.
         That level is not unmeasured: it is bounded in ulps of the entry value
         by ``tests/test_thompson_aerosol_adapter.py::
-        test_the_near_cancellation_level_is_bounded_in_ulps_not_excluded``
+        test_the_near_cancellation_level_is_bounded_in_ulps_not_excluded`` (retired with the exclusion by the 2.8.6 accumulator rework)
         and published in ULP terms by the same file's
         ``test_every_g3_residual_is_published_in_ulps_as_well_as_relative``.
 
@@ -336,9 +346,9 @@ def test_the_set_of_fixtures_clearing_the_gate_is_exactly_what_is_published():
     assert not set(_PUBLISHED_G3) & expected, (
         "a fixture is published both clean and with a residual: "
         f"{sorted(set(_PUBLISHED_G3) & expected)}")
-    assert len(clean) == 19 and len(matrix) == 22, (len(clean), len(matrix))
+    assert len(clean) == 22 and len(matrix) == 22, (len(clean), len(matrix))
     aero = sorted(name for name in clean if name.startswith("aero-"))
-    assert len(aero) == 17, aero
+    assert len(aero) == 19, aero
 
 
 # ---------------------------------------------------------------------------

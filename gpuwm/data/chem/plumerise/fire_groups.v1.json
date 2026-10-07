@@ -1,0 +1,13 @@
+{
+  "schema": "gpuwm.freitas.fire_groups.v1",
+  "source": "https://github.com/wrf-model/WRF/blob/f52c197ed39d12e087d02c50f412d90d418f6186/chem/module_chem_plumerise_scalar.F#L424-L433",
+  "single_pass_source": "https://github.com/wrf-model/WRF/blob/f52c197ed39d12e087d02c50f412d90d418f6186/chem/module_chem_plumerise_scalar.F#L142-L147",
+  "units": "kW m-2",
+  "groups": [
+    {"group": "tropical_forest", "heat_min": 30.0, "heat_max": 80.0, "single_heat_pass": false},
+    {"group": "extratropical_forest", "heat_min": 30.0, "heat_max": 80.0, "single_heat_pass": false},
+    {"group": "savanna", "heat_min": 4.4, "heat_max": 23.0, "single_heat_pass": false},
+    {"group": "grassland", "heat_min": 3.3, "heat_max": 3.3, "single_heat_pass": true}
+  ],
+  "input_contract": "mean_fct and firesize are supplied per column. This table does not infer flaming fractions or burnt areas from a land-cover category."
+}

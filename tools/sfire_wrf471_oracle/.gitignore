@@ -1,0 +1,4 @@
+*.tar
+*.tgz
+__pycache__/
+receipts/*-first-green.log

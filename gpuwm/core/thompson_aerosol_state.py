@@ -391,6 +391,30 @@ def launch_aerosol_state_finalize(qc, nc, nwfa, nifa, ncten, nwfaten,
              np.int32(ncol), np.int32(size)))
 
 
+def launch_terminal_rain_ice(qr, nr, qi, ni, qrten, nrten, qiten, niten,
+                             rho, micro_columns, dt) -> None:
+    """Apply WRF's rain and ice accumulators once, :4023-4053.
+
+    The v4.6.1 accumulator path's terminal apply: ``qi``/``ni``/``qr``/``nr``
+    are the entry state, read-only until here, and leave as
+    ``X1d + Xten*DT`` with WRF's floors and size bounds, which WRF puts after
+    the phase cleanup's :3956 freeze.  ``rho`` is the terminal density
+    :func:`launch_aerosol_state_finalize` takes; a column
+    :func:`launch_aerosol_micro_columns` marked 0 keeps its entry state.
+    """
+    shape, size = validate_fields({
+        "qr": qr, "nr": nr, "qi": qi, "ni": ni, "qrten": qrten,
+        "nrten": nrten, "qiten": qiten, "niten": niten, "rho": rho,
+    })
+    if len(shape) != 3 or micro_columns.shape != shape[1:]:
+        raise ValueError(f"micro_columns must have shape {shape[1:]}, "
+                         f"got {micro_columns.shape}")
+    _, ncol = validate_fields({"micro_columns": micro_columns})
+    _launch("thompson_aa_terminal_rain_ice", size,
+            (qr, nr, qi, ni, qrten, nrten, qiten, niten, rho, micro_columns,
+             DTYPE(dt), np.int32(ncol), np.int32(size)))
+
+
 # ---------------------------------------------------------------------------
 # 4.  Surface emission.
 # ---------------------------------------------------------------------------
@@ -584,6 +608,7 @@ __all__ = [
     "launch_aerosol_working_cloud",
     "launch_aerosol_working_number",
     "launch_tau1_density",
+    "launch_terminal_rain_ice",
     "zero_aerosol_accumulators",
 ]
 

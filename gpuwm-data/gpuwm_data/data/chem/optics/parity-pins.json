@@ -1,0 +1,8 @@
+{
+  "gpuwm-data/gpuwm_data/data/chem/optics/table-sha256sums.txt": "d39e1c78ddd3465f0bf3a5e4b329e626be508ac21847ca94fa3a5a11f50486af",
+  "tests/data/oracles/chem/gocart/optics/oracle-sha256sums.txt": "195c1e6fd226a31c13c55cc393ea34f11f439614296e4315a6e001f88197ee25",
+  "gpuwm-data/gpuwm_data/data/chem/optics/wrfchem_components.json": "311e68c79360e642b99c579f7f8da79dcaf894aa12e0a7a3ea1835d237235a4d",
+  "gpuwm-data/gpuwm_data/data/chem/optics/gocart_simple_optics_rows.json": "ece990c2cbbca77accf64a6090a6596e3d126d83c46e7633bc626c4cdfdc962e",
+  "tools/chem_wrf471_oracle/gocart/source-sha256sums.txt": "d1f71ac2563bbf9cd61dc4aa2bbdf94f9a0260d454dbffa60b5c287a39481a48",
+  "tools/chem_wrf471_oracle/gocart/extract-ranges.txt": "9db6da11535ebb8fd1f432cd42ddbd0143212700f6feaeba052c5c46a8396ef3"
+}

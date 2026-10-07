@@ -87,7 +87,7 @@ def _assert_within_ulp(got, expected, budget: int, err_msg: str) -> None:
 
 ORACLE = (
     Path(__file__).parents[1]
-    / "gpuwm" / "data" / "mynn" / "oracle" / "pbl-level2.csv"
+    / "tests" / "data" / "oracles" / "mynn" / "pbl-level2.csv"
 )
 PBLH_ORACLE = ORACLE.with_name("pblh-scale.csv")
 MIXLENGTH_ORACLE = ORACLE.with_name("mixlength.csv")

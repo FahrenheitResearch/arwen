@@ -11,7 +11,7 @@ Sub-commands
 
 ``--oracle PATH``
     Run the compiled oracle over the case list and write the two fixture CSVs
-    under ``gpuwm/data/noahmp/oracle/``.  Every REAL crosses the boundary as an
+    under ``tests/data/oracles/noahmp/``.  Every REAL crosses the boundary as an
     IEEE-754 binary32 bit pattern, so no decimal rounding can enter.
 
 ``--validate``
@@ -50,7 +50,7 @@ from gpuwm.core import noahmp_vegprecip as vp          # noqa: E402
 from gpuwm.core.fp32_ulp import max_ulp                 # noqa: E402
 from gpuwm.core.noahmp_libm import expf, f32, powf      # noqa: E402
 
-FIXTURE_DIR = os.path.join(_ROOT, "gpuwm", "data", "noahmp", "oracle")
+FIXTURE_DIR = os.path.join(_ROOT, "tests", "data", "oracles", "noahmp")
 PHEN_CSV = os.path.join(FIXTURE_DIR, "noahmp-vegprecip-phenology.csv")
 PRCP_CSV = os.path.join(FIXTURE_DIR, "noahmp-vegprecip-precip_heat.csv")
 

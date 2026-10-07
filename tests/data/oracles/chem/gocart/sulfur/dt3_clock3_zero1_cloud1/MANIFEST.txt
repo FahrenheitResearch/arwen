@@ -1,0 +1,42 @@
+dt f4 0
+gmt f4 0
+julday i4 0
+optional_cloud i4 0
+zero_roles i4 0
+latitude f4 2 8 1
+longitude f4 2 8 1
+tcosz f4 2 8 1
+ttday f4 2 8 1
+temp f4 3 8 5 1
+rho f4 3 8 5 1
+qc f4 3 8 5 1
+qi f4 3 8 5 1
+gd_cldf f4 3 8 5 1
+backg_oh f4 3 8 5 1
+backg_h2o2 f4 3 8 5 1
+backg_no3 f4 3 8 5 1
+input_dms f4 3 8 5 1
+input_so2 f4 3 8 5 1
+input_so4 f4 3 8 5 1
+input_msa f4 3 8 5 1
+curr_secs_1 f4 0
+cossza_1 f4 2 8 1
+branch_input_1 i4 3 8 5 1
+step1_dms f4 3 8 5 1
+step1_so2 f4 3 8 5 1
+step1_so4 f4 3 8 5 1
+step1_msa f4 3 8 5 1
+curr_secs_2 f4 0
+cossza_2 f4 2 8 1
+branch_input_2 i4 3 8 5 1
+step2_dms f4 3 8 5 1
+step2_so2 f4 3 8 5 1
+step2_so4 f4 3 8 5 1
+step2_msa f4 3 8 5 1
+curr_secs_3 f4 0
+cossza_3 f4 2 8 1
+branch_input_3 i4 3 8 5 1
+step3_dms f4 3 8 5 1
+step3_so2 f4 3 8 5 1
+step3_so4 f4 3 8 5 1
+step3_msa f4 3 8 5 1

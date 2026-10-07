@@ -384,10 +384,26 @@ extern "C" __global__ void thompson_aa_cold_network(
     const double* __restrict__ rain_cloud_efficiency,
     const double* __restrict__ cloud_to_ice_mass,
     const double* __restrict__ cloud_to_ice_number,
+    // WRF's qcten (per kilogram per second).  Null: the cloud sink is
+    // applied to qc in place, the unit gates' form.  Non-null (the
+    // production adapter): qc is the read-only entry cloud and the sink is
+    // ADDED here, to be applied once at :3975 with every later cloud
+    // tendency (THE CLOUD-WATER ACCUMULATOR, microphysics_aerosol.py).
+    float* __restrict__ qcten,
+    // WRF's qrten / nrten / qiten / niten, likewise: all four null keeps the
+    // in-place rain and ice apply and its in-place size bounds; all four
+    // given (the production adapter's v4.6.1 generation) adds the sources to
+    // them and runs the :3033-3055 / :3070-3091 balances in tendency form,
+    // leaving qr, nr, qi and ni the read-only entry state.
+    float* __restrict__ qrten,
+    float* __restrict__ nrten,
+    float* __restrict__ qiten,
+    float* __restrict__ niten,
     float dt, int size)
 {
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= size) return;
+    const bool accumulate_rain_ice = niten != nullptr;
 
     // WRF resets vts_boost on every cold-source call (:2243) before
     // diagnosing the deposition-conditioned rimed-snow conversion.  Warm and
@@ -407,7 +423,19 @@ extern "C" __global__ void thompson_aa_cold_network(
         // (tools/thompson_real_column_parity).  No source process changes
         // ice here, so the balance reads the entry ice at the entry density
         // (:1802), exactly as :3036-3037 do.
-        if (qi[idx] > 0.0f || ni[idx] > 0.0f) {
+        if (accumulate_rain_ice) {
+            // The same balance in WRF's tendency form, at every level, on
+            // the entry ice (no source changed it here) at the entry
+            // density.
+            const float qv_entry = fmaxf(1.0e-10f, qv[idx]);
+            const float rho_entry = 0.622f * pressure[idx]
+                / (287.04f * temperature[idx] * (qv_entry + 0.622f));
+            float ice_number_tendency = niten[idx];
+            thompson_aa_ice_balance_tendency(
+                qi[idx], ni[idx], qiten[idx], &ice_number_tendency,
+                rho_entry, 1.0f / rho_entry, 1.0f / dt, dt);
+            niten[idx] = ice_number_tendency;
+        } else if (qi[idx] > 0.0f || ni[idx] > 0.0f) {
             const float qv_entry = fmaxf(1.0e-10f, qv[idx]);
             const float rho_entry = 0.622f * pressure[idx]
                 / (287.04f * temperature[idx] * (qv_entry + 0.622f));
@@ -1719,8 +1747,21 @@ extern "C" __global__ void thompson_aa_cold_network(
     const double rain_limit = (double)(-rain_mass * inverse_dt);
     const double rain_sum = -freeze_graupel_rate - freeze_ice_rate
         - rain_ice_rain_rate + rain_snow_rain_rate + rain_graupel_rain_rate;
+#if !defined(THOMPSON_AA_WRF39)
+    // WRF declares sump, rate_max and ratio REAL (:1615): the double sum is
+    // rounded to REAL, compared in REAL, and the REAL ratio widens to
+    // rescale the DOUBLE rates.  A double ratio is 3e-8 away, and at a level
+    // the limiter drains (aero-cold-overlap level 6, 99.97 percent of the
+    // rain) that is 2.48e-05 of what survives.
+    const float rain_sum_real = (float)rain_sum;
+    const float rain_limit_real = (float)rain_limit;
+    if (rain_active && rain_sum_real < rain_limit_real) {
+        const double ratio = (double)thompson_aa_div(rain_limit_real,
+                                                     rain_sum_real);
+#else
     if (rain_active && rain_sum < rain_limit) {
         const double ratio = rain_limit / rain_sum;
+#endif
         freeze_graupel_rate *= ratio;
         freeze_ice_rate *= ratio;
         rain_ice_rain_rate *= ratio;
@@ -1844,25 +1885,25 @@ extern "C" __global__ void thompson_aa_cold_network(
     const float qg_entry_wrf = qg[idx] > THOMPSON_AA_R1 ? qg[idx] : 0.0f;
     const float ng_entry_wrf = qg[idx] > THOMPSON_AA_R1
         ? graupel_number_shadow[idx] : 0.0f;
-    qi[idx] = fmaxf(0.0f, thompson_aa_add(qi[idx],
-        thompson_aa_mul(
-            (float)((nucleation_rate + koop_rate + hm_mass_rate
-                     + cloud_freezing_rate + freeze_ice_rate + ice_rate
-                     - autoconversion_rate
-                     - snow_collection_rate - rain_ice_ice_rate)
-                    * (double)orho),
-            dt)));
-    ni[idx] = fmaxf(0.0f, thompson_aa_add(ni[idx],
-        thompson_aa_mul(
-            (float)((nucleation_number_rate + koop_number_rate
-                     + hm_number_rate
-                     + cloud_freezing_number_rate + freeze_ice_number_rate
-                     + ice_number_rate
-                     - autoconversion_number_rate
-                     - snow_collection_number_rate
-                     - rain_ice_ice_number_rate)
-                    * (double)orho),
-            dt)));
+    // :3022-3031.  REAL + DOUBLE*orho, rounded once.
+    const double ice_mass_rate = (nucleation_rate + koop_rate + hm_mass_rate
+        + cloud_freezing_rate + freeze_ice_rate + ice_rate
+        - autoconversion_rate - snow_collection_rate - rain_ice_ice_rate)
+        * (double)orho;
+    const double ice_number_rate_sum = (nucleation_number_rate
+        + koop_number_rate + hm_number_rate + cloud_freezing_number_rate
+        + freeze_ice_number_rate + ice_number_rate
+        - autoconversion_number_rate - snow_collection_number_rate
+        - rain_ice_ice_number_rate) * (double)orho;
+    if (accumulate_rain_ice) {
+        qiten[idx] = (float)((double)qiten[idx] + ice_mass_rate);
+        niten[idx] = (float)((double)niten[idx] + ice_number_rate_sum);
+    } else {
+        qi[idx] = fmaxf(0.0f, thompson_aa_add(qi[idx],
+            thompson_aa_mul((float)ice_mass_rate, dt)));
+        ni[idx] = fmaxf(0.0f, thompson_aa_add(ni[idx],
+            thompson_aa_mul((float)ice_number_rate_sum, dt)));
+    }
     qs[idx] = fmaxf(0.0f, thompson_aa_add(qs[idx],
         thompson_aa_mul(
             (float)((ice_to_snow_rate + snow_rate + autoconversion_rate
@@ -1905,34 +1946,69 @@ extern "C" __global__ void thompson_aa_cold_network(
             thompson_aa_mul((float)(number_rate * (double)orho), dt));
     }
 #endif
-    qr[idx] = fmaxf(0.0f, thompson_aa_add(qr[idx],
-        thompson_aa_mul((float)(rain_rate * (double)orho), dt)));
-    nr[idx] = fmaxf(0.0f, thompson_aa_add(nr[idx],
-        thompson_aa_mul(
-            (float)((cloud_autoconversion_number_rate - rain_number_sink)
-                    * (double)orho),
-            dt)));
+    // On the accumulator path the sum is :3058-3061's, in WRF's order (the
+    // melt terms are zero below 0 C); the in-place form keeps the order the
+    // fork-generation results were measured with.  The two differ by a
+    // rounding of the double sum, which the tendency carries to the state:
+    // one ulp of qrten at aero-cold-overlap level 6, 2.48e-05 on its qr.
+    const double rain_mass_rate = (accumulate_rain_ice
+        ? cloud_autoconversion_rate + cloud_rain_accretion_rate
+          + rain_snow_rain_rate + rain_graupel_rain_rate
+          - freeze_graupel_rate - freeze_ice_rate - rain_ice_rain_rate
+        : rain_rate) * (double)orho;
+    const double rain_number_rate_sum =
+        (cloud_autoconversion_number_rate - rain_number_sink) * (double)orho;
+    if (accumulate_rain_ice) {
+        // :3058-3067.
+        qrten[idx] = (float)((double)qrten[idx] + rain_mass_rate);
+        nrten[idx] = (float)((double)nrten[idx] + rain_number_rate_sum);
+    } else {
+        qr[idx] = fmaxf(0.0f, thompson_aa_add(qr[idx],
+            thompson_aa_mul((float)rain_mass_rate, dt)));
+        nr[idx] = fmaxf(0.0f, thompson_aa_add(nr[idx],
+            thompson_aa_mul((float)rain_number_rate_sum, dt)));
+    }
     // :3975, `qc1d(k) = qc1d(k) + qcten(k)*DT`.  See the contraction note at
     // the head of this block; this is the apply the two measured cells there
     // were taken from.
-    qc[idx] = fmaxf(0.0f, thompson_aa_sub(qc[idx],
-        thompson_aa_mul(
-            (float)((cloud_autoconversion_rate + cloud_freezing_rate
-                     + cloud_rain_accretion_rate + snow_riming_rate
-                     + snow_graupel_conversion_rate
-                     + graupel_riming_rate) * (double)orho),
-            dt)));
+    const double cloud_sink_per_kg = (cloud_autoconversion_rate
+        + cloud_freezing_rate + cloud_rain_accretion_rate + snow_riming_rate
+        + snow_graupel_conversion_rate + graupel_riming_rate) * (double)orho;
+    if (qcten != nullptr) {
+        // :2987, `qcten(k) = qcten(k) + (-prr_wau(k) - ...)*orho`: a REAL
+        // plus a DOUBLE expression, rounded once to REAL.
+        qcten[idx] = (float)((double)qcten[idx] - cloud_sink_per_kg);
+    } else {
+        qc[idx] = fmaxf(0.0f, thompson_aa_sub(qc[idx],
+            thompson_aa_mul((float)cloud_sink_per_kg, dt)));
+    }
+    if (accumulate_rain_ice) {
+        // :3033-3055 and :3070-3091 in WRF's tendency form.
+        float ice_number_tendency = niten[idx];
+        thompson_aa_ice_balance_tendency(qi[idx], ni[idx], qiten[idx],
+            &ice_number_tendency, rho, orho, inverse_dt, dt);
+        niten[idx] = ice_number_tendency;
+        float rain_mass_tendency = qrten[idx];
+        float rain_number_tendency = nrten[idx];
+        thompson_aa_rain_balance_tendency(qr[idx], nr[idx],
+            &rain_mass_tendency, &rain_number_tendency, rho, orho,
+            inverse_dt, dt);
+        qrten[idx] = rain_mass_tendency;
+        nrten[idx] = rain_number_tendency;
+    } else {
 #if defined(THOMPSON_AA_WRF39)
     thompson_aa_wrf39_bound_ice_number(qi[idx] * rho, rho, &ni[idx]);
 #else
     thompson_aa_bound_ice_number(qi[idx] * rho, rho, &ni[idx]);
 #endif
     thompson_aa_bound_rain_number(qr[idx] * rho, rho, &nr[idx]);
+    }
     // :3067-3091.  Where the post-source rain concentration is at or below R1
     // WRF discards the call's rain sources and removes the entry rain:
     // qrten = -qr1d*odts, nrten = -nr1d*odts.  The number bound above zeroes
     // only the number; the mass has to go too.
-    if (!(thompson_aa_mul(qr[idx], rho) > THOMPSON_AA_R1)) {
+    if (!accumulate_rain_ice
+            && !(thompson_aa_mul(qr[idx], rho) > THOMPSON_AA_R1)) {
         qr[idx] = thompson_aa_add(qr_entry_wrf, thompson_aa_mul(
             thompson_aa_mul(-qr_entry_wrf, inverse_dt), dt));
         nr[idx] = thompson_aa_add(nr_entry_wrf, thompson_aa_mul(

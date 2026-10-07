@@ -2374,9 +2374,10 @@ def build_parser() -> argparse.ArgumentParser:
                           "(forwarded to the cycle driver; requires "
                           "--positivity-policy)")
     run.add_argument("--positivity-policy", default=None,
-                     choices=("clip", "reject", "none"),
-                     help="required with --hydrometeors; clip / reject / "
-                          "none are not equivalent and gpuwm.da.positivity "
+                     choices=("mean-preserving", "clip", "reject", "none"),
+                     help="with --hydrometeors; unstated, the cycle "
+                          "driver's default (mean-preserving) applies. The "
+                          "four are not equivalent and gpuwm.da.positivity "
                           "documents what each costs")
     run.add_argument("--reflectivity-analysis", action="store_true",
                      help="assimilate the merged reflectivity batch beside "
@@ -2782,7 +2783,7 @@ def resolve_da_preset(args) -> None:
             "intention")
     args.hydrometeors = True
     if args.positivity_policy is None:
-        args.positivity_policy = "clip"
+        args.positivity_policy = "mean-preserving"
     if "reflectivity" not in without:
         args.reflectivity_analysis = True
     if "clear-air" not in without:

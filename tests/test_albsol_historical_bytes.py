@@ -8,7 +8,8 @@ import pytest
 from gpuwm.domain_wizard import render_config
 from gpuwm.experiment import build_experiment
 from gpuwm.namelist_import import import_namelists
-from test_audit_parent_generic_bytes import FIXTURES, assert_old_bytes, controls
+from test_audit_parent_generic_bytes import (
+    FIXTURES, assert_old_bytes, assert_old_recipe_bytes, controls)
 
 
 ALBSOL_PARENT = "055595b3a8e019be508f05991b67af607dcee338"
@@ -67,6 +68,8 @@ def test_albsol_generic_bytes_retain_parent_with_prior_fractional_zero_fix(key, 
         # Vadv intentionally corrected it to genuine pre-lane audit1077 bytes.
         original_pins = assert_old_parent_zero_line_was_the_exact_inherited_difference(key, pins)
         assert_old_bytes(ORIGINAL_AUDIT_PARENT, original_pins, key, emitted)
+    elif key.startswith("recipe/"):
+        assert_old_recipe_bytes(ALBSOL_PARENT, pins, key.split("/", 1)[1], emitted)
     else:
         assert_old_bytes(ALBSOL_PARENT, pins, key, emitted)
 

@@ -1,0 +1,813 @@
+{
+  "components": {
+    "sulfate": {
+      "density_g_cm3": {
+        "value": 1.8,
+        "dtype": "float32",
+        "from": "chem/module_optical_averaging.F:3815"
+      },
+      "kappa": {
+        "value": 0.5,
+        "dtype": "float32",
+        "from": "chem/module_data_sorgam.F:1191"
+      },
+      "refrsw_sulf": {
+        "value": [
+          1.52,
+          1.52,
+          1.52,
+          1.52
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:74-74"
+      },
+      "refisw_sulf": {
+        "value": [
+          1e-09,
+          1e-09,
+          1e-09,
+          1.75e-06
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:75-75"
+      },
+      "refrlw_sulf": {
+        "value": [
+          1.89,
+          1.91,
+          1.93,
+          1.586,
+          1.678,
+          1.758,
+          1.855,
+          1.597,
+          1.15,
+          1.26,
+          1.42,
+          1.35,
+          1.379,
+          1.385,
+          1.385,
+          1.367
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:76-77"
+      },
+      "refilw_sulf": {
+        "value": [
+          0.22,
+          0.152,
+          0.0846,
+          0.2225,
+          0.195,
+          0.441,
+          0.696,
+          0.695,
+          0.459,
+          0.161,
+          0.172,
+          0.14,
+          0.12,
+          0.122,
+          0.126,
+          0.158
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:78-79"
+      }
+    },
+    "ammonium": {
+      "density_g_cm3": {
+        "value": 1.8,
+        "dtype": "float32",
+        "from": "chem/module_optical_averaging.F:3820"
+      },
+      "kappa": {
+        "value": 0.5,
+        "dtype": "float32",
+        "from": "chem/module_data_sorgam.F:1193"
+      },
+      "refractive_index": {
+        "value": [
+          1.5,
+          0.0
+        ],
+        "dtype": "float32",
+        "from": "chem/module_optical_averaging.F:3777"
+      }
+    },
+    "other_inorganic": {
+      "density_g_cm3": {
+        "value": 2.6,
+        "dtype": "float32",
+        "from": "chem/module_optical_averaging.F:3823"
+      },
+      "kappa": {
+        "value": 0.14,
+        "dtype": "float32",
+        "from": "chem/module_data_sorgam.F:1196"
+      },
+      "refractive_index": {
+        "value": [
+          1.55,
+          0.006
+        ],
+        "dtype": "float32",
+        "from": "chem/module_optical_averaging.F:3802"
+      }
+    },
+    "organic_carbon": {
+      "density_g_cm3": {
+        "value": 1.0,
+        "dtype": "float32",
+        "from": "chem/module_optical_averaging.F:3825"
+      },
+      "kappa": {
+        "value": 0.14,
+        "dtype": "float32",
+        "from": "chem/module_data_sorgam.F:1194"
+      },
+      "refrsw_oc": {
+        "value": [
+          1.45,
+          1.45,
+          1.45,
+          1.45
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:52-52"
+      },
+      "refisw_oc": {
+        "value": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:54-54"
+      },
+      "refrlw_oc": {
+        "value": [
+          1.86,
+          1.91,
+          1.988,
+          1.439,
+          1.606,
+          1.7,
+          1.888,
+          2.489,
+          1.219,
+          1.419,
+          1.426,
+          1.446,
+          1.457,
+          1.458,
+          1.455,
+          1.443
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:55-56"
+      },
+      "refilw_oc": {
+        "value": [
+          0.5,
+          0.268,
+          0.185,
+          0.198,
+          0.059,
+          0.0488,
+          0.11,
+          0.3345,
+          0.065,
+          0.058,
+          0.0261,
+          0.0142,
+          0.013,
+          0.01,
+          0.005,
+          0.0057
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:57-58"
+      }
+    },
+    "black_carbon": {
+      "density_g_cm3": {
+        "value": 1.8,
+        "dtype": "float32",
+        "from": "chem/module_optical_averaging.F:3830"
+      },
+      "kappa": {
+        "value": 0.14,
+        "dtype": "float32",
+        "from": "chem/module_data_sorgam.F:1194"
+      },
+      "refractive_index": {
+        "value": [
+          1.85,
+          0.71
+        ],
+        "dtype": "float32",
+        "from": "chem/module_optical_averaging.F:3801"
+      },
+      "mie_grid_refrsw_bc": {
+        "value": [
+          1.95,
+          1.95,
+          1.95,
+          1.95
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:43-43"
+      },
+      "mie_grid_refisw_bc": {
+        "value": [
+          0.79,
+          0.79,
+          0.79,
+          0.79
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:44-44"
+      },
+      "mie_grid_refrlw_bc": {
+        "value": [
+          1.95,
+          1.95,
+          1.95,
+          1.95,
+          1.95,
+          1.95,
+          1.95,
+          1.95,
+          1.95,
+          1.95,
+          1.95,
+          1.95,
+          1.95,
+          1.95,
+          1.95,
+          1.95
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:45-45"
+      },
+      "mie_grid_refilw_bc": {
+        "value": [
+          0.79,
+          0.79,
+          0.79,
+          0.79,
+          0.79,
+          0.79,
+          0.79,
+          0.79,
+          0.79,
+          0.79,
+          0.79,
+          0.79,
+          0.79,
+          0.79,
+          0.79,
+          0.79
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:46-46"
+      },
+      "note": "fixed prep index is 1.85+0.71i; the first-call fitting grid brackets 1.95+0.79i"
+    },
+    "sodium": {
+      "density_g_cm3": {
+        "value": 2.2,
+        "dtype": "float32",
+        "from": "chem/module_optical_averaging.F:3821"
+      },
+      "kappa": {
+        "value": 1.16,
+        "dtype": "float32",
+        "from": "chem/module_data_sorgam.F:1200"
+      },
+      "refrsw_seas": {
+        "value": [
+          1.51,
+          1.5,
+          1.5,
+          1.47
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:63-63"
+      },
+      "refisw_seas": {
+        "value": [
+          8.66e-07,
+          7.019e-08,
+          1.184e-08,
+          0.00015
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:64-64"
+      },
+      "refrlw_seas": {
+        "value": [
+          1.74,
+          1.76,
+          1.78,
+          1.456,
+          1.41,
+          1.48,
+          1.56,
+          1.63,
+          1.4,
+          1.43,
+          1.56,
+          1.45,
+          1.485,
+          1.486,
+          1.48,
+          1.48
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:65-66"
+      },
+      "refilw_seas": {
+        "value": [
+          0.1978,
+          0.1978,
+          0.129,
+          0.038,
+          0.019,
+          0.014,
+          0.016,
+          0.03,
+          0.012,
+          0.0064,
+          0.0196,
+          0.0029,
+          0.0017,
+          0.0014,
+          0.0014,
+          0.00176
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:67-68"
+      }
+    },
+    "chloride": {
+      "density_g_cm3": {
+        "value": 2.2,
+        "dtype": "float32",
+        "from": "chem/module_optical_averaging.F:3817"
+      },
+      "kappa": {
+        "value": 1.16,
+        "dtype": "float32",
+        "from": "chem/module_data_sorgam.F:1199"
+      },
+      "refrsw_seas": {
+        "value": [
+          1.51,
+          1.5,
+          1.5,
+          1.47
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:63-63"
+      },
+      "refisw_seas": {
+        "value": [
+          8.66e-07,
+          7.019e-08,
+          1.184e-08,
+          0.00015
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:64-64"
+      },
+      "refrlw_seas": {
+        "value": [
+          1.74,
+          1.76,
+          1.78,
+          1.456,
+          1.41,
+          1.48,
+          1.56,
+          1.63,
+          1.4,
+          1.43,
+          1.56,
+          1.45,
+          1.485,
+          1.486,
+          1.48,
+          1.48
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:65-66"
+      },
+      "refilw_seas": {
+        "value": [
+          0.1978,
+          0.1978,
+          0.129,
+          0.038,
+          0.019,
+          0.014,
+          0.016,
+          0.03,
+          0.012,
+          0.0064,
+          0.0196,
+          0.0029,
+          0.0017,
+          0.0014,
+          0.0014,
+          0.00176
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:67-68"
+      }
+    },
+    "dust": {
+      "density_g_cm3": {
+        "value": 2.6,
+        "dtype": "float32",
+        "from": "chem/module_optical_averaging.F:3824"
+      },
+      "kappa": {
+        "value": 0.1,
+        "dtype": "float32",
+        "from": "chem/module_data_sorgam.F:1197"
+      },
+      "refrsw_dust": {
+        "value": [
+          1.55,
+          1.55,
+          1.55,
+          1.55
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:32-32"
+      },
+      "refisw_dust": {
+        "value": [
+          0.003,
+          0.003,
+          0.003,
+          0.003
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:34-34"
+      },
+      "refrlw_dust": {
+        "value": [
+          2.34,
+          2.904,
+          1.748,
+          1.508,
+          1.911,
+          1.822,
+          2.917,
+          1.557,
+          1.242,
+          1.447,
+          1.432,
+          1.473,
+          1.495,
+          1.5,
+          1.5,
+          1.51
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:35-36"
+      },
+      "refilw_dust": {
+        "value": [
+          0.7,
+          0.857,
+          0.462,
+          0.263,
+          0.319,
+          0.26,
+          0.65,
+          0.373,
+          0.093,
+          0.105,
+          0.061,
+          0.0245,
+          0.011,
+          0.008,
+          0.0068,
+          0.018
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:37-38"
+      }
+    },
+    "msa": {
+      "density_g_cm3": {
+        "value": 1.8,
+        "dtype": "float32",
+        "from": "chem/module_optical_averaging.F:3818"
+      },
+      "kappa": {
+        "value": 0.58,
+        "dtype": "float32",
+        "from": "chem/module_data_mosaic_asect.F:581"
+      },
+      "refractive_index": {
+        "value": [
+          1.43,
+          0.0
+        ],
+        "dtype": "float32",
+        "from": "chem/module_optical_averaging.F:3794"
+      }
+    },
+    "water": {
+      "density_g_cm3": {
+        "value": 1.0,
+        "dtype": "float32",
+        "from": "chem/module_optical_averaging.F:3839"
+      },
+      "refrwsw": {
+        "value": [
+          1.35,
+          1.34,
+          1.33,
+          1.33
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:21-21"
+      },
+      "refiwsw": {
+        "value": [
+          1.524e-08,
+          2.494e-09,
+          1.638e-09,
+          3.128e-06
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:22-22"
+      },
+      "refrwlw": {
+        "value": [
+          1.532,
+          1.524,
+          1.42,
+          1.274,
+          1.161,
+          1.142,
+          1.232,
+          1.266,
+          1.296,
+          1.321,
+          1.342,
+          1.315,
+          1.33,
+          1.339,
+          1.35,
+          1.408
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:23-24"
+      },
+      "refiwlw": {
+        "value": [
+          0.336,
+          0.36,
+          0.426,
+          0.403,
+          0.321,
+          0.115,
+          0.0471,
+          0.039,
+          0.034,
+          0.0344,
+          0.092,
+          0.012,
+          0.013,
+          0.01,
+          0.0049,
+          0.0142
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:25-26"
+      }
+    },
+    "nitrate": {
+      "density_g_cm3": {
+        "value": 1.8,
+        "dtype": "float32",
+        "from": "chem/module_optical_averaging.F:3816"
+      },
+      "kappa": {
+        "value": 0.5,
+        "dtype": "float32",
+        "from": "chem/module_data_sorgam.F:1192"
+      },
+      "refractive_index": {
+        "value": [
+          1.5,
+          0.0
+        ],
+        "dtype": "float32",
+        "from": "chem/module_optical_averaging.F:3777"
+      },
+      "note": "mass_no3 is initialized to zero and never populated on the GOCART path"
+    },
+    "sea_salt": {
+      "density_g_cm3": {
+        "value": 2.2,
+        "dtype": "float32",
+        "from": "chem/module_optical_averaging.F:3821"
+      },
+      "refrsw_seas": {
+        "value": [
+          1.51,
+          1.5,
+          1.5,
+          1.47
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:63-63"
+      },
+      "refisw_seas": {
+        "value": [
+          8.66e-07,
+          7.019e-08,
+          1.184e-08,
+          0.00015
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:64-64"
+      },
+      "refrlw_seas": {
+        "value": [
+          1.74,
+          1.76,
+          1.78,
+          1.456,
+          1.41,
+          1.48,
+          1.56,
+          1.63,
+          1.4,
+          1.43,
+          1.56,
+          1.45,
+          1.485,
+          1.486,
+          1.48,
+          1.48
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:65-66"
+      },
+      "refilw_seas": {
+        "value": [
+          0.1978,
+          0.1978,
+          0.129,
+          0.038,
+          0.019,
+          0.014,
+          0.016,
+          0.03,
+          0.012,
+          0.0064,
+          0.0196,
+          0.0029,
+          0.0017,
+          0.0014,
+          0.0014,
+          0.00176
+        ],
+        "dtype": "float32",
+        "from": "chem/module_data_rrtmgaeropt.F:67-68"
+      },
+      "kappa": {
+        "value": 1.16,
+        "dtype": "float32",
+        "from": "chem/module_data_sorgam.F:1198"
+      },
+      "sodium_mass_fraction": {
+        "value": [
+          22.9898,
+          58.4428
+        ],
+        "dtype": "float32",
+        "from": "chem/module_optical_averaging.F:4012"
+      },
+      "chloride_mass_fraction": {
+        "value": [
+          35.453,
+          58.4428
+        ],
+        "dtype": "float32",
+        "from": "chem/module_optical_averaging.F:4011"
+      }
+    }
+  },
+  "mode_constants": {
+    "aitken_fraction": {
+      "value": 0.25,
+      "dtype": "float32",
+      "from": "chem/module_optical_averaging.F:3643"
+    },
+    "minimum_diameter_um": {
+      "value": 0.0390625,
+      "dtype": "float32",
+      "from": "chem/module_optical_averaging.F:3676"
+    },
+    "maximum_diameter_um": {
+      "value": 20.0,
+      "dtype": "float32",
+      "from": "chem/module_optical_averaging.F:3677"
+    },
+    "rh_cap": {
+      "value": 0.9,
+      "dtype": "float32",
+      "from": "chem/module_optical_averaging.F:4034"
+    },
+    "sigma": {
+      "value": [
+        1.7,
+        2.0,
+        2.5
+      ],
+      "dtype": "float32",
+      "from": "chem/module_data_sorgam.F:729-737"
+    },
+    "diameter_m": {
+      "value": [
+        1e-08,
+        7e-08,
+        1e-06
+      ],
+      "dtype": "float32",
+      "from": "chem/module_data_sorgam.F:741-749"
+    },
+    "oc_mfac": {
+      "value": 1.8,
+      "dtype": "float32",
+      "from": "chem/module_data_gocartchem.F:20"
+    },
+    "nh4_mfac": {
+      "value": 1.375,
+      "dtype": "float32",
+      "from": "chem/module_data_gocartchem.F:18"
+    },
+    "sulfate_conversion_molecular_mass": {
+      "value": 96.0,
+      "dtype": "float32",
+      "from": "chem/module_optical_averaging.F:3924"
+    },
+    "dry_air_conversion_molecular_mass": {
+      "value": 28.97,
+      "dtype": "float32",
+      "from": "chem/module_optical_averaging.F:3924"
+    }
+  },
+  "bin_radius_um": {
+    "dust": {
+      "value": [
+        [
+          0.1,
+          1.0,
+          1.8,
+          3.0,
+          6.0
+        ],
+        [
+          1.0,
+          1.8,
+          3.0,
+          6.0,
+          10.0
+        ]
+      ],
+      "dtype": "float64",
+      "from": "phys/module_data_gocart_dust.F:33-34"
+    },
+    "sea_salt": {
+      "value": [
+        [
+          0.1,
+          0.5,
+          1.5,
+          5.0
+        ],
+        [
+          0.5,
+          1.5,
+          5.0,
+          10.0
+        ]
+      ],
+      "dtype": "float64",
+      "from": "chem/module_data_gocart_seas.F:2-3"
+    }
+  }
+}

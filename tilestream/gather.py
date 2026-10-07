@@ -881,7 +881,7 @@ def build_plan(src_arrays: Mapping[str, Any], dst_arrays: Mapping[str, Any],
                allow_pageable: bool = False,
                require_full_gather: bool = True,
                domain_arrays: Mapping[str, Any] | None = None,
-               nz: int | None = None) -> TilePlan:
+               nz: int | None = None, global_keys=()) -> TilePlan:
     """Resolve ``spec`` against two inventories into a :class:`TilePlan`.
 
     ``domain_arrays`` names which of the two sides is the FULL domain (it is
@@ -931,6 +931,13 @@ def build_plan(src_arrays: Mapping[str, Any], dst_arrays: Mapping[str, Any],
     for name in names:
         src_arr = src_arrays[name]
         dst_arr = dst_arrays[name]
+        if name in global_keys:
+            from tilestream.global_inventory import global_keys as domain_global_keys
+            if domain_global_keys((name,)) != (name,):
+                raise SpecError(f"unknown global carrier {name} would bypass tile transport")
+            if src_arr.shape != dst_arr.shape or src_arr.dtype != dst_arr.dtype:
+                raise SpecError(f"global carrier {name} differs from its single domain owner")
+            continue
         dom_arr = domain_arrays[name]
         til_arr = tile_arrays[name]
 
@@ -944,8 +951,18 @@ def build_plan(src_arrays: Mapping[str, Any], dst_arrays: Mapping[str, Any],
                     "copy math assumes a dense C-order layout")
             _check_host(arr, name, role, allow_pageable)
 
-        kind = classify(dom_arr.shape, nz, ny, nx, layers_ok=layers_ok)
-        want = tile_shape_for(kind, dom_arr.shape, tny, tnx)
+        from tilestream.fire_inventory import fire_field_layout, fire_transfer_segments, fire_wind_segments
+        fire_layout = fire_field_layout(name, dom_arr.shape, ny, nx)
+        fire_wind = name in ("fire/uah", "fire/vah")
+        if fire_layout is None:
+            kind = classify(dom_arr.shape, nz, ny, nx, layers_ok=layers_ok)
+            want = tile_shape_for(kind, dom_arr.shape, tny, tnx)
+        else:
+            ry, rx, py, px = fire_layout
+            kind = f"fire:{ry}:{rx}:{py}:{px}"
+            want = (tny * ry + 2 * py, tnx * rx + 2 * px)
+        if fire_wind:
+            kind = f"fire-wind:{kind}"
         if tuple(til_arr.shape) != want:
             raise SpecError(
                 f"{name}: domain shape {tuple(dom_arr.shape)} is stagger "
@@ -953,7 +970,9 @@ def build_plan(src_arrays: Mapping[str, Any], dst_arrays: Mapping[str, Any],
                 f"{tuple(til_arr.shape)}")
 
         if kind not in segment_cache:
-            segment_cache[kind] = segments_for(spec, direction, kind)
+            segment_cache[kind] = (fire_wind_segments(spec, name, direction) if fire_wind else
+                segments_for(spec, direction, kind) if fire_layout is None else
+                fire_transfer_segments(spec, fire_layout, direction))
         segments = segment_cache[kind]
         if not segments:
             raise SpecError(
@@ -991,7 +1010,7 @@ def build_plan(src_arrays: Mapping[str, Any], dst_arrays: Mapping[str, Any],
 
         _check_destination_rects(
             dst_rects, dst_arr.shape,
-            require_full=(direction == "gather" and require_full_gather),
+            require_full=(direction == "gather" and require_full_gather and fire_layout is None and not fire_wind),
             what=f"{direction} {name} (kind {kind!r})")
 
     if not copies:
@@ -1026,7 +1045,7 @@ def _plan_cache(spec) -> dict:
 def make_plan(src_arrays: Mapping[str, Any], dst_arrays: Mapping[str, Any],
               spec, direction: str, *, allow_pageable: bool = False,
               require_full_gather: bool = True,
-              nz: int | None = None) -> TilePlan:
+              nz: int | None = None, global_keys=()) -> TilePlan:
     """Cached :func:`build_plan`, keyed by a structural signature.
 
     The signature covers every field's name, shape, dtype and memory class on
@@ -1036,13 +1055,13 @@ def make_plan(src_arrays: Mapping[str, Any], dst_arrays: Mapping[str, Any],
     is part of the key because it decides the stagger classification.
     """
     key = (_signature(direction, src_arrays, dst_arrays),
-           allow_pageable, require_full_gather, nz)
+           allow_pageable, require_full_gather, nz, tuple(sorted(global_keys)))
     cache = _plan_cache(spec)
     plan = cache.get(key)
     if plan is None:
         plan = build_plan(src_arrays, dst_arrays, spec, direction,
                           allow_pageable=allow_pageable,
-                          require_full_gather=require_full_gather, nz=nz)
+                          require_full_gather=require_full_gather, nz=nz, global_keys=global_keys)
         cache[key] = plan
     return plan
 
@@ -1053,7 +1072,7 @@ def make_plan(src_arrays: Mapping[str, Any], dst_arrays: Mapping[str, Any],
 
 def gather_tile(store, tile_state, spec, stream=None, *,
                 allow_pageable: bool = False, require_full_gather: bool = True,
-                names=None, inventory_fn=None, nz: int | None = None
+                names=None, inventory_fn=None, nz: int | None = None, global_keys=()
                 ) -> TilePlan:
     """Full-domain ``store`` -> ``tile_state`` (halo included).
 
@@ -1080,7 +1099,7 @@ def gather_tile(store, tile_state, spec, stream=None, *,
     src = take(store, names)
     dst = take(tile_state, names)
     plan = make_plan(src, dst, spec, "gather", allow_pageable=allow_pageable,
-                     require_full_gather=require_full_gather, nz=nz)
+                     require_full_gather=require_full_gather, nz=nz, global_keys=global_keys)
     plan.execute(src, dst, stream)
     if "fields/lakemask" in dst:
         lake = getattr(getattr(tile_state, "physics", None), "lake", None)
@@ -1093,7 +1112,7 @@ def gather_tile(store, tile_state, spec, stream=None, *,
 
 def scatter_tile(tile_state, store, spec, stream=None, *,
                  allow_pageable: bool = False, names=None, inventory_fn=None,
-                 nz: int | None = None) -> TilePlan:
+                 nz: int | None = None, global_keys=()) -> TilePlan:
     """``tile_state`` interior -> full-domain ``store``.
 
     The mirror of :func:`gather_tile`, driven by the spec's SCATTER segments,
@@ -1105,7 +1124,7 @@ def scatter_tile(tile_state, store, spec, stream=None, *,
     src = take(tile_state, names)
     dst = take(store, names)
     plan = make_plan(src, dst, spec, "scatter", allow_pageable=allow_pageable,
-                     nz=nz)
+                     nz=nz, global_keys=global_keys)
     plan.execute(src, dst, stream)
     return plan
 

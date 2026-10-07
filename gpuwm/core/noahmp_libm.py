@@ -140,6 +140,7 @@ __all__ = [
     "GLIBC_VERSION",
     "f32",
     "logf",
+    "logf_array",
     "log10f",
     "expf",
     "powf",
@@ -392,6 +393,88 @@ def logf(x) -> np.float32:
     return F(y)
 
 
+#: Elements per block of :func:`logf_array` scratch.  Bounds the binary64
+#: temporaries at a few MiB whatever the field's size.
+_LOGF_ARRAY_BLOCK = 1 << 20
+_LOGF_TAB_INVC = np.asarray([row[0] for row in _LOGF_TAB], dtype=np.float64)
+_LOGF_TAB_LOGC = np.asarray([row[1] for row in _LOGF_TAB], dtype=np.float64)
+
+
+def logf_array(x) -> np.ndarray:
+    """:func:`logf` over a NumPy array, the same bits element for element.
+
+    e_logf.c's main path evaluated in binary64 and integer array arithmetic,
+    operation for operation as :func:`logf` evaluates it: each product and
+    sum rounded once, as in the C, and NumPy's elementwise loops never
+    contract a multiply and an add into one rounding.  Elements the C
+    handles specially (exactly 1, zero, negative, subnormal, infinite, NaN)
+    go through :func:`logf` itself; a physical field has none of them, so
+    the field pays the array path only.
+
+    Written for ``ruclsminit``'s freezing curve (:func:`gpuwm.core.ruc.
+    ruc_initialize_cold_start`), which took :func:`logf` once per soil level
+    per column: about 30 microseconds of CPython per column, which is a
+    minute of card idle on HRRR's 1.9 million columns at every launch.
+    """
+    value = np.asarray(x, dtype=np.float32)
+    out = np.empty(value.shape, dtype=np.float32)
+    flat = np.ascontiguousarray(value).reshape(-1)
+    flat_out = out.reshape(-1)
+    if flat.size == 0:
+        return out
+    block = min(_LOGF_ARRAY_BLOCK, flat.size)
+    for start in range(0, flat.size, block):
+        stop = min(start + block, flat.size)
+        _logf_block(flat[start:stop], flat_out[start:stop])
+    return out
+
+
+def _logf_block(flat_x: np.ndarray, out: np.ndarray) -> None:
+    """:func:`logf` of one contiguous 1-D float32 block, into ``out``."""
+    ix = flat_x.view(np.uint32)
+    # e_logf.c: ``if (ix - 0x00800000 >= 0x7f800000 - 0x00800000)`` takes
+    # the special path; ``ix == 0x3f800000`` answers exactly zero.
+    ordinary = np.subtract(ix, np.uint32(0x00800000)) < np.uint32(
+        0x7F800000 - 0x00800000)
+    ordinary &= ix != np.uint32(0x3F800000)
+    if ordinary.all():
+        special = None
+        ixf = ix
+    else:
+        special = np.flatnonzero(~ordinary)
+        ixf = ix[ordinary]
+    tmp = np.subtract(ixf, np.uint32(_LOGF_OFF))
+    i = (tmp >> np.uint32(23 - 4)) & np.uint32(15)
+    k = tmp.view(np.int32) >> np.int32(23)
+    iz = np.subtract(ixf, tmp & np.uint32(0xFF800000))
+    invc = _LOGF_TAB_INVC[i]
+    logc = _LOGF_TAB_LOGC[i]
+    z = iz.view(np.float32).astype(np.float64)
+    r = z * invc
+    r -= 1.0
+    y0 = k.astype(np.float64) * _LOGF_LN2
+    y0 += logc
+    r2 = r * r
+    y = _LOGF_A[1] * r
+    y += _LOGF_A[2]
+    y = _logf_fma_free(_LOGF_A[0], r2, y)
+    y0 += r
+    y = _logf_fma_free(y, r2, y0)
+    if special is None:
+        out[...] = y.astype(np.float32)
+    else:
+        out[ordinary] = y.astype(np.float32)
+        for index in special:
+            out[index] = logf(flat_x[index])
+
+
+def _logf_fma_free(a, b, c):
+    """``a * b + c`` as two roundings, the way the C and :func:`logf` do it."""
+    product = a * b
+    product += c
+    return product
+
+
 def log10f(x) -> np.float32:
     """glibc 2.39 ``log10f`` (still the 1993 SunPro FP32 reduction)."""
     value = F(x)
@@ -595,7 +678,7 @@ def powf_array(x, y) -> np.ndarray:
     out = np.empty(shape, dtype=np.float32)
     if not out.size:
         return out
-    workers = pm._workers(None)
+    workers = pm._workers(None, out.size)
 
     def apply(left, right, target):
         left = np.ascontiguousarray(left, dtype=np.float32)

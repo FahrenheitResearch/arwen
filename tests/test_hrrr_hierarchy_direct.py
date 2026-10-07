@@ -116,6 +116,7 @@ def test_join_highres_cache_survives_publication_and_reuses_tiles(
     root = SimpleNamespace(run=run, grid_id=1)
     exp = SimpleNamespace(root=root, domains=[root, root], start_time=day, run_seconds=60.)
     monkeypatch.setattr(join, "_native_experiment", lambda *a, **k: (exp, "fixture", _Run()))
+    monkeypatch.setattr(join, "publish_hierarchy_forecast_companions", lambda *a, **k: {})
     monkeypatch.setattr(join, "load_hrrr_target_domain", lambda path: target)
     monkeypatch.setattr(join, "_supported_hierarchy_slice", lambda *a, **k: None)
     monkeypatch.setattr(join, "validated_corridor_selection", lambda *a: None)
@@ -1855,6 +1856,7 @@ def test_the_hierarchy_receipt_relays_the_root_s_perturbation_deferral(
                 run_seconds=60.)
     monkeypatch.setattr(join, "_native_experiment",
                         lambda *a, **k: (exp, "fixture", _Run()))
+    monkeypatch.setattr(join, "publish_hierarchy_forecast_companions", lambda *a, **k: {})
     monkeypatch.setattr(join, "load_hrrr_target_domain", lambda path: target)
     monkeypatch.setattr(join, "_supported_hierarchy_slice", lambda *a, **k: None)
     monkeypatch.setattr(join, "validated_corridor_selection", lambda *a: None)

@@ -1,0 +1,2617 @@
+{
+  "schema": "sfire-initializer-atmos-native-v1",
+  "cases": {
+    "columns1_corrected0": {
+      "sha256": "591a9e38332a5e34fed3bda473b18f38837bb863550d20ba505ef46de7d3480a",
+      "native_stream_sha256": {
+        "terrain": "4b48f21a4b7a02bfbec19ef880a967a02334a3cdcef8ae83de2ef327ba8bc5dd",
+        "settings": "f0890d3e1b5610bea63ff5e2fe9781696d54c4d0fe5b47db21fb37d95d9e3cc5",
+        "flags": "7c9fa136d4413fa6173637e883b6998d32e1d675f88cddff9dcbcf331820f4b8",
+        "p_top": "9e7c49488d0facd269d5111bfb647a428945a0de3f963712b2f2272a50453687",
+        "cf1": "4d1b838d07c03630410c1cc7a5251546cd322b2b36836f5fe284338875c53cc7",
+        "cf2": "94f7efd61885ab392a9f93c2fb4d608d05d232d777f128f730a9faadfb7d64dc",
+        "cf3": "43f98d5434785369aabe116fe9ea7c2679c852ce80af1d594e7335c0955d3016",
+        "dnw": "9439dee8221d3be07b5c42251b430e91433988816fd00692b306752bec3b4ff2",
+        "rdnw": "47aeab15f088e079b0ed4ea64d7c5cda38b4c5e2d95a92ccf2e0584dfb88a6b1",
+        "rdn": "c596a3dbe74649c0e9e87f291d1980392eeeabfc83f035595b2f901fe5419a11",
+        "c1f": "6f3a1a9d59ae648b4f66e10802905ef54f901e2409b9e01e653a05fd7c4ff786",
+        "c2f": "3addfb141cd7c9c4c6543a82191a3707ac29c7a041217782e61d4d91c691aee8",
+        "c1h": "f46913286d895f62d646314f400fc3d7a543cf34eb4ae56df87f43dc4582a36b",
+        "c2h": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0",
+        "c3h": "bfff794bf0d090a016220c067030486387174b13010a0d653b55fbcfeccb8266",
+        "c4h": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0",
+        "U": "51096bba79c50f4faae1407c1de1b69093816b9ec1ea410a35be84264070920d",
+        "V": "f34f397ed58cd9b3e3aafae1d8fa2bad8e8e1b42d7f3883bd631646e335b9ed8",
+        "W": "9b00b8930d66b11eb3cc96e31d08b2889160b0e617f1f6c229fa37c92578c23c",
+        "PH": "08631419f405921d41d4b4e51060b8bd9508a32a6d7b82d35300952be8f23697",
+        "PHB": "52495919e6a58fb9d881f61e01eb76f92c7132dc61b888c98564401fdfdab1ff",
+        "MU": "cdc3ba4b223a049157b756ac18ab6d753c67fea0f43d2980544eeaa3ea7af2be",
+        "MUB": "4ee7bcd4afacb68442b8bbd734aa5f8718226c017ae8081e6fd00c75430a6024",
+        "T_DRY": "1a0d4193ca45409371c3783c872a979ee6260e945bdffc71bdd0c383d1e197b3",
+        "T": "108b8fd694cd3bc1f8c9d6f28a1f66504e48328931e6a8fce34c82f20bb11ef3",
+        "T_INIT": "f7698a69d9472c09daf4538e08de05c9a3670bbbf0d3233a3f7e38f0f136ca41",
+        "P": "dd22180aa92ef9a43bcccafc3438ea4368edb8a66f2fafb58f62a89cd3ca1b66",
+        "PB": "5312ad10ebb908dba15925cd2e7b031dbfb93d90a0f2ad8b074276e0f380a0d6",
+        "AL": "c3d7a332fae89bc21b8e5fdc406a10bb891e87d41e2fd069b5abfe3fd2fba0ec",
+        "ALB": "b82ef41dfdd9deed27398aed2157a48e6431d9f87e3bc4407a957f8bc9bdb157",
+        "ALT": "2ee9a54f3ad3f9889fcd32046269a7c435b2349b8c83cc7ec4561147b97171ea",
+        "QVAPOR": "d2d0e9e7b43ef7166c005f84ba1986a88ec95586b3d236bfe7d3fccd1070e850",
+        "H_DIABATIC": "39a68c2004ed4a20edb148b72e5aabd663f15cce54b30d2ea1c106e839761ed5",
+        "TSK": "fd6c5262ca62359fb9dbb0d06d0957d17acaf3fa9ee2b95672c7ae54b43aa81c",
+        "TMN": "b4431fd78b73fa6caa206d16417d8f4cc16895e60f5c4d2c41536223b7203e45"
+      },
+      "field_shapes": {
+        "terrain": [
+          10,
+          12
+        ],
+        "settings": [
+          8
+        ],
+        "flags": [
+          2
+        ],
+        "p_top": [],
+        "cf1": [],
+        "cf2": [],
+        "cf3": [],
+        "dnw": [
+          6
+        ],
+        "rdnw": [
+          6
+        ],
+        "rdn": [
+          6
+        ],
+        "c1f": [
+          7
+        ],
+        "c2f": [
+          7
+        ],
+        "c1h": [
+          6
+        ],
+        "c2h": [
+          6
+        ],
+        "c3h": [
+          6
+        ],
+        "c4h": [
+          6
+        ],
+        "U": [
+          6,
+          10,
+          13
+        ],
+        "V": [
+          6,
+          11,
+          12
+        ],
+        "W": [
+          7,
+          10,
+          12
+        ],
+        "PH": [
+          7,
+          10,
+          12
+        ],
+        "PHB": [
+          7,
+          10,
+          12
+        ],
+        "MU": [
+          10,
+          12
+        ],
+        "MUB": [
+          10,
+          12
+        ],
+        "T_DRY": [
+          6,
+          10,
+          12
+        ],
+        "T": [
+          6,
+          10,
+          12
+        ],
+        "T_INIT": [
+          6,
+          10,
+          12
+        ],
+        "P": [
+          6,
+          10,
+          12
+        ],
+        "PB": [
+          6,
+          10,
+          12
+        ],
+        "AL": [
+          6,
+          10,
+          12
+        ],
+        "ALB": [
+          6,
+          10,
+          12
+        ],
+        "ALT": [
+          6,
+          10,
+          12
+        ],
+        "QVAPOR": [
+          6,
+          10,
+          12
+        ],
+        "H_DIABATIC": [
+          6,
+          10,
+          12
+        ],
+        "TSK": [
+          10,
+          12
+        ],
+        "TMN": [
+          10,
+          12
+        ]
+      }
+    },
+    "columns1_corrected1": {
+      "sha256": "591a9e38332a5e34fed3bda473b18f38837bb863550d20ba505ef46de7d3480a",
+      "native_stream_sha256": {
+        "terrain": "4b48f21a4b7a02bfbec19ef880a967a02334a3cdcef8ae83de2ef327ba8bc5dd",
+        "settings": "f0890d3e1b5610bea63ff5e2fe9781696d54c4d0fe5b47db21fb37d95d9e3cc5",
+        "flags": "7c9fa136d4413fa6173637e883b6998d32e1d675f88cddff9dcbcf331820f4b8",
+        "p_top": "9e7c49488d0facd269d5111bfb647a428945a0de3f963712b2f2272a50453687",
+        "cf1": "4d1b838d07c03630410c1cc7a5251546cd322b2b36836f5fe284338875c53cc7",
+        "cf2": "94f7efd61885ab392a9f93c2fb4d608d05d232d777f128f730a9faadfb7d64dc",
+        "cf3": "43f98d5434785369aabe116fe9ea7c2679c852ce80af1d594e7335c0955d3016",
+        "dnw": "9439dee8221d3be07b5c42251b430e91433988816fd00692b306752bec3b4ff2",
+        "rdnw": "47aeab15f088e079b0ed4ea64d7c5cda38b4c5e2d95a92ccf2e0584dfb88a6b1",
+        "rdn": "c596a3dbe74649c0e9e87f291d1980392eeeabfc83f035595b2f901fe5419a11",
+        "c1f": "6f3a1a9d59ae648b4f66e10802905ef54f901e2409b9e01e653a05fd7c4ff786",
+        "c2f": "3addfb141cd7c9c4c6543a82191a3707ac29c7a041217782e61d4d91c691aee8",
+        "c1h": "f46913286d895f62d646314f400fc3d7a543cf34eb4ae56df87f43dc4582a36b",
+        "c2h": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0",
+        "c3h": "bfff794bf0d090a016220c067030486387174b13010a0d653b55fbcfeccb8266",
+        "c4h": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0",
+        "U": "51096bba79c50f4faae1407c1de1b69093816b9ec1ea410a35be84264070920d",
+        "V": "f34f397ed58cd9b3e3aafae1d8fa2bad8e8e1b42d7f3883bd631646e335b9ed8",
+        "W": "9b00b8930d66b11eb3cc96e31d08b2889160b0e617f1f6c229fa37c92578c23c",
+        "PH": "08631419f405921d41d4b4e51060b8bd9508a32a6d7b82d35300952be8f23697",
+        "PHB": "52495919e6a58fb9d881f61e01eb76f92c7132dc61b888c98564401fdfdab1ff",
+        "MU": "cdc3ba4b223a049157b756ac18ab6d753c67fea0f43d2980544eeaa3ea7af2be",
+        "MUB": "4ee7bcd4afacb68442b8bbd734aa5f8718226c017ae8081e6fd00c75430a6024",
+        "T_DRY": "1a0d4193ca45409371c3783c872a979ee6260e945bdffc71bdd0c383d1e197b3",
+        "T": "108b8fd694cd3bc1f8c9d6f28a1f66504e48328931e6a8fce34c82f20bb11ef3",
+        "T_INIT": "f7698a69d9472c09daf4538e08de05c9a3670bbbf0d3233a3f7e38f0f136ca41",
+        "P": "dd22180aa92ef9a43bcccafc3438ea4368edb8a66f2fafb58f62a89cd3ca1b66",
+        "PB": "5312ad10ebb908dba15925cd2e7b031dbfb93d90a0f2ad8b074276e0f380a0d6",
+        "AL": "c3d7a332fae89bc21b8e5fdc406a10bb891e87d41e2fd069b5abfe3fd2fba0ec",
+        "ALB": "b82ef41dfdd9deed27398aed2157a48e6431d9f87e3bc4407a957f8bc9bdb157",
+        "ALT": "2ee9a54f3ad3f9889fcd32046269a7c435b2349b8c83cc7ec4561147b97171ea",
+        "QVAPOR": "d2d0e9e7b43ef7166c005f84ba1986a88ec95586b3d236bfe7d3fccd1070e850",
+        "H_DIABATIC": "39a68c2004ed4a20edb148b72e5aabd663f15cce54b30d2ea1c106e839761ed5",
+        "TSK": "fd6c5262ca62359fb9dbb0d06d0957d17acaf3fa9ee2b95672c7ae54b43aa81c",
+        "TMN": "b4431fd78b73fa6caa206d16417d8f4cc16895e60f5c4d2c41536223b7203e45"
+      },
+      "field_shapes": {
+        "terrain": [
+          10,
+          12
+        ],
+        "settings": [
+          8
+        ],
+        "flags": [
+          2
+        ],
+        "p_top": [],
+        "cf1": [],
+        "cf2": [],
+        "cf3": [],
+        "dnw": [
+          6
+        ],
+        "rdnw": [
+          6
+        ],
+        "rdn": [
+          6
+        ],
+        "c1f": [
+          7
+        ],
+        "c2f": [
+          7
+        ],
+        "c1h": [
+          6
+        ],
+        "c2h": [
+          6
+        ],
+        "c3h": [
+          6
+        ],
+        "c4h": [
+          6
+        ],
+        "U": [
+          6,
+          10,
+          13
+        ],
+        "V": [
+          6,
+          11,
+          12
+        ],
+        "W": [
+          7,
+          10,
+          12
+        ],
+        "PH": [
+          7,
+          10,
+          12
+        ],
+        "PHB": [
+          7,
+          10,
+          12
+        ],
+        "MU": [
+          10,
+          12
+        ],
+        "MUB": [
+          10,
+          12
+        ],
+        "T_DRY": [
+          6,
+          10,
+          12
+        ],
+        "T": [
+          6,
+          10,
+          12
+        ],
+        "T_INIT": [
+          6,
+          10,
+          12
+        ],
+        "P": [
+          6,
+          10,
+          12
+        ],
+        "PB": [
+          6,
+          10,
+          12
+        ],
+        "AL": [
+          6,
+          10,
+          12
+        ],
+        "ALB": [
+          6,
+          10,
+          12
+        ],
+        "ALT": [
+          6,
+          10,
+          12
+        ],
+        "QVAPOR": [
+          6,
+          10,
+          12
+        ],
+        "H_DIABATIC": [
+          6,
+          10,
+          12
+        ],
+        "TSK": [
+          10,
+          12
+        ],
+        "TMN": [
+          10,
+          12
+        ]
+      }
+    },
+    "columns2_corrected0": {
+      "sha256": "d4919eb0a14c1cafdf2c52924cfda90d5a03d578d5f9a2b81fc1c8f4f4c43b90",
+      "native_stream_sha256": {
+        "terrain": "c8e571932b1174a3b5a92834cc478946a2530f80c473fcfe8f976249201f4e13",
+        "settings": "f0890d3e1b5610bea63ff5e2fe9781696d54c4d0fe5b47db21fb37d95d9e3cc5",
+        "flags": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+        "p_top": "9e7c49488d0facd269d5111bfb647a428945a0de3f963712b2f2272a50453687",
+        "cf1": "4d1b838d07c03630410c1cc7a5251546cd322b2b36836f5fe284338875c53cc7",
+        "cf2": "94f7efd61885ab392a9f93c2fb4d608d05d232d777f128f730a9faadfb7d64dc",
+        "cf3": "43f98d5434785369aabe116fe9ea7c2679c852ce80af1d594e7335c0955d3016",
+        "dnw": "9439dee8221d3be07b5c42251b430e91433988816fd00692b306752bec3b4ff2",
+        "rdnw": "47aeab15f088e079b0ed4ea64d7c5cda38b4c5e2d95a92ccf2e0584dfb88a6b1",
+        "rdn": "c596a3dbe74649c0e9e87f291d1980392eeeabfc83f035595b2f901fe5419a11",
+        "c1f": "6f3a1a9d59ae648b4f66e10802905ef54f901e2409b9e01e653a05fd7c4ff786",
+        "c2f": "3addfb141cd7c9c4c6543a82191a3707ac29c7a041217782e61d4d91c691aee8",
+        "c1h": "f46913286d895f62d646314f400fc3d7a543cf34eb4ae56df87f43dc4582a36b",
+        "c2h": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0",
+        "c3h": "bfff794bf0d090a016220c067030486387174b13010a0d653b55fbcfeccb8266",
+        "c4h": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0",
+        "U": "79ccf673f5d35e3063919df0a73d7eb1fb1de13dc4e477724808e4326e0ff185",
+        "V": "59f03c957f737de54a18ac3555ab4604241c141a7dabb495149bf2c680aa56b6",
+        "W": "9b00b8930d66b11eb3cc96e31d08b2889160b0e617f1f6c229fa37c92578c23c",
+        "PH": "cd41227cd1492eaa66d20d7090e96507e3230551c2bf28143627846333801608",
+        "PHB": "1c1d834b65b7bb79e7cdd1bd9fd441946896635b524f9feeb3ec735fe2703adb",
+        "MU": "0cd727b8ff2f713480b1ab756f3a699d7dfd6140137cd1cf342305742c10ac8b",
+        "MUB": "fac180b3b8990b7eb691d6cec18e0e389d5db6a3fae18fbeab576bcef9f40694",
+        "T_DRY": "c6af0ddfd5efbe59255ed5a6d2551ffd450d546ba81e2791f8c0d2021b1eb4c2",
+        "T": "c6af0ddfd5efbe59255ed5a6d2551ffd450d546ba81e2791f8c0d2021b1eb4c2",
+        "T_INIT": "e99172d437812c5911612bdfd13350df75132ba5f9fab4b1c97f8d642259b27a",
+        "P": "32e877859f6264ee4afcfa18d85ea434e43a007cda3ef55e49ad5e62bb973212",
+        "PB": "a956e436aa7c873a80e39c63b0008f7b9d5e9af5a5f561391869cbdcacd7f75b",
+        "AL": "caf6dfcdbbf7231c631d52e11f0dcaf490c404a994c14cd29a8516162a7c252e",
+        "ALB": "f4879ae8cc28f3552a964fe479aa882ca57eb7ccf8d51bca202029c8a7cd0c06",
+        "ALT": "dbf4ead36c65b1cd04018b9af137bc45f8a5edb93dbc6b85cba6d75d512d6ef1",
+        "QVAPOR": "25943234df86f269dd53c0f9cf4ced8c14687e34a3511504e89229c7bb573000",
+        "H_DIABATIC": "39a68c2004ed4a20edb148b72e5aabd663f15cce54b30d2ea1c106e839761ed5",
+        "TSK": "2beeed4c2c68d09ace042b4bc3dc89145a858627a3d68a9e7690c29a6601ce8c",
+        "TMN": "4441b1ff2860bdcccc5662c93badde429e64f89d18348aee41133e13a9fbea87"
+      },
+      "field_shapes": {
+        "terrain": [
+          10,
+          12
+        ],
+        "settings": [
+          8
+        ],
+        "flags": [
+          2
+        ],
+        "p_top": [],
+        "cf1": [],
+        "cf2": [],
+        "cf3": [],
+        "dnw": [
+          6
+        ],
+        "rdnw": [
+          6
+        ],
+        "rdn": [
+          6
+        ],
+        "c1f": [
+          7
+        ],
+        "c2f": [
+          7
+        ],
+        "c1h": [
+          6
+        ],
+        "c2h": [
+          6
+        ],
+        "c3h": [
+          6
+        ],
+        "c4h": [
+          6
+        ],
+        "U": [
+          6,
+          10,
+          13
+        ],
+        "V": [
+          6,
+          11,
+          12
+        ],
+        "W": [
+          7,
+          10,
+          12
+        ],
+        "PH": [
+          7,
+          10,
+          12
+        ],
+        "PHB": [
+          7,
+          10,
+          12
+        ],
+        "MU": [
+          10,
+          12
+        ],
+        "MUB": [
+          10,
+          12
+        ],
+        "T_DRY": [
+          6,
+          10,
+          12
+        ],
+        "T": [
+          6,
+          10,
+          12
+        ],
+        "T_INIT": [
+          6,
+          10,
+          12
+        ],
+        "P": [
+          6,
+          10,
+          12
+        ],
+        "PB": [
+          6,
+          10,
+          12
+        ],
+        "AL": [
+          6,
+          10,
+          12
+        ],
+        "ALB": [
+          6,
+          10,
+          12
+        ],
+        "ALT": [
+          6,
+          10,
+          12
+        ],
+        "QVAPOR": [
+          6,
+          10,
+          12
+        ],
+        "H_DIABATIC": [
+          6,
+          10,
+          12
+        ],
+        "TSK": [
+          10,
+          12
+        ],
+        "TMN": [
+          10,
+          12
+        ]
+      }
+    },
+    "columns2_corrected1": {
+      "sha256": "d48ac7129e52d106857eaea6bc98d10f3abfe8059639126d49c174bc94e38761",
+      "native_stream_sha256": {
+        "terrain": "c8e571932b1174a3b5a92834cc478946a2530f80c473fcfe8f976249201f4e13",
+        "settings": "f0890d3e1b5610bea63ff5e2fe9781696d54c4d0fe5b47db21fb37d95d9e3cc5",
+        "flags": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+        "p_top": "9e7c49488d0facd269d5111bfb647a428945a0de3f963712b2f2272a50453687",
+        "cf1": "4d1b838d07c03630410c1cc7a5251546cd322b2b36836f5fe284338875c53cc7",
+        "cf2": "94f7efd61885ab392a9f93c2fb4d608d05d232d777f128f730a9faadfb7d64dc",
+        "cf3": "43f98d5434785369aabe116fe9ea7c2679c852ce80af1d594e7335c0955d3016",
+        "dnw": "9439dee8221d3be07b5c42251b430e91433988816fd00692b306752bec3b4ff2",
+        "rdnw": "47aeab15f088e079b0ed4ea64d7c5cda38b4c5e2d95a92ccf2e0584dfb88a6b1",
+        "rdn": "c596a3dbe74649c0e9e87f291d1980392eeeabfc83f035595b2f901fe5419a11",
+        "c1f": "6f3a1a9d59ae648b4f66e10802905ef54f901e2409b9e01e653a05fd7c4ff786",
+        "c2f": "3addfb141cd7c9c4c6543a82191a3707ac29c7a041217782e61d4d91c691aee8",
+        "c1h": "f46913286d895f62d646314f400fc3d7a543cf34eb4ae56df87f43dc4582a36b",
+        "c2h": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0",
+        "c3h": "bfff794bf0d090a016220c067030486387174b13010a0d653b55fbcfeccb8266",
+        "c4h": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0",
+        "U": "79ccf673f5d35e3063919df0a73d7eb1fb1de13dc4e477724808e4326e0ff185",
+        "V": "59f03c957f737de54a18ac3555ab4604241c141a7dabb495149bf2c680aa56b6",
+        "W": "9b00b8930d66b11eb3cc96e31d08b2889160b0e617f1f6c229fa37c92578c23c",
+        "PH": "cd41227cd1492eaa66d20d7090e96507e3230551c2bf28143627846333801608",
+        "PHB": "1c1d834b65b7bb79e7cdd1bd9fd441946896635b524f9feeb3ec735fe2703adb",
+        "MU": "0cd727b8ff2f713480b1ab756f3a699d7dfd6140137cd1cf342305742c10ac8b",
+        "MUB": "fac180b3b8990b7eb691d6cec18e0e389d5db6a3fae18fbeab576bcef9f40694",
+        "T_DRY": "c6af0ddfd5efbe59255ed5a6d2551ffd450d546ba81e2791f8c0d2021b1eb4c2",
+        "T": "c6af0ddfd5efbe59255ed5a6d2551ffd450d546ba81e2791f8c0d2021b1eb4c2",
+        "T_INIT": "e99172d437812c5911612bdfd13350df75132ba5f9fab4b1c97f8d642259b27a",
+        "P": "32e877859f6264ee4afcfa18d85ea434e43a007cda3ef55e49ad5e62bb973212",
+        "PB": "a956e436aa7c873a80e39c63b0008f7b9d5e9af5a5f561391869cbdcacd7f75b",
+        "AL": "caf6dfcdbbf7231c631d52e11f0dcaf490c404a994c14cd29a8516162a7c252e",
+        "ALB": "f4879ae8cc28f3552a964fe479aa882ca57eb7ccf8d51bca202029c8a7cd0c06",
+        "ALT": "dbf4ead36c65b1cd04018b9af137bc45f8a5edb93dbc6b85cba6d75d512d6ef1",
+        "QVAPOR": "25943234df86f269dd53c0f9cf4ced8c14687e34a3511504e89229c7bb573000",
+        "H_DIABATIC": "39a68c2004ed4a20edb148b72e5aabd663f15cce54b30d2ea1c106e839761ed5",
+        "TSK": "22ff657375d374c41e461689096918534ab84397fe9430baacedca3543ccd038",
+        "TMN": "58643f1b0062fba8dc2e46770c1a133207292fb636c0522c8a4437848a7d879d"
+      },
+      "field_shapes": {
+        "terrain": [
+          10,
+          12
+        ],
+        "settings": [
+          8
+        ],
+        "flags": [
+          2
+        ],
+        "p_top": [],
+        "cf1": [],
+        "cf2": [],
+        "cf3": [],
+        "dnw": [
+          6
+        ],
+        "rdnw": [
+          6
+        ],
+        "rdn": [
+          6
+        ],
+        "c1f": [
+          7
+        ],
+        "c2f": [
+          7
+        ],
+        "c1h": [
+          6
+        ],
+        "c2h": [
+          6
+        ],
+        "c3h": [
+          6
+        ],
+        "c4h": [
+          6
+        ],
+        "U": [
+          6,
+          10,
+          13
+        ],
+        "V": [
+          6,
+          11,
+          12
+        ],
+        "W": [
+          7,
+          10,
+          12
+        ],
+        "PH": [
+          7,
+          10,
+          12
+        ],
+        "PHB": [
+          7,
+          10,
+          12
+        ],
+        "MU": [
+          10,
+          12
+        ],
+        "MUB": [
+          10,
+          12
+        ],
+        "T_DRY": [
+          6,
+          10,
+          12
+        ],
+        "T": [
+          6,
+          10,
+          12
+        ],
+        "T_INIT": [
+          6,
+          10,
+          12
+        ],
+        "P": [
+          6,
+          10,
+          12
+        ],
+        "PB": [
+          6,
+          10,
+          12
+        ],
+        "AL": [
+          6,
+          10,
+          12
+        ],
+        "ALB": [
+          6,
+          10,
+          12
+        ],
+        "ALT": [
+          6,
+          10,
+          12
+        ],
+        "QVAPOR": [
+          6,
+          10,
+          12
+        ],
+        "H_DIABATIC": [
+          6,
+          10,
+          12
+        ],
+        "TSK": [
+          10,
+          12
+        ],
+        "TMN": [
+          10,
+          12
+        ]
+      }
+    },
+    "columns3_corrected0": {
+      "sha256": "f2731811667cb477151c2f35c18a3ec3d8c0ef9d9bd014121066fd53db378c56",
+      "native_stream_sha256": {
+        "terrain": "c8e571932b1174a3b5a92834cc478946a2530f80c473fcfe8f976249201f4e13",
+        "settings": "e47c84a772c9488cb9e7022ee1a6891451d9ff724e4c6428ec05c3142037baa4",
+        "flags": "7c9fa136d4413fa6173637e883b6998d32e1d675f88cddff9dcbcf331820f4b8",
+        "p_top": "9e7c49488d0facd269d5111bfb647a428945a0de3f963712b2f2272a50453687",
+        "cf1": "4d1b838d07c03630410c1cc7a5251546cd322b2b36836f5fe284338875c53cc7",
+        "cf2": "94f7efd61885ab392a9f93c2fb4d608d05d232d777f128f730a9faadfb7d64dc",
+        "cf3": "43f98d5434785369aabe116fe9ea7c2679c852ce80af1d594e7335c0955d3016",
+        "dnw": "9439dee8221d3be07b5c42251b430e91433988816fd00692b306752bec3b4ff2",
+        "rdnw": "47aeab15f088e079b0ed4ea64d7c5cda38b4c5e2d95a92ccf2e0584dfb88a6b1",
+        "rdn": "c596a3dbe74649c0e9e87f291d1980392eeeabfc83f035595b2f901fe5419a11",
+        "c1f": "6f3a1a9d59ae648b4f66e10802905ef54f901e2409b9e01e653a05fd7c4ff786",
+        "c2f": "3addfb141cd7c9c4c6543a82191a3707ac29c7a041217782e61d4d91c691aee8",
+        "c1h": "f46913286d895f62d646314f400fc3d7a543cf34eb4ae56df87f43dc4582a36b",
+        "c2h": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0",
+        "c3h": "bfff794bf0d090a016220c067030486387174b13010a0d653b55fbcfeccb8266",
+        "c4h": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0",
+        "U": "79ccf673f5d35e3063919df0a73d7eb1fb1de13dc4e477724808e4326e0ff185",
+        "V": "59f03c957f737de54a18ac3555ab4604241c141a7dabb495149bf2c680aa56b6",
+        "W": "9b00b8930d66b11eb3cc96e31d08b2889160b0e617f1f6c229fa37c92578c23c",
+        "PH": "0c1f242f078065dfad3a2423913b8d7361e7b2e5c6ddeda335e9e7d9178f0047",
+        "PHB": "1c1d834b65b7bb79e7cdd1bd9fd441946896635b524f9feeb3ec735fe2703adb",
+        "MU": "0cd727b8ff2f713480b1ab756f3a699d7dfd6140137cd1cf342305742c10ac8b",
+        "MUB": "fac180b3b8990b7eb691d6cec18e0e389d5db6a3fae18fbeab576bcef9f40694",
+        "T_DRY": "128fffe600f09d84492e0ffdc1da4be551be06222ea40215eec573d4e63d4fb8",
+        "T": "7f99e850d43d50d150fa22f7bcd9bf8007f2f0efdcc476a9c1c932c1394b8ae6",
+        "T_INIT": "e99172d437812c5911612bdfd13350df75132ba5f9fab4b1c97f8d642259b27a",
+        "P": "32e877859f6264ee4afcfa18d85ea434e43a007cda3ef55e49ad5e62bb973212",
+        "PB": "a956e436aa7c873a80e39c63b0008f7b9d5e9af5a5f561391869cbdcacd7f75b",
+        "AL": "53c9ccc0a170891a51433a14e49603a6f10644cda5844d90bd634b3ebeaa4c14",
+        "ALB": "f4879ae8cc28f3552a964fe479aa882ca57eb7ccf8d51bca202029c8a7cd0c06",
+        "ALT": "b3ce8d8d68afe3941ad462f3533cb9641005d0319e52b70ce11c30f05b81040e",
+        "QVAPOR": "25943234df86f269dd53c0f9cf4ced8c14687e34a3511504e89229c7bb573000",
+        "H_DIABATIC": "39a68c2004ed4a20edb148b72e5aabd663f15cce54b30d2ea1c106e839761ed5",
+        "TSK": "2beeed4c2c68d09ace042b4bc3dc89145a858627a3d68a9e7690c29a6601ce8c",
+        "TMN": "4441b1ff2860bdcccc5662c93badde429e64f89d18348aee41133e13a9fbea87"
+      },
+      "field_shapes": {
+        "terrain": [
+          10,
+          12
+        ],
+        "settings": [
+          8
+        ],
+        "flags": [
+          2
+        ],
+        "p_top": [],
+        "cf1": [],
+        "cf2": [],
+        "cf3": [],
+        "dnw": [
+          6
+        ],
+        "rdnw": [
+          6
+        ],
+        "rdn": [
+          6
+        ],
+        "c1f": [
+          7
+        ],
+        "c2f": [
+          7
+        ],
+        "c1h": [
+          6
+        ],
+        "c2h": [
+          6
+        ],
+        "c3h": [
+          6
+        ],
+        "c4h": [
+          6
+        ],
+        "U": [
+          6,
+          10,
+          13
+        ],
+        "V": [
+          6,
+          11,
+          12
+        ],
+        "W": [
+          7,
+          10,
+          12
+        ],
+        "PH": [
+          7,
+          10,
+          12
+        ],
+        "PHB": [
+          7,
+          10,
+          12
+        ],
+        "MU": [
+          10,
+          12
+        ],
+        "MUB": [
+          10,
+          12
+        ],
+        "T_DRY": [
+          6,
+          10,
+          12
+        ],
+        "T": [
+          6,
+          10,
+          12
+        ],
+        "T_INIT": [
+          6,
+          10,
+          12
+        ],
+        "P": [
+          6,
+          10,
+          12
+        ],
+        "PB": [
+          6,
+          10,
+          12
+        ],
+        "AL": [
+          6,
+          10,
+          12
+        ],
+        "ALB": [
+          6,
+          10,
+          12
+        ],
+        "ALT": [
+          6,
+          10,
+          12
+        ],
+        "QVAPOR": [
+          6,
+          10,
+          12
+        ],
+        "H_DIABATIC": [
+          6,
+          10,
+          12
+        ],
+        "TSK": [
+          10,
+          12
+        ],
+        "TMN": [
+          10,
+          12
+        ]
+      }
+    },
+    "columns3_corrected1": {
+      "sha256": "a398d0bdf19b646754949d7739cdb35eb438f47956cb16eb75cb1fe99fc6ec01",
+      "native_stream_sha256": {
+        "terrain": "c8e571932b1174a3b5a92834cc478946a2530f80c473fcfe8f976249201f4e13",
+        "settings": "e47c84a772c9488cb9e7022ee1a6891451d9ff724e4c6428ec05c3142037baa4",
+        "flags": "7c9fa136d4413fa6173637e883b6998d32e1d675f88cddff9dcbcf331820f4b8",
+        "p_top": "9e7c49488d0facd269d5111bfb647a428945a0de3f963712b2f2272a50453687",
+        "cf1": "4d1b838d07c03630410c1cc7a5251546cd322b2b36836f5fe284338875c53cc7",
+        "cf2": "94f7efd61885ab392a9f93c2fb4d608d05d232d777f128f730a9faadfb7d64dc",
+        "cf3": "43f98d5434785369aabe116fe9ea7c2679c852ce80af1d594e7335c0955d3016",
+        "dnw": "9439dee8221d3be07b5c42251b430e91433988816fd00692b306752bec3b4ff2",
+        "rdnw": "47aeab15f088e079b0ed4ea64d7c5cda38b4c5e2d95a92ccf2e0584dfb88a6b1",
+        "rdn": "c596a3dbe74649c0e9e87f291d1980392eeeabfc83f035595b2f901fe5419a11",
+        "c1f": "6f3a1a9d59ae648b4f66e10802905ef54f901e2409b9e01e653a05fd7c4ff786",
+        "c2f": "3addfb141cd7c9c4c6543a82191a3707ac29c7a041217782e61d4d91c691aee8",
+        "c1h": "f46913286d895f62d646314f400fc3d7a543cf34eb4ae56df87f43dc4582a36b",
+        "c2h": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0",
+        "c3h": "bfff794bf0d090a016220c067030486387174b13010a0d653b55fbcfeccb8266",
+        "c4h": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0",
+        "U": "79ccf673f5d35e3063919df0a73d7eb1fb1de13dc4e477724808e4326e0ff185",
+        "V": "59f03c957f737de54a18ac3555ab4604241c141a7dabb495149bf2c680aa56b6",
+        "W": "9b00b8930d66b11eb3cc96e31d08b2889160b0e617f1f6c229fa37c92578c23c",
+        "PH": "0c1f242f078065dfad3a2423913b8d7361e7b2e5c6ddeda335e9e7d9178f0047",
+        "PHB": "1c1d834b65b7bb79e7cdd1bd9fd441946896635b524f9feeb3ec735fe2703adb",
+        "MU": "0cd727b8ff2f713480b1ab756f3a699d7dfd6140137cd1cf342305742c10ac8b",
+        "MUB": "fac180b3b8990b7eb691d6cec18e0e389d5db6a3fae18fbeab576bcef9f40694",
+        "T_DRY": "128fffe600f09d84492e0ffdc1da4be551be06222ea40215eec573d4e63d4fb8",
+        "T": "7f99e850d43d50d150fa22f7bcd9bf8007f2f0efdcc476a9c1c932c1394b8ae6",
+        "T_INIT": "e99172d437812c5911612bdfd13350df75132ba5f9fab4b1c97f8d642259b27a",
+        "P": "32e877859f6264ee4afcfa18d85ea434e43a007cda3ef55e49ad5e62bb973212",
+        "PB": "a956e436aa7c873a80e39c63b0008f7b9d5e9af5a5f561391869cbdcacd7f75b",
+        "AL": "53c9ccc0a170891a51433a14e49603a6f10644cda5844d90bd634b3ebeaa4c14",
+        "ALB": "f4879ae8cc28f3552a964fe479aa882ca57eb7ccf8d51bca202029c8a7cd0c06",
+        "ALT": "b3ce8d8d68afe3941ad462f3533cb9641005d0319e52b70ce11c30f05b81040e",
+        "QVAPOR": "25943234df86f269dd53c0f9cf4ced8c14687e34a3511504e89229c7bb573000",
+        "H_DIABATIC": "39a68c2004ed4a20edb148b72e5aabd663f15cce54b30d2ea1c106e839761ed5",
+        "TSK": "e1ac40b63f285ae5cb8984571b811c6fc96277b1be3646ef4cc2b315e4d82f60",
+        "TMN": "eefa9737ff1cd66f05dafaae87cd6c3d453c3d5cdcc58e409e19fd72307f1930"
+      },
+      "field_shapes": {
+        "terrain": [
+          10,
+          12
+        ],
+        "settings": [
+          8
+        ],
+        "flags": [
+          2
+        ],
+        "p_top": [],
+        "cf1": [],
+        "cf2": [],
+        "cf3": [],
+        "dnw": [
+          6
+        ],
+        "rdnw": [
+          6
+        ],
+        "rdn": [
+          6
+        ],
+        "c1f": [
+          7
+        ],
+        "c2f": [
+          7
+        ],
+        "c1h": [
+          6
+        ],
+        "c2h": [
+          6
+        ],
+        "c3h": [
+          6
+        ],
+        "c4h": [
+          6
+        ],
+        "U": [
+          6,
+          10,
+          13
+        ],
+        "V": [
+          6,
+          11,
+          12
+        ],
+        "W": [
+          7,
+          10,
+          12
+        ],
+        "PH": [
+          7,
+          10,
+          12
+        ],
+        "PHB": [
+          7,
+          10,
+          12
+        ],
+        "MU": [
+          10,
+          12
+        ],
+        "MUB": [
+          10,
+          12
+        ],
+        "T_DRY": [
+          6,
+          10,
+          12
+        ],
+        "T": [
+          6,
+          10,
+          12
+        ],
+        "T_INIT": [
+          6,
+          10,
+          12
+        ],
+        "P": [
+          6,
+          10,
+          12
+        ],
+        "PB": [
+          6,
+          10,
+          12
+        ],
+        "AL": [
+          6,
+          10,
+          12
+        ],
+        "ALB": [
+          6,
+          10,
+          12
+        ],
+        "ALT": [
+          6,
+          10,
+          12
+        ],
+        "QVAPOR": [
+          6,
+          10,
+          12
+        ],
+        "H_DIABATIC": [
+          6,
+          10,
+          12
+        ],
+        "TSK": [
+          10,
+          12
+        ],
+        "TMN": [
+          10,
+          12
+        ]
+      }
+    },
+    "columns4_corrected0": {
+      "sha256": "cec74fdb55a9fadac4f8a60712724946f06ff2de9810867884e822c77cf65458",
+      "native_stream_sha256": {
+        "terrain": "c8e571932b1174a3b5a92834cc478946a2530f80c473fcfe8f976249201f4e13",
+        "settings": "51c4a75e29e79a93db21ff1310d2b13a6ffbe475cc40df71abe784fb80279eeb",
+        "flags": "7c9fa136d4413fa6173637e883b6998d32e1d675f88cddff9dcbcf331820f4b8",
+        "p_top": "9e7c49488d0facd269d5111bfb647a428945a0de3f963712b2f2272a50453687",
+        "cf1": "4d1b838d07c03630410c1cc7a5251546cd322b2b36836f5fe284338875c53cc7",
+        "cf2": "94f7efd61885ab392a9f93c2fb4d608d05d232d777f128f730a9faadfb7d64dc",
+        "cf3": "43f98d5434785369aabe116fe9ea7c2679c852ce80af1d594e7335c0955d3016",
+        "dnw": "9439dee8221d3be07b5c42251b430e91433988816fd00692b306752bec3b4ff2",
+        "rdnw": "47aeab15f088e079b0ed4ea64d7c5cda38b4c5e2d95a92ccf2e0584dfb88a6b1",
+        "rdn": "c596a3dbe74649c0e9e87f291d1980392eeeabfc83f035595b2f901fe5419a11",
+        "c1f": "6f3a1a9d59ae648b4f66e10802905ef54f901e2409b9e01e653a05fd7c4ff786",
+        "c2f": "3addfb141cd7c9c4c6543a82191a3707ac29c7a041217782e61d4d91c691aee8",
+        "c1h": "f46913286d895f62d646314f400fc3d7a543cf34eb4ae56df87f43dc4582a36b",
+        "c2h": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0",
+        "c3h": "bfff794bf0d090a016220c067030486387174b13010a0d653b55fbcfeccb8266",
+        "c4h": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0",
+        "U": "79ccf673f5d35e3063919df0a73d7eb1fb1de13dc4e477724808e4326e0ff185",
+        "V": "59f03c957f737de54a18ac3555ab4604241c141a7dabb495149bf2c680aa56b6",
+        "W": "9b00b8930d66b11eb3cc96e31d08b2889160b0e617f1f6c229fa37c92578c23c",
+        "PH": "74748fc031892eaff684f9239154b2d808053737206bea1150e7695c759d5548",
+        "PHB": "1c1d834b65b7bb79e7cdd1bd9fd441946896635b524f9feeb3ec735fe2703adb",
+        "MU": "0cd727b8ff2f713480b1ab756f3a699d7dfd6140137cd1cf342305742c10ac8b",
+        "MUB": "fac180b3b8990b7eb691d6cec18e0e389d5db6a3fae18fbeab576bcef9f40694",
+        "T_DRY": "3e020a307626b37a4a4d18f1eecbff2cd4433885913e79f30822a409f238302f",
+        "T": "c7d86f00d537bb35fc91fb560b610e35ccc370e4bc5d12827fa1bf236cdafa43",
+        "T_INIT": "e99172d437812c5911612bdfd13350df75132ba5f9fab4b1c97f8d642259b27a",
+        "P": "32e877859f6264ee4afcfa18d85ea434e43a007cda3ef55e49ad5e62bb973212",
+        "PB": "a956e436aa7c873a80e39c63b0008f7b9d5e9af5a5f561391869cbdcacd7f75b",
+        "AL": "f52088e31d47fd77a22752f2709c6dbf4181ca1ae43e527fa63cbc9f1afcd269",
+        "ALB": "f4879ae8cc28f3552a964fe479aa882ca57eb7ccf8d51bca202029c8a7cd0c06",
+        "ALT": "3f6dd6bbad91cc41bbb7a186ea823deb4e70b93e5ab6375332b0d701e260f68b",
+        "QVAPOR": "25943234df86f269dd53c0f9cf4ced8c14687e34a3511504e89229c7bb573000",
+        "H_DIABATIC": "39a68c2004ed4a20edb148b72e5aabd663f15cce54b30d2ea1c106e839761ed5",
+        "TSK": "2beeed4c2c68d09ace042b4bc3dc89145a858627a3d68a9e7690c29a6601ce8c",
+        "TMN": "4441b1ff2860bdcccc5662c93badde429e64f89d18348aee41133e13a9fbea87"
+      },
+      "field_shapes": {
+        "terrain": [
+          10,
+          12
+        ],
+        "settings": [
+          8
+        ],
+        "flags": [
+          2
+        ],
+        "p_top": [],
+        "cf1": [],
+        "cf2": [],
+        "cf3": [],
+        "dnw": [
+          6
+        ],
+        "rdnw": [
+          6
+        ],
+        "rdn": [
+          6
+        ],
+        "c1f": [
+          7
+        ],
+        "c2f": [
+          7
+        ],
+        "c1h": [
+          6
+        ],
+        "c2h": [
+          6
+        ],
+        "c3h": [
+          6
+        ],
+        "c4h": [
+          6
+        ],
+        "U": [
+          6,
+          10,
+          13
+        ],
+        "V": [
+          6,
+          11,
+          12
+        ],
+        "W": [
+          7,
+          10,
+          12
+        ],
+        "PH": [
+          7,
+          10,
+          12
+        ],
+        "PHB": [
+          7,
+          10,
+          12
+        ],
+        "MU": [
+          10,
+          12
+        ],
+        "MUB": [
+          10,
+          12
+        ],
+        "T_DRY": [
+          6,
+          10,
+          12
+        ],
+        "T": [
+          6,
+          10,
+          12
+        ],
+        "T_INIT": [
+          6,
+          10,
+          12
+        ],
+        "P": [
+          6,
+          10,
+          12
+        ],
+        "PB": [
+          6,
+          10,
+          12
+        ],
+        "AL": [
+          6,
+          10,
+          12
+        ],
+        "ALB": [
+          6,
+          10,
+          12
+        ],
+        "ALT": [
+          6,
+          10,
+          12
+        ],
+        "QVAPOR": [
+          6,
+          10,
+          12
+        ],
+        "H_DIABATIC": [
+          6,
+          10,
+          12
+        ],
+        "TSK": [
+          10,
+          12
+        ],
+        "TMN": [
+          10,
+          12
+        ]
+      }
+    },
+    "columns4_corrected1": {
+      "sha256": "00cb4285b02db7dba772bf429c7e5c1a9d554aed6d8c191594712b407565c1b9",
+      "native_stream_sha256": {
+        "terrain": "c8e571932b1174a3b5a92834cc478946a2530f80c473fcfe8f976249201f4e13",
+        "settings": "51c4a75e29e79a93db21ff1310d2b13a6ffbe475cc40df71abe784fb80279eeb",
+        "flags": "7c9fa136d4413fa6173637e883b6998d32e1d675f88cddff9dcbcf331820f4b8",
+        "p_top": "9e7c49488d0facd269d5111bfb647a428945a0de3f963712b2f2272a50453687",
+        "cf1": "4d1b838d07c03630410c1cc7a5251546cd322b2b36836f5fe284338875c53cc7",
+        "cf2": "94f7efd61885ab392a9f93c2fb4d608d05d232d777f128f730a9faadfb7d64dc",
+        "cf3": "43f98d5434785369aabe116fe9ea7c2679c852ce80af1d594e7335c0955d3016",
+        "dnw": "9439dee8221d3be07b5c42251b430e91433988816fd00692b306752bec3b4ff2",
+        "rdnw": "47aeab15f088e079b0ed4ea64d7c5cda38b4c5e2d95a92ccf2e0584dfb88a6b1",
+        "rdn": "c596a3dbe74649c0e9e87f291d1980392eeeabfc83f035595b2f901fe5419a11",
+        "c1f": "6f3a1a9d59ae648b4f66e10802905ef54f901e2409b9e01e653a05fd7c4ff786",
+        "c2f": "3addfb141cd7c9c4c6543a82191a3707ac29c7a041217782e61d4d91c691aee8",
+        "c1h": "f46913286d895f62d646314f400fc3d7a543cf34eb4ae56df87f43dc4582a36b",
+        "c2h": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0",
+        "c3h": "bfff794bf0d090a016220c067030486387174b13010a0d653b55fbcfeccb8266",
+        "c4h": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0",
+        "U": "79ccf673f5d35e3063919df0a73d7eb1fb1de13dc4e477724808e4326e0ff185",
+        "V": "59f03c957f737de54a18ac3555ab4604241c141a7dabb495149bf2c680aa56b6",
+        "W": "9b00b8930d66b11eb3cc96e31d08b2889160b0e617f1f6c229fa37c92578c23c",
+        "PH": "74748fc031892eaff684f9239154b2d808053737206bea1150e7695c759d5548",
+        "PHB": "1c1d834b65b7bb79e7cdd1bd9fd441946896635b524f9feeb3ec735fe2703adb",
+        "MU": "0cd727b8ff2f713480b1ab756f3a699d7dfd6140137cd1cf342305742c10ac8b",
+        "MUB": "fac180b3b8990b7eb691d6cec18e0e389d5db6a3fae18fbeab576bcef9f40694",
+        "T_DRY": "3e020a307626b37a4a4d18f1eecbff2cd4433885913e79f30822a409f238302f",
+        "T": "c7d86f00d537bb35fc91fb560b610e35ccc370e4bc5d12827fa1bf236cdafa43",
+        "T_INIT": "e99172d437812c5911612bdfd13350df75132ba5f9fab4b1c97f8d642259b27a",
+        "P": "32e877859f6264ee4afcfa18d85ea434e43a007cda3ef55e49ad5e62bb973212",
+        "PB": "a956e436aa7c873a80e39c63b0008f7b9d5e9af5a5f561391869cbdcacd7f75b",
+        "AL": "f52088e31d47fd77a22752f2709c6dbf4181ca1ae43e527fa63cbc9f1afcd269",
+        "ALB": "f4879ae8cc28f3552a964fe479aa882ca57eb7ccf8d51bca202029c8a7cd0c06",
+        "ALT": "3f6dd6bbad91cc41bbb7a186ea823deb4e70b93e5ab6375332b0d701e260f68b",
+        "QVAPOR": "25943234df86f269dd53c0f9cf4ced8c14687e34a3511504e89229c7bb573000",
+        "H_DIABATIC": "39a68c2004ed4a20edb148b72e5aabd663f15cce54b30d2ea1c106e839761ed5",
+        "TSK": "ffd19853209ae6499896379adcee5a7e94919ea9339643c6a9dd630f4a667b4d",
+        "TMN": "52a0c002cf3d4d37f61ecb38fc7d1aa7b8f55dd9c86e60f7f14c2b1cb32667e2"
+      },
+      "field_shapes": {
+        "terrain": [
+          10,
+          12
+        ],
+        "settings": [
+          8
+        ],
+        "flags": [
+          2
+        ],
+        "p_top": [],
+        "cf1": [],
+        "cf2": [],
+        "cf3": [],
+        "dnw": [
+          6
+        ],
+        "rdnw": [
+          6
+        ],
+        "rdn": [
+          6
+        ],
+        "c1f": [
+          7
+        ],
+        "c2f": [
+          7
+        ],
+        "c1h": [
+          6
+        ],
+        "c2h": [
+          6
+        ],
+        "c3h": [
+          6
+        ],
+        "c4h": [
+          6
+        ],
+        "U": [
+          6,
+          10,
+          13
+        ],
+        "V": [
+          6,
+          11,
+          12
+        ],
+        "W": [
+          7,
+          10,
+          12
+        ],
+        "PH": [
+          7,
+          10,
+          12
+        ],
+        "PHB": [
+          7,
+          10,
+          12
+        ],
+        "MU": [
+          10,
+          12
+        ],
+        "MUB": [
+          10,
+          12
+        ],
+        "T_DRY": [
+          6,
+          10,
+          12
+        ],
+        "T": [
+          6,
+          10,
+          12
+        ],
+        "T_INIT": [
+          6,
+          10,
+          12
+        ],
+        "P": [
+          6,
+          10,
+          12
+        ],
+        "PB": [
+          6,
+          10,
+          12
+        ],
+        "AL": [
+          6,
+          10,
+          12
+        ],
+        "ALB": [
+          6,
+          10,
+          12
+        ],
+        "ALT": [
+          6,
+          10,
+          12
+        ],
+        "QVAPOR": [
+          6,
+          10,
+          12
+        ],
+        "H_DIABATIC": [
+          6,
+          10,
+          12
+        ],
+        "TSK": [
+          10,
+          12
+        ],
+        "TMN": [
+          10,
+          12
+        ]
+      }
+    },
+    "columns5_corrected0": {
+      "sha256": "731cc1022e88401b50dd7ac3f6bf16c1b491659e18f051e69f97d9c9dd876ba1",
+      "native_stream_sha256": {
+        "terrain": "c8e571932b1174a3b5a92834cc478946a2530f80c473fcfe8f976249201f4e13",
+        "settings": "f0890d3e1b5610bea63ff5e2fe9781696d54c4d0fe5b47db21fb37d95d9e3cc5",
+        "flags": "64ed86b909d6d0502b64b28db0ea1272ffb358e20e9b1d88b63ccb07fa900cf5",
+        "p_top": "9e7c49488d0facd269d5111bfb647a428945a0de3f963712b2f2272a50453687",
+        "cf1": "4d1b838d07c03630410c1cc7a5251546cd322b2b36836f5fe284338875c53cc7",
+        "cf2": "94f7efd61885ab392a9f93c2fb4d608d05d232d777f128f730a9faadfb7d64dc",
+        "cf3": "43f98d5434785369aabe116fe9ea7c2679c852ce80af1d594e7335c0955d3016",
+        "dnw": "9439dee8221d3be07b5c42251b430e91433988816fd00692b306752bec3b4ff2",
+        "rdnw": "47aeab15f088e079b0ed4ea64d7c5cda38b4c5e2d95a92ccf2e0584dfb88a6b1",
+        "rdn": "c596a3dbe74649c0e9e87f291d1980392eeeabfc83f035595b2f901fe5419a11",
+        "c1f": "6f3a1a9d59ae648b4f66e10802905ef54f901e2409b9e01e653a05fd7c4ff786",
+        "c2f": "3addfb141cd7c9c4c6543a82191a3707ac29c7a041217782e61d4d91c691aee8",
+        "c1h": "f46913286d895f62d646314f400fc3d7a543cf34eb4ae56df87f43dc4582a36b",
+        "c2h": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0",
+        "c3h": "bfff794bf0d090a016220c067030486387174b13010a0d653b55fbcfeccb8266",
+        "c4h": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0",
+        "U": "79ccf673f5d35e3063919df0a73d7eb1fb1de13dc4e477724808e4326e0ff185",
+        "V": "59f03c957f737de54a18ac3555ab4604241c141a7dabb495149bf2c680aa56b6",
+        "W": "9b00b8930d66b11eb3cc96e31d08b2889160b0e617f1f6c229fa37c92578c23c",
+        "PH": "cd41227cd1492eaa66d20d7090e96507e3230551c2bf28143627846333801608",
+        "PHB": "1c1d834b65b7bb79e7cdd1bd9fd441946896635b524f9feeb3ec735fe2703adb",
+        "MU": "0cd727b8ff2f713480b1ab756f3a699d7dfd6140137cd1cf342305742c10ac8b",
+        "MUB": "fac180b3b8990b7eb691d6cec18e0e389d5db6a3fae18fbeab576bcef9f40694",
+        "T_DRY": "c6af0ddfd5efbe59255ed5a6d2551ffd450d546ba81e2791f8c0d2021b1eb4c2",
+        "T": "aa2ea1754cc6aec1d06d004ecb45954bd33a00089db40c7dd217d2c2828d1959",
+        "T_INIT": "e99172d437812c5911612bdfd13350df75132ba5f9fab4b1c97f8d642259b27a",
+        "P": "32e877859f6264ee4afcfa18d85ea434e43a007cda3ef55e49ad5e62bb973212",
+        "PB": "a956e436aa7c873a80e39c63b0008f7b9d5e9af5a5f561391869cbdcacd7f75b",
+        "AL": "caf6dfcdbbf7231c631d52e11f0dcaf490c404a994c14cd29a8516162a7c252e",
+        "ALB": "f4879ae8cc28f3552a964fe479aa882ca57eb7ccf8d51bca202029c8a7cd0c06",
+        "ALT": "dbf4ead36c65b1cd04018b9af137bc45f8a5edb93dbc6b85cba6d75d512d6ef1",
+        "QVAPOR": "25943234df86f269dd53c0f9cf4ced8c14687e34a3511504e89229c7bb573000",
+        "H_DIABATIC": "39a68c2004ed4a20edb148b72e5aabd663f15cce54b30d2ea1c106e839761ed5",
+        "TSK": "601241cbd095560e95c34fd4c0d70bb6ebfa56ba441a4c728fa04b6fb6121a5f",
+        "TMN": "52a0084d0d17e7751f315b6e0dbbb45aa308ecbe44aeae0e62ce74cf53947731"
+      },
+      "field_shapes": {
+        "terrain": [
+          10,
+          12
+        ],
+        "settings": [
+          8
+        ],
+        "flags": [
+          2
+        ],
+        "p_top": [],
+        "cf1": [],
+        "cf2": [],
+        "cf3": [],
+        "dnw": [
+          6
+        ],
+        "rdnw": [
+          6
+        ],
+        "rdn": [
+          6
+        ],
+        "c1f": [
+          7
+        ],
+        "c2f": [
+          7
+        ],
+        "c1h": [
+          6
+        ],
+        "c2h": [
+          6
+        ],
+        "c3h": [
+          6
+        ],
+        "c4h": [
+          6
+        ],
+        "U": [
+          6,
+          10,
+          13
+        ],
+        "V": [
+          6,
+          11,
+          12
+        ],
+        "W": [
+          7,
+          10,
+          12
+        ],
+        "PH": [
+          7,
+          10,
+          12
+        ],
+        "PHB": [
+          7,
+          10,
+          12
+        ],
+        "MU": [
+          10,
+          12
+        ],
+        "MUB": [
+          10,
+          12
+        ],
+        "T_DRY": [
+          6,
+          10,
+          12
+        ],
+        "T": [
+          6,
+          10,
+          12
+        ],
+        "T_INIT": [
+          6,
+          10,
+          12
+        ],
+        "P": [
+          6,
+          10,
+          12
+        ],
+        "PB": [
+          6,
+          10,
+          12
+        ],
+        "AL": [
+          6,
+          10,
+          12
+        ],
+        "ALB": [
+          6,
+          10,
+          12
+        ],
+        "ALT": [
+          6,
+          10,
+          12
+        ],
+        "QVAPOR": [
+          6,
+          10,
+          12
+        ],
+        "H_DIABATIC": [
+          6,
+          10,
+          12
+        ],
+        "TSK": [
+          10,
+          12
+        ],
+        "TMN": [
+          10,
+          12
+        ]
+      }
+    },
+    "columns5_corrected1": {
+      "sha256": "731cc1022e88401b50dd7ac3f6bf16c1b491659e18f051e69f97d9c9dd876ba1",
+      "native_stream_sha256": {
+        "terrain": "c8e571932b1174a3b5a92834cc478946a2530f80c473fcfe8f976249201f4e13",
+        "settings": "f0890d3e1b5610bea63ff5e2fe9781696d54c4d0fe5b47db21fb37d95d9e3cc5",
+        "flags": "64ed86b909d6d0502b64b28db0ea1272ffb358e20e9b1d88b63ccb07fa900cf5",
+        "p_top": "9e7c49488d0facd269d5111bfb647a428945a0de3f963712b2f2272a50453687",
+        "cf1": "4d1b838d07c03630410c1cc7a5251546cd322b2b36836f5fe284338875c53cc7",
+        "cf2": "94f7efd61885ab392a9f93c2fb4d608d05d232d777f128f730a9faadfb7d64dc",
+        "cf3": "43f98d5434785369aabe116fe9ea7c2679c852ce80af1d594e7335c0955d3016",
+        "dnw": "9439dee8221d3be07b5c42251b430e91433988816fd00692b306752bec3b4ff2",
+        "rdnw": "47aeab15f088e079b0ed4ea64d7c5cda38b4c5e2d95a92ccf2e0584dfb88a6b1",
+        "rdn": "c596a3dbe74649c0e9e87f291d1980392eeeabfc83f035595b2f901fe5419a11",
+        "c1f": "6f3a1a9d59ae648b4f66e10802905ef54f901e2409b9e01e653a05fd7c4ff786",
+        "c2f": "3addfb141cd7c9c4c6543a82191a3707ac29c7a041217782e61d4d91c691aee8",
+        "c1h": "f46913286d895f62d646314f400fc3d7a543cf34eb4ae56df87f43dc4582a36b",
+        "c2h": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0",
+        "c3h": "bfff794bf0d090a016220c067030486387174b13010a0d653b55fbcfeccb8266",
+        "c4h": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0",
+        "U": "79ccf673f5d35e3063919df0a73d7eb1fb1de13dc4e477724808e4326e0ff185",
+        "V": "59f03c957f737de54a18ac3555ab4604241c141a7dabb495149bf2c680aa56b6",
+        "W": "9b00b8930d66b11eb3cc96e31d08b2889160b0e617f1f6c229fa37c92578c23c",
+        "PH": "cd41227cd1492eaa66d20d7090e96507e3230551c2bf28143627846333801608",
+        "PHB": "1c1d834b65b7bb79e7cdd1bd9fd441946896635b524f9feeb3ec735fe2703adb",
+        "MU": "0cd727b8ff2f713480b1ab756f3a699d7dfd6140137cd1cf342305742c10ac8b",
+        "MUB": "fac180b3b8990b7eb691d6cec18e0e389d5db6a3fae18fbeab576bcef9f40694",
+        "T_DRY": "c6af0ddfd5efbe59255ed5a6d2551ffd450d546ba81e2791f8c0d2021b1eb4c2",
+        "T": "aa2ea1754cc6aec1d06d004ecb45954bd33a00089db40c7dd217d2c2828d1959",
+        "T_INIT": "e99172d437812c5911612bdfd13350df75132ba5f9fab4b1c97f8d642259b27a",
+        "P": "32e877859f6264ee4afcfa18d85ea434e43a007cda3ef55e49ad5e62bb973212",
+        "PB": "a956e436aa7c873a80e39c63b0008f7b9d5e9af5a5f561391869cbdcacd7f75b",
+        "AL": "caf6dfcdbbf7231c631d52e11f0dcaf490c404a994c14cd29a8516162a7c252e",
+        "ALB": "f4879ae8cc28f3552a964fe479aa882ca57eb7ccf8d51bca202029c8a7cd0c06",
+        "ALT": "dbf4ead36c65b1cd04018b9af137bc45f8a5edb93dbc6b85cba6d75d512d6ef1",
+        "QVAPOR": "25943234df86f269dd53c0f9cf4ced8c14687e34a3511504e89229c7bb573000",
+        "H_DIABATIC": "39a68c2004ed4a20edb148b72e5aabd663f15cce54b30d2ea1c106e839761ed5",
+        "TSK": "601241cbd095560e95c34fd4c0d70bb6ebfa56ba441a4c728fa04b6fb6121a5f",
+        "TMN": "52a0084d0d17e7751f315b6e0dbbb45aa308ecbe44aeae0e62ce74cf53947731"
+      },
+      "field_shapes": {
+        "terrain": [
+          10,
+          12
+        ],
+        "settings": [
+          8
+        ],
+        "flags": [
+          2
+        ],
+        "p_top": [],
+        "cf1": [],
+        "cf2": [],
+        "cf3": [],
+        "dnw": [
+          6
+        ],
+        "rdnw": [
+          6
+        ],
+        "rdn": [
+          6
+        ],
+        "c1f": [
+          7
+        ],
+        "c2f": [
+          7
+        ],
+        "c1h": [
+          6
+        ],
+        "c2h": [
+          6
+        ],
+        "c3h": [
+          6
+        ],
+        "c4h": [
+          6
+        ],
+        "U": [
+          6,
+          10,
+          13
+        ],
+        "V": [
+          6,
+          11,
+          12
+        ],
+        "W": [
+          7,
+          10,
+          12
+        ],
+        "PH": [
+          7,
+          10,
+          12
+        ],
+        "PHB": [
+          7,
+          10,
+          12
+        ],
+        "MU": [
+          10,
+          12
+        ],
+        "MUB": [
+          10,
+          12
+        ],
+        "T_DRY": [
+          6,
+          10,
+          12
+        ],
+        "T": [
+          6,
+          10,
+          12
+        ],
+        "T_INIT": [
+          6,
+          10,
+          12
+        ],
+        "P": [
+          6,
+          10,
+          12
+        ],
+        "PB": [
+          6,
+          10,
+          12
+        ],
+        "AL": [
+          6,
+          10,
+          12
+        ],
+        "ALB": [
+          6,
+          10,
+          12
+        ],
+        "ALT": [
+          6,
+          10,
+          12
+        ],
+        "QVAPOR": [
+          6,
+          10,
+          12
+        ],
+        "H_DIABATIC": [
+          6,
+          10,
+          12
+        ],
+        "TSK": [
+          10,
+          12
+        ],
+        "TMN": [
+          10,
+          12
+        ]
+      }
+    },
+    "columns6_corrected0": {
+      "sha256": "9d8d3ec81ee0f5547643b9a9b1a69b3ed3dbb4cbb08fa01aecaf1671d6723aa2",
+      "native_stream_sha256": {
+        "terrain": "73759cc2b399f4b217a9c0026e38a01abd5e4b0acdd68dd2646c214f2e8bfd52",
+        "settings": "8426e268bdd4c2a1782c31edf0f6bff4cd5a561facda646834bdbf4740d3fed3",
+        "flags": "7c9fa136d4413fa6173637e883b6998d32e1d675f88cddff9dcbcf331820f4b8",
+        "p_top": "9e7c49488d0facd269d5111bfb647a428945a0de3f963712b2f2272a50453687",
+        "cf1": "4d1b838d07c03630410c1cc7a5251546cd322b2b36836f5fe284338875c53cc7",
+        "cf2": "94f7efd61885ab392a9f93c2fb4d608d05d232d777f128f730a9faadfb7d64dc",
+        "cf3": "43f98d5434785369aabe116fe9ea7c2679c852ce80af1d594e7335c0955d3016",
+        "dnw": "9439dee8221d3be07b5c42251b430e91433988816fd00692b306752bec3b4ff2",
+        "rdnw": "47aeab15f088e079b0ed4ea64d7c5cda38b4c5e2d95a92ccf2e0584dfb88a6b1",
+        "rdn": "c596a3dbe74649c0e9e87f291d1980392eeeabfc83f035595b2f901fe5419a11",
+        "c1f": "6f3a1a9d59ae648b4f66e10802905ef54f901e2409b9e01e653a05fd7c4ff786",
+        "c2f": "3addfb141cd7c9c4c6543a82191a3707ac29c7a041217782e61d4d91c691aee8",
+        "c1h": "f46913286d895f62d646314f400fc3d7a543cf34eb4ae56df87f43dc4582a36b",
+        "c2h": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0",
+        "c3h": "bfff794bf0d090a016220c067030486387174b13010a0d653b55fbcfeccb8266",
+        "c4h": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0",
+        "U": "f4b7c4496881f23f042897001c2c18f3d31441b08d31395cb6c23c059caaea69",
+        "V": "ecf5ee00fd1706d5353b7c5ea383199a26190904910e2f529451552eedea37f9",
+        "W": "9b00b8930d66b11eb3cc96e31d08b2889160b0e617f1f6c229fa37c92578c23c",
+        "PH": "79fcc1c49c1c526c22ec5cbcef84b7ea882820a3032f5db3a3f75d895a36551e",
+        "PHB": "7cc215ce2f68a1e5de7b02e230a245d4861e763bd7c7847ac8e971dc895482e0",
+        "MU": "df3c66c4c59add6294fd68363a9a2b0d6791d807f01b6a494e180a2d8a339da4",
+        "MUB": "306f09c35dfa859f0c963ae83e5b38b33bdc0ee931bf6d05f4317573bc8983e9",
+        "T_DRY": "fba7f4bd2f057a3f14918c1a98ae99c7e145cadbf41f64192fe9e347ae9c192b",
+        "T": "500d03c1dc561919f9ee6b75c2f0d2bce7fff8d17699cd065250460b952a5feb",
+        "T_INIT": "67403013450714cd1ddf08c726aaf0059ee5cf9b98167ec03bc34cd28ac44fd9",
+        "P": "b84f69ff8d92a3e9a3ee197849d4f2cb6942964379fcc0a676e8b9fe0501f81c",
+        "PB": "6ab14c46bcd03cf03dc985712106b8c4947017d2405515df1b7bb62eff2c6b13",
+        "AL": "0bcefac92950ff7b50bd6fc4337f561cd241f37a552c5e188962445ea6c44611",
+        "ALB": "762c6195394f0ade4f373af5cfeb333779f19f60bc383013bc53b129791390c2",
+        "ALT": "25170cfff93a1f3f35a4c38f26acd44ce93ef6291668078535a7b4e0a2245b97",
+        "QVAPOR": "d89c481b72bae2c4f3a0b608a4316fa727c972d773e0ebb579a9808d2cf422ab",
+        "H_DIABATIC": "39a68c2004ed4a20edb148b72e5aabd663f15cce54b30d2ea1c106e839761ed5",
+        "TSK": "b0177f7681ebeab8abe0311172d23a73190d2ab10c29bfc996e9d82cfd3c4a9f",
+        "TMN": "e356779d262dba40140d1bf07e5675042e800a94aa6ff9075d99ff37b0a157b3"
+      },
+      "field_shapes": {
+        "terrain": [
+          10,
+          12
+        ],
+        "settings": [
+          8
+        ],
+        "flags": [
+          2
+        ],
+        "p_top": [],
+        "cf1": [],
+        "cf2": [],
+        "cf3": [],
+        "dnw": [
+          6
+        ],
+        "rdnw": [
+          6
+        ],
+        "rdn": [
+          6
+        ],
+        "c1f": [
+          7
+        ],
+        "c2f": [
+          7
+        ],
+        "c1h": [
+          6
+        ],
+        "c2h": [
+          6
+        ],
+        "c3h": [
+          6
+        ],
+        "c4h": [
+          6
+        ],
+        "U": [
+          6,
+          10,
+          13
+        ],
+        "V": [
+          6,
+          11,
+          12
+        ],
+        "W": [
+          7,
+          10,
+          12
+        ],
+        "PH": [
+          7,
+          10,
+          12
+        ],
+        "PHB": [
+          7,
+          10,
+          12
+        ],
+        "MU": [
+          10,
+          12
+        ],
+        "MUB": [
+          10,
+          12
+        ],
+        "T_DRY": [
+          6,
+          10,
+          12
+        ],
+        "T": [
+          6,
+          10,
+          12
+        ],
+        "T_INIT": [
+          6,
+          10,
+          12
+        ],
+        "P": [
+          6,
+          10,
+          12
+        ],
+        "PB": [
+          6,
+          10,
+          12
+        ],
+        "AL": [
+          6,
+          10,
+          12
+        ],
+        "ALB": [
+          6,
+          10,
+          12
+        ],
+        "ALT": [
+          6,
+          10,
+          12
+        ],
+        "QVAPOR": [
+          6,
+          10,
+          12
+        ],
+        "H_DIABATIC": [
+          6,
+          10,
+          12
+        ],
+        "TSK": [
+          10,
+          12
+        ],
+        "TMN": [
+          10,
+          12
+        ]
+      }
+    },
+    "columns6_corrected1": {
+      "sha256": "b0a4bbeba51b54d705d94aff987cb4a0a41d36a7146fd3a89b80faa04da7ce5e",
+      "native_stream_sha256": {
+        "terrain": "73759cc2b399f4b217a9c0026e38a01abd5e4b0acdd68dd2646c214f2e8bfd52",
+        "settings": "8426e268bdd4c2a1782c31edf0f6bff4cd5a561facda646834bdbf4740d3fed3",
+        "flags": "7c9fa136d4413fa6173637e883b6998d32e1d675f88cddff9dcbcf331820f4b8",
+        "p_top": "9e7c49488d0facd269d5111bfb647a428945a0de3f963712b2f2272a50453687",
+        "cf1": "4d1b838d07c03630410c1cc7a5251546cd322b2b36836f5fe284338875c53cc7",
+        "cf2": "94f7efd61885ab392a9f93c2fb4d608d05d232d777f128f730a9faadfb7d64dc",
+        "cf3": "43f98d5434785369aabe116fe9ea7c2679c852ce80af1d594e7335c0955d3016",
+        "dnw": "9439dee8221d3be07b5c42251b430e91433988816fd00692b306752bec3b4ff2",
+        "rdnw": "47aeab15f088e079b0ed4ea64d7c5cda38b4c5e2d95a92ccf2e0584dfb88a6b1",
+        "rdn": "c596a3dbe74649c0e9e87f291d1980392eeeabfc83f035595b2f901fe5419a11",
+        "c1f": "6f3a1a9d59ae648b4f66e10802905ef54f901e2409b9e01e653a05fd7c4ff786",
+        "c2f": "3addfb141cd7c9c4c6543a82191a3707ac29c7a041217782e61d4d91c691aee8",
+        "c1h": "f46913286d895f62d646314f400fc3d7a543cf34eb4ae56df87f43dc4582a36b",
+        "c2h": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0",
+        "c3h": "bfff794bf0d090a016220c067030486387174b13010a0d653b55fbcfeccb8266",
+        "c4h": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0",
+        "U": "f4b7c4496881f23f042897001c2c18f3d31441b08d31395cb6c23c059caaea69",
+        "V": "ecf5ee00fd1706d5353b7c5ea383199a26190904910e2f529451552eedea37f9",
+        "W": "9b00b8930d66b11eb3cc96e31d08b2889160b0e617f1f6c229fa37c92578c23c",
+        "PH": "79fcc1c49c1c526c22ec5cbcef84b7ea882820a3032f5db3a3f75d895a36551e",
+        "PHB": "7cc215ce2f68a1e5de7b02e230a245d4861e763bd7c7847ac8e971dc895482e0",
+        "MU": "df3c66c4c59add6294fd68363a9a2b0d6791d807f01b6a494e180a2d8a339da4",
+        "MUB": "306f09c35dfa859f0c963ae83e5b38b33bdc0ee931bf6d05f4317573bc8983e9",
+        "T_DRY": "fba7f4bd2f057a3f14918c1a98ae99c7e145cadbf41f64192fe9e347ae9c192b",
+        "T": "500d03c1dc561919f9ee6b75c2f0d2bce7fff8d17699cd065250460b952a5feb",
+        "T_INIT": "67403013450714cd1ddf08c726aaf0059ee5cf9b98167ec03bc34cd28ac44fd9",
+        "P": "b84f69ff8d92a3e9a3ee197849d4f2cb6942964379fcc0a676e8b9fe0501f81c",
+        "PB": "6ab14c46bcd03cf03dc985712106b8c4947017d2405515df1b7bb62eff2c6b13",
+        "AL": "0bcefac92950ff7b50bd6fc4337f561cd241f37a552c5e188962445ea6c44611",
+        "ALB": "762c6195394f0ade4f373af5cfeb333779f19f60bc383013bc53b129791390c2",
+        "ALT": "25170cfff93a1f3f35a4c38f26acd44ce93ef6291668078535a7b4e0a2245b97",
+        "QVAPOR": "d89c481b72bae2c4f3a0b608a4316fa727c972d773e0ebb579a9808d2cf422ab",
+        "H_DIABATIC": "39a68c2004ed4a20edb148b72e5aabd663f15cce54b30d2ea1c106e839761ed5",
+        "TSK": "99701287eb5b3b95ab46e3a6ec29763a2096051216c88ceda77b0bc3b3bcd682",
+        "TMN": "fafcf910a4f6a19270f73fa999731e0a1a17efad0009087e143000f37390e1db"
+      },
+      "field_shapes": {
+        "terrain": [
+          10,
+          12
+        ],
+        "settings": [
+          8
+        ],
+        "flags": [
+          2
+        ],
+        "p_top": [],
+        "cf1": [],
+        "cf2": [],
+        "cf3": [],
+        "dnw": [
+          6
+        ],
+        "rdnw": [
+          6
+        ],
+        "rdn": [
+          6
+        ],
+        "c1f": [
+          7
+        ],
+        "c2f": [
+          7
+        ],
+        "c1h": [
+          6
+        ],
+        "c2h": [
+          6
+        ],
+        "c3h": [
+          6
+        ],
+        "c4h": [
+          6
+        ],
+        "U": [
+          6,
+          10,
+          13
+        ],
+        "V": [
+          6,
+          11,
+          12
+        ],
+        "W": [
+          7,
+          10,
+          12
+        ],
+        "PH": [
+          7,
+          10,
+          12
+        ],
+        "PHB": [
+          7,
+          10,
+          12
+        ],
+        "MU": [
+          10,
+          12
+        ],
+        "MUB": [
+          10,
+          12
+        ],
+        "T_DRY": [
+          6,
+          10,
+          12
+        ],
+        "T": [
+          6,
+          10,
+          12
+        ],
+        "T_INIT": [
+          6,
+          10,
+          12
+        ],
+        "P": [
+          6,
+          10,
+          12
+        ],
+        "PB": [
+          6,
+          10,
+          12
+        ],
+        "AL": [
+          6,
+          10,
+          12
+        ],
+        "ALB": [
+          6,
+          10,
+          12
+        ],
+        "ALT": [
+          6,
+          10,
+          12
+        ],
+        "QVAPOR": [
+          6,
+          10,
+          12
+        ],
+        "H_DIABATIC": [
+          6,
+          10,
+          12
+        ],
+        "TSK": [
+          10,
+          12
+        ],
+        "TMN": [
+          10,
+          12
+        ]
+      }
+    },
+    "interpolation1": {
+      "sha256": "43ccc752216cc1ed910e1717490537646fe8158dac3a303ee16aadba96bd2b5b",
+      "native_stream_sha256": {
+        "values": "a88dc4831dbf60177c66e5717ba665df7e77f7d8aa5e5cdc25d7fe62eab38923",
+        "coordinates": "2a28865fe2ee9951ffd03a27fda415c1a53b88a1e479041156759ff3be82e158",
+        "targets": "7a5af51a5e022cd38418e1c3b659ed75176b3aeadc712290e2fa90c9f94ce7d5",
+        "out": "cdb2719cff76f3ed8b612d48e86c7dbeb02e6eca7d8093149b956aa197df2c84"
+      },
+      "field_shapes": {
+        "values": [
+          6
+        ],
+        "coordinates": [
+          6
+        ],
+        "targets": [
+          263
+        ],
+        "out": [
+          263
+        ]
+      }
+    },
+    "interpolation2": {
+      "sha256": "65484fbb72f0133dc0b7f801e45bacd06137a1921e07a68026a44ef65cab0076",
+      "native_stream_sha256": {
+        "values": "a88dc4831dbf60177c66e5717ba665df7e77f7d8aa5e5cdc25d7fe62eab38923",
+        "coordinates": "fcb66cc8f935961fd24c1afde15539856af5e0820dd2a1e11168291786119ef2",
+        "targets": "56048fa2e7b1a7b6a3a917afe2f8b1b1043776c531e6869f1ae6c6d2f3cea7cf",
+        "out": "a58a69ab28beccff59027b04dbc65b1d1638b2a9bcdfe40c5024a98e93880479"
+      },
+      "field_shapes": {
+        "values": [
+          6
+        ],
+        "coordinates": [
+          6
+        ],
+        "targets": [
+          263
+        ],
+        "out": [
+          263
+        ]
+      }
+    },
+    "sounding_dry0": {
+      "sha256": "00bf596515edc997e72072bfd8706813c7d545b3223f68276199ef736ec9cb03",
+      "native_stream_sha256": {
+        "height": "2a28865fe2ee9951ffd03a27fda415c1a53b88a1e479041156759ff3be82e158",
+        "p_moist": "0b9abc7481fdfd77d34f041644a358f8123ef9b9484894c125da7180b34fcb83",
+        "p_dry": "3ebd80ed9db761dbe0d69ac4ceea19efd3778b5d71471c55b4a4db825b8b46fc",
+        "theta": "c480e8951273b0abd7c5aa4ac36e989534a574b36f2b1fab42727211f832d7a6",
+        "rho": "18128352c34283e92fc1c38ad4a8d9fc0e2a0a85da4582938b50281b487a859c",
+        "u": "434db9b8aafd616af7b616b389a85ddf4f2bf624b44bb61d85f1ce7316c59082",
+        "v": "3017609d4b0f3ed77bf244b7d7e558940ba074bab9d07f8ce275de49c2bbb360",
+        "qv": "6ddd0041e42fa44ee56ad6855470e94fd8adf7bf416a2b33eb634a798733cc9e"
+      },
+      "field_shapes": {
+        "height": [
+          6
+        ],
+        "p_moist": [
+          6
+        ],
+        "p_dry": [
+          6
+        ],
+        "theta": [
+          6
+        ],
+        "rho": [
+          6
+        ],
+        "u": [
+          6
+        ],
+        "v": [
+          6
+        ],
+        "qv": [
+          6
+        ]
+      }
+    },
+    "sounding_dry1": {
+      "sha256": "2ce8b0d431cd9f80a1867277c8b847e1f9d1cb414855074d40df819484ff533a",
+      "native_stream_sha256": {
+        "height": "2a28865fe2ee9951ffd03a27fda415c1a53b88a1e479041156759ff3be82e158",
+        "p_moist": "e3901394a305fc8859284f03f309651802e4fd7845c581a35dd3d7e416b782f0",
+        "p_dry": "e3901394a305fc8859284f03f309651802e4fd7845c581a35dd3d7e416b782f0",
+        "theta": "c480e8951273b0abd7c5aa4ac36e989534a574b36f2b1fab42727211f832d7a6",
+        "rho": "3d41668009a9144576e7bdaca42329b2b09ded3e22cc76fd24709394b7f3cd50",
+        "u": "434db9b8aafd616af7b616b389a85ddf4f2bf624b44bb61d85f1ce7316c59082",
+        "v": "3017609d4b0f3ed77bf244b7d7e558940ba074bab9d07f8ce275de49c2bbb360",
+        "qv": "9d908ecfb6b256def8b49a7c504e6c889c4b0e41fe6ce3e01863dd7b61a20aa0"
+      },
+      "field_shapes": {
+        "height": [
+          6
+        ],
+        "p_moist": [
+          6
+        ],
+        "p_dry": [
+          6
+        ],
+        "theta": [
+          6
+        ],
+        "rho": [
+          6
+        ],
+        "u": [
+          6
+        ],
+        "v": [
+          6
+        ],
+        "qv": [
+          6
+        ]
+      }
+    },
+    "sounding_elevated_dry0": {
+      "sha256": "5e4689adb953499f4f7dcd5e9f98b632b8060977598bf9bbe242c73c5aaeaa7b",
+      "native_stream_sha256": {
+        "height": "a839e7d0fa3c6606296b0268ef2bd55341a16e5f489ca8d6b3ac5d9061c3a6e5",
+        "p_moist": "40fe702bf55fc09b42fb05a732d5cb2c783cd504c8926b23fdf6cb019516c650",
+        "p_dry": "039235fed4b88ad35291729e515faf4b9141f1a1373506b00f30d3cc92d08fa0",
+        "theta": "22005699a53b598f174f2226aaf987770e828822d4d091e966adf090ce025d28",
+        "rho": "307d78115cb15dad6f3f050ad7b2af0e7c951ba1f5c3a2953cd71b849bd84929",
+        "u": "0032a7e15d79974cb52ee4887178d1d173bc175f2b86488f94653a425ebe2f47",
+        "v": "a33d1cebd2491f6235e6e548ae18935ea572f9c7d24bc3d928ec939694004c8c",
+        "qv": "bc80a0fff4dfe301c59f488d7de01bd572ce39e44b89a014712def7f22ffaaec",
+        "input_height": "a839e7d0fa3c6606296b0268ef2bd55341a16e5f489ca8d6b3ac5d9061c3a6e5",
+        "input_theta": "22005699a53b598f174f2226aaf987770e828822d4d091e966adf090ce025d28",
+        "input_qv": "e7de5df9079a1591a97099f2ca5a03d94c998a8246f677c839a9c266208858cc",
+        "input_u": "0032a7e15d79974cb52ee4887178d1d173bc175f2b86488f94653a425ebe2f47",
+        "input_v": "a33d1cebd2491f6235e6e548ae18935ea572f9c7d24bc3d928ec939694004c8c",
+        "input_surface": "7d975ab4763ee12c5f266138c53a3be3a0ffe4e596e928aeb7baee5200fc2946"
+      },
+      "field_shapes": {
+        "height": [
+          8
+        ],
+        "p_moist": [
+          8
+        ],
+        "p_dry": [
+          8
+        ],
+        "theta": [
+          8
+        ],
+        "rho": [
+          8
+        ],
+        "u": [
+          8
+        ],
+        "v": [
+          8
+        ],
+        "qv": [
+          8
+        ],
+        "input_height": [
+          8
+        ],
+        "input_theta": [
+          8
+        ],
+        "input_qv": [
+          8
+        ],
+        "input_u": [
+          8
+        ],
+        "input_v": [
+          8
+        ],
+        "input_surface": [
+          3
+        ]
+      }
+    },
+    "sounding_elevated_dry1": {
+      "sha256": "9d367b8963ea668b4d73ae24fbc06520ba7e16a1080b888421e7cc904ad16bd0",
+      "native_stream_sha256": {
+        "height": "a839e7d0fa3c6606296b0268ef2bd55341a16e5f489ca8d6b3ac5d9061c3a6e5",
+        "p_moist": "0eabc9c1fcb2591e2fe86641941199b9b8d03e7d2eb89cb61d7ba90d62f73efd",
+        "p_dry": "0eabc9c1fcb2591e2fe86641941199b9b8d03e7d2eb89cb61d7ba90d62f73efd",
+        "theta": "22005699a53b598f174f2226aaf987770e828822d4d091e966adf090ce025d28",
+        "rho": "7a32de922c4711eef18674a99d0210a2cfe37b6707badb2df86eb6ae495ae074",
+        "u": "0032a7e15d79974cb52ee4887178d1d173bc175f2b86488f94653a425ebe2f47",
+        "v": "a33d1cebd2491f6235e6e548ae18935ea572f9c7d24bc3d928ec939694004c8c",
+        "qv": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+        "input_height": "a839e7d0fa3c6606296b0268ef2bd55341a16e5f489ca8d6b3ac5d9061c3a6e5",
+        "input_theta": "22005699a53b598f174f2226aaf987770e828822d4d091e966adf090ce025d28",
+        "input_qv": "e7de5df9079a1591a97099f2ca5a03d94c998a8246f677c839a9c266208858cc",
+        "input_u": "0032a7e15d79974cb52ee4887178d1d173bc175f2b86488f94653a425ebe2f47",
+        "input_v": "a33d1cebd2491f6235e6e548ae18935ea572f9c7d24bc3d928ec939694004c8c",
+        "input_surface": "7d975ab4763ee12c5f266138c53a3be3a0ffe4e596e928aeb7baee5200fc2946"
+      },
+      "field_shapes": {
+        "height": [
+          8
+        ],
+        "p_moist": [
+          8
+        ],
+        "p_dry": [
+          8
+        ],
+        "theta": [
+          8
+        ],
+        "rho": [
+          8
+        ],
+        "u": [
+          8
+        ],
+        "v": [
+          8
+        ],
+        "qv": [
+          8
+        ],
+        "input_height": [
+          8
+        ],
+        "input_theta": [
+          8
+        ],
+        "input_qv": [
+          8
+        ],
+        "input_u": [
+          8
+        ],
+        "input_v": [
+          8
+        ],
+        "input_surface": [
+          3
+        ]
+      }
+    },
+    "sounding_two_levels_dry0": {
+      "sha256": "62eb5af05d68e7ee7c2df29149a34169c03171a0f72fd3efada3162680de2c7b",
+      "native_stream_sha256": {
+        "height": "38eb96d6a6e6c1f94170c325b44d77b9def066a4a2964cc61acc967d76b083d3",
+        "p_moist": "db09d8ac9142689f8182cf4e750b6392f66585e5ed1ddf469427617ccd2f59e1",
+        "p_dry": "904c8862660094ed2b58fff88d94f5524727deb42f9d9e805ffb57eb51a2ecde",
+        "theta": "0af45536339d93846a4502d7f2fffa08e37c8137b9462e945bc78dd2de4911ee",
+        "rho": "979170232b579f00d8ebff777ff119f49db3eecccf5cbc1e163bd21a595ad3f2",
+        "u": "6c271cc305571d90515da7fbafcf026eba2239a838aaff415ee600f0580a3c10",
+        "v": "31f468725b36618f7e2e059a2942b359adf08500d94e10bdcda4735a16abfbb4",
+        "qv": "bf714789efcbd525b4eac64019cf47bf25412a46dd73f3217cb8f8cccb68c078",
+        "input_height": "38eb96d6a6e6c1f94170c325b44d77b9def066a4a2964cc61acc967d76b083d3",
+        "input_theta": "0af45536339d93846a4502d7f2fffa08e37c8137b9462e945bc78dd2de4911ee",
+        "input_qv": "9cee15d4461a8d7ed6a5dd65e81697e19788af9d004a54fca5c3660ad856ce83",
+        "input_u": "6c271cc305571d90515da7fbafcf026eba2239a838aaff415ee600f0580a3c10",
+        "input_v": "31f468725b36618f7e2e059a2942b359adf08500d94e10bdcda4735a16abfbb4",
+        "input_surface": "7e80270e6550416d1997ca3de2359bde82e9a1b83a942cf5dc8d3643f53b68c6"
+      },
+      "field_shapes": {
+        "height": [
+          2
+        ],
+        "p_moist": [
+          2
+        ],
+        "p_dry": [
+          2
+        ],
+        "theta": [
+          2
+        ],
+        "rho": [
+          2
+        ],
+        "u": [
+          2
+        ],
+        "v": [
+          2
+        ],
+        "qv": [
+          2
+        ],
+        "input_height": [
+          2
+        ],
+        "input_theta": [
+          2
+        ],
+        "input_qv": [
+          2
+        ],
+        "input_u": [
+          2
+        ],
+        "input_v": [
+          2
+        ],
+        "input_surface": [
+          3
+        ]
+      }
+    },
+    "sounding_two_levels_dry1": {
+      "sha256": "e6482729d94f9a37c4b35d12d42813d576df9a92d4b6c3f6264bf6c5a674be61",
+      "native_stream_sha256": {
+        "height": "38eb96d6a6e6c1f94170c325b44d77b9def066a4a2964cc61acc967d76b083d3",
+        "p_moist": "3f9f2bd54c4ff0d06424c3a1b905f29664f3047885efacb31422f6a9655ec282",
+        "p_dry": "3f9f2bd54c4ff0d06424c3a1b905f29664f3047885efacb31422f6a9655ec282",
+        "theta": "0af45536339d93846a4502d7f2fffa08e37c8137b9462e945bc78dd2de4911ee",
+        "rho": "3248e3613db2a784de9340b4f792d90040839e58bf3ee2bd275783de0673b274",
+        "u": "6c271cc305571d90515da7fbafcf026eba2239a838aaff415ee600f0580a3c10",
+        "v": "31f468725b36618f7e2e059a2942b359adf08500d94e10bdcda4735a16abfbb4",
+        "qv": "af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc",
+        "input_height": "38eb96d6a6e6c1f94170c325b44d77b9def066a4a2964cc61acc967d76b083d3",
+        "input_theta": "0af45536339d93846a4502d7f2fffa08e37c8137b9462e945bc78dd2de4911ee",
+        "input_qv": "9cee15d4461a8d7ed6a5dd65e81697e19788af9d004a54fca5c3660ad856ce83",
+        "input_u": "6c271cc305571d90515da7fbafcf026eba2239a838aaff415ee600f0580a3c10",
+        "input_v": "31f468725b36618f7e2e059a2942b359adf08500d94e10bdcda4735a16abfbb4",
+        "input_surface": "7e80270e6550416d1997ca3de2359bde82e9a1b83a942cf5dc8d3643f53b68c6"
+      },
+      "field_shapes": {
+        "height": [
+          2
+        ],
+        "p_moist": [
+          2
+        ],
+        "p_dry": [
+          2
+        ],
+        "theta": [
+          2
+        ],
+        "rho": [
+          2
+        ],
+        "u": [
+          2
+        ],
+        "v": [
+          2
+        ],
+        "qv": [
+          2
+        ],
+        "input_height": [
+          2
+        ],
+        "input_theta": [
+          2
+        ],
+        "input_qv": [
+          2
+        ],
+        "input_u": [
+          2
+        ],
+        "input_v": [
+          2
+        ],
+        "input_surface": [
+          3
+        ]
+      }
+    }
+  },
+  "extraction": {
+    "source_sha256": {
+      "module_initialize_fire.F": "c92d30ddb871bd2188fc7c37391b330eb6c9eca24a81abbfc34429fc5ab966b7",
+      "module_init_utilities.F": "ea7bb9242a79fde1a818abc69a8e41afa5fdd8bc87a60aad6ffbaf813c61469e"
+    },
+    "native_block_lines": [
+      789,
+      1124
+    ],
+    "native_block_sha256": "4f80cd9ff6d3eab315264db4a5a9b52995635c079006c82e805128c8b5d3a8d5",
+    "get_sounding_read_sounding_sha256": "c6edfbc73d2fc8dc9295ed1a186a43d9364d869b266bab0458ec60909e21ca5d",
+    "interp_0_sha256": "065c53ad1a71ffeeec337bdbe99bb9fdc2e548807a3530fbac1f0ae7d2a8750d",
+    "wrapper_sha256": "de9eb9a7a93f58ff52f8dc9e49432ef6ad94c42a94eb4864043a03b5b92f694b",
+    "scientific_original_transformations": [],
+    "corrected_skin_transform": "Exact native three-level temperature expressions inserted before each TSK assignment only when corrected control selected",
+    "shell": "lightweight allocated domain, single-process broadcast no-op, monitor true; original/corrected same wrapper"
+  },
+  "build": {
+    "compiler_command": [
+      "nice",
+      "-n",
+      "10",
+      "gfortran",
+      "-O0",
+      "-ffp-contract=off",
+      "-ffree-line-length-none",
+      "-fcheck=all",
+      "-I",
+      "${SFIRE_WORK}/oracle-build",
+      "-I",
+      "${SFIRE_WORK}/initializer-atmos",
+      "${SFIRE_WORK}/initializer-atmos/run.F90",
+      "${SFIRE_WORK}/initializer-atmos/native_atmos.o",
+      "${SFIRE_WORK}/oracle-build/stub_wrf.o",
+      "${SFIRE_WORK}/oracle-build/module_model_constants.o",
+      "${SFIRE_WORK}/oracle-build/module_wrf_error.o",
+      "${SFIRE_WORK}/oracle-build/oracle_io.o",
+      "-o",
+      "${SFIRE_WORK}/initializer-atmos/run"
+    ],
+    "run_command": [
+      "nice",
+      "-n",
+      "10",
+      "${SFIRE_WORK}/initializer-atmos/run",
+      "${SFIRE_WORK}/initializer-atmos/output"
+    ],
+    "compiler": "GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+    "files_sha256": {
+      "native_atmos.F90": "de9eb9a7a93f58ff52f8dc9e49432ef6ad94c42a94eb4864043a03b5b92f694b",
+      "native_atmos.o": "c8e9535932b3aff18a1e3cabaf5f2e995fb27c15be53e21e0e24d9bf7a20543a",
+      "run.F90": "92c0442014933e47fc6163a7895b63aece1ca9629a648a9be73a37dc9a12f1b5",
+      "run": "4e1921eb8c92163bdc4d9390b47a8f4823d0e1ba23f8b25a78a680d1d666c2c5",
+      "input_sounding": "cc45a4157c8ee7ceeecfbf565aaa2f5944944962f9561ed6c3c7582d55536db1"
+    },
+    "linked_objects_sha256": {
+      "stub_wrf.o": "caa11b1aadd691acb65b15e87c033f1afe7a8afe455243ac580806d2c65a973a",
+      "module_model_constants.o": "301defba973fa4f6b16b243392e0ee101fbde3221fbd8b4acb3c28a0b8cd2e3b",
+      "module_wrf_error.o": "622876e7ed1036fccb614eadf88931023fd4d6ba662b8b545cfd718370f6a7fd",
+      "oracle_io.o": "1d28783612eaab3ee6e26cff1bb779ca595662b51724d70aad50d9e9b800c3dd"
+    },
+    "status": "PASS"
+  },
+  "raw_sounding": {
+    "psurf": 1000.0,
+    "theta_surface": 289.0,
+    "qv_surface": 21.0,
+    "height": [
+      0.0,
+      100.0,
+      700.0,
+      1800.0,
+      4000.0,
+      7000.0
+    ],
+    "theta": [
+      289.0,
+      289.0,
+      293.0,
+      300.0,
+      315.0,
+      340.0
+    ],
+    "qv": [
+      18.0,
+      12.0,
+      7.0,
+      3.0,
+      1.0,
+      0.0
+    ],
+    "u": [
+      1.0,
+      2.0,
+      4.0,
+      7.0,
+      9.0,
+      12.0
+    ],
+    "v": [
+      -4.0,
+      -2.0,
+      0.0,
+      1.0,
+      3.0,
+      4.0
+    ]
+  },
+  "extra_build": {
+    "compiler_command": [
+      "nice",
+      "-n",
+      "10",
+      "gfortran",
+      "-O0",
+      "-ffp-contract=off",
+      "-ffree-line-length-none",
+      "-fcheck=all",
+      "-I",
+      "${SFIRE_WORK}/oracle-build",
+      "-I",
+      "${SFIRE_WORK}/initializer-atmos",
+      "${SFIRE_WORK}/initializer-atmos/run_sounding.F90",
+      "${SFIRE_WORK}/initializer-atmos/native_atmos.o",
+      "${SFIRE_WORK}/oracle-build/stub_wrf.o",
+      "${SFIRE_WORK}/oracle-build/module_model_constants.o",
+      "${SFIRE_WORK}/oracle-build/module_wrf_error.o",
+      "${SFIRE_WORK}/oracle-build/oracle_io.o",
+      "-o",
+      "${SFIRE_WORK}/initializer-atmos/run_sounding"
+    ],
+    "run_sounding_sha256": "b5e34a210627123738df34b39e1a866c417fe0d34de0afeb1bb3690675b75f85",
+    "run_source_sha256": "470b2709eda8074c6b8ebeaaef50de98b118dd6570af1fc2ecddafa638eba8b6",
+    "original_native_module_sha256": "c8e9535932b3aff18a1e3cabaf5f2e995fb27c15be53e21e0e24d9bf7a20543a",
+    "records": [
+      {
+        "profile": "elevated",
+        "input_sha256": "cec0082ef2a8acef2009d6962b0cc19044184068bd142fe576f3202352037102",
+        "log_sha256": "54f7f9850129fbadb8aa0202b51a3a282e86258e8a8b2f2999ded864e51bb591"
+      },
+      {
+        "profile": "two_levels",
+        "input_sha256": "3fe80a80e4b2dbb4ec63690d289584d2acd1eedb5c42fe8ee6302e9f93a97174",
+        "log_sha256": "7b6be2968262c8b105e38f5dd2834b03f7ec996231a5fe15aa43134634e2019e"
+      }
+    ],
+    "status": "PASS"
+  }
+}

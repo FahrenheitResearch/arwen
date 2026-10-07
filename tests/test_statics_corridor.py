@@ -206,6 +206,59 @@ def corridor_build(geog_root, tmp_path_factory):
         reference_grid=_reference_grid(), static_catalog=catalog)
 
 
+def test_dust_corridor_crop_equals_direct_rust_sampling(tmp_path):
+    """A moved dust process consumes sealed fine-grid source bytes."""
+    from gpuwm.chem_table import catalog as chem_catalog
+    from gpuwm.core.chem_statics import static_specs
+    from gpuwm.static.extra_fields import build_extra_fields
+
+    root = _synthetic_wps_geog(tmp_path / "dust-geog")
+    for name, nz in (("erod", 3), ("clayfrac_5m", 1), ("sandfrac_5m", 1)):
+        kv, nxg, nyg = _coarse_global(nz=nz, kv_extra=dict(
+            type="continuous", signed="yes", wordsize=2, scale_factor=0.01))
+        kv = _write_index(root / name, **kv)
+        z, y, x = np.meshgrid(np.arange(nz), np.arange(nyg),
+                              np.arange(nxg), indexing="ij")
+        _write_tiles(root / name, 1 + (x + 2 * y + 5 * z) % 50, kv)
+    child = _child_dc()
+    child.run.chem_sets = "dust"
+    build = build_child_statics_corridor(
+        child_dc=child, parent_run=_parent_run(),
+        reference_grid=_reference_grid(), static_catalog=_catalog(root, tmp_path))
+    directory = tmp_path / "sealed-dust"
+    receipt = write_statics_corridor_set(directory, [build])
+    corridor = load_child_statics_corridor(
+        directory, expected_set_receipt=receipt, grid_id=2, child_dc=child,
+        parent_run=_parent_run(), reference_grid=_reference_grid())
+    cost = corridor_cost(child, _parent_run())
+    assert cost["host_bytes"] == build.entry["host_bytes"]
+    assert cost["planes_per_cell"] == CORRIDOR_PLANES_PER_CELL + 5
+    selection = GeogSelection.fallback(root)
+    specs = static_specs(chem_catalog(), selection)
+    for ip, jp in ((_REF_I, _REF_J), (1, 1), (8, 8), (2, 6), (7, 3)):
+        grid = _reference_grid().translated(
+            (ip - _REF_I) * _RATIO, (jp - _REF_J) * _RATIO)
+        direct = build_extra_fields(grid, root, specs)
+        cropped = corridor.crop(ip, jp)
+        for name in ("EROD", "CLAYFRAC", "SANDFRAC"):
+            assert cropped[name].dtype == direct[name].dtype
+            assert cropped[name].shape == direct[name].shape
+            assert cropped[name].tobytes() == direct[name].tobytes(), (
+                name, ip, jp)
+
+
+@pytest.mark.parametrize("missing", ["EROD", "CLAYFRAC", "SANDFRAC"])
+def test_dust_corridor_refuses_partial_static_inventory(corridor_build, missing):
+    fields = dict(corridor_build.fields)
+    ny = int(corridor_build.entry["corridor_ny"])
+    nx = int(corridor_build.entry["corridor_nx"])
+    fields.update(EROD=np.zeros((3, ny, nx)),
+                  CLAYFRAC=np.zeros((ny, nx)), SANDFRAC=np.zeros((ny, nx)))
+    del fields[missing]
+    with pytest.raises(CorridorRefusal, match="chemistry fields are incomplete"):
+        corridor_module._validate_corridor_fields(fields, corridor_build.entry)
+
+
 # ---------------------------------------------------------------------------
 # Geometry
 # ---------------------------------------------------------------------------

@@ -311,8 +311,10 @@ extern "C" __global__ void ruc_validate_finite({arguments}, int* flags) {{
         atomicOr(flags + blockIdx.y, 1);
 }}
 """
+    # FTZ comes from CuPy's own -ftz=true (see mynn_pbl_gpu); a second
+    # spelling is refused by NVRTC 12.
     return cp.RawKernel(source, "ruc_validate_finite",
-                        options=("-std=c++17", "--ftz=true"))
+                        options=("-std=c++17",))
 
 
 def _validation_scan_blocks(longest: int, count: int) -> int:
@@ -3159,7 +3161,16 @@ def ruc_sfctmp_full_width_fused(
     stream = cp.cuda.get_current_stream()
     upload_key = (int(cp.cuda.runtime.getDevice()), stream.ptr)
     pending = _SFCTMP_UPLOADS.setdefault(upload_key, [])
-    pending[:] = [entry for entry in pending if not cp.cuda.runtime.eventQuery(entry[0].ptr)]
+    # Retire only the uploads whose transfer has COMPLETED (the event is
+    # done), and keep every one still in flight: its pinned source must stay
+    # alive until the copy has read it.  The earlier filter kept
+    # ``not eventQuery(...)``, and eventQuery returns 0 for a completed event
+    # (cudaErrorNotReady, 600, while pending), so it held every completed
+    # upload for the life of the run and dropped the in-flight ones.  Measured
+    # on a 6 h Boston run (2.8.5): this scan grew from 1.5 to 10.1 ms per
+    # step as the list grew by one or two entries per RUC call, and the
+    # retained pinned buffers never returned to the pool.
+    pending[:] = [entry for entry in pending if not entry[0].done]
     # Keep the pinned source alive and immutable until its transfer ends.
     upload_memory = cp.cuda.alloc_pinned_memory(pointers.nbytes)
     upload = np.frombuffer(upload_memory, dtype=np.uint64, count=len(_SFCTMP_ARRAYS))

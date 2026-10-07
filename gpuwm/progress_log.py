@@ -575,6 +575,16 @@ class StepLog:
         #: a durable-publish LATENCY, which is the only accurate timing an
         #: asynchronous writer can report.
         self._domain_wall: dict[int, float] = {}
+        #: (grid_id, valid_time) -> the perf_counter reading when that
+        #: frame was handed to its writer (:meth:`frame_submitted`).  The
+        #: anchor of its landing latency.  Without it the latency was
+        #: measured from the domain's LAST step, which had moved on by the
+        #: time the file landed (an f02 of 5.4 GB reported 0.78 s), and a
+        #: frame written before step 1 was timed from the log's creation,
+        #: so the initial frame of a 1 km run reported 257.6 s that were
+        #: preflight, cache restore and slab initialization.  Popped on
+        #: landing, written and read under ``_lock``.
+        self._frame_wall: dict[tuple, float] = {}
         #: grid_id -> the wall of its first few steps, in order.  Kept
         #: for :meth:`close`'s first-step excess, and recorded BEFORE the
         #: ``--progress-every`` thinning so a quiet stream and a chatty
@@ -779,6 +789,11 @@ class StepLog:
 
     # -- the events ---------------------------------------------------
 
+    def frame_submitted(self, *, domain: int, valid_time) -> None:
+        """A history frame was handed to its writer.  Stepping thread."""
+        with self._lock:
+            self._frame_wall[(int(domain), valid_time)] = time.perf_counter()
+
     def output_committed(self, *, domain: int, valid_time, path,
                          wall_seconds: float | None = None) -> None:
         """One history frame is durable.  Raised from the writer thread.
@@ -795,8 +810,11 @@ class StepLog:
         domain = int(domain)
         now = time.perf_counter()
         if wall_seconds is None:
-            wall_seconds = now - self._domain_wall.get(
-                int(domain), self._started_wall)
+            with self._lock:
+                anchor = self._frame_wall.pop((domain, valid_time), None)
+            if anchor is None:
+                anchor = self._domain_wall.get(domain, self._started_wall)
+            wall_seconds = now - anchor
         marker = None
         marker_error = None
         if self._marker_dir is not None:
@@ -1194,6 +1212,9 @@ class _NullStepLog:
         return None
 
     def announce_kernel_compile(self, **_fields) -> None:
+        return None
+
+    def frame_submitted(self, **_fields) -> None:
         return None
 
     def output_committed(self, **_fields) -> None:

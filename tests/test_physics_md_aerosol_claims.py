@@ -130,6 +130,37 @@ def _read(path: pathlib.Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _live(path: pathlib.Path) -> str:
+    """The part of ``path`` that makes a claim about THIS tree.
+
+    Every document is live in full except ``CHANGELOG.md``, whose released
+    sections record what each release shipped and are history by
+    construction: "18 of 22" under an older release heading was true of that
+    release.  Its live part is ``## Unreleased`` when that carries entries,
+    else the newest release section.  A lane cannot add changelog entries
+    without a version bump (tests/test_release_version_declaration.py), so
+    the counts are not REQUIRED in the changelog; when its live part quotes
+    one, it must be the gate's.
+    """
+    text = _read(path)
+    if path != CHANGELOG_MD:
+        return text
+    starts = [m.start() for m in re.finditer(r"(?m)^## ", text)]
+    if not starts:
+        return text
+    sections = [text[a:b] for a, b in zip(starts, starts[1:] + [len(text)])]
+    for section in sections:
+        heading, _, body = section.partition("\n")
+        if re.fullmatch(r"##\s+Unreleased\s*", heading, re.IGNORECASE) \
+                and body.strip():
+            return section
+    for section in sections:
+        heading = section.partition("\n")[0]
+        if not re.fullmatch(r"##\s+Unreleased\s*", heading, re.IGNORECASE):
+            return section
+    return ""
+
+
 _ADAPTER_MODULE = None
 
 
@@ -244,12 +275,15 @@ def _table_rows(text: str, header: str) -> dict[str, str]:
         "residuals this file derives are no longer findable")
     body = text[text.index(header) + len(header):]
     rows: dict[str, str] = {}
-    for line in body.splitlines():
+    # The table ends at its first non-table line.  It used to end at the
+    # first non-table line AFTER A FIXTURE ROW, which read straight past an
+    # EMPTY table (header and separator only) into whichever table came next
+    # on the page; an empty miss table is the published state since the
+    # 2.8.6 accumulator rework.  ``[1:]`` drops the rest of the header line.
+    for line in body.splitlines()[1:]:
         stripped = line.strip()
         if not stripped.startswith("|"):
-            if rows:
-                break
-            continue
+            break
         match = re.match(r"\|\s*`([A-Za-z0-9_-]+)`\s*\|", stripped)
         if match:
             rows[match.group(1)] = stripped
@@ -444,7 +478,7 @@ def test_the_published_clean_counts_are_the_gates_own_counts():
     flat_count = f"{flat} of {total}"
     gated_count = f"{gated} of {total}"
 
-    for path in (PHYSICS_MD, EVIDENCE_MD, PROVENANCE_MD, CHANGELOG_MD):
+    for path in (PHYSICS_MD, EVIDENCE_MD, PROVENANCE_MD):
         text = _read(path)
         assert flat_count in text, (
             f"{path.name} does not publish the gate's unexceptioned clean "
@@ -726,7 +760,10 @@ def test_the_published_allowance_tables_name_exactly_the_live_allowances():
     failures: list[str] = []
     for path in (PHYSICS_MD, EVIDENCE_MD):
         text = _read(path)
-        heading = f"The {_SPELLED[len(live)]} allowance"
+        # No live allowance is published as "No allowance remains", not as
+        # "The no allowance".
+        heading = (f"The {_SPELLED[len(live)]} allowance" if live
+                   else "No allowance remains")
         if heading not in text:
             failures.append(
                 f"{path.name}: does not say {heading!r}; the gate applies "
@@ -835,7 +872,7 @@ def test_no_publication_states_a_clean_count_the_gate_does_not_produce():
 
     failures: list[str] = []
     for path in (PHYSICS_MD, EVIDENCE_MD, PROVENANCE_MD, CHANGELOG_MD):
-        for block in re.split(r"\n\s*\n|\n(?=\|)", _read(path)):
+        for block in re.split(r"\n\s*\n|\n(?=\|)", _live(path)):
             found = {int(match) if match.isdigit() else spelled[match.lower()]
                      for match in pattern.findall(block)}
             if not found - allowed:

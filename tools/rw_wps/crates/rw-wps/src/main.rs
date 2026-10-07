@@ -67,6 +67,16 @@ struct AuthorMappedArgs {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    /// Prepare refined fire-grid fuel and terrain using the Rust static builder.
+    FireStatic {
+        config: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        receipt: Option<PathBuf>,
+        #[arg(long, default_value = "gpuwm-sfire-static")]
+        static_engine: OsString,
+    },
     /// Discover the engine's provenance-bound source capabilities.
     Sources,
     /// Classify paired WRF/WPS namelists and inventory required initialized state.
@@ -139,6 +149,9 @@ fn real_main() -> Result<(), RwWpsError> {
         .or_else(|| std::env::var_os("RW_WPS_ENGINE"))
         .unwrap_or_else(|| OsString::from("gpuwm-wrf-init"));
     match cli.command {
+        Commands::FireStatic {config,output,receipt,static_engine} => {
+            rw_wps::sfire::run(&config,&output,receipt.as_deref(),&static_engine)
+        }
         Commands::Sources => {
             let (manifest, _) = discover_capabilities(&engine)?;
             print_json(&manifest)

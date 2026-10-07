@@ -352,12 +352,17 @@ _EXPECTED_ORDER = (
     # exports (:3485), not from the post-source cloud water (:3645).
     "launch_hydrometeor_column_mask",
     "launch_aa_cloud_sedimentation",
-    "launch_ice_sedimentation",
+    # :3664-3698 / :3838-3870 in WRF's tendency form, mp=28's own kernel.
+    "launch_aa_ice_sedimentation_accumulate",
     "launch_snow_sedimentation",
     "launch_graupel_sedimentation",
-    "launch_rain_sedimentation",
+    # :3611-3640 / :3790-3812 likewise.
+    "launch_aa_rain_sedimentation_accumulate",
     "launch_aa_final_phase_cleanup",
     "launch_classic_graupel_number_finalize",
+    # :4023-4053: the rain and ice accumulators' one application, after the
+    # cleanup's freeze, then the cloud and aerosol terminal apply.
+    "launch_terminal_rain_ice",
     "launch_aerosol_state_finalize",
     "launch_aerosol_effective_radius",
     "launch_aerosol_surface_emission",
@@ -873,9 +878,10 @@ def test_entry_hydrometeors_at_or_below_r1_are_zeroed_mass_and_number(
                 got, np.where(present, before[name], f32(0.0)), name)
             # A +0.0, as WRF writes, not a signed zero from a product.
             assert not np.signbit(got[~present]).any(), name
-    # The final phase cleanup's melt credit reads the rewritten ice number.
-    np.testing.assert_array_equal(
-        state._scratch["mp_thompson_aero_ni_entry"], state.ni)
+    # The final phase cleanup's melt credit reads the rewritten ice number,
+    # which on the accumulator path IS state.ni for the whole call.
+    _, cleanup_args, _ = _one(calls, "launch_aa_final_phase_cleanup")
+    assert cleanup_args[5] is state.ni
     # And the rewrite happens before the first process.
     names = _names(calls)
     assert names.index("launch_aerosol_entry_cloud_number") < names.index(
@@ -883,7 +889,7 @@ def test_entry_hydrometeors_at_or_below_r1_are_zeroed_mass_and_number(
 
 
 def test_reused_classic_launchers_receive_the_mp8_argument_shape(monkeypatch):
-    """The eight frozen launchers get the arguments mp=8 gives them.
+    """The frozen launchers mp=28 reuses get the arguments mp=8 gives them.
 
     module_mp_thompson.F:3790-3936 has no ``is_aerosol_aware`` branch and no
     nc/nwfa/nifa reference, so "reused unchanged" has to mean the argument
@@ -903,13 +909,15 @@ def test_reused_classic_launchers_receive_the_mp8_argument_shape(monkeypatch):
     # launch_graupel_fallout_column_mask write
     # (tests/test_thompson_speed_glue.py); mp=28 still calls those three,
     # and the comparison below covers the launchers both adapters call.
+    # The v4.6.1 generation's rain and ice fallout are mp=28's own
+    # tendency-form kernels (launch_aa_rain/ice_sedimentation_accumulate),
+    # so they are no longer compared here; the snow fallout's melting blend
+    # now reads the working rain (entry plus tendency) from spent slots.
     reused = (
         "launch_classic_graupel_number_finalize",
         "launch_hydrometeor_column_mask",
-        "launch_ice_sedimentation",
         "launch_snow_sedimentation",
         "launch_graupel_sedimentation",
-        "launch_rain_sedimentation",
     )
 
     def label(state, value):
@@ -958,23 +966,35 @@ def test_reused_classic_launchers_receive_the_mp8_argument_shape(monkeypatch):
     for name in reused:
         got = profile(aerosol_calls, aerosol_state, name)
         want = profile(classic_calls, classic_state, name)
-        if name in ("launch_rain_sedimentation", "launch_snow_sedimentation"):
+        if name == "launch_snow_sedimentation":
             # Both rain evaporations write WRF's L_qr into the fallout's
             # reference density (zero where :3236 failed, negative where
-            # :3568 rewrote the pair), and both adapters tell the rain
-            # fallout and the melting-snow blend to read it there.
-            flag = ("density_carries_rain_presence"
-                    if name == "launch_rain_sedimentation"
-                    else "melt_rain_density_carries_presence")
+            # :3568 rewrote the pair), and both adapters tell the
+            # melting-snow blend to read it there.
             for calls in (got, want):
                 for _args, kwargs in calls:
-                    assert kwargs[flag] == "True", (name, kwargs)
+                    assert kwargs["melt_rain_density_carries_presence"] == (
+                        "True"), (name, kwargs)
+            # mp=28 hands the blend WRF's working rain, qr1d + qrten*DT, in
+            # the two slots spent by then; mp=8 hands its in-place state.
+            for calls in (got,):
+                for _args, kwargs in calls:
+                    assert kwargs["melt_rain_qr"] == (
+                        "scratch.mp_thompson_aero_condensation_rate"), kwargs
+                    assert kwargs["melt_rain_nr"] == (
+                        "scratch.mp_thompson_aero_tau1_density"), kwargs
+            got = [(args, {k: v for k, v in kwargs.items()
+                           if k not in ("melt_rain_qr", "melt_rain_nr")})
+                   for args, kwargs in got]
+            want = [(args, {k: v for k, v in kwargs.items()
+                            if k not in ("melt_rain_qr", "melt_rain_nr")})
+                    for args, kwargs in want]
         if name == "launch_hydrometeor_column_mask":
             # WRF's cloud fallout gate reads ANY(L_qc) as the adjustment
             # left it (:3485, :3645), so both adapters take the cloud
             # column's mask from the L_qc(k) their adjustment exports, each
-            # into a buffer it has spent or not yet filled: the entry-cloud
-            # slot for mp=28, the rain evaporation's density output for
+            # into a buffer it has spent or not yet filled: the TAU+1
+            # density's slot for mp=28, the rain evaporation's density output for
             # mp=8.  Same launcher, same mask buffer, same order.
             # The cloud call is compared; mp=28's post-source rain mask
             # (the mp=8 twin of which is fused into launch_adapter_masks) is
@@ -983,7 +1003,7 @@ def test_reused_classic_launchers_receive_the_mp8_argument_shape(monkeypatch):
                 assert [a[0] for a, _k in calls].count(carrier) == 1, calls
                 return [(("L_qc",) + args[1:], kwargs)
                         for args, kwargs in calls if args[0] == carrier]
-            got = carried(got, "scratch.mp_thompson_aero_qc_entry")
+            got = carried(got, "scratch.mp_thompson_aero_tau1_density")
             want = carried(want, "scratch.mp_thompson_rain_reference_density")
         assert got == want, name
 
@@ -1465,8 +1485,15 @@ _END_TO_END_BOUNDS: dict[str, dict[str, float]] = {
 #: which is the quantity the cancellation is measured against.
 #: MEASURED: qr 14.9 ulp (4.2361e-13 kg/kg against ulp 2.842e-14),
 #: nr_per_kg 4.05 ulp (0.1266 against ulp 0.03125).
-_NEAR_CANCELLATION_LEVELS: dict[str, tuple[int, ...]] = {
-    "aero-reduces-to-classic": (6,)}
+#:
+#: RETIRED BY THE 2.8.6 ACCUMULATOR REWORK.  The cancellation is real (the
+#: level still loses 99.958% of its rain in the step) but it was never the
+#: reason the port missed there: applying the evaporation to the state and
+#: then the fallout to the rounded result added roundings WRF does not
+#: make.  With the rain carried in WRF's tendency form, level 6 is bit-exact
+#: against WRF in qr and nr, so the exclusion buys nothing and is empty.
+#: The machinery stays so a re-added entry is visible to the allowance gate.
+_NEAR_CANCELLATION_LEVELS: dict[str, tuple[int, ...]] = {}
 _NEAR_CANCELLATION_ULPS = 32.0
 
 
@@ -1498,18 +1525,12 @@ _NEAR_CANCELLATION_ULPS = 32.0
 #: bound bought nothing and was deleted; the near-cancellation bound at
 #: level 6 is still essential and is the only allowance left in the
 #: port.
-_G3_ALLOWANCES = (
-    ("0-based level 6 held to 32 ulps of the entry value instead of a "
-     "relative bound",
-     "_NEAR_CANCELLATION_LEVELS",
-     ("aero-reduces-to-classic",),
-     "the level enters with qr = 3.1695777e-07 kg/kg and :3500-3574 "
-     "evaporates 99.958% of it in one 10 s step, so the surviving value is "
-     "the difference of two nearly equal float32 numbers and a relative gate "
-     "there measures the rate's error amplified by 1/(1-0.99958) = 2370.  "
-     "Bounded in ulps of the entry value, which is what the cancellation is "
-     "measured against; MEASURED 14.9 ulp (qr) and 4.05 ulp (nr)."),
-)
+#:
+#: AND NOW NONE.  The 2.8.6 accumulator rework took the last allowance's
+#: level bit-exact against WRF (qr 0.585 and nr 0.159 entry-ulps before it,
+#: 0 after), so it was retired in the same change, with its fixture moved
+#: into the unexceptioned clean set.
+_G3_ALLOWANCES: tuple = ()
 
 
 def _require_device():
@@ -2037,9 +2058,22 @@ def test_g3_end_to_end_against_all_nineteen_oracle_fixtures():
 #: were held out solely by the sedimentation-density defect described on
 #: :data:`_G3_RESIDUALS`, and both went to 0.000e+00 on every surface
 #: accumulator when it was fixed.
+#:
+#: THE ACCUMULATOR REWORK (2.8.6) ADDED THE LAST FOUR, AND THE DECK IS NOW
+#: 22 OF 22.  ``aero-cloud-freeze-nc``, ``aero-cold-overlap``,
+#: ``aero-reduces-to-classic`` and ``wp08-nusweep`` were the port's last
+#: misses, all from applying mass tendencies stage by stage where WRF
+#: accumulates them and applies them once (:3973-4053): the cloud-water and
+#: rain/ice accumulators (microphysics_aerosol.py, properties 1b and 1c),
+#: mp=28's own tendency-form rain and ice fallout, and the cold network's
+#: REAL rain-conservation ratio closed them.  aero-reduces-to-classic no
+#: longer needs the near-cancellation allowance: its qr and nr are bit-exact
+#: against WRF at every level.
 _G3_UNEXCEPTIONED_CLEAN = (
     "aero-ccn-activate",
     "aero-ccn-sweep",
+    "aero-cloud-freeze-nc",
+    "aero-cold-overlap",
     "aero-drop-evap",
     "aero-ice-demott-dep",
     "aero-ice-demott-idxin",
@@ -2050,12 +2084,14 @@ _G3_UNEXCEPTIONED_CLEAN = (
     "aero-nc-cap",
     "aero-nc-effrad",
     "aero-nc-sed",
+    "aero-reduces-to-classic",
     "aero-scav-frozen",
     "aero-scav-rain",
     "aero-sfc-emit",
     "aero-warm-overlap",
     "wp08-freeze",
     "wp08-melt",
+    "wp08-nusweep",
 )
 
 #: THE ACCURATE COUNT, PART 2: the fixtures that clear the gate AS GATED, i.e.
@@ -2063,8 +2099,7 @@ _G3_UNEXCEPTIONED_CLEAN = (
 #: The difference between this and the tuple above is exactly
 #: :data:`_G3_ALLOWANCE_ONLY_CLEAN`, and that identity is asserted, so the two
 #: counts can never be conflated again.
-_G3_GATED_CLEAN = tuple(sorted(
-    set(_G3_UNEXCEPTIONED_CLEAN) | {"aero-reduces-to-classic"}))
+_G3_GATED_CLEAN = tuple(sorted(set(_G3_UNEXCEPTIONED_CLEAN)))
 
 #: The fixtures that are clean ONLY because an allowance exists.  Exactly one,
 #: and it now rests on ONE allowance rather than two: dropping the surviving
@@ -2073,7 +2108,11 @@ _G3_GATED_CLEAN = tuple(sorted(
 #: proves by removing them one at a time.  (A third, ``_REFL_DB_BOUNDS``, was
 #: retired by WP-13a and the same test now asserts the flat dB gate holds
 #: without it.)
-_G3_ALLOWANCE_ONLY_CLEAN = ("aero-reduces-to-classic",)
+#:
+#: NOW NONE: the 2.8.6 accumulator rework put aero-reduces-to-classic's
+#: level 6 bit-exact against WRF, so the allowance that bought it was
+#: retired with it (see _G3_ALLOWANCES).
+_G3_ALLOWANCE_ONLY_CLEAN: tuple[str, ...] = ()
 
 
 #: THE RESIDUAL RATCHET.  Every (fixture, quantity) that is ABOVE the gate as
@@ -2286,13 +2325,16 @@ _G3_ALLOWANCE_ONLY_CLEAN = ("aero-reduces-to-classic",)
 #: UNITS.  The cell is well conditioned either way -- a one-ulp entry
 #: perturbation moves the exit by 3-7 ulp (qc) or 0-4 ulp (nc) -- which is
 #: why 34 ulp was findable and, unlike wp08-nusweep, was found.
-_G3_RESIDUALS: dict[str, dict[str, float]] = {
-    "aero-cloud-freeze-nc": {"qc": 4.9256e-06},
-    "aero-cold-overlap": {
-        "qc": 1.0000e+00, "nc_per_kg": 1.0000e+00, "effc_m": 8.1018e-01,
-        "nr_per_kg": 1.2613e-04, "qr": 4.4426e-05},
-    "wp08-nusweep": {"qr": 4.6424e-06},
-}
+#:
+#: EMPTY SINCE THE 2.8.6 ACCUMULATOR REWORK, and every cell above closed in
+#: one change: the cloud water (aero-cloud-freeze-nc qc and aero-cold-overlap
+#: qc / nc / effc at level 4) by the qcten accumulator, the rain at
+#: aero-cold-overlap level 6 by the rain accumulators plus the cold
+#: network's REAL rain-conservation ratio (:1615 declares sump, rate_max and
+#: ratio REAL; a double ratio sat 3e-8 away), and wp08-nusweep level 12 by
+#: the tendency-form rain fallout (60 ulps to 6, under the gate).  The
+#: ratchet below now holds the table at empty.
+_G3_RESIDUALS: dict[str, dict[str, float]] = {}
 
 
 _G3_TABLE: dict[str, dict[str, float]] = {}
@@ -2364,9 +2406,8 @@ def test_the_unexceptioned_g3_table_is_printed_and_its_count_pinned():
     fails here too, because a port whose evidence understates it is a port
     whose evidence nobody re-read.
 
-    MEASURED: 18 of 22 clean.  The four that miss and every number they miss
-    by are in :data:`_G3_RESIDUALS` (three of them) and, for the one the
-    allowances cover, in tests/test_thompson_aerosol_gpu.py's published matrix.
+    MEASURED: 22 of 22 clean since the 2.8.6 accumulator rework (18 before
+    it); :data:`_G3_RESIDUALS` is empty.
     """
     import cupy as cp
 
@@ -2397,11 +2438,11 @@ def test_the_unexceptioned_g3_table_is_printed_and_its_count_pinned():
         f"clean: {sorted(set(_G3_UNEXCEPTIONED_CLEAN) - set(clean))}.  "
         "Update _G3_UNEXCEPTIONED_CLEAN, _G3_RESIDUALS, the G3 docstring and "
         "tests/test_thompson_aerosol_gpu.py in ONE change.")
-    assert len(clean) == 18 and len(_FIXTURES) == 22, (
+    assert len(clean) == 22 and len(_FIXTURES) == 22, (
         len(clean), len(_FIXTURES))
     # ...and the aero-only subtotal the public documents quote.
     aero = [name for name in clean if name.startswith("aero-")]
-    assert len(aero) == 16, aero
+    assert len(aero) == 19, aero
     assert len([n for n in _FIXTURES if n.startswith("aero-")]) == 19, (
         "the spec'd fixture set (ids 101-119) is no longer nineteen columns")
 
@@ -2597,54 +2638,14 @@ def _g3_ulp_rows(cp):
 #: level the relative gate fails on and 18 ulps at level 1, so the relative
 #: metric and the ULP metric do not agree about where this column's worst
 #: disagreement is -- which is itself the reason for publishing both.
-_G3_ULP_PINS = (
-    ("aero-cloud-freeze-nc", "qc", 4, 1.000, "entry", 1.000, 4, "entry"),
-    ("aero-cold-overlap", "qc", 4, 1.000, "entry", 1.000, 4, "entry"),
-    ("aero-cold-overlap", "qr", 6, 1.789, "entry", 18.00, 1, "after"),
-    # 16.00 at level 1 until A146 (see _G3_ULP_PINS_SM89).
-    ("aero-cold-overlap", "nr_per_kg", 6, 0.6109, "entry", 17.00, 1, "after"),
-    ("aero-cold-overlap", "nc_per_kg", 4, 0.2292, "entry", 0.2292, 4,
-     "entry"),
-    ("aero-cold-overlap", "effc_m", 4, 1.11439e+07, "after", 1.11439e+07, 4,
-     "after"),
-    # RE-MEASURED after the 1.4.1 merge inherited the mp=8 lane's two
-    # sedimentation reconciliations.  Both rows TIGHTENED, and by a lot:
-    # qr level 6 went 14.90 -> 0.5850 entry-ulps and its worst level moved
-    # off 6 entirely; nr_per_kg level 6 went 4.052 -> 0.1593, and its worst
-    # went 27.50 ulps at level 5 -- the cell the retired relative bound
-    # existed for -- to 3.000 ulps at level 2.  The rows stay because both
-    # cells are still above the FLAT gate once level 6 is put back in.
-    ("aero-reduces-to-classic", "qr", 6, 0.5850, "entry", 1.000, 0, "after"),
-    # 0.1593 at level 6 until A146 (see _G3_ULP_PINS_SM89).
-    ("aero-reduces-to-classic", "nr_per_kg", 6, 0.1592, "entry", 3.000, 2,
-     "entry"),
-    ("wp08-nusweep", "qr", 12, 60.00, "after", 60.00, 12, "after"),
-)
+#:
+#: EMPTY ON EVERY CARD CLASS SINCE THE 2.8.6 ACCUMULATOR REWORK: no cell is
+#: above the relative gate, so no cell carries a ULP pin.  The per-fixture
+#: worst-ULP ratchet and the clean ceiling below still bound every cell.
+_G3_ULP_PINS: tuple = ()
 
-#: The same nine cells on an RTX 4090 (sm_89, cupy 14.2.0), measured
-#: 2026-09-24.  Until A146 two cells read differently from sm_120, both in
-#: the last ulp of a rounding: ``aero-cold-overlap`` nr_per_kg was 16 ulps
-#: at level 1 on sm_120 and ``aero-reduces-to-classic`` nr_per_kg 0.1593 at
-#: level 6.  A146 is why: NVRTC compiled a float division by a compile-time
-#: constant as a multiply by the rounded reciprocal on Blackwell, and since
-#: the kernels spell those divisions ``__fdiv_rn`` sm_120 reads both cells
-#: as sm_89 does (RTX 5070 Ti, NVRTC 13.4.92, 2026-09-30), so the two rows
-#: are equal.  The relative gate's miss set is the same nine cells on both
-#: classes.
-_G3_ULP_PINS_SM89 = (
-    ("aero-cloud-freeze-nc", "qc", 4, 1.000, "entry", 1.000, 4, "entry"),
-    ("aero-cold-overlap", "qc", 4, 1.000, "entry", 1.000, 4, "entry"),
-    ("aero-cold-overlap", "qr", 6, 1.789, "entry", 18.00, 1, "after"),
-    ("aero-cold-overlap", "nr_per_kg", 6, 0.6109, "entry", 17.00, 1, "after"),
-    ("aero-cold-overlap", "nc_per_kg", 4, 0.2292, "entry", 0.2292, 4,
-     "entry"),
-    ("aero-cold-overlap", "effc_m", 4, 1.11439e+07, "after", 1.11439e+07, 4,
-     "after"),
-    ("aero-reduces-to-classic", "qr", 6, 0.5850, "entry", 1.000, 0, "after"),
-    ("aero-reduces-to-classic", "nr_per_kg", 6, 0.1592, "entry", 3.000, 2,
-     "entry"),
-    ("wp08-nusweep", "qr", 12, 60.00, "after", 60.00, 12, "after"),
-)
+#: The sm_89 row, likewise empty (RTX 4090, measured with the rework).
+_G3_ULP_PINS_SM89: tuple = ()
 
 #: THE PINS ARE PER CARD CLASS.  A residual is one card's rounding of the
 #: port, not the port's number: the same kernels compiled for sm_89 and for
@@ -2678,47 +2679,52 @@ def _card_class(cp) -> str:
 #: in ULP terms at all: a level whose values are large can drift many ulps
 #: and stay far inside 2e-06.  A regression that doubles the rounding error
 #: of a currently-clean quantity fails here.
-_G3_CLEAN_ULP_CEILING = 20.0
+#:
+#: TIGHTENED TO 6.0 BY THE 2.8.6 ACCUMULATOR REWORK.  The 20.0 above was the
+#: derived effc_m of the one-ulp qc row; with that row closed the worst cell
+#: in the deck is wp08-nusweep qr at 0-based level 11, 6.0 ulps (it was the
+#: 60-ulp residual at level 12, ill-conditioned: one ulp of entry qc or nc
+#: moves it 32 to 256 ulps), and the next is 3.0.  Measured on an RTX 5090
+#: (sm_120) and an RTX 4090 (sm_89).
+_G3_CLEAN_ULP_CEILING = 6.0
 
 #: THE WORST ULP ANYWHERE IN EACH FIXTURE, over all 23 quantities and all
 #: levels, above-gate cells included.  A per-fixture ratchet: it bounds the
 #: cells the relative gate leaves unbounded AND the cells
 #: :data:`_G3_ULP_PINS` bounds, in one number a reader can scan.
 #:
-#: FOUR FIXTURES ARE BIT-EXACT AGAINST WRF ON EVERY COMPARED QUANTITY AT
+#: FIVE FIXTURES ARE BIT-EXACT AGAINST WRF ON EVERY COMPARED QUANTITY AT
 #: EVERY LEVEL -- 0.0 ulps, not "0.0 to four figures": aero-ccn-activate,
-#: aero-ccn-sweep, aero-init-profile and aero-sfc-emit.  That is stated here
+#: aero-ccn-sweep, aero-init-profile, aero-sfc-emit and (since the 2.8.6
+#: accumulator rework) wp08-melt.  That is stated here
 #: because it is the strongest single fact the deck contains and the relative
 #: table renders it as an unremarkable column of ``0.00e+00``.  It is asserted
 #: for EQUALITY (``measured == 0.0``), not as an upper bound.
 _G3_WORST_ULP_BY_FIXTURE = {
+    # RE-MEASURED with the 2.8.6 accumulator rework on an RTX 5090 (sm_120).
+    # Every fixture held or tightened; wp08-melt joined the bit-exact set.
     "aero-ccn-activate": 0.0,
     "aero-ccn-sweep": 0.0,
-    "aero-cloud-freeze-nc": 20.0,
-    "aero-cold-overlap": 1.11439e+07,
-    "aero-drop-evap": 4.0,
-    "aero-ice-demott-dep": 5.0,
+    "aero-cloud-freeze-nc": 2.0,
+    "aero-cold-overlap": 3.0,
+    "aero-drop-evap": 1.5,
+    "aero-ice-demott-dep": 3.0,
     "aero-ice-demott-idxin": 3.0,
-    "aero-ice-koop": 4.0,
+    "aero-ice-koop": 3.0,
     "aero-init-profile": 0.0,
-    "aero-nc-accrete": 5.0,
-    "aero-nc-auto": 3.0,
-    "aero-nc-cap": 4.0,
+    "aero-nc-accrete": 2.0,
+    "aero-nc-auto": 2.0,
+    "aero-nc-cap": 1.875,
     "aero-nc-effrad": 2.0,
-    "aero-nc-sed": 4.0,
-    "aero-reduces-to-classic": 3.0,
+    "aero-nc-sed": 1.75,
+    "aero-reduces-to-classic": 2.25,
     "aero-scav-frozen": 3.0,
-    "aero-scav-rain": 4.0,
+    "aero-scav-rain": 2.0,
     "aero-sfc-emit": 0.0,
-    "aero-warm-overlap": 5.0,
-    # 34.0 until the rain fallout was handed WRF's L_qr.  5.0 is the card's
-    # number, level 0 nr_per_kg, read on an RTX 5070 Ti (sm_120) and an
-    # RTX 4090 (sm_89) alike; the 3.0 this pin carried was the host build
-    # of the kernels (tools/thompson_real_column_parity), which is not the
-    # device, and every card failed on it.
-    "wp08-freeze": 5.0,
-    "wp08-melt": 2.0,
-    "wp08-nusweep": 60.0,
+    "aero-warm-overlap": 2.0,
+    "wp08-freeze": 2.0,
+    "wp08-melt": 0.0,
+    "wp08-nusweep": 6.0,
 }
 
 #: The same ratchet per card class.  The table above is sm_120's (an RTX
@@ -2730,13 +2736,12 @@ _G3_WORST_ULP_BY_FIXTURE = {
 #: compile-time constant ``__fdiv_rn`` (A146: NVRTC had compiled it as a
 #: reciprocal multiply on Blackwell) sm_120 reads the three as sm_89 does,
 #: and the two rows are equal.
+#: The sm_89 (RTX 4090) row differs from sm_120 only where listed here.
+SM89_WORST_ULP_DIFFERENCES: dict[str, float] = {}
+
 _G3_WORST_ULP_BY_CARD_CLASS = {
     "12.0": _G3_WORST_ULP_BY_FIXTURE,
-    "8.9": dict(_G3_WORST_ULP_BY_FIXTURE, **{
-        "aero-nc-effrad": 2.0,
-        "aero-nc-sed": 4.0,
-        "aero-reduces-to-classic": 3.0,
-    }),
+    "8.9": dict(_G3_WORST_ULP_BY_FIXTURE, **SM89_WORST_ULP_DIFFERENCES),
 }
 
 #: Round-trip slack on the four-significant-figure literals above.  It is NOT
@@ -2804,7 +2809,7 @@ def test_every_g3_residual_is_published_in_ulps_as_well_as_relative():
         "the ULP pins and the cells above the relative gate have diverged.  "
         f"Above the gate with no ULP pin: {sorted(above - pinned)}; pinned "
         f"but no longer above the gate: {sorted(pinned - above)}")
-    assert len(_G3_ULP_PINS) == 9, len(_G3_ULP_PINS)
+    assert len(_G3_ULP_PINS) == 0, len(_G3_ULP_PINS)
     for card_class, card_pins in _G3_ULP_PINS_BY_CARD_CLASS.items():
         assert {(row[0], row[1]) for row in card_pins} == pinned, card_class
     assert set(_G3_WORST_ULP_BY_CARD_CLASS) == set(
@@ -2884,7 +2889,7 @@ def test_every_g3_residual_is_published_in_ulps_as_well_as_relative():
     exact = sorted(name for name, pin in worst_by_fixture.items()
                    if pin == 0.0)
     assert exact == ["aero-ccn-activate", "aero-ccn-sweep",
-                     "aero-init-profile", "aero-sfc-emit"], exact
+                     "aero-init-profile", "aero-sfc-emit", "wp08-melt"], exact
     print(f"BIT-EXACT ON EVERY COMPARED QUANTITY: {len(exact)}/22 -- {exact}")
 
 
@@ -2943,22 +2948,16 @@ def test_the_ulp_companion_metric_cannot_relax_the_relative_gate():
 
 
 @requires_gpu
-def test_every_g3_allowance_is_named_and_buys_exactly_one_fixture():
-    """The surviving allowance, measured, plus both retired ones held down.
+def test_every_g3_allowance_is_retired_and_none_is_needed():
+    """No allowance, and none needed: the gated and flat verdicts coincide.
 
-    An auditor's finding: ``aero-reduces-to-classic`` is counted clean through
-    three simultaneous allowances and no single place said so.  This is that
-    place, and it is arithmetic rather than prose.  Two of the three are now
-    retired -- the reflectivity carve-out by WP-13a, the relative bound by
-    the 1.4.1 merge -- and each retirement inverted its assertion rather than
-    removing it, so a carve-out cannot quietly come back:
-
-    * the gated clean set minus the unexceptioned clean set is exactly
-      :data:`_G3_ALLOWANCE_ONLY_CLEAN`;
-    * removing ANY ONE of the three allowances puts that fixture back over the
-      gate, so none of them is redundant padding;
-    * no allowance touches any other fixture -- for every fixture except the
-      one named, the gated verdict and the flat verdict are identical.
+    The allowance registry used to name what each departure from the flat
+    gate bought, so the accurate count could never be inferred from prose.
+    The 2.8.6 accumulator rework retired the last one (the near-cancellation
+    level of aero-reduces-to-classic, now bit-exact against WRF), so this
+    asserts the registry and every carve-out object are empty and that the
+    gated and the flat verdicts are the same 22 fixtures -- a re-added
+    carve-out fails here instead of passing silently through _g3_bound.
     """
     import cupy as cp
 
@@ -2971,78 +2970,15 @@ def test_every_g3_allowance_is_named_and_buys_exactly_one_fixture():
              if not _g3_failures(name, gated_table[name])}
     flat = {name for name in _FIXTURES
             if not _flat_failures(name, flat_table[name])}
-    assert gated == set(_G3_GATED_CLEAN), sorted(gated)
-    assert flat == set(_G3_UNEXCEPTIONED_CLEAN), sorted(flat)
-    assert gated - flat == set(_G3_ALLOWANCE_ONLY_CLEAN), sorted(gated - flat)
-    assert not flat - gated, sorted(flat - gated)
-
-    # The registry names every object that implements an allowance, and every
-    # such object is in the registry.  A fourth allowance added without a row
-    # here fails this.
-    named = {entry[1] for entry in _G3_ALLOWANCES}
-    assert named == {"_NEAR_CANCELLATION_LEVELS"}, named
-    for _label, _object, fixtures, justification in _G3_ALLOWANCES:
-        assert set(fixtures) <= set(_FIXTURES), fixtures
-        assert set(fixtures) == set(_G3_ALLOWANCE_ONLY_CLEAN), fixtures
-        assert "module_mp_thompson.F" in justification or ":" in justification
-    for name, allowance in (("_NEAR_CANCELLATION_LEVELS",
-                             _NEAR_CANCELLATION_LEVELS),):
-        assert set(allowance) == set(_G3_ALLOWANCE_ONLY_CLEAN), (
-            f"{name} now applies to {sorted(allowance)}, but the port's "
-            f"allowances are declared to buy only "
-            f"{sorted(_G3_ALLOWANCE_ONLY_CLEAN)}; a second allowanced "
-            "fixture must be added to _G3_ALLOWANCE_ONLY_CLEAN, to "
-            "_G3_ALLOWANCES with its WRF justification, and to the G3 "
-            "docstring's two counts in the same change")
-    # THE RETIRED ONE STAYS RETIRED.  WP-13a's sedimentation-density fix put
-    # aero-reduces-to-classic's reflectivity residual inside the flat dB gate,
-    # so the carve-out buys nothing; re-adding an entry here without also
-    # adding a row to _G3_ALLOWANCES fails this line rather than passing
-    # silently through _g3_bound.
-    assert _REFL_DB_BOUNDS == {}, (
-        "_REFL_DB_BOUNDS was retired by WP-13a because the residual it "
-        "covered is now inside the flat gate; a new entry needs a new "
-        "_G3_ALLOWANCES row with its WRF justification")
-
-    # NONE OF THE THREE IS REDUNDANT.  Drop one, re-measure, require the
-    # fixture to fail.  Nothing is written; the measurement is re-run against
-    # a modified bound view.
-    scenario = _G3_ALLOWANCE_ONLY_CLEAN[0]
-    measured, _ = _run_g3(cp, scenario, widened=True)
-    assert not _g3_failures(scenario, measured), measured
-
-    # (a) THE RELATIVE-BOUND ALLOWANCE IS NO LONGER NEEDED EITHER.  This
-    #     used to assert the opposite -- that dropping _END_TO_END_BOUNDS put
-    #     the fixture back over the gate on nr_per_kg.  The 1.4.1 merge
-    #     closed the mechanism (5e4af4e3 and cb765336 in the frozen mp=8
-    #     kernel this port shares for rain sedimentation), so the assertion
-    #     is INVERTED rather than deleted, exactly as (b) below was: with
-    #     _NEAR_CANCELLATION_LEVELS still applied, every field of this
-    #     fixture must clear the FLAT gate on its own.
-    without_bounds = [
-        f"{field}={value:.3e}" for field, value in measured.items()
-        if not value <= (_REFL_DB_GATE if field == _REFL_FIELD
-                         else _END_TO_END_DEFAULT_BOUND)]
-    assert not without_bounds, (
-        "a relative carve-out is needed again for "
-        f"{scenario}: {without_bounds}; re-adding one needs a new "
-        "_G3_ALLOWANCES row with its WRF justification")
-    # (b) THE REFLECTIVITY CARVE-OUT IS NO LONGER NEEDED AT ALL.  This used to
-    #     assert the opposite -- that dropping _REFL_DB_BOUNDS put the fixture
-    #     back over the gate.  WP-13a closed the mechanism, so the assertion is
-    #     inverted rather than deleted: the flat 2.0e-04 dB gate must hold on
-    #     its own, and if it ever stops holding this fails instead of a
-    #     carve-out quietly reappearing.
-    assert measured[_REFL_FIELD] <= _REFL_DB_GATE, (
-        f"{scenario} reflectivity {measured[_REFL_FIELD]:.3e} dB no longer "
-        f"clears the flat {_REFL_DB_GATE:.1e} dB gate WP-13a put it inside")
-    # (c) without the near-cancellation level exclusion.
-    raw = flat_table[scenario]
-    excluded = _NEAR_CANCELLATION_LEVELS[scenario]
-    assert excluded, scenario
-    for field in ("qr", "nr_per_kg"):
-        assert not raw[field] <= _g3_bound(scenario, field), (
-            f"_NEAR_CANCELLATION_LEVELS is not buying anything for {field}")
+    assert gated == set(_G3_GATED_CLEAN) == set(_FIXTURES), sorted(gated)
+    assert flat == set(_G3_UNEXCEPTIONED_CLEAN) == set(_FIXTURES), sorted(flat)
+    assert _G3_ALLOWANCES == () and _G3_ALLOWANCE_ONLY_CLEAN == ()
+    assert _NEAR_CANCELLATION_LEVELS == {}
+    assert _END_TO_END_BOUNDS == {} and _REFL_DB_BOUNDS == {}
+    # The level the last allowance held out is exact now, not merely inside
+    # the flat gate.
+    measured = flat_table["aero-reduces-to-classic"]
+    assert measured["qr"] == 0.0 and measured["nr_per_kg"] == 0.0, measured
 
 
 @requires_gpu
@@ -3433,13 +3369,30 @@ def test_the_pre_condensation_density_is_wrfs_3193_density_bitwise():
     _tables_or_skip()
     from gpuwm.core.microphysics_aerosol import _apply_thompson_aerosol
 
+    import gpuwm.core.thompson_aerosol_sat as sat_module
+
     for scenario in _FIXTURES:
         state, cfg, dt, _, _, _, _ = _build_case(cp, scenario)
-        _apply_thompson_aerosol(state, cfg, dt)
-        cp.cuda.Stream.null.synchronize()
-        tau1 = state._scratch["mp_thompson_aero_tau1_density"]
-        reference = state._scratch["mp_thompson_frozen_reference_density"]
-        assert bool(cp.array_equal(tau1, reference)), scenario
+        # The TAU+1 slot is later reused (the cloud-presence flag, then the
+        # snow blend's working rain number), so it is read at the one moment
+        # both routes hold the :3193 density: when the adjustment returns.
+        seen = {}
+        real = sat_module.launch_aerosol_saturation_adjust
+
+        def capture(*args, **kwargs):
+            seen["tau1"] = state._scratch[
+                "mp_thompson_aero_tau1_density"].copy()
+            result = real(*args, **kwargs)
+            seen["reference"] = kwargs["reference_density"].copy()
+            return result
+
+        sat_module.launch_aerosol_saturation_adjust = capture
+        try:
+            _apply_thompson_aerosol(state, cfg, dt)
+            cp.cuda.Stream.null.synchronize()
+        finally:
+            sat_module.launch_aerosol_saturation_adjust = real
+        assert bool(cp.array_equal(seen["tau1"], seen["reference"])), scenario
 
 
 @requires_gpu
@@ -3490,7 +3443,8 @@ def test_suppressing_the_pre_condensation_density_reproduces_the_old_defect():
                 cp.asnumpy(field).ravel().astype(np.float64)[level])
         return {
             "qr": pull(state.qr), "nr": pull(state.nr),
-            "rho_pre": pull(state._scratch["mp_thompson_aero_tau1_density"]),
+            "rho_pre": pull(
+                state._scratch["mp_thompson_frozen_reference_density"]),
             # Negative where :3568 rewrote the pair (the fallout's floor
             # marker); its magnitude is the :3490 density.
             "rho_post": abs(pull(
@@ -3569,30 +3523,35 @@ def test_rain_sedimentation_gets_wrfs_level_wise_working_rain_density():
 
     _require_device()
     _tables_or_skip()
-    import gpuwm.core.thompson as classic_module
+    import gpuwm.core.thompson_aerosol_sed as sed_module
     from gpuwm.core.microphysics_aerosol import _apply_thompson_aerosol
 
     scenario = "aero-drop-evap"
 
     def run(*, single_density):
         state, cfg, dt, before, after, surface, _ = _build_case(cp, scenario)
-        real = classic_module.launch_rain_sedimentation
+        real = sed_module.launch_aa_rain_sedimentation_accumulate
         if single_density:
-            # thompson.cu:430-431 falls back to the density it diagnoses from
-            # the state it is handed when reference_density is NULL, which on
-            # this column is the post-condensation one -- i.e. exactly what the
-            # adapter used to hand it at every level.  With no density there
-            # is no L_qr marker either, so the plain entry point runs.
-            def without(*args, **kwargs):
-                kwargs.pop("reference_density", None)
-                kwargs.pop("density_carries_rain_presence", None)
-                return real(*args, **kwargs)
-            classic_module.launch_rain_sedimentation = without
+            # The old defect, on mp=28's own fallout: every L_qr level read
+            # as if :3568 had rewritten it on the post-condensation density
+            # the state now gives, which is exactly the single density the
+            # adapter used to hand the fallout at every level.
+            def without(qr1d, nr1d, qrten, nrten, temperature, pressure, qv,
+                        *args, reference_density, **kwargs):
+                qvk = cp.maximum(cp.float32(1.0e-10), qv)
+                post = (cp.float32(0.622) * pressure
+                        / (cp.float32(287.04) * temperature
+                           * (qvk + cp.float32(0.622)))).astype(cp.float32)
+                single = cp.where(reference_density != 0, -post,
+                                  cp.float32(0.0)).astype(cp.float32)
+                return real(qr1d, nr1d, qrten, nrten, temperature, pressure,
+                            qv, *args, reference_density=single, **kwargs)
+            sed_module.launch_aa_rain_sedimentation_accumulate = without
         try:
             _apply_thompson_aerosol(state, cfg, dt)
             cp.cuda.Stream.null.synchronize()
         finally:
-            classic_module.launch_rain_sedimentation = real
+            sed_module.launch_aa_rain_sedimentation_accumulate = real
         return state, surface, before
 
     fixed, surface, before = run(single_density=False)
@@ -3711,7 +3670,14 @@ def test_the_source_networks_round_the_tendency_before_adding_it():
         def capture(*args, **kwargs):
             result = real(*args, **kwargs)
             cp.cuda.Stream.null.synchronize()
-            captured["qc"] = cp.asnumpy(state.qc).ravel().astype(np.float64)
+            # The working cloud WRF's :3215 forms, qc1d + qcten*DT, product
+            # rounded first: state.qc is qc1d for the whole call now.
+            entry = cp.asnumpy(state.qc).ravel().astype(np.float32)
+            tendency = cp.asnumpy(
+                state._scratch["mp_thompson_aero_qcten"]).ravel().astype(
+                    np.float32)
+            captured["qc"] = (entry + (tendency * np.float32(dt)).astype(
+                np.float32)).astype(np.float32).astype(np.float64)
             return result
 
         warm_module.launch_aerosol_warm_source_network_from_owner = capture
@@ -3774,36 +3740,20 @@ def test_the_source_networks_round_the_tendency_before_adding_it():
 
 
 @requires_gpu
-def test_the_qc_residual_is_exactly_one_extra_rounding():
-    """The last column residual the port could name, LOCATED to one stage.
+def test_the_cloud_water_is_rounded_once_per_call():
+    """The last cloud residuals, CLOSED, and the mechanism held down.
 
-    ``aero-cloud-freeze-nc`` qc at 0-based level 4 and ``aero-cold-overlap`` qc
-    at 0-based level 4 are the two cells where the port's answer and WRF's
-    differ by exactly ONE float32 ulp of the value the level entered with.  The
-    mechanism claimed for them on :data:`_G3_RESIDUALS` is the port's
-    apply-per-stage against WRF's :3971-4021 apply-once, and this test measures
-    that claim rather than asserting it.
+    ``aero-cloud-freeze-nc`` and ``aero-cold-overlap`` qc at 0-based level 4
+    were one float32 ulp of the entry value from WRF, because the port
+    applied the source network and then the condensation to ``state.qc``
+    where module_mp_thompson.F accumulates ``qcten`` and applies it once at
+    :3975 (and on aero-cold-overlap that one ulp flipped :4007's ``qc1d <=
+    R1`` branch, zeroing the droplets and the radius).  The 2.8.6 rework
+    carries ``qcten`` through every stage.  Asserted here, at both cells:
 
-    module_mp_thompson.F accumulates ``qcten`` across the whole network and
-    evaluates ``qc1d(k) = qc1d(k) + qcten(k)*DT`` ONCE at :3975.  ArWen's
-    mp=28 does that for ncten / nwfaten / nifaten (zeroed once, written by
-    every kernel, applied once by thompson_aerosol_state.cu) but not for the
-    mass fields, so qc is rounded once per stage that touches it.
-
-    THE MEASUREMENT.  If the claim is right, then at these two cells qc is
-    written by EXACTLY TWO stages -- the source network and the condensation --
-    and every stage after the condensation must leave it bit-identical.  If a
-    third stage moved it, "one extra rounding" would be the wrong story and the
-    residual would need a different one.  So: snapshot qc around cloud
-    sedimentation, the final phase cleanup and the terminal apply, and require
-    all three to be inert here.
-
-    THIS IS EVIDENCE, NOT A GATE ON THE FIX.  Closing it needs a qcten
-    accumulator, which needs a scratch slot ``gpuwm/core/preflight.py`` budgets
-    and a resequencing of readers in
-    ``gpuwm/core/kernels/thompson_aerosol_sed.cu`` -- neither file belonged to
-    the package that measured this.  Pinning the mechanism here is what stops
-    the attribution drifting away from the numbers while it waits.
+      * ``state.qc`` is WRF's ``qc1d`` -- untouched -- at every stage
+        boundary up to the terminal apply, so it is rounded exactly once;
+      * the final qc is WRF's, bit for bit.
     """
     import cupy as cp
 
@@ -3828,18 +3778,14 @@ def test_the_qc_residual_is_exactly_one_extra_rounding():
                 cp.cuda.Stream.null.synchronize()
                 trace.append((f"before {tag}",
                               float(cp.asnumpy(state.qc).ravel()[level])))
-                result = real(*args, **kwargs)
-                cp.cuda.Stream.null.synchronize()
-                trace.append((f"after {tag}",
-                              float(cp.asnumpy(state.qc).ravel()[level])))
-                return result
+                return real(*args, **kwargs)
 
             setattr(module, name, wrapped)
 
         instrument(sat_module, "launch_aerosol_saturation_adjust", "condense")
         instrument(sed_module, "launch_aa_cloud_sedimentation", "cloud sed")
         instrument(sed_module, "launch_aa_final_phase_cleanup", "cleanup")
-        instrument(state_module, "launch_aerosol_state_finalize", "finalize")
+        instrument(state_module, "launch_terminal_rain_ice", "terminal")
         try:
             _apply_thompson_aerosol(state, cfg, dt)
             cp.cuda.Stream.null.synchronize()
@@ -3848,667 +3794,152 @@ def test_the_qc_residual_is_exactly_one_extra_rounding():
                 setattr(module, name, real)
 
         seen = dict(trace)
-        entry = float(_column(before, "qc").astype(np.float64)[level])
+        entry = float(_column(before, "qc").astype(np.float32)[level])
         want = float(_oracle_expectation(after, "qc")[level])
         final = float(cp.asnumpy(state.qc).ravel()[level])
-
-        # The source network moved it, and so did the condensation: two
-        # writes, which is one more rounding than WRF's :3975 performs.
-        assert seen["before condense"] != entry, (scenario, trace)
-        assert seen["after condense"] != seen["before condense"], (
-            scenario, trace)
-        # And NOTHING after the condensation touches it, so the residual
-        # cannot be attributed to any later stage.
-        for tag in ("cloud sed", "cleanup", "finalize"):
-            assert seen[f"after {tag}"] == seen[f"before {tag}"], (
-                f"{scenario}: the {tag} stage now moves qc at level {level}; "
-                "the 'one extra rounding' attribution on _G3_RESIDUALS is no "
-                f"longer the whole story.  Trace: {trace}")
-        assert final == seen["after finalize"], (scenario, final, trace)
-
-        # ...and the gap really is one ulp of the ENTRY value, which is the
-        # signature of a second rounding at the entry scale rather than a rate
-        # disagreement.
-        ulp = _ulps(entry)
-        assert abs(final - want) <= 1.0001 * ulp, (
-            f"{scenario}: |got - want| is {abs(final - want) / ulp:.4f} ulp "
-            "of the entry value, so this is no longer a one-rounding gap")
-        assert abs(final - want) >= 0.99 * ulp, (
-            f"{scenario}: the gap shrank to "
-            f"{abs(final - want) / ulp:.4f} ulp; if it closed, remove the row "
-            "from _G3_RESIDUALS and _RESIDUAL_ATTRIBUTION")
+        for tag in ("condense", "cloud sed", "cleanup"):
+            assert seen[f"before {tag}"] == entry, (
+                f"{scenario}: state.qc moved before the {tag} stage at level "
+                f"{level}; the cloud is applied stage by stage again.  "
+                f"Trace: {trace}")
+        # The one apply happened between the cleanup and the terminal
+        # rain/ice launch, and its value is WRF's.
+        assert seen["before terminal"] == final, (scenario, trace)
+        assert final == want, (
+            f"{scenario} level {level}: qc {final!r}, WRF {want!r}")
+        assert final != entry
 
 
 def _state_entering_rain_sedimentation(cp, scenario):
-    """qr, nr and the reference density as ``launch_rain_sedimentation`` sees.
+    """The working rain pair as mp=28's rain fallout forms it, and its marks.
 
-    The frozen mp=8 kernel is where the last two mechanisms live, so the only
-    way to measure them is to read its arguments.  Nothing is modified: the
-    wrapper snapshots and delegates.
+    Reads the arguments of ``launch_aa_rain_sedimentation_accumulate``:
+    ``qr1d + qrten*DT`` and ``nr1d + nrten*DT``, and the rain evaporation's
+    level-wise reference density (its magnitude the density, its zero and
+    sign WRF's L_qr and :3568 marks).  Nothing is modified.
     """
-    import gpuwm.core.thompson as classic_module
+    import gpuwm.core.thompson_aerosol_sed as sed_module
     from gpuwm.core.microphysics_aerosol import _apply_thompson_aerosol
 
     state, cfg, dt, before, after, surface, _ = _build_case(cp, scenario)
     seen: dict[str, np.ndarray] = {}
-    real = classic_module.launch_rain_sedimentation
+    real = sed_module.launch_aa_rain_sedimentation_accumulate
 
-    def wrap(qr, nr, temperature, pressure, qv, dz, rainnc, rainncv, dt_,
-             **kwargs):
+    def wrap(qr1d, nr1d, qrten, nrten, *args, reference_density, **kwargs):
         cp.cuda.Stream.null.synchronize()
-        seen["qr"] = cp.asnumpy(qr).ravel().astype(np.float32).copy()
-        seen["nr"] = cp.asnumpy(nr).ravel().astype(np.float32).copy()
-        # The magnitude is the density; its sign and zero are the L_qr and
-        # :3568-rewrite markers the mp=28 rain evaporation writes.
-        seen["rho"] = np.abs(cp.asnumpy(
-            kwargs["reference_density"]).ravel().astype(np.float32))
-        return real(qr, nr, temperature, pressure, qv, dz, rainnc, rainncv,
-                    dt_, **kwargs)
+        f32 = np.float32
+        for key, entry, tendency in (("qr", qr1d, qrten), ("nr", nr1d, nrten)):
+            e = cp.asnumpy(entry).ravel().astype(f32)
+            t = cp.asnumpy(tendency).ravel().astype(f32)
+            seen[key] = (e + (t * f32(dt)).astype(f32)).astype(f32)
+        seen["marks"] = cp.asnumpy(reference_density).ravel().astype(f32)
+        seen["rho"] = np.abs(seen["marks"])
+        return real(qr1d, nr1d, qrten, nrten, *args,
+                    reference_density=reference_density, **kwargs)
 
-    classic_module.launch_rain_sedimentation = wrap
+    sed_module.launch_aa_rain_sedimentation_accumulate = wrap
     try:
         _apply_thompson_aerosol(state, cfg, dt)
         cp.cuda.Stream.null.synchronize()
     finally:
-        classic_module.launch_rain_sedimentation = real
+        sed_module.launch_aa_rain_sedimentation_accumulate = real
     assert seen, scenario
-    return seen, before, after, surface
+    return seen, state, before, after, surface
 
 
-@requires_gpu
-def test_the_two_residuals_that_live_in_the_frozen_kernel_are_measured_here():
-    """The last two mechanisms, MEASURED rather than asserted -- and NOT fixed.
-
-    Two of this port's surviving residuals were traced to
-    ``gpuwm/core/kernels/thompson.cu``, the byte-frozen, model-validated mp=8
-    rain-sedimentation kernel that ``microphysics_aerosol.py`` reuses.  mp=28
-    cannot fix either one: the file is frozen, ``gpuwm/core/microphysics.py``
-    wires it the same way for mp=8, and changing it would move a trajectory
-    validated against 92 classic fixtures that this package did not re-measure.
-
-    Leaving them as prose would make them exactly the kind of claim that rots.
-    So both are measured here, confined to the levels they occur at, and cited
-    to WRF.  If either kernel-side condition is ever corrected, this test fails
-    and the correction has to arrive with an updated record.
-
-    ONE IS REPAIRED FOR mp=28 AND STAYS HERE AS A RECORD OF THE STATE.
-    The rain evaporation now writes WRF's L_qr into its reference density
-    (zero where :3236 failed) and the mp=28 adapter launches the fallout's
-    ``_with_presence`` entry points, which read it; since the classic rain
-    fallout repair (7727fda3c) the classic rain evaporation writes it too
-    and the mp=8 adapter launches the same entry points (the plain ones keep
-    the stand-in for their unit-gated callers).  The data check below describes the
-    column entering the fallout, which is unchanged, so it still holds; the
-    residual it explained is gone (level 0 ``nr`` 1 ulp from WRF).
-
-    ONE.  THE SEDIMENTATION PRESENCE GATE IS IN THE WRONG UNITS.
-    module_mp_thompson.F:3616 opens rain fall-speed calculation on
-    ``rr(k) .gt. R1`` -- a MASS CONCENTRATION in kg/m3, built at :3237 as
-    ``qr*rho``.  thompson.cu:438 tests ``qr[idx] > 1.0e-12f``, a MIXING RATIO.
-    They disagree wherever ``qr`` straddles R1/rho, and ``wp08-freeze`` has
-    such a level: 0-based 1 carries qr = 8.526513e-13 kg/kg (below the mixing-
-    ratio threshold, so ArWen gives it the level-above velocities at
-    thompson.cu:469-470) and rr = 1.175581e-12 kg/m3 (above R1, so WRF gives it
-    a real fall speed).  That is 29 of the 34 ULP of this fixture's published
-    ``nr_per_kg`` 2.724e-06, measured on the frozen kernel by the sibling
-    test below.
-
-    THIS ATTRIBUTION WAS PUBLISHED AS FALSIFIED FOR PART OF 2026-08-01 AND
-    THE FALSIFICATION WAS ITSELF WRONG.  It reasoned that WRF's :3236 test
-    fails at this level too, so WRF floors rr to R1 and closes its own gate.
-    It read ``qr1d + qrten*DT`` at the END of the step -- 8.521e-13, below R1
-    -- and took that for the value :3236 tested.  It is not: the rain
-    evaporation block at :3501 runs in between and SUBTRACTS from ``qrten``.
-    Instrumented WRF (tools/thompson_wrf461_oracle/
-    instrument_sedimentation_entry.py, proved inert by reproducing all 44
-    committed aerosol CSVs byte for byte) records ``L_qr = .true.`` at that
-    level, and ``L_qr`` is written nowhere between :3239/:3254 and here --
-    so :3236 took the TRUE branch, and :3568's
-    ``rr = MAX(R1, (qr1d + DT*qrten)*rho)`` left rr at
-    1.17481534483293570E-12, above R1.  WRF opens the gate.
-
-    Why cb765336 did not move the residual: that merge reconciled the
-    sedimentation DENSITY (:3237 against :3568, level-wise), not the gate's
-    UNITS.  A different mechanism landing without effect was never evidence
-    against this one.
-
-    TWO.  THE mvd_r CLAMP IS RE-APPLIED WHERE WRF NO LONGER CARRIES IT.
-    WRF bounds the mean volume diameter at :3240-3250, in the :3236 TAU+1
-    block only.  At the levels where the :3501-3502 rain-evaporation gate
-    passes, :3568-3570 REBUILDS rr(k) and nr(k) and does NOT re-apply the
-    clamp, so :3616-3627 derives the fall speed from an unclamped pair.
-    thompson.cu:449-453 re-applies it unconditionally.  Measured on
-    ``aero-reduces-to-classic``: exactly one level of the column, 0-based 6,
-    has mvd_r below the 37.5 um lower bound -- 12.9007 um -- and it is exactly
-    the level carrying that fixture's published 3.155e-03 qr/nr residual.
-    """
-    import cupy as cp
-
-    _require_device()
-    _tables_or_skip()
-
-    r1 = np.float32(1.0e-12)
-
-    # ONE.  wp08-freeze, the units disagreement, level by level.
-    seen, _before, _after, _surface = _state_entering_rain_sedimentation(
-        cp, "wp08-freeze")
-    qr, rho = seen["qr"], seen["rho"]
-    mass_concentration = (qr * rho).astype(np.float32)
-    arwen_open = qr > r1                               # thompson.cu:438
-    wrf_open = mass_concentration > r1                 # :3616
-    disagree = sorted(np.nonzero(arwen_open != wrf_open)[0].tolist())
-    assert disagree == [1], (
-        f"the sedimentation presence gate now disagrees with WRF's at "
-        f"{disagree} instead of [1]; the port's wp08-freeze attribution needs "
-        "re-deriving")
-    assert not arwen_open[1] and wrf_open[1]
-    assert float(qr[1]) < 1.0e-12 < float(mass_concentration[1])
-    assert float(rho[1]) > 1.0, float(rho[1])
-
-    # TWO.  aero-reduces-to-classic, the clamp that WRF stopped carrying.
-    seen, _before, _after, _surface = _state_entering_rain_sedimentation(
-        cp, "aero-reduces-to-classic")
-    qr, nr, rho = seen["qr"], seen["nr"], seen["rho"]
-    # thompson.cu:439-443, transcribed on the host.
-    am_r = np.float32(3.1415926536) * np.float32(1000.0) / np.float32(6.0)
-    clamped = []
-    present = []
-    for level in range(qr.size):
-        if not qr[level] > r1:
-            continue
-        present.append(level)
-        rain_mass = np.float32(qr[level] * rho[level])
-        rain_number = max(np.float32(1.0e-6), np.float32(nr[level] * rho[level]))
-        lam = float(np.cbrt(float(am_r * np.float32(6.0) * rain_number
-                                  / rain_mass)))
-        mvd = 3.672 / lam
-        if mvd < 37.5e-6 or mvd > 2.5e-3:
-            clamped.append((level, mvd))
-    assert len(present) >= 6, present
-    assert [level for level, _ in clamped] == [6], clamped
-    (_level, mvd), = clamped
-    # 12.9007 um, an order below the 37.5 um bound -- not a borderline case.
-    assert 12.5e-6 < mvd < 13.5e-6, mvd
-    assert mvd < 37.5e-6 / 2.0
-    # And it is the level the published residual sits at.
-    assert "aero-reduces-to-classic" in _G3_ALLOWANCE_ONLY_CLEAN
-    assert _NEAR_CANCELLATION_LEVELS["aero-reduces-to-classic"] == (6,)
-
-
-#: WRF v4.6.1's own numbers at the moment rain sedimentation begins, for
-#: ``wp08-freeze``, 0-based level 1 -- the level where ArWen's mixing-ratio
-#: presence gate and WRF's mass-concentration one disagree.  From the
-#: instrumented build described in
-#: ``tools/thompson_wrf461_oracle/instrument_sedimentation_entry.py``, whose
-#: inertness is proved by ``build_aero.sh`` reproducing every committed
-#: fixture byte for byte afterwards (measured 2026-08-02: it did).
-#:
-#: ``L_qr`` is the field that settles the argument.  WRF writes it in exactly
-#: two places before this point, :1887/:1904 and :3239/:3254, so ``.true.``
-#: here means :3236 took its TRUE branch and ``rr`` was never floored to R1.
-_WP08_FREEZE_WRF_SEDIMENTATION_ENTRY = {
-    "level": 1,
-    "L_qr": True,
-    "rr": 1.17481534483293570e-12,          # > R1, so :3616 OPENS
-    "nr": 1.58222410827875137e-02,
-    "vtrk": 5.02253711223602295e-01,
-    "vtnrk": 3.16547304391860962e-01,
-    "qrten": 8.52096171399807645e-14,
-    "nstep": 1,
-    "ksed1_rain": 6,
-    # The level above, whose velocities ArWen's closed gate inherits
-    # (thompson.cu:469-470).  5.3x faster in number.
-    "vtrk_above": 2.59040689468383789e+00,
-    "vtnrk_above": 1.68873035907745361e+00,
-}
-
-#: The three-arm experiment that attributed the residual, as measured on the
-#: RTX 5090, and the repair.  (mode, nr at 0-based level 0, ULP from WRF)
-#: "unmodified" is the old gate, which the repair test reproduces by
-#: stripping the L_qr hand-off.  "repaired" is the card's: read on the RTX
-#: 4090 at b2e0bc80 (THOMPSON-CARD 4.2), bit for bit the 5090's
-#: "gate_opened" arm, so carrying L_qr gives exactly what forcing the gate
-#: open gave.  "repaired_host" is the host build of the kernels
-#: (tools/thompson_real_column_parity), which reproduces "unmodified" bit
-#: for bit but reads the repaired arm 4 ulp nearer WRF than both cards; the
-#: test takes it only when cupy is that host backend.  The host number was
-#: the only pin until the card re-read it, and a card failed on it.
-_WP08_FREEZE_GATE_ARMS = {
-    "unmodified": (23.80756950378418, 34),
-    "gate_opened": (23.80764389038086, 5),
-    "repaired": (23.80764389038086, 5),
-    "repaired_host": (23.807636260986328, 1),
-}
+#: WRF v4.6.1's level-0 rain number for ``wp08-freeze``, from the committed
+#: fixture; the port's 2.8.6 rain fallout matches it bit for bit.
 _WP08_FREEZE_WRF_NR_LEVEL0 = 23.807634353637695
 
 
 @requires_gpu
-def test_the_wp08_freeze_residual_was_the_presence_gate_and_is_repaired():
-    """THE ATTRIBUTION, MEASURED, AND THEN THE REPAIR, MEASURED THE SAME WAY.
+def test_the_frozen_kernel_mechanisms_no_longer_reach_mp28():
+    """The two rain mechanisms that lived in thompson.cu, and their end.
 
-    This fixture's published ``nr_per_kg`` 2.7239e-06 at level 0 (34 ulp)
-    was attributed, un-attributed and finally measured on the frozen kernel:
-    29 of its 34 ulp were the rain fallout taking L_qr from the post-
-    evaporation mixing ratio.  At 0-based level 1 ArWen saw qr = 8.5265e-13
-    kg/kg (closed, so it inherited the level-above fall speeds, 5.3x faster
-    in number) where WRF's :3236 had taken its TRUE branch on the post-SOURCE
-    rain and :3568 left rr = 1.1748e-12 kg/m3 above R1, so :3616 opened.
+    Two of the port's former residuals were traced to mp=8's byte-frozen
+    rain fallout, which mp=28 shared: its presence gate tested the MIXING
+    RATIO where :3616 tests the mass concentration ``rr(k)``, and it
+    re-applied the :3240-3250 mvd_r clamp where :3568-3570 had rebuilt the
+    pair without it.  The first was carried around by handing the fallout
+    WRF's L_qr; the second was held by the near-cancellation allowance.  The
+    v4.6.1 generation now has its own tendency-form rain fallout, which forms
+    the pair and the gate where WRF does.  Asserted:
 
-    REPAIRED FOR mp=28 by carrying L_qr itself, which is what the record
-    said closing it would take.  The rain evaporation writes a ZERO
-    reference density where :3236 failed and the adapter launches the
-    fallout's ``_with_presence`` entry points, which read L_qr from it.
-    The plain entry points keep the stand-in, so the 92 classic kernel
-    fixtures are untouched; the mp=8 adapter launches the presence forms
-    too since the classic rain fallout repair (7727fda3c).
-
-    TWO RUNS OF THE SAME FIXTURE:
-
-      as it stands        level 0 ``nr`` 5 ulp from WRF on a card
-                          (4.006e-07; 1 ulp, 8.012e-08, on the host
-                          build of the kernels)
-      presence stripped   the plain fallout entry, i.e. the old gate:
-                          the published 34 ulp answer, bit for bit
-
-    The second arm is what makes the first a measurement: nothing but the
-    L_qr hand-off differs between them.
-    """
-    import cupy as cp
-
-    import gpuwm.core.thompson as classic_module
-    from gpuwm.core.microphysics_aerosol import _apply_thompson_aerosol
-
-    _require_device()
-    _tables_or_skip()
-
-    def run(strip):
-        state, cfg, dt, before, after, _surface, _ = _build_case(
-            cp, "wp08-freeze")
-        real = classic_module.launch_rain_sedimentation
-        seen: dict[str, object] = {}
-
-        def wrap(*args, **kwargs):
-            seen["presence"] = kwargs.get("density_carries_rain_presence")
-            if strip:
-                kwargs.pop("density_carries_rain_presence", None)
-            return real(*args, **kwargs)
-
-        classic_module.launch_rain_sedimentation = wrap
-        try:
-            _apply_thompson_aerosol(state, cfg, dt)
-            cp.cuda.Stream.null.synchronize()
-        finally:
-            classic_module.launch_rain_sedimentation = real
-        got = _adapter_outputs(cp, state, before)["nr_per_kg"]
-        want = _oracle_expectation(after, "nr_per_kg")
-        return got, want, seen
-
-    def ulp_gap(got, want):
-        pair = [int(np.frombuffer(np.float32(value).tobytes(),
-                                  dtype=np.int32)[0])
-                for value in (got, want)]
-        return abs(pair[0] - pair[1])
-
-    repaired, want, seen = run(strip=False)
-    stripped, _want, _seen = run(strip=True)
-
-    # The adapter really does hand the fallout L_qr.
-    assert seen["presence"] is True, seen
-    assert want[0] == _WP08_FREEZE_WRF_NR_LEVEL0, want[0]
-    # WRF's own numbers at the level that decided it, unchanged.
-    assert _WP08_FREEZE_WRF_SEDIMENTATION_ENTRY["L_qr"] is True
-    assert _WP08_FREEZE_WRF_SEDIMENTATION_ENTRY["rr"] > 1.0e-12
-
-    # THE OLD GATE, REPRODUCED: the published answer, bit for bit.
-    published, published_ulp = _WP08_FREEZE_GATE_ARMS["unmodified"]
-    assert stripped[0] == published, (stripped[0], published)
-    assert ulp_gap(stripped[0], want[0]) == published_ulp
-
-    # THE REPAIR, on the backend that ran it.
-    arm = ("repaired_host" if getattr(cp, "__gpuwm_host_backend__", False)
-           else "repaired")
-    expected, expected_ulp = _WP08_FREEZE_GATE_ARMS[arm]
-    assert repaired[0] == expected, (repaired[0], expected)
-    assert ulp_gap(repaired[0], want[0]) == expected_ulp
-    assert abs(repaired[0] - want[0]) / abs(want[0]) <= 2.0e-6
-    # ...and the fixture has left the residual table in the same change.
-    assert "wp08-freeze" not in _G3_RESIDUALS
-    assert "wp08-freeze" in _G3_UNEXCEPTIONED_CLEAN
-
-
-@requires_gpu
-def test_the_reduces_to_classic_residual_is_the_classic_paths():
-    """What is left on aero-reduces-to-classic, and whose it is.
-
-    THE ANSWER CHANGED BACK, AND THE NAME IS TRUE AGAIN.  Since 2026-09-23
-    the classic rain evaporation writes WRF's L_qr hand-off too and the
-    mp=8 adapter launches the same ``_with_presence`` fallout forms mp=28
-    does, so on this column the two pipelines share the warm-rain and
-    fallout path bit for bit.  MEASURED on an RTX 5070 Ti (sm_120) and an
-    RTX 4090 (sm_89) alike: ``qr`` and ``nr_per_kg`` are BITWISE IDENTICAL
-    between mp=28 and mp=8 at 0-based levels 0-5, and both are bit-exact
-    against WRF at ``qr`` levels 1, 2, 4 and 5.
-
-    The one level where they differ is level 6, the near-cancellation level
-    :data:`_NEAR_CANCELLATION_LEVELS` names: it enters with 3.1695777e-07
-    kg/kg of rain and evaporates 99.958% of it, so its survivor is the
-    difference of two nearly equal float32 numbers.  The earlier form of
-    this test compared the two schemes there RELATIVELY (mp=28 1.2383e-04
-    against mp=8 7.1010e-05) and failed on every card, which is the metric
-    the allowance exists to replace.  In ulps of the entry value, the unit
-    that allowance states, mp=28 is 0.585 ulp from WRF and mp=8 0.335
-    (``nr_per_kg`` 0.159 and 0.091): both under one ulp, inside the 32-ulp
-    allowance.
-
-    What this asserts:
-
-      1. outside the near-cancellation level, mp=28 and mp=8 are bitwise
-         identical in ``qr`` and ``nr``, so the fixture's residual there is
-         the classic path's;
-      2. at the near-cancellation level both are inside the allowance, in
-         ulps of the entry value;
-      3. mp=28 is bit-exact against WRF at ``qr`` levels 1, 2 and 4;
-      4. the column carries rain at seven levels, so none of this is
-         vacuous;
-      5. the two schemes really are different runs (nc is prognostic in one
-         and pinned at Nt_c in the other), so (1) is a finding and not a
-         tautology.
+      1. the data that made each mechanism bite is still in the columns, so
+         what follows is not vacuous -- wp08-freeze level 1 straddles R1
+         (qr below it, qr*rho above it), and aero-reduces-to-classic level 6
+         enters the fallout with an mvd_r an order below the 37.5 um clamp;
+      2. at both, the port is now WRF's bit for bit: wp08-freeze nr at
+         level 0, and aero-reduces-to-classic qr and nr at every level.
     """
     import cupy as cp
 
     _require_device()
     _tables_or_skip()
-    from gpuwm.core.microphysics import _apply_thompson
-    from gpuwm.core.microphysics_aerosol import _apply_thompson_aerosol
+    r1 = np.float32(1.0e-12)
 
-    scenario = "aero-reduces-to-classic"
-    state, cfg, dt, before, after, _, _ = _build_case(cp, scenario)
-    _apply_thompson_aerosol(state, cfg, dt)
-    cp.cuda.Stream.null.synchronize()
+    # wp08-freeze: the units disagreement is in the data ...
+    seen, state, _before, after, _surface = _state_entering_rain_sedimentation(
+        cp, "wp08-freeze")
+    qr, rho = seen["qr"], seen["rho"]
+    mass_concentration = (qr * rho).astype(np.float32)
+    assert float(qr[1]) < 1.0e-12 < float(mass_concentration[1])
+    assert seen["marks"][1] != 0.0, "L_qr held at level 1 (:3236)"
+    # ... and the level below it, which the gate fed, is WRF's exactly.
+    nr0 = float(cp.asnumpy(state.nr).ravel()[0])
+    assert nr0 == _WP08_FREEZE_WRF_NR_LEVEL0 == float(
+        _column(after, "nr_per_kg")[0]), nr0
 
-    classic_state, _, _, _, _, _, _ = _build_case(cp, scenario)
-    _apply_thompson(
-        classic_state,
-        SimpleNamespace(mp_physics=8, no_mp_heating=0, mp_tend_lim=10.0), dt)
-    cp.cuda.Stream.null.synchronize()
-
-    cancellation = set(_NEAR_CANCELLATION_LEVELS[scenario])
+    # aero-reduces-to-classic: the clamp WRF stopped carrying is in the data
+    seen, state, before, after, _surface = _state_entering_rain_sedimentation(
+        cp, "aero-reduces-to-classic")
+    am_r = np.float32(3.1415926536) * np.float32(1000.0) / np.float32(6.0)
+    level = 6
+    rain_mass = np.float32(seen["qr"][level] * seen["rho"][level])
+    rain_number = max(np.float32(1.0e-6),
+                      np.float32(seen["nr"][level] * seen["rho"][level]))
+    mvd = 3.672 / float(np.cbrt(float(am_r * np.float32(6.0) * rain_number
+                                      / rain_mass)))
+    assert 12.5e-6 < mvd < 13.5e-6, mvd
+    # ... and the column is WRF's at every level, near-cancellation included.
     for attribute, key in (("qr", "qr"), ("nr", "nr_per_kg")):
-        aerosol = cp.asnumpy(getattr(state, attribute)).ravel().astype(
-            np.float64)
-        classic = cp.asnumpy(getattr(classic_state, attribute)).ravel(
-            ).astype(np.float64)
+        got = cp.asnumpy(getattr(state, attribute)).ravel().astype(np.float64)
         want = _column(after, key).astype(np.float64)
+        np.testing.assert_array_equal(got, want, err_msg=key)
+        assert (want != 0.0).sum() == 7, key
         entry = _column(before, key).astype(np.float64)
+        assert (entry[level] - want[level]) / entry[level] > 0.999
 
-        # (1) the shared classic path, bit for bit, off the cancellation.
-        differ = [level for level in range(want.size)
-                  if level not in cancellation
-                  and aerosol[level] != classic[level]]
-        assert not differ, (
-            f"{key}: mp=28 and the frozen mp=8 pipeline differ at 0-based "
-            f"levels {differ}; they share the warm-rain and fallout path on "
-            "this column")
 
-        # (2) the near-cancellation level, in ulps of the entry value.
-        for level in sorted(cancellation):
-            ulp = _ulps(entry[level])
-            for label, got in (("mp=28", aerosol), ("mp=8", classic)):
-                distance = abs(got[level] - want[level]) / ulp
-                assert distance <= _NEAR_CANCELLATION_ULPS, (
-                    f"{key} level {level}: {label} is {distance:.3f} ulp of "
-                    f"the entry value from WRF, past the "
-                    f"{_NEAR_CANCELLATION_ULPS} allowance")
-
-        if key == "qr":
-            # (3) bit-exact against WRF where WRF carries rain.
-            exact = [level for level in range(want.size)
-                     if want[level] != 0.0 and aerosol[level] == want[level]]
-            assert set(exact) >= {1, 2, 4}, exact
-            # (4) non-vacuous.
-            rain_levels = [level for level in range(want.size)
-                           if want[level] != 0.0 or classic[level] != 0.0]
-            assert len(rain_levels) == 7, rain_levels
-
-    # (5) the two schemes are different runs.
-    aerosol_nc = float(cp.asnumpy(state.nc).ravel()[0])
-    classic_nc = float(cp.asnumpy(classic_state.nc).ravel()[0])
-    assert aerosol_nc != classic_nc
+#: WHERE EACH SURVIVING RESIDUAL LIVES AND WHAT REGIME IT LIVES IN.  Empty
+#: since the 2.8.6 accumulator rework, which closed every row it carried
+#: (the "consumed" cloud and rain cells at aero-cold-overlap levels 4 and 6
+#: and aero-cloud-freeze-nc level 4, the "derived" effc_m, and the
+#: "created" wp08-nusweep qr at level 12).
+_RESIDUAL_ATTRIBUTION: tuple = ()
 
 
 @requires_gpu
-def test_the_near_cancellation_level_is_bounded_in_ulps_not_excluded():
-    """The one held-out level, held to an absolute bound instead.
+def test_no_residual_survives_and_none_needs_a_regime():
+    """The residual narrative is empty, and the table agrees.
 
-    aero-reduces-to-classic 0-based level 6 enters with 3.1695777e-07 kg/kg
-    of rain and evaporates 99.958% of it in one step, so its surviving qr is
-    the difference of two nearly equal float32 numbers and a relative gate
-    there is a gate on the fifth significant digit of a cancellation.  It is
-    excluded from the RELATIVE comparison in :func:`_run_g3` and bounded here
-    in ulps of the entry value instead.
-
-    This also replaces the exclusion's old justification, which was that
-    "WRF's own qr survives at a value BOTH ArWen ports drive to exactly
-    zero".  After WP-12a's rain-density fix that is no longer true: mp=28 now
-    produces 1.3384e-10 kg/kg there against WRF's 1.3426e-10, and the test
-    below requires it to be non-zero so the old sentence cannot silently
-    come back.
-
-    MEASURED: qr 14.9 ulp of its entry value, nr_per_kg 4.05 ulp of its.
+    :data:`_G3_RESIDUALS` and :data:`_RESIDUAL_ATTRIBUTION` are both empty,
+    and nothing in the unexceptioned table (every level, every field, the
+    seven surface diagnostics included) is above the flat gate -- so a
+    residual cannot come back without a row, and a row cannot be deleted
+    instead of a residual being closed.
     """
     import cupy as cp
 
     _require_device()
     _tables_or_skip()
-    from gpuwm.core.microphysics_aerosol import _apply_thompson_aerosol
-
-    for scenario, levels in _NEAR_CANCELLATION_LEVELS.items():
-        state, cfg, dt, before, after, _, _ = _build_case(cp, scenario)
-        _apply_thompson_aerosol(state, cfg, dt)
-        cp.cuda.Stream.null.synchronize()
-        for level in levels:
-            for field, key in ((state.qr, "qr"), (state.nr, "nr_per_kg")):
-                entry = float(_column(before, key)[level])
-                want = float(_column(after, key)[level])
-                got = float(cp.asnumpy(field).ravel()[level])
-                # It really is a near-total consumption, so the carve-out
-                # cannot be reused for a level that merely disagrees.
-                assert entry > 0.0 and want > 0.0
-                assert (entry - want) / entry > 0.999, (scenario, key)
-                # The surviving value is non-zero: the port no longer just
-                # collapses this level, which is what the old justification
-                # assumed.
-                assert got > 0.0, (scenario, key)
-                ulp = _ulps(entry)
-                assert abs(got - want) <= _NEAR_CANCELLATION_ULPS * ulp, (
-                    f"{scenario} level {level} {key}: "
-                    f"{abs(got - want) / ulp:.1f} ulp of the entry value "
-                    f"exceeds {_NEAR_CANCELLATION_ULPS}")
-
-
-#: WHERE EACH SURVIVING RESIDUAL LIVES AND WHAT REGIME IT LIVES IN, so the
-#: narrative on ``_G3_RESIDUALS`` is checkable rather than assertive.
-#: ``(fixture, field, 0-based level, regime, scale)`` with regime one of:
-#:
-#:   "created"  -- the field enters the level at EXACTLY zero.  ``scale`` is
-#:                 |got - want| as a fraction of the column peak of the
-#:                 oracle's own after-state for that field, which is the only
-#:                 non-degenerate denominator available.
-#:   "consumed" -- at least 98% of the entry value is removed in the step.
-#:                 ``scale`` is |got - want| in ULPS OF THE ENTRY VALUE, which
-#:                 is the resolution the difference is actually carried at.
-#:   "partial"  -- neither of the above; ``scale`` is again ulps of the entry
-#:                 value, and it is the accurate statement that the residual is
-#:                 the accumulated rounding of a chain of processes rather
-#:                 than a threshold or a cancellation.
-#:   "derived"  -- the quantity is a diagnostic FUNCTION of other quantities
-#:                 at the same level that already appear in this table.
-#:                 ``scale`` is the relative difference; the attribution is
-#:                 the dependency, not the size.
-#:   "surface"  -- a column-integrated surface accumulation; it has no level.
-#:
-#: THE HEADLINE, AND IT IS AN IMPROVEMENT.  Every column residual left in the
-#: port is now "created", "consumed", "partial" or "derived".  The "rate"
-#: regime -- a disagreement in a process rate itself, at values far from any
-#: threshold -- is EMPTY.  It used to contain aero-ice-koop's qi 1.612e-03 and
-#: ni 1.764e-03, which three auditors called the port's largest genuine
-#: physics gap; WP-06 closed it and this file now measures 1.534e-07 / 
-#: 3.396e-07 there, inside the flat gate, so aero-ice-koop is in
-#: :data:`_G3_UNEXCEPTIONED_CLEAN` and has no row here at all.
-#:
-#: THE TWO EXTREME ROWS, IN WRF'S OWN TERMS.
-#:   aero-cold-overlap qc at level 4 reads a relative 1.000e+00 because WRF
-#:   ends the step with 1.4551915e-11 kg/kg -- exactly 2**-36, and exactly
-#:   1.000 float32 ulp of the 2.325216e-04 kg/kg the level entered with --
-#:   while gpuwm ends at exactly zero.  The two implementations remove the
-#:   same cloud water to within one ulp; the relative metric divides by the
-#:   remainder.  The same level's nc is 0.229 ulp of its entry value.
-#:   aero-cold-overlap effc_m at level 4 follows from that single ulp through
-#:   a BRANCH, not a rate: :5625 sets rc = MAX(R1, qc*rho) and :5638 CYCLEs
-#:   the whole cloud-radius loop when rc <= R1 with R1 = 1.E-12 (:183), so
-#:   WRF's 1.455e-11 clears the threshold and computes 13.118 micron from
-#:   :5646-5647 while gpuwm's exact zero leaves the RE_QC_BG background that
-#:   mp_gt_driver:1475 clamps to 2.49 micron.  Recorded as a MISS, not
-#:   allowanced.
-_RESIDUAL_ATTRIBUTION = (
-    ("aero-cloud-freeze-nc", "qc", 4, "consumed", 1.0),
-    ("aero-cold-overlap", "qc", 4, "consumed", 1.0),
-    ("aero-cold-overlap", "nc_per_kg", 4, "consumed", 0.2292),
-    ("aero-cold-overlap", "effc_m", 4, "derived", 0.8102),
-    ("aero-cold-overlap", "nr_per_kg", 6, "consumed", 0.6108),
-    ("aero-cold-overlap", "qr", 6, "consumed", 1.789),
-    ("wp08-nusweep", "qr", 12, "created", 2.502e-08),
-)
-
-#: Which quantities a "derived" row depends on, at the same level.  Named so
-#: the dependency is asserted rather than asserted-about.
-_DERIVED_INPUTS = {"effc_m": ("qc", "nc_per_kg"),
-                   "effi_m": ("qi", "ni_per_kg"),
-                   "effs_m": ("qs",)}
-
-
-@requires_gpu
-def test_every_surviving_residual_is_located_and_its_regime_is_stated():
-    """The residual narrative, asserted level by level and scale by scale.
-
-    :data:`_G3_RESIDUALS` ratchets the MAGNITUDE of what is left.  This
-    ratchets the STORY: which level each residual sits at, whether the field
-    there is being created from zero, consumed almost entirely, carried
-    through a chain of processes, or derived from another row -- and, for
-    every one of them, the SCALE the difference is actually carried at.
-    Without it the attribution prose drifts away from the numbers silently,
-    which is exactly what happened to the 2.5e-03 carve-out an earlier wave
-    replaced, whose comment named the wrong level and a mechanism that
-    measurement did not support.
-
-    COMPLETENESS IS ASSERTED, not assumed: every (fixture, field) in
-    :data:`_G3_RESIDUALS` must have a row here and vice versa, so a new
-    residual cannot appear with no story attached to it.
-    """
-    import cupy as cp
-
-    _require_device()
-    _tables_or_skip()
-    from gpuwm.core.microphysics_aerosol import _apply_thompson_aerosol
-
-    recorded = {(fixture, field) for fixture, fields in _G3_RESIDUALS.items()
-                for field in fields}
-    stated = {(row[0], row[1]) for row in _RESIDUAL_ATTRIBUTION}
-    assert stated == recorded, (
-        f"attribution rows with no residual: {sorted(stated - recorded)}; "
-        f"residuals with no attribution: {sorted(recorded - stated)}")
-
-    attribution: dict[str, list] = {}
-    for fixture, field, level, regime, scale in _RESIDUAL_ATTRIBUTION:
-        attribution.setdefault(fixture, []).append(
-            (field, level, regime, scale))
-
-    seen_regimes = set()
-    for fixture, expectations in sorted(attribution.items()):
-        state, cfg, dt, before, after, _, _ = _build_case(cp, fixture)
-        _apply_thompson_aerosol(state, cfg, dt)
-        cp.cuda.Stream.null.synchronize()
-        got = _adapter_outputs(cp, state, before)
-        for field, level, regime, scale in expectations:
-            seen_regimes.add(regime)
-            if regime == "surface":
-                assert level == -1 and field in _END_TO_END_SURFACE_FIELDS
-                continue
-            want = _oracle_expectation(after, field)
-            relative = np.where(
-                (got[field] == 0.0) & (want == 0.0), 0.0,
-                np.abs(got[field] - want)
-                / np.maximum(np.abs(want), 1.0e-30))
-            assert int(np.argmax(relative)) == level, (
-                f"{fixture}.{field}: worst residual moved from 0-based level "
-                f"{level} to {int(np.argmax(relative))}")
-            entry = float(_column(before, field)[level])
-            final = float(want[level])
-            difference = abs(float(got[field][level]) - final)
-            if regime == "created":
-                assert entry == 0.0, (fixture, field, entry)
-                assert final > 0.0, (fixture, field, final)
-                measured_scale = difference / float(np.abs(want).max())
-            elif regime == "consumed":
-                assert entry > 0.0 and final >= 0.0
-                assert (entry - final) / entry >= 0.98, (
-                    fixture, field, (entry - final) / entry)
-                measured_scale = difference / _ulps(entry)
-            elif regime == "partial":
-                assert entry > 0.0 and final > 0.0
-                assert (entry - final) / entry < 0.98, (
-                    f"{fixture}.{field} is now a near-total consumption; "
-                    "move it to the 'consumed' regime")
-                measured_scale = difference / _ulps(entry)
-            elif regime == "derived":
-                inputs = _DERIVED_INPUTS[field]
-                for source in inputs:
-                    assert source in _G3_RESIDUALS[fixture], (
-                        f"{fixture}.{field} is recorded as derived from "
-                        f"{source}, but {source} is not itself above the "
-                        "gate; the attribution is wrong")
-                measured_scale = difference / max(abs(final), 1.0e-30)
-            else:                                        # pragma: no cover
-                raise AssertionError(f"unknown regime {regime!r}")
-            assert measured_scale <= scale * 1.01, (
-                f"{fixture}.{field} at level {level}: {regime} scale grew "
-                f"from {scale:.4g} to {measured_scale:.4g}")
-
-    # THE REGIMES THAT ARE NOW EMPTY, AND WHY THAT IS A RESULT RATHER THAN A
-    # WEAKENING.  This used to require all five regimes to be exercised.  Two
-    # of them no longer are, because WP-13a closed every residual in them:
-    #
-    #   "surface" -- there were FIVE surface rows (aero-cloud-freeze-nc's
-    #       rainnc/rainncv/sr, aero-drop-evap's rainnc/rainncv,
-    #       aero-ice-demott-idxin's sr/rainnc/rainncv).  The port now has NO
-    #       surface residual above the gate on ANY fixture, which is asserted
-    #       positively below rather than left as an absence.
-    #   "partial" -- the single row was aero-ice-demott-idxin nr_per_kg at
-    #       level 5 (4.594e-06, 23.0 ulps of entry); it now measures 3.61e-07.
-    #
-    # So the assertion becomes: every regime PRESENT is one the table defines
-    # (the elif chain above already raises otherwise), the two live regimes
-    # are still both exercised, and the empty ones are empty for a reason that
-    # is itself checked.
-    assert seen_regimes <= {"created", "consumed", "partial", "derived",
-                            "surface"}, sorted(seen_regimes)
-    assert {"created", "consumed"} <= seen_regimes, sorted(seen_regimes)
-    # ...and the regime that would be a genuine physics gap is EMPTY.
-    assert not any(row[3] == "rate" for row in _RESIDUAL_ATTRIBUTION)
-
-    # NO SURFACE DIAGNOSTIC IS ABOVE THE GATE ANYWHERE.  All seven of WRF's
-    # mp_gt_driver:1298-1308 surface writes, on all 22 fixtures, inside the
-    # flat 2.0e-06 gate with no allowance -- 154 cells.  Stated as an
-    # assertion so "there are no surface rows" cannot become true again by a
-    # row being deleted instead of a residual being closed.
+    assert _G3_RESIDUALS == {} and _RESIDUAL_ATTRIBUTION == ()
     flat_table = _g3_table_unexceptioned(cp)
-    above = {f"{fixture}.{field}": flat_table[fixture][field]
+    above = {f"{fixture}.{field}": value
              for fixture in _FIXTURES
-             for field in _END_TO_END_SURFACE_FIELDS
-             if flat_table[fixture][field] > _END_TO_END_DEFAULT_BOUND}
-    assert not above, (
-        "a surface diagnostic is above the flat gate again; add its row to "
-        f"_RESIDUAL_ATTRIBUTION and _G3_RESIDUALS: {above}")
+             for field, value in _flat_failures(
+                 fixture, flat_table[fixture]).items()}
+    assert not above, above
     assert len(_END_TO_END_SURFACE_FIELDS) == 7, _END_TO_END_SURFACE_FIELDS
 
 

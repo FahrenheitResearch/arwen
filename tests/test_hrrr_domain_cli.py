@@ -20,9 +20,12 @@ FAILED_DOMAIN_SHA256 = (
 # The window the target's own interpolation needs: it reaches row -2, so
 # the target is refused whatever its soil donor search, which stops at
 # HRRR's edge and is not part of the refusal.
+# The window named is the bilinear cell range HRRR must hold (the
+# parabolic halo past HRRR's edge falls back to bilinear, as metgrid's
+# does); this shifted target still needs row j=-1.
 FAILED_COVERAGE_ERROR = (
     "target domain plus required interpolation halo leaves HRRR coverage: "
-    "required zero-based inclusive window i=650..1379, j=-2..496; native "
+    "required zero-based inclusive window i=651..1378, j=-1..495; native "
     "limits are i=0..1798, j=0..1058"
 )
 

@@ -100,6 +100,28 @@ inside the ensemble (to force the members, then by the filter at the end
 of the leg against the same file), and the members receive nearly the
 same heating where the radar covers, which shrinks their spread there.
 
+WOOF options around NOAA's builder (design E3, all off by default)
+----------------------------------------------------------------
+* Windows: :func:`build_forcing` takes one volume per 15-minute window and
+  :func:`window_end_minutes` gives NOAA's slot times for a leg; the cycle
+  reads gridded Level II windows (``--radar-tten-windows``).
+* Per-member parameters: :func:`member_config` draws dt_cond and the
+  28 dBZ thresholds per member, deterministic in (seed, member).
+* The suppression rule: :func:`suppression_receipt` checks every built
+  slot.  NOAA's two smoothing passes run over observed-no-echo points too,
+  so heat bleeds into air the radar saw as empty, and a stratiform column
+  hands observed-clear points back to the model's own heating;
+  ``strict_suppression`` makes "observed no echo" mean exactly zero
+  heating.  Note also that NOAA sets warm echo under 28 dBZ to ZERO
+  tendency (it replaces the model's heating there) rather than leaving the
+  model alone, unless the column is handed back as stratiform.
+* ``pbl_extension``: heat down to the PBL top where 200 hPa of the column
+  is observed, instead of NOAA's level-7 floor.
+* :class:`LatentHeatNudging`: the comparison arm, attached the same way.
+
+A config with any option on is not NOAA's product; every receipt carries
+:func:`config_record` with ``noaa_product``.
+
 What is deliberately not here
 -----------------------------
 No NumPy implementation and no host fallback: without a CUDA device the
@@ -121,19 +143,34 @@ __all__ = [
     "NO_COVERAGE_DBZ",
     "NO_COVERAGE_TENDENCY",
     "NO_ECHO_DBZ",
+    "SLAB_ATTRIBUTE",
     "STATE_ATTRIBUTE",
     "RadarTtenConfig",
     "RadarTtenError",
     "RadarTtenForcing",
+    "LatentHeatNudging",
+    "LatentHeatNudgingConfig",
+    "MEMBER_PERTURBATION",
+    "WINDOWS_PER_HOUR",
     "attach",
     "background_from_state",
+    "build_forcing",
     "build_forcing_from_documents",
+    "build_nudging",
     "build_tendency",
+    "config_record",
     "detach",
+    "member_config",
+    "read_window_host",
+    "read_window_reflectivity",
+    "suppression_receipt",
+    "window_end_minutes",
     "pbl_height",
     "cone_fill",
     "reflectivity_from_document",
     "select_slot",
+    "slab_extent",
+    "slab_refusal",
     "smooth",
     "tendency_receipt",
     "vinterp_mosaic",
@@ -155,6 +192,12 @@ NO_COVERAGE_TENDENCY = -20.0
 
 #: The attribute ``gpuwm.core.microphysics.apply`` reads off the state.
 STATE_ATTRIBUTE = "radar_tten_forcing"
+
+#: The attribute a door sets on a resident rank's slab state: its ``(j0, i0)``
+#: in the domain.  A slab forcing (one built with ``extent``) attaches only
+#: to a state carrying the same origin, so it can never land on a
+#: tile-streamed buffer that serves a different tile each sweep.
+SLAB_ATTRIBUTE = "_radar_tten_slab"
 
 #: K/s.  The microphysics heating clamp HRRR pairs with the radar forcing:
 #: ``mp_tend_lim = 0.07`` beside ``mp_tend_radar = 1`` in the pre-forecast
@@ -234,6 +277,29 @@ class RadarTtenConfig:
     smooth_passes_flag: int = 3
     #: Slot end times in minutes.  ``gsdcloudanalysis_ref2tten.f90:438-441``.
     slot_minutes: tuple = (15.0, 30.0, 45.0, 60.0)
+    # -- WOOF options (design E3).  Each is off by default, so a default
+    # config is NOAA's product and the oracle comparison applies to it; a
+    # config with any of them on leaves NOAA's product and says so in its
+    # receipt (:func:`config_record`).
+    #: Lower the heating's bottom from ``max(krad_bot, PBL top)`` to the PBL
+    #: top itself in columns where at least ``pbl_extension_depth_hpa`` of
+    #: depth is observed (echo or observed no echo, after the cone fill).
+    #: NOAA's floor of model level 7 keeps a shallow boundary layer's top
+    #: unheated; the extension reaches down to it where the radar saw enough
+    #: of the column to say what is there.
+    pbl_extension: bool = False
+    pbl_extension_depth_hpa: float = 200.0
+    #: Force the tendency back to exactly zero at every covered point the
+    #: radar observed as no echo, AFTER NOAA's two smoothing passes.  NOAA
+    #: smooths the tendency over observed-clear points too, so heat bleeds
+    #: one to two cells into air the radar saw as empty
+    #: (:func:`suppression_receipt` counts it); with this on, "the radar saw
+    #: nothing" always means "no latent heating here".
+    strict_suppression: bool = False
+
+    def is_noaa(self) -> bool:
+        """True when every value is NOAA's (the oracle applies)."""
+        return self == RadarTtenConfig()
 
 
 # ``radar_ref2tten.f90:113-127``, evaluated in the order the PARAMETER
@@ -332,6 +398,35 @@ __device__ __forceinline__ float rtt_temperature(
 __device__ __forceinline__ int rtt_krad_bot(const float krad_bot_in, const float pblh) {
     // radar_ref2tten.f90:180, :283
     return __float2int_rz(__fadd_rn(fmaxf(krad_bot_in, pblh), 0.5f));
+}
+
+__device__ __forceinline__ float rtt_bottom_in(
+        const float krad_bot_in, const signed char* __restrict__ ext, const int col) {
+    // WOOF PBL extension: a column flagged by rtt_observed_depth takes the
+    // heating's bottom from its PBL top alone (level 1 never wins against a
+    // PBL top, which rtt_pbl_height keeps at 2 or above).  Unflagged
+    // columns keep NOAA's floor, so an all-zero flag array is NOAA's code.
+    return ext[col] ? 1.0f : krad_bot_in;
+}
+
+extern "C" __global__ void rtt_observed_depth(
+        const float* __restrict__ ref, const float* __restrict__ p,
+        signed char* __restrict__ ext, const double depth_hpa,
+        const int nz, const int ny, const int nx) {
+    // WOOF PBL extension: hPa of the column the radar observed (echo or
+    // observed no echo, i.e. ref > -100, after the cone fill), summed with
+    // NOAA's own layer depth 0.5 * (p(k-1) - p(k+1)) over levels 2..nz-1.
+    const int ncol = ny * nx;
+    const int col = blockIdx.x * blockDim.x + threadIdx.x;
+    if (col >= ncol) return;
+    double dpint = 0.0;
+    for (int kf = 2; kf <= nz - 1; ++kf) {
+        const long long at = (long long)(kf - 1) * ncol + col;
+        if (ref[at] > -100.0f)
+            dpint = __dadd_rn(dpint, __dmul_rn(
+                0.5, (double)__fsub_rn(p[at - ncol], p[at + ncol])));
+    }
+    ext[col] = (dpint >= depth_hpa) ? 1 : 0;
 }
 
 extern "C" __global__ void rtt_background(
@@ -493,7 +588,7 @@ extern "C" __global__ void rtt_probable_convection(
 extern "C" __global__ void rtt_tendency(
         const float* __restrict__ ref, const float* __restrict__ p,
         const float* __restrict__ t, const float* __restrict__ pblh,
-        double* __restrict__ tten,
+        const signed char* __restrict__ ext, double* __restrict__ tten,
         const float krad_bot_in, const double echo_floor, const double warm_k,
         const double warm_min_dbz, const double z_scale, const double z_divisor,
         const double z_factor, const double inv_cpovr, const double latent,
@@ -516,7 +611,8 @@ extern "C" __global__ void rtt_tendency(
         } else if (rd >= echo_floor) {                          // :184
             const float tbk = rtt_temperature(t[idx], p[idx], rd_over_cp);
             const bool skip = ((double)tbk > warm_k) && (rd < warm_min_dbz);
-            if (!skip && (k + 1) >= rtt_krad_bot(krad_bot_in, pblh[col])) {
+            if (!skip && (k + 1) >= rtt_krad_bot(
+                    rtt_bottom_in(krad_bot_in, ext, col), pblh[col])) {
                 // :203
                 const double addsnow = __dmul_rn(__ddiv_rn(
                     glibc_pow(10.0, __ddiv_rn(rd, z_scale)), z_divisor), z_factor);
@@ -597,9 +693,23 @@ extern "C" __global__ void rtt_store(
     ges[idx] = out;
 }
 
+extern "C" __global__ void rtt_strict_clear(
+        float* __restrict__ ges, const float* __restrict__ ref,
+        const double echo_floor, const long long n_below) {
+    // WOOF strict suppression, after NOAA's whole sequence: every level
+    // below the top that the radar observed as no echo holds exactly zero
+    // tendency, whether NOAA's smoothing bled heat into it or a stratiform
+    // column handed it back to the model.
+    const long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n_below) return;
+    const float r = ref[idx];
+    if (r > -100.0f && (double)r < echo_floor) ges[idx] = 0.0f;
+}
+
 extern "C" __global__ void rtt_column_flag(
         const double* __restrict__ tten, const float* __restrict__ ref,
         const float* __restrict__ p, const float* __restrict__ pblh,
+        const signed char* __restrict__ ext,
         const signed char* __restrict__ probable, float* __restrict__ ges,
         const float krad_bot_in, const double coverage_depth,
         const double nearby, const int convection_only,
@@ -625,7 +735,8 @@ extern "C" __global__ void rtt_column_flag(
         radyn = 0.0;
         if (radmax > nearby) radyn = 1.0;
         if (fabs(radyn) < 0.00001) {
-            int kb = rtt_krad_bot(krad_bot_in, pblh[col]);
+            int kb = rtt_krad_bot(rtt_bottom_in(krad_bot_in, ext, col),
+                                  pblh[col]);
             if (kb < 1) kb = 1;
             for (int kf = kb; kf <= nz - 1; ++kf)
                 ges[(long long)(kf - 1) * ncol + col] = 0.0f;
@@ -718,13 +829,79 @@ extern "C" __global__ void rtt_vinterp_edges(
 extern "C" __global__ void rtt_apply(
         float* __restrict__ thp, const float* __restrict__ thp_before,
         const float* __restrict__ slot, const float dt, const int ring,
-        const int nz, const int ny, const int nx) {
+        const int nz, const int ny, const int nx,
+        const int j0, const int i0, const int gny, const int gnx) {
     // module_big_step_utilities_em.F:5991-6005.  `thp` already holds the
     // microphysics result, which is what an uncovered point keeps (:6003);
     // a covered point below the top level takes the tendency instead
     // (:5996, :6000).  The top level holds the column flag, never a
     // tendency, and the specified-zone ring is outside the tile WRF runs
-    // this routine on.
+    // this routine on.  (j0, i0) is this array's origin in the domain and
+    // (gny, gnx) the domain's extent: a card's slab tests the ring in the
+    // DOMAIN's indices, so a seam column is heated exactly as the same
+    // column of a one-card run.  A whole domain passes (0, 0, ny, nx).
+    const int ncol = ny * nx;
+    const long long n = (long long)nz * ncol;
+    const long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n) return;
+    const int k = (int)(idx / ncol);
+    const int col = (int)(idx - (long long)k * ncol);
+    const int j = col / nx + j0, i = col % nx + i0;
+    if (k >= nz - 1 || i < ring || i >= gnx - ring || j < ring || j >= gny - ring)
+        return;
+    const float v = slot[idx];
+    if (v >= -1.0f && v <= 1.0f)
+        thp[idx] = __fadd_rn(thp_before[idx], __fmul_rn(v, dt));
+}
+
+// ---------------------------------------------------------------------------
+// Latent heat nudging (the comparison arm, design E3; ICON/COSMO style).
+// Not NOAA code and not graded against an oracle: ordinary float arithmetic.
+// ---------------------------------------------------------------------------
+
+extern "C" __global__ void lhn_observed_rate(
+        const float* __restrict__ ref, const float* __restrict__ h_agl,
+        float* __restrict__ rate, const float max_height_m,
+        const float zr_a, const float zr_b, const int nz, const int ncol) {
+    // Surface rain rate (mm/h) per column from the LOWEST observed level at
+    // or below max_height_m: Z = a R^b on echo, 0 on observed no echo, -1
+    // where no level that low is observed (no information).
+    const int col = blockIdx.x * blockDim.x + threadIdx.x;
+    if (col >= ncol) return;
+    float out = -1.0f;
+    for (int k = 0; k < nz; ++k) {
+        const long long at = (long long)k * ncol + col;
+        if (h_agl[at] > max_height_m) break;
+        const float r = ref[at];
+        if (r > -100.0f) {
+            out = (r >= 0.001f)
+                ? powf(__fdiv_rn(powf(10.0f, __fmul_rn(r, 0.1f)), zr_a),
+                       __fdiv_rn(1.0f, zr_b)) : 0.0f;
+            break;
+        }
+    }
+    rate[col] = out;
+}
+
+__device__ __forceinline__ float lhn_qsat(const float t, const float p) {
+    // Bolton (1980) over water, Pa and K.
+    const float es = 611.2f * expf(17.67f * (t - 273.15f) / (t - 29.65f));
+    return 0.622f * es / fmaxf(p - es, 1.0f);
+}
+
+extern "C" __global__ void lhn_apply(
+        float* __restrict__ thp, const float* __restrict__ thp_before,
+        float* __restrict__ qv, const float* __restrict__ thb,
+        const float* __restrict__ p, const float* __restrict__ rate_obs,
+        const float* __restrict__ rainncv, const float dt,
+        const float alpha_min, const float alpha_max, const float threshold,
+        const float cap_k_per_s, const int thb_full, const int ring,
+        unsigned long long* __restrict__ counts,
+        const int nz, const int ny, const int nx) {
+    // The model's own microphysics heating at this step, scaled by the
+    // ratio of observed to model surface rain rate, in heating points
+    // only, capped, with relative humidity kept (vapour rescaled to the
+    // new saturation value).  counts: [up, down].
     const int ncol = ny * nx;
     const long long n = (long long)nz * ncol;
     const long long idx = (long long)blockIdx.x * blockDim.x + threadIdx.x;
@@ -734,9 +911,29 @@ extern "C" __global__ void rtt_apply(
     const int j = col / nx, i = col - j * nx;
     if (k >= nz - 1 || i < ring || i >= nx - ring || j < ring || j >= ny - ring)
         return;
-    const float v = slot[idx];
-    if (v >= -1.0f && v <= 1.0f)
-        thp[idx] = __fadd_rn(thp_before[idx], __fmul_rn(v, dt));
+    const float ro = rate_obs[col];
+    if (ro < 0.0f) return;                              // no information
+    const float rm = rainncv[col] * 3600.0f / dt;       // mm per step -> mm/h
+    float alpha;
+    if (ro >= threshold && rm >= threshold) {
+        alpha = fminf(fmaxf(ro / rm, alpha_min), alpha_max);
+    } else if (ro < threshold && rm >= threshold) {
+        alpha = alpha_min;                              // model rains, radar does not
+    } else {
+        return;   // model dry: no heating profile of its own to scale
+    }
+    const float lh = thp[idx] - thp_before[idx];
+    if (!(lh > 0.0f)) return;                           // in-cloud heating only
+    const float cap = cap_k_per_s * dt;
+    const float inc = fminf(fmaxf((alpha - 1.0f) * lh, -cap), cap);
+    if (inc == 0.0f) return;
+    const float base = thb[thb_full ? idx : k];
+    const float exner = powf(__fmul_rn(p[idx], 1.0e-5f), 0.285714f);
+    const float t_old = (base + thp[idx]) * exner;
+    const float t_new = (base + thp[idx] + inc) * exner;
+    qv[idx] = qv[idx] * (lhn_qsat(t_new, p[idx]) / lhn_qsat(t_old, p[idx]));
+    thp[idx] = thp[idx] + inc;
+    atomicAdd(&counts[inc > 0.0f ? 0 : 1], 1ULL);
 }
 """
 
@@ -1009,10 +1206,16 @@ def build_tendency(ref, theta, pressure_hpa, qv, height_agl_m,
                  np.float64(cfg.cold_echo_depth_hpa),
                  np.float64(_RD_OVER_CP)) + dims)
 
+    extended = cp.zeros((ny, nx), dtype=np.int8)
+    if cfg.pbl_extension:
+        _launch("rtt_observed_depth", ncol,
+                (refc, pressure_hpa, extended,
+                 np.float64(cfg.pbl_extension_depth_hpa)) + dims)
+
     tten = cp.empty(shape, dtype=np.float64)
     work = cp.empty(shape, dtype=np.float64)
     _launch("rtt_tendency", tten.size,
-            (refc, pressure_hpa, theta, pblh, tten,
+            (refc, pressure_hpa, theta, pblh, extended, tten,
              np.float32(cfg.krad_bot), np.float64(cfg.echo_floor_dbz),
              np.float64(cfg.warm_temperature_k),
              np.float64(cfg.warm_min_dbz), np.float64(cfg.z_scale_dbz),
@@ -1029,17 +1232,86 @@ def build_tendency(ref, theta, pressure_hpa, qv, height_agl_m,
     for _ in range(int(cfg.smooth_passes_flag)):
         tten, work = _smooth_pass(tten, work, cfg.smooth_weight)
     _launch("rtt_column_flag", ncol,
-            (tten, refc, pressure_hpa, pblh, probable, slot,
+            (tten, refc, pressure_hpa, pblh, extended, probable, slot,
              np.float32(cfg.krad_bot), np.float64(cfg.coverage_depth_hpa),
              np.float64(cfg.nearby_tendency),
              np.int32(1 if cfg.convection_only else 0)) + dims)
     del tten, work
+    before_strict = None
+    if cfg.strict_suppression:
+        before_strict = suppression_receipt(slot, refc, cfg)
+        _launch("rtt_strict_clear", slot.size - ncol,
+                (slot, refc, np.float64(cfg.echo_floor_dbz),
+                 np.int64(slot.size - ncol)))
     receipt = tendency_receipt(slot)
+    if before_strict is not None:
+        receipt["suppression_before_strict"] = before_strict
     receipt["probable_convection_columns"] = int(cp.count_nonzero(probable))
     receipt["boundary_layer_top_level"] = {
         "min": float(pblh.min()), "max": float(pblh.max())}
     receipt["cone_changed_points"] = int(cp.count_nonzero(refc != ref))
+    receipt["pbl_extended_columns"] = int(cp.count_nonzero(extended))
+    receipt["suppression"] = suppression_receipt(slot, refc, cfg)
+    receipt["config"] = config_record(cfg)
     return slot, receipt
+
+
+def config_record(config: RadarTtenConfig) -> dict:
+    """Every constant a slot was built with, and whether it is NOAA's."""
+    import dataclasses
+
+    record = {f.name: getattr(config, f.name)
+              for f in dataclasses.fields(config)}
+    record["slot_minutes"] = list(record["slot_minutes"])
+    record["noaa_product"] = config.is_noaa()
+    return record
+
+
+def suppression_receipt(slot, ref, config: RadarTtenConfig | None = None
+                        ) -> dict:
+    """The suppression rule, checked on a built slot (design E3).
+
+    ``ref`` is the reflectivity the slot was built from AFTER the cone fill
+    (the builder's ``intermediates["ref_cone"]``).  Levels below the top are
+    classed by what the radar said there and what the slot then does:
+
+    * observed no echo (``-100 < Z < echo_floor``): the rule is "no latent
+      heating".  ``observed_clear_heated`` counts the points that still
+      carry a non-zero tendency; NOAA's smoothing puts them there
+      (:attr:`RadarTtenConfig.strict_suppression` removes them), and
+      ``observed_clear_to_model`` counts points the column rules handed back
+      to the microphysics;
+    * echo: heated, held at zero (warm echo under ``warm_min_dbz``, below
+      the heating's bottom, or a no-convection column) or handed to the
+      model (stratiform columns);
+    * ``holds``: no observed-clear point is heated or handed to the model.
+    """
+    cp = _require_device()
+    cfg = RadarTtenConfig() if config is None else config
+    below = slot[:-1]
+    r = ref[:-1]
+    covered = (below >= np.float32(-1.0)) & (below <= np.float32(1.0))
+    nonzero = covered & (below != np.float32(0.0))
+    clear = (r > np.float32(-100.0)) & (r < np.float32(cfg.echo_floor_dbz))
+    echo = r >= np.float32(cfg.echo_floor_dbz)
+    count = lambda m: int(cp.count_nonzero(m))          # noqa: E731
+    clear_heated = clear & nonzero
+    out = {
+        "observed_clear_points": count(clear),
+        "observed_clear_zero": count(clear & covered & (below == 0)),
+        "observed_clear_heated": count(clear_heated),
+        "observed_clear_to_model": count(clear & ~covered),
+        "observed_clear_max_k_per_s": (
+            float(cp.where(clear_heated, below, np.float32(0)).max())
+            if count(clear_heated) else 0.0),
+        "echo_points": count(echo),
+        "echo_heated": count(echo & nonzero),
+        "echo_zero": count(echo & covered & (below == 0)),
+        "echo_to_model": count(echo & ~covered),
+    }
+    out["holds"] = (out["observed_clear_heated"] == 0
+                    and out["observed_clear_to_model"] == 0)
+    return out
 
 
 def tendency_receipt(slot) -> dict:
@@ -1230,6 +1502,69 @@ def select_slot(minutes, slot_minutes) -> int:
     return index
 
 
+def _init_activity(forcing, active_minutes) -> None:
+    """``active_minutes``: the forcing applies while the clock (minutes
+    from attachment, at the start of the step) is below it and is a
+    pass-through after, so one integration can be forced for its first
+    hour (a pre-forecast) and run free after it.  ``None``: always."""
+    if active_minutes is not None:
+        active_minutes = float(active_minutes)
+        if not np.isfinite(active_minutes) or active_minutes <= 0.0:
+            raise RadarTtenError(
+                f"active_minutes {active_minutes}: a forcing that is never "
+                "active would record a forced run that was not")
+    forcing.active_minutes = active_minutes
+    forcing.calls_after_active = 0
+    forcing._inactive = False
+
+
+def slab_extent(extent, shape):
+    """``None`` (a whole domain) or ``(j0, i0, ny_domain, nx_domain)`` for a
+    card's slab of shape ``(nz, ny, nx)``, checked to lie inside the domain.
+    Host-only arithmetic, so the refusal is testable without a device."""
+    if extent is None:
+        return None
+    try:
+        j0, i0, gny, gnx = (int(v) for v in extent)
+    except (TypeError, ValueError) as error:
+        raise RadarTtenError(
+            f"slab extent {extent!r} is not (j0, i0, ny, nx)") from error
+    _, ny, nx = (int(v) for v in shape)
+    if j0 < 0 or i0 < 0 or j0 + ny > gny or i0 + nx > gnx:
+        raise RadarTtenError(
+            f"a {ny} x {nx} slab at (j0={j0}, i0={i0}) does not lie inside "
+            f"the {gny} x {gnx} domain: the tendency would be read at the "
+            "wrong columns")
+    return (j0, i0, gny, gnx)
+
+
+def slab_refusal(forcing_extent, state_origin):
+    """The reason a forcing with ``forcing_extent`` cannot be read on a
+    state whose slab origin is ``state_origin`` (``None`` for a whole-domain
+    state), or ``None`` when it can."""
+    if forcing_extent is None:
+        if state_origin is not None:
+            return ("this state is a card's slab of a larger domain and the "
+                    "forcing is a whole-domain field: the tendency would be "
+                    "read at the slab's own (0, 0)")
+        return None
+    origin = tuple(forcing_extent[:2])
+    if state_origin is None:
+        return (f"the forcing is a slab at (j0, i0) = {origin} and this "
+                "state is not a resident rank slab: a tile-streamed buffer "
+                "serves a different tile every sweep")
+    if tuple(state_origin) != origin:
+        return (f"the forcing is a slab at (j0, i0) = {origin} and this "
+                f"state is the slab at {tuple(state_origin)}: another "
+                "rank's slab holds other columns")
+    return None
+
+
+def _ended(forcing) -> bool:
+    return (forcing.active_minutes is not None
+            and forcing.minutes() >= np.float32(forcing.active_minutes))
+
+
 class RadarTtenForcing:
     """Tendency slots, their end times, and the clock that picks between
     them.  External data: it is attached to a state for one leg and is in
@@ -1246,8 +1581,10 @@ class RadarTtenForcing:
     """
 
     def __init__(self, slots, slot_minutes, *, receipts=(), provenance=None,
-                 mp_tend_lim: float | None = HRRR_MP_TEND_LIM):
+                 mp_tend_lim: float | None = HRRR_MP_TEND_LIM,
+                 active_minutes: float | None = None, extent=None):
         cp = _require_device()
+        _init_activity(self, active_minutes)
         if mp_tend_lim is not None:
             mp_tend_lim = float(mp_tend_lim)
             if not np.isfinite(mp_tend_lim) or mp_tend_lim <= 0.0:
@@ -1275,6 +1612,7 @@ class RadarTtenForcing:
                            for index, slot in enumerate(slots))
         _require_extent(shape)
         self.shape = shape
+        self.extent = slab_extent(extent, shape)
         self.slot_minutes = times
         self.receipts = tuple(dict(r) for r in receipts)
         self.provenance = dict(provenance or {})
@@ -1325,9 +1663,14 @@ class RadarTtenForcing:
             raise RadarTtenError(
                 "this state is integrated tile by tile (tile-streamed or "
                 "multi-card): each tile or card slab runs microphysics on "
-                "its own buffer, which carries no forcing and whose index "
-                "(0, 0) is not the domain's, so the radar tendency would "
-                "be skipped or read at the wrong offsets")
+                "its own buffer, so a forcing attached to the whole-domain "
+                "state would be skipped or read at the wrong offsets.  A "
+                "multi-card run attaches one slab forcing per resident "
+                "rank instead (gpuwm.da.forecast_heating)")
+        refusal = slab_refusal(self.extent,
+                               getattr(state, SLAB_ATTRIBUTE, None))
+        if refusal is not None:
+            raise RadarTtenError(refusal)
         thp = getattr(state, "thp", None)
         if not isinstance(thp, cp.ndarray):
             raise RadarTtenError(
@@ -1360,7 +1703,7 @@ class RadarTtenForcing:
         """
         if self.case_mp_tend_lim is None:
             self.case_mp_tend_lim = float(cfg.mp_tend_lim)
-        if self.mp_tend_lim is None \
+        if self._inactive or self.mp_tend_lim is None \
                 or float(cfg.mp_tend_lim) == self.mp_tend_lim:
             return cfg
         cached = self._scheme_cfg
@@ -1378,6 +1721,10 @@ class RadarTtenForcing:
         from the time at the beginning of the step."""
         cp = _require_device()
         self.check_state(state, cfg)
+        self._inactive = _ended(self)
+        if self._inactive:
+            self._pending = -1
+            return
         cp.copyto(self._theta_before, state.thp)
         self._pending = self.slot_index()
 
@@ -1394,12 +1741,20 @@ class RadarTtenForcing:
             raise RadarTtenError(
                 "after_microphysics was called without before_microphysics")
         index, self._pending = self._pending, None
+        if index == -1:
+            self.calls_after_active += 1
+            self.elapsed_seconds += float(dt)
+            return
         if int(getattr(cfg, "no_mp_heating", 0)) == 0:
             nz, ny, nx = self.shape
+            j0, i0, gny, gnx = (self.extent if self.extent is not None
+                                else (0, 0, ny, nx))
             _launch("rtt_apply", self._theta_before.size,
                     (state.thp, self._theta_before, self.slots[index],
                      np.float32(dt), np.int32(max(int(ring_width), 0)),
-                     np.int32(nz), np.int32(ny), np.int32(nx)))
+                     np.int32(nz), np.int32(ny), np.int32(nx),
+                     np.int32(j0), np.int32(i0), np.int32(gny),
+                     np.int32(gnx)))
             self.calls_by_slot[index] += 1
         else:
             self.calls_skipped_no_mp_heating += 1
@@ -1416,6 +1771,8 @@ class RadarTtenForcing:
             "calls_by_slot": list(self.calls_by_slot),
             "calls_skipped_no_mp_heating": int(
                 self.calls_skipped_no_mp_heating),
+            "active_minutes": self.active_minutes,
+            "calls_after_active": int(self.calls_after_active),
             "mp_tend_lim_k_per_s": (
                 self.mp_tend_lim if self.mp_tend_lim is not None
                 else self.case_mp_tend_lim),
@@ -1426,18 +1783,23 @@ class RadarTtenForcing:
                 if self.mp_tend_lim == HRRR_MP_TEND_LIM else
                 "the forcing's, set by its caller"),
             "case_mp_tend_lim_k_per_s": self.case_mp_tend_lim,
+            "extent": None if self.extent is None else list(self.extent),
         }
 
 
 def attach(state, forcing: RadarTtenForcing, cfg=None) -> None:
     """Attach ``forcing`` to ``state`` for the coming leg.
 
-    The forcing is external data, like boundary data: detach it before the
-    state is written to a restart, and attach again on the next leg.
+    The forcing is external data, like boundary data: restart INFRA
+    (``gpuwm.io.restart.STATE_INFRA_ATTRS``), so a checkpoint written while
+    it is attached carries none of it.  Its slot clock starts at zero here,
+    so a caller that resumes inside a forced period must refuse
+    (``gpuwm.da.forecast_heating.resume_plan``) rather than re-attach.
     """
-    if not isinstance(forcing, RadarTtenForcing):
+    if not isinstance(forcing, (RadarTtenForcing, LatentHeatNudging)):
         raise RadarTtenError(
-            f"expected a RadarTtenForcing, got {type(forcing).__name__}")
+            "expected a RadarTtenForcing or LatentHeatNudging, got "
+            f"{type(forcing).__name__}")
     if getattr(state, STATE_ATTRIBUTE, None) is not None:
         raise RadarTtenError(
             "this state already carries a radar forcing; detach it first, "
@@ -1464,23 +1826,376 @@ def build_forcing_from_documents(state, documents, slot_minutes,
     the END of its window.  ``slot_minutes`` are the windows' end times in
     minutes from now.
     """
-    documents = list(documents)
-    background = background_from_state(state)
-    slots, receipts, provenance = [], [], []
+    refs, sources = [], []
     for document in documents:
         ref, source = reflectivity_from_document(document)
-        if tuple(ref.shape) != tuple(background["theta"].shape):
+        refs.append(ref)
+        sources.append(source)
+    return build_forcing(
+        state, refs, slot_minutes, config, mp_tend_lim=mp_tend_lim,
+        sources=sources,
+        provenance={"built_from": "gpuwm-obs.radar-grid documents",
+                    "background": "the model state at attachment"})
+
+
+def build_forcing(state, refs, slot_minutes,
+                  config: RadarTtenConfig | None = None, *,
+                  mp_tend_lim: float | None = HRRR_MP_TEND_LIM,
+                  sources=None, provenance=None,
+                  active_minutes: float | None = None):
+    """One slot per reflectivity volume (NOAA's convention, device float32
+    ``(nz, ny, nx)``), each built against ``state`` as it stands now.
+
+    The pre-forecast and leg shape: NOAA builds all four slots against the
+    one background the hour starts from (``gsdcloudanalysis_ref2tten.f90``),
+    each from the volume valid at the END of its window, and the slot rule
+    (:func:`select_slot`) reads window ``n`` while the clock is inside it.
+    """
+    refs = list(refs)
+    if len(refs) != len(tuple(slot_minutes)):
+        raise RadarTtenError(
+            f"{len(refs)} reflectivity volume(s) for "
+            f"{len(tuple(slot_minutes))} slot time(s): each window needs "
+            "its own volume, or a window would be heated from another "
+            "window's storms")
+    background = background_from_state(state)
+    shape = tuple(getattr(background["theta"], "shape", ()))
+    slots, receipts = [], []
+    for index, ref in enumerate(refs):
+        if shape and tuple(getattr(ref, "shape", shape)) != shape:
             raise RadarTtenError(
                 f"the observation grid {tuple(ref.shape)} is not the model "
-                f"grid {tuple(background['theta'].shape)}")
+                f"grid {shape}")
         slot, receipt = build_tendency(ref, config=config, **background)
-        receipt["observations"] = source
+        if sources is not None:
+            receipt["observations"] = sources[index]
         slots.append(slot)
         receipts.append(receipt)
-        provenance.append(source)
-        del ref
+    del background
     return RadarTtenForcing(
         slots, slot_minutes, receipts=receipts,
-        provenance={"built_from": "gpuwm-obs.radar-grid documents",
-                    "background": "the model state at attachment"},
-        mp_tend_lim=mp_tend_lim)
+        provenance=dict(provenance or {
+            "built_from": "reflectivity volumes",
+            "background": "the model state at attachment"}),
+        mp_tend_lim=mp_tend_lim,
+        **({} if active_minutes is None else
+           {"active_minutes": active_minutes}))
+
+
+# --------------------------------------------------------------------------
+# windows and members (design E3: four 15-minute windows, per-member
+# parameters)
+# --------------------------------------------------------------------------
+
+#: Windows per leg hour in HRRR's pre-forecast
+#: (``gsdcloudanalysis_ref2tten.f90:438-441``).
+WINDOWS_PER_HOUR = 4
+
+
+def window_end_minutes(leg_minutes: float, windows: int) -> tuple:
+    """End times, minutes from the leg start, of ``windows`` equal windows.
+
+    A 60-minute leg in four windows is NOAA's ``(15, 30, 45, 60)``.  The
+    volume for window ``n`` is the one valid at its end."""
+    leg_minutes = float(leg_minutes)
+    windows = int(windows)
+    if windows < 1 or not np.isfinite(leg_minutes) or leg_minutes <= 0.0:
+        raise RadarTtenError(
+            f"{windows} window(s) over {leg_minutes} min: a forced leg needs "
+            "at least one window of positive length")
+    return tuple(leg_minutes * (n + 1) / windows for n in range(windows))
+
+
+#: Per-member parameter ranges (design E3, risk 2: "heating too strong
+#: reproduces over-intensity"; NOAA moved dt_cond 5 -> 10 -> 20 min).
+#: Each member draws uniformly inside these, around the base config.
+MEMBER_PERTURBATION = {
+    "latent_heat_period_min": (15.0, 30.0),
+    "threshold_offset_dbz": (-3.0, 3.0),
+}
+
+
+def member_config(base: RadarTtenConfig | None, member: int, seed: int,
+                  ranges: dict | None = None):
+    """``(config, record)`` for one ensemble member: dt_cond and the 28 dBZ
+    thresholds drawn per member from :data:`MEMBER_PERTURBATION`.
+
+    Deterministic in ``(seed, member)`` alone, so a rerun, a resumed leg and
+    a different card count draw the same values.  The control (member
+    ``None``) keeps ``base`` unchanged.
+    """
+    import dataclasses
+
+    base = RadarTtenConfig() if base is None else base
+    if member is None:
+        return base, {"member": None, "perturbed": False}
+    ranges = dict(MEMBER_PERTURBATION if ranges is None else ranges)
+    rng = np.random.default_rng(np.random.SeedSequence(
+        [int(seed) & 0xFFFFFFFF, int(member), 0x6C366])) # "l6"
+    lo, hi = ranges["latent_heat_period_min"]
+    period = float(rng.uniform(lo, hi))
+    lo, hi = ranges["threshold_offset_dbz"]
+    offset = float(rng.uniform(lo, hi))
+    config = dataclasses.replace(
+        base, latent_heat_period_min=period,
+        convection_refl_threshold_dbz=base.convection_refl_threshold_dbz
+        + offset,
+        warm_min_dbz=base.warm_min_dbz + offset)
+    return config, {"member": int(member), "perturbed": True,
+                    "seed": int(seed),
+                    "latent_heat_period_min": period,
+                    "threshold_offset_dbz": offset,
+                    "ranges": {k: list(v) for k, v in ranges.items()}}
+
+
+def window_paths(root, leg_start_valid, leg_minutes: float,
+                 windows: int) -> list:
+    """The window products a forced leg reads, in slot order.
+
+    ``root`` holds one directory per window end time,
+    ``<root>/<YYYYmmddTHHMMZ>/ref.f32`` (``tools/radar_tten_windows.py``).
+    A missing window is a refusal: heating three windows of four would
+    leave a quarter of the leg on the microphysics while the record says
+    forced."""
+    from datetime import timedelta
+
+    root = Path(root)
+    paths, missing = [], []
+    for end in window_end_minutes(leg_minutes, windows):
+        valid = leg_start_valid + timedelta(minutes=float(end))
+        path = root / f"{valid:%Y%m%dT%H%MZ}" / "ref.f32"
+        (paths if path.is_file() else missing).append(path)
+    if missing:
+        raise RadarTtenError(
+            f"{len(missing)} of {windows} window product(s) are missing "
+            f"under {root}: {[str(p) for p in missing]}")
+    return paths
+
+
+def read_window_host(path, *, identity_sha256: str):
+    """A window product held to its receipt and to the run's grid, on the
+    host: ``(ref, receipt)``, ``ref`` float32 ``(nz, ny, nx)``.
+
+    The strict reader (:func:`gpuwm.obs.radar_tten_grid.read_reflectivity`)
+    on every path: schema and READY status, a shape that accounts for every
+    byte, the data digest, and ``grid.identity_sha256`` equal to the run's.
+    ``identity_sha256`` is required.  The breakage it prevents: a window
+    gridded onto another grid of the same shape was read and heated the
+    wrong columns with no error (lane 6 code map, section 1).
+    """
+    from gpuwm.obs.radar_tten_grid import RadarTtenGridError, read_reflectivity
+
+    if not isinstance(identity_sha256, str) or not identity_sha256:
+        raise RadarTtenError(
+            "a heating window is read only against the run's grid identity; "
+            "none was given, and an unchecked window may hold other columns")
+    path = Path(path)
+    if path.suffix != ".f32":
+        raise RadarTtenError(f"{path} is not a window's ref.f32")
+    try:
+        host, receipt = read_reflectivity(path.with_suffix(""),
+                                          identity_sha256=identity_sha256)
+    except RadarTtenGridError as error:
+        raise RadarTtenError(f"window {path}: {error}") from error
+    named = Path(str((receipt.get("data") or {}).get("file")))
+    named = named if named.is_absolute() else path.parent / named
+    if named.resolve() != path.resolve():
+        raise RadarTtenError(
+            f"{path.with_suffix('.json')} names data {named}, not {path}")
+    return host, receipt
+
+
+def read_window_reflectivity(path, *, identity_sha256: str):
+    """A ``gpuwm-obs.radar-tten-ref.v1`` window as ``(ref, receipt)``, ``ref``
+    a float32 device volume, after :func:`read_window_host` has held it to
+    its receipt and to ``identity_sha256``, the run's grid."""
+    host, receipt = read_window_host(path, identity_sha256=identity_sha256)
+    cp = _require_device()
+    return cp.asarray(np.ascontiguousarray(host)), receipt
+
+
+# --------------------------------------------------------------------------
+# latent heat nudging: the comparison arm
+# --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class LatentHeatNudgingConfig:
+    """ICON/COSMO-style latent heat nudging (design E3, comparison arm).
+
+    The model's own microphysics heating at each step is scaled by the
+    ratio of the radar's surface rain rate to the model's, inside
+    ``[alpha_min, alpha_max]``, at heating points only, capped, and with
+    relative humidity kept.  Declared simplifications against ICON: the
+    model rate is the step's own grid-scale precipitation (no time filter),
+    and a column where the radar sees rain and the model none is left alone
+    (no upstream profile search)."""
+
+    alpha_min: float = 0.5
+    alpha_max: float = 2.0
+    #: mm/h below which a rate counts as no rain.
+    threshold_mm_h: float = 0.1
+    #: K/h cap on the nudging increment.
+    cap_k_per_h: float = 50.0
+    #: Observed rate from the lowest observed level at or below this height.
+    max_obs_height_m: float = 2500.0
+    #: Marshall-Palmer Z = a R^b.
+    zr_a: float = 200.0
+    zr_b: float = 1.6
+
+
+class LatentHeatNudging:
+    """Observed rain-rate slots and the clock, read by
+    ``gpuwm.core.microphysics.apply`` exactly like :class:`RadarTtenForcing`
+    (the same three calls), so either attaches as the state's forcing."""
+
+    def __init__(self, rates, slot_minutes, *, config=None, receipts=(),
+                 provenance=None, shape=None,
+                 active_minutes: float | None = None):
+        cp = _require_device()
+        _init_activity(self, active_minutes)
+        self.config = LatentHeatNudgingConfig() if config is None else config
+        rates = tuple(rates)
+        times = tuple(float(v) for v in slot_minutes)
+        if not rates or len(rates) != len(times):
+            raise RadarTtenError(
+                f"{len(rates)} rate slot(s) and {len(times)} time(s)")
+        if any(b <= a for a, b in zip(times, times[1:])):
+            raise RadarTtenError(f"slot times {times} must increase")
+        self.rates = tuple(cp.ascontiguousarray(r.astype(np.float32))
+                           for r in rates)
+        self.shape = tuple(shape)
+        #: Whole-domain only: the nudging arm has no slab form (its kernel
+        #: tests the ring in the array's own indices), so a multi-card
+        #: attach is refused by check_state's slab rule.
+        self.extent = None
+        self.slot_minutes = times
+        self.receipts = tuple(dict(r) for r in receipts)
+        self.provenance = dict(provenance or {})
+        self.elapsed_seconds = 0.0
+        self.calls_by_slot = [0] * len(self.rates)
+        self.calls_skipped_no_mp_heating = 0
+        self.points_up = 0
+        self.points_down = 0
+        self.mp_tend_lim = None
+        self.case_mp_tend_lim = None
+        self._theta_before = cp.empty(self.shape, dtype=np.float32)
+        self._counts = cp.zeros(2, dtype=np.uint64)
+        self._pending = None
+
+    def minutes(self) -> np.float32:
+        return wrf_minutes(self.elapsed_seconds)
+
+    def slot_index(self) -> int:
+        return select_slot(self.minutes(), self.slot_minutes)
+
+    def check_state(self, state, cfg=None) -> None:
+        RadarTtenForcing.check_state(self, state, cfg)
+
+    def scheme_config(self, cfg):
+        if self.case_mp_tend_lim is None:
+            self.case_mp_tend_lim = float(cfg.mp_tend_lim)
+        return cfg
+
+    def before_microphysics(self, state, cfg, dt: float) -> None:
+        cp = _require_device()
+        self.check_state(state, cfg)
+        self._inactive = _ended(self)
+        if self._inactive:
+            self._pending = -1
+            return
+        cp.copyto(self._theta_before, state.thp)
+        self._pending = self.slot_index()
+
+    def after_microphysics(self, state, cfg, dt: float, *,
+                           ring_width: int = 0) -> None:
+        if self._pending is None:
+            raise RadarTtenError(
+                "after_microphysics was called without before_microphysics")
+        index, self._pending = self._pending, None
+        if index == -1:
+            self.calls_after_active += 1
+            self.elapsed_seconds += float(dt)
+            return
+        if int(getattr(cfg, "no_mp_heating", 0)) == 0:
+            nz, ny, nx = self.shape
+            c = self.config
+            thb = state.thb
+            _launch("lhn_apply", self._theta_before.size,
+                    (state.thp, self._theta_before, state.qv,
+                     _require_device().ascontiguousarray(thb), state.p,
+                     self.rates[index], state.scratch((ny, nx), "mp_rainncv"),
+                     np.float32(dt), np.float32(c.alpha_min),
+                     np.float32(c.alpha_max), np.float32(c.threshold_mm_h),
+                     np.float32(c.cap_k_per_h / 3600.0),
+                     np.int32(1 if thb.ndim == 3 else 0),
+                     np.int32(max(int(ring_width), 0)), self._counts,
+                     np.int32(nz), np.int32(ny), np.int32(nx)))
+            self.calls_by_slot[index] += 1
+        else:
+            self.calls_skipped_no_mp_heating += 1
+        self.elapsed_seconds += float(dt)
+
+    def receipt(self) -> dict:
+        import dataclasses
+
+        up, down = (int(v) for v in self._counts.get())
+        return {
+            "schema": "gpuwm-da.latent-heat-nudging.v1",
+            "config": dataclasses.asdict(self.config),
+            "slot_minutes": list(self.slot_minutes),
+            "slots": [dict(r) for r in self.receipts],
+            "provenance": dict(self.provenance),
+            "elapsed_seconds": float(self.elapsed_seconds),
+            "calls_by_slot": list(self.calls_by_slot),
+            "calls_skipped_no_mp_heating": int(
+                self.calls_skipped_no_mp_heating),
+            "active_minutes": self.active_minutes,
+            "calls_after_active": int(self.calls_after_active),
+            "point_steps_nudged_up": up,
+            "point_steps_nudged_down": down,
+            "mp_tend_lim_k_per_s": self.case_mp_tend_lim,
+            "mp_tend_lim_source": "the case's (nudging scales the scheme's "
+                                  "own heating; no companion clamp)",
+        }
+
+
+def build_nudging(state, refs, slot_minutes,
+                  config: LatentHeatNudgingConfig | None = None, *,
+                  sources=None, provenance=None,
+                  active_minutes: float | None = None
+                  ) -> LatentHeatNudging:
+    """One observed rain-rate slot per reflectivity volume (NOAA's
+    convention), from its lowest observed level at or below
+    ``config.max_obs_height_m`` above the model's ground."""
+    cp = _require_device()
+    cfg = LatentHeatNudgingConfig() if config is None else config
+    refs = list(refs)
+    background = background_from_state(state)
+    h_agl = background["height_agl_m"]
+    shape = tuple(h_agl.shape)
+    nz, ny, nx = shape
+    del background
+    rates, receipts = [], []
+    for index, ref in enumerate(refs):
+        ref = _volume(cp, f"reflectivity {index + 1}", ref, shape)
+        rate = cp.empty((ny, nx), dtype=np.float32)
+        _launch("lhn_observed_rate", ny * nx,
+                (ref, h_agl, rate, np.float32(cfg.max_obs_height_m),
+                 np.float32(cfg.zr_a), np.float32(cfg.zr_b),
+                 np.int32(nz), np.int32(ny * nx)))
+        receipt = {
+            "columns_no_information": int(cp.count_nonzero(rate < 0)),
+            "columns_observed_dry": int(cp.count_nonzero(
+                (rate >= 0) & (rate < cfg.threshold_mm_h))),
+            "columns_observed_rain": int(cp.count_nonzero(
+                rate >= cfg.threshold_mm_h)),
+            "max_rate_mm_h": float(rate.max()),
+        }
+        if sources is not None:
+            receipt["observations"] = sources[index]
+        rates.append(rate)
+        receipts.append(receipt)
+    return LatentHeatNudging(
+        rates, slot_minutes, config=cfg, receipts=receipts, shape=shape,
+        provenance=dict(provenance or {"built_from": "reflectivity volumes"}),
+        active_minutes=active_minutes)

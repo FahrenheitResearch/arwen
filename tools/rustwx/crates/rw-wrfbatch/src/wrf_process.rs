@@ -253,6 +253,30 @@ impl WrfProcessOptions {
         selectors
     }
 
+    /// Add optional selectors only after inspecting this wrfout's variables.
+    pub fn planned_store_selectors_for(&self, file: &WrfFile) -> Vec<FieldSelector> {
+        let mut selectors = self.planned_store_selectors();
+        selectors.extend(self.chem_rows_for(file).map(|row| row.selector));
+        selectors.sort_by_key(|selector| selector.key());
+        selectors.dedup();
+        selectors
+    }
+
+    pub fn planned_store_fields_for(&self, file: &WrfFile) -> Vec<String> {
+        let mut names = self.planned_store_fields();
+        names.extend(self.chem_rows_for(file).map(|row| row.store_name.to_string()));
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    fn chem_rows_for<'a>(&'a self, file: &'a WrfFile) -> impl Iterator<Item = &'static ChemProductRow> + 'a {
+        CHEM_CORE_FIELD_CATALOG.iter().filter(move |row| {
+            row.sources().any(|source| file.has_var(source))
+                && self.should_process(row.source, Some(row.store_name), WrfProductGroup::Core)
+        })
+    }
+
     pub(crate) fn should_process(
         &self,
         wrf_name: &str,
@@ -316,6 +340,53 @@ const CORE_FIELD_CATALOG: &[(&str, &str)] = &[
     ("apcp", "apcp"),
 ];
 
+/// Optional core planes. The source-presence gate keeps chem-off plans and
+/// selectors identical to the meteorological catalog. WRF-Chem writes PM2_5_DRY
+/// and o3 on mass levels (Registry/registry.chem:1136,1584); level 1 is
+/// the first plane, not a vertically interpolated 2 m value.
+#[derive(Debug, Clone, Copy)]
+pub struct ChemProductRow {
+    pub source: &'static str,
+    /// Further sources of the same quantity in the same units, summed with
+    /// `source` where present: the coupled fire's bulk smoke
+    /// (`SFIRE_SMOKE_SFC`, `SFIRE_SMOKE_COLUMN`) is smoke as much as the
+    /// transported AQ row, so a fire run's smoke draws on the same map and
+    /// a run carrying both draws their total.
+    pub also: &'static [&'static str],
+    pub store_name: &'static str,
+    pub selector: FieldSelector,
+    pub lowest_level: bool,
+    pub scale: f32,
+}
+
+impl ChemProductRow {
+    /// Every source this row reads, `source` first.
+    pub fn sources(&self) -> impl Iterator<Item = &'static str> + '_ {
+        std::iter::once(self.source).chain(self.also.iter().copied())
+    }
+}
+
+pub const CHEM_CORE_FIELD_CATALOG: &[ChemProductRow] = &[
+    ChemProductRow { source: "SMOKE_SFC", also: &["SFIRE_SMOKE_SFC"], store_name: "smoke_near_surface",
+        selector: FieldSelector::height_agl(CanonicalField::SmokeMassDensity, 8),
+        lowest_level: false, scale: 1.0e-9 },
+    ChemProductRow { source: "SMOKE_COLUMN", also: &["SFIRE_SMOKE_COLUMN"], store_name: "smoke_column",
+        selector: FieldSelector::entire_atmosphere(CanonicalField::ColumnIntegratedSmoke),
+        lowest_level: false, scale: 1.0e-6 },
+    ChemProductRow { source: "PM2_5_DRY", also: &[], store_name: "pm25_near_surface",
+        selector: FieldSelector::surface(CanonicalField::Pm25Dry),
+        lowest_level: true, scale: 1.0 },
+    ChemProductRow { source: "AOD5502D", also: &[], store_name: "aod_550",
+        selector: FieldSelector::entire_atmosphere(CanonicalField::AerosolOpticalDepth550),
+        lowest_level: false, scale: 1.0 },
+    ChemProductRow { source: "DUST_SFC", also: &[], store_name: "dust_near_surface",
+        selector: FieldSelector::surface(CanonicalField::DustMassConcentration),
+        lowest_level: false, scale: 1.0 },
+    ChemProductRow { source: "o3", also: &[], store_name: "ozone_near_surface",
+        selector: FieldSelector::surface(CanonicalField::OzoneConcentration),
+        lowest_level: true, scale: 1000.0 },
+];
+
 /// The canonical selector each [`CORE_FIELD_CATALOG`] row is written under.
 ///
 /// ONE declaration for the writer and the plan: [`read_wrf_products`]
@@ -325,6 +396,9 @@ const CORE_FIELD_CATALOG: &[(&str, &str)] = &[
 /// selectors for one plane.  Every catalog row has an arm; the
 /// `every_core_row_has_one_selector` test holds the two tables together.
 pub(crate) fn core_field_selector(store_name: &str) -> FieldSelector {
+    if let Some(row) = CHEM_CORE_FIELD_CATALOG.iter().find(|row| row.store_name == store_name) {
+        return row.selector;
+    }
     match store_name {
         "orography" => FieldSelector::surface(CanonicalField::GeopotentialHeight),
         "temperature_2m" => FieldSelector::height_agl(CanonicalField::Temperature, 2),
@@ -349,6 +423,9 @@ pub(crate) fn core_field_selector(store_name: &str) -> FieldSelector {
 /// Chart planes use selector keys unless a shared writer table assigns a
 /// public store name to that selector.
 fn store_name_for_selector(selector: FieldSelector) -> String {
+    if let Some(row) = CHEM_CORE_FIELD_CATALOG.iter().find(|row| row.selector == selector) {
+        return row.store_name.to_string();
+    }
     CORE_FIELD_CATALOG
         .iter()
         .find(|(_, name)| core_field_selector(name) == selector)
@@ -1775,6 +1852,8 @@ fn read_wrf_products(
         }
     }
 
+    push_chem_products(&mut fields, file, timeidx, &grid, projection.clone(), options);
+
     let total_twod = VARS
         .iter()
         .filter(|def| def.dim == VarDim::TwoD && !excluded_from_full_twod_pass(def.name))
@@ -2805,6 +2884,64 @@ fn push_derived_output(
     }
 }
 
+/// Read the first mass-level plane without getvar's diagnostic dispatch.
+/// Source spelling is exact, including lower-case o3. Validate dimensions so
+/// a staggered or transposed array cannot masquerade as a surface product.
+fn chem_plane(file: &WrfFile, row: &ChemProductRow, timeidx: usize) -> Result<Vec<f32>, String> {
+    // The row's present sources, summed plane by plane (one quantity, one unit).
+    let mut total: Option<Vec<f32>> = None;
+    for source in row.sources().filter(|source| file.has_var(source)) {
+        let plane = chem_source_plane(file, row, source, timeidx)?;
+        total = Some(match total {
+            None => plane,
+            Some(mut sum) => {
+                for (into, value) in sum.iter_mut().zip(plane) {
+                    *into += value;
+                }
+                sum
+            }
+        });
+    }
+    total.ok_or_else(|| format!("none of {:?} is in this wrfout", row.sources().collect::<Vec<_>>()))
+}
+
+fn chem_source_plane(file: &WrfFile, row: &ChemProductRow, source: &str, timeidx: usize) -> Result<Vec<f32>, String> {
+    if row.lowest_level && file.nz == 0 {
+        return Err(format!("{} has no first mass level; refusing an empty surface plane", source));
+    }
+    let dims = file.var_shape_no_time(source).map_err(|err| err.to_string())?;
+    let cells = file.nx.checked_mul(file.ny).ok_or("chem plane cell count overflow")?;
+    let expected = if row.lowest_level { vec![file.nz, file.ny, file.nx] }
+                   else { vec![file.ny, file.nx] };
+    if dims != expected {
+        return Err(format!("{} dimensions {dims:?}, expected {expected:?}; refusing a misplaced surface plane", source));
+    }
+    let values = file.read_var(source, timeidx).map_err(|err| err.to_string())?;
+    let count = if row.lowest_level { cells.checked_mul(file.nz).ok_or("chem volume cell count overflow")? }
+                else { cells };
+    if values.len() != count {
+        return Err(format!("{} has {} values, expected {count}; refusing an incomplete surface plane", source, values.len()));
+    }
+    Ok(values[..cells].iter().map(|value| {
+        let value = *value as f32;
+        if !value.is_finite() || value.abs() > 1.0e30 { f32::NAN }
+        else { value * row.scale }
+    }).collect())
+}
+
+fn push_chem_products(
+    fields: &mut WrfHourFields, file: &WrfFile, timeidx: usize,
+    grid: &LatLonGrid, projection: Option<GridProjection>, options: &WrfProcessOptions,
+) {
+    for row in options.chem_rows_for(file) {
+        match chem_plane(file, row, timeidx) {
+            Ok(values) => push_canonical_values(fields, grid, projection.clone(), row.store_name,
+                                                row.selector, row.selector.native_units(), values),
+            Err(err) => fields.notes.push(format!("{} skipped: {err}", row.store_name)),
+        }
+    }
+}
+
 fn single_plane(output: VarOutput, cells: usize) -> Result<(Vec<f32>, String), String> {
     let (ny, nx) = match output.shape.as_slice() {
         [ny, nx] | [1, ny, nx] => (*ny, *nx),
@@ -3044,17 +3181,32 @@ pub(crate) fn wrf_product_slug(base: &str) -> Option<&'static str> {
 
 pub(crate) fn wrf_projection(file: &WrfFile) -> Option<GridProjection> {
     let map_proj = file.global_attr_i32("MAP_PROJ").ok()?;
+    projection_from_attributes(map_proj, |name| file.global_attr_f64(name).ok())
+}
+
+pub(crate) fn netcdf_projection(file: &netcrust::File) -> Option<GridProjection> {
+    let map_proj = match file.attribute("MAP_PROJ")?.as_f64()? {
+        1.0 => 1,
+        2.0 => 2,
+        3.0 => 3,
+        6.0 => 6,
+        _ => return None,
+    };
+    projection_from_attributes(map_proj, |name| file.attribute(name).and_then(|attr| attr.as_f64()))
+}
+
+fn projection_from_attributes(
+    map_proj: i32,
+    read: impl Fn(&str) -> Option<f64>,
+) -> Option<GridProjection> {
     match map_proj {
         1 => {
-            let truelat1 = file.global_attr_f64("TRUELAT1").ok()?;
+            let truelat1 = read("TRUELAT1")?;
             let truelat2 = crate::local_import::normalize_lambert_truelat2(
                 truelat1,
-                file.global_attr_f64("TRUELAT2").ok(),
+                read("TRUELAT2"),
             );
-            let stand_lon = file
-                .global_attr_f64("STAND_LON")
-                .ok()
-                .or_else(|| file.global_attr_f64("CEN_LON").ok())?;
+            let stand_lon = read("STAND_LON").or_else(|| read("CEN_LON"))?;
             Some(GridProjection::LambertConformal {
                 standard_parallel_1_deg: truelat1,
                 standard_parallel_2_deg: truelat2,
@@ -3062,11 +3214,8 @@ pub(crate) fn wrf_projection(file: &WrfFile) -> Option<GridProjection> {
             })
         }
         2 => {
-            let truelat1 = file.global_attr_f64("TRUELAT1").ok()?;
-            let stand_lon = file
-                .global_attr_f64("STAND_LON")
-                .ok()
-                .or_else(|| file.global_attr_f64("CEN_LON").ok())?;
+            let truelat1 = read("TRUELAT1")?;
+            let stand_lon = read("STAND_LON").or_else(|| read("CEN_LON"))?;
             Some(GridProjection::PolarStereographic {
                 true_latitude_deg: truelat1,
                 central_meridian_deg: stand_lon,
@@ -3078,14 +3227,14 @@ pub(crate) fn wrf_projection(file: &WrfFile) -> Option<GridProjection> {
             })
         }
         3 => Some(GridProjection::Mercator {
-            latitude_of_true_scale_deg: file.global_attr_f64("TRUELAT1").unwrap_or(0.0),
+            latitude_of_true_scale_deg: read("TRUELAT1").unwrap_or(0.0),
             central_meridian_deg: crate::local_import::wrf_mercator_central_longitude(
-                file.global_attr_f64("STAND_LON").ok(),
+                read("STAND_LON"),
             ),
         }),
         6 if crate::local_import::wrf_latlon_is_unrotated(
-            file.global_attr_f64("POLE_LAT").ok(),
-            file.global_attr_f64("POLE_LON").ok(),
+            read("POLE_LAT"),
+            read("POLE_LON"),
         ) =>
         {
             Some(GridProjection::Geographic)

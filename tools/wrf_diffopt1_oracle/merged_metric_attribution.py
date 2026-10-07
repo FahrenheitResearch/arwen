@@ -15,25 +15,32 @@ def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+OPEN_BOUNDARY = "890e2523a+9c79e8e12"
+
+LEVELS = 6
+
+
 def attribute(data, captures, output, merged_commit):
     controls = [{key: value for key, value in np.load(captures / f"control-{level}.npz").items()}
-                for level in range(5)]
+                for level in range(LEVELS)]
     originals = {}
     with np.load(data / "diff2-baseline.npz") as stored:
         originals.update({key: value for key, value in stored.items()})
     with np.load(data / "diff2-legacy.npz") as stored:
         originals.update({"legacy_" + key: value for key, value in stored.items()})
     assert originals.keys() == controls[0].keys()
-    changes = ((4, 3, "46b0a09fe", "native acoustic damping constant"),
-               (3, 2, "dc226e820", "native lid and mapped boundary advection"),
-               (2, 1, "0673d8c51", "native outer-row geopotential and limiter rounding"),
-               (1, 0, "83fde6032+2c212f621", "native diffusion and composed dry map coupling"))
+    changes = ((5, 4, "46b0a09fe", "native acoustic damping constant"),
+               (4, 3, "dc226e820", "native lid and mapped boundary advection"),
+               (3, 2, "0673d8c51", "native outer-row geopotential and limiter rounding"),
+               (2, 1, "83fde6032+2c212f621", "native diffusion and composed dry map coupling"),
+               (1, 0, OPEN_BOUNDARY,
+                "native open-boundary rhs_ph upwinding, the west top row as unmodified WRF"))
     fields = []
     totals = {row[2]: 0 for row in changes}
     original_words = moved_words = 0
     for key, old in sorted(originals.items()):
         current = controls[0][key]
-        np.testing.assert_array_equal(old.view("u4"), controls[4][key].view("u4"),
+        np.testing.assert_array_equal(old.view("u4"), controls[-1][key].view("u4"),
                                       err_msg="unattributed original words: " + key)
         changed = np.flatnonzero(old.view("u4").reshape(-1) != current.view("u4").reshape(-1))
         original_words += old.size
@@ -74,7 +81,7 @@ def attribute(data, captures, output, merged_commit):
                    merged_legacy_sha256=digest(output / "diff2-merged-legacy.npz"),
                    runtime_sources=current_receipt["runtime_sources"],
                    controls=[json.loads((captures / f"control-{level}.json").read_text())
-                             for level in range(5)],
+                             for level in range(LEVELS)],
                    words=int(original_words), moved_words=int(moved_words),
                    control_transition_words=totals,
                    control_groups=[dict(before=b, after=a, commit=c, reason=r)
@@ -92,6 +99,8 @@ def attribute(data, captures, output, merged_commit):
                       "tools/advect_wrf471_oracle"],
         "0673d8c51": ["tests/test_bigstep_prep_wrf471_parity.py",
                       "tests/test_w_crit_cfl.py", "tools/bigstep_wrf471_oracle"],
+        OPEN_BOUNDARY: ["tests/test_sfire_open_geopotential_wrf471_parity.py",
+                        "tools/sfire_coupled_ideal/rhs_ph_open"],
         "83fde6032+2c212f621": ["tests/test_diff6_wrf471_parity.py",
                               "tests/test_deformation_wrf471_parity.py",
                               "tests/test_horizontal_diffusion_wrf471_parity.py",

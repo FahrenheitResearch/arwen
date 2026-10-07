@@ -67,7 +67,7 @@ tests/test_mynn_surface.py
 # only): a missing fixture must fail, not silently remove the comparison.
 tests/test_scalar_pblmix.py
 
-# --- Noah-MP, against gpuwm/data/noahmp/oracle/ and tools/noahmp_wrf461_oracle/
+# --- Noah-MP, against tests/data/oracles/noahmp/ and tools/noahmp_wrf461_oracle/
 tests/test_noahmp_bareflux.py
 tests/test_noahmp_driver.py
 tests/test_noahmp_oracle_harness.py
@@ -108,14 +108,6 @@ tests/test_lake_contract.py
 # --- DECLARED-SKIPPING-BEGIN -------------------------------------------------
 # Release-source checks need an external Git executable to construct real repositories.
 tests/test_verify_release_build_tree.py  needs Git on PATH; it checks real tracked and untracked build state.
-# DECLARED TEST EXCEPTIONS: one test id, not a file (tools/battery/
-# no_silent_skip.py skips exactly that test with this reason; every other test
-# in the file keeps running).  2.8.6 ruling: the g3 gate is the one test that
-# asserts the aero-cloud-freeze-nc, aero-cold-overlap and wp08-nusweep cells
-# against the 2e-6 bound; the residual ratchet, the published-matrix pins and
-# the one-extra-rounding pin beside it keep gating.  Retire this entry in the
-# commit that makes g3 pass.
-tests/test_thompson_aerosol_adapter.py::test_g3_end_to_end_against_all_nineteen_oracle_fixtures  mp=28 (aerosol-aware Thompson) is not yet bit-parity with WRF 4.6.1 on 7 oracle cells (qc up to 4.9e-6 against a 2e-6 bound); the accumulation-order rework is in progress and changes kernels shared with mp=8 (lane/cut286-mp28-g3)
 # Ensemble member decks (lane/283-ensemble-batch) skip whole modules when
 # their device or native preparation library is absent.
 tests/test_ensemble_batch_bookkeeping_gpu.py  needs a CUDA device; it is skipped when GPUWM_NO_LOCAL_GPU is set, and a GPU leg with the device runs its member bookkeeping word comparisons.

@@ -1,0 +1,19 @@
+{
+  "schema": "gpuwm.chem.diagnostic.v1",
+  "output_name": "SMOKE_SFC",
+  "units": "ug m-3",
+  "description": "Near-surface smoke: the lowest model level's smoke mixing ratio times its dry-air density (ug kg-1 x kg m-3)",
+  "kind": "term_sum_surface",
+  "terms": [
+    {
+      "species": [
+        "smoke"
+      ],
+      "ops": [],
+      "from": "DESIGN section 8 (ArWen addition, not a WRF-Chem sum)"
+    }
+  ],
+  "divide_by_alt": true,
+  "column_scale": 1,
+  "provenance": "ArWen-only 2-D output (DESIGN section 8), the counterpart of HRRR-Smoke's MASSDEN at 8 m above ground; WRF-Chem has no such field."
+}

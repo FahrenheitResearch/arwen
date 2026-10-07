@@ -1,0 +1,5300 @@
+{
+  "summary": {
+    "cases": 65,
+    "words": 36525,
+    "different_words": 0,
+    "max_ulp": 0
+  },
+  "device": "NVIDIA GeForce RTX 5090",
+  "native_receipt_sha256": "1b37539f996339132c0c06c9fe9bbcad8a1d4e9d571afefe6de3427df986adae",
+  "source_sha256": {
+    "gpuwm/core/sfire_ideal.py": "cbc9812595186cb1dc717f1b7c0bda09495cbd6bbb3bc7df077435ab1eb70ddf",
+    "gpuwm/core/kernels/sfire_ideal.cu": "4ae70ca85d10d8b198dad60bcf9eab1d528f222c649d2a001ebe3a5299181714"
+  },
+  "cases": {
+    "ideal_geometry/coordinates": {
+      "x": {
+        "words": 99,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "y": {
+        "words": 99,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/gradient_1": {
+      "gx": {
+        "words": 1188,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "gy": {
+        "words": 1188,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/gradient_2": {
+      "gx": {
+        "words": 1188,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "gy": {
+        "words": 1188,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/gradient_3": {
+      "gx": {
+        "words": 1188,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "gy": {
+        "words": 1188,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/gradient_4": {
+      "gx": {
+        "words": 1188,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "gy": {
+        "words": 1188,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/gradient_5": {
+      "gx": {
+        "words": 1188,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "gy": {
+        "words": 1188,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/interpolation_edges": {
+      "corrected": {
+        "words": 1188,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/mountain_1": {
+      "height": {
+        "words": 99,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "zsf": {
+        "words": 1188,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/mountain_2": {
+      "height": {
+        "words": 99,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "zsf": {
+        "words": 1188,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/mountain_3": {
+      "height": {
+        "words": 99,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "zsf": {
+        "words": 1188,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/mountain_4": {
+      "height": {
+        "words": 99,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "zsf": {
+        "words": 1188,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/mountain_5": {
+      "height": {
+        "words": 99,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "zsf": {
+        "words": 1188,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/soil_1": {
+      "zs": {
+        "words": 5,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dzs": {
+        "words": 5,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "tslb": {
+        "words": 280,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "smois": {
+        "words": 280,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/soil_2": {
+      "zs": {
+        "words": 4,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dzs": {
+        "words": 4,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "tslb": {
+        "words": 224,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "smois": {
+        "words": 224,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/soil_3": {
+      "zs": {
+        "words": 6,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dzs": {
+        "words": 6,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "tslb": {
+        "words": 336,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "smois": {
+        "words": 336,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/soil_4": {
+      "zs": {
+        "words": 4,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dzs": {
+        "words": 4,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "tslb": {
+        "words": 224,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "smois": {
+        "words": 224,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/soil_5": {
+      "zs": {
+        "words": 9,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dzs": {
+        "words": 9,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "tslb": {
+        "words": 504,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "smois": {
+        "words": 504,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_1": {
+      "znw": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_10": {
+      "znw": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_11": {
+      "znw": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_12": {
+      "znw": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_13": {
+      "znw": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_14": {
+      "znw": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_15": {
+      "znw": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_16": {
+      "znw": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_17": {
+      "znw": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_18": {
+      "znw": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_19": {
+      "znw": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_2": {
+      "znw": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_20": {
+      "znw": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_21": {
+      "znw": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_22": {
+      "znw": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_23": {
+      "znw": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_24": {
+      "znw": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_25": {
+      "znw": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_26": {
+      "znw": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_27": {
+      "znw": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_28": {
+      "znw": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_29": {
+      "znw": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_3": {
+      "znw": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_30": {
+      "znw": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_31": {
+      "znw": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_32": {
+      "znw": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 18,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 17,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_33": {
+      "znw": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_34": {
+      "znw": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_35": {
+      "znw": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_36": {
+      "znw": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_37": {
+      "znw": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_38": {
+      "znw": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_39": {
+      "znw": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_4": {
+      "znw": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_40": {
+      "znw": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_41": {
+      "znw": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_42": {
+      "znw": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_43": {
+      "znw": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_44": {
+      "znw": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_45": {
+      "znw": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_46": {
+      "znw": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_47": {
+      "znw": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_48": {
+      "znw": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 23,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 22,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_5": {
+      "znw": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_6": {
+      "znw": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_7": {
+      "znw": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_8": {
+      "znw": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "ideal_geometry/vertical_9": {
+      "znw": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znu": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdnw": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "dn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "rdn": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnp": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "fnm": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4f": {
+        "words": 13,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c1h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c2h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c3h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "c4h": {
+        "words": 12,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "scalars": {
+        "words": 7,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    }
+  }
+}

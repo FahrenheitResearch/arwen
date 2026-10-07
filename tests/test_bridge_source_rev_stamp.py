@@ -170,6 +170,19 @@ def test_verification_refuses_a_malformed_expected_revision():
             _stamp(RELEASED), expected="HEAD", label="x")
 
 
+def test_grib2_export_abi_marker_matches_binary_bytes(tmp_path):
+    marker = bridges.BRIDGE_ABI_MARKERS["rw_grib2export"]
+    assert isinstance(marker, bytes)
+    binary = tmp_path / "rw_grib2export"
+    binary.write_bytes(b"\x7fELF\x00" + marker + b"\x00")
+    matched, reason = bridges.bridge_abi_matches("rw_grib2export", binary)
+    assert matched, reason
+    binary.write_bytes(b"\x7fELF\x00older contract\x00")
+    matched, reason = bridges.bridge_abi_matches("rw_grib2export", binary)
+    assert not matched
+    assert "predates this release" in reason
+
+
 # ---------------------------------------------------------------------------
 # The cut path: pin refuses what it cannot prove
 # ---------------------------------------------------------------------------
@@ -298,6 +311,9 @@ _STAMP_SOURCES = {
     "rw_fetch": "crates/rw-fetch/src/main.rs",
     "rw_wrfbatch": "crates/rw-wrfbatch/src/main.rs",
     "rw_compare": "crates/rw-wrfbatch/src/bin/compare.rs",
+    # The ensemble reducer the AQ line bundled: same crate, same build.rs
+    # stamp; its entry point black_boxes SOURCE_REV_STAMP in main.
+    "rw_ensbatch": "crates/rw-wrfbatch/src/bin/ensbatch.rs",
     "rw_verify": "crates/rw-wrfbatch/src/bin/verify.rs",
     "rw_mpas_mesh": "crates/rw-mpas/src/bin/rw_mpas_mesh.rs",
     "rw_mpas_static": "crates/rw-mpas/src/bin/rw_mpas_static.rs",
@@ -318,6 +334,10 @@ _STAMP_SOURCES = {
     # joined BUNDLED_ARTIFACTS without a stamp, so the cut would have
     # refused the bundle that carried it.
     "rw_simradar": "crates/rw-simradar/src/main.rs",
+    "rw_grib2export": "crates/rw-grib2export/src/bin/rw_grib2export.rs",
+    # The nowcast frames converter: a bin of rw-wrfbatch, stamped by that
+    # crate's build.rs with rw_compare and rw_verify.
+    "rw_nowcast_frames": "crates/rw-wrfbatch/src/bin/nowcast_frames.rs",
     # The GDT-101 remapper, added to BUNDLED_ARTIFACTS by the icon-global
     # lane.  It lives in the bridge crate, so `tools/grib1_bridge/build.rs`
     # stamps it with its five siblings, and its `main` black_boxes the
@@ -329,6 +349,7 @@ _STAMP_SOURCES = {
     "rw_mrms": "crates/rw-obs/src/bin/mrms.rs",
     "rw_stage4": "crates/rw-obs/src/bin/stage4.rs",
     "rw_asos": "crates/rw-obs/src/bin/asos.rs",
+    "rw_airnow": "crates/rw-obs/src/bin/airnow.rs",
     "rw_opera": "crates/rw-obs/src/bin/opera.rs",
     "rw_goes": "crates/rw-goes/src/main.rs",
     "rw_netcdf": "crates/rw-netcdf/src/main.rs",
@@ -340,6 +361,7 @@ _STAMP_SOURCES = {
     "rw_mpas_geometry": "crates/rw-mpas/src/bin/rw_mpas_geometry.rs",
     "rw_mpas_hostprep": "crates/rw-mpas/src/bin/rw_mpas_hostprep.rs",
     "rw_isobaric": "crates/rw-isobaric/src/capi.rs",
+    "rw_superob": "crates/rw-superob/src/capi.rs",
 }
 
 #: The build script that injects the revision for each artifact.
@@ -364,7 +386,8 @@ _STAMP_BUILDS = {
                                     "crates/static-fields/build.rs",
                                     "crates/obs-regrid/build.rs",
                                     "crates/obs-score/build.rs",
-                                    "crates/rw-isobaric/build.rs"),
+                                    "crates/rw-isobaric/build.rs",
+                                    "crates/rw-superob/build.rs"),
     # The engine workspace carries one gpuwm-authored crate beside the
     # donor snapshot (tools/rw_wps/VENDOR.md); the snapshot's own crate
     # ships nothing, so it is stamped by nothing.

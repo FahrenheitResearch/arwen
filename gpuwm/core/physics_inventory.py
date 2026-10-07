@@ -62,7 +62,7 @@ def physics_enabled(cfg: RunConfig) -> bool:
     """Whether any non-timesplit physics scheme is configured."""
     return bool(radiation_enabled(cfg) or cfg.sf_sfclay_physics
                 or cfg.sf_surface_physics or cfg.bl_pbl_physics
-                or cfg.cu_physics)
+                or cfg.cu_physics or getattr(cfg, "ifire", 0) == 2)
 
 
 def physics_driver_required(cfg: RunConfig) -> bool:

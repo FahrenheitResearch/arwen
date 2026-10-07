@@ -102,6 +102,8 @@ relax_zone = 9
 terrain_opt = 1
 map_proj = 1
 sf_sfclay_physics = 5
+# The GSL surface layer the operational fork runs.
+mynn_sfclay_variant = "gsl_wrf39"
 sf_surface_physics = 3
 ruc_irrigation = "wrf_45"
 ruc_soilprop = "wrf_45"

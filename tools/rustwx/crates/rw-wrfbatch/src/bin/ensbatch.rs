@@ -611,7 +611,11 @@ struct MemberPlane {
     nx: usize,
 }
 
+pub static SOURCE_REV_STAMP: &str =
+    concat!("GPUWM_BRIDGE_SOURCE_REV=", env!("GPUWM_BRIDGE_SOURCE_REV"));
+
 fn main() -> ExitCode {
+    let _ = std::hint::black_box(SOURCE_REV_STAMP);
     if let Some(result) = rw_wrfbatch::ensemble_products::try_cli(
         &std::env::args().skip(1).collect::<Vec<_>>(),
     ) {
@@ -626,6 +630,7 @@ fn main() -> ExitCode {
     match parse_args() {
         Ok(Invocation::Abi) => {
             println!("{ABI_MARKER}");
+            println!("{SOURCE_REV_STAMP}");
             ExitCode::SUCCESS
         }
         Ok(Invocation::Help) => {
@@ -1222,13 +1227,16 @@ mod tests {
 
     impl Scratch {
         fn new(tag: &str) -> Self {
+            // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+            static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let path = std::env::temp_dir().join(format!(
-                "rw-ensbatch-test-{tag}-{}-{:?}",
+                "rw-ensbatch-test-{tag}-{}-{:?}-{}",
                 std::process::id(),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_nanos())
-                    .unwrap_or(0)
+                    .unwrap_or(0),
+                NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             ));
             std::fs::create_dir_all(&path).expect("scratch dir");
             Self(path)

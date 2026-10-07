@@ -148,10 +148,23 @@ class FrontDoor:
                 errors="replace", timeout=_PROBE_TIMEOUT_S)
         except (OSError, subprocess.SubprocessError) as error:
             return False, f"{path} --abi did not run: {error}"
-        if abi.returncode != 0 or (abi.stdout or "").strip() != self.abi_marker:
+        from gpuwm import provenance_gate
+
+        # A GPUWM_BRIDGE_SOURCE_REV line after the contract is not part of
+        # it (rw_ensbatch's whole-answer compare refused its own checkout's
+        # build); it is judged by the shared stamp check.
+        contract, revision = provenance_gate.split_abi_answer(abi.stdout)
+        if abi.returncode != 0 or contract != self.abi_marker:
             return False, (f"{transcript} -- --abi does not match the record "
                            "contract this gpuwm expects; rebuild it: "
                            f"{rustwx_build_hint()}")
+        if revision is not None:
+            refusal = provenance_gate.abi_revision_refusal(
+                path, revision, env_var=self.env_var)
+            if refusal is not None:
+                return False, (f"{transcript} -- --abi matches the record "
+                               f"contract, but {refusal}; rebuild it: "
+                               f"{rustwx_build_hint()}")
         return True, f"{transcript} -- --abi matches the record contract"
 
     def run(self, subcommand: str, arguments: list[str], *,
@@ -252,7 +265,7 @@ GOES = FrontDoor(
                 "gpuwm-obs.goes-cloudtop.v2\t"
                 # The Level 1b radiance family and the clear-sky forward
                 # operator (bt, colocate, superobs, quicklook, forward).
-                "gpuwm-obs.goes-bt.v1\tgpuwm-da.abi-forward.v1"),
+                "gpuwm-obs.goes-bt.v1\tgpuwm-da.abi-forward.v1\tgpuwm-obs.goes-aod.v1"),
 )
 
 #: The European radar composite front door.
@@ -360,10 +373,15 @@ PREPBUFR = FrontDoor(
 #: same way: both write ``gpuwm-obs.radar-sweeps`` packs that the one sweeps
 #: reader accepts, so a superob picks a decoder by which network covers the
 #: domain rather than by which code path it has to take.
+AIRNOW = FrontDoor(
+    name="rw_airnow", env_var="GPUWM_RW_AIRNOW", subject="the AirNow front door",
+    abi_marker="gpuwm-obs.airnow-fetch.v1\tgpuwm-obs.airnow-table.v1\tgpuwm-obs.table.v2",
+)
+
 FRONT_DOORS = {"mrms": MRMS, "stage4": STAGE4, "asos": ASOS, "goes": GOES,
-               "opera": OPERA, "odim": ODIM}
+               "opera": OPERA, "odim": ODIM, "airnow": AIRNOW}
 
 
-__all__ = ["ASOS", "CARGO_BUILD_HINT", "FRONT_DOORS", "GOES", "MRMS", "ODIM",
+__all__ = ["AIRNOW", "ASOS", "CARGO_BUILD_HINT", "FRONT_DOORS", "GOES", "MRMS", "ODIM",
            "OPERA", "PREPBUFR",
            "STAGE4", "FrontDoor", "crate_dir"]

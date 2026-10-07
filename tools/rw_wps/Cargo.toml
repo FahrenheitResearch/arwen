@@ -48,7 +48,8 @@ thiserror = "2"
 # outside this workspace. No consumer-side checksum workaround is needed.
 
 [profile.release]
-# Same reasoning as tools/grib1_bridge: bridge binaries are package
-# data measured against wheel caps; debug symbols are the cheapest
-# weight to give back.  The ABI marker literal survives stripping.
-strip = "debuginfo"
+# Same reasoning as tools/rustwx: bridge binaries are package data
+# measured against PyPI's per-file limit, and the static symbol table is
+# the cheapest weight to give back.  The ABI marker literal and the
+# source-revision stamp are .rodata and survive a symbol strip.
+strip = "symbols"

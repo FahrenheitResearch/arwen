@@ -7,6 +7,13 @@ CUDA-based atmospheric modeling engine. Use the desktop to inspect weather maps,
 choose a forecast area or cyclone, review the setup, and follow your results.
 Run the model on a local NVIDIA GPU or a Linux computer connected over SSH.
 
+Coupled wildfire runs use a refined SFIRE grid with atmospheric feedback,
+fuel moisture, optional [bulk smoke](docs/public/sfire-smoke.md), and native
+restart state. [Prepare public fuel and terrain](docs/SFIRE-STATIC.md), or
+[run a native ideal sounding](docs/SFIRE-IDEAL.md) with the complete
+[short example](examples/sfire-ideal/README.md). The Rust renderer draws
+fire perimeter, rate of spread and ground heat flux.
+
 ![ArWen Desktop showing an ERA5 temperature field](https://raw.githubusercontent.com/FahrenheitResearch/arwen/v2.7.3/docs/public/img/arwen-desktop-2.7.png)
 
 *The Linux desktop displaying a real ERA5 field. Windows uses the same interface.*
@@ -17,7 +24,7 @@ Run the model on a local NVIDIA GPU or a Linux computer connected over SSH.
 | --- | --- |
 | [Windows desktop: GUI and TUI](https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.0/ArWen-Desktop-1.0.8-Windows-x64.zip) | x86-64 Windows; compatible NVIDIA GPU and driver; internet for first setup |
 | [Linux desktop: GUI and TUI](https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.0/ArWen-Desktop-1.0.8-Linux-x64-pip.tar.gz) | x86-64 Linux, glibc 2.39 or newer, such as Ubuntu 24.04; Python 3.11 or newer; X11 or Wayland with working OpenGL |
-| [Integration kit](https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.6/ArWen-2.8.6-Integration-Kit.zip) | Developer guide, CLI/plan examples, catalogs, and client design notes |
+| [Integration kit](https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.7/ArWen-2.8.7-Integration-Kit.zip) | Developer guide, CLI/plan examples, catalogs, and client design notes |
 
 The desktop archives contain the applications, native map library and map assets.
 Windows includes a graphical setup launcher that downloads a private Python and
@@ -26,7 +33,7 @@ compiler is needed for these binary packages.
 
 The Python package is named **`gpuwm`**. Its Windows and Linux platform wheels
 include the engine, native processing tools, and TUI. The desktop GUI is the
-separate download above. Check [release notes and checksums](https://github.com/FahrenheitResearch/arwen/releases/tag/v2.8.6)
+separate download above. Check [release notes and checksums](https://github.com/FahrenheitResearch/arwen/releases/tag/v2.8.7)
 for the exact artifacts and qualification records.
 
 ## Install the desktop for forecasts on your PC
@@ -173,10 +180,15 @@ for running preprocessing, the simulation and rendering on your own terms.
 with standard pressure levels and ERA5 or WeatherBench 2 names. See
 [ML export](docs/ml-export.md).
 
+`gpuwm export-grib2 my-run --out grib/my-run --zip` writes one surface and
+one pressure-level GRIB2 file per domain and time, computed by the WOOF
+post-processor on a GPU when one has room. `gpuwm go forecast.toml --grib2`
+writes them as each frame lands. See [GRIB2 export](docs/grib2-export.md).
+
 ## Integrate ArWen into another application
 
 The [integration guide](https://github.com/FahrenheitResearch/arwen/blob/v2.8.0/docs/integration-kit/integration-guide.md)
-and [downloadable kit](https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.6/ArWen-2.8.6-Integration-Kit.zip)
+and [downloadable kit](https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.7/ArWen-2.8.7-Integration-Kit.zip)
 describe the CLI, run-plan documents, catalogs, and companion bridge boundaries.
 The kit contains an example subprocess client and tests. It is a documented
 integration surface, not a separate simulation engine or a replacement for
@@ -200,6 +212,11 @@ general forecast-skill claim follows. Read the
 [verification and validation record](docs/public/VERIFICATION.md),
 [physics documentation](docs/public/PHYSICS.md),
 and [2.8 changes](https://github.com/FahrenheitResearch/arwen/blob/v2.8.0/CHANGELOG.md).
+
+Wildfire smoke, dust, sea salt, carbon and CAMS air-quality species are an
+opt-in product, off unless a configuration names `chem_sets`: see
+[smoke, dust and air quality](docs/public/SMOKE-AND-AIR-QUALITY.md) and the
+worked example in [CONFIGURATION.md](docs/public/CONFIGURATION.md).
 
 2.8.0 adds the Weather Library, `gpuwm gui`, as a preview beside the desktop
 app: 17 cited storm events with a best simulation for each card size,

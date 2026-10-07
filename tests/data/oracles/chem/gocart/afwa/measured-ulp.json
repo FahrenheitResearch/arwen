@@ -1,0 +1,548 @@
+{
+  "aggregate": {
+    "chem": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 18240
+    },
+    "edust": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 6080
+    },
+    "afwa_dustloft": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 1216
+    },
+    "tot_dust": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 3648
+    },
+    "vis_dust": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 3648
+    },
+    "tot_edust": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 1216
+    }
+  },
+  "cases": {
+    "variant_000_step_1": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      },
+      "afwa_dustloft": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      },
+      "tot_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "vis_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "tot_edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      }
+    },
+    "variant_000_step_2": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      },
+      "afwa_dustloft": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      },
+      "tot_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "vis_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "tot_edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      }
+    },
+    "variant_000_step_3": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      },
+      "afwa_dustloft": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      },
+      "tot_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "vis_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "tot_edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      }
+    },
+    "variant_001_step_1": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      },
+      "afwa_dustloft": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      },
+      "tot_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "vis_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "tot_edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      }
+    },
+    "variant_002_step_1": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      },
+      "afwa_dustloft": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      },
+      "tot_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "vis_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "tot_edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      }
+    },
+    "variant_003_step_1": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      },
+      "afwa_dustloft": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      },
+      "tot_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "vis_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "tot_edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      }
+    },
+    "variant_004_step_1": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      },
+      "afwa_dustloft": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      },
+      "tot_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "vis_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "tot_edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      }
+    },
+    "variant_005_step_1": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      },
+      "afwa_dustloft": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      },
+      "tot_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "vis_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "tot_edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      }
+    },
+    "variant_006_step_1": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      },
+      "afwa_dustloft": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      },
+      "tot_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "vis_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "tot_edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      }
+    },
+    "variant_007_step_1": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      },
+      "afwa_dustloft": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      },
+      "tot_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "vis_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "tot_edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      }
+    },
+    "variant_008_step_1": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      },
+      "afwa_dustloft": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      },
+      "tot_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "vis_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "tot_edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      }
+    },
+    "variant_009_step_1": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      },
+      "afwa_dustloft": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      },
+      "tot_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "vis_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "tot_edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      }
+    },
+    "variant_010_step_1": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      },
+      "afwa_dustloft": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      },
+      "tot_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "vis_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "tot_edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      }
+    },
+    "variant_011_step_1": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      },
+      "afwa_dustloft": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      },
+      "tot_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "vis_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "tot_edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      }
+    },
+    "variant_012_step_1": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      },
+      "afwa_dustloft": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      },
+      "tot_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "vis_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "tot_edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      }
+    },
+    "variant_013_step_1": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      },
+      "afwa_dustloft": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      },
+      "tot_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "vis_dust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 228
+      },
+      "tot_edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 76
+      }
+    }
+  }
+}

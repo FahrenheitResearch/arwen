@@ -9,6 +9,9 @@
 //! the worker count cannot change an output element's arithmetic.
 
 pub mod dealias;
+pub mod chem_conversions;
+pub mod chem_diagnostics;
+pub mod chem_fire_reduce;
 pub mod eta;
 pub mod ensemble;
 pub mod grib2_supplement;
@@ -19,6 +22,8 @@ pub mod aerosol_emission;
 // inverse of src/bin/met_intermediate.rs's writer) and the
 // global-source bilinear the seam of a cyclic lat/lon grid needs.
 pub mod wif_ffi;
+pub mod chem_remap;
+pub mod grib2_stack;
 pub mod wps_intermediate;
 // WPS metgrid's masked-field chain (soil, snow, skin, sea ice) in float64,
 // byte-identical to the NumPy transcription it replaced.

@@ -33,6 +33,10 @@ pub enum Method {
     /// nearest destination centre is this one.  `source_index` is per
     /// SOURCE cell, and -1 means "assigned to no destination".
     CellAverage,
+    /// Reverse assignment of extensive quantities. Empty cells are valid zero.
+    CellSum,
+    /// Row-major n by n partition centres in a regular latitude/longitude cell.
+    CellSumSplit { n: usize },
 }
 
 impl Method {
@@ -40,9 +44,10 @@ impl Method {
         match code {
             0 => Ok(Method::Nearest),
             1 => Ok(Method::CellAverage),
+            2 => Ok(Method::CellSum),
             other => Err(RegridError::InvalidOptions(format!(
                 "unknown remap method code {other}; expected 0 (nearest) or \
-                 1 (cell_average)"
+                 1 (cell_average) or 2 (cell_sum)"
             ))),
         }
     }
@@ -66,6 +71,153 @@ pub struct RegridPlan {
 
 fn cells(shape: (usize, usize)) -> usize {
     shape.0 * shape.1
+}
+
+pub(crate) fn split_count(method: Method) -> Result<usize, RegridError> {
+    let n = match method { Method::CellSumSplit { n } => n, _ => 1 };
+    if n == 0 || n.checked_mul(n).is_none() {
+        return Err(RegridError::InvalidOptions("cell-sum split n must be positive and its square fit usize; otherwise sub-point weights are undefined".into()));
+    }
+    Ok(n)
+}
+
+/// One caller array and one temporary Rust array coexist at the seam.
+/// Bound indices to 4 GiB each before either allocation, preventing a full
+/// continental fine-grid partition from exhausting host memory.
+pub const MAX_SUM_INDEX_BYTES: usize = 4 * 1024 * 1024 * 1024;
+
+/// Coordinates may be stored as float32. Tolerance admits their quantization,
+/// but not an irregular grid whose partition centres would be misplaced.
+pub(crate) fn regular_spacing(lat: &[f64], lon: &[f64], shape: (usize, usize)) -> Result<(f64, f64), RegridError> {
+    let refuse = || RegridError::InvalidGrid("cell_sum_split refuses an irregular source grid: regular 2-D latitude/longitude spacing is required to locate sub-points".into());
+    if shape.0 < 2 || shape.1 < 2 { return Err(refuse()); }
+    let dy = (lat[(shape.0-1)*shape.1] - lat[0]) / (shape.0-1) as f64;
+    let dx = (lon[shape.1-1] - lon[0]) / (shape.1-1) as f64;
+    if dy == 0.0 || dx == 0.0 { return Err(refuse()); }
+    for j in 0..shape.0 { for i in 0..shape.1 {
+        let k = j*shape.1+i;
+        let expected_lat = lat[0]+j as f64*dy;
+        let expected_lon = lon[0]+i as f64*dx;
+        // One coordinate rounding plus rounded endpoints used for spacing.
+        // Two stored-f32 ULPs admit that quantization, not a curvilinear grid.
+        let tolerance = |v: f64| {
+            let stored = v.abs() as f32;
+            2.0 * (f32::from_bits(stored.to_bits()+1) as f64 - stored as f64) + 1e-12
+        };
+        if !lat[k].is_finite() || !lon[k].is_finite()
+            || (lat[k] - expected_lat).abs() > tolerance(expected_lat)
+            || (lon[k] - expected_lon).abs() > tolerance(expected_lon) { return Err(refuse()); }
+    }}
+    Ok((dy, dx))
+}
+
+/// Serial source-major accumulation. Receipt order: finite source mass,
+/// remapped mass, unreachable valid mass, masked finite mass.
+/// Invalid contributors mark every destination they touch invalid; valid mass
+/// still accumulates there. No contributor means a confident emission zero.
+pub fn apply_sum(method: Method, index: &[i64], values: &[f64], valid: &[bool],
+                 out: &mut [f64], out_valid: &mut [bool]) -> Result<[f64; 4], RegridError> {
+    if !matches!(method, Method::CellSum | Method::CellSumSplit { .. }) {
+        return Err(RegridError::InvalidOptions("apply_sum requires a cell-sum method; an observation plan has a different index direction".into()));
+    }
+    let n = split_count(method)?;
+    let parts = n*n;
+    if valid.len() != values.len() || out.len() != out_valid.len()
+        || values.len().checked_mul(parts) != Some(index.len()) {
+        return Err(RegridError::ShapeMismatch("cell-sum buffers do not match source/sub-point/destination counts; refusing out-of-bounds mass assignment".into()));
+    }
+    out.fill(0.0); out_valid.fill(true);
+    let mut receipt = [0.0; 4];
+    for source in 0..values.len() {
+        let value = values[source];
+        if value.is_finite() { receipt[0] += value; }
+        let usable = valid[source] && value.is_finite();
+        if !usable && value.is_finite() { receipt[3] += value; }
+        let piece = value / parts as f64;
+        for sub in 0..parts {
+            let target = index[source*parts+sub];
+            if target < -1 || target >= out.len() as i64 {
+                return Err(RegridError::ShapeMismatch("cell-sum destination index is outside the grid; refusing out-of-bounds mass assignment".into()));
+            }
+            if target == -1 { if usable { receipt[2] += piece; } }
+            else if usable { out[target as usize] += piece; }
+            else { out_valid[target as usize] = false; }
+        }
+    }
+    for value in out { receipt[1] += *value; }
+    Ok(receipt)
+}
+
+/// Apply a cell-sum plan to a fire-INTENSITY field (fire radiative power):
+/// every destination cell touched by at least one of a source cell's
+/// sub-points receives that source cell's WHOLE value, once, and values from
+/// different source cells landing in one destination still add.
+///
+/// Why this is not [`apply_sum`].  Fire power drives plume rise through the
+/// fire's size (Freitas burnt area is proportional to FRP), so partitioning a
+/// 3 km pixel's FRP into n*n pieces on a finer grid turns one fire into n*n
+/// fires of 1/n^2 the power and lowers every plume (at 750 m, n = 5: 25 fires
+/// of 4 % power).  The emitted MASS is partitioned by [`apply_sum`]; the power
+/// each column's plume sees is the pixel's.  With n = 1 the two operators are
+/// the same sum.  The destination total is therefore NOT the source total when
+/// n > 1: receipt[1] is the touched total, reported, never compared.
+///
+/// Receipt: finite source total, touched destination total, unreachable
+/// (valid sources none of whose sub-points reached a destination), masked.
+pub fn apply_touch_sum(method: Method, index: &[i64], values: &[f64], valid: &[bool],
+                       out: &mut [f64], out_valid: &mut [bool]) -> Result<[f64; 4], RegridError> {
+    if !matches!(method, Method::CellSum | Method::CellSumSplit { .. }) {
+        return Err(RegridError::InvalidOptions("apply_touch_sum requires a cell-sum method; an observation plan has a different index direction".into()));
+    }
+    let n = split_count(method)?;
+    let parts = n * n;
+    if valid.len() != values.len() || out.len() != out_valid.len()
+        || values.len().checked_mul(parts) != Some(index.len()) {
+        return Err(RegridError::ShapeMismatch("cell-sum buffers do not match source/sub-point/destination counts; refusing out-of-bounds assignment".into()));
+    }
+    out.fill(0.0);
+    out_valid.fill(true);
+    let mut receipt = [0.0; 4];
+    let mut touched: Vec<usize> = Vec::with_capacity(parts);
+    for source in 0..values.len() {
+        let value = values[source];
+        if value.is_finite() {
+            receipt[0] += value;
+        }
+        let usable = valid[source] && value.is_finite();
+        if !usable && value.is_finite() {
+            receipt[3] += value;
+        }
+        touched.clear();
+        for sub in 0..parts {
+            let target = index[source * parts + sub];
+            if target < -1 || target >= out.len() as i64 {
+                return Err(RegridError::ShapeMismatch("cell-sum destination index is outside the grid; refusing out-of-bounds assignment".into()));
+            }
+            if target >= 0 && !touched.contains(&(target as usize)) {
+                touched.push(target as usize);
+            }
+        }
+        if touched.is_empty() {
+            if usable {
+                receipt[2] += value;
+            }
+            continue;
+        }
+        // Destinations in first-touch (row-major sub-point) order: the sum
+        // into each destination is still ascending source order, serial.
+        for &target in &touched {
+            if usable {
+                out[target] += value;
+            } else {
+                out_valid[target] = false;
+            }
+        }
+    }
+    for value in out.iter() {
+        receipt[1] += *value;
+    }
+    Ok(receipt)
 }
 
 /// Compute the remap once, for reuse across every arm of a case.
@@ -93,6 +245,14 @@ pub fn build_plan(
             "the destination latitude/longitude arrays do not fill the \
              destination shape",
         )));
+    }
+    if matches!(method, Method::CellSum | Method::CellSumSplit { .. }) {
+        for (lat, lon) in source_latitude.iter().zip(source_longitude)
+            .chain(destination_latitude.iter().zip(destination_longitude)) {
+            if !lat.is_finite() || lat.abs() > 90.0 || !lon.is_finite() {
+                return Err(RegridError::InvalidGrid("cell-sum coordinates must be finite with latitude in [-90,90]; invalid geometry would assign emission mass to wrong cells".into()));
+            }
+        }
     }
     let source_points = unit_vectors(source_latitude, source_longitude)?;
     let destination_points = unit_vectors(destination_latitude, destination_longitude)?;
@@ -132,20 +292,44 @@ pub fn build_plan(
                 max_used_distance_m,
             })
         }
-        Method::CellAverage => {
+        Method::CellAverage | Method::CellSum | Method::CellSumSplit { .. } => {
+            let n = split_count(method)?;
+            let spacing = if matches!(method, Method::CellSumSplit { .. }) {
+                Some(regular_spacing(source_latitude, source_longitude, source_shape)?)
+            } else { None };
             let destination_count = destination_points.len();
             let tree = KdTree::build(destination_points);
-            let mut source_index = vec![-1i64; source_points.len()];
+            let index_count = source_points.len().checked_mul(n * n).ok_or_else(||
+                RegridError::InvalidOptions("cell-sum split plan size overflows; cannot allocate destination indices".into()))?;
+            if matches!(method, Method::CellSum | Method::CellSumSplit { .. })
+                && index_count > MAX_SUM_INDEX_BYTES / 8 {
+                return Err(RegridError::InvalidOptions("cell-sum destination indices exceed 4 GiB per buffer; caller and Rust copies would exhaust the supported host-memory budget".into()));
+            }
+            let mut source_index = vec![-1i64; index_count];
             let mut reachable = vec![false; destination_count];
             let mut largest_squared = f64::NEG_INFINITY;
-            for (slot, query) in source_points.iter().enumerate() {
-                if let Some(found) = tree.nearest(*query, bound_squared) {
-                    source_index[slot] = found.index as i64;
+            for (source, centre) in source_points.iter().enumerate() {
+              // Arc displacement cannot exceed the latitude plus longitude
+              // displacement. Reject a whole far cell before partitioning it.
+              if let Some((dy, dx)) = spacing {
+                  let radius = crate::geometry::EARTH_RADIUS_M * (dy.abs()+dx.abs()).to_radians()/2.0;
+                  let expanded = chord_from_arc((max_distance_m+radius).min(std::f64::consts::PI*crate::geometry::EARTH_RADIUS_M))?;
+                  if tree.nearest(*centre, expanded*expanded).is_none() { continue; }
+              }
+              for sub in 0..n*n {
+                let query = if let Some((dy, dx)) = spacing {
+                    let lat = source_latitude[source] + ((sub / n) as f64 + 0.5 - n as f64 / 2.0) * dy / n as f64;
+                    let lon = source_longitude[source] + ((sub % n) as f64 + 0.5 - n as f64 / 2.0) * dx / n as f64;
+                    unit_vectors(&[lat], &[lon])?[0]
+                } else { *centre };
+                if let Some(found) = tree.nearest(query, bound_squared) {
+                    source_index[source*n*n + sub] = found.index as i64;
                     reachable[found.index] = true;
                     if found.distance_squared > largest_squared {
                         largest_squared = found.distance_squared;
                     }
                 }
+              }
             }
             let max_used_distance_m = if largest_squared.is_finite() {
                 arc_from_chord(largest_squared.sqrt())
@@ -229,6 +413,9 @@ pub fn apply_plan(
             }
             Ok(())
         }
+        Method::CellSum | Method::CellSumSplit { .. } => {
+            Err(RegridError::InvalidOptions("cell-sum callers must use apply_sum and retain its receipt; apply_plan cannot report unreachable emission mass".into()))
+        }
         Method::CellAverage => {
             if source_index.len() != source_cells {
                 return Err(RegridError::ShapeMismatch(String::from(
@@ -280,6 +467,88 @@ pub fn unreachable_destination_cells(reachable: &[bool]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cell_sum_identity_empty_invalid_and_unreachable_mass() {
+        let (lat, lon) = ramp(2, 2, 30.0, 100.0, 0.03);
+        let plan = build_plan(Method::CellSum, &lat, &lon, (2,2),
+                              &[30.0,30.0], &[100.0,101.0], (1,2), 100.0).unwrap();
+        let mut out = [0.0;2]; let mut valid = [false;2];
+        let receipt = apply_sum(Method::CellSum, &plan.source_index,
+                                &[8.0,4.0,2.0,1.0], &[true;4], &mut out, &mut valid).unwrap();
+        assert_eq!(out, [8.0,0.0]); assert_eq!(valid, [true,true]);
+        assert_eq!(receipt, [15.0,8.0,7.0,0.0]);
+        let receipt = apply_sum(Method::CellSum, &[0,0,1,-1],
+                                &[8.0,4.0,2.0,1.0], &[true,false,true,true], &mut out, &mut valid).unwrap();
+        assert_eq!(out, [8.0,2.0]); assert_eq!(valid, [false,true]);
+        assert_eq!(receipt, [15.0,10.0,1.0,4.0]);
+        let plan = build_plan(Method::CellSum, &lat, &lon, (2,2), &lat, &lon, (2,2), 1.0).unwrap();
+        let mut out = [0.0;4]; let mut valid = [false;4];
+        assert_eq!(apply_sum(Method::CellSum, &plan.source_index, &[1.0,2.0,3.0,4.0], &[true;4], &mut out, &mut valid).unwrap(), [10.0,10.0,0.0,0.0]);
+        assert_eq!(out, [1.0,2.0,3.0,4.0]);
+    }
+
+    #[test]
+    fn cell_sum_split_three_km_onto_750m_and_500m() {
+        let (lat, lon) = ramp(2,2,0.0,100.0,0.027);
+        for n in [4,6] {
+            let step = 0.027/n as f64;
+            let (dlat, dlon) = ramp(2*n,2*n,-0.0135+step/2.0,100.0-0.0135+step/2.0,step);
+            let method = Method::CellSumSplit { n };
+            let plan = build_plan(method,&lat,&lon,(2,2),&dlat,&dlon,(2*n,2*n),20.0).unwrap();
+            let mut out = vec![0.0;4*n*n]; let mut valid = vec![false;out.len()];
+            let receipt = apply_sum(method,&plan.source_index,&[36.0;4],&[true;4],&mut out,&mut valid).unwrap();
+            assert_eq!(receipt,[144.0,144.0,0.0,0.0]);
+            assert!(out.iter().all(|v| *v == 36.0/(n*n) as f64));
+            assert!(valid.iter().all(|v| *v));
+        }
+    }
+
+    #[test]
+    fn touch_sum_gives_each_touched_cell_the_whole_pixel_and_still_adds_pixels() {
+        // One 3 km pixel onto a 2 x 2 fine grid with n = 2: every fine cell
+        // is touched once and sees the pixel's whole power, where the
+        // partitioning sum would give each a quarter.
+        let index = [0i64, 1, 2, 3];
+        let mut out = [0.0; 4];
+        let mut valid = [false; 4];
+        let receipt = apply_touch_sum(Method::CellSumSplit { n: 2 }, &index, &[40.0], &[true],
+                                      &mut out, &mut valid).unwrap();
+        assert_eq!(out, [40.0; 4]);
+        assert_eq!(receipt, [40.0, 160.0, 0.0, 0.0]);
+        // Two pixels whose sub-points share destination 1 add there; a
+        // pixel whose sub-points all miss is unreachable; a pixel touching
+        // one destination twice counts once.
+        let index = [0i64, 1, 1, 1, -1, -1, -1, -1, 1, 2, 3, 3];
+        let mut out = [0.0; 4];
+        let mut valid = [false; 4];
+        let receipt = apply_touch_sum(Method::CellSumSplit { n: 2 }, &index, &[5.0, 7.0, 11.0],
+                                      &[true, true, true], &mut out, &mut valid).unwrap();
+        assert_eq!(out, [5.0, 16.0, 11.0, 11.0]);
+        assert_eq!(receipt, [23.0, 43.0, 7.0, 0.0]);
+        // With n = 1 the touch sum is the partitioning sum.
+        let index = [0i64, 0, 1];
+        let values = [1.5, 2.5, 4.0];
+        let mut a = [0.0; 2];
+        let mut b = [0.0; 2];
+        let mut va = [false; 2];
+        let mut vb = [false; 2];
+        let ra = apply_touch_sum(Method::CellSum, &index, &values, &[true; 3], &mut a, &mut va).unwrap();
+        let rb = apply_sum(Method::CellSum, &index, &values, &[true; 3], &mut b, &mut vb).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(ra, rb);
+        assert_eq!(va, vb);
+    }
+
+    #[test]
+    fn cell_sum_split_refuses_irregular_grid_and_reports_partial_mass() {
+        let (mut lat, lon) = ramp(2,2,30.0,100.0,0.03);
+        lat[3] += 0.001;
+        assert!(build_plan(Method::CellSumSplit { n:2 },&lat,&lon,(2,2),&[30.0],&[100.0],(1,1),100.0).unwrap_err().to_string().contains("irregular source grid"));
+        let mut out = [0.0]; let mut valid = [false];
+        let receipt = apply_sum(Method::CellSumSplit { n:2 },&[0,-1,0,-1],&[8.0],&[true],&mut out,&mut valid).unwrap();
+        assert_eq!(receipt,[8.0,4.0,4.0,0.0]);
+    }
 
     fn ramp(ny: usize, nx: usize, lat0: f64, lon0: f64, step: f64) -> (Vec<f64>, Vec<f64>) {
         let mut lat = Vec::with_capacity(ny * nx);

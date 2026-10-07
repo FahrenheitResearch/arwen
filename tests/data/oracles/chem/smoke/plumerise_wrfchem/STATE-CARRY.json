@@ -1,0 +1,320 @@
+{
+  "seconds": 387.4287428581156,
+  "experiments": {
+    "all": {
+      "w": {
+        "cases": 72,
+        "max_ulp": 1343554297,
+        "words": 756
+      },
+      "t": {
+        "cases": 72,
+        "max_ulp": 1343554297,
+        "words": 756
+      },
+      "qv": {
+        "cases": 72,
+        "max_ulp": 1343554297,
+        "words": 756
+      },
+      "qc": {
+        "cases": 72,
+        "max_ulp": 1343554297,
+        "words": 756
+      },
+      "qh": {
+        "cases": 72,
+        "max_ulp": 1343554297,
+        "words": 756
+      },
+      "qi": {
+        "cases": 72,
+        "max_ulp": 1343554297,
+        "words": 756
+      },
+      "radius": {
+        "cases": 72,
+        "max_ulp": 1343554297,
+        "words": 756
+      },
+      "steps": {
+        "cases": 4,
+        "max_ulp": 1,
+        "words": 6
+      },
+      "ebu": {
+        "cases": 1,
+        "max_ulp": 23967743,
+        "words": 6
+      },
+      "ztopmax": {
+        "cases": 1,
+        "max_ulp": 4915200,
+        "words": 1
+      },
+      "solver_k_max": {
+        "cases": 1,
+        "max_ulp": 1,
+        "words": 1
+      }
+    },
+    "carry": {
+      "w": {
+        "cases": 36,
+        "max_ulp": 1100401984,
+        "words": 1722
+      },
+      "t": {
+        "cases": 36,
+        "max_ulp": 1133947365,
+        "words": 6822
+      },
+      "qv": {
+        "cases": 36,
+        "max_ulp": 1017371167,
+        "words": 6822
+      },
+      "radius": {
+        "cases": 36,
+        "max_ulp": 1152944595,
+        "words": 6822
+      },
+      "qc": {
+        "cases": 6,
+        "max_ulp": 999558235,
+        "words": 690
+      },
+      "qh": {
+        "cases": 6,
+        "max_ulp": 932845948,
+        "words": 588
+      },
+      "qi": {
+        "cases": 6,
+        "max_ulp": 926492575,
+        "words": 495
+      }
+    },
+    "w": {
+      "w": {
+        "cases": 72,
+        "max_ulp": 1343554297,
+        "words": 756
+      }
+    },
+    "t": {
+      "t": {
+        "cases": 72,
+        "max_ulp": 1343554297,
+        "words": 756
+      }
+    },
+    "qv": {
+      "qv": {
+        "cases": 72,
+        "max_ulp": 1343554297,
+        "words": 756
+      }
+    },
+    "qc": {
+      "qc": {
+        "cases": 72,
+        "max_ulp": 1343554297,
+        "words": 756
+      }
+    },
+    "qh": {
+      "qh": {
+        "cases": 72,
+        "max_ulp": 1343554297,
+        "words": 756
+      }
+    },
+    "qi": {
+      "qi": {
+        "cases": 72,
+        "max_ulp": 1343554297,
+        "words": 756
+      }
+    },
+    "sc": {},
+    "vth": {},
+    "vti": {},
+    "rho": {},
+    "txs": {},
+    "est": {},
+    "qsat": {},
+    "qpas": {},
+    "qtotal": {},
+    "wc": {},
+    "wt": {},
+    "tt": {},
+    "qvt": {},
+    "qct": {},
+    "qht": {},
+    "qit": {},
+    "sct": {},
+    "vctr1": {},
+    "vctr2": {},
+    "vt3dc": {},
+    "vt3df": {},
+    "vt3dk": {},
+    "vt3dg": {},
+    "scr1": {},
+    "pke": {},
+    "the": {},
+    "thve": {},
+    "thee": {},
+    "pe": {},
+    "te": {},
+    "qvenv": {},
+    "rhe": {},
+    "dne": {},
+    "sce": {},
+    "ucon": {},
+    "vcon": {},
+    "wcon": {},
+    "thtcon": {},
+    "rvcon": {},
+    "picon": {},
+    "tmpcon": {},
+    "dncon": {},
+    "prcon": {},
+    "zcon": {},
+    "zzcon": {},
+    "scon": {},
+    "dqsdz": {},
+    "visc": {},
+    "viscosity": {},
+    "tstpf": {},
+    "n": {},
+    "nm1": {},
+    "l": {},
+    "advw": {},
+    "advt": {},
+    "advv": {},
+    "advc": {},
+    "advh": {},
+    "advi": {},
+    "cvh": {},
+    "cvi": {
+      "steps": {
+        "cases": 4,
+        "max_ulp": 1,
+        "words": 6
+      },
+      "ebu": {
+        "cases": 1,
+        "max_ulp": 23967743,
+        "words": 6
+      },
+      "ztopmax": {
+        "cases": 1,
+        "max_ulp": 4915200,
+        "words": 1
+      },
+      "solver_k_max": {
+        "cases": 1,
+        "max_ulp": 1,
+        "words": 1
+      }
+    },
+    "adiabat": {},
+    "wbar": {},
+    "alast": {},
+    "vhrel": {},
+    "virel": {},
+    "zbase": {},
+    "ztop": {},
+    "lbase": {},
+    "area": {},
+    "rsurf": {},
+    "alpha": {},
+    "radius": {
+      "radius": {
+        "cases": 72,
+        "max_ulp": 1343554297,
+        "words": 756
+      }
+    },
+    "heating": {},
+    "fmoist": {},
+    "bload": {},
+    "dt": {},
+    "time": {},
+    "tdur": {},
+    "mintime": {},
+    "mdur": {},
+    "maxtime": {},
+    "w_vmd": {},
+    "vmd": {},
+    "upe": {},
+    "vpe": {},
+    "vel_e": {},
+    "vel_p": {},
+    "rad_p": {},
+    "vel_t": {},
+    "rad_t": {},
+    "ztop_": {},
+    "cvi_1": {
+      "steps": {
+        "cases": 4,
+        "max_ulp": 1,
+        "words": 6
+      },
+      "ebu": {
+        "cases": 1,
+        "max_ulp": 23967743,
+        "words": 6
+      },
+      "ztopmax": {
+        "cases": 1,
+        "max_ulp": 4915200,
+        "words": 1
+      },
+      "solver_k_max": {
+        "cases": 1,
+        "max_ulp": 1,
+        "words": 1
+      }
+    },
+    "cvi_tail": {},
+    "carry_reverse": {
+      "t": {
+        "cases": 72,
+        "max_ulp": 1133893686,
+        "words": 7848
+      },
+      "qv": {
+        "cases": 72,
+        "max_ulp": 1017371167,
+        "words": 6987
+      },
+      "radius": {
+        "cases": 72,
+        "max_ulp": 1152348240,
+        "words": 7848
+      },
+      "w": {
+        "cases": 36,
+        "max_ulp": 2154999685,
+        "words": 2475
+      },
+      "qc": {
+        "cases": 18,
+        "max_ulp": 999558235,
+        "words": 1587
+      },
+      "qh": {
+        "cases": 18,
+        "max_ulp": 932845948,
+        "words": 1356
+      },
+      "qi": {
+        "cases": 12,
+        "max_ulp": 926492575,
+        "words": 1023
+      }
+    }
+  }
+}

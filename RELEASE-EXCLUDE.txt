@@ -37,6 +37,16 @@ MP28_HANDOFF.md
 # "ftz" would otherwise put nine thousand hash lines into the FTZ claim census.
 tools/noah_mosaic_wrf471_oracle/receipts/*
 
+# The SFIRE oracle and coupled-ideal run receipts (lane/283-sfire, ported on
+# lane/ec-sfire): GPU replay censuses and source manifests recorded at the
+# source names of their day, development evidence behind the fire tools'
+# READMEs.  The harness sources and fixtures ship; these do not.
+tools/sfire_wrf471_oracle/receipts/**
+tools/sfire_coupled_ideal/moisture_driver/receipts/**
+tools/sfire_coupled_ideal/rhs_ph_open/receipts/**
+tools/sfire_coupled_ideal/initializer_atmos/receipts/**
+tools/sfire_coupled_ideal/geographic_units/receipts/**
+
 # The project's binding agent instructions.  Tracked so every worktree and
 # agent reads one law file, but it is a development-process document -- it
 # names this machine's Downloads directory and program ledger -- and means
@@ -227,6 +237,25 @@ configs/superoutbreak_20110427_smoke.namelist.wps
 # pyproject packages configs/ recursively.  It is also case-named, which
 # nothing in configs/ should be.
 configs/real74_morrison_d03_pressure_fix_1h.toml
+
+# The recent-convection DA deck's per-machine authorings.  tools.da_recent_case
+# writes every plan path absolute by design (the finalizer resolves the
+# authority directory strictly, and prepare_argv names the authoring
+# interpreter), and the authority receipt records its config paths the same
+# way, so each case-plan.json and authority-receipt.json here names the
+# author's Windows profile, and the two Linux pricing receipts name a node
+# scratch directory.  The deck cannot run off its author's disk: a reader
+# re-authors the case on the execution box, as the deck README says, which
+# writes fresh local copies of all three.  The observation case, model object
+# requests, configs and README beside them carry no machine path and ship.
+configs/da_rerun_286/recent/active-241/case-plan.json
+configs/da_rerun_286/recent/active-241/authority/authority-receipt.json
+configs/da_rerun_286/recent/large-601-center32p2/case-plan.json
+configs/da_rerun_286/recent/large-601-center32p2/authority/authority-receipt.json
+configs/da_rerun_286/recent/requested-601-center31/case-plan.json
+configs/da_rerun_286/recent/requested-601-center31/authority/authority-receipt.json
+configs/da_rerun_286/recent/native-linux-pricing.json
+configs/da_rerun_286/recent/native-linux-pricing-241.json
 # DA-campaign drivers and a node runbook from the 2.6.1 fold wave: each
 # bakes a per-user scratch root or a rented node's home path -- exactly
 # the machine-specific runbook class this manifest exists for.  Their
@@ -281,3 +310,21 @@ tools/albsol_score/receipts/full-build-first.log
 tools/albsol_score/receipts/tests.log
 tools/albsol_score/receipts/full-dependencies.json
 tools/albsol_score/receipts/source-packet.json
+
+# The nowcast radar-heating evaluation's box drivers.  They bootstrap and run
+# one rented box: root-owned /work/nh and /opt/gpu-mutex paths, a dead-man
+# timer that ends the instance, and a card mutex stand-in.  They are bench
+# machinery for that box, not anything a reader runs.  The Python beside them
+# (tables, overlays, scoring, sheets, the decision) is NOT excluded.
+# Literal paths only: tools/release_exclusions.py reads a literal path or a
+# trailing /** subtree, so a *.sh glob here matched nothing and shipped them.
+tools/heat_eval/bootstrap.sh
+tools/heat_eval/box_chain.sh
+tools/heat_eval/case_steps.sh
+tools/heat_eval/deadman.sh
+tools/heat_eval/fetch_case.sh
+tools/heat_eval/gpu_mutex_run.sh
+tools/heat_eval/lib.sh
+tools/heat_eval/make_kit.sh
+tools/heat_eval/run_arm.sh
+tools/heat_eval/dryrun/**

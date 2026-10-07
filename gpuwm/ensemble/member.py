@@ -235,7 +235,8 @@ def run_member(*, base_config, member_dir, index: int, seed: int,
             "here would be recorded and then discarded")
     else:
         report = dict(hook(state, seed, dict(perturbation_options or {}),
-                           grid_spacing_km=spacing_km) or {})
+                           grid_spacing_km=spacing_km,
+                           hypsometric_opt=dc.run.hypsometric_opt) or {})
         perturbed_sha = live_state_sha256(state)
         changed = perturbed_sha != prepared_sha
         # The caller post-condition, honoured exactly when there is

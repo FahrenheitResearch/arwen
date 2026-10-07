@@ -10,7 +10,7 @@ use std::ops::{Add, Mul, Sub};
 pub const ABI_MARKER: &str = "rw_mpas_hostprep --protocol hex-hostprep-v1";
 
 #[derive(Clone, Copy)]
-enum Word {
+pub(crate) enum Word {
     F32(f32),
     F64(f64),
 }
@@ -67,7 +67,7 @@ impl Numbers {
     }
 }
 
-trait Real:
+pub(crate) trait Real:
     Copy + Send + Sync + Add<Output = Self> + Sub<Output = Self> + Mul<Output = Self> + PartialOrd
 {
     const WIDTH: usize;
@@ -114,13 +114,13 @@ macro_rules! real {
 real!(f32, 4, F32);
 real!(f64, 8, F64);
 
-fn product(values: &[usize]) -> Result<usize, String> {
+pub(crate) fn product(values: &[usize]) -> Result<usize, String> {
     values
         .iter()
         .try_fold(1usize, |size, &value| size.checked_mul(value))
         .ok_or_else(|| "host preparation array size overflow".into())
 }
-fn filled<T: Clone>(count: usize, value: T) -> Result<Vec<T>, String> {
+pub(crate) fn filled<T: Clone>(count: usize, value: T) -> Result<Vec<T>, String> {
     let mut output = Vec::new();
     output
         .try_reserve_exact(count)
@@ -128,10 +128,10 @@ fn filled<T: Clone>(count: usize, value: T) -> Result<Vec<T>, String> {
     output.resize(count, value);
     Ok(output)
 }
-fn zeros<T: Real>(count: usize) -> Result<Vec<T>, String> {
+pub(crate) fn zeros<T: Real>(count: usize) -> Result<Vec<T>, String> {
     filled(count, T::zero())
 }
-fn read_values<T: Real>(input: &mut impl Read, count: usize) -> Result<Vec<T>, String> {
+pub(crate) fn read_values<T: Real>(input: &mut impl Read, count: usize) -> Result<Vec<T>, String> {
     let mut values = Vec::new();
     values
         .try_reserve_exact(count)
@@ -147,7 +147,7 @@ fn read_values<T: Real>(input: &mut impl Read, count: usize) -> Result<Vec<T>, S
     }
     Ok(values)
 }
-fn read_indices(input: &mut impl Read, count: usize) -> Result<Vec<i64>, String> {
+pub(crate) fn read_indices(input: &mut impl Read, count: usize) -> Result<Vec<i64>, String> {
     let mut values = Vec::new();
     values
         .try_reserve_exact(count)
@@ -167,7 +167,7 @@ fn read_indices(input: &mut impl Read, count: usize) -> Result<Vec<i64>, String>
     }
     Ok(values)
 }
-fn write_values<T: Real>(output: &mut impl Write, values: &[T]) -> Result<(), String> {
+pub(crate) fn write_values<T: Real>(output: &mut impl Write, values: &[T]) -> Result<(), String> {
     let mut block = Vec::with_capacity(65536);
     for values in values.chunks(65536 / T::WIDTH) {
         block.clear();
@@ -180,7 +180,7 @@ fn write_values<T: Real>(output: &mut impl Write, values: &[T]) -> Result<(), St
     }
     Ok(())
 }
-fn write_indices(output: &mut impl Write, values: &[i64]) -> Result<(), String> {
+pub(crate) fn write_indices(output: &mut impl Write, values: &[i64]) -> Result<(), String> {
     for &value in values {
         output
             .write_all(&value.to_le_bytes())
@@ -411,7 +411,7 @@ fn topology(
     serde_json::to_writer(output, &errors).map_err(|error| error.to_string())
 }
 
-fn process<T: Real>(
+fn process<T: crate::hosttables::Tab>(
     input: &mut impl Read,
     output: &mut impl Write,
     nc: usize,
@@ -427,6 +427,16 @@ fn process<T: Real>(
         .any(|&count| count < 0 || count as u64 > me as u64)
     {
         return Err("n_edges_on_cell entries must be in [0, maxEdges]".into());
+    }
+    match mode {
+        12 => return crate::hosttables::vertical_velocity_damping::<T>(input, output, nc, nl),
+        14 => return crate::hosttables::pow_elementwise::<T>(input, output, nc),
+        10 => {
+            return crate::hosttables::deformation_weights::<T>(input, output, nc, ne, me, &counts, &eoc)
+        }
+        11 => return crate::hosttables::advection_coefficients::<T>(input, output, nc, ne, me, &counts),
+        13 => return crate::hosttables::host_mesh_laws(input, output, nc, ne, me, &counts, &eoc),
+        _ => {}
     }
     if mode != 0 {
         for cell in 0..nc {

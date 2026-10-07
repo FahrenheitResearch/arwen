@@ -172,6 +172,16 @@ _SHARED_CODES = frozenset({
     # override was reported as a disagreement it is not.
     "noah-mosaic-pairing",
     "parameter-value",
+    # The SPP consumer law, shared the same way: plan review calls
+    # gpuwm.config's validate_spp_config, the function validate_run_config
+    # calls, on the resolved settings.  Before it did, 340 reachable plans
+    # with spp_conv=1 or spp_pbl=1 and no consuming scheme were offered as
+    # launchable and refused at the run door.
+    "spp-consumer",
+    # The scalar_pblmix consumer pair and the gsd_41/spp_pbl exclusion,
+    # shared by the same construction (gpuwm.config's
+    # validate_scalar_pblmix_consumer and validate_mynn_generation_spp).
+    "pbl-coupling",
     "unimplemented-selector",
     "unknown-selector-combination",
 })
@@ -1295,8 +1305,7 @@ def _observed_and_absences(consumer: str):
     if consumer == "obsop.CLEAR_AIR_FLOOR_DBZ":
         from gpuwm.da import obsop
         return "microphysics", obsop.CLEAR_AIR_FLOOR_DBZ, {
-            0: "no microphysics, no operator",
-            50: "not one number (CLEAR_AIR_FLOOR_IS_NOT_ONE_NUMBER)"}
+            0: "no microphysics, no operator"}
     if consumer == "refl.REFL_10CM_INPUT_SPECIES + SCHEME_NATIVE_REFL_10CM":
         from gpuwm.core import refl
         return "microphysics", (set(refl.REFL_10CM_INPUT_SPECIES)

@@ -83,6 +83,18 @@ The demo's headline is FSS 0.727-0.766 for the free forecast against
 +90 minutes.  Here is everything that number is, stated precisely enough
 to be checked:
 
+**Scorer change, 2026-10-05.**  Three of the flatterers below are fixed in
+the scorers rather than only described.  Every FSS from
+`tools/da_sweep_score.py`, the gallery (`tools/da_nowcast_render.py`) and
+the A/B, external-baseline, background and ensemble-size scorers is now
+taken over the columns a radar measured (echo or measured below-floor
+gates), through the Rust masked FSS in `gpuwm/verify/obs/fss.py`;
+unobserved columns no longer count as observed no-echo.  The headline is
+the per-member mean, with the ensemble-mean field's score beside it under
+its own name, and 40 dBZ is scored beside 30.  The 0.727-0.766 above are
+the earlier unmasked ensemble-mean numbers; receipts keep that quantity as
+`fss30_fcst_unmasked`.
+
 | property | value | where |
 |---|---|---|
 | formulation | Roberts & Lean (2008) fractional-coverage FSS, `1 - sum(Pf-Po)^2 / sum(Pf^2+Po^2)` | `gpuwm/verify/field_metrics.py:146` |

@@ -325,7 +325,7 @@ def launch(path, *, backend=None, cycle_runner=None, forecast_runner=None, roste
                                             progress=analysis_progress):
                 cycles = cycle_runner(cfg, root / 'cycles', n_cycles=plan['selected']['cycles'],
                     cycle_seconds=plan['selected']['cadence_seconds'], assimilate=backend.assimilate,
-                    runner=runner, positivity='clip', restart_from_analysis=True,
+                    runner=runner, positivity='mean-preserving', restart_from_analysis=True,
                     moment_policy='full-moment', moment_repair=True, mp_physics=backend.mp_physics,
                     on_event=event,
                     **({'analysis_context': backend.analysis_context}
@@ -474,8 +474,13 @@ class PreparedBackend:
                 inputs.experiment_config, expected_sha256=inputs.file_sha256['experiment_config']))
         self.state = restored.initial_result.state
         if self.setup is None:
-            names = ('thb', 'phb', 'dphb_resid', 'alb', 'rdnw', 'c1h', 'c2h', 'c3h', 'c4h',
-                     'c3f', 'c4f', 'dc3f', 'dc4f', 'mub2d', 'p_top', 'dnw')
+            # c1f, c2f and rdn: the full-level loading coefficients the
+            # static covariance's member perturbation integrates its
+            # hydrostatic php with (gpuwm.da.perturb mass_balance, default
+            # since 2026-10-06); without them it refuses by name.
+            names = ('thb', 'phb', 'dphb_resid', 'alb', 'rdnw', 'rdn', 'c1h', 'c2h',
+                     'c1f', 'c2f', 'c3h', 'c4h', 'c3f', 'c4f', 'dc3f', 'dc4f', 'mub2d',
+                     'p_top', 'dnw')
             self.setup = {name: self._host(getattr(self.state, name)) for name in names}
             self.setup['static_covariance'] = self.plan['selected']['members'] == 1
         prepared = runtime.PreparedRealCase(cfg=exp.root.run, grid=inputs.grid,
@@ -734,7 +739,7 @@ class PreparedBackend:
             fall_speed='reflectivity' if reflect else 'none', cwp=obs['cwp'] is not None,
             velocity_thinning_cells=max(1, int(np.ceil(6000. / self.grid.dx_m))),
             reflectivity_thinning_cells=max(1, int(np.ceil(6000. / self.grid.dx_m))),
-            mp_physics=self.mp_physics, solve_device='auto', positivity_policy='clip',
+            mp_physics=self.mp_physics, solve_device='auto', positivity_policy='mean-preserving',
             memory_budget_mib=self.plan['memory']['solve_memory_mib'])
         reflectivity_provider = scheme_reflectivity_provider(self.exp.root.run, base_theta=self.setup['thb']) if reflect else None
         cwp_provider = checkpoint_cwp_provider(self.exp.root.run, **{k: self.setup[k] for k in ('c1h', 'c2h', 'dnw', 'mub2d')}) if obs['cwp'] is not None else None
@@ -948,7 +953,7 @@ class ContinuousBackend(PreparedBackend):
         with analysis_execution_options(scratch_budget=scratch_budget, progress=progress):
             result = run_cycles(self.cfg, directory / 'cycles', n_cycles=1, first_cycle=index,
                 initial_restarts=restarts, input_binding=binding, cycle_seconds=self.plan['selected']['cadence_seconds'],
-                assimilate=self.assimilate, runner=self.member_runner, positivity='clip', restart_from_analysis=True,
+                assimilate=self.assimilate, runner=self.member_runner, positivity='mean-preserving', restart_from_analysis=True,
                 moment_policy='full-moment', moment_repair=True, mp_physics=self.mp_physics,
                 analysis_context=self.analysis_context)
         if result.status != 'COMPLETE':

@@ -175,10 +175,14 @@ def _prep(sw, kw):
         night = cp.empty(ncol, cp.uint8)
         mod.get_function("rp_day")(((ncol+127)//128,), (128,),
                                     (ncol, surf["xcoszen"], night))
-        if bool(night.any()):
-            raise ValueError("night column (coszen <= 0) in batch: swrad_prep_batch "
-                             "takes pre-gathered day columns only; route night "
-                             "columns through swrad_night_outputs")
+        def _night_verdict(any_night):
+            if bool(any_night):
+                raise ValueError("night column (coszen <= 0) in batch: swrad_prep_batch "
+                                 "takes pre-gathered day columns only; route night "
+                                 "columns through swrad_night_outputs")
+        # Read now, or once per radiation call (deferred_device_checks).
+        from gpuwm.core.deferred_device_checks import check
+        check(night.any(), _night_verdict)
     inflg, iceflg = 2, 3
     if k["icloud"] != 0:
         if hc: inflg = 3

@@ -2414,11 +2414,18 @@ def supervise_experiment(
                 health_debug=health_debug,
                 preprocess_backend=preprocess_backend, members=members,
                 keep_member_files=keep_member_files)
+            # The worker dies with this supervisor (gpuwm.parent_death):
+            # a `gpuwm run` killed by pid must not leave its worker on the
+            # card as an orphan, as a killed `gpuwm go` left its forecast
+            # holding 63.9 GB for 43 minutes on box B (2026-10-07).
+            from gpuwm.parent_death import child_environment, popen_options
+
+            env.update(child_environment())
             with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
                 process = subprocess.Popen(
                     command, cwd=Path(__file__).resolve().parents[1], env=env,
                     stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
-                    close_fds=True)
+                    close_fds=True, **popen_options())
             starting = Heartbeat(
                 HEARTBEAT_SCHEMA, run_id, digest, process.pid, started_at,
                 utc_now(), "preparing:launch", 0.0, 0, None,

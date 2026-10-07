@@ -165,7 +165,7 @@ def test_every_front_door_declares_a_distinct_name_env_and_abi():
     # (gpuwm.obs.goes_pack) and no resolver at all, so a wheel user could
     # parse a pack and had no packaged way to obtain one; opera and odim
     # joined as the European composite and polar-volume routes.
-    assert len(doors) == 6, sorted(frontdoor.FRONT_DOORS)
+    assert len(doors) == 7, sorted(frontdoor.FRONT_DOORS)
     for attribute in ("name", "env_var", "abi_marker"):
         values = [getattr(door, attribute) for door in doors]
         assert len(set(values)) == len(values), f"{attribute} is not distinct"

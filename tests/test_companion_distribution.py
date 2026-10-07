@@ -60,6 +60,18 @@ MOVED_MEMBER_SHA256 = {
         "a1bda803cdb53aedce8a2970c04c355fad19e3744398e1c9b13a876f09730547",
     "thompson/tables/CCN_ACTIVATE.BIN":
         "f2b8d3916560f9046f89f8ac5f32c5292a1800498fd75301e422f147c82a3dbd",
+    # Moved in 2.8.7 as single files (their directories keep other members
+    # in the gpuwm wheel); the digests are the ones they had at e9d54cc17.
+    "case-catalog/historical.zip":
+        "97c404da2e858eb9d4e3c5c521d8a1352eeaa93d34fafcd6e00a83676520f2b5",
+    "spp/native-wrf461.zip":
+        "9bc14a88c46b54547a6a19000830a3f4028fbce4b755f5bfb2648e853e4d0f4b",
+    # Moved later in 2.8.7 as a directory, beside the Linux bridges' symbol
+    # strip; the digests are the ones they had at e81291059.
+    "chem/optics/table-sha256sums.txt":
+        "d39e1c78ddd3465f0bf3a5e4b329e626be508ac21847ca94fa3a5a11f50486af",
+    "chem/optics/extplw.bin":
+        "239b29e9ffb68549a4cdab88db258ef288d8bd5a13f95397c94dc49a26d25e28",
 }
 
 
@@ -112,9 +124,12 @@ def test_every_moved_tree_is_covered_by_a_recorded_hash() -> None:
     the state the split was supposed to make impossible.
     """
 
-    covered = {relative.rsplit("/", 1)[0]
-               for relative in MOVED_MEMBER_SHA256}
-    missing = sorted(set(data_assets.COMPANION_TREES) - covered)
+    # A moved entry is covered when a recorded member is the entry itself
+    # (a single moved file) or lies inside it (a moved directory).
+    missing = sorted(
+        entry for entry in data_assets.COMPANION_TREES
+        if not any(relative == entry or relative.startswith(entry + "/")
+                   for relative in MOVED_MEMBER_SHA256))
     assert not missing, (
         f"gpuwm.data_assets.COMPANION_TREES moved {missing} into the "
         "companion with no recorded member hash; add one file from each to "

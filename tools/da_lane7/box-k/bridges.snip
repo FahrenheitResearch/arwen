@@ -1,0 +1,11 @@
+# The natives env.sh names are /work/da-e/engine's (55e9206b8); this tree's Rust half moved with the lane 0 merge,
+# so each bridge this tree has built replaces the shared one (the shared one is kept where this tree has none).
+for v in GPUWM_CPU_PREPROCESS_BRIDGE GPUWM_DEALIAS_REGION_BRIDGE GPUWM_GDT101_REMAP GPUWM_GFS_GRIB2_BRIDGE \
+         GPUWM_GRIB1_BRIDGE GPUWM_GRIB2_DUMP GPUWM_GRIB2_INVENTORY GPUWM_HRRR_DECODER GPUWM_MAPPED_ENGINE_BIN \
+         GPUWM_NCWRITE_BRIDGE GPUWM_OBSSCORE_BRIDGE GPUWM_RW_ASOS GPUWM_RW_MRMS GPUWM_RW_NETCDF GPUWM_RW_NEXRAD \
+         GPUWM_STATIC_BRIDGE; do
+  cur=${!v:-}
+  case "$cur" in /work/da-e/engine/*) cand="$DA_ENGINE/${cur#/work/da-e/engine/}"; [ -e "$cand" ] && export "$v=$cand";; esac
+done
+export GPUWM_BRIDGE_SOURCE_REV=$(cat $DA_ENGINE/.engine-export-sha)
+env | grep "^GPUWM_.*=/work/" | sort > "$OUT/bridges.txt"

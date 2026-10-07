@@ -1,0 +1,82 @@
+{
+  "schema": "gpuwm.chem.synthetic-cams-fixture.v1",
+  "SYNTHETIC": "values are smooth plausible profiles, not a forecast",
+  "encoder": "ecCodes 2.48.0",
+  "area_nwse": [
+    31.2,
+    -96.0,
+    30.4,
+    -95.2
+  ],
+  "grid_deg": 0.4,
+  "cycle": "2025-07-30T00:00:00",
+  "leads_h": [
+    0,
+    3
+  ],
+  "levels": [
+    1,
+    137,
+    137
+  ],
+  "packing": "simple",
+  "encoded_as": {
+    "ozone": {
+      "paramId": 210203,
+      "discipline": 0,
+      "category": 20,
+      "parameter": 2,
+      "pdt": 40,
+      "constituent_type": 0,
+      "level_type": 105
+    },
+    "nitrogen_dioxide": {
+      "paramId": 210121,
+      "discipline": 0,
+      "category": 20,
+      "parameter": 2,
+      "pdt": 40,
+      "constituent_type": 5,
+      "level_type": 105
+    },
+    "carbon_monoxide": {
+      "paramId": 210123,
+      "discipline": 0,
+      "category": 20,
+      "parameter": 2,
+      "pdt": 40,
+      "constituent_type": 4,
+      "level_type": 105
+    },
+    "sulphur_dioxide": {
+      "paramId": 210122,
+      "discipline": 0,
+      "category": 20,
+      "parameter": 2,
+      "pdt": 40,
+      "constituent_type": 8,
+      "level_type": 105
+    },
+    "specific_humidity": {
+      "paramId": 133,
+      "discipline": 0,
+      "category": 1,
+      "parameter": 0,
+      "pdt": 0,
+      "constituent_type": null,
+      "level_type": 105
+    },
+    "surface_pressure": {
+      "paramId": 134,
+      "discipline": 0,
+      "category": 3,
+      "parameter": 0,
+      "pdt": 0,
+      "level_type": 1
+    }
+  },
+  "files": {
+    "SYNTHETIC-cams-ml-20250730T00.grib2": "162a9eeb0dab09ef4383244a6c7c3658bc62185fc50ee31cdf2edb5e95c2f5f2",
+    "SYNTHETIC-cams-sl-20250730T00.grib2": "656e75f73f61c862a8c24ea7d1a02aa6210e3e382cc1e65893fcc720d6911477"
+  }
+}

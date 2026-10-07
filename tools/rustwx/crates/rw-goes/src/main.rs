@@ -48,6 +48,7 @@
 //! rw_goes verify    --pack FILE.goespack
 //! ```
 
+mod aod;
 mod cloudtop;
 mod forward;
 mod pack;
@@ -121,7 +122,7 @@ pub const CLOUDTOP_VERIFY_SCHEMA: &str = "gpuwm-obs.goes-cloudtop-verify.v1";
 /// _it_pins` below binds the literal to the three constants instead, so
 /// a schema bump that forgets this line fails the crate's own tests.
 const ABI_MARKER: &str = "gpuwm-obs.goes-fetch.v1\tgpuwm-obs.goes-cwp.v2\t\
-gpuwm-obs.goes-cloudtop.v2\tgpuwm-obs.goes-bt.v1\tgpuwm-da.abi-forward.v1";
+gpuwm-obs.goes-cloudtop.v2\tgpuwm-obs.goes-bt.v1\tgpuwm-da.abi-forward.v1\tgpuwm-obs.goes-aod.v1";
 
 /// The ABI scan mode the operational feed has run since 2019.  A flip to
 /// the contingency mode is a flag, not a rebuild.
@@ -134,7 +135,7 @@ const CWP_FORMULA: &str = "CWP[g m^-2] = (2/3) * tau * r_e[um] * rho[g cm^-3]";
 const DEFAULT_CACHE_DIR: &str = ".rw-goes-cache";
 
 const USAGE: &str = "\
-usage: rw_goes <list|fetch|cwp|cloud-top|bt|colocate|quicklook|forward|verify> [OPTIONS]
+usage: rw_goes <list|fetch|cwp|cloud-top|aod|bt|colocate|quicklook|forward|verify> [OPTIONS]
        rw_goes --version | --help | --abi
 
   list       report the ABI L2 cloud granules a (satellite, sector, product
@@ -256,6 +257,10 @@ per-pixel DQF planes (schema v2, 2026-08-06)
   NOT gate and which the CWP observation operator inflates obs error on,
   could not be recovered from a v1 pack at all.  The counts and the mask are
   unchanged and still there; the plane is what they could not answer.
+
+aod options: --aod FILE --out FILE [--window XS,XC,YS,YC]
+  AOD at 550 nm; DQF 0 high retained, 1 medium/2 low/3 no retrieval rejected.
+  list/fetch use --products AOD --sector C or F.
 
 cwp options (planes: cwp, phase, cod, cps, lat, lon, then the _dqf planes)
   --cod FILE            ABI-L2-COD granule (required)
@@ -413,6 +418,7 @@ fn run(args: &[String]) -> Result<String, Box<dyn Error>> {
         "fetch" => cmd_fetch(&options),
         "cwp" => cmd_cwp(&options),
         "cloud-top" => cmd_cloud_top(&options),
+        "aod" => aod::cmd_aod(&options),
         "bt" => cmd_bt(&options.radiance),
         "colocate" => cmd_colocate(&options.radiance),
         "superobs" => cmd_superobs(&options.radiance),
@@ -443,6 +449,7 @@ struct Options {
     out: Option<PathBuf>,
     limit_scans: Option<usize>,
     complete_only: bool,
+    aod: Option<PathBuf>,
     cod: Option<PathBuf>,
     cps: Option<PathBuf>,
     actp: Option<PathBuf>,
@@ -499,6 +506,7 @@ impl Options {
                     options.limit_scans = Some(count)
                 }
                 "--complete-only" => options.complete_only = true,
+                "--aod" => options.aod = Some(PathBuf::from(value()?)),
                 "--cod" => options.cod = Some(PathBuf::from(value()?)),
                 "--cps" => options.cps = Some(PathBuf::from(value()?)),
                 "--actp" => options.actp = Some(PathBuf::from(value()?)),
@@ -2186,6 +2194,7 @@ fn cmd_verify(options: &Options) -> Result<String, Box<dyn Error>> {
     if CLOUDTOP_READABLE_SCHEMAS.contains(&declared.as_str()) {
         return verify_cloudtop_pack(path, &bytes, &declared);
     }
+    if declared == aod::AOD_SCHEMA { return aod::verify(&bytes); }
     if BT_READABLE_SCHEMAS.contains(&declared.as_str()) {
         return verify_bt_pack(path, &bytes);
     }
@@ -2411,14 +2420,14 @@ mod tests {
         // The marker is a literal (no const-format crate in the offline
         // vendor closure), so this is what keeps it accurate: bump a schema
         // without touching the marker and this test is the refusal.
-        for needle in [FETCH_SCHEMA, pack::CWP_SCHEMA, cloudtop::CLOUDTOP_SCHEMA, radiance::BT_SCHEMA, forward::FORWARD_SCHEMA] {
+        for needle in [FETCH_SCHEMA, pack::CWP_SCHEMA, cloudtop::CLOUDTOP_SCHEMA, radiance::BT_SCHEMA, forward::FORWARD_SCHEMA, aod::AOD_SCHEMA] {
             assert!(
                 ABI_MARKER.contains(needle),
                 "--abi does not pin {needle}, so a wrapper written against \
                  it could not tell a drifted binary from a current one"
             );
         }
-        assert_eq!(ABI_MARKER.split('\t').count(), 5);
+        assert_eq!(ABI_MARKER.split('\t').count(), 6);
     }
 
     #[test]

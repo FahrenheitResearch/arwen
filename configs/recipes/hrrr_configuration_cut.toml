@@ -115,6 +115,8 @@ use_rap_aero_icbc = true
 bl_pbl_physics = 5
 bl_mynn_version = "gsd_41"
 sf_sfclay_physics = 5
+# The GSL surface layer the operational fork runs.
+mynn_sfclay_variant = "gsl_wrf39"
 sf_surface_physics = 3
 ruc_irrigation = "wrf_45"
 ruc_soilprop = "wrf_45"
@@ -155,7 +157,11 @@ diff_6th_factor = 0.12
 source = "rap-native"
 cycle = "2026-10-02T21"
 hours = 3
-cadence = 3
+# Hourly boundaries, the route's own default: RAP posts every hour. A 3 h row
+# interpolates the inflow state over 3 h, which thinned the inflow cloud and left
+# the rim stations 0.9 K warm and 110 W/m2 sunnier than HRRR at f02 on a HRRR-lattice
+# crop; hourly boundaries halved that (plains-t2-bias, WOOF-FIX-PROGRAM 2026-10-06).
+cadence = 1
 
 [static]
 source = "hrrr-conus-v4"

@@ -1,0 +1,59 @@
+{
+  "schema": "gpuwm.chem.source.v1",
+  "name": "edgar-v81",
+  "kind": "emission",
+  "route": "edgar-v81-ap-2022-flx",
+  "credential": null,
+  "format": "netcdf",
+  "grid": {
+    "kind": "regular_latlon",
+    "spacing_deg": 0.1,
+    "global": true,
+    "lat_first": -89.95,
+    "lon_first": -179.95,
+    "nlat": 1800,
+    "nlon": 3600,
+    "order": "south_to_north"
+  },
+  "variables": {
+    "bc": {
+      "selector": {
+        "archive": "v8.1_FT2022_AP_BC_2022_TOTALS_flx_nc.zip",
+        "archive_sha256": "0ca68b3c6bae02f7c4f59b412b4ab84f186163d8ab3f8f61578502e12e8ed7f2",
+        "archive_bytes": 15988920,
+        "member": "v8.1_FT2022_AP_BC_2022_TOTALS_flx.nc",
+        "variable": "fluxes"
+      },
+      "units": "kg m-2 s-1"
+    },
+    "oc": {
+      "selector": {
+        "archive": "v8.1_FT2022_AP_OC_2022_TOTALS_flx_nc.zip",
+        "archive_sha256": "8b029f4c4d7d1420a37e14b8ae0ed77a15cdd2793fb49157b4911a00b18ce0be",
+        "archive_bytes": 16032717,
+        "member": "v8.1_FT2022_AP_OC_2022_TOTALS_flx.nc",
+        "variable": "fluxes"
+      },
+      "units": "kg m-2 s-1"
+    },
+    "so2": {
+      "selector": {
+        "archive": "v8.1_FT2022_AP_SO2_2022_TOTALS_flx_nc.zip",
+        "archive_sha256": "a3fe345e243c2fc13fe4ae845bb90b87ad3174449d51daa091c63d8dccfe7328",
+        "archive_bytes": 15950340,
+        "member": "v8.1_FT2022_AP_SO2_2022_TOTALS_flx.nc",
+        "variable": "fluxes"
+      },
+      "units": "kg m-2 s-1"
+    }
+  },
+  "time": {
+    "cadence_s": 31536000,
+    "latency_s": 0,
+    "persistence": "annual_mean_2022"
+  },
+  "remap": "bilinear",
+  "licence": "CC-BY-4.0 (EDGAR copyright notice, (c) European Union 1995-2026, Commission Decision 2011/833/EU)",
+  "attribution": "EDGAR v8.1 air pollutant emissions, European Commission Joint Research Centre (JRC), https://edgar.jrc.ec.europa.eu/dataset_ap81; values converted to WRF emission units and remapped to the model grid by ArWen.",
+  "provenance": "Archives fetched over HTTPS from https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/EDGAR/datasets/v81_FT2022_AP_new/<SPECIES>/TOTALS/flx_nc/ on 2026-09-30, sha256 and size pinned above; each zip holds one NetCDF4 file with float32 fluxes(lat=1800, lon=3600) in kg m-2 s-1 on 0.1 deg cell centres (-89.95..89.95 N, -179.95..179.95 E) and a _readme.html. Annual 2022 totals, no seasonal, weekly or diurnal profile (a declared v1 simplification; the monthly sector files under .../monthly/ are the v2 route). remap bilinear on the flux density is not mass-exact; the conservative route is cell_sum on flux x cell area, named for v2. BC and OC go to the hydrophobic rows only, as WRF's emiss_opt=6 block does (chem/emissions_driver.F:1604-1607)."
+}

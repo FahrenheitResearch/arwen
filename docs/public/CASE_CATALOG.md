@@ -14,8 +14,9 @@ gpuwm case-catalog list --query "El Reno"
 gpuwm case-catalog default --json
 ```
 
-The bundled `gpuwm/data/case-catalog/historical.zip` combines the supplied
-200-case catalog and its worldwide expansion. All 200 earlier case IDs are
+The bundled `historical.zip` (in the `gpuwm-data` companion, which every
+`pip install gpuwm` installs, at `gpuwm_data/data/case-catalog/`) combines the
+supplied 200-case catalog and its worldwide expansion. All 200 earlier case IDs are
 retained, with the newer complete records taking precedence, and 100 cases
 are added. The result contains 120 tornado, 60 convective-wind, 70
 tropical-cyclone and 50 synoptic cases. Source references, planning limitations,

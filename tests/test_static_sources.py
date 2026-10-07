@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -41,6 +42,74 @@ def test_packaged_table_rows_are_complete():
                  "LAKE_DEPTH"):
         assert name in served
     assert row.grid_map["e_we"] == 1800 and row.grid_map["e_sn"] == 1060
+
+
+#: An NCO production-tree URL under a versioned package folder
+#: (``.../nwprod/hrrr.v4.1.21/...``).  NCO deletes the folder when the
+#: package version moves on.
+_NCO_VERSION_FOLDER = re.compile(r"/nwprod/(?:[^/]+/)*[A-Za-z0-9_-]+\.v\d+(?:\.\d+)+/")
+
+
+def test_every_row_has_a_source_outside_an_nco_version_folder():
+    """The breakage: row hrrr-conus-v4 had only NCO's hrrr.v4.1.21 folder
+    (the v4.1.19 one already returned 404), and since 2.8.6 every HRRR go
+    route and native chain stages that row, so a rotated folder would make
+    every HRRR run on a fresh install refuse.  Each row keeps at least one
+    URL that a version bump at the publisher cannot delete."""
+    assert _NCO_VERSION_FOLDER.search(
+        "https://www.nco.ncep.noaa.gov/pmb/codes/nwprod/hrrr.v4.1.21/fix/conus/hrrr_geo_em.d01.nc")
+    for row in es.static_source_rows().values():
+        durable = [url for url in (row.url, *row.mirrors) if not _NCO_VERSION_FOLDER.search(url)]
+        assert durable, f"{row.id}: every source is an NCO version folder: {(row.url, *row.mirrors)}"
+    row = es.static_source_row("hrrr-conus-v4")
+    assert row.mirrors == (
+        "https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.7/"
+        "hrrr-conus-v4-hrrr_geo_em.d01.nc",)
+
+
+def test_fetch_takes_the_release_mirror_when_the_nco_folder_is_gone(tmp_path, monkeypatch):
+    """The packaged row's own URLs, network stubbed: NCO answers 404 (the
+    rotated folder), the fetch walks on to the release mirror, and the
+    mirror's bytes are installed only after they verify against the pin."""
+    from dataclasses import replace
+    from io import BytesIO
+    from urllib.error import HTTPError
+    from gpuwm import fetch_guard
+    data = b"stand-in for the pinned geo_em bytes\n" * 64
+    packaged = es.static_source_row("hrrr-conus-v4")
+    row = replace(packaged, bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+    monkeypatch.setattr(es, "static_source_row", lambda source_id: row)
+    monkeypatch.setenv(fetch_guard.LOCK_ROOT_ENV, str(tmp_path / "locks"))
+    attempted = []
+
+    class Response(BytesIO):
+        status = 200
+        headers = {}
+
+    def open_url(request):
+        attempted.append(request.full_url)
+        if request.full_url == packaged.url:
+            raise HTTPError(request.full_url, 404, "Not Found", {}, None)
+        return Response(data)
+
+    lines = []
+    final = es.fetch_static_source("hrrr-conus-v4", tmp_path / "geog",
+                                    progress=lines.append, urlopen_fn=open_url)
+    assert attempted == [packaged.url, packaged.mirrors[0]]
+    assert final == tmp_path / "geog" / "static_sources" / "hrrr-conus-v4" / "hrrr_geo_em.d01.nc"
+    assert final.read_bytes() == data
+    es.verify_local_file(final, row)
+
+    # Other bytes from the mirror are refused, naming both URLs.
+    final.unlink()
+    attempted.clear()
+    row = replace(row, sha256="0" * 64)
+    from gpuwm import geog_assets
+    with pytest.raises(geog_assets.GeogFetchError, match="could not be fetched from any of its 2 URL"):
+        es.fetch_static_source("hrrr-conus-v4", tmp_path / "geog",
+                               progress=lines.append, urlopen_fn=open_url)
+    assert attempted == [packaged.url, packaged.mirrors[0]]
+    assert not final.exists()
 
 
 def test_setting_groups_and_refusals():

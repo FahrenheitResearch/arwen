@@ -713,10 +713,19 @@ class HrrrPipelineProducer:
 
     def __init__(self, *, decoder: Path, series: Path, output: Path,
                  signals: Path, cycle: str, window: tuple[int, int, int, int],
-                 workers: str, log: Path, admissions: Path | None = None):
+                 workers: str, log: Path, admissions: Path | None = None,
+                 analyzed_aerosol: bool = False):
         #: As posted (:class:`PostedLeadAdmitter`): the folder the decoder
         #: waits in for each lead's admission.
         self.admissions = admissions
+        #: The configuration's preparation reads HRRR's analyzed aerosol
+        #: pair (:func:`gpuwm.preparation_assets.analyzed_aerosol_domains`),
+        #: so the decoder selects QNWFA/QNIFA when a lead publishes them
+        #: (``--analyzed-aerosol``).  Off, it never does, 2.8.6's
+        #: inventory: NCEP masks PMTF with a GRIB2 bitmap at some leads of
+        #: some cycles, and a pair read unasked at the reference lead
+        #: stopped an as-posted series at the first masked later lead.
+        self.analyzed_aerosol = bool(analyzed_aerosol)
         self.decoder = decoder
         self.series = series
         series_rows = _parse_series(series)
@@ -810,6 +819,25 @@ class HrrrPipelineProducer:
                 if self._log_status == "not opened":
                     self._log_status = "written"
 
+    def decoder_argv(self) -> tuple[str, ...]:
+        """The decoder command this producer launches."""
+
+        i0, i1, j0, j1 = self.window
+        request = ("--analyzed-aerosol",) if self.analyzed_aerosol else ()
+        if self.admissions is None:
+            return (
+                str(self.decoder), *request, "--series-workers-ready",
+                str(self.workers), str(self.series), str(self.output),
+                str(self.signals), self.cycle,
+                str(i0), str(i1), str(j0), str(j1),
+            )
+        return (
+            str(self.decoder), *request, "--series-workers-posted",
+            str(self.workers), str(self.series), str(self.output),
+            str(self.signals), str(self.admissions), self.cycle,
+            str(i0), str(i1), str(j0), str(j1),
+        )
+
     def start(self) -> None:
         for path, label in ((self.output, "output"), (self.signals, "signals")):
             if path.exists():
@@ -827,20 +855,7 @@ class HrrrPipelineProducer:
         except OSError as error:
             self._log_status = (
                 f"unavailable: {type(error).__name__}: {error}")
-        i0, i1, j0, j1 = self.window
-        if self.admissions is None:
-            self.argv = (
-                str(self.decoder), "--series-workers-ready", str(self.workers),
-                str(self.series), str(self.output), str(self.signals),
-                self.cycle, str(i0), str(i1), str(j0), str(j1),
-            )
-        else:
-            self.argv = (
-                str(self.decoder), "--series-workers-posted",
-                str(self.workers), str(self.series), str(self.output),
-                str(self.signals), str(self.admissions), self.cycle,
-                str(i0), str(i1), str(j0), str(j1),
-            )
+        self.argv = self.decoder_argv()
         self.started = time.perf_counter()
         try:
             self.process = subprocess.Popen(
@@ -982,9 +997,11 @@ class HrrrPipelineProducer:
                 f"invalid producer preflight timestamp: {producer_seconds!r}")
         self.preflight = values
         staging_root = self._validated_staging_root()
-        from gpuwm.ingest.native_supplements import gate_soil_surface_fields
-        soil_surface_count = len(gate_soil_surface_fields(
-            _read_tsv(staging_root / "gate.txt")))
+        from gpuwm.ingest.native_supplements import (
+            gate_optional_hybrid_fields, gate_soil_surface_fields)
+        staged_gate = _read_tsv(staging_root / "gate.txt")
+        soil_surface_count = (len(gate_soil_surface_fields(staged_gate))
+                              + len(gate_optional_hybrid_fields(staged_gate)))
         self.hour_payload_files = {
             hour: count + soil_surface_count
             for hour, count in self._base_hour_payload_files.items()}

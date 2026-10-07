@@ -1,0 +1,306 @@
+{
+  "source": "WRF v4.7.1",
+  "commit": "f52c197ed39d12e087d02c50f412d90d418f6186",
+  "tar_sha256": "0826f8878aa787e016586b6e3b43896c8467570b7cca47741b5e16d2f4def0ae",
+  "compiler": "GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+  "libc": "ldd (Ubuntu GLIBC 2.43-2ubuntu2.4) 2.43",
+  "flags": "-O0 -cpp -ffp-contract=off -fcheck=all -fbacktrace -ffree-form -ffree-line-length-none",
+  "source_sha256sums": "c92d30ddb871bd2188fc7c37391b330eb6c9eca24a81abbfc34429fc5ab966b7  dyn_em/module_initialize_fire.F\n",
+  "oracle_sha256sums": "8d58d952c02beb0205f842ee891209b4119fae7259343c157c04af7691c6d185  extract_surface.py\n5fc6ae557b837a2a58151c84254604d0e1808999a811aa15b95ab24b46f3d6ff  run_surface.F90\n340b772751fe6fd8905ca613c110b7fd67ab57245cb4fe3da4b526feadb1a640  build_surface.sh\n",
+  "reference_kind": "byte-unmodified original WRF",
+  "layout": "2D (j,i); 3D (k,j,i); little-endian f4/i4; scalar rank zero",
+  "cases": {
+    "moisture_surface/case_1": {
+      "sha256": "c6b5679bc7ad216c66f2d3f1684e786b5a3189418f5fd92d80c683d4567875d9",
+      "native_stream_sha256": {
+        "temperature": "507f21ab79f351d181bbf215e18e25dc4f530fdd5fb7647217af8a2ae5e3083a",
+        "theta": "f2169e303e3c109755290d61dcc313a4d178a79476b3f40430752fcad747ab5f",
+        "qv": "a65b163d4b2286b32c622f20e9189ee55b18ac23ae2d06dfeffedb0313482ab7",
+        "psfc": "a2dfc0befce5dccb38b8d7cdd5019c09a2543a957c63d65d70689ebfacef6754",
+        "coeff": "6241a24dcdf0d9eb5f5c255697da9cca240b3a00c434619b2b91be61e86bd0e9",
+        "t2": "ea6a6584413643a3be9a382fa1e190c6b066398ce682808202b93069e7adc9d3",
+        "th2": "8c34677207478b0adb4cb1012e68f25c8075d4ea0c7631f6f641bba3512123bd",
+        "q2": "097683d569641659bd0c3317cf736d868470c05ab8d7c9261547e1d21cb88636"
+      },
+      "arrays": {
+        "temperature": {
+          "shape": [
+            3,
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "theta": {
+          "shape": [
+            3,
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "qv": {
+          "shape": [
+            3,
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "psfc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "coeff": {
+          "shape": [
+            3
+          ],
+          "dtype": "<f4"
+        },
+        "t2": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "th2": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "q2": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "moisture_surface/case_2": {
+      "sha256": "e6fb909097a9e5e0eb42f586a929c10a2a6994901bfb3f632e4447f2e27937dd",
+      "native_stream_sha256": {
+        "temperature": "507f21ab79f351d181bbf215e18e25dc4f530fdd5fb7647217af8a2ae5e3083a",
+        "theta": "f2169e303e3c109755290d61dcc313a4d178a79476b3f40430752fcad747ab5f",
+        "qv": "a65b163d4b2286b32c622f20e9189ee55b18ac23ae2d06dfeffedb0313482ab7",
+        "psfc": "a2dfc0befce5dccb38b8d7cdd5019c09a2543a957c63d65d70689ebfacef6754",
+        "coeff": "476e068062e36981c1a65a2c9b90a9ec5df7856b12958425a8a5ba14400f7fa1",
+        "t2": "da63374b88ff44e19db4b5f2bc9067e9ee7403e8186047ecca701308ef88db1c",
+        "th2": "f52f1a4fa67678fa90a640a4b65d1b3070964cdf25a4046d239e78efb00dbe3d",
+        "q2": "097683d569641659bd0c3317cf736d868470c05ab8d7c9261547e1d21cb88636"
+      },
+      "arrays": {
+        "temperature": {
+          "shape": [
+            3,
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "theta": {
+          "shape": [
+            3,
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "qv": {
+          "shape": [
+            3,
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "psfc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "coeff": {
+          "shape": [
+            3
+          ],
+          "dtype": "<f4"
+        },
+        "t2": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "th2": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "q2": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "moisture_surface/case_3": {
+      "sha256": "02200823bda5a834b15cdb777073342443e28e0728c23285363a12655d86f2ff",
+      "native_stream_sha256": {
+        "temperature": "507f21ab79f351d181bbf215e18e25dc4f530fdd5fb7647217af8a2ae5e3083a",
+        "theta": "f2169e303e3c109755290d61dcc313a4d178a79476b3f40430752fcad747ab5f",
+        "qv": "a65b163d4b2286b32c622f20e9189ee55b18ac23ae2d06dfeffedb0313482ab7",
+        "psfc": "a2dfc0befce5dccb38b8d7cdd5019c09a2543a957c63d65d70689ebfacef6754",
+        "coeff": "773c62e17a4097616eb83b23525a392ad2313db53404e5b954d8beca0047a945",
+        "t2": "09222f5f4706467456414dd0401bb56c79af2ec1dd2596427bb68b2545ae57dd",
+        "th2": "8c34677207478b0adb4cb1012e68f25c8075d4ea0c7631f6f641bba3512123bd",
+        "q2": "097683d569641659bd0c3317cf736d868470c05ab8d7c9261547e1d21cb88636"
+      },
+      "arrays": {
+        "temperature": {
+          "shape": [
+            3,
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "theta": {
+          "shape": [
+            3,
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "qv": {
+          "shape": [
+            3,
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "psfc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "coeff": {
+          "shape": [
+            3
+          ],
+          "dtype": "<f4"
+        },
+        "t2": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "th2": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "q2": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "moisture_surface/case_4": {
+      "sha256": "bbbae1afce8bd90232274f26a1ffef3230ca490e45c526ec814e9000936d5b70",
+      "native_stream_sha256": {
+        "temperature": "507f21ab79f351d181bbf215e18e25dc4f530fdd5fb7647217af8a2ae5e3083a",
+        "theta": "f2169e303e3c109755290d61dcc313a4d178a79476b3f40430752fcad747ab5f",
+        "qv": "a65b163d4b2286b32c622f20e9189ee55b18ac23ae2d06dfeffedb0313482ab7",
+        "psfc": "a2dfc0befce5dccb38b8d7cdd5019c09a2543a957c63d65d70689ebfacef6754",
+        "coeff": "97c63d731b5f323675e53fe2738cd11556f08628c1eb3aed7afc59c1b61a26e4",
+        "t2": "a3ffdfb653793544d01a2235c52884abbc323097b98c7f35b09d4baf9695a52e",
+        "th2": "4e5db3d75bcca0928852b29e3e941572fcaf2c65f7de2592f8fabe37fdafd147",
+        "q2": "097683d569641659bd0c3317cf736d868470c05ab8d7c9261547e1d21cb88636"
+      },
+      "arrays": {
+        "temperature": {
+          "shape": [
+            3,
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "theta": {
+          "shape": [
+            3,
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "qv": {
+          "shape": [
+            3,
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "psfc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "coeff": {
+          "shape": [
+            3
+          ],
+          "dtype": "<f4"
+        },
+        "t2": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "th2": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "q2": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    }
+  }
+}

@@ -152,7 +152,7 @@ STAGES = ("fetch", "prepare", "initialize", "forecast", "finalize")
 EVENT_TAGS = (
     "plan_accepted", "resolved_plan", "stage_started", "stage_finished",
     "model_progress", "output_committed", "first_products_ready",
-    "live_products_ready",
+    "live_products_ready", "grib2_export_progress",
     "fetch_started", "fetch_progress", "fetch_completed",
     # Chained preparation: the prepared head is published (the forecast
     # starts beside the rest of the preparation), and later the seal.
@@ -278,6 +278,9 @@ WARNING_CODES = {
         "the early render did not finish within its wait, so the "
         "finalize stage stopped holding a finished forecast for it; that "
         "render was ended and publishes nothing",
+    "grib2_export_failed":
+        "native GRIB2 export failed; the message names the cause and "
+        "the GRIB2 output is incomplete",
     "live_products_empty":
         "a frame drawn as it landed produced no picture; the end-of-run "
         "render draws it with the rest",
@@ -882,6 +885,8 @@ def build_plan(raw: Mapping[str, Any], *, source: str,
         fetch_arguments=fetch_arguments, output_root=output_root,
         run_options=resolved_options, sha256=sha256, source=source,
         automatic_resolutions=tuple(resolutions))
+    if resolved_options.get("grib2"):
+        _grib2_member_contract(plan, b"" if config_intent is not None else plan.config_bytes())
     if route == "prepared":
         if resolved_options.get("restart") and not resolved_options.get("prepared_root"):
             raise PlanError(
@@ -914,6 +919,19 @@ def build_plan(raw: Mapping[str, Any], *, source: str,
                                 "fetches; remove it to use that bundle")
             _validate_prepared_output(plan, require_empty=True)
     return plan
+
+
+def _grib2_member_contract(plan: RunPlan, payload: bytes) -> None:
+    """Refuse member-colliding archives before source or device work."""
+    if not plan.run_options.get("grib2"):
+        return
+    from gpuwm.ensemble.door import request_for_payload
+    from gpuwm.grib2_live import validate_member_contract
+    try:
+        request = request_for_payload(payload, override=plan.run_options.get("ensemble"))
+        validate_member_contract(True, request)
+    except ValueError as error:
+        raise PlanError(str(error)) from None
 
 
 def _section_refusal(options: Mapping[str, Any]) -> str | None:
@@ -1188,6 +1206,7 @@ _RUN_OPTION_DEFAULTS: dict[str, Any] = {
     "wps_namelist": None,
     "health_debug": False,
     "verify_visuals": True,
+    "grib2": False,
     "data_dir": None,
     "geog_root": None,
     "physics_profile": None,
@@ -1254,7 +1273,7 @@ def _run_option(key: str, value: object, base: Path) -> Any:
             return bindings(value, base=base)
         except ValueError as error:
             raise PlanError(str(error)) from error
-    if key in ("dry_run", "health_debug", "verify_visuals"):
+    if key in ("dry_run", "health_debug", "grib2", "verify_visuals"):
         if not isinstance(value, bool):
             raise PlanError(f"{label} must be true or false")
         return value
@@ -2271,6 +2290,9 @@ class RunObserver:
         #: lands (:mod:`gpuwm.live_products`), on whenever the end of the
         #: run would draw pictures.
         self._live_products = None
+        self._grib2_export = None
+        self._grib2_base_out = None
+        self._grib2_attempt = 1
         #: The plan both were armed with, to arm them again when the
         #: hosted forecast restarts (:meth:`restarting`).
         self._render_plan = None
@@ -2437,6 +2459,12 @@ class RunObserver:
         hook = getattr(self._heartbeat, "restarting", None)
         if hook is not None:
             hook(reason)
+        if self._grib2_export is not None:
+            self.stop_grib2(halt=True)
+            self._grib2_export = None
+            self._grib2_attempt += 1
+            base = self._grib2_base_out
+            self.arm_grib2(base.with_name(f"{base.name}-attempt-{self._grib2_attempt:02d}"))
         if live is not None or first is not None:
             self._first_products = None
             self._live_products = None
@@ -2575,6 +2603,27 @@ class RunObserver:
 
         return self._live_products
 
+    def arm_grib2(self, out) -> None:
+        """Start native output independently of the selected map products."""
+        if self._grib2_export is not None:
+            return
+        from gpuwm.grib2_live import LiveGrib2Export
+        out = Path(out)
+        if self._grib2_base_out is None:
+            self._grib2_base_out = out
+        self._grib2_export = LiveGrib2Export(
+            out, report=self._grib2_progress, warn=self.warn)
+        self._grib2_progress({"event": "armed", "out": str(out), "attempt": self._grib2_attempt})
+
+    def _grib2_progress(self, event) -> None:
+        self._events.emit("grib2_export_progress", progress=dict(event))
+
+    def stop_grib2(self, *, halt: bool = False) -> dict | None:
+        export = self._grib2_export
+        if export is None:
+            return None
+        return export.halt() if halt else export.stop()
+
     def stop_live_products(self, *, halt: bool = False) -> dict | None:
         """Stop drawing frames as they land.
 
@@ -2698,6 +2747,12 @@ class RunObserver:
                         if isinstance(valid_time, datetime)
                         else str(valid_time)),
             path=str(path))
+        export = self._grib2_export
+        if export is not None:
+            try:
+                export.frame_committed(domain=int(domain), valid_time=valid_time, path=path)
+            except Exception as error:  # output callbacks must not stop stepping
+                self.warn("grib2_export_failed", f"committed frame could not be queued: {error}", frame=str(path))
         trigger = self._first_products
         claimed = False
         if trigger is not None and int(domain) == self._root_domain:
@@ -2731,10 +2786,15 @@ class RunObserver:
                 "draws it", frame=str(path))
 
     def complete(self, model_elapsed_seconds: float) -> None:
+        self.stop_grib2()
         if self._heartbeat is not None:
             self._heartbeat.complete(model_elapsed_seconds)
 
     def failed(self) -> None:
+        try:
+            self.stop_grib2()
+        except Exception as error:
+            self.warn("grib2_export_failed", str(error))
         if self._heartbeat is not None:
             self._heartbeat.failed()
 
@@ -3066,6 +3126,7 @@ def resolve_plan(plan: RunPlan, *, generate_into: Path | None = None,
                         if plan.config_path is not None
                         else plan.config_base_dir)
 
+        _grib2_member_contract(plan, payload)
         # Imported here rather than at module scope, on this file's own
         # convention for gpuwm.core.streaming: the run-plan front door is
         # reached by every route, and the streaming module must stay a
@@ -3181,6 +3242,15 @@ def resolve_plan(plan: RunPlan, *, generate_into: Path | None = None,
         except HrrrRouteInputError as refusal:
             raise PlanError(str(refusal)) from None
     if chain == "prepared:staged":
+        # The WPS namelist the staged chain runs from, asked of the same
+        # function the chain calls, so `gpuwm go --dry-run` and plan
+        # review refuse a configuration the run could not render one for.
+        from gpuwm.companion_domains import configuration_wps_namelist
+
+        try:
+            configuration_wps_namelist(Path(config_source), exp, raw=raw)
+        except ValueError as refusal:
+            raise PlanError(str(refusal)) from None
         from gpuwm import fetch_routes
         hints = raw.get("fetch") or {}
         source_id = fetch_routes.canonical_source(str(hints.get("source", "")))
@@ -4688,6 +4758,7 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
         from gpuwm.geog_assets import default_geog_root
 
         geog_root = default_geog_root()
+    _stage_static_sources(raw, geog_root, base_dir=config_path.parent)
     # Not created here, and deliberately so: the preparer refuses an
     # --output-root that already exists ("refusing existing output
     # root"), which is its own create-only guarantee.  A re-run into the
@@ -4703,10 +4774,12 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
     # decodes each lead as its marker appears, publishes its head on the
     # first two leads and writes the source manifest at its seal.  The
     # fetch beside is ``None`` otherwise, and the window is fetched first.
-    from gpuwm.preparation_assets import wif_fetch_domains
+    from gpuwm.preparation_assets import (analyzed_aerosol_fetch_hints,
+                                          wif_fetch_domains)
 
     if wif_fetch_domains(exp, hints):
         hints = {**hints, "wif": True}
+    hints = analyzed_aerosol_fetch_hints(exp, hints)
     beside = _native_fetch_beside(plan, hints, exp, data_dir=data_dir,
                                   run_dir=run_dir, observer=observer,
                                   prepare_only=prepare_only)
@@ -4989,6 +5062,11 @@ def _hrrr_chain(plan: RunPlan, *, config_path: Path, exp,
     if getattr(getattr(exp, "simulated_radar", None), "enabled", False):
         from gpuwm.simulated_radar_config import execution_flags
         argv += execution_flags(exp.simulated_radar)
+    # [radar_heating] crosses to the door the same way: beside the
+    # hash-bound experiment, so the preparation is the unheated control's.
+    if getattr(getattr(exp, "radar_heating", None), "enabled", False):
+        from gpuwm.da.forecast_heating import execution_flags as heating_flags
+        argv += heating_flags(exp.radar_heating)
     observer.enter_stage("forecast", phase="forecast")
     from gpuwm import prepared_single_domain_forecast as runner
 
@@ -5263,6 +5341,9 @@ def _hrrr_single_chain(*, prep_root: Path, preparation, forecast_dir: Path,
         if getattr(getattr(exp, "simulated_radar", None), "enabled", False):
             from gpuwm.simulated_radar_config import execution_flags
             argv += execution_flags(exp.simulated_radar)
+        if getattr(getattr(exp, "radar_heating", None), "enabled", False):
+            from gpuwm.da.forecast_heating import execution_flags as heating_flags
+            argv += heating_flags(exp.radar_heating)
         observer.enter_stage("forecast", phase="forecast")
         from gpuwm import prepared_single_domain_forecast as runner
 
@@ -5618,6 +5699,33 @@ def _finish_render(render_plan: dict, *, observer: RunObserver,
             "Forecast completed, but requested pictures were not produced. "
             "Next: run gpuwm setup, then render the saved forecast:\n  "
             + printable(render_command(render_plan)))
+
+
+def _stage_static_sources(raw, geog_root, *, base_dir) -> None:
+    """Fetch the published static files this run reads and is missing.
+
+    Called by each native chain before its forcing fetch, so a recipe
+    naming ``[static] source = "hrrr-conus-v4"`` (or a source whose
+    metadata selects it) gets the file through ``fetch-geog
+    --static-source``'s own fetch rather than a refusal at static
+    preparation after the download.  The lines go to stderr as notes, the
+    form a launch relays to the terminal, and never onto a stream a
+    run-plan consumer reads as events.
+    """
+
+    from gpuwm.geog_assets import GeogFetchError
+    from gpuwm.static.external_source import (StaticSourceError,
+                                              stage_required_static_sources)
+
+    def say(line: str) -> None:
+        line = line if line.startswith(("note:", "warning:")) else f"note: {line}"
+        print(line, file=sys.stderr, flush=True)
+
+    try:
+        stage_required_static_sources(raw, geog_root, base_dir=base_dir,
+                                      progress=say)
+    except (GeogFetchError, StaticSourceError) as error:
+        raise PlanError(str(error)) from None
 
 
 def _staged_prep_root(run_dir: Path) -> Path:
@@ -6051,14 +6159,20 @@ def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
         from gpuwm.geog_assets import default_geog_root
 
         geog_root = default_geog_root()
-    # The wizard writes the WPS namelist beside every emission, under
-    # the config's own stem; the mapped preparation binds it by digest.
-    namelist = config_path.with_name(f"{config_path.stem}.namelist.wps")
-    if not namelist.is_file():
-        raise PlanError(
-            f"the staged route reads {namelist.name} beside "
-            f"{config_path.name}, and `gpuwm domain` writes it at "
-            "emission; this config was not emitted with one")
+    _stage_static_sources(raw, geog_root, base_dir=config_path.parent)
+    # The WPS namelist the mapped preparation binds by digest: the one a
+    # door wrote beside the config under its own stem, or, where there is
+    # none (a shipped recipe, a hand-written or imported config), the one
+    # this run renders from the config into its own folder.  The same
+    # function answered resolve_plan's question before anything was
+    # fetched.
+    from gpuwm.companion_domains import configuration_wps_namelist
+
+    try:
+        namelist = configuration_wps_namelist(
+            config_path, exp, raw=raw, into=run_dir / "chain" / "route-inputs")
+    except ValueError as refusal:
+        raise PlanError(str(refusal)) from None
     prep_root = _staged_prep_root(run_dir)
     forecast_dir = run_dir / "chain" / "run"
     #: The as-posted fetch running beside the preparation (_PostedFetch),
@@ -6111,10 +6225,12 @@ def _staged_chain(plan: RunPlan, *, config_path: Path, exp,
                         "network_used": False, "input_sha256": snapshot["sha256"],
                         "file_count": len(snapshot["files"])}
     else:
-        from gpuwm.preparation_assets import wif_fetch_domains
+        from gpuwm.preparation_assets import (analyzed_aerosol_fetch_hints,
+                                              wif_fetch_domains)
 
         if wif_fetch_domains(exp, hints):
             hints = {**hints, "wif": True}
+        hints = analyzed_aerosol_fetch_hints(exp, hints)
         # Acquisition publishes complete extended paths on Windows. Keep the
         # same directory spelling when reading its handoff and writing the
         # verified member list, including cache roots beyond MAX_PATH.
@@ -6758,6 +6874,7 @@ def _execute_prepared_route(plan: RunPlan, *, exp, data, config_path,
     # The line the section products are cut along, stamped the same way;
     # `gpuwm go --section` is the typed spelling of the same value.
     args.render_section = plan.run_options.get("render_section")
+    args.grib2 = bool(plan.run_options.get("grib2"))
     # No tree keyword any more: `gpuwm go` itself dispatches a
     # multi-domain config to the tree runner, so this front door and
     # the interactive one now enter the same chain by the same call.
@@ -7348,6 +7465,8 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
         observer = RunObserver(
             events, heartbeat=heartbeat, root_domain=exp.root.grid_id,
             accepted_wall=accepted_wall)
+        if plan.run_options.get("grib2"):
+            observer.arm_grib2(run_dir / "grib2")
         heartbeat.starting()
 
         if fetch_arguments is not None:
@@ -7420,6 +7539,7 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
 
         stage = "finalize"
         observer.enter_stage("finalize")
+        grib2_summary = observer.stop_grib2()
         receipts = _receipts(run_dir)
         observer.finish_stage(receipts=receipts)
         heartbeat.complete(_finite_seconds(
@@ -7437,6 +7557,7 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
             # published no products early.
             first_products_seconds=observer.first_products_seconds,
             summary=dict(summary),
+            **({"grib2_summary": grib2_summary} if grib2_summary is not None else {}),
             **({"render_summary": observer._render_summary} if observer._render_summary is not None else {}))
         return 0
     except BaseException as error:  # noqa: BLE001 - every exit is an event
@@ -7448,6 +7569,10 @@ def execute_plan(plan: RunPlan, *, events: EventStream) -> int:
             # the user stopped draws nothing more: finishing the queue
             # could hold it for minutes, and the desktop kills it 5 s
             # after asking.
+            try:
+                observer.stop_grib2(halt=interrupted)
+            except Exception:  # the failure is already carried by the event
+                pass
             try:
                 observer.stop_live_products(halt=interrupted)
             except Exception:  # noqa: BLE001 - the failure is the event

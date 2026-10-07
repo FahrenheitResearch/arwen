@@ -2,7 +2,7 @@
   "command": "cargo +1.94.0 vendor --locked --offline --versioned-dirs --manifest-path tools/arwen-launchpad/Cargo.toml --sync tools/arwen-tui/Cargo.toml tools/arwen-ui-vendor/crates-io",
   "locks": {
     "arwen-launchpad": "336137f01e326f7c8baa0cf75d2334a29fbae444e6f5ed0d731ce38094b07e13",
-    "arwen-tui": "e6e05be12c7f669efcd57e89ab0b85b57ec767c7e502168a858f65ef2646a15f"
+    "arwen-tui": "6785e797bd1021bffcc7a21c265b607fd49c2fe2cd592298f51ed0bf3a51ccc2"
   },
   "packages": [
     {

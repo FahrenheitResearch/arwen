@@ -276,6 +276,13 @@ permission) for the Noah mosaic column, whose TDFCND takes LOG10 of the
 soil saturation ratio; that file too carries the copyright line and the
 permission notice beside the code.
 
+The sfire_tanhf function in gpuwm/core/kernels/sfire_libm.cuh transcribes
+CORE-MATH's correctly-rounded binary32 tanhf as glibc 2.43 carries it
+(sysdeps/ieee754/flt-32/s_tanhf.c: src/binary32/tanh/tanhf.c, b1ecd83),
+Copyright (c) 2022-2024 Alexei Sibidanov, under the same MIT permission, for
+the native SFIRE fire state; that file carries the copyright line and the
+permission notice beside the code.
+
 Both upstream copyright-year lines and the exact common permission text
 are reproduced in licenses/LICENSE-CORE-MATH-MIT.txt, in the header and
 beside the code in gpuwm/core/kernels/LICENSE-third-party.txt. MIT

@@ -556,7 +556,7 @@ def _install_prepare_fakes(
     # every state, in which order, and that arrival order and position
     # were kept distinct.
     frame_calls = {"added": [], "arrival": [], "built": [],
-                   "intervals": [], "released": []}
+                   "intervals": [], "released": [], "replaced": []}
 
     class RecordingFrames:
         inventory = ("u", "v", "theta", "phi", "mu")
@@ -570,6 +570,12 @@ def _install_prepare_fakes(
         def add_state(self, state, *, index=None):
             frame_calls["added"].append(state)
             frame_calls["arrival"].append(index)
+
+        def replace_start_state(self, state, *, index=0):
+            # Recorded in call order beside the intervals, so a test can
+            # see the start frame was replaced before interval 0 was built.
+            frame_calls["replaced"].append(
+                (index, state, len(frame_calls["intervals"])))
 
         def build(self, actual_times):
             frame_calls["built"].append(tuple(actual_times))
@@ -850,9 +856,12 @@ def test_prepare_threads_the_output_root_into_the_compose_scratch(
         Path(args["output_root"]).resolve())
 
 
-def test_separate_analysis_keeps_boundary_zero_and_uses_donor_aerosols(monkeypatch, tmp_path):
-    # Replacing forcing[0] would interpolate from the analysis toward the next
-    # boundary product. The first boundary must remain that product's f00.
+def test_separate_analysis_starts_the_boundary_from_itself_and_uses_donor_aerosols(monkeypatch, tmp_path):
+    # The first boundary record is the start state's own coupling and
+    # interval 0 runs from it to the boundary product's next time, WRFDA
+    # da_update_bc's rule (operational HRRR runs it after GSI).  It used to
+    # stay the boundary product's f00, so an HRRR start under RAP boundaries
+    # began its specified and relaxation zones from the RAP atmosphere.
     from contextlib import contextmanager
     import gpuwm.initial_source as initial_source
 
@@ -885,6 +894,8 @@ def test_separate_analysis_keeps_boundary_zero_and_uses_donor_aerosols(monkeypat
     monkeypatch.setattr(initial_source, "decode_initial_analysis", analysis)
     proof = mapped_direct.prepare_mapped_wrf(**args)
     assert calls["frames"]["added"] == [result.state for result in expected.results]
+    # Replaced once, frame 0, by the analysis, before any interval exists.
+    assert calls["frames"]["replaced"] == [(0, donor_result.state, 0)]
     assert calls["cache_stream"]["head"]["initial_result"] is donor_result
     assert proof["initial_source"]["source"] == "distinct-analysis"
     assert proof["initial_source"]["aerosol_source"] == "boundary-analysis"

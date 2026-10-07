@@ -49,3 +49,8 @@ the fit operation does not expand its scope by silently changing topology.
 The fitted TOML preserves values, not the starter's comment formatting.
 
 Omit both --card and --vram-gib to detect this machine's GPU through the existing wizard.
+
+Smoke, dust and air quality are off in the starter. The commented block at
+the end of `[shared]` turns them on (RAVE wildfire smoke plus GOCART dust,
+sea salt and carbon); uncomment it before fitting. The options and outputs
+are in `docs/public/SMOKE-AND-AIR-QUALITY.md`.

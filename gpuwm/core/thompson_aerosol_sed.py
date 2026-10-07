@@ -107,7 +107,7 @@ def launch_aa_cloud_sedimentation(
         temperature, pressure, qv, vertical_velocity, dz,
         dt: float, *, reference_density,
         rain_active_columns=None, cloud_active_columns=None,
-        diagnostics=None) -> None:
+        diagnostics=None, qcten=None) -> None:
     """Apply WRF's number-weighted cloud-water fallout.
 
     Parameters
@@ -158,6 +158,12 @@ def launch_aa_cloud_sedimentation(
           i.e. the value ``sed_c`` is built from.
         * ``cloud_number`` -- the working ``nc`` AFTER the fallout is applied,
           i.e. WRF's :3835 with its floor of 10.
+    qcten
+        WRF's cloud water accumulator, per kilogram per second.  Given, ``qc``
+        is the read-only entry cloud, the working ``rc`` is formed from
+        ``qc + qcten*dt`` and the fallout tendency is added to ``qcten``
+        (:3832).  Only the production entry points (``cloud_active_columns``
+        given, no diagnostics) carry it.
     """
     shape, _ = validate_fields({
         "qc": qc,
@@ -180,6 +186,13 @@ def launch_aa_cloud_sedimentation(
             f"{_KMAX}, got {nz}")
     if not np.isfinite(dt) or dt <= 0.0:
         raise ValueError(f"dt must be finite and positive, got {dt}")
+
+    if qcten is not None:
+        if cloud_active_columns is None or diagnostics:
+            raise ValueError(
+                "qcten is carried only by the production entry point: pass "
+                "cloud_active_columns and no diagnostics")
+        validate_fields({"qc": qc, "qcten": qcten})
 
     surface_shape = (ny, nx)
     if rain_active_columns is not None:
@@ -228,6 +241,8 @@ def launch_aa_cloud_sedimentation(
     arguments += (vertical_velocity, dz)
     if diagnostic_arguments is not None:
         arguments += diagnostic_arguments
+    if cloud_active_columns is not None and diagnostic_arguments is None:
+        arguments += (qcten,)
     arguments += (DTYPE(dt), np.int32(nz), np.int32(ny), np.int32(nx))
 
     ncol = ny * nx
@@ -248,7 +263,8 @@ def launch_aa_cloud_sedimentation(
 
 def launch_aa_final_phase_cleanup(
         qc, qi, ni, temperature, cloud_number_entry, ice_number_entry,
-        cloud_number_tendency, pressure, qv, dt: float) -> None:
+        cloud_number_tendency, pressure, qv, dt: float, *,
+        qcten=None, qiten=None, niten=None) -> None:
     """Melt cloud ice above 0 C and freeze cloud water below HGFR.
 
     module_mp_thompson.F:3943-3966.  Both transfers move NUMBER as well as
@@ -265,7 +281,11 @@ def launch_aa_final_phase_cleanup(
       unclamped.
 
     ``qc``, ``qi``, ``ni`` and ``temperature`` are updated in place; ``nc`` is
-    not touched.
+    not touched.  With ``qcten`` (WRF's cloud water accumulator) ``qc`` is
+    the read-only entry cloud instead: the melt adds ``xri*odt`` to
+    ``qcten`` (:3949), the freeze reads ``xrc`` from ``qc + qcten*dt`` and
+    subtracts ``xrc*odt`` (:3955, :3962), and the R1 zeroing waits for the
+    terminal apply.
     """
     _, size = validate_fields({
         "qc": qc,
@@ -277,20 +297,98 @@ def launch_aa_final_phase_cleanup(
         "cloud_number_tendency": cloud_number_tendency,
         "pressure": pressure,
         "qv": qv,
+        **({} if qcten is None else {"qcten": qcten}),
+        **({} if qiten is None else {"qiten": qiten, "niten": niten}),
     })
+    if (qiten is None) != (niten is None):
+        raise ValueError("qiten and niten are given together or not at all")
+    if qiten is not None and qcten is None:
+        raise ValueError("the ice accumulators ride with the cloud one")
     if not np.isfinite(dt) or dt <= 0.0:
         raise ValueError(f"dt must be finite and positive, got {dt}")
     grid, block = launch_grid(size, DEFAULT_THREADS)
     aerosol_kernel(SED_MODULE, "thompson_aa_final_phase_cleanup")(
         grid, block,
         (qc, qi, ni, temperature, cloud_number_entry, ice_number_entry,
-         cloud_number_tendency, pressure, qv, DTYPE(dt), np.int32(size)))
+         cloud_number_tendency, pressure, qv, qcten, qiten, niten,
+         DTYPE(dt), np.int32(size)))
+
+
+def _column_launch(name: str, nz: int, ny: int, nx: int, arguments) -> None:
+    suffix = "64" if nz <= _SHALLOW_KMAX else "256"
+    ncol = ny * nx
+    blocks = (ncol + _COLUMN_TPB - 1) // _COLUMN_TPB
+    aerosol_kernel(SED_MODULE, f"{name}_{suffix}")(
+        (blocks,), (_COLUMN_TPB,), arguments)
+
+
+def launch_aa_rain_sedimentation_accumulate(
+        qr1d, nr1d, qrten, nrten, temperature, pressure, qv, dz,
+        rainnc, rainncv, dt: float, *, reference_density,
+        accumulate_surface: bool = True) -> None:
+    """WRF's rain fallout in tendency form (:3611-3640, :3790-3812).
+
+    ``qr1d``/``nr1d`` are the read-only entry rain; the fallout is added to
+    ``qrten``/``nrten`` and nothing is applied (the terminal apply,
+    :func:`gpuwm.core.thompson_aerosol_state.launch_terminal_rain_ice`, does
+    that once, with the size bounds).  ``reference_density`` is the rain
+    evaporation's level-wise export (zero: no L_qr; negative: the :3568
+    rewrite on that density; positive: the :3193 TAU+1 density).  The surface
+    bookkeeping is the classic launcher's.
+    """
+    shape, _ = validate_fields({
+        "qr1d": qr1d, "nr1d": nr1d, "qrten": qrten, "nrten": nrten,
+        "temperature": temperature, "pressure": pressure, "qv": qv,
+        "reference_density": reference_density, "dz": dz,
+    })
+    nz, ny, nx = shape
+    if nz < 2 or nz > _KMAX:
+        raise ValueError(f"rain fallout requires 2 <= nz <= {_KMAX}, got {nz}")
+    _validate_surface_mask("rainnc", rainnc, (ny, nx))
+    _validate_surface_mask("rainncv", rainncv, (ny, nx))
+    _column_launch("thompson_aa_rain_sediment_accumulate", nz, ny, nx,
+                   (qr1d, nr1d, qrten, nrten, temperature, pressure, qv,
+                    reference_density, dz, rainnc, rainncv,
+                    np.int32(1 if accumulate_surface else 0), DTYPE(dt),
+                    np.int32(nz), np.int32(ny), np.int32(nx)))
+
+
+def launch_aa_ice_sedimentation_accumulate(
+        qi1d, ni1d, qiten, niten, temperature, pressure, qv, dz,
+        rainnc, rainncv, snownc, snowncv, dt: float, *, reference_density,
+        rain_active_columns) -> None:
+    """WRF's ice fallout in tendency form (:3664-3698, :3838-3870).
+
+    The working pair is :3226-3233's on the held :3193 density
+    (``reference_density``); rhof is refreshed from the current density
+    only in columns ``rain_active_columns`` marks (WRF's ANY(L_qr)).  The
+    surface bookkeeping is the classic launcher's.
+    """
+    shape, _ = validate_fields({
+        "qi1d": qi1d, "ni1d": ni1d, "qiten": qiten, "niten": niten,
+        "temperature": temperature, "pressure": pressure, "qv": qv,
+        "reference_density": reference_density, "dz": dz,
+    })
+    nz, ny, nx = shape
+    if nz < 2 or nz > _KMAX:
+        raise ValueError(f"ice fallout requires 2 <= nz <= {_KMAX}, got {nz}")
+    for name, value in (("rainnc", rainnc), ("rainncv", rainncv),
+                        ("snownc", snownc), ("snowncv", snowncv),
+                        ("rain_active_columns", rain_active_columns)):
+        _validate_surface_mask(name, value, (ny, nx))
+    _column_launch("thompson_aa_ice_sediment_accumulate", nz, ny, nx,
+                   (qi1d, ni1d, qiten, niten, temperature, pressure, qv,
+                    reference_density, rain_active_columns, dz, rainnc,
+                    rainncv, snownc, snowncv, DTYPE(dt), np.int32(nz),
+                    np.int32(ny), np.int32(nx)))
 
 
 __all__ = [
     "DIAGNOSTIC_FIELDS",
     "VERTICAL_LEVEL_BOUNDS",
     "launch_aa_cloud_sedimentation",
+    "launch_aa_ice_sedimentation_accumulate",
+    "launch_aa_rain_sedimentation_accumulate",
     "launch_aa_final_phase_cleanup",
 ]
 
@@ -391,6 +489,29 @@ def launch_wrf39_snow_sedimentation(
         pressure, qv, reference_density, reference_temperature,
         velocity_boost, melt_rain_density, dz,
         rainnc, rainncv, snownc, snowncv, np.int32(bool(singular_fall)),
+        DTYPE(dt), np.int32(nz), np.int32(ny), np.int32(nx)))
+
+
+def launch_wrf39_rain_sedimentation(
+        qr, nr, temperature, pressure, qv, dz, rainnc, rainncv, dt: float,
+        *, reference_density) -> None:
+    """The fork's rain fallout: the v4.6.1 rain-presence pass with surface
+    rain counted above R1*10 (fork :3556, audit T21).  Accumulates the
+    surface totals, as the classic rain pass does on the coupled adapter;
+    ``reference_density`` carries L_qr and the :3568 rewrite."""
+    _require_wrf39("launch_wrf39_rain_sedimentation")
+    shape, _ = validate_fields({
+        "qr": qr, "nr": nr, "temperature": temperature,
+        "pressure": pressure, "qv": qv, "dz": dz,
+        "reference_density": reference_density})
+    nz, ny, nx = shape
+    if not np.isfinite(dt) or dt <= 0.0:
+        raise ValueError(f"dt must be finite and positive, got {dt}")
+    for name, value in (("rainnc", rainnc), ("rainncv", rainncv)):
+        _validate_surface_mask(name, value, (ny, nx))
+    _column_launch("thompson_aa_wrf39_rain_sediment", nz, ny, nx, (
+        qr, nr, temperature, pressure, qv, reference_density, dz,
+        rainnc, rainncv,
         DTYPE(dt), np.int32(nz), np.int32(ny), np.int32(nx)))
 
 

@@ -458,7 +458,8 @@ def _fetch_static_source_locked(source_id: str, root: Path, *, progress,
         try:
             geog_assets.download_archive(
                 url, partial, expected_bytes=row.bytes, progress=progress,
-                label=row.id, **kwargs)
+                label=row.id, report_every_bytes=max(row.bytes // 10, 1),
+                **kwargs)
             geog_assets.verify_archive(
                 partial, expected_sha256=row.sha256, expected_bytes=row.bytes,
                 source="hf", allow_drift=False, progress=progress,
@@ -473,6 +474,69 @@ def _fetch_static_source_locked(source_id: str, root: Path, *, progress,
     raise geog_assets.GeogFetchError(
         f"static source {row.id!r} could not be fetched from any of its "
         f"{1 + len(row.mirrors)} URL(s): " + "; ".join(errors))
+
+
+def required_static_rows(raw, *, base_dir=None) -> tuple[StaticSourceRow, ...]:
+    """The static-source rows a run of this configuration will read.
+
+    The row the configuration's ``[static] source`` names, or the one its
+    ``[fetch]`` source's metadata selects on the row's own cone -- the
+    same resolution the static build makes
+    (:func:`gpuwm.static.highres_production.resolve_static_highres`) --
+    when at least one domain is at the row's grid spacing.  A row at
+    another spacing is never read (:func:`overlay_static_source` reports
+    it ``NOT_APPLICABLE``), so it is not asked for.
+    """
+    from .highres_production import raw_domain_spacings, resolve_static_highres
+
+    fetch = raw.get("fetch") if isinstance(raw, Mapping) else None
+    source = (fetch or {}).get("source") if isinstance(fetch, Mapping) else None
+    carrier = resolve_static_highres(raw, source=str(source or "configuration"),
+                                     base_dir=base_dir)
+    setting = static_source_for(carrier)
+    if setting is None:
+        return ()
+    row = setting.row
+    g = row.grid_map
+    spacings = raw_domain_spacings(raw)
+    if not any(abs(float(dx) - float(g["dx"])) <= 1e-6
+               and abs(float(dx) - float(g["dy"])) <= 1e-6 for dx in spacings):
+        return ()
+    return (row,)
+
+
+def stage_required_static_sources(raw, geog_root, *, base_dir=None,
+                                  progress=print, fetch=None) -> list[Path]:
+    """Fetch every static file this configuration reads and is not staged.
+
+    The run's own statics, staged through the same fetch as ``gpuwm
+    fetch-geog --static-source ID`` (:func:`fetch_static_source`: the pin,
+    the resume, the verification and the cache folder are that command's),
+    with a line naming the file and its size before the download and
+    progress lines while it runs.  A file already staged is verified by
+    :func:`resolve_local_file` and not fetched again.
+
+    Breakage it prevents: a run of a shipped HRRR configuration recipe
+    stopped at static preparation, after its forcing download, until the
+    user had run ``fetch-geog --static-source hrrr-conus-v4`` by hand
+    (WOOF 1.0.3 GPU smoke, 2026-10-06).
+    """
+    fetch = fetch_static_source if fetch is None else fetch
+    staged = []
+    for row in required_static_rows(raw, base_dir=base_dir):
+        try:
+            staged.append(resolve_local_file(row, geog_root))
+            continue
+        except FileNotFoundError:
+            pass
+        host = row.url.split("/")[2] if "://" in row.url else row.url
+        progress(
+            f"note: static source {row.id} is not staged; fetching "
+            f"{row.bytes / 1e9:.2f} GB from {host} into "
+            f"{Path(geog_root) / CACHE_SUBDIR / row.id} (the same as "
+            f"`{fetch_command(row, geog_root)}`)")
+        staged.append(fetch(row.id, Path(geog_root), progress=progress))
+    return staged
 
 
 # ---------------------------------------------------------------------------
@@ -813,7 +877,8 @@ __all__ = [
     "PROJECTION_KEYS", "TABLE_PATH", "crop_window", "projection_mismatch",
     "sampling_window", "fetch_command", "fetch_static_source",
     "field_groups", "overlay_static_source", "parse_static_source",
-    "require_root_static_source", "resolve_local_file", "served_names",
+    "require_root_static_source", "required_static_rows",
+    "resolve_local_file", "served_names", "stage_required_static_sources",
     "setting_from_echo", "source_grid", "static_source_for",
     "static_source_receipt", "static_source_row", "static_source_rows",
     "verify_local_file",

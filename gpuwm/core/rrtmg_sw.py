@@ -3480,26 +3480,42 @@ class CudaSW:
             h = cp.asnumpy(a) if isinstance(a, cp.ndarray) else a
             return np.asarray(h, f32).reshape(ncol)
 
-        # ---- day-columns-only contract (fail closed) --------------------
-        cz = hostf(coszen)
-        if not bool(np.all(cz > F(0.0))):
-            raise ValueError(
-                "batched SW is day-columns-only (every coszen must be "
-                "> 0); the WRF option-4 driver's night gate skips the SW "
-                "call entirely -- filter night columns before batching")
+        def _day_verdict(night):
+            if bool(night):
+                raise ValueError(
+                    "batched SW is day-columns-only (every coszen must be "
+                    "> 0); the WRF option-4 driver's night gate skips the SW "
+                    "call entirely -- filter night columns before batching")
 
-        # ---- per-column host scalar prep (same single-op FP32 chains as
-        # the per-column driver, elementwise; numpy f32 array ops are the
-        # identical IEEE single-rounded operations) -----------------------
-        cossza_h = np.where(cz <= F(1.0e-10), F(1.0e-10), cz)
-        adjflx_h = hostf(adjes)
-        solvar_h = hostf(scon) / RRSW_SCON        # F(F(scon) / RRSW_SCON)
+        # ---- per-column scalar prep (same single-op FP32 chains as the
+        # per-column driver, elementwise).  Device inputs stay on the
+        # device: a where, one IEEE division and one product, which CUDA
+        # rounds exactly as NumPy float32 does, and copies; reading them
+        # back each chunk drained the card before every SW chunk (A3).
+        device = all(isinstance(a, cp.ndarray) and a.dtype == cp.float32
+                     for a in (coszen, aldir, aldif, asdir, asdif))
+        xp = cp if device else np
+        if device:
+            cz = cp.ascontiguousarray(coszen.reshape(ncol))
+            # ---- day-columns-only contract (fail closed) ----------------
+            from gpuwm.core.deferred_device_checks import check
+            check(cp.any(~(cz > F(0.0))), _day_verdict)
+            dev = lambda a: (cp.ascontiguousarray(a.reshape(ncol))
+                             if isinstance(a, cp.ndarray) and a.dtype == cp.float32
+                             else cp.asarray(hostf(a)))
+        else:
+            cz = hostf(coszen)
+            _day_verdict(not bool(np.all(cz > F(0.0))))
+            dev = hostf
+        cossza_h = xp.where(cz <= F(1.0e-10), F(1.0e-10), cz)
+        adjflx_h = dev(adjes)
+        solvar_h = dev(scon) / RRSW_SCON          # F(F(scon) / RRSW_SCON)
         adjb_h = adjflx_h * solvar_h              # F(adjflx * solvar[ib])
-        adjflux_h = np.repeat(adjb_h[:, None], NBNDSW, axis=1)
-        aldir_h, aldif_h = hostf(aldir), hostf(aldif)
-        asdir_h, asdif_h = hostf(asdir), hostf(asdif)
-        albdir_h = np.zeros((ncol, NBNDSW), f32)
-        albdif_h = np.zeros((ncol, NBNDSW), f32)
+        adjflux_h = xp.repeat(adjb_h[:, None], NBNDSW, axis=1)
+        aldir_h, aldif_h = dev(aldir), dev(aldif)
+        asdir_h, asdif_h = dev(asdir), dev(asdif)
+        albdir_h = xp.zeros((ncol, NBNDSW), f32)
+        albdif_h = xp.zeros((ncol, NBNDSW), f32)
         albdir_h[:, 0:9] = aldir_h[:, None]
         albdif_h[:, 0:9] = aldif_h[:, None]
         albdir_h[:, NBNDSW - 1] = aldir_h
@@ -3678,10 +3694,10 @@ class CudaSW:
                 zasya_d = aerosol[1][rows]
                 zomga_d = aerosol[2][rows]
 
-            albdif_d = cp.asarray(albdif_h[rows])
-            albdir_d = cp.asarray(albdir_h[rows])
-            adjflux_d = cp.asarray(adjflux_h[rows])
-            cossza_d = cp.asarray(cossza_h[rows])
+            albdif_d = cp.ascontiguousarray(cp.asarray(albdif_h[rows]))
+            albdir_d = cp.ascontiguousarray(cp.asarray(albdir_h[rows]))
+            adjflux_d = cp.ascontiguousarray(cp.asarray(adjflux_h[rows]))
+            cossza_d = cp.ascontiguousarray(cp.asarray(cossza_h[rows]))
 
             # ---- spcvmc ---------------------------------------------
             # wk: each thread owns RSW_SPCVMC_WK x n1 entries, plus
@@ -3762,11 +3778,17 @@ class CudaSW:
             # bound; data movement only).
             del acc, pdp_d, swhr_d, swhrc_d
 
-        self.cp.cuda.runtime.deviceSynchronize()
-        err = int(cp.asnumpy(err_d)[0])
-        if err:
-            raise ValueError(f"rsw_cldprmc device abort, code {err} "
-                             "(mirrors the Fortran STOPs)")
+        def _cldprmc_verdict(err):
+            err = int(err[0])
+            if err:
+                raise ValueError(f"rsw_cldprmc device abort, code {err} "
+                                 "(mirrors the Fortran STOPs)")
+
+        # Read now, or once per radiation call
+        # (gpuwm.core.deferred_device_checks).  ``err`` is reused scratch
+        # the next call zeroes, so the deferred read takes its own copy.
+        from gpuwm.core.deferred_device_checks import check
+        check(err_d.copy(), _cldprmc_verdict)
         O["swhr"] = swhr
         O["swhrc"] = swhrc
         # The clean-sky-no-aerosol pair IS zero by the aer_opt = 0

@@ -267,6 +267,16 @@ CGLC_MODIS_LCZ_TO_MODIS21 = {
 NLCD_URBAN_TYPES = {21: 1, 22: 1, 23: 2, 24: 3}
 
 
+class _SlucmFractionLegend(dict):
+    """A crosswalk with SLUCM-only preparation metadata.
+
+    Dictionary items and serialized bytes are the established legend.
+    BEP/BEM retain their existing table fractions and ordinary mappings.
+    """
+
+    estimate_slucm_fraction = True
+
+
 def landcover_legend(source_id, *, sf_urban_physics=0, use_wudapt_lcz=0):
     """Crosswalk and NUM_LAND_CAT selected by the run's urban canopy."""
     mapping = (CGLC_MODIS_LCZ_TO_MODIS21 if source_id == "cglc-modis-lcz"
@@ -292,6 +302,8 @@ def landcover_legend(source_id, *, sf_urban_physics=0, use_wudapt_lcz=0):
         mapping = {**mapping, **{raw: categories.lcz[k - 1]
                                 for raw, k in NLCD_URBAN_TYPES.items()}}
     from gpuwm.core.landuse import load_landuse_table
+    if sf_urban_physics == 1:
+        mapping = _SlucmFractionLegend(mapping)
     return mapping, load_landuse_table().lucats
 
 
@@ -1164,6 +1176,7 @@ def build_highres_overrides(
         baseline: Mapping[str, np.ndarray] | None = None,
         landcover_water: str = WATER_SPLIT_BY_BASELINE,
         category_count: int = MODIS21_CATEGORY_COUNT,
+        soil_source: str = "soilgrids",
         ) -> tuple[dict[str, np.ndarray], dict[str, object]]:
     """Build terrain, land-use, and soil fields for one projected domain.
 
@@ -1265,11 +1278,16 @@ def build_highres_overrides(
                      **_coverage_record(landcover_id, luf_weight, latlon)},
     }
 
+    if soil_source not in ("soilgrids", "wps-geog"):
+        raise ValueError(f"unknown high-resolution soil_source {soil_source!r}")
     soil_id = next((_source_id(source) for _, source
                     in sorted(soil_sources.items())), None)
     soil_fields: dict[str, np.ndarray] = {}
     soil_audit = {}
-    for layer_name, weights in SOILGRIDS_DEPTH_WEIGHTS.items():
+    if soil_source == "wps-geog":
+        soil_fields, soil_audit = selected_geog_soil(soil_fallback, landmask)
+    for layer_name, weights in (SOILGRIDS_DEPTH_WEIGHTS.items()
+                                if soil_source == "soilgrids" else ()):
         fractions_extended, layer_audit = soilgrids_category_fractions(
             soil_sources, weights, extended, category_count=16)
         fractions = fractions_extended[(slice(None),) + crop]
@@ -1351,7 +1369,73 @@ def build_highres_overrides(
     if not terrain_smoothing.is_default:
         audit["method"] = audit["method"].replace("one WPS smooth-desmooth terrain pass",
             f"WPS terrain smoothing {terrain_smoothing.label()}")
+    if getattr(landcover_mapping, "estimate_slucm_fraction", False):
+        # The retained legend is selected only by an enabled canopy. Pick
+        # the same table as its existing source crosswalk, without inferring
+        # urban intensity from a different source's class numbers.
+        selected_lcz = None
+        for source_id, lcz in (("annual-nlcd", 0), ("cglc-modis-lcz", 1)):
+            selected, count = landcover_legend(
+                source_id, sf_urban_physics=1, use_wudapt_lcz=lcz)
+            if count == category_count and selected == landcover_mapping:
+                selected_lcz = lcz
+                break
+        if selected_lcz is None:
+            raise ValueError(
+                "the requested SLUCM area fraction has no registered URBPARM "
+                "crosswalk: its estimate would be missing or would use the "
+                "wrong urban class parameters")
+        from .urban_fraction import estimate_urban_fraction
+        fraction_source = {}
+        if selected_lcz == 0 and landcover is not None:
+            # Preserve the four NLCD developed intensities before 21/22
+            # collapse to one morphology type. All numerical resampling
+            # and weighting remains in Rust. URBPARM supplies morphology,
+            # while NLCD's imperviousness classes supply the built area.
+            raw_mapping = {raw: 1 for raw in NLCD_TO_MODIS21_INLAND}
+            raw_mapping.update({raw: n for n, raw in
+                                enumerate((21, 22, 23, 24), start=2)})
+            source_extended = resample_mapped_categories(
+                landcover, extended, raw_mapping, category_count=5)
+            fraction_source = {
+                "source_fractions": source_extended[(slice(None),) + crop],
+                "source_weight": luf_weight,
+            }
+        fields["FRC_URB2D"], audit["urban_fraction"] = estimate_urban_fraction(
+            fields, option=1, use_wudapt_lcz=selected_lcz, **fraction_source)
     return fields, audit
+
+
+def selected_geog_soil(soil_fallback, landmask):
+    """Carry selected WPS soil through the new land mask in Rust."""
+    import ctypes
+    from . import rust_bridge as bridge
+
+    library = bridge.load()
+    try:
+        entry = library.gpuwm_static_highres_baseline_soil
+    except AttributeError:
+        raise bridge.StaticBridgeError(
+            "the staged static-fields library cannot retain selected WPS "
+            "soil beneath high-resolution land cover; it would replace it "
+            "with SoilGrids. Rebuild the static-fields bridge.") from None
+    entry.argtypes = [ctypes.c_uint64, ctypes.c_uint64,
+                      ctypes.POINTER(ctypes.c_uint64)]
+    entry.restype = ctypes.c_int32
+    baseline_handle = _fieldset_new(bridge, soil_fallback or {})
+    mask_handle = _fieldset_new(bridge, {"LANDMASK": landmask})
+    output = ctypes.c_uint64(0)
+    try:
+        if entry(baseline_handle, mask_handle, ctypes.byref(output)) != 0:
+            raise ValueError(bridge.last_error(library))
+        return (bridge.fieldset_to_dict(output.value),
+                bridge.highres_audit_json(output.value))
+    finally:
+        bridge.fieldset_free(baseline_handle)
+        bridge.fieldset_free(mask_handle)
+        if output.value:
+            bridge.highres_audit_drop(output.value)
+            bridge.fieldset_free(output.value)
 
 
 #: How the warning and the receipt name each soil layer.

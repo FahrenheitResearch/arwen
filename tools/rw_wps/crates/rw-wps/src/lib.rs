@@ -8,6 +8,7 @@
 
 pub mod mapping;
 pub mod namelist;
+pub mod sfire;
 
 use mapping::{
     AxisRole, GridLocation, MissingPolicy, SourceFormat, Staggering, TargetContract,
@@ -4562,10 +4563,13 @@ mod tests {
     }
 
     fn temp_root(label: &str) -> PathBuf {
+        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         std::env::temp_dir().join(format!(
-            "rw-wps-{label}-{}-{}",
+            "rw-wps-{label}-{}-{}-{}",
             std::process::id(),
-            unix_ms()
+            unix_ms(),
+            NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ))
     }
 }

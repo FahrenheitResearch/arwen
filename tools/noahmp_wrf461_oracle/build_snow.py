@@ -29,7 +29,9 @@ Usage::
 
     python3 build_snow.py WRF_SOURCE_ROOT BUILD_DIR [--install]
 
-``--install`` copies the fixture over ``gpuwm/data/noahmp/oracle/noahmp-snow.csv``.
+``--install`` copies both fixtures into ``tests/data/oracles/noahmp/``, the
+directory ``tests/test_noahmp_snow.py`` reads.  They are test-only and live
+outside the package, so a regeneration never puts them back in the wheel.
 """
 
 from __future__ import annotations
@@ -43,6 +45,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
+# Where --install writes and what the sums file labels: the test fixture home,
+# outside gpuwm/ so the wheel's package-data glob never ships it.
+INSTALL_REL = "tests/data/oracles/noahmp"
+INSTALL_DIR = REPO / INSTALL_REL
 
 sys.path.insert(0, str(HERE))
 import snow_visibility_patch as vis  # noqa: E402
@@ -196,8 +202,8 @@ def main(argv: list[str]) -> int:
         ("tools/noahmp_wrf461_oracle/run_snow.F90", HERE / "run_snow.F90"),
         ("tools/noahmp_wrf461_oracle/run_snow_expf.F90", HERE / "run_snow_expf.F90"),
         ("tools/noahmp_wrf461_oracle/build_snow.py", HERE / "build_snow.py"),
-        ("gpuwm/data/noahmp/oracle/noahmp-snow.csv", csv),
-        ("gpuwm/data/noahmp/oracle/noahmp-snow-expf.csv", csv.parent / "noahmp-snow-expf.csv"),
+        (f"{INSTALL_REL}/noahmp-snow.csv", csv),
+        (f"{INSTALL_REL}/noahmp-snow-expf.csv", csv.parent / "noahmp-snow-expf.csv"),
     ]:
         lines.append(f"{sha256_file(path)}  {label}")
     lines.append(f"{obj_digest}  module_sf_noahmplsm.o (pristine == patched)")
@@ -207,7 +213,7 @@ def main(argv: list[str]) -> int:
     print("\n".join(lines))
 
     if install:
-        out_dir = REPO / "gpuwm" / "data" / "noahmp" / "oracle"
+        out_dir = INSTALL_DIR
         out_dir.mkdir(parents=True, exist_ok=True)
         for name in ("noahmp-snow.csv", "noahmp-snow-expf.csv"):
             dest = out_dir / name

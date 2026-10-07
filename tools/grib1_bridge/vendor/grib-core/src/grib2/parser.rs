@@ -135,6 +135,10 @@ pub struct ProductDefinition {
     /// ECMWF L137 publishes 276 values: 138 A, then 138 B.  Empty when
     /// NV is 0.
     pub coordinate_values: Vec<f64>,
+    pub constituent_type: Option<u16>,
+    pub aerosol_type: Option<u16>,
+    pub aerosol_size: Option<(u8, Option<f64>, Option<f64>)>,
+    pub optical_wavelength: Option<(u8, Option<f64>, Option<f64>)>,
 }
 
 /// Data representation from Section 5.
@@ -228,8 +232,7 @@ impl ProductDefinition {
     /// sentinel test, which is how a `255` layer type reaches a selector as
     /// a real bounded surface.
     pub fn second_fixed_surface(&self) -> Option<(u8, f64)> {
-        (self.second_level_type != 255)
-            .then_some((self.second_level_type, self.second_level_value))
+        (self.second_level_type != 255).then_some((self.second_level_type, self.second_level_value))
     }
 
     /// Returns the first PDT 4.8/4.11/4.12 statistical time range as an exact
@@ -309,6 +312,10 @@ impl Default for ProductDefinition {
             statistical_time_range_unit: None,
             time_range_length: None,
             coordinate_values: Vec::new(),
+            constituent_type: None,
+            aerosol_type: None,
+            aerosol_size: None,
+            optical_wavelength: None,
         }
     }
 }
@@ -1021,6 +1028,9 @@ fn parse_section4(sec: &[u8]) -> Result<ProductDefinition, String> {
         return Err("Section 4 too short".into());
     }
     let template = read_u16(sec, 7)?;
+    if matches!(template, 40 | 41 | 42 | 44 | 48) {
+        return parse_chemical_section4(sec, template);
+    }
     // PDT 4.0 contains two complete fixed-surface descriptors through octet
     // 34.  A shorter section must not inherit ProductDefinition defaults and
     // masquerade as an explicitly absent second surface.
@@ -1135,6 +1145,90 @@ fn parse_section4(sec: &[u8]) -> Result<ProductDefinition, String> {
     Ok(prod)
 }
 
+// WMO Manual on Codes, Volume I.2, PDT 4.40/41/42/44/48.
+// Tables: https://github.com/wmo-im/GRIB2 (GRIB2_Template_4_*_en.csv).
+// Published octet views: https://codes.ecmwf.int/grib/format/grib2/templates/4/
+// and https://www.nco.ncep.noaa.gov/pmb/docs/grib2/grib2_doc/grib2_temp4-48.shtml
+fn chemical_fixed_length(sec: &[u8], template: u16) -> Result<usize, String> {
+    Ok(match template {
+        40 => 36,
+        41 => 39,
+        // 4.42 octet 44 counts the 12-octet specifications after octet 48.
+        42 => {
+            let n = read_u8(sec, 43)? as usize;
+            if n == 0 {
+                return Err("Section 4 template 42 has zero time ranges".into());
+            }
+            48 + 12 * n
+        }
+        44 => 45,
+        48 => 58,
+        _ => return Err(format!("unmodeled chemical template {template}")),
+    })
+}
+
+fn parse_chemical_section4(sec: &[u8], template: u16) -> Result<ProductDefinition, String> {
+    let fixed = chemical_fixed_length(sec, template)?;
+    let nv = read_u16(sec, 5)? as usize;
+    if sec.len() != fixed + 4 * nv {
+        return Err(format!("Section 4 template {template} truncated or inconsistent: {} bytes, expected {} including coordinate values", sec.len(), fixed + 4 * nv));
+    }
+    // Copy the common descriptors into a PDT 4.0 layout and reuse its scale
+    // semantics.  Chemical process octets 14-24, surfaces 25-36;
+    // aerosol 4.44 process 25-33 (forecast is TWO octets), surfaces 34-45;
+    // optical 4.48 process 36-46, surfaces 47-58.
+    let (process, surface) = match template {
+        44 => (24, 33),
+        48 => (35, 46),
+        _ => (13, 24),
+    };
+    let mut common = vec![0u8; 34];
+    common[9..11].copy_from_slice(&sec[9..11]);
+    common[11..18].copy_from_slice(&sec[process..process + 7]);
+    if template == 44 {
+        common[18..22].copy_from_slice(&(read_u16(sec, 31)? as u32).to_be_bytes());
+    } else {
+        common[18..22].copy_from_slice(&sec[process + 7..process + 11]);
+    }
+    common[22..34].copy_from_slice(&sec[surface..surface + 12]);
+    let mut prod = parse_section4(&common)?;
+    prod.template = template;
+    let identity = read_u16(sec, 11)?;
+    let identity = (identity != u16::MAX).then_some(identity);
+    if matches!(template, 40 | 41 | 42) {
+        prod.constituent_type = identity;
+    } else {
+        prod.aerosol_type = identity;
+        // Size interval octet 14, scales/values at 15-19 and 20-24.
+        prod.aerosol_size = Some((
+            read_u8(sec, 13)?,
+            read_scaled_optional(sec, 14, 15)?,
+            read_scaled_optional(sec, 19, 20)?,
+        ));
+        if template == 48 {
+            // Wavelength interval octet 25, scales/values 26-30 and 31-35.
+            prod.optical_wavelength = Some((
+                read_u8(sec, 24)?,
+                read_scaled_optional(sec, 25, 26)?,
+                read_scaled_optional(sec, 30, 31)?,
+            ));
+        }
+    }
+    if template == 41 {
+        prod.ensemble_type = Some(read_u8(sec, 36)?);
+        prod.perturbation_number = Some(read_u8(sec, 37)?);
+        prod.num_forecasts_in_ensemble = Some(read_u8(sec, 38)?);
+    }
+    if template == 42 {
+        parse_pdt_statistical_fields(sec, &mut prod, 36)?;
+        if prod.end_of_interval.is_none() {
+            return Err("Section 4 template 42 invalid interval end".into());
+        }
+    }
+    prod.coordinate_values = parse_section4_coordinate_values(sec, template)?;
+    Ok(prod)
+}
+
 /// Read the optional coordinate values from the tail of Section 4.
 ///
 /// Octets 6-7 declare NV, the number of IEEE-754 f32 values appended
@@ -1153,6 +1247,29 @@ fn parse_section4_coordinate_values(sec: &[u8], template: u16) -> Result<Vec<f64
         0 => 34,
         1 => 37,
         2 => 36,
+        5 => 47,
+        6 => 35,
+        8 | 9 | 10 | 11 | 12 => {
+            let base = match template {
+                8 => 34,
+                9 => 47,
+                10 => 35,
+                11 => 37,
+                _ => 36,
+            };
+            let count = read_u8(sec, base + 7)? as usize;
+            if count == 0 {
+                return Err(format!(
+                    "Section 4 template {template} has zero time ranges"
+                ));
+            }
+            base + 12 + 12 * count
+        }
+        40 => 36,
+        41 => 39,
+        42 => chemical_fixed_length(sec, template)?,
+        44 => 45,
+        48 => 58,
         other => {
             return Err(format!(
                 "Section 4 declares {nv} coordinate values behind product \
@@ -1608,6 +1725,288 @@ mod tests {
         sec[spec_base + 3..spec_base + 7].copy_from_slice(&length_hours.to_be_bytes());
     }
 
+    fn chemical_section(template: u16, nv: usize) -> Vec<u8> {
+        let fixed = match template {
+            40 => 36,
+            41 => 39,
+            42 => 72,
+            44 => 45,
+            48 => 58,
+            _ => unreachable!(),
+        };
+        let mut sec = vec![0u8; fixed + 4 * nv];
+        let size = sec.len() as u32;
+        sec[..4].copy_from_slice(&size.to_be_bytes());
+        sec[4] = 4;
+        sec[5..7].copy_from_slice(&(nv as u16).to_be_bytes());
+        sec[7..9].copy_from_slice(&template.to_be_bytes());
+        sec[9] = 20;
+        sec[10] = 2;
+        sec[11..13].copy_from_slice(&5u16.to_be_bytes());
+        let (process, surface) = match template {
+            44 => (24, 33),
+            48 => (35, 46),
+            _ => (13, 24),
+        };
+        sec[process] = 2;
+        sec[process + 1] = 7;
+        sec[process + 2] = 8;
+        sec[process + 6] = 1;
+        if template == 44 {
+            sec[31..33].copy_from_slice(&258u16.to_be_bytes());
+        } else {
+            sec[process + 7..process + 11].copy_from_slice(&258u32.to_be_bytes());
+        }
+        sec[surface] = 105;
+        sec[surface + 1] = 0x81;
+        sec[surface + 2..surface + 6].copy_from_slice(&3u32.to_be_bytes());
+        sec[surface + 6] = 100;
+        sec[surface + 7] = 1;
+        sec[surface + 8..surface + 12].copy_from_slice(&125u32.to_be_bytes());
+        if template == 41 {
+            sec[36..39].copy_from_slice(&[1, 6, 20]);
+        }
+        if template == 42 {
+            seed_statistical_window(&mut sec, 36, 6);
+            sec[43] = 2;
+        }
+        if matches!(template, 44 | 48) {
+            sec[13] = 2;
+            sec[14] = 6;
+            sec[15..19].copy_from_slice(&3u32.to_be_bytes());
+            sec[19] = 255;
+            sec[20..24].copy_from_slice(&u32::MAX.to_be_bytes());
+            if template == 48 {
+                sec[24] = 1;
+                sec[25] = 9;
+                sec[26..30].copy_from_slice(&550u32.to_be_bytes());
+                sec[30] = 0x81;
+                sec[31..35].copy_from_slice(&2u32.to_be_bytes());
+            }
+        }
+        for i in 0..nv {
+            sec[fixed + 4 * i..fixed + 4 * i + 4].copy_from_slice(&(i as f32 * 0.25).to_be_bytes());
+        }
+        sec
+    }
+
+    #[test]
+    fn chemical_templates_parse_each_own_octets_and_refuse_every_truncation() {
+        for template in [40, 41, 42, 44, 48] {
+            let sec = chemical_section(template, 2);
+            let p = parse_section4(&sec).unwrap();
+            assert_eq!(
+                (p.template, p.parameter_category, p.parameter_number),
+                (template, 20, 2)
+            );
+            assert_eq!(
+                (
+                    p.generating_process,
+                    p.background_generating_process_id,
+                    p.forecast_generating_process_id
+                ),
+                (2, 7, 8)
+            );
+            assert_eq!((p.forecast_time, p.time_range_unit), (258, 1));
+            assert_eq!(
+                (
+                    p.level_type,
+                    p.level_value,
+                    p.second_level_type,
+                    p.second_level_value
+                ),
+                (105, 30.0, 100, 12.5)
+            );
+            assert_eq!(p.coordinate_values, vec![0.0, 0.25]);
+            assert_eq!(
+                p.constituent_type,
+                if template <= 42 { Some(5) } else { None }
+            );
+            assert_eq!(p.aerosol_type, if template >= 44 { Some(5) } else { None });
+            assert_eq!(
+                p.aerosol_size,
+                if template >= 44 {
+                    Some((2, Some(3.0 * 10f64.powi(-6)), None))
+                } else {
+                    None
+                }
+            );
+            assert_eq!(
+                p.optical_wavelength,
+                if template == 48 {
+                    Some((1, Some(550.0 * 10f64.powi(-9)), Some(20.0)))
+                } else {
+                    None
+                }
+            );
+            assert_eq!(p.ensemble_type, if template == 41 { Some(1) } else { None });
+            assert_eq!(
+                p.perturbation_number,
+                if template == 41 { Some(6) } else { None }
+            );
+            assert_eq!(
+                p.num_forecasts_in_ensemble,
+                if template == 41 { Some(20) } else { None }
+            );
+            assert_eq!(
+                p.statistical_process_type,
+                if template == 42 { Some(1) } else { None }
+            );
+            assert_eq!(
+                p.statistical_time_range_unit,
+                if template == 42 { Some(1) } else { None }
+            );
+            assert_eq!(
+                p.time_range_length,
+                if template == 42 { Some(6) } else { None }
+            );
+            assert_eq!(
+                p.end_of_interval,
+                if template == 42 {
+                    chrono::NaiveDate::from_ymd_opt(2026, 5, 7)
+                        .unwrap()
+                        .and_hms_opt(0, 0, 0)
+                } else {
+                    None
+                }
+            );
+            assert!(
+                p.derived_forecast_type.is_none()
+                    && p.percentile_value.is_none()
+                    && p.probability_type.is_none()
+            );
+            for end in 0..sec.len() {
+                assert!(
+                    parse_section4(&sec[..end]).is_err(),
+                    "template {template}, truncation {end}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn chemical_template_40_reads_all_276_hybrid_coefficients() {
+        let p = parse_section4(&chemical_section(40, 276)).unwrap();
+        assert_eq!(
+            p.coordinate_values,
+            (0..276).map(|i| i as f64 * 0.25).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn local_discipline_192_template_0_preserves_parameter_and_hybrid_level() {
+        // Section 0 carries discipline; Section 4 layout is independent of it.
+        // Envelope construction matches grib2/unpack.rs:3131.
+        fn section(number: u8, length: usize) -> Vec<u8> {
+            let mut sec = vec![0; length];
+            sec[..4].copy_from_slice(&(length as u32).to_be_bytes());
+            sec[4] = number;
+            sec
+        }
+        let mut s1 = section(1, 21);
+        s1[12..14].copy_from_slice(&2026u16.to_be_bytes());
+        s1[14] = 9;
+        s1[15] = 30;
+        let mut s3 = section(3, 72);
+        s3[6..10].copy_from_slice(&1u32.to_be_bytes());
+        s3[30..34].copy_from_slice(&1u32.to_be_bytes());
+        s3[34..38].copy_from_slice(&1u32.to_be_bytes());
+        let mut s4 = section(4, 34);
+        seed_common_section4(&mut s4, 0);
+        s4[9] = 210;
+        s4[10] = 3;
+        s4[22] = 105;
+        s4[28] = 255;
+        s4[24..28].copy_from_slice(&137u32.to_be_bytes());
+        let mut s5 = section(5, 12);
+        s5[5..9].copy_from_slice(&1u32.to_be_bytes());
+        s5[9..11].copy_from_slice(&4u16.to_be_bytes());
+        s5[11] = 1;
+        let mut s6 = section(6, 6);
+        s6[5] = 255;
+        let mut s7 = section(7, 9);
+        s7[5..9].copy_from_slice(&1.25f32.to_be_bytes());
+        let mut bytes = b"GRIB\0\0\xc0\x02".to_vec();
+        bytes.extend_from_slice(
+            &((16 + s1.len() + s3.len() + s4.len() + s5.len() + s6.len() + s7.len() + 4) as u64)
+                .to_be_bytes(),
+        );
+        for sec in [s1, s3, s4, s5, s6, s7] {
+            bytes.extend(sec);
+        }
+        bytes.extend(b"7777");
+        let file = Grib2File::from_bytes(&bytes).unwrap();
+        let m = &file.messages[0];
+        assert_eq!(m.discipline, 192);
+        assert_eq!(
+            (
+                m.product.template,
+                m.product.parameter_category,
+                m.product.parameter_number
+            ),
+            (0, 210, 3)
+        );
+        assert_eq!((m.product.level_type, m.product.level_value), (105, 137.0));
+        assert_eq!(
+            (m.product.forecast_time, m.product.time_range_unit),
+            (24, 1)
+        );
+        assert_eq!(m.product.constituent_type, None);
+        assert_eq!(m.product.aerosol_type, None);
+        assert_eq!(crate::grib2::unpack_message(m).unwrap(), vec![1.25]);
+    }
+
+    #[test]
+    fn chemical_missing_intervals_and_identity_are_optional() {
+        let mut sec = chemical_section(48, 0);
+        sec[11..13].fill(255);
+        sec[25] = 255;
+        sec[30] = 255;
+        let p = parse_section4(&sec).unwrap();
+        assert_eq!(p.aerosol_type, None);
+        assert_eq!(p.optical_wavelength, Some((1, None, None)));
+    }
+
+    #[test]
+    fn existing_section4_fixtures_keep_their_fields_and_no_chemical_identity() {
+        // Reparse the existing synthetic Section 4 fixtures. The crate ships no
+        // GRIB2 fixture files. These expected values predate the new templates.
+        for template in [0, 1, 2, 5, 6, 8, 9, 10, 11, 12] {
+            let base = match template {
+                8 => Some(34),
+                9 => Some(47),
+                10 => Some(35),
+                11 => Some(37),
+                12 => Some(36),
+                _ => None,
+            };
+            let fixed = base.map_or(
+                match template {
+                    1 => 37,
+                    2 => 36,
+                    5 => 47,
+                    6 => 35,
+                    _ => 34,
+                },
+                |b| b + 24,
+            );
+            let mut sec = vec![0u8; fixed];
+            seed_common_section4(&mut sec, template);
+            if let Some(b) = base {
+                seed_statistical_window(&mut sec, b, 3);
+            }
+            let p = parse_section4(&sec).unwrap();
+            assert_eq!(p.template, template);
+            assert_eq!(p.level_type, 103);
+            assert_eq!(p.level_value, 2.0);
+            assert_eq!(p.constituent_type, None);
+            assert_eq!(p.aerosol_type, None);
+            assert_eq!(p.aerosol_size, None);
+            assert_eq!(p.optical_wavelength, None);
+            assert!(p.coordinate_values.is_empty());
+        }
+    }
+
     #[test]
     fn parse_section4_reads_the_pv_coordinate_octets() {
         // A model-level PDT 4.0 whose Section 4 carries NV=6 coordinate
@@ -1662,7 +2061,10 @@ mod tests {
         sec[9..11].copy_from_slice(&4u16.to_be_bytes());
         sec[11] = 1;
         let dr = parse_section5(&sec).expect("a 12-octet IEEE section is valid");
-        assert_eq!((dr.template, dr.bits_per_value, dr.section5_num_data_points), (4, 32, 4));
+        assert_eq!(
+            (dr.template, dr.bits_per_value, dr.section5_num_data_points),
+            (4, 32, 4)
+        );
         sec[11] = 2;
         assert_eq!(parse_section5(&sec).unwrap().bits_per_value, 64);
         sec[11] = 9;
@@ -1694,21 +2096,16 @@ mod tests {
             if template == 4 {
                 sec[11] = 1;
             }
-            let dr = parse_section5(&sec)
-                .unwrap_or_else(|e| panic!("template {template}: {e}"));
+            let dr = parse_section5(&sec).unwrap_or_else(|e| panic!("template {template}: {e}"));
             assert_eq!(dr.template, template);
         }
     }
 
     #[test]
     fn parse_section4_refuses_pv_octets_on_an_unmodeled_template() {
-        // PDT 4.8's fixed part is variable-length (time-range
-        // specifications), so the tail cannot be located without
-        // modeling it; decoding anyway would misread statistics octets
-        // as coefficients.
+        // PDT 4.99 has no modeled layout, so its tail must refuse.
         let mut sec = vec![0u8; 58 + 8];
-        seed_common_section4(&mut sec, 8);
-        seed_statistical_window(&mut sec, 34, 1);
+        seed_common_section4(&mut sec, 99);
         sec[5..7].copy_from_slice(&2u16.to_be_bytes());
         let error = parse_section4(&sec).expect_err("unmodeled pv must refuse");
         assert!(error.contains("template"), "{error}");

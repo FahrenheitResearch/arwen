@@ -1,0 +1,24 @@
+nz i4 0
+t_phy f4 1 59
+p_phy f4 1 59
+rho f4 1 59
+qv_in f4 1 59
+u_phy f4 1 59
+v_phy f4 1 59
+z f4 1 59
+z_at_w f4 1 60
+ebu_in f4 1 3
+ebu f4 2 59 3
+ztopmax f4 2 2 4
+steps i4 2 2 4
+solver_k_min i4 1 4
+solver_k_max i4 1 4
+w f4 1 200
+t f4 1 200
+qv f4 1 200
+qc f4 1 200
+qh f4 1 200
+qi f4 1 200
+radius f4 1 200
+mean_fct f4 1 4
+firesize f4 1 4

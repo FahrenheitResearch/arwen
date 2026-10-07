@@ -43,18 +43,16 @@ from pathlib import Path
 import numpy as np
 
 from score_free_forecast import (COLUMN_THRESHOLD_DBZ, THRESHOLD_DBZ,
-                                 observed_composite)
+                                 fss_observed, observed_composite)
 
 #: Box edge is 2h+1 cells; the km follows from that grid's spacing.
 COARSE_HALF_WIDTHS = (0, 1, 2, 3, 4, 6, 8)      # 3..51 km at 3 km dx
 FINE_HALF_WIDTHS = (0, 1, 2, 4, 8)              # 1.5..25.5 km at 1.5 km dx
 
 
-def fss_at(field: np.ndarray, observed: np.ndarray, half_width: int) -> float:
-    from gpuwm.verify.field_metrics import fss_distance
-
-    return 1.0 - fss_distance(field, observed, threshold=THRESHOLD_DBZ,
-                              half_width=half_width)
+def fss_at(field: np.ndarray, observed: np.ndarray, half_width: int,
+           coverage=None) -> float:
+    return fss_observed(field, observed, coverage, half_width)
 
 
 def block_reduce(field: np.ndarray, factor: int, how: str) -> np.ndarray:
@@ -78,10 +76,10 @@ def mean_composite(composites: Path, leg: int, members: int) -> np.ndarray:
 
 
 def ladder(field: np.ndarray, observed: np.ndarray, half_widths,
-           dx_km: float) -> list[dict]:
+           dx_km: float, coverage=None) -> list[dict]:
     return [{"half_width": h,
              "neighborhood_km": round((2 * h + 1) * dx_km, 1),
-             "fss": round(fss_at(field, observed, h), 4)}
+             "fss": round(fss_at(field, observed, h, coverage), 4)}
             for h in half_widths]
 
 
@@ -102,7 +100,8 @@ def main() -> int:
     frames = []
     for index, obs_coarse in enumerate(args.obs_coarse):
         leg = args.first_free_leg + index
-        observed_c, echo_c = observed_composite(obs_coarse)
+        observed_c, echo_c, cover_c = observed_composite(
+            obs_coarse, with_coverage=True)
         coarse = mean_composite(args.coarse_composites, leg, args.members)
         fine = mean_composite(args.fine_composites, leg, args.members)
 
@@ -128,24 +127,27 @@ def main() -> int:
                     (fine_mean >= COLUMN_THRESHOLD_DBZ)[echo_c].sum()),
             },
             "family_a_common_3km": {
-                "coarse": ladder(coarse, observed_c, COARSE_HALF_WIDTHS, 3.0),
+                "coarse": ladder(coarse, observed_c, COARSE_HALF_WIDTHS, 3.0,
+                                 cover_c),
                 "fine_blockmax": ladder(fine_max, observed_c,
-                                        COARSE_HALF_WIDTHS, 3.0),
+                                        COARSE_HALF_WIDTHS, 3.0, cover_c),
             },
             "family_c_sensitivity_blockmean": {
                 "fine_blockmean": ladder(fine_mean, observed_c,
-                                         COARSE_HALF_WIDTHS, 3.0),
+                                         COARSE_HALF_WIDTHS, 3.0, cover_c),
             },
         }
 
         if index < len(args.obs_fine):
-            observed_f, _ = observed_composite(args.obs_fine[index])
+            observed_f, _, cover_f = observed_composite(
+                args.obs_fine[index], with_coverage=True)
             if observed_f.shape == fine.shape:
                 record["family_b_common_1p5km"] = {
-                    "fine": ladder(fine, observed_f, FINE_HALF_WIDTHS, 1.5),
+                    "fine": ladder(fine, observed_f, FINE_HALF_WIDTHS, 1.5,
+                                   cover_f),
                     "coarse_replicated": ladder(replicate(coarse, factor),
                                                 observed_f, FINE_HALF_WIDTHS,
-                                                1.5),
+                                                1.5, cover_f),
                     "obs_cols_gt35_1p5km": int(
                         (observed_f >= COLUMN_THRESHOLD_DBZ).sum()),
                 }

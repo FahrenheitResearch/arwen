@@ -832,8 +832,12 @@ def register_cli(subparsers) -> None:
              "(same meaning as GPUWM_WIF_DATA_ROOT)")
     parser.add_argument(
         "--thompson-fork", action="store_true",
-        help="stage the pinned WRF 3.9 fork Thompson coefficient set from "
-             "--from DIR, packaged fork data, or an explicitly selected mirror")
+        help="also stage the pinned WRF 3.9 fork Thompson coefficient set "
+             "(thompson_version = \"wrf_39_noaa\", the HRRR configurations' "
+             "tables; 330 MiB) into ~/.gpuwm/tables/thompson-wrf39-noaa: from "
+             "--from DIR, packaged fork data, an explicitly selected mirror, or "
+             "the release assets, SHA-256-verified against the packaged pins "
+             "before install. Runs that select the fork acquire it automatically")
     parser.add_argument(
         "--thompson-fork-only", action="store_true",
         help="stage only the fork coefficient set and leave classic tables alone")

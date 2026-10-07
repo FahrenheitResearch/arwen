@@ -727,6 +727,11 @@ class TestThePhysicalSpeedBound:
 
     def _run(self, monkeypatch, rows, nyquist, *, max_speed_ms):
         raw, solved, azimuth = self._plane(rows, nyquist)
+        # A prepared solver can only be injected into the Python reference
+        # (the Rust route links the real one), so these bound tests state
+        # that route.  The Rust route's bound is held to the reference by
+        # tests/test_obs_superob_rust_parity.py.
+        monkeypatch.setenv("GPUWM_SUPEROB_PYTHON", "1")
         monkeypatch.setattr(dealias_region, "load_region_dealiaser",
                             lambda path=None: _PreparedSolver(solved))
         params = DealiasParams(engine=ENGINE_REGION_GLOBAL, refinement=False,

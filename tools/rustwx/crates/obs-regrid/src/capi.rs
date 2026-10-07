@@ -185,7 +185,8 @@ pub unsafe extern "C" fn gpuwm_obsregrid_build_plan(
         };
         let index_cells = match method {
             Method::Nearest => destination_cells,
-            Method::CellAverage => source_cells,
+            Method::CellAverage | Method::CellSum => source_cells,
+            Method::CellSumSplit { n } => source_cells * n * n,
         };
         let (Some(source_latitude), Some(source_longitude)) = (
             unsafe { slice(source_latitude, source_cells) },
@@ -207,6 +208,94 @@ pub unsafe extern "C" fn gpuwm_obsregrid_build_plan(
         };
         if out_max_used_distance_m.is_null() {
             return set_error("null max-used-distance pointer");
+        }
+
+        let plan = match build_plan(
+            method,
+            source_latitude,
+            source_longitude,
+            (source_ny, source_nx),
+            destination_latitude,
+            destination_longitude,
+            (destination_ny, destination_nx),
+            max_distance_m,
+        ) {
+            Ok(value) => value,
+            Err(error) => return set_error(error.to_string()),
+        };
+        index_out.copy_from_slice(&plan.source_index);
+        for (slot, value) in reachable_out.iter_mut().zip(plan.reachable.iter()) {
+            *slot = u8::from(*value);
+        }
+        unsafe {
+            *out_max_used_distance_m = plan.max_used_distance_m;
+        }
+        OK
+    })
+}
+
+/// Build a cell-sum plan, without changing the ABI-1 observation symbols.
+/// # Safety
+/// Output indices address source_ny * source_nx * n * n elements.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn gpuwm_obsregrid_build_sum_plan(
+    method: u32,
+    n: usize,
+    source_latitude: *const f64,
+    source_longitude: *const f64,
+    source_ny: usize,
+    source_nx: usize,
+    destination_latitude: *const f64,
+    destination_longitude: *const f64,
+    destination_ny: usize,
+    destination_nx: usize,
+    max_distance_m: f64,
+    out_source_index: *mut i64,
+    out_reachable: *mut u8,
+    out_max_used_distance_m: *mut f64,
+) -> i32 {
+    guard(ERR, || {
+        clear_error();
+        let method = match (method, n) {
+            (2, 1) => Method::CellSum,
+            (3, _) => Method::CellSumSplit { n },
+            _ => return set_error("sum builder requires method 2 with n=1 or method 3 with a positive partition count; other method layouts would overwrite the index buffer"),
+        };
+        if let Err(error) = crate::plan::split_count(method) { return set_error(error.to_string()); }
+        let source_cells = match source_ny.checked_mul(source_nx) {
+            Some(value) if value > 0 => value,
+            _ => return set_error("the source grid must be a non-empty 2-D shape; otherwise mass assignment would read an invalid buffer"),
+        };
+        let destination_cells = match destination_ny.checked_mul(destination_nx) {
+            Some(value) if value > 0 => value,
+            _ => return set_error("the destination grid must be a non-empty 2-D shape; otherwise mass assignment would write an invalid buffer"),
+        };
+        let index_cells = match source_cells.checked_mul(n).and_then(|v| v.checked_mul(n)) {
+            Some(v) if v <= crate::plan::MAX_SUM_INDEX_BYTES / 8 => v,
+            None => return set_error("cell-sum plan size overflows; destination index buffer cannot be sized"),
+            _ => return set_error("cell-sum destination indices exceed 4 GiB per buffer; caller and Rust copies would exhaust the supported host-memory budget"),
+        };
+        let (Some(source_latitude), Some(source_longitude)) = (
+            unsafe { slice(source_latitude, source_cells) },
+            unsafe { slice(source_longitude, source_cells) },
+        ) else {
+            return set_error("null source latitude/longitude pointer; refusing null coordinate reads");
+        };
+        let (Some(destination_latitude), Some(destination_longitude)) = (
+            unsafe { slice(destination_latitude, destination_cells) },
+            unsafe { slice(destination_longitude, destination_cells) },
+        ) else {
+            return set_error("null destination latitude/longitude pointer; refusing null coordinate reads");
+        };
+        let (Some(index_out), Some(reachable_out)) = (
+            unsafe { slice_mut(out_source_index, index_cells) },
+            unsafe { slice_mut(out_reachable, destination_cells) },
+        ) else {
+            return set_error("null plan output pointer; refusing null index writes");
+        };
+        if out_max_used_distance_m.is_null() {
+            return set_error("null max-used-distance pointer; refusing null receipt writes");
         }
 
         let plan = match build_plan(
@@ -268,7 +357,8 @@ pub unsafe extern "C" fn gpuwm_obsregrid_apply_plan(
         };
         let index_cells = match method {
             Method::Nearest => destination_cells,
-            Method::CellAverage => source_cells,
+            Method::CellAverage | Method::CellSum => source_cells,
+            Method::CellSumSplit { n } => source_cells * n * n,
         };
         let (Some(source_index), Some(reachable), Some(values), Some(valid)) = (
             unsafe { slice(source_index, index_cells) },
@@ -419,4 +509,145 @@ mod tests {
         assert_eq!(out_values, [4.5, 0.0]);
         assert_eq!(out_valid, [1, 0]);
     }
+}
+
+/// Apply a cell-sum plan and publish its four mass totals.
+/// # Safety
+/// index has source_count*n*n elements; receipt has four f64 elements.
+/// Other pointers address their explicit counts.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpuwm_obsregrid_apply_sum_plan(
+    n: usize, index: *const i64, source_count: usize, destination_count: usize,
+    values: *const f64, valid: *const u8, out: *mut f64, out_valid: *mut u8,
+    receipt: *mut f64,
+) -> i32 {
+    guard(ERR, || {
+        clear_error();
+        let count = match source_count.checked_mul(n).and_then(|v| v.checked_mul(n)) {
+            Some(v) if n > 0 => v,
+            _ => return set_error("cell-sum split size is zero or overflows; sub-point buffer cannot be read"),
+        };
+        let (Some(index), Some(values), Some(valid), Some(out), Some(out_valid), Some(receipt)) = (
+            unsafe { slice(index, count) }, unsafe { slice(values, source_count) },
+            unsafe { slice(valid, source_count) }, unsafe { slice_mut(out, destination_count) },
+            unsafe { slice_mut(out_valid, destination_count) }, unsafe { slice_mut(receipt, 4) },
+        ) else { return set_error("null cell-sum buffer; refusing to read or write through null"); };
+        let valid: Vec<bool> = valid.iter().map(|v| *v != 0).collect();
+        let mut validity = vec![true; destination_count];
+        match crate::plan::apply_sum(Method::CellSumSplit { n }, index, values, &valid, out, &mut validity) {
+            Ok(totals) => receipt.copy_from_slice(&totals),
+            Err(error) => return set_error(error.to_string()),
+        }
+        for (to, from) in out_valid.iter_mut().zip(validity) { *to = u8::from(from); }
+        OK
+    })
+}
+
+/// Apply a cell-sum plan to a fire-intensity field with the touch rule
+/// (`plan::apply_touch_sum`): each destination a source cell's sub-points
+/// reach gets that cell's whole value once.  Same buffers and receipt layout
+/// as `gpuwm_obsregrid_apply_sum_plan`; receipt[1] is the touched total.
+/// # Safety
+/// index has source_count*n*n elements; receipt has four f64 elements.
+/// Other pointers address their explicit counts.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpuwm_obsregrid_apply_touch_plan(
+    n: usize, index: *const i64, source_count: usize, destination_count: usize,
+    values: *const f64, valid: *const u8, out: *mut f64, out_valid: *mut u8,
+    receipt: *mut f64,
+) -> i32 {
+    guard(ERR, || {
+        clear_error();
+        let count = match source_count.checked_mul(n).and_then(|v| v.checked_mul(n)) {
+            Some(v) if n > 0 => v,
+            _ => return set_error("cell-sum split size is zero or overflows; sub-point buffer cannot be read"),
+        };
+        let (Some(index), Some(values), Some(valid), Some(out), Some(out_valid), Some(receipt)) = (
+            unsafe { slice(index, count) }, unsafe { slice(values, source_count) },
+            unsafe { slice(valid, source_count) }, unsafe { slice_mut(out, destination_count) },
+            unsafe { slice_mut(out_valid, destination_count) }, unsafe { slice_mut(receipt, 4) },
+        ) else { return set_error("null cell-sum buffer; refusing to read or write through null"); };
+        let valid: Vec<bool> = valid.iter().map(|v| *v != 0).collect();
+        let mut validity = vec![true; destination_count];
+        match crate::plan::apply_touch_sum(Method::CellSumSplit { n }, index, values, &valid, out, &mut validity) {
+            Ok(totals) => receipt.copy_from_slice(&totals),
+            Err(error) => return set_error(error.to_string()),
+        }
+        for (to, from) in out_valid.iter_mut().zip(validity) { *to = u8::from(from); }
+        OK
+    })
+}
+
+/// Apply one table-declared inclusive range mask in Rust.
+/// # Safety
+/// Pointers address count elements. valid is updated in place.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpuwm_obsregrid_mask_range(
+    values: *const f64, count: usize, minimum: f64, maximum: f64, valid: *mut u8,
+    quantity: *const f64, nonzero_only: u8,
+) -> i32 {
+    guard(ERR, || {
+        clear_error();
+        let (Some(values), Some(valid), Some(quantity)) = (unsafe { slice(values, count) }, unsafe { slice_mut(valid, count) }, unsafe { slice(quantity, count) })
+            else { return set_error("null emission mask buffer; refusing null data access"); };
+        if minimum.is_nan() || maximum.is_nan() || minimum > maximum {
+            return set_error("emission mask range is reversed or NaN; it would exclude cells unpredictably");
+        }
+        for ((value, valid), quantity) in values.iter().zip(valid).zip(quantity) {
+            if nonzero_only != 0 && *quantity == 0.0 { continue; }
+            *valid = u8::from(*valid != 0 && value.is_finite() && *value >= minimum && *value <= maximum);
+        }
+        OK
+    })
+}
+
+/// Normalize a row-declared no-fire sentinel, never arbitrary missing values.
+/// # Safety
+/// values addresses count writable f64 elements.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpuwm_obsregrid_emission_sentinel(values: *mut f64, count: usize, sentinel: f64) -> i32 {
+    guard(ERR, || {
+        clear_error();
+        let Some(values) = (unsafe { slice_mut(values, count) }) else {
+            return set_error("null emission values; refusing null data access");
+        };
+        for value in values { if *value == sentinel { *value = 0.0; } }
+        OK
+    })
+}
+
+/// Select n from the largest source angular spacing and finest model spacing.
+/// # Safety
+/// map_factors addresses count readable f64 elements, out_n one usize.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpuwm_obsregrid_emission_split(
+    latitude: *const f64, longitude: *const f64, source_ny: usize, source_nx: usize,
+    dx: f64, map_factors: *const f64, count: usize, out_n: *mut usize,
+) -> i32 {
+    guard(ERR, || {
+        clear_error();
+        let source_count = match source_ny.checked_mul(source_nx) {
+            Some(v) if v > 0 => v,
+            _ => return set_error("source shape is empty or overflows; emission spacing cannot be determined"),
+        };
+        let (Some(latitude), Some(longitude)) = (unsafe { slice(latitude, source_count) }, unsafe { slice(longitude, source_count) })
+            else { return set_error("null source coordinates; emission partition spacing cannot be determined"); };
+        let (dy, dx_deg) = match crate::plan::regular_spacing(latitude, longitude, (source_ny, source_nx)) {
+            Ok(v) => v, Err(error) => return set_error(error.to_string()),
+        };
+        let spacing_deg = dy.abs().max(dx_deg.abs());
+        let Some(factors) = (unsafe { slice(map_factors, count) }) else {
+            return set_error("null map factors; cannot determine emission partition spacing");
+        };
+        if count == 0 || out_n.is_null() || !dx.is_finite() || dx <= 0.0
+            || !spacing_deg.is_finite() || spacing_deg <= 0.0
+            || factors.iter().any(|v| !v.is_finite() || *v <= 0.0) {
+            return set_error("emission split requires positive finite spacing and map factors; otherwise a coarse fire cell concentrates in one fine cell");
+        }
+        let largest = factors.iter().copied().fold(0.0, f64::max);
+        let n = (crate::geometry::EARTH_RADIUS_M * spacing_deg.to_radians() * largest / dx).ceil().max(1.0);
+        if !n.is_finite() || n >= usize::MAX as f64 { return set_error("emission split count cannot fit usize; sub-point buffers cannot be represented"); }
+        unsafe { *out_n = n as usize; }
+        OK
+    })
 }

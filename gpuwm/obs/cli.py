@@ -532,6 +532,7 @@ _INSTRUMENTS = {
     "mrms": "MRMS composite reflectivity",
     "stage4": "Stage-IV precipitation accumulation",
     "asos": "ASOS/METAR surface reports",
+    "airnow": "AirNow hourly air-quality reports",
     "goes": "GOES ABI cloud-product packs",
     "opera": "the European composite-reflectivity mosaic",
     "odim": "European per-site polar volumes (the raw route "

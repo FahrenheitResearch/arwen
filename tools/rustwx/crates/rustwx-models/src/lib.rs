@@ -112,6 +112,10 @@ pub enum RenderStyle {
     /// A hydrometeor mixing ratio in g kg-1, sequential, masked below a
     /// hundredth of a gram.
     WeatherHydrometeorMixingRatio,
+    AirQualityPm25,
+    AirQualityOzone,
+    AerosolOpticalDepth,
+    DustConcentration,
 }
 
 fn recipe_lineage(slug: &str, family: ProductFamily) -> ProductLineage {
@@ -3862,7 +3866,50 @@ const FIELD_COLUMN_INTEGRATED_SMOKE: GribFieldSpec = field_spec(
     ],
 );
 
+const FIELD_PM25_SFC: GribFieldSpec = field_spec(
+    "pm25_near_surface", "Lowest-Level Dry PM2.5", ProductFamily::Native,
+    GribLevelKind::Surface, None,
+    Some(FieldSelector::surface(CanonicalField::Pm25Dry)), &[],
+);
+const FIELD_DUST_SFC: GribFieldSpec = field_spec(
+    "dust_near_surface", "Near-Surface Dust", ProductFamily::Native,
+    GribLevelKind::Surface, None,
+    Some(FieldSelector::surface(CanonicalField::DustMassConcentration)), &[],
+);
+const FIELD_OZONE_SFC: GribFieldSpec = field_spec(
+    "ozone_near_surface", "Lowest-Level Ozone", ProductFamily::Native,
+    GribLevelKind::Surface, None,
+    Some(FieldSelector::surface(CanonicalField::OzoneConcentration)), &[],
+);
+const FIELD_AOD550: GribFieldSpec = field_spec(
+    "aod_550", "550 nm Aerosol Optical Depth", ProductFamily::Native,
+    GribLevelKind::EntireAtmosphere, None,
+    Some(FieldSelector::entire_atmosphere(CanonicalField::AerosolOpticalDepth550)),
+    &["AOTK:entire atmosphere"],
+);
+
 const PLOT_RECIPES: &[PlotRecipe] = &[
+    PlotRecipe {
+        slug: "smoke_near_surface", title: "Near-Surface Smoke", filled: FIELD_SMOKE_MASS_DENSITY_8M,
+        contours: None, barbs_u: None, barbs_v: None, style: RenderStyle::AirQualityPm25,
+    },
+    PlotRecipe {
+        slug: "pm25_near_surface", title: "Lowest-Level Dry PM2.5", filled: FIELD_PM25_SFC,
+        contours: None, barbs_u: None, barbs_v: None, style: RenderStyle::AirQualityPm25,
+    },
+    PlotRecipe {
+        slug: "dust_near_surface", title: "Near-Surface Dust", filled: FIELD_DUST_SFC,
+        contours: None, barbs_u: None, barbs_v: None, style: RenderStyle::DustConcentration,
+    },
+    PlotRecipe {
+        slug: "ozone_near_surface", title: "Lowest-Level Ozone (instantaneous)", filled: FIELD_OZONE_SFC,
+        contours: None, barbs_u: None, barbs_v: None, style: RenderStyle::AirQualityOzone,
+    },
+    PlotRecipe {
+        slug: "aod_550", title: "550 nm Aerosol Optical Depth", filled: FIELD_AOD550,
+        contours: None, barbs_u: None, barbs_v: None, style: RenderStyle::AerosolOpticalDepth,
+    },
+
     PlotRecipe {
         slug: "200mb_height_winds",
         title: "200mb Height / Winds",
@@ -6061,7 +6108,7 @@ const PLOT_RECIPES: &[PlotRecipe] = &[
         contours: None,
         barbs_u: None,
         barbs_v: None,
-        style: RenderStyle::WeatherTemperature,
+        style: RenderStyle::AirQualityPm25,
     },
     PlotRecipe {
         slug: "smoke_column",
@@ -6282,7 +6329,7 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
         }
         (CanonicalField::WindGust, VerticalSelector::HeightAboveGroundMeters(10)) => true,
         (CanonicalField::SmokeMassDensity, VerticalSelector::HeightAboveGroundMeters(8)) => {
-            matches!(model, ModelId::Hrrr | ModelId::HrrrAk)
+            matches!(model, ModelId::Hrrr | ModelId::HrrrAk | ModelId::WrfGdex)
         }
         (CanonicalField::PressureReducedToMeanSeaLevel, VerticalSelector::MeanSeaLevel) => true,
         (
@@ -6295,9 +6342,23 @@ pub fn selector_supported_for_model(selector: FieldSelector, model: ModelId) -> 
             | CanonicalField::HighCloudCover,
             VerticalSelector::EntireAtmosphere,
         ) => true,
-        (CanonicalField::ColumnIntegratedSmoke, VerticalSelector::EntireAtmosphere) => {
-            matches!(model, ModelId::Hrrr | ModelId::HrrrAk)
+        // HRRR-Smoke's AOTK/COLMD from its files, and ArWen's own wrfout
+        // (AOD5502D, SMOKE_COLUMN) through the store: the chem products
+        // draw both through one recipe.
+        (CanonicalField::AerosolOpticalDepth550, VerticalSelector::EntireAtmosphere) => {
+            matches!(model, ModelId::Hrrr | ModelId::HrrrAk | ModelId::WrfGdex)
         }
+        (CanonicalField::ColumnIntegratedSmoke, VerticalSelector::EntireAtmosphere) => {
+            matches!(model, ModelId::Hrrr | ModelId::HrrrAk | ModelId::WrfGdex)
+        }
+        // ArWen chem wrfout planes with no operational-source counterpart
+        // (PM2_5_DRY, DUST_SFC and o3 at the lowest mass level).
+        (
+            CanonicalField::Pm25Dry
+            | CanonicalField::DustMassConcentration
+            | CanonicalField::OzoneConcentration,
+            VerticalSelector::Surface,
+        ) => matches!(model, ModelId::WrfGdex),
         (
             CanonicalField::TotalPrecipitation | CanonicalField::ProbabilityOfPrecipitation,
             VerticalSelector::Surface,

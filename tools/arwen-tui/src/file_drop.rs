@@ -196,12 +196,14 @@ mod tests {
     struct Files(PathBuf);
     impl Files {
         fn new() -> Self {
+            // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+            static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let unique = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
             let root = std::env::temp_dir()
-                .join(format!("arwen-file-drop-{}-{unique}", std::process::id()));
+                .join(format!("arwen-file-drop-{}-{unique}-{}", std::process::id(), NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
             fs::create_dir(&root).unwrap();
             for name in [
                 "storm case.toml",

@@ -1201,6 +1201,18 @@ def release_waiting_ozone_links(outgoing, waiting) -> None:
 # The adapter.
 # ---------------------------------------------------------------------------
 
+def _with_deferred_device_checks(method):
+    """Run ``method`` inside one :func:`gpuwm.core.deferred_device_checks.deferred` scope."""
+    from functools import wraps
+
+    @wraps(method)
+    def wrapper(*args, **kwargs):
+        from gpuwm.core.deferred_device_checks import deferred
+        with deferred():
+            return method(*args, **kwargs)
+    return wrapper
+
+
 class RRTMGLegacyRadiation:
     """WRF v4.6.1 legacy RRTMG (option 4/4) forecast radiation adapter.
 
@@ -1228,6 +1240,10 @@ class RRTMGLegacyRadiation:
     #: the run's wrfout carries the field.  The declaration is what the
     #: driver reads to decide whether OLR exists at all.
     publishes_olr = True
+    #: The chunk prep builds WRF's icloud=1 CLDFRA (plus the MYNN merge)
+    #: on either spectrum, so the driver's held CLDFRA output buffer
+    #: exists for every legacy RRTMG configuration.
+    publishes_cldfra = True
 
     # No latitude-derived ozone is retained. The common tile gather and
     # moving-grid routes change latitude in place, so every radiation call
@@ -1377,6 +1393,47 @@ class RRTMGLegacyRadiation:
                 f"{exc}") from exc
 
     # ------------------------------------------------------------------
+    # The retained o33d field (nz, ny, nx).  The climatology route
+    # computes it on the device and used to copy it to the host on every
+    # radiation call (and the physics driver then copied it back into
+    # o3rad): 180 MB down and up per call per rank at 900,000 columns, the
+    # host-memory rise seen at every 1 km radiation step (A3).  It now
+    # stays on the device; the host copy is made the first time a host
+    # reader (a child provider, a restart, a test) asks, bit for bit the
+    # same array.
+    @property
+    def _o33d_grid(self):
+        host = self.__dict__.get("_o33d_host")
+        device = self.__dict__.get("_o33d_device")
+        if host is None and device is not None:
+            import cupy as cp
+            host = np.ascontiguousarray(cp.asnumpy(device))
+            self.__dict__["_o33d_host"] = host
+        return host
+
+    @_o33d_grid.setter
+    def _o33d_grid(self, value):
+        self.__dict__["_o33d_host"] = value
+        self.__dict__["_o33d_device"] = None
+
+    def o33d_share(self, carrier) -> None:
+        """Hold ``carrier`` (the driver's o3rad, just copied from this field)
+        as the retained device field instead of a second copy, so keeping
+        ozone on the card costs no memory over the carrier it fills."""
+        if self.__dict__.get("_o33d_device") is not None:
+            self.__dict__["_o33d_device"] = carrier
+
+    def o33d_device(self):
+        """The retained o33d field on the device, or ``None``."""
+        device = self.__dict__.get("_o33d_device")
+        if device is not None:
+            return device
+        host = self.__dict__.get("_o33d_host")
+        if host is None:
+            return None
+        import cupy as cp
+        return cp.asarray(host)
+
     @staticmethod
     def _host(a):
         """Bit-preserving host copy of a numpy or cupy array."""
@@ -1516,16 +1573,22 @@ class RRTMGLegacyRadiation:
         if q is None:
             return
         mask = _f32_positive(q) & _f32_positive(eff_um)
-        top = float(cp.where(mask, eff_um, cp.float32(-np.inf)).max())
-        if top != -np.inf and top < 1.0e-3:
-            raise ValueError(
-                f"state.{name} looks meter-scale (every value on cloudy "
-                f"points is < 1e-3, max {top:.3e}) "
-                "but the gpuwm radii contract is MICRONS: this state was "
-                "almost surely written before the Thompson radii-units "
-                "fix.  Resuming it requires the cloud-radiation seam "
-                "lane's restart migration; rrtmg_legacy will not silently "
-                "rescale or radiate at clip floors")
+
+        def verdict(top):
+            top = float(top)
+            if top != -np.inf and top < 1.0e-3:
+                raise ValueError(
+                    f"state.{name} looks meter-scale (every value on cloudy "
+                    f"points is < 1e-3, max {top:.3e}) "
+                    "but the gpuwm radii contract is MICRONS: this state was "
+                    "almost surely written before the Thompson radii-units "
+                    "fix.  Resuming it requires the cloud-radiation seam "
+                    "lane's restart migration; rrtmg_legacy will not silently "
+                    "rescale or radiate at clip floors")
+
+        # One host read per call, not per species (deferred_device_checks).
+        from gpuwm.core.deferred_device_checks import check
+        check(cp.where(mask, eff_um, cp.float32(-np.inf)).max(), verdict)
 
     def _mcica_generator(self, gpu_entry):
         """Device McICA twin, resolved through the module attribute at
@@ -1537,6 +1600,13 @@ class RRTMGLegacyRadiation:
                        _stage_probe=lambda c0, nc: probe("mcica"))
 
     # ------------------------------------------------------------------
+    # Every device-side guard of the call (the LW/SW cloud aborts, the SW
+    # day contract, the McICA seed guard, the radii unit check) is read
+    # once when the call ends instead of once per chunk, so the host
+    # queues the next chunk while the card runs this one
+    # (gpuwm.core.deferred_device_checks, A3).  A failed guard raises the
+    # same error before any result leaves this call.
+    @_with_deferred_device_checks
     def __call__(self, *, atmosphere, fields, state, cfg):
         import cupy as cp
 
@@ -1760,8 +1830,13 @@ class RRTMGLegacyRadiation:
                 o33d.reshape(ny, nx, nz).transpose(2, 0, 1))
             grid_o3 = cp.asarray(self._o33d_grid.reshape(nz, ncol))
         else:
+            # One host buffer for every call (the native route fills it in
+            # place): a fresh ~200 MB array per call per rank was faulted in
+            # at every 1 km radiation step (A3).
             ozmixt = np.asarray(self._ozone.ozn_latitude_time_int(
-                julday, julian, self.latitude_deg.reshape(-1), self._ozone_climo))
+                julday, julian, self.latitude_deg.reshape(-1), self._ozone_climo,
+                out=self.__dict__.get("_ozmixt_buf")))
+            self.__dict__["_ozmixt_buf"] = ozmixt
             pin = np.asarray(self._ozone_climo.plev)
             if pin.dtype != np.float32 or pin.ndim != 1:
                 raise ValueError("pin must be float32 (levsiz,)")
@@ -1787,7 +1862,8 @@ class RRTMGLegacyRadiation:
             del ozmixt_d
             # Retain for child domains (their providers read this field,
             # so a nest's ozone updates exactly when its parent's does).
-            self._o33d_grid = cp.asnumpy(grid_o3).reshape(nz, ny, nx)
+            self.__dict__["_o33d_host"] = None
+            self.__dict__["_o33d_device"] = grid_o3.reshape(nz, ny, nx)
             del pin_d
 
         shared = dict(
@@ -1928,10 +2004,24 @@ class RRTMGLegacyRadiation:
         if self.shortwave and (swddir is not None or getattr(
                 self, "surface_diffuse_requested", False)):
             swddif = cp.zeros(ncol, dtype=cp.float32)
+        # CLDFRA for the driver's held output buffer: the chunk prep's
+        # cal_cldfra1 + MYNN-merge fraction (cldfra3d, what WRF's driver
+        # leaves in grid%cldfra), copied out per chunk in column order.
+        # The longwave loop covers every column; a shortwave-only adapter
+        # covers only daylight ones, so it builds the cloud inputs for all
+        # columns once more (cost only: chunk_inputs is per column and
+        # touches nothing outside its own gathered blocks).
+        cldfra_cols = cp.empty((ncol, nz), dtype=cp.float32)
+        for c0 in range(0, 0 if self.longwave else ncol, chunk_lw):
+            c1 = min(c0 + chunk_lw, ncol)
+            kw = chunk_inputs(slice(c0, c1))
+            cldfra_cols[c0:c1] = kw["cldfra3d"]
+            del kw
         for c0 in range(0, ncol if self.longwave else 0, chunk_lw):
             c1 = min(c0 + chunk_lw, ncol)
             sel = slice(c0, c1)
             kw = chunk_inputs(sel)
+            cldfra_cols[c0:c1] = kw["cldfra3d"]
             # The wrapper glue on the device: rrtmg_legacy_device holds
             # lwrad_prep_batch's statements bitwise
             # (tests/test_rrtmg_legacy_prep_device.py).
@@ -2103,4 +2193,5 @@ class RRTMGLegacyRadiation:
             olr=(olr.reshape(ny, nx) if self.longwave
                  else None),
             swddir=(None if swddir is None else swddir.reshape(ny, nx)),
-            swddif=(None if swddif is None else swddif.reshape(ny, nx)))
+            swddif=(None if swddif is None else swddif.reshape(ny, nx)),
+            cldfra=cp.ascontiguousarray(cldfra_cols.T).reshape(nz, ny, nx))

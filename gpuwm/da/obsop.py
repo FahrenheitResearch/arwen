@@ -59,14 +59,18 @@ imposing one scheme's assumptions on another:
   verbatim here.  Two departures from the 1/6/8/10 family the caller must
   carry: radardd02 floors at **0 dBZ**, not -35, and it reads five ice
   categories plus their moments rather than the shared rain-first set.
-- ``mp_physics=50`` -- P3 is REFUSED BY NAME and is not in either list
-  above; see :data:`NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP` for the reason
-  text the refusal prints.  P3 is an active scheme and it does produce
-  reflectivity -- ``gpuwm.core.p3`` stashes the scheme's own diagnostic Z
-  as REFL_10CM -- but that Z is computed inside ``p3_main``'s final
-  diagnostics loop, which is simultaneously a state update, so there is
-  no pure H_Z(x) to adapt over.  ``gpuwm.core.refl.compute_refl_10cm``
-  carries no mp=50 branch for the same reason and must not gain one here.
+- ``mp_physics=50`` -- P3, through
+  ``gpuwm.core.p3_device.reflectivity``: the Z half of the scheme's own
+  final-diagnostics loop (WRF module_mp_p3.F:4722-4895), replayed on
+  LOCAL copies in gpuwm/core/kernels/p3_zdiag.cu over the forecast port's
+  unchanged device helpers, so evaluating it moves nothing.  The forecast
+  loop fuses that Z with a state update (sub-QSMALL dumps into vapour and
+  theta, the rain-DSD and ice-number clamps), which is why this was a named
+  refusal until the Z was lifted out.  Its one clear-air value is the
+  scheme's zero-hydrometeor reflectivity, -36.9897 dBZ (the 1e-22 seeds at
+  :2286-2287).  ``gpuwm.core.refl.compute_refl_10cm`` still carries no
+  mp=50 branch: its only P3-satisfiable arm is the rain-only Kessler
+  fallback.
 
 The 1/6/8/10/16/28 routes share the -35 dBZ floor, the 1e-9 kg/kg species
 activity threshold, and the ``refl10cm_hm`` air-density diagnosis, so
@@ -101,10 +105,22 @@ Documented simplifications
    Kessler fallback here implements -- so on ``mp_physics=1`` the fall
    speed and the reflectivity share one PSD (checked numerically in
    :func:`reflectivity_fall_speed`).  On the Morrison, WSM6 and Thompson
-   paths the richer scheme PSD supplies Z while the fall speed is still
-   read off the Marshall-Palmer rain calibration: it consumes that
-   scheme's Z, but it is NOT a moment integral over that scheme's PSD,
-   and it overstates the fall speed of dry snow aloft.
+   paths the richer scheme PSD supplies Z while the RAIN fall speed is
+   still read off the Marshall-Palmer rain calibration: it consumes that
+   scheme's Z, but it is NOT a moment integral over that scheme's PSD.
+
+   Frozen species no longer fall at the rain relation.  Given the state's
+   species (``species=`` and ``inverse_density=``, which both callers in
+   this tree pass), snow, graupel and hail each take the Lin, Farley and
+   Orville (1983, J. Clim. Appl. Meteor. 22, 1065-1092) mass-weighted
+   fall speed of an exponential size distribution, and the cell's fall
+   speed is the mass-weighted blend of its active species, rain keeping
+   Sun and Crook.  The rain relation alone, applied to dry snow aloft,
+   made a 30 dBZ snow cell fall at about 5 m/s where snow falls at about
+   1 m/s, and the radial velocity operator projected the difference onto
+   every elevated beam.  Mass weighting is itself an approximation (a
+   radar weights by reflectivity); it is stated, and it is far nearer
+   than one rain relation for every species.
 
    Because a power law in Z does not vanish in clear air (it still gives
    ~1.7 m/s at the -35 dBZ floor), the fall speed is gated OFF wherever
@@ -211,12 +227,25 @@ CLEAR_AIR_FLOOR_DBZ: dict[int, float] = {
     # (kernels/milbrandt2.cu:308).  The launch covers every cell on every
     # call, so there is no hydrometeor-free skip and no initialisation
     # value left standing -- which is exactly what separates mp=9 from
-    # mp=50 in CLEAR_AIR_FLOOR_IS_NOT_ONE_NUMBER below, where P3 reports
+    # the P3 forecast field, which reports two clear values (see mp=50),
     # two different clear-air values.  A -99 dBZ floor is NOT
     # interchangeable with the -35 family in one obs array: give
     # reflectivity observations a matching floor or mask the clear-air
     # cells, exactly as for NSSL's 0 dBZ.
     9: -99.0,
+    # P3's operator (gpuwm.core.p3_device.reflectivity, kernel
+    # gpuwm/core/kernels/p3_zdiag.cu) reads the scheme's two accumulator
+    # seeds in every cell with no rain and no ice above QSMALL:
+    # ze_rain = ze_ice = 1e-22 mm6 m-3 (module_mp_p3.F:2286-2287), so
+    # 10*log10(2e-22*1e18) = -36.9897 dBZ, this float32 value exactly
+    # (gpuwm.core.p3_device.CLEAR_AIR_DBZ; tests/test_p3_reflectivity_gpu.py
+    # holds the kernel to it).  The forecast REFL_10CM additionally holds
+    # the -99.0 entry initialisation (:2278) through columns the step's
+    # no-hydrometeor skip (:3972) never diagnoses; that sentinel is not a
+    # reflectivity, and the OPERATOR does not reproduce it, which is what
+    # gives P3 one floor.  Not interchangeable with the -35 family in one
+    # obs array, as for NSSL's 0 and Milbrandt-Yau's -99.
+    50: -36.98970031738281,
 }
 
 #: Schemes whose H(x) has NO single clear-air value, and the paragraph that
@@ -230,41 +259,13 @@ CLEAR_AIR_FLOOR_DBZ: dict[int, float] = {
 #: mechanism, so a reader finds a decision instead of a gap and an editor
 #: who reaches for ``-35.0`` finds out what it would cost.
 CLEAR_AIR_FLOOR_IS_NOT_ONE_NUMBER: dict[int, str] = {
-    50: (
-        "P3, one-category two-moment ice, reports TWO different clear-air "
-        "numbers in the same field, so no single value is its floor.  P3's "
-        "REFL_10CM is ``diag_ze`` verbatim -- ``mp_p3_wrapper_wrf`` "
-        "(module_mp_p3.F:690-932) hands the history array straight into "
-        "``p3_main`` and applies no clamp of its own -- and ``diag_ze`` is "
-        "``10*log10((ze_rain + ze_ice)*1e18)`` over two accumulators seeded "
-        "at 1e-22 mm6 m-3 (:2286-2287), so a clear LEVEL reads "
-        "-36.9897 dBZ, not -35.  A column in which nothing anywhere clears "
-        "QSMALL never reaches that diagnostic block at all -- the "
-        "no-hydrometeor skip (:3972; gpuwm/core/p3.py:1293-1294 and "
-        "gpuwm/core/kernels/p3.cu:1862) leaves every level of it holding "
-        "the -99.0 dBZ value the entry initialisation wrote (:2278).  "
-        "MEASURED, and measured against the Fortran rather than against "
-        "the transcription of it: in the WRF-Fortran oracle campaign the "
-        "reference ``zdbz`` field is bit-identical to this tree on "
-        "F01-clear-dry and F05-coldstart-nucleation, whose entire "
-        "magnitude is 99.0, and on F03-riming and F04-dep-sub, whose clear "
-        "levels hold 36.9897 (evidence/p3-fortran-oracle-20260828/"
-        "receipts/arwen-vs-fortranA.json).  Neither number is -35, and "
-        "P3 is not in "
-        "the refl10cm family that floor belongs to: it carries one ice "
-        "category and no qs and no qg, and stashes its own diagnostic "
-        "rather than being dispatched to gpuwm.core.refl.  Picking either "
-        "value is catastrophic in one direction -- -35.0 puts a +64 dB "
-        "innovation in every fully dry column and the analysis builds "
-        "condensate into clear sky; -99.0 puts a -62 dB innovation at "
-        "every clear level beside an echo and the analysis erases "
-        "condensate around every storm.  What P3 clear-air assimilation "
-        "needs is a per-cell clear-air FIELD, or a rule that masks the "
-        "no-hydrometeor columns out of the batch, and nobody has specified "
-        "one"
-    ),
+    # Empty, and kept: the class is a real one (an operator that reports
+    # more than one clear-air value) and its refusal below still speaks for
+    # a scheme added to it.  P3 sat here while its only reflectivity was
+    # the forecast field, which holds -36.9897 at a clear level and the
+    # -99.0 entry sentinel through a never-diagnosed column; its operator
+    # (CLEAR_AIR_FLOOR_DBZ[50]) reports one value.
 }
-
 
 def clear_air_floor_dbz(mp_physics: int) -> float:
     """The active scheme's clear-air H(x) value, or a refusal.
@@ -324,6 +325,23 @@ SUN_CROOK_VT_EXPONENT = 0.125
 SUN_CROOK_Z_INTERCEPT_DBZ = 43.1
 SUN_CROOK_Z_SLOPE_DB = 17.5
 FALL_SPEED_DENSITY_EXPONENT = 0.4
+
+#: Lin, Farley and Orville (1983) exponential-PSD fall-speed constants
+#: for the frozen species, the set ARPS and the Tong and Xue (2005) radar
+#: EnKF use: ``(a [m^(1-b) s^-1], b, intercept N0 [m^-4], bulk density
+#: [kg m^-3])`` for a power-law fall speed ``V = a D^b`` scaled by
+#: ``(RHO0/rho)**0.5``.  Graupel is Rutledge and Hobbs (1984); hail is
+#: Lin's ``V = (4 g rho_h D / (3 C_D rho))**0.5`` with ``C_D = 0.6``,
+#: written in the same ``a D^b`` form at ``rho = RHO0``.
+FROZEN_FALL_SPEED_CONSTANTS = {
+    "qs": (11.72, 0.41, 3.0e6, 100.0),
+    "qg": (19.3, 0.37, 4.0e6, 400.0),
+    "qh": ((4.0 * 9.81 * 917.0 / (3.0 * 0.6 * 1.225)) ** 0.5, 0.5,
+           4.0e4, 917.0),
+}
+
+#: Reference air density of the ``(RHO0/rho)**0.5`` fall-speed correction.
+FALL_SPEED_RHO0 = 1.225
 
 #: Default clamp on the diagnosed fall speed (m/s).  Large enough for
 #: hail, small enough that a pathological Z cannot dominate the beam
@@ -879,8 +897,13 @@ def _nssl_reflectivity(state, temperature, pressure):
     return refl
 
 
-def _thompson_graupel_number(state, temperature, pressure):
+def _thompson_graupel_number(state, temperature, pressure, *,
+                             version: str = "wrf_461"):
     """Classic Thompson's transient graupel number, diagnosed here.
+
+    ``version`` is the generation (:func:`thompson_generation`): the
+    v4.6.1 wrapper diagnosis below, or, for the operational fork, the
+    fork's own reflectivity intercept.
 
     ``mp_physics=8`` carries no graupel number in the Registry.  WRF's
     ``mp_gt_driver`` DIAGNOSES one from qg at the beginning of every
@@ -952,6 +975,31 @@ def _thompson_graupel_number(state, temperature, pressure):
     # A transient copy, not a scratch slot: it is dead when this returns,
     # and a slot would enter the pinned mp=8 arena layout for a DA-only
     # temporary.
+    if version == "wrf_39_noaa":
+        # The fork's calc_refl10cm does not read an evolved number at all:
+        # it diagnoses its own graupel intercept from the final state
+        # (fork :5486-5510, from graupel content and supercooled rain,
+        # non-increasing downward), and the mp=28 adapter forms exactly
+        # that moment on every output-due step
+        # (gpuwm/core/microphysics_aerosol.py, WRF39_INTERCEPT_REFLECTIVITY)
+        # before the shared column kernel reads it.  H_Z(x) under the fork
+        # has to form the same moment: the v4.6.1 wrapper diagnosis below
+        # (gonv 1e2..1e6, graupel content alone) is a different PSD, and a
+        # DA that inverts dBZ through it against history written through
+        # the fork's intercept is inverting a different model than it
+        # integrates.  Measured on the Iowa 2024-05-21 18Z f01 crop: the
+        # two intercepts on one state differ by 1..5 dBZ in the 30..50 dBZ
+        # band (box S, WOOF-FIX-PROGRAM-2026-10-06/dbz/REPORT.md).
+        from gpuwm.core.thompson_aerosol_launch import (   # noqa: PLC0415
+            thompson_version_scope)
+        from gpuwm.core.thompson_aerosol_state import (    # noqa: PLC0415
+            WRF39_INTERCEPT_REFLECTIVITY, launch_wrf39_graupel_intercept)
+
+        with thompson_version_scope(version):
+            launch_wrf39_graupel_intercept(
+                state.qg, state.qr, state.nr, temperature, pressure,
+                state.qv, shadow, mode=WRF39_INTERCEPT_REFLECTIVITY)
+        return temperature, pressure, shadow
     graupel_mass = state.qg.copy()
     launch_classic_graupel_number_init(
         graupel_mass, temperature, pressure, state.qv, shadow)
@@ -961,34 +1009,27 @@ def _thompson_graupel_number(state, temperature, pressure):
     return temperature, pressure, shadow
 
 
-_P3_NO_PURE_OPERATOR = (
-    "mp_physics=50 (P3) has no H_Z(x) in this module, and this is a NAMED "
-    "refusal, not an absence. P3 is an ACTIVE microphysics scheme and it "
-    "DOES produce reflectivity: gpuwm/core/p3.py:1911-1915 (reference arm) "
-    "and :2062-2064 (CUDA arm) stash the scheme's own diagnostic Z as "
-    "REFL_10CM on every history frame, which "
-    "is why gpuwm/core/refl.py deliberately carries no mp=50 branch. What "
-    "P3 cannot do is produce that Z as a PURE function of the state, which "
-    "is what an observation operator is. WRF computes P3's dBZ inside "
-    "p3_main's k_loop_final_diagnostics (module_mp_p3.F:4722-4895, within "
-    "p3_main :1905-5201), and that loop is simultaneously a state update: "
-    "it dumps sub-qsmall rain and ice into vapour and theta (:4759-4763, "
-    ":4873-4880) and clamps ni onto the ice lookup table's lambda limiters "
-    "before ze_ice reads it (:4833-4834). The gpuwm port is fused the same "
-    "way (p3_final_level, gpuwm/core/kernels/p3.cu), so evaluating it here "
-    "would move the background it is meant to observe. Routing P3 into "
-    "compute_refl_10cm instead is worse than a gap: P3 has ONE ice "
-    "category and allocates no qs and no qg at all "
-    "(gpuwm/core/state.py:464-478), so the only branch whose field list a "
-    "P3 state satisfies is the mp=1 Kessler rain-only fallback, which "
-    "reads qr alone -- it would return the -35 dBZ clear-air floor through "
-    "every glaciated updraft while P3 carries that mass in qi/qir/qib. "
-    "Difference against the model's own REFL_10CM output instead, or pass "
-    "the field in (hotstart_increments takes simulated_dbz=). Lifting this "
-    "refusal means porting a PURE P3 Z -- get_rain_dsd2, calc_bulkRhoRime, "
-    "find_lookupTable_indices_1a and the f1pr13 lookup replayed on LOCAL "
-    "copies -- which is a scheme mirror, not an adapter over one."
-)
+def thompson_generation(cfg) -> str:
+    """The Thompson generation whose graupel PSD H_Z(x) must read.
+
+    ``RunConfig.thompson_version`` (``wrf_461`` by default, ``wrf_39_noaa``
+    for the operational fork) is what the mp=28 adapter runs the scheme
+    and writes REFL_10CM through; the operator reads the same selector so
+    the two never diverge.  Classic mp=8 has one generation.  A config
+    object without the field (the ``SimpleNamespace`` the tests build) is
+    the default generation, as it is for the adapter.
+    """
+    from gpuwm.core.thompson_aerosol_launch import (       # noqa: PLC0415
+        THOMPSON_VERSIONS)
+
+    if int(cfg.mp_physics) != 28:
+        return "wrf_461"
+    version = getattr(cfg, "thompson_version", "wrf_461")
+    if version not in THOMPSON_VERSIONS:
+        raise ValueError(
+            f"thompson_version={version!r} is not one of {THOMPSON_VERSIONS}")
+    return version
+
 
 #: Shipped ``mp_physics`` selectors whose reflectivity is NATIVE to the
 #: scheme and is NOT separable from the scheme's own state update, with the
@@ -1016,8 +1057,21 @@ _P3_NO_PURE_OPERATOR = (
 #: since been lifted into its own kernel
 #: (gpuwm/core/kernels/milbrandt2_zet.cu), which updates nothing, and
 #: ``gpuwm.core.milbrandt2.reflectivity`` is its scheme-diagnostic H(x).
-NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP: dict[int, str] = {
-    50: _P3_NO_PURE_OPERATOR,
+#:
+#: mp=50 is no longer here either.  P3's Z was fused into p3_main's final
+#: diagnostics loop (WRF module_mp_p3.F:4722-4895), which also dumps
+#: sub-QSMALL condensate into vapour and theta and clamps nr and ni before
+#: Z reads them; the Z half of that loop now runs on LOCAL copies in
+#: gpuwm/core/kernels/p3_zdiag.cu over the forecast port's own device
+#: helpers, which updates nothing, and ``gpuwm.core.p3_device.reflectivity``
+#: is its scheme-diagnostic H(x).  The table stays, empty, for the class.
+NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP: dict[int, str] = {}
+
+#: Schemes whose H_Z(x) is the scheme's own state-reading diagnostic and
+#: which take BOTH a device and a host state themselves, dispatched ahead
+#: of the host/device split.  A row, not a branch: ``module:function``.
+STATE_REFLECTIVITY_OPERATORS: dict[int, str] = {
+    50: "gpuwm.core.p3_device:reflectivity",
 }
 
 
@@ -1084,12 +1138,13 @@ def simulated_reflectivity(state, cfg, *, temperature=None, pressure=None,
     between steps has no evolved one to have, and refusing there left
     the whole Thompson family with no H_Z(x) at all.
 
-    ``mp_physics=50`` is refused BY NAME through
-    :data:`NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP`: P3 is active and does
-    produce reflectivity, but only from inside ``p3_main``'s final
-    diagnostics loop, which also updates the state -- so it is not an
-    H_Z(x) and it is not routed to ``compute_refl_10cm``, whose only
-    P3-satisfiable branch is the rain-only Kessler fallback.
+    ``mp_physics=50`` dispatches through
+    :data:`STATE_REFLECTIVITY_OPERATORS` to
+    ``gpuwm.core.p3_device.reflectivity``, the Z half of P3's own final
+    diagnostics replayed on local copies (device kernel, host reference),
+    before the host/device split.  It is not routed to
+    ``compute_refl_10cm``, whose only P3-satisfiable branch is the
+    rain-only Kessler fallback.
 
     ``mp_physics=18`` dispatches to the product's NSSL ``radardd02``
     diagnostic exactly as the production coordinator does (CUDA only, no
@@ -1114,6 +1169,13 @@ def simulated_reflectivity(state, cfg, *, temperature=None, pressure=None,
     refusal = NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP.get(int(cfg.mp_physics))
     if refusal is not None:
         raise NotImplementedError(refusal)
+    operator = STATE_REFLECTIVITY_OPERATORS.get(int(cfg.mp_physics))
+    if operator is not None:
+        import importlib
+
+        module_name, function_name = operator.split(":")
+        return getattr(importlib.import_module(module_name), function_name)(
+            state, temperature=temperature, pressure=pressure)
     _refuse_unrouted_reflectivity(int(cfg.mp_physics))
 
     xp = _array_module(state.p)
@@ -1142,7 +1204,8 @@ def simulated_reflectivity(state, cfg, *, temperature=None, pressure=None,
     if (int(cfg.mp_physics) in (8, 28)
             and thompson_graupel_number is None):
         temperature, pressure, thompson_graupel_number = (
-            _thompson_graupel_number(state, temperature, pressure))
+            _thompson_graupel_number(state, temperature, pressure,
+                                     version=thompson_generation(cfg)))
 
     from gpuwm.core.refl import compute_refl_10cm
 
@@ -1229,9 +1292,77 @@ def precipitating_activity_mask(state):
     return mask
 
 
+def frozen_mass_weighted_fall_speed(name, q, density):
+    """Lin et al. (1983) mass-weighted fall speed (m/s) of one frozen
+    species with mixing ratio ``q`` (kg/kg) in air of ``density`` (kg/m3).
+
+    For an exponential distribution ``N0 exp(-lambda D)`` of spheres of
+    bulk density ``rho_x`` falling at ``a D^b (RHO0/rho)^0.5``,
+    ``lambda = (pi rho_x N0 / (rho q))**0.25`` and the mass-weighted mean
+    is ``a Gamma(4+b) / (6 lambda^b) (RHO0/rho)^0.5``.  Zero where ``q``
+    is not positive.
+    """
+    from math import gamma
+
+    xp = _array_module(q)
+    a, b, n0, bulk = FROZEN_FALL_SPEED_CONSTANTS[name]
+    q = xp.asarray(q, dtype=xp.float64)
+    rho = xp.asarray(density, dtype=xp.float64)
+    positive = q > 0.0
+    safe_q = xp.where(positive, q, 1.0)
+    slope = (np.pi * bulk * n0 / (rho * safe_q)) ** 0.25
+    vt = (a * gamma(4.0 + b) / 6.0) * slope ** (-b) * (
+        FALL_SPEED_RHO0 / rho) ** 0.5
+    return xp.where(positive, vt, 0.0)
+
+
+def species_blended_fall_speed(rain_vt, species, inverse_density, *,
+                               max_ms: float = FALL_SPEED_MAX_MS):
+    """The cell's fall speed as the mass-weighted blend of its ACTIVE
+    precipitating species: rain at ``rain_vt`` (Sun and Crook, from the
+    scheme's Z), snow, graupel and hail at
+    :func:`frozen_mass_weighted_fall_speed`.
+
+    ``species`` maps ``qr``/``qs``/``qg``/``qh`` (any subset) to mixing
+    ratios; a species is active above :data:`Q_ACTIVE_THRESHOLD`, per
+    species, as the reflectivity authority tests it.  Where no species is
+    active the result is ``rain_vt`` (the caller's activity gate then
+    zeroes it).  Where rain is the only active species the result is
+    ``rain_vt`` exactly, so a rain-only column is unchanged.
+    """
+    xp = _array_module(rain_vt)
+    density = 1.0 / xp.asarray(inverse_density, dtype=xp.float64)
+    rain = xp.asarray(rain_vt, dtype=xp.float64)
+    weight_total = xp.zeros_like(rain)
+    weighted = xp.zeros_like(rain)
+    frozen_active = xp.zeros(rain.shape, dtype=bool)
+    for name in PRECIPITATING_SPECIES:
+        q = species.get(name)
+        if q is None:
+            continue
+        q = xp.asarray(q, dtype=xp.float64)
+        active = q > Q_ACTIVE_THRESHOLD
+        mass = xp.where(active, q, 0.0)
+        if name == "qr":
+            speed = rain
+        else:
+            speed = frozen_mass_weighted_fall_speed(name, mass, density)
+            frozen_active = frozen_active | active
+        weight_total = weight_total + mass
+        weighted = weighted + mass * speed
+    blended = xp.where(weight_total > 0.0,
+                       weighted / xp.where(weight_total > 0.0,
+                                           weight_total, 1.0), rain)
+    blended = xp.clip(blended, 0.0, max_ms)
+    # A cell with no active frozen species keeps the rain value bit for bit.
+    return xp.where(frozen_active, blended, rain).astype(
+        rain_vt.dtype, copy=False)
+
+
 def reflectivity_fall_speed(dbz, pressure, active=None, *,
                             surface_pressure=None,
-                            max_ms: float = FALL_SPEED_MAX_MS):
+                            max_ms: float = FALL_SPEED_MAX_MS,
+                            species=None, inverse_density=None):
     """Sun and Crook reflectivity-driven fall speed (m/s, downward).
 
     ``surface_pressure`` is the ``(ny, nx)`` pressure at the ground, in Pa,
@@ -1282,8 +1413,19 @@ def reflectivity_fall_speed(dbz, pressure, active=None, *,
 
     Non-finite dBZ (Morrison's invalid-number-moment signal) propagates as
     non-finite fall speed rather than being silently zeroed.
+
+    ``species`` (``{"qr", "qs", "qg", "qh": mixing ratio}``, any subset)
+    with ``inverse_density`` (``alt``, m3/kg) switches on the per-species
+    blend (:func:`species_blended_fall_speed`): frozen species fall at
+    their own Lin et al. (1983) speeds instead of the rain relation.
+    Both callers in this tree pass them; without them the rain relation
+    applies to every species, as it always did.
     """
     xp = _array_module(dbz)
+    if (species is None) != (inverse_density is None):
+        raise ValueError(
+            "species= and inverse_density= go together: the frozen "
+            "species' fall speeds need the air density")
     if max_ms <= 0.0 or not np.isfinite(max_ms):
         raise ValueError(f"max_ms must be positive and finite, got {max_ms}")
     if surface_pressure is None:
@@ -1315,6 +1457,9 @@ def reflectivity_fall_speed(dbz, pressure, active=None, *,
     vt = (SUN_CROOK_VT_COEFF * density_factor
           * xp.power(xp.asarray(10.0, dtype=dbz.dtype), exponent))
     vt = xp.clip(vt, 0.0, max_ms)
+    if species is not None:
+        vt = species_blended_fall_speed(vt, species, inverse_density,
+                                        max_ms=max_ms)
     if active is not None:
         mask = xp.asarray(active)
         if mask.dtype != bool:
@@ -1430,9 +1575,15 @@ def _resolve_fall_speed(state, cfg, reflectivity_dbz, fall_speed, shape, xp,
             reflectivity_dbz = simulated_reflectivity(state, cfg)
         dbz = reflectivity_dbz.astype(out_dtype, copy=False)
         pressure = state.p.astype(out_dtype, copy=False)
+        species = {name: getattr(state, name) for name in
+                   PRECIPITATING_SPECIES
+                   if getattr(state, name, None) is not None}
+        alt = getattr(state, "alt", None)
         vt = reflectivity_fall_speed(
             dbz, pressure, precipitating_activity_mask(state),
-            surface_pressure=surface_pressure, max_ms=max_ms)
+            surface_pressure=surface_pressure, max_ms=max_ms,
+            species=species if alt is not None else None,
+            inverse_density=alt)
         return vt.astype(out_dtype, copy=False)
     if isinstance(fall_speed, str):
         raise ValueError(

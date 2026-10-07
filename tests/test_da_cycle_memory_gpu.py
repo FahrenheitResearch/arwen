@@ -74,7 +74,70 @@ def _synthetic_leg(*, members=10, nz=10, ny=64, nx=64, seed=7):
     return grid, prior, batches, fields
 
 
-def test_the_analysis_price_covers_the_resident_solve_on_the_card():
+@pytest.mark.parametrize("neighbor_search", ["forward", "index"])
+def test_the_analysis_price_covers_the_resident_solve_on_the_card(
+        monkeypatch, neighbor_search):
+    """The admission's price holds the resident solve on both of its routes.
+
+    Since 2ac908c52 the resident route packs from the neighbour roster
+    (``neighbor_search="index"``, the default): its spans are sized by the
+    host roster's per-point bytes and its device chunks by the positive
+    neighbours actually found, so the dense chunk arithmetic below is a
+    statement about the dense route only (``"forward"``, which on the card
+    finds neighbours densely), still selectable and still priced by the
+    same function.  The pool's growth is held to the price on both.
+    """
+    import cupy as cp
+
+    from gpuwm.da import radar_assimilation
+
+    from gpuwm.da.letkf import (LetkfConfig, LetkfDiagnostics, Localization,
+                                analysis_device_price, analyze)
+    from gpuwm.da.radar_assimilation import _execute_analysis
+
+    grid, prior, batches, fields = _synthetic_leg()
+    members = next(iter(prior.values())).shape[0]
+    shape = next(iter(prior.values())).shape[1:]
+    config = LetkfConfig(
+        localization=Localization(horizontal_m=12000.0, vertical_m=4000.0),
+        analysis_fields=fields, rtps_alpha=0.5, memory_budget_mib=64.0,
+        neighbor_search=neighbor_search)
+    price = analysis_device_price(
+        members=members, shape=shape, fields=len(fields), prior_itemsize=8,
+        batches=[(int(np.prod(b.mask.shape)), b.localization)
+                 for b in batches],
+        grid=grid, config=config, obs_itemsize=8)
+    # This cell prices the RESIDENT route, so it asks for that route; the
+    # observation-sparse default is held to the same price in the next cell.
+    monkeypatch.setattr(radar_assimilation, "_obs_sparse_takes",
+                        lambda *_a: (False, None))
+    with _pool_high_water() as peak:
+        increments, diagnostics, _stage, _unstage, storage, _attempts = \
+            _execute_analysis(analyze, prior, batches, grid, config,
+                              namespace=cp, device="cuda",
+                              diagnostics=LetkfDiagnostics())
+    assert storage == "cuda-resident"
+    assert diagnostics.chunk_oom_shrinks == 0
+    if neighbor_search == "forward":
+        assert diagnostics.neighbor_search == "dense"
+        # The solve sized its chunk at or above the priced one: it sizes
+        # on the slots a row can reach, never more than the priced sum.
+        assert diagnostics.chunk_points_initial >= price.chunk_points
+        assert diagnostics.chunk_points_initial * \
+            diagnostics.solve_bytes_per_point <= price.scratch_bytes
+    else:
+        # The roster route walked the grid in spans and solved on the card
+        # in chunks of positive neighbours.
+        assert diagnostics.neighbor_search == "index"
+        assert diagnostics.chunk_points_initial >= 1
+        assert diagnostics.device_chunks >= 1
+    grown = peak["total"] - peak["base_used"]
+    assert 0 < grown <= price.resident_bytes, (grown, price)
+    for name in fields:
+        assert np.all(np.isfinite(increments[name]))
+
+
+def test_the_default_device_route_is_observation_sparse_within_the_price():
     import cupy as cp
 
     from gpuwm.da.letkf import (LetkfConfig, LetkfDiagnostics, Localization,
@@ -93,21 +156,17 @@ def test_the_analysis_price_covers_the_resident_solve_on_the_card():
                  for b in batches],
         grid=grid, config=config, obs_itemsize=8)
     with _pool_high_water() as peak:
-        increments, diagnostics, _stage, _unstage, storage, _attempts = \
+        increments, _diag, _stage, _unstage, storage, attempts = \
             _execute_analysis(analyze, prior, batches, grid, config,
                               namespace=cp, device="cuda",
                               diagnostics=LetkfDiagnostics())
-    assert storage == "cuda-resident"
-    assert diagnostics.chunk_oom_shrinks == 0
-    # The solve sized its chunk at or above the priced one: it sizes on
-    # the slots a row can reach, never more than the priced sum.
-    assert diagnostics.chunk_points_initial >= price.chunk_points
-    assert diagnostics.chunk_points_initial * \
-        diagnostics.solve_bytes_per_point <= price.scratch_bytes
+    assert storage == "cuda-obs-sparse" and len(attempts) == 1
     grown = peak["total"] - peak["base_used"]
     assert 0 < grown <= price.resident_bytes, (grown, price)
+    host = analyze(prior, batches, grid, config)
     for name in fields:
-        assert np.all(np.isfinite(increments[name]))
+        np.testing.assert_allclose(increments[name], host[name],
+                                   atol=1e-11, rtol=1e-10)
 
 
 def test_a_draw_runs_under_uncached_plans_and_draws_the_same_field(
@@ -143,8 +202,11 @@ def test_the_draw_stays_inside_its_price_with_the_measured_plans():
 
     from gpuwm.da import perturb
 
+    # A lone u draw measures one transform; the default rotational mode
+    # refuses a lone component, so the comparison arm's draw is priced.
     config = perturb.PerturbationConfig.from_mapping({
         "dx_km": 3.0, "dy_km": 3.0, "rim_width": 5,
+        "wind_mode": "independent",
         "fields": [{"name": "u", "amplitude": 1.0,
                     "length_scale_km": 30.0}]})
     mass = (24, 160, 200)

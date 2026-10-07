@@ -818,7 +818,6 @@ def apply_to_experiment(text: str, request: Mapping[str, Any], *, load: bool = T
     # it off is written off.
     requested = _cumulus_requested(request) or bool(file_cumulus(text)[0])
     settings, _ = _as_emitted(settings, base, dx_km=float(verdict["dx_km"]), requested=requested)
-    settings.update(route_stated(settings, verdict["source"]))
     known = _run_fields()
     full = {key: value for key, value in settings.items() if key in known and value is not None}
     changed = _changed(base, settings)
@@ -1108,26 +1107,6 @@ def _settings(request: Mapping[str, Any]) -> tuple[str, dict[str, Any], dict[str
     return base, settings, chosen, blocked
 
 
-def route_stated(settings: Mapping[str, Any], source: str | None) -> dict[str, Any]:
-    """The switches ``source``'s route runs for this set whatever a file says.
-
-    The HRRR route runs its namelists, and a WRF namelist has no key for
-    ``moist_cq``: the route's importer answers it from
-    :func:`gpuwm.physics_compat.implicit_runtime_switches`.  That authority
-    enables WRF's moisture pressure correction for every suite; a dry
-    state bypasses it without a moisture carrier.  A verification opt-out
-    cannot be encoded by this route's namelists, so the round trip checks
-    it before publication.  Empty on every route that reads the
-    configuration itself.
-    """
-
-    if not source:
-        return {}
-    from gpuwm.hrrr_route_inputs import route_implicit_switches
-
-    return dict(route_implicit_switches(source, settings))
-
-
 def _cumulus_requested(request: Mapping[str, Any]) -> bool:
     """Whether the caller asked for the root's cumulus, as the wizard reads it.
 
@@ -1340,10 +1319,6 @@ def check(request: Mapping[str, Any]) -> dict[str, Any]:
     base, settings, chosen, blocked = _settings(request)
     as_written = dict(settings)
     settings, retired = _as_emitted(settings, base, dx_km=dx_km, requested=_cumulus_requested(request))
-    # What the source's route runs for a switch its own files cannot state,
-    # so the check describes, and a mix is written with, what that route
-    # runs (route_stated).
-    settings.update(route_stated(settings, source))
     if retired:
         chosen["cumulus"] = next(key for key, row in _menu()["cumulus"].items()
                                  if row["settings"].get("cu_physics") == settings["cu_physics"])

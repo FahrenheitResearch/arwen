@@ -1,0 +1,21 @@
+{
+  "root": "~/agent-scratch/aq-smoke-sol-fire/",
+  "bytes_before_delete": 10583578,
+  "deleted": true,
+  "gpu_used": false,
+  "max_cores": 1,
+  "contents": {
+    "cpu": 202625,
+    "gsl4": 476322,
+    "gsl8": 477091,
+    "harness": 62701,
+    "nvrtc": 47041,
+    "oracles": 2047974,
+    "poison": 2633132,
+    "reducer": 3866731,
+    "ulp-tables.json": 31887,
+    "wet": 738074
+  },
+  "final_byte_exact_compile_scratch_deleted": 46212,
+  "cumulative_bytes_deleted": 10629790
+}

@@ -79,7 +79,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             message.identification.master_table_version,
             message.identification.local_table_version,
             message.product.level_type,
-            message.product.level_value,
+            gpuwm_preprocess_cpu::grib2_stack::first_surface_level(&message.product),
             message.product.second_level_type,
             message.product.second_level_value,
             message

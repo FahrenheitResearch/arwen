@@ -9690,13 +9690,17 @@ def np_refl10cm_morrison_column(qv, qr, nr, qs, ns, qg, ng, t, p, *,
     return out
 
 
-def np_refl10cm_wsm6_column(qv, qr, qs, qg, t, p, *, hail_opt=0):
+def np_refl10cm_wsm6_column(qv, qr, qs, qg, t, p, *, hail_opt=0,
+                            melting=True):
     """Float64 one-column mirror of WRF v4.6.1 ``refl10cm_wsm6``.
 
     WSM6 diagnoses fixed-intercept exponential rain/snow/rimed-ice PSDs,
     then applies the same 50-bin Blahak melting-particle calculation used by
     Morrison.  Inputs are bottom-to-top ``(nz,)`` arrays.  ``hail_opt``
     selects WRF's graupel (0) or hail (1) density and intercept.
+    ``melting=False`` omits the melting-particle term (rain plus dry snow
+    and dry graupel only), the float64 mirror of
+    ``launch_refl10cm_wsm6(..., melting=False)``.
     """
     from gpuwm.core.refl import (MELT_OUTSIDE_G, MELT_OUTSIDE_S, NRBINS,
                                  radar_init_wsm6)
@@ -9768,7 +9772,7 @@ def np_refl10cm_wsm6_column(qv, qr, qs, qg, t, p, *, hail_opt=0):
                              * (rc.xam_g / 900.0) ** 2 * n0_g
                              * rc.xcgg[3] * ilamg[k] ** rc.xcge[3])
 
-    if melti and k_0 >= 1:
+    if melting and melti and k_0 >= 1:
         for k in range(k_0 - 1, -1, -1):
             if l_qs[k] and l_qs[k_0]:
                 fmelt = max(0.005, min(1.0 - rs[k] / rs[k_0], 0.99))

@@ -171,10 +171,30 @@ def production_units(root) -> list[Unit]:
                 (kdir / name).read_text(encoding="utf-8"))
 
     noahmp_parts = set()
+    # These files compile through their own observed NVRTC composition. A
+    # bare generic-loader source omits the shared SFIRE physics and libm.
+    from gpuwm.core import sfire_atm, sfire_core, sfire_moisture, sfire_phys, sfire_wind, sfire_coupler, sfire_spotting, sfire_ideal, sfire_ideal_atmos, chem_sfire, urban_bem
+    dedicated_units = {
+        "sfire_atm": (sfire_atm.module_source, sfire_atm.MODULE_OPTIONS),
+        "sfire_core": (sfire_core.source, sfire_core.NVRTC_OPTIONS),
+        "sfire_moisture": (sfire_moisture.module_source, sfire_moisture.MODULE_OPTIONS),
+        "sfire_phys": (sfire_phys.module_source, sfire_phys.MODULE_OPTIONS),
+        "sfire_wind": (sfire_wind.module_source, sfire_wind.MODULE_OPTIONS),
+        "sfire_coupling": (sfire_coupler.module_source, sfire_coupler.MODULE_OPTIONS),
+        "sfire_spotting": (sfire_spotting.module_source, sfire_spotting.MODULE_OPTIONS),
+        "sfire_ideal": (sfire_ideal.module_source, sfire_ideal.MODULE_OPTIONS),
+        "sfire_ideal_atmos": (sfire_ideal_atmos.module_source, sfire_ideal_atmos.MODULE_OPTIONS),
+        "chem_sfire": (chem_sfire.module_source, chem_sfire.MODULE_OPTIONS),
+        "urban_bep_bem": (urban_bem.module_source, urban_bem.MODULE_OPTIONS),
+    }
     for parts in N.NOAHMP_TRANSLATION_UNITS.values():
         noahmp_parts.update(parts)
     for path in sorted(kdir.glob("*.cu")):
         name = path.stem
+        if name in dedicated_units:
+            source_fn, options = dedicated_units[name]
+            units.append(Unit(f"kernels:{name}", source_fn(kernel_dir=kdir), tuple(options), []))
+            continue
         if name in noahmp_parts:
             continue
         extra = [kfile(h) for h in K.EXTRA_HEADERS.get(name, ())]

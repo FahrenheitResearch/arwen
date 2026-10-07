@@ -1,6 +1,6 @@
 """gpuwm-vs-WRF parity for the Noah-MP parameter transfer.
 
-The fixture `gpuwm/data/noahmp/oracle/noahmp-parameters.csv` is
+The fixture `tests/data/oracles/noahmp/noahmp-parameters.csv` is
 `NOAHMP_TABLES::read_mp_*` followed by
 `module_sf_noahmpdrv::TRANSFER_MP_PARAMETERS`, run by unmodified WRF v4.6.1
 over seven land identities x 181 transferred field/index pairs. These tests
@@ -41,7 +41,7 @@ from gpuwm.core.noahmp_leaves import LEAF_EVALUATORS
 
 ORACLE_PATH = (
     Path(__file__).parents[1]
-    / "gpuwm" / "data" / "noahmp" / "oracle" / "noahmp-parameters.csv"
+    / "tests" / "data" / "oracles" / "noahmp" / "noahmp-parameters.csv"
 )
 ORACLE_SHA256 = "1a2617bad69ff050f728b71c46ce13a4624091a68488d1cb2b59fcda106eaa35"
 ORACLE_ROWS = 1267
@@ -320,7 +320,7 @@ def test_transfer_rejects_out_of_range_identities(bundle):
 # ===========================================================================
 # Per-leaf solver oracles
 #
-# `gpuwm/data/noahmp/oracle/noahmp-leaves.csv` is produced by
+# `tests/data/oracles/noahmp/noahmp-leaves.csv` is produced by
 # `tools/noahmp_wrf461_oracle/build_leaves.sh` from a *scratch copy* of the
 # pinned WRF tree carrying only `patches/noahmp-lsm-leaf-visibility.patch`
 # (50 `private ::` -> `public ::` accessibility statements, nothing else).
@@ -328,7 +328,7 @@ def test_transfer_rejects_out_of_range_identities(bundle):
 # ===========================================================================
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-ORACLE_DIR = REPO_ROOT / "gpuwm" / "data" / "noahmp" / "oracle"
+ORACLE_DIR = REPO_ROOT / "tests" / "data" / "oracles" / "noahmp"
 LEAVES_CSV = ORACLE_DIR / "noahmp-leaves.csv"
 DISC_CSV = ORACLE_DIR / "noahmp-leaves-discrimination.csv"
 VISIBILITY_PATCH = REPO_ROOT / "patches" / "noahmp-lsm-leaf-visibility.patch"

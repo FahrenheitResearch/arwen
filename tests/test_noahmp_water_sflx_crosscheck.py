@@ -6,7 +6,7 @@ level over all 85 procedures, but "proven inert" and "measured inert on the
 values this port is held to" are different claims, and only the second one is
 evidence.  ``noahmp-sflx.csv`` is the second one: it is built by
 ``run_sflx.F90`` against the **pristine, unpatched** module (see
-``gpuwm/data/noahmp/oracle/README.md``), and its ``output`` rows are every
+``tests/data/oracles/noahmp/README.md``), and its ``output`` rows are every
 INTENT(OUT) and INTENT(INOUT) argument of ``NOAHMP_SFLX`` -- which includes
 most of WATER's.
 
@@ -50,8 +50,8 @@ import pytest
 from gpuwm.core.noahmp_water import WSLMAX  # noqa: F401  (identity documented below)
 
 REPO = Path(__file__).resolve().parent.parent
-SFLX = REPO / "gpuwm" / "data" / "noahmp" / "oracle" / "noahmp-sflx.csv"
-WATER = REPO / "gpuwm" / "data" / "noahmp" / "oracle" / "noahmp-water.csv"
+SFLX = REPO / "tests" / "data" / "oracles" / "noahmp" / "noahmp-sflx.csv"
+WATER = REPO / "tests" / "data" / "oracles" / "noahmp" / "noahmp-water.csv"
 
 SFLX_SHA = "76abe0d9e7ab69c3359c1cd641422ef776fcead777edee0daaf3d6d8dbffcd24"
 

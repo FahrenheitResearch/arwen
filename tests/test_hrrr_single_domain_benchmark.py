@@ -2578,3 +2578,68 @@ def test_a_prepare_only_run_says_its_steps_and_a_forecast_run_does_not(capsys):
                                 label="Initialize the start state"):
         pass
     assert "GPUWM_PREP_EVENT" not in capsys.readouterr().err
+
+
+def _boundary_static(ny, nx):
+    mass = np.zeros((ny, nx))
+    return {"HGT_M": mass, "LANDMASK": mass, "MAPFAC_M": mass + 1.0,
+            "MAPFAC_U": np.ones((ny, nx + 1)), "MAPFAC_V": np.ones((ny + 1, nx)),
+            "F": mass, "E": mass, "SINALPHA": mass, "COSALPHA": mass + 1.0}
+
+
+def test_an_mp28_boundary_strip_carries_its_own_geodesy():
+    """Each side ships its rectangle of the mass-point lat/lon, which is
+    what the WIF climatology needs (it refused in every boundary worker
+    without it); without lat/lon the payload is the eight fields it was."""
+
+    ny, nx, width = 12, 15, 3
+    lat = np.arange(ny * nx, dtype=np.float64).reshape(ny, nx)
+    lon = -lat
+    sides = hrrr_runner._compact_boundary_static(
+        _boundary_static(ny, nx), SimpleNamespace(ny=ny, nx=nx),
+        width=width, latlon_mass=(lat, lon))
+    rectangles = {"west": (0, ny, 0, width), "east": (0, ny, nx - width, nx),
+                  "south": (0, width, 0, nx), "north": (ny - width, ny, 0, nx)}
+    for side, (y0, y1, x0, x1) in rectangles.items():
+        np.testing.assert_array_equal(sides[side]["XLAT_M"], lat[y0:y1, x0:x1])
+        np.testing.assert_array_equal(sides[side]["XLONG_M"], lon[y0:y1, x0:x1])
+    bare = hrrr_runner._compact_boundary_static(
+        _boundary_static(ny, nx), SimpleNamespace(ny=ny, nx=nx), width=width)
+    assert all("XLAT_M" not in fields for fields in bare.values())
+
+
+def test_a_boundary_strip_hands_its_geodesy_to_initialize_real(monkeypatch):
+    import gpuwm.ingest.preprocess_backend as backends
+    import gpuwm.ingest.real as real
+    from gpuwm.config import RunConfig
+
+    class Stop(Exception):
+        pass
+
+    seen = {}
+
+    def initialize_real(*args, **kwargs):
+        seen.update(kwargs)
+        raise Stop
+
+    monkeypatch.setattr(real, "initialize_real", initialize_real)
+    monkeypatch.setattr(backends, "resolve_preprocess_backend",
+                        lambda *a, **k: SimpleNamespace(
+                            array_module=np, name="cpu", receipt=lambda: {}))
+    ny, nx, width = 12, 15, 3
+    lat = np.full((ny, nx), 40.0)
+    lon = np.full((ny, nx), -100.0)
+    sides = hrrr_runner._compact_boundary_static(
+        _boundary_static(ny, nx), SimpleNamespace(ny=ny, nx=nx),
+        width=width, latlon_mass=(lat, lon))
+    cfg = RunConfig(nx=nx, ny=ny, nz=4, dx=3000.0, dy=3000.0, ztop=20000.0,
+                    dt=10.0, run_seconds=60.0, mp_physics=28)
+    mets = {side: SimpleNamespace(flag_sh_surface_fallback=False)
+            for side in sides}
+    with pytest.raises(Stop):
+        hrrr_runner._initialize_boundary_sides(
+            mets, cfg, sides, [1.0, 0.7, 0.4, 0.1, 0.0], p_top=5000.0,
+            width=width, preprocess_backend="cpu")
+    grid = seen["grid"]
+    np.testing.assert_array_equal(grid["XLAT_M"], lat[:, :width])
+    np.testing.assert_array_equal(grid["XLONG_M"], lon[:, :width])

@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from gpuwm.config import RunConfig
+from gpuwm.config import CHEM_RUN_FIELDS, FIRE_RUN_FIELDS, RunConfig
 from gpuwm.core.model import restart_identity_payload
 from gpuwm.experiment import (
     DomainConfig, ExperimentConfig, VerticalConfig,
@@ -36,8 +36,20 @@ def _experiment(**overrides):
 
 def _historical_schema(exp):
     domain = exp.domains[0]
-    old_fields = [field for field in fields(domain.run) if field.name not in PRE_FIELD_OMISSIONS]
-    old_type = make_dataclass("HistoricalRunConfig", [(field.name, field.type) for field in old_fields])
+    # The historical public schema predates chemistry and these neutral selectors.
+    assert domain.run.chem_sets == ""
+    neutral = {"swint_opt": 0, "aer_opt": 0, "alb_sol": 0}
+    for name, default in neutral.items():
+        assert getattr(domain.run, name) == default
+    # The keyword-only fire block (lane/ec-sfire) postdates it too.
+    omitted = (set(PRE_FIELD_OMISSIONS) | set(CHEM_RUN_FIELDS)
+               | set(FIRE_RUN_FIELDS))
+    old_fields = [field for field in fields(domain.run) if field.name not in omitted]
+    # ExperimentConfig still asks every run whether it carries a fire, so
+    # the stand-in answers ifire 0 and no fire smoke without making them
+    # fields (fields are what the documents serialize).
+    old_type = make_dataclass("HistoricalRunConfig", [(field.name, field.type) for field in old_fields],
+                              namespace={"ifire": 0, "fire_smoke": False})
     old_run = old_type(**{field.name: getattr(domain.run, field.name) for field in old_fields})
     return replace(exp, domains=(replace(domain, run=old_run),))
 

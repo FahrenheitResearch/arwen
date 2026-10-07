@@ -589,18 +589,14 @@ def test_k0_temperature_batch_through_analyze():
 # ---------------------------------------------------------------------------
 
 
-def test_naming_dewpoint_is_refused_by_name_not_by_typeerror():
-    """A caller CAN name dewpoint_2m, and gets told why it is declined."""
-
-    with pytest.raises(SurfaceObsError, match="dewpoint_2m") as caught:
-        SurfaceObsConfig(temperature_error_k=1.0,
-                         quantity_error_stddev={"dewpoint_2m": 1.0})
-    message = str(caught.value)
-    # The missing operator, named.
-    assert "q2" in message
-    assert "saturation" in message
-    # The way out, named: the v2 seam plus a pinned formulation.
-    assert "asos-surface.v2" in message
+def test_naming_dewpoint_enables_the_pinned_q2_operator():
+    config = SurfaceObsConfig(quantity_error_stddev={"dewpoint_2m": 1.0})
+    assert config.dewpoint
+    assert config.error_stddev("dewpoint_2m") == 1.0
+    grid = _grid()
+    with pytest.raises(SurfaceObsError, match="simulated_q2/simulated_psfc"):
+        surface_to_gridded_obs(_record(), target_grid=grid, analysis_time=T12,
+                              config=config)
 
 
 def test_naming_mslp_names_the_reduction_formula_mixing():
@@ -679,7 +675,7 @@ def test_declined_quantities_are_counted_and_named_in_the_provenance():
 
     notes = "\n".join(provenance["notes"])
     assert "declined quantity dewpoint_2m" in notes
-    assert "saturation" in notes
+    assert "dewpoint_error_k" in notes
     assert "declined quantity mslp" in notes
     assert "reduction" in notes
     assert "declined quantity wind_speed_10m" in notes

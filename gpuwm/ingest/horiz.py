@@ -16,7 +16,7 @@ weights, and results are FP32.
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, replace, field
 from datetime import datetime
 from types import MappingProxyType
 from typing import Mapping
@@ -128,6 +128,14 @@ class HorizontalSnapshot:
     #: (:func:`gpuwm.ingest.ruc_soil.island_soil_columns`); the count rides
     #: ``masked_field_repairs`` as ``no_source_land``.
     soil_no_source_land: np.ndarray | None = None
+    #: Row-unit native tracers, separate from the met field inventory.
+    boundary_tracers: Mapping[str, object] = field(default_factory=dict)
+    #: Fields the source published but its decoder withheld, keyed by
+    #: metgrid name, with the decoder's reason (the analyzed aerosol pair
+    #: when a GRIB2 bitmap masks points of it).  The initializer appends
+    #: the reason to its refusal when a run requests a withheld field.
+    #: ``None`` when nothing was withheld or the source does not say.
+    withheld_fields: Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
         if self.horizontal_operators is not None:
@@ -1592,7 +1600,8 @@ def _land_call_coordinates(slab, latitude, longitude, target_lat, target_lon,
 def _skin_temperature_on_both_surfaces(
         slab, latitude, longitude, target_lat, target_lon, *,
         land_donors, partial_land_donors, target_land, fill_value,
-        physical_range=None, tally=None, native=None, workers=None):
+        physical_range=None, tally=None, native=None, workers=None,
+        reach=None):
     """METGRID.TBL ``masked=both`` skin temperature, with no 0 K on a surface.
 
     Land targets take the land pass (with its second chance) and water
@@ -1618,6 +1627,12 @@ def _skin_temperature_on_both_surfaces(
 
     Returns ``(values, recovered)`` as the land pass does.  Every pass
     runs in the Rust preprocessing library in one call.
+
+    ``reach`` is ``(limited, cells)``: the inland-water reach
+    (:data:`INLAND_WATER_SOURCE_REACH_M`).  A flagged water target whose
+    only source water lies farther than ``cells`` source cells keeps NaN,
+    for the caller's 2 m air temperature fallback, and is counted as
+    ``beyond_reach``.
     """
     slab = np.asarray(slab, dtype=np.float64)
     yy, xx = _land_call_coordinates(
@@ -1625,11 +1640,15 @@ def _skin_temperature_on_both_surfaces(
         land_donors, partial_land_donors, target_land)
     bounds = _physical_bounds(physical_range)
     native, workers = _masked_chain_engine(native, workers)
-    values, counts = native.wps_masked_chain(
+    called = native.wps_masked_chain(
         slab[None], land_donors, partial_land_donors, yy, xx, target_land,
         _WPS_FULL_CHAIN, mode="skin", fill_value=fill_value,
-        physical_range=bounds, workers=workers)
+        physical_range=bounds, workers=workers, reach=reach)
+    values, counts = called[0], called[1]
     _merge_counts(tally, counts[0], _SKIN_COUNT_KEYS)
+    if reach is not None and tally is not None:
+        tally["beyond_reach"] = (tally.get("beyond_reach", 0)
+                                 + int(called[2][0]))
     return values[0].reshape(yy.shape), int(counts[0][_RECOVERED_SLOT])
 
 
@@ -1759,6 +1778,10 @@ _MASKED_REPAIR_WORDING = (
      "has only land takes that land's skin temperature, an island where "
      "it has only sea the sea's), where WPS writes METGRID.TBL "
      "fill_missing"),
+    ("inland_air_temperature",
+     "inland water value(s) with no source water within "
+     "INLAND_WATER_SOURCE_REACH_M took the daily-mean 2 m air temperature "
+     "there (WRF use_tavg_for_tsk), instead of another basin's water"),
     ("fill",
      "value(s) no usable source value reached kept METGRID.TBL "
      "fill_missing"),
@@ -1873,6 +1896,232 @@ def _horizontal_domain_setup(snapshot, targets, engine):
             owner.backends[id(engine)] = engine
             owner.horizontal[key] = build()
         return owner.horizontal[key]
+
+
+#: How far from inland water the skin temperature's water pass may find
+#: its source water.  Metgrid's search reaches the whole source array, so
+#: a basin the source does not resolve took the nearest source water of
+#: any other body: the Charles River basin on a 250 m Boston grid took
+#: coastal HRRR water 4.5 to 6 km away (BOSTON-ROWING water audit).  A
+#: water body the source resolves has its own source water within a
+#: source cell of every target, so 3 km keeps it on a 3 km source and
+#: refuses the next basin over.  Beyond it the target takes WRF's own
+#: answer for a lake the analysis does not resolve, the daily-mean 2 m air
+#: temperature (real.exe use_tavg_for_tsk), from
+#: :class:`DailyMeanAirTemperature` when the route declares one.
+INLAND_WATER_SOURCE_REACH_M = 3000.0
+#: Source 2 m air temperature field the fallback averages.
+_INLAND_AIR_FIELD = "T2"
+_INLAND_LABEL_CACHE: dict[tuple, np.ndarray] = {}
+_REPORTED_INLAND_AIR: set = set()
+
+
+def inland_water_targets(target_land, target_lake=None):
+    """Target water no domain edge reaches: lakes, rivers, enclosed basins.
+
+    A water component (8-connected) touching the domain's edge is open
+    water whose body continues past the domain, the ocean or a large lake;
+    it keeps metgrid's whole-array search.  Every other water component,
+    and every cell the land use classes as lake, is inland water and takes
+    :data:`INLAND_WATER_SOURCE_REACH_M`.
+    """
+    from gpuwm.ingest.water_temperature import _label_components, _mask_key
+
+    water = ~np.asarray(target_land, dtype=bool)
+    key = _mask_key(water)
+    inland = _INLAND_LABEL_CACHE.get(key)
+    if inland is None:
+        labels, _ = _label_components(water)
+        labels = np.asarray(labels)
+        edge = np.unique(np.concatenate(
+            (labels[0], labels[-1], labels[:, 0], labels[:, -1])))
+        inland = water & ~np.isin(labels, edge[edge > 0])
+        if len(_INLAND_LABEL_CACHE) >= 4:
+            _INLAND_LABEL_CACHE.pop(next(iter(_INLAND_LABEL_CACHE)))
+        _INLAND_LABEL_CACHE[key] = inland
+    if target_lake is not None:
+        inland = inland | (np.asarray(target_lake, dtype=bool) & water)
+    return inland
+
+
+def source_cell_spacing_m(snapshot, target_lat):
+    """The source grid's coarser cell spacing in metres near the target.
+
+    The masked search measures distance in source cells; this turns a
+    reach in metres into one.  A geographic source's longitude spacing is
+    taken at the target's mean latitude.
+    """
+    latitude = np.asarray(snapshot.latitude, dtype=np.float64)
+    longitude = np.asarray(snapshot.longitude, dtype=np.float64)
+    dlat = abs(float(latitude[1] - latitude[0]))
+    dlon = abs(float(longitude[1] - longitude[0]))
+    projection = getattr(snapshot, "projection", None)
+    if projection is not None:
+        unit = float(projection["parameters"]["axis_unit_m"])
+        return max(dlat, dlon) * unit
+    from gpuwm.static.projection import EARTH_RADIUS_M
+
+    metres = np.pi / 180.0 * EARTH_RADIUS_M
+    mean_lat = float(np.mean(np.asarray(target_lat, dtype=np.float64)))
+    return max(dlat * metres, dlon * metres * np.cos(np.radians(mean_lat)))
+
+
+@dataclass(frozen=True, eq=False)
+class _InlandReach:
+    """One snapshot's inland-water reach and its air-temperature fallback."""
+
+    limited: np.ndarray
+    cells: float
+    shape: tuple
+
+    @property
+    def reach(self):
+        return self.limited, self.cells
+
+    def fill(self, values, snapshot, statics, target_y, target_x, *,
+             native, workers):
+        """Put the 2 m air temperature on the targets the reach left NaN."""
+        open_ = self.limited.ravel()[None, :] & ~np.isfinite(values)
+        if not np.any(open_):
+            return values
+        air, receipt = inland_air_temperature(snapshot, statics)
+        mapped, _ = native.wps_masked_chain(
+            air[None], np.isfinite(air), None, target_y, target_x,
+            np.any(open_, axis=0).reshape(self.shape),
+            ("four_pt", "search"), mode="plain", fill_value=np.nan,
+            physical_range=None, workers=workers)
+        filled = np.where(open_, mapped[0][None, :], values)
+        if not np.all(np.isfinite(filled[open_])):
+            raise ValueError(
+                "inland water beyond the source reach found no 2 m air "
+                f"temperature ({_INLAND_AIR_FIELD}) to take")
+        signature = (self.shape, receipt.get("window"))
+        if signature not in _REPORTED_INLAND_AIR:
+            _REPORTED_INLAND_AIR.add(signature)
+            print(
+                "inland water: on the "
+                f"{self.shape[0]}x{self.shape[1]} mass grid, "
+                f"{int(np.count_nonzero(np.any(open_, axis=0)))} water cell(s) "
+                "with no source water within "
+                f"{INLAND_WATER_SOURCE_REACH_M:g} m take the 2 m air "
+                f"temperature there ({receipt['window']}), as WRF "
+                "use_tavg_for_tsk does for a lake its analysis does not "
+                "resolve", file=sys.stderr)
+        return filled
+
+
+def inland_water_reach(snapshot, target_land, target_lat, statics=None):
+    """The skin temperature's inland-water reach for one snapshot, or None.
+
+    None when the target has no inland water or the source carries no
+    2 m air temperature to fall back on (then metgrid's whole-array search
+    stands, as before).
+    """
+    lake = None if statics is None else statics.lake
+    if lake is not None and np.shape(lake) != np.shape(target_land):
+        lake = None
+    limited = inland_water_targets(target_land, lake)
+    if not np.any(limited):
+        return None
+    if (_INLAND_AIR_FIELD not in snapshot.fields
+            and getattr(statics, "inland_air_temperature", None) is None):
+        return None
+    cells = INLAND_WATER_SOURCE_REACH_M / source_cell_spacing_m(
+        snapshot, target_lat)
+    return _InlandReach(limited=limited, cells=float(cells),
+                        shape=tuple(np.shape(target_land)))
+
+
+def inland_air_temperature(snapshot, statics=None):
+    """``(field, receipt)``: the source 2 m air temperature inland water takes.
+
+    The route's :class:`DailyMeanAirTemperature` when its water statics
+    carry one (WRF's TAVGSFC, a daily mean); otherwise this snapshot's own
+    2 m air temperature, and the receipt says so.
+    """
+    provider = getattr(statics, "inland_air_temperature", None)
+    if provider is not None:
+        field, receipt = provider(snapshot)
+    else:
+        if _INLAND_AIR_FIELD not in snapshot.fields:
+            raise ValueError(
+                f"inland water needs the source's {_INLAND_AIR_FIELD}")
+        field = snapshot.fields[_INLAND_AIR_FIELD]
+        receipt = {"window": "this forcing time only",
+                   "times": [snapshot.valid_time.isoformat()]}
+    field = _as_host_float64(field)
+    if field.shape != np.shape(snapshot.fields["SKINTEMP"]):
+        raise ValueError(
+            "the inland-water air temperature is not on the source grid "
+            f"(shape {field.shape})")
+    return field, receipt
+
+
+class DailyMeanAirTemperature:
+    """WRF's TAVGSFC for inland water: the source 2 m air temperature's mean.
+
+    WPS ``avg_tsfc`` averages the surface air temperature over the whole
+    days of the forcing; ``real.exe`` with ``use_tavg_for_tsk`` gives it to
+    the water the analysis does not resolve.  This averages the source's
+    ``T2`` over the forcing times in the first ``hours`` (24) after the
+    start, read once and only when a domain has inland water beyond the
+    source reach.  A forcing shorter than a day averages what it has, and
+    the receipt names the window either way.
+    """
+
+    def __init__(self, snapshots, *, hours=24.0):
+        self._snapshots = snapshots
+        self._hours = float(hours)
+        self._value = None
+
+    def __call__(self, snapshot):
+        if self._value is None:
+            times = tuple(getattr(self._snapshots, "valid_times", None)
+                          or (item.valid_time for item in self._snapshots))
+            start = min(times)
+            chosen = [index for index, when in enumerate(times)
+                      if (when - start).total_seconds() < self._hours * 3600.0]
+            total = None
+            for index in chosen:
+                fields = self._snapshots[index].fields
+                if _INLAND_AIR_FIELD not in fields:
+                    raise ValueError(
+                        f"forcing time {times[index]} carries no "
+                        f"{_INLAND_AIR_FIELD} for the inland-water daily mean")
+                value = _as_host_float64(fields[_INLAND_AIR_FIELD])
+                total = value.copy() if total is None else total + value
+            span = (times[chosen[-1]] - start).total_seconds() / 3600.0
+            self._value = (total / len(chosen), {
+                "window": (f"daily mean of {len(chosen)} forcing time(s) "
+                           f"over {span:g} h from {start.isoformat()}"),
+                "times": [times[index].isoformat() for index in chosen]})
+        field, receipt = self._value
+        if field.shape != np.shape(snapshot.fields["SKINTEMP"]):
+            raise ValueError(
+                "the daily-mean 2 m air temperature's grid differs from "
+                "this forcing time's")
+        return field, receipt
+
+_INLAND_AIR_PROVIDERS: list = []
+
+
+def with_inland_air_temperature(statics, snapshots):
+    """``statics`` carrying the forcing series' daily-mean 2 m air temperature.
+
+    One :class:`DailyMeanAirTemperature` per forcing series, shared by the
+    root and every child mapped from it, so the series is averaged once.
+    ``statics`` None or no series: returned unchanged.
+    """
+    if statics is None or snapshots is None:
+        return statics
+    for series, provider in _INLAND_AIR_PROVIDERS:
+        if series is snapshots:
+            break
+    else:
+        provider = DailyMeanAirTemperature(snapshots)
+        _INLAND_AIR_PROVIDERS.append((snapshots, provider))
+        del _INLAND_AIR_PROVIDERS[:-2]
+    return replace(statics, inland_air_temperature=provider)
 
 
 def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
@@ -2221,17 +2470,29 @@ def interpolate_era5_to_lambert(snapshot: Era5Snapshot, grid: ProjectedGrid, *,
                 # soil initializer builds its column, so it is marked and
                 # counted as no_source_land, not as fill.
                 soil = mode == "land" and name in _SOIL_FAMILY_FIELDS
-                values, counts = native.wps_masked_chain(
+                inland = (inland_water_reach(snapshot, target_land_host,
+                                             mass_lat, water_temperature_statics)
+                          if mode == "skin" else None)
+                called = native.wps_masked_chain(
                     layers, donors,
                     None if mode == "plain" else partial_land_host,
                     target_y, target_x, targets, chain, mode=mode,
                     fill_value=np.nan if soil else fill,
-                    physical_range=bounds, workers=chain_workers)
+                    physical_range=bounds, workers=chain_workers,
+                    reach=None if inland is None else inland.reach)
+                values, counts = called[0], called[1]
+                if inland is not None:
+                    values = inland.fill(
+                        values, snapshot, water_temperature_statics,
+                        target_y, target_x, native=native,
+                        workers=chain_workers)
                 mapped = []
                 for layer in range(layers.shape[0]):
                     row = values[layer].reshape(mass_lat.shape)
                     passes = {key: int(counts[layer][_COUNT_SLOT[key]])
                               for key in count_keys}
+                    if inland is not None:
+                        passes["inland_air_temperature"] = int(called[2][layer])
                     if soil:
                         answered = np.isfinite(row)
                         starved = targets & ~answered
@@ -2405,6 +2666,10 @@ __all__ = [
     "global_longitude_period_columns",
     "interpolate_era5_to_lambert",
     "interpolate_lake_skin_temperature",
+    "DailyMeanAirTemperature",
+    "INLAND_WATER_SOURCE_REACH_M",
+    "inland_water_targets",
+    "with_inland_air_temperature",
     "unrolled_source_ring",
     "interpolate_regular_gpu",
     "lambert_rotation",

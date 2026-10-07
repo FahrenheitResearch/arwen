@@ -559,6 +559,14 @@ def numpy_pseudo_state(nz=8, ny=16, nx=20, dz=1150.0):
         php=np.zeros((nz + 1, ny, nx), f32),
         alb=np.zeros((nz,), f32),
         rdnw=np.full((nz,), -float(nz), f32),
+        # The hydrostatic mass balance gpuwm.da.perturb applies by default
+        # (2026-10-06) integrates the column with the full-level loading
+        # coefficients and the layer thickness; a state without them is
+        # refused by name rather than balanced silently.
+        dnw=np.full((nz,), -1.0 / nz, f32),
+        rdn=np.concatenate([[0.0], np.full((nz - 1,), -float(nz)),
+                            [0.0]]).astype(f32),
+        c1f=np.ones((nz + 1,), f32), c2f=np.zeros((nz + 1,), f32),
         c1h=np.ones((nz,), f32), c2h=np.zeros((nz,), f32),
         c3h=np.ones((nz,), f32), c4h=np.zeros((nz,), f32),
         c3f=np.ones((nz + 1,), f32), c4f=np.zeros((nz + 1,), f32),
@@ -602,7 +610,8 @@ def test_the_perturbation_stales_the_diagnostics_and_the_refresh_fixes_it():
     provenance = perturb.apply_perturbations(
         state, 12345,
         perturb.PerturbationConfig.from_mapping(
-            {"dx_km": 3.0, "dy_km": 3.0, **_PERTURB_OPTIONS}))
+            {"dx_km": 3.0, "dy_km": 3.0, "hypsometric_opt": 1,
+             **_PERTURB_OPTIONS}))
     assert np.abs(state.thp).max() > 0.0
     assert any("update_diagnostics" in line
                for line in provenance["post_conditions"])
@@ -646,8 +655,10 @@ def test_the_engine_supplies_the_grid_spacing_the_perturb_lane_requires():
     update_diagnostics(state, 1)
     hook = resolve_perturbation("gpuwm.da.perturb")
     report = hook(state, 4242, dict(_PERTURB_OPTIONS),
-                  grid_spacing_km=(3.0, 3.0))
-    assert report["schema"] == "gpuwm.da.perturb/provenance/v1"
+                  grid_spacing_km=(3.0, 3.0), hypsometric_opt=1)
+    # v2 since ef11996bd (the vertical spread repair added the vertical
+    # draw's record to the provenance).
+    assert report["schema"] == "gpuwm.da.perturb/provenance/v2"
     # The engine's dx reached the module, not a default.
     assert report["grid_spacing_km"] == {"dx": 3.0, "dy": 3.0}
     assert np.abs(state.thp).max() > 0.0
@@ -1259,7 +1270,13 @@ def test_a_member_wind_of_the_wrong_sign_shows_up_on_both_radars(tmp_path):
 
 
 def test_the_adapter_reads_z_from_the_named_reduction(tmp_path):
-    """z_obs vs z_max per the schema doc; z_mean refused with a reason."""
+    """z_obs, z_max and z_mean each read their own named reduction.
+
+    z_mean was refused here until 098029d01 (DA lane 2) made the in-cell
+    linear-Z mean a real superob reduction and the default of
+    RadarAssimilationConfig.z_source; a name the module does not know is
+    still refused.
+    """
 
     from gpuwm.da import obs_radar
 
@@ -1276,10 +1293,17 @@ def test_the_adapter_reads_z_from_the_named_reduction(tmp_path):
     mask = default[0].mask
     np.testing.assert_allclose(maxima[0].values[mask],
                                default[0].values[mask] + 1.0, atol=1e-4)
-    with pytest.raises(obs_radar.RadarObsAdapterError, match="z_mean"):
+    means, provenance = obs_radar.radar_grid_to_gridded_obs(
+        path, reflectivity_simulated=simulated, expected_grid=grid,
+        z_source="z_mean")
+    # two_radar_grid_file writes z_mean = z_obs - 1.
+    np.testing.assert_allclose(means[0].values[mask],
+                               default[0].values[mask] - 1.0, atol=1e-4)
+    assert provenance["z_source"] == "z_mean"
+    with pytest.raises(obs_radar.RadarObsAdapterError, match="z_median"):
         obs_radar.radar_grid_to_gridded_obs(
             path, reflectivity_simulated=simulated, expected_grid=grid,
-            z_source="z_mean")
+            z_source="z_median")
 
 
 def test_the_adapter_refuses_a_file_bound_to_another_grid(tmp_path):
@@ -1437,7 +1461,8 @@ def test_clipping_bounds_the_analysis_and_says_it_added_mass():
              "thp": np.array([[[0.0, 0.0, 0.0]]])}
     increments = {"qr": np.array([[[-2.0e-3, 1.0e-4, -5.0e-4]]]),
                   "thp": np.array([[[-3.0, 1.0, -1.0]]])}
-    adjusted, receipt = positivity.apply_positivity(prior, increments)
+    adjusted, receipt = positivity.apply_positivity(prior, increments,
+                                                    policy="clip")
 
     analysis = prior["qr"] + adjusted["qr"]
     assert analysis.min() >= 0.0
@@ -1535,14 +1560,18 @@ def test_the_cycle_driver_applies_the_policy_and_receipts_it(tmp_path):
 
     manifest = json.loads((root / CYCLE_MANIFEST_NAME).read_text("utf-8"))
     assimilation = manifest["cycles"][0]["assimilation"]
-    assert assimilation["positivity_policy"] == "clip"
+    assert assimilation["positivity_policy"] == "mean-preserving"
     assert assimilation["negative_points_total"] == 2 * int(np.prod(shape))
-    # Two members, every point raised from -1e-3 to 0.
-    assert assimilation["mass_added_by_clip_total"] == pytest.approx(
+    # Two members, every point at -1e-3: the ensemble MEAN is negative
+    # everywhere, so the mean-preserving rule has no mean to keep and every
+    # member ends at zero, which adds exactly what the clip added.
+    assert assimilation["mass_added_total"] == pytest.approx(
         2 * np.prod(shape) * 1.0e-3, rel=1e-6)
+    assert assimilation["mass_added_by_clip_total"] == 0.0
 
     for record in assimilation["receipts"]:
-        assert record["positivity"]["policy"] == "clip"
+        assert record["positivity"]["policy"] == "mean-preserving"
+        assert record["positivity"]["scope"] == "ensemble"
     for member in ("member_000", "member_001"):
         with np.load(root / "cycle_000" / member / ANALYSIS_NAME) as data:
             assert float(data["state/qr"].min()) >= 0.0
@@ -1649,14 +1678,20 @@ def test_the_cycle_manifest_carries_the_assimilation_receipts(gate_report):
 
 def test_the_positivity_policy_ran_and_reported_the_mass_it_added(
         gate_report):
-    """Clipping is not free, and the receipt says how much it cost."""
+    """The default bound ran, and the receipt says what it cost.
+
+    The default is mean-preserving: it adds mass only where the ensemble
+    mean itself went negative, so the figure may be zero; it may never be
+    negative and it is never more than the clip would have added.
+    """
 
     assimilation = gate_report["assimilation"]
-    assert assimilation["positivity_policy"] == "clip"
+    assert assimilation["positivity_policy"] == "mean-preserving"
     assert assimilation["negative_points_total"] > 0, (
         "no analysis went negative, so the positivity seam was not "
         "exercised and this gate does not test it")
-    assert assimilation["mass_added_by_clip_total"] > 0.0
+    assert assimilation["mass_added_total"] >= 0.0
+    assert assimilation["mass_added_by_clip_total"] == 0.0
 
 
 def test_the_observations_are_a_real_radar_file_from_two_radars(gate_report):

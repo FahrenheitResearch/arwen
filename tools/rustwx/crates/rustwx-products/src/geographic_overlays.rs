@@ -240,15 +240,12 @@ impl MapOverlays {
             return Ok(());
         }
         let geographic = self.geographic_points();
-        let projected = project_points_with_projection(
-            lat_deg,
-            lon_deg,
-            projection,
-            bounds,
-            target_ratio,
-            &geographic,
-        )
-        .map_err(|err| format!("project overlay points: {err}"))?;
+        let projected = if let Some(resolved)=request.resolved_projection {
+            geographic.iter().map(|(lat,lon)|resolved.project(*lat,*lon)).collect()
+        } else {
+            project_points_with_projection(lat_deg,lon_deg,projection,bounds,target_ratio,&geographic)
+                .map_err(|err|format!("project overlay points: {err}"))?
+        };
         let mut cursor = 0usize;
         let mut take = |count: usize| {
             let slice = projected[cursor..cursor + count].to_vec();
@@ -308,7 +305,11 @@ impl MapOverlays {
             {
                 continue;
             }
-            if layer.units != request.field.units {
+            // Dots that borrow the map's palette must be in the map's units,
+            // or a value is read off a bar it was never on.  A layer that
+            // carries its own ladder (observation-minus-background dots
+            // over a shaded field) is read on that ladder, not the map's.
+            if layer.scale.is_none() && layer.units != request.field.units {
                 return Err(format!(
                     "scalar overlay units {:?} differ from map units {:?}",
                     layer.units, request.field.units
@@ -519,6 +520,52 @@ mod tests {
         request.projected_place_labels.clear();
         marks.apply(&mut request, &lat, &lon, None, (-99.0,-98.0,34.0,35.0), 1.0).unwrap();
         assert!(request.projected_place_labels.is_empty());
+    }
+
+    #[test]
+    fn dots_on_their_own_ladder_may_carry_other_units_than_the_map() {
+        use rustwx_core::{Field2D, GridShape, LatLonGrid, ProductKey};
+        let lat = vec![34.0, 34.0, 35.0, 35.0];
+        let lon = vec![-99.0, -98.0, -99.0, -98.0];
+        let scale = |low: f64| ColorScale::Discrete(rustwx_render::DiscreteColorScale {
+            levels: vec![low, 0.0, 10.0],
+            colors: vec![Color::rgba(0, 0, 200, 255), Color::rgba(200, 0, 0, 255)],
+            extend: rustwx_render::ExtendMode::Both,
+            mask_below: None,
+        });
+        let field = Field2D::new(ProductKey::named("shaded"), "dBZ", LatLonGrid {
+            shape: GridShape {nx: 2, ny: 2}, lat_deg: lat.clone(), lon_deg: lon.clone(),
+        }, vec![30.0; 4]).unwrap();
+        let mut request = MapRenderRequest::from_core_field(field, scale(-10.0));
+        let layer = |own: Option<ColorScale>| MapOverlays {
+            value_layers: vec![ValuePointLayer {
+                products: Vec::new(), units: "K".to_string(),
+                points: vec![ValuePointSpec {lat: 34.5, lon: -98.5, value: 2.0}],
+                scale: own, radius_px: 4,
+            }], ..MapOverlays::default()
+        };
+        // Borrowing the map's dBZ palette for kelvin is refused ...
+        assert!(layer(None).apply(&mut request, &lat, &lon, None, (-99.0,-98.0,34.0,35.0), 1.0).is_err());
+        // ... and a departure layer read on its own ladder is drawn.
+        layer(Some(scale(-10.0))).apply(&mut request, &lat, &lon, None, (-99.0,-98.0,34.0,35.0), 1.0).unwrap();
+        assert_eq!(request.projected_place_labels.len(), 1);
+    }
+
+    #[test]
+    fn overlays_follow_the_published_native_frame_transform() {
+        use rustwx_core::{Field2D,GridShape,LatLonGrid,ProductKey};
+        let field=Field2D::new(ProductKey::named("probe"),"1",LatLonGrid {
+            shape:GridShape {nx:1,ny:1},lat_deg:vec![32.6],lon_deg:vec![-116.4]},vec![0.]).unwrap();
+        let mut request=MapRenderRequest::from_core_field(field,rustwx_render::ColorScale::Discrete(
+            rustwx_render::DiscreteColorScale {levels:vec![0.,1.],colors:vec![Color::BLACK],
+                extend:rustwx_render::ExtendMode::Neither,mask_below:None}));
+        request.resolved_projection=Some(rustwx_render::ResolvedProjection::Geographic {central_meridian_deg:-120.});
+        let overlays=MapOverlays {labels:vec![LabelSpec {lat:32.6,lon:-116.4,text:"32.60°N".into()}],..Default::default()};
+        // The supplied bounds would select a different presentation anchor.
+        // The actual PNG's transform is authoritative for all annotations.
+        overlays.apply(&mut request,&[32.6],&[-116.4],None,(-117.,-116.,32.,33.),1.).unwrap();
+        let label=&request.projected_place_labels[0];
+        assert!((label.x-3.6).abs()<1e-10);assert!((label.y-32.6).abs()<1e-10);
     }
 
     #[test]

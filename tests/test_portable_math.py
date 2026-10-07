@@ -160,8 +160,8 @@ def test_real_init_serial_helpers_pass_their_worker_count(monkeypatch):
     original = pm._workers
     seen = []
 
-    def spy(workers):
-        seen.append(original(workers))
+    def spy(workers, size=None):
+        seen.append(original(workers, size))
         return seen[-1]
 
     monkeypatch.setattr(pm, "_workers", spy)
@@ -183,7 +183,12 @@ def test_real_init_serial_helpers_pass_their_worker_count(monkeypatch):
         temperature[:1], pb[:1], column_workers=4)
     assert set(seen) == {4}
     seen.clear()
+    # An unnamed count is the automatic one, given at least
+    # AUTOMATIC_ELEMENTS_PER_WORKER elements per worker.
     pm.exp(np.ones(3))
+    assert seen == [1]
+    seen.clear()
+    pm.exp(np.ones(8 * pm.AUTOMATIC_ELEMENTS_PER_WORKER))
     assert seen == [8]
 
 
@@ -329,3 +334,20 @@ def test_real_init_thermodynamics_are_the_portable_expressions():
     theta_m = theta * (1.0 + c.RVOVRD * qv)
     assert alpha.tobytes() == (
         c.RD * theta_m * pm.power(pb / c.P0, c.RCP) / pb).tobytes()
+
+
+def test_automatic_worker_count_scales_with_the_array(monkeypatch):
+    """An automatic count gives each worker at least
+    AUTOMATIC_ELEMENTS_PER_WORKER elements; a named count or a worker_limit
+    is taken as given.  A thread count never changes an element."""
+    from gpuwm.core import portable_math as pm
+    from gpuwm.ingest import cpu_backend
+    monkeypatch.setattr(cpu_backend, "automatic_workers", lambda: 100)
+    per = pm.AUTOMATIC_ELEMENTS_PER_WORKER
+    assert pm._workers(None) == 100
+    assert pm._workers(None, 1) == 1
+    assert pm._workers(None, 3 * per) == 3
+    assert pm._workers(None, 1000 * per) == 100
+    assert pm._workers(7, 1) == 7
+    with pm.worker_limit(5):
+        assert pm._workers(None, 1) == 5

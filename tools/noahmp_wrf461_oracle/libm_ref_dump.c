@@ -1,5 +1,5 @@
 /* Dump live glibc logf/atanf/powf(x,0.25f) for a list of hex float32 inputs.
-   Produces gpuwm/data/noahmp/oracle/noahmp-bareflux-libm.csv, which is what
+   Produces tests/data/oracles/noahmp/noahmp-bareflux-libm.csv, which is what
    both the CPU and the CUDA transcriptions of those three functions are
    gated against.  Build:  gcc -O2 -o libm_ref_dump libm_ref_dump.c -lm
    Run:    ./libm_ref_dump < hex_inputs.txt

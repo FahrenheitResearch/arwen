@@ -689,3 +689,32 @@ def test_log1pf_array_holds_its_result_and_one_block_not_the_field():
         f"log1pf_array over {size} elements held {held} bytes at its peak, "
         f"more than its result ({result.nbytes}) plus one block of scratch "
         f"({40 * block}): {held / size:.1f} bytes per element")
+
+
+def test_logf_array_matches_logf_bit_for_bit():
+    """The whole-array ``logf`` against the scalar transcription.
+
+    Every float32 word across the normal range (log-uniform), a dense band
+    around 1 where ``ruclsminit``'s freezing curve lives, exactly 1, and
+    the specials the C handles outside its main path.
+    """
+    import numpy as np
+
+    from gpuwm.core.noahmp_libm import logf, logf_array
+
+    rng = np.random.default_rng(7)
+    wide = np.exp(rng.uniform(np.log(1.2e-38), np.log(3.0e38), 20000)
+                  ).astype(np.float32)
+    band = rng.uniform(0.6, 1.5, 20000).astype(np.float32)
+    specials = np.asarray(
+        [1.0, 0.0, -0.0, -1.0, np.inf, -np.inf, np.nan, 1e-40, 1.17549435e-38,
+         3.4028235e38, 273.15 / 273.15, np.nextafter(np.float32(1), np.float32(0)),
+         np.nextafter(np.float32(1), np.float32(2))], dtype=np.float32)
+    values = np.concatenate([wide, band, specials])
+    expected = np.asarray([logf(v) for v in values], dtype=np.float32)
+    actual = logf_array(values.reshape(4, -1) if values.size % 4 == 0
+                        else values)
+    np.testing.assert_array_equal(actual.reshape(-1).view(np.uint32),
+                                  expected.view(np.uint32))
+    assert logf_array(np.zeros((0,), dtype=np.float32)).shape == (0,)
+    assert logf_array(np.float32(1.0)).shape == ()

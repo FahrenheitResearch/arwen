@@ -350,6 +350,27 @@ def check_warm_ice_number(mp):
         float(cols["qi"][0, k]), float(cols["ni"][0, k]),
         float(inp["T"][0, k]), float(inp["p"][0, k]),
         float(cols["qv"][0, k])) for k in levels]
+    if mp == 28:
+        # mp=28 (v4.6.1) carries the balance as WRF does, in tendency form:
+        # niten = (xni - ni1d*rho)*odts*orho, then ni1d + niten*DT, all REAL.
+        # Where the entry number is far above the bound (level 4: 1e9 per
+        # kg against ~1.07e6) that subtraction cancels to the float32 ulp of
+        # the entry, so WRF's own answer sits ~9e-5 from the exact target;
+        # the expectation is WRF's arithmetic, not the exact target.
+        f32 = np.float32
+        dt = f32(cols["dt"])
+        tendency_form = []
+        for k, target in zip(levels, want):
+            temp = float(inp["T"][0, k])
+            rho = f32(f32(0.622) * f32(inp["p"][0, k]) / (
+                f32(287.04) * f32(temp)
+                * (f32(max(float(cols["qv"][0, k]), 1.0e-10)) + f32(0.622))))
+            ni1d = f32(cols["ni"][0, k])
+            xni = f32(target * float(rho))
+            niten = f32(f32(f32(xni - f32(ni1d * rho)) * f32(f32(1.0) / dt))
+                        * f32(f32(1.0) / rho))
+            tendency_form.append(float(f32(ni1d + f32(niten * dt))))
+        want = tendency_form
     return {"temperature": [float(inp["T"][0, k]) for k in levels],
             "ni_after_sources": [float(got[k]) for k in levels],
             "ni_balance": want}

@@ -711,7 +711,7 @@ def make_base_state(coord: VerticalCoord, sounding: Sounding,
     # 5. Invert z(p) by interpolation; base theta and inverse density.
     #    np.interp needs increasing xp, and p decreases with z -> reverse.
     z_of_pb = np.interp(pb, p_of_z[::-1], zf[::-1])
-    thb = sounding(z_of_pb)
+    thb = _base_theta(sounding, z_of_pb, terrain_z)
     alb = c.RD * thb * (pb / c.P0) ** c.RCP / pb
 
     # 6. Discrete hydrostatic base geopotential (essential recurrence).
@@ -720,6 +720,29 @@ def make_base_state(coord: VerticalCoord, sounding: Sounding,
 
     return BaseState(mub=mub, p_top=p_top, pb=pb, alb=alb, thb=thb, phb=phb,
                      terrain_z=terrain_z)
+
+
+def _base_theta(sounding: Sounding, z_of_pb: np.ndarray,
+                terrain_z: np.ndarray | None) -> np.ndarray:
+    """``sounding`` at the base heights, evaluated once per distinct column.
+
+    Over a constant terrain every column asks for the same ``nz`` heights,
+    so the sounding is evaluated on that one column and broadcast: the same
+    numbers, because a sounding is a function of height alone and the
+    heights it sees are the same set.  Evaluating it on the whole ``(nz,
+    ny, nx)`` array instead is what a tile buffer did (its terrain is the
+    constant of ``tilestream.harness.neutral_geography``): wk82_sounding
+    unions every requested height into its integration grid, so a rank of
+    HRRR's lattice sorted and integrated 50 million heights to learn 50
+    values.  Varying terrain keeps the whole-array evaluation.
+    """
+    if (terrain_z is None or z_of_pb.ndim != 3
+            or np.ptp(terrain_z) != 0.0):
+        return sounding(z_of_pb)
+    column = np.asarray(sounding(np.ascontiguousarray(z_of_pb[:, 0, 0])),
+                        dtype=np.float64)
+    return np.ascontiguousarray(
+        np.broadcast_to(column[:, None, None], z_of_pb.shape))
 
 
 def rebalance_hydrostatic(th_total: np.ndarray, mub: float,

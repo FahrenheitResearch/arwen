@@ -53,6 +53,18 @@ from gpuwm.bridges import (RUSTWX_CRATE_RELATIVE, artifact_remedy,
 #: Environment variable naming a prebuilt renderer executable.
 RENDERER_ENV = "GPUWM_RW_WRFBATCH"
 
+#: Optional product metadata, matching rw_wrfbatch's CHEM_CORE_FIELD_CATALOG.
+#: The renderer inspects source presence; this table never plans a product.
+#: (slug, wrfout source, mass level or None, display units).
+CHEM_PRODUCT_ROWS = (
+    ("smoke_near_surface", "SMOKE_SFC", None, "ug/m^3"),
+    ("smoke_column", "SMOKE_COLUMN", None, "mg/m^2"),
+    ("pm25_near_surface", "PM2_5_DRY", 1, "ug/m^3"),
+    ("aod_550", "AOD5502D", None, "1"),
+    ("dust_near_surface", "DUST_SFC", None, "ug/m^3"),
+    ("ozone_near_surface", "o3", 1, "ppb"),
+)
+
 #: Executable base name of the vendored batch renderer.
 RENDERER_NAME = "rw_wrfbatch"
 
@@ -976,8 +988,14 @@ def probe_renderer(path: Path) -> tuple[bool, str]:
         return False, f"--abi did not run: {error}"
     except subprocess.TimeoutExpired:
         return False, (f"--abi did not exit within {_PROBE_TIMEOUT_S} s")
+    from gpuwm import provenance_gate
+
     observed = (abi.stdout or "").strip()
-    if abi.returncode != 0 or observed != RENDERER_ABI_MARKER:
+    # A GPUWM_BRIDGE_SOURCE_REV line after the contract is not part of it
+    # (rw_ensbatch's whole-answer compare refused its own checkout's
+    # build); it is judged by the shared stamp check below.
+    contract, revision = provenance_gate.split_abi_answer(observed)
+    if abi.returncode != 0 or contract != RENDERER_ABI_MARKER:
         # A build predating the handshake answers `unknown option --abi`
         # on exit 2, so name that case for what it is rather than
         # reporting an empty string against a long expected line.
@@ -989,6 +1007,13 @@ def probe_renderer(path: Path) -> tuple[bool, str]:
             "checkout, so its product catalog is not this tree's; REBUILD "
             f"it, do not re-point {RENDERER_ENV} at another copy: "
             f"{rustwx_build_hint()}")
+    if revision is not None:
+        refusal = provenance_gate.abi_revision_refusal(
+            path, revision, env_var=RENDERER_ENV)
+        if refusal is not None:
+            return False, (
+                f"launches and --abi matches the render contract, but "
+                f"{refusal}; REBUILD it: {rustwx_build_hint()}")
     return True, ("probe --help exited 0 with its usage line; --abi matches "
                   "the render contract")
 
@@ -1297,7 +1322,7 @@ def catalog_verdict(rows, requested) -> tuple[str, list[tuple[str, str]]]:
     wanted = (product_spec_terms(requested) if isinstance(requested, str)
               else [str(token).strip() for token in requested])
     wanted = [token for token in wanted if token]
-    status = {row[0]: (row[2], row[3]) for row in rows}
+    status = {row[0]: (row[2], row[3], catalog_code(row)) for row in rows}
     # Whether this listing enumerated the store's 2-D variables at all,
     # which is what makes an absent row a reading rather than a silence.
     enumerated = any(row[1] == "generic"
@@ -1316,7 +1341,7 @@ def catalog_verdict(rows, requested) -> tuple[str, list[tuple[str, str]]]:
                 continue
             available.append(token)
             continue
-        if row[0] == "renderable":
+        if row[0] == "renderable" or row[2] == "invalid-active-fire-domain":
             available.append(token)
             continue
         excluded.append((token, row[1]))

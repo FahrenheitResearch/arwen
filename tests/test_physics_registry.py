@@ -2160,15 +2160,21 @@ def test_mp28_is_registered_at_the_maturity_its_evidence_earns():
         assert parameter_is_implemented(declared[name]), name
 
 
-def test_mp28_publishes_its_measured_column_residuals_not_a_clean_claim():
-    """The gate is not green, and the registry has to say so in numbers.
+def test_mp28_publishes_its_measured_column_evidence_not_a_forecast_claim():
+    """The column gate is green; the registry says so in numbers, and no more.
 
-    ``implemented-unverified`` says "column-oracle-measured".  It does not say
-    "column-oracle-CLEAN", and the difference is the whole accuracy of the
-    label, so the measurement lives on the option where a user reads it
-    rather than only in a test file.  The published partition must cover every
-    committed fixture exactly once: a fixture that quietly leaves the residual
-    list without joining the clean list would otherwise vanish.
+    ``implemented-unverified`` says "column-oracle-measured".  Since the 2.8.6
+    accumulator rework the column deck is also CLEAN -- 22 of 22 at the flat
+    gate with no allowance -- and the label still does not move, because a
+    clean single-call deck is not a forecast comparison.  The measurement
+    lives on the option where a user reads it rather than only in a test
+    file.  The published partition must cover every committed fixture
+    exactly once: a fixture that quietly leaves the residual list without
+    joining the clean list would otherwise vanish.
+
+    This test was ``..._not_a_clean_claim`` and asserted a residual existed,
+    which was the accurate claim until the rework closed the last four
+    fixtures; it now asserts the opposite, with the same partition checks.
     """
     evidence = _mp28_option()["extensions"]["column_oracle_evidence"]
     committed = _committed_aerosol_fixture_ids()
@@ -2224,9 +2230,11 @@ def test_mp28_publishes_its_measured_column_residuals_not_a_clean_claim():
     assert not (clean & residual) and not (clean & carved) \
         and not (residual & carved)
 
-    # The point of the row: some fixtures do NOT clear the gate, and every
-    # residual is published as a number rather than as an adjective.
-    assert residual, "an empty residual list would be a clean claim"
+    # Every residual, while any existed, was published as a number rather
+    # than as an adjective.  Since the 2.8.6 accumulator rework there is none,
+    # and the clean list is the whole deck.
+    assert residual == set(), evidence["residual_fixtures"]
+    assert clean == committed
     for name, fields in evidence["residual_fixtures"].items():
         assert fields, name
         for field, value in fields.items():
@@ -2239,7 +2247,9 @@ def test_mp28_publishes_its_measured_column_residuals_not_a_clean_claim():
     # retired the relative carve-out it also used to sit under, so carved is
     # EMPTY and the assertion moves to `near` rather than being deleted.
     assert carved == set()
-    assert near == {"aero-reduces-to-classic"}
+    # Retired by the 2.8.6 accumulator rework: level 6 of
+    # aero-reduces-to-classic is bit-exact against WRF in qr and nr.
+    assert near == set()
     # ONE FIELD, not two.  This literal used to read ``{"qr", "nr_per_kg"}``
     # and stayed green for a wave after WP-13a's level-wise sedimentation
     # density took that fixture's ``qr`` to 1.788e-07 -- inside the FLAT
@@ -2252,8 +2262,7 @@ def test_mp28_publishes_its_measured_column_residuals_not_a_clean_claim():
     # applies``.
     # ONE LEVEL, not two.  Same second-opinion role the field-set assertion
     # above it used to play for the retired relative bound.
-    assert evidence["near_cancellation_bound"]["fixtures"] == {
-        "aero-reduces-to-classic": [6]}
+    assert evidence["near_cancellation_bound"]["fixtures"] == {}
 
     # THE TWO COUNTS, PUBLISHED SEPARATELY.  ``clean_fixtures`` is the
     # UNEXCEPTIONED list -- nothing held out, no bounds dict -- and the gated
@@ -2262,15 +2271,17 @@ def test_mp28_publishes_its_measured_column_residuals_not_a_clean_claim():
     # on the option and both are derived from the same partition here.
     assert evidence["clean_unexceptioned"] == len(clean)
     assert evidence["clean_as_gated"] == len(clean) + len(carved) + len(near)
-    assert evidence["clean_unexceptioned"] < evidence["fixtures"], (
-        "a clean count equal to the deck size is a clean claim, and the "
-        "residual table below contradicts it")
+    assert evidence["clean_unexceptioned"] == evidence["fixtures"], (
+        "the gate clears the whole deck with nothing held out, so the "
+        "published unexceptioned count must be the deck size")
+    # ...and the clean deck did NOT raise the label, which is the claim this
+    # row must never overstate.
+    assert _mp28_option()["maturity"] == "implemented-unverified"
 
     # EVERY departure from the flat gate is named, and each one says which
     # direction it moved.  An unpublished allowance is indistinguishable
     # from a hidden one.
     allowances = evidence["allowances"]
-    assert allowances, "the gate has allowances and publishes none"
     for allowance in allowances:
         # ``carved | near`` rather than ``carved`` alone: an allowance may be
         # a METRIC change published under near_cancellation_bound as well as
@@ -2293,11 +2304,13 @@ def test_mp28_publishes_its_measured_column_residuals_not_a_clean_claim():
     # in the retiring direction only: _END_TO_END_BOUNDS went live -> retired
     # when the inherited mp=8 sedimentation reconciliations took the residual
     # it covered from 5.700e-06 to 4.146e-07.
-    assert {a["gate_constant"] for a in allowances} == {
-        "_NEAR_CANCELLATION_LEVELS"}, allowances
+    # NONE live: the 2.8.6 accumulator rework retired the last one,
+    # _NEAR_CANCELLATION_LEVELS, when level 6 went bit-exact.
+    assert allowances == [], allowances
     retired = evidence["retired_allowances"]
     assert {a["gate_constant"] for a in retired} == {
-        "_END_TO_END_BOUNDS", "_REFL_DB_BOUNDS"}, retired
+        "_END_TO_END_BOUNDS", "_NEAR_CANCELLATION_LEVELS",
+        "_REFL_DB_BOUNDS"}, retired
     for allowance in retired:
         assert allowance["is"] is None and allowance["direction"], allowance
     assert not ({a["gate_constant"] for a in retired}
@@ -2624,7 +2637,7 @@ def test_mp28_plan_warns_at_every_deviation_rather_than_blocking():
     text = " ".join(emitted)
     for phrase in (
         "No matched REAL-DATA or NESTED WRF trajectory",
-        "THE COLUMN EVIDENCE IS NOT CLEAN",
+        "THE COLUMN EVIDENCE IS CLEAN; THE FORECAST EVIDENCE IS NOT",
         "AEROSOL INPUT LIMITS",
         "gpuwm/core/physics.py::initialize_physics",
         "HISTORICAL SYNTHETIC-PROFILE SENSITIVITY",
@@ -2642,6 +2655,9 @@ def test_mp28_plan_warns_at_every_deviation_rather_than_blocking():
     ):
         assert phrase in text, f"the mp=28 warnings no longer say: {phrase}"
     for retired_claim in (
+        # Retired by the 2.8.6 accumulator rework: 22 of 22 columns clear
+        # the flat gate, so the warning may no longer say they do not.
+        "THE COLUMN EVIDENCE IS NOT CLEAN",
         "carries NO aerosol inflow",
         "flag_qnc/flag_qnwfa/flag_qnifa to MYNN as literal False",
         "MIXED NESTING IS REFUSED BY NAME",

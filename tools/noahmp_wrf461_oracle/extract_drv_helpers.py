@@ -17,7 +17,7 @@ be WRF's own code rather than a transcription:
 
 * ``TRANSFER_MP_PARAMETERS`` -- fills ``noahmp_parameters`` from the pinned
   MPTABLE/SOILPARM/GENPARM.  Its output is already pinned independently in
-  ``gpuwm/data/noahmp/oracle/noahmp-parameters.csv``.
+  ``tests/data/oracles/noahmp/noahmp-parameters.csv``.
 * ``SNOW_INIT`` -- builds ISNOW/ZSNSO/SNICE/SNLIQ/STC exactly as WRF does, so
   the ENERGY cases sit on a snow topology a forecast can actually present.
 

@@ -705,41 +705,22 @@ def test_the_clear_air_floor_is_per_scheme_and_never_guessed():
         obsop.clear_air_floor_dbz(99)
 
 
-def test_p3s_clear_air_floor_is_refused_by_name_and_not_by_absence():
-    """mp=50 is OUT of the table on purpose, and says so.
+def test_p3s_operator_has_one_clear_air_floor():
+    """mp=50 has ONE clear-air value now that it has an operator.
 
-    P3 is a shipped, front-doored scheme, so its absence from a scalar
-    lookup has to read as a decision rather than as a scheme nobody got
-    to.  ``-36.9897`` is what its H(x) reads at a clear LEVEL and
-    ``-99.0`` is what it reads through a column that holds no hydrometeor
-    anywhere; both are in the same field, so no entry in a
-    ``dict[int, float]`` can be right for P3 and the refusal has to say
-    which two numbers it is between.
+    It sat in ``CLEAR_AIR_FLOOR_IS_NOT_ONE_NUMBER`` while its only
+    reflectivity was the forecast field, which holds -36.9897 at a clear
+    level and the -99.0 entry sentinel through a never-diagnosed column.
+    The operator (gpuwm.core.p3_device.reflectivity, audit S14) diagnoses
+    every cell and reads the scheme's zero-hydrometeor value, -36.9897,
+    everywhere clear; the test below still measures both forecast values.
     """
-    assert 50 not in obsop.CLEAR_AIR_FLOOR_DBZ
-    assert 50 in obsop.CLEAR_AIR_FLOOR_IS_NOT_ONE_NUMBER
-
-    with pytest.raises(ValueError) as excinfo:
-        obsop.clear_air_floor_dbz(50)
-    message = str(excinfo.value)
-    # Not the generic "nobody read this one yet" refusal.
-    assert "no clear-air reflectivity floor is recorded" not in message
-    assert "no single clear-air reflectivity floor" in message
-    # The scheme, the two values, and what each wrong choice costs.
-    assert "P3" in message
-    assert "-36.9897" in message
-    assert "-99.0" in message
-    assert "+64 dB" in message and "-62 dB" in message
-    assert "module_mp_p3.F" in message
-
-    # And the front door refuses at construction, not mid-cycle.  It asks
-    # the H(x) route question before the floor question, so P3 is turned
-    # away as the scheme with no separable operator, and the way out it
-    # names (the clear-air arm off) is one that constructs.
-    with pytest.raises(ValueError, match=r"no H_Z\(x\)") as front:
-        _config(clear_air=True, mp_physics=50,
-                analysis_fields=("thp", "qv", "qr", "u", "v"))
-    assert "clear_air=False" in str(front.value)
+    assert obsop.CLEAR_AIR_FLOOR_DBZ[50] == pytest.approx(-36.9897, abs=1e-4)
+    assert 50 not in obsop.CLEAR_AIR_FLOOR_IS_NOT_ONE_NUMBER
+    assert obsop.clear_air_floor_dbz(50) == obsop.CLEAR_AIR_FLOOR_DBZ[50]
+    cfg = _config(clear_air=True, mp_physics=50,
+                  analysis_fields=("thp", "qv", "qr", "u", "v"))
+    assert cfg.clear_air
 
 
 def test_p3s_two_clear_air_values_are_measured_and_not_asserted():
@@ -868,23 +849,22 @@ def test_a_stated_floor_equal_to_the_schemes_is_accepted():
                    clear_air_value_dbz=-35.0).clear_air_value_dbz == -35.0
 
 
-def test_a_scheme_with_no_single_floor_keeps_the_explicit_route():
-    """The mismatch check compares against a READ floor or not at all.
+def test_a_stated_p3_floor_is_checked_against_its_operator():
+    """P3 now has a read floor, so a stated value is compared with it.
 
-    P3 reports two clear-air values, so there is no number to disagree
-    with and ``CLEAR_AIR_FLOOR_IS_NOT_ONE_NUMBER`` says an explicit value
-    is honoured as a claim about H(x).  That route must not be broken by
-    a check that assumes every scheme has one floor -- what refuses mp=50
-    here is the reflectivity route it has no H(x) for, which is a
-    different refusal with a different way out.
+    ``CLEAR_AIR_FLOOR_IS_NOT_ONE_NUMBER`` is empty (its one member, P3,
+    has an operator with one clear-air value), so the explicit route for a
+    scheme without a single floor has no member to exercise; P3 instead
+    takes the mismatch check every scheme with a floor takes.
     """
-    assert 50 not in obsop.CLEAR_AIR_FLOOR_DBZ
-
-    with pytest.raises(RadarAssimilationError) as excinfo:
+    assert not obsop.CLEAR_AIR_FLOOR_IS_NOT_ONE_NUMBER
+    floor = obsop.CLEAR_AIR_FLOOR_DBZ[50]
+    _config(clear_air=True, mp_physics=50, clear_air_value_dbz=floor,
+            analysis_fields=("thp", "qv", "qr", "u", "v"))
+    with pytest.raises(RadarAssimilationError,
+                       match="disagrees with mp_physics"):
         _config(clear_air=True, mp_physics=50, clear_air_value_dbz=-35.0,
                 analysis_fields=("thp", "qv", "qr", "u", "v"))
-    message = str(excinfo.value)
-    assert "disagrees with mp_physics" not in message
 
 
 def test_clear_air_error_inflation_below_one_is_refused():

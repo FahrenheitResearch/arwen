@@ -1,0 +1,7 @@
+prep_kpbl.inc gsl-ccpp-physics/physics/smoke_dust/rrfs_smoke_wrapper.F90 855 864
+prep_columns.inc gsl-ccpp-physics/physics/smoke_dust/rrfs_smoke_wrapper.F90 922 974
+prep_hwp.inc gsl-ccpp-physics/physics/smoke_dust/rrfs_smoke_wrapper.F90 985 1013
+fire_rules.inc gsl-ccpp-physics/physics/smoke_dust/rrfs_smoke_wrapper.F90 375 403
+fire_carry_restore.inc gsl-ccpp-physics/physics/smoke_dust/rrfs_smoke_wrapper.F90 365 370
+fire_carry_store.inc gsl-ccpp-physics/physics/smoke_dust/rrfs_smoke_wrapper.F90 552 556
+fire_frp_diag.inc gsl-ccpp-physics/physics/smoke_dust/rrfs_smoke_wrapper.F90 620 620

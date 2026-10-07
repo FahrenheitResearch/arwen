@@ -99,6 +99,15 @@ cd "$build_dir"
 
 python3 "$script_dir/instrument_aero_intermediates.py" \
   "$thompson_source" "$build_dir/module_mp_thompson_instrumented.F"
+# STAGE_DUMP=1 adds instrument_stages_aero.py's running-tendency dump at the
+# five stage boundaries (still WRITE statements only; the fidelity proof
+# below covers it): intermediates/<scenario>-stages.csv, which
+# compare_port_stages_aero.py reads.
+if [ "${STAGE_DUMP:-0}" = 1 ]; then
+  mv "$build_dir/module_mp_thompson_instrumented.F" "$build_dir/provenance.F"
+  python3 "$script_dir/instrument_stages_aero.py" \
+    "$build_dir/provenance.F" "$build_dir/module_mp_thompson_instrumented.F"
+fi
 
 $fc -c $opt_flags -ffree-form -ffree-line-length-none \
   "$script_dir/stub_wrf.F90"
@@ -153,13 +162,23 @@ for scenario in aero-init-profile aero-sfc-emit aero-ccn-activate \
                 aero-cold-overlap aero-reduces-to-classic \
                 wp08-nusweep wp08-melt wp08-freeze; do
   rm -f cold-network-intermediates.csv cloud-sed-intermediates.csv \
-        phase-cleanup-intermediates.csv
+        phase-cleanup-intermediates.csv stage-tendencies.csv rain-rates.csv
   ./run_column_aero "$scenario" column-oracle-aero \
     | tee "column-$scenario.log"
   # A scenario whose every column is hydrometeor-free and sub-saturated
   # returns at module_mp_thompson.F:2020 before reaching any anchor, so it
   # legitimately emits nothing.  Record that as an empty file rather than
   # failing: every scenario the committed tables cover does emit.
+  if [ "${STAGE_DUMP:-0}" = 1 ]; then
+    if [ -f stage-tendencies.csv ]; then
+      mv stage-tendencies.csv "intermediates/$scenario-stages.csv"
+    else
+      : > "intermediates/$scenario-stages.csv"
+    fi
+    if [ -f rain-rates.csv ]; then
+      mv rain-rates.csv "intermediates/$scenario-rain-rates.csv"
+    fi
+  fi
   for probe in cold-network cloud-sed phase-cleanup; do
     if [ -f "$probe-intermediates.csv" ]; then
       mv "$probe-intermediates.csv" "intermediates/$scenario-$probe.csv"

@@ -7,7 +7,7 @@ import pytest
 
 from test_mynn_gsd41 import requires_gpu
 
-ORACLE = Path(__file__).resolve().parents[1] / "gpuwm/data/mynn/oracle/dmp-mf-gsd41.csv"
+ORACLE = Path(__file__).resolve().parents[1] / "tests/data/oracles/mynn/dmp-mf-gsd41.csv"
 
 
 def _cases():

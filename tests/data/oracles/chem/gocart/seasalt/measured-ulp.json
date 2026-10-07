@@ -1,0 +1,88 @@
+{
+  "aggregate": {
+    "chem": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 5472
+    },
+    "eseas": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 1824
+    }
+  },
+  "cases": {
+    "variant_000_step_1": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 912
+      },
+      "eseas": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 304
+      }
+    },
+    "variant_000_step_2": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 912
+      },
+      "eseas": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 304
+      }
+    },
+    "variant_000_step_3": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 912
+      },
+      "eseas": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 304
+      }
+    },
+    "variant_001_step_1": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 912
+      },
+      "eseas": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 304
+      }
+    },
+    "variant_001_step_2": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 912
+      },
+      "eseas": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 304
+      }
+    },
+    "variant_001_step_3": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 912
+      },
+      "eseas": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 304
+      }
+    }
+  }
+}

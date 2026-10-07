@@ -1201,7 +1201,7 @@ def test_list_products_reports_the_full_catalog(wrfout, tmp_path, capsys):
     assert rc == 0
     out = capsys.readouterr().out
     # The complete catalog is enumerated, not just what renders.
-    # 359 = 163 + the standalone 10 m wind chart + this fixture's 23
+    # 364 = 163 + the standalone 10 m wind chart + this fixture's 23
     # generic ``var:`` rows (stored 2-D planes no named product claims;
     # the generic family is store-dependent, so the count is the
     # FIXTURE's, not the build's) + the 172 ensemble/probabilistic
@@ -1216,9 +1216,24 @@ def test_list_products_reports_the_full_catalog(wrfout, tmp_path, capsys):
     # wrfout import gained the eleven column products (three isotherm
     # heights, three supercooled water paths, five hydrometeor column
     # maxima); ``rw_wrfbatch --list-products`` counts the same eleven,
-    # ``selectable_slugs`` 322 to 333.
-    assert "total=359" in out
+    # ``selectable_slugs`` 322 to 333. Five optional AQ rows add surface
+    # smoke, dry PM2.5, dust, ozone and aerosol optical depth; the existing
+    # canonical smoke and column recipes remain in the original catalog.
+    # The coupled fire's three maps (fire_perimeter, fire_ros,
+    # fire_heat_flux, lane/ec-sfire) are listed too, excluded on this
+    # fixture because it carries no refined fire grid: 364 + 3 = 367.
+    assert "total=367" in out
     assert "renderable" in out and "excluded" in out
+    for slug in ("smoke_near_surface", "pm25_near_surface",
+                 "dust_near_surface", "ozone_near_surface", "aod_550"):
+        rows = [line for line in out.splitlines()
+                if len(line.split()) >= 3 and line.split()[2] == slug]
+        assert len(rows) == 1, (slug, rows)
+        assert rows[0].lstrip().startswith("missing-fields"), rows[0]
+        assert "not stored:" in rows[0], rows[0]
+    for slug in ("smoke_pm25_native", "smoke_column"):
+        assert any(len(line.split()) >= 3 and line.split()[2] == slug
+                   for line in out.splitlines()), slug
     # The generic rows are part of the catalog, not a side channel: every
     # stored plane without a named product renders as ``var:<name>``.
     #
@@ -1231,7 +1246,7 @@ def test_list_products_reports_the_full_catalog(wrfout, tmp_path, capsys):
     # into the listing as renderable (``generic-deduped``) so that a
     # request for a spelling this build accepts is not refused by the
     # listing that describes it.  They are also why ``total=`` still
-    # says 359 while 365 rows print: the total is the ENGINE's catalog
+    # says 364 while 370 rows print: the total is the ENGINE's catalog
     # and these six are the door's addition to it.
     generic_rows = [line for line in out.splitlines()
                     if " generic " in line and " var:" in line]

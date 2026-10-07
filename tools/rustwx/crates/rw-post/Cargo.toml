@@ -1,0 +1,64 @@
+# WOOF post-processor (clean-room, Apache-2.0).
+#
+# Replaces the held-out post modules of the GRIB2 exporter with methods
+# written from public science (the WOOF post specification and the papers it
+# cites).  Every field has a CPU path (Rust, rayon over columns) and a CUDA
+# path (prebuilt PTX and CUBINs, driver-only dynamic loading, no toolkit on
+# user machines).  The two paths produce the same bits: the kernels are
+# built with --fmad=false and exact division, and the elementary functions
+# are one shared implementation (src/math.rs and its CUDA twin
+# kernels/woof_math.cuh), with no platform C library.
+[package]
+name = "rw-post"
+version = "0.1.0"
+edition.workspace = true
+license = "Apache-2.0"
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+netcrust = { path = "../../vendor/netcrust" }
+rayon.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
+# Driver-only, dynamically loaded CUDA, the same pin and features as the
+# vendored simulated-radar executor.  `nvrtc` provides the module-image
+# wrapper; NVRTC itself is called only by the opt-in rebuild example.
+cudarc = { version = "=0.19.8", default-features = false, features = [
+    "std",
+    "driver",
+    "nvrtc",
+    "dynamic-loading",
+    "cuda-13000",
+] }
+
+[dev-dependencies]
+# Black-box comparison against GRIB2 output (examples/compare_grib.rs).
+grib-core = { path = "../../../grib1_bridge/vendor/grib-core", default-features = false }
+sha2 = "0.10"
+
+[[example]]
+name = "rebuild_kernels"
+path = "examples/rebuild_kernels.rs"
+
+[[example]]
+name = "post_frame"
+path = "examples/post_frame.rs"
+
+[[example]]
+name = "groups_frame"
+path = "examples/groups_frame.rs"
+
+[[example]]
+name = "compare_grib"
+path = "examples/compare_grib.rs"
+
+[[example]]
+name = "severe_fixtures"
+path = "examples/severe_fixtures.rs"
+
+[[example]]
+name = "group_d_frame"
+path = "examples/group_d_frame.rs"

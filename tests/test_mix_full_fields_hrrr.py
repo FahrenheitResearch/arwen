@@ -81,6 +81,67 @@ def test_the_checkpoint_echo_carries_false_in_the_identity():
         replace(cfg, mix_full_fields=True))
 
 
+@pytest.mark.parametrize("mix_full_fields", [True, False],
+                         ids=["full-fields", "perturbations"])
+def test_matching_mix_selector_restores_actual_checkpoint_words(
+        mix_full_fields, monkeypatch, tmp_path):
+    from gpuwm.io import restart
+    from test_checkpoint_config_echo import _checkpoint_state
+    from test_checkpoint_radiation_defaults import _words
+    from test_restart import _fill_serialized
+
+    cfg = _cfg(mix_full_fields=mix_full_fields)
+    source, _ = _checkpoint_state(cfg, monkeypatch)
+    _fill_serialized(source, seed=20261004)
+    source.elapsed_seconds = 12.0
+    expected = _words(source)
+    path = restart.write_restart(tmp_path / "matching-mix.npz", source, cfg)
+    header = restart.read_restart_header(path)
+    assert header["config"].get("mix_full_fields", True) is mix_full_fields
+    assert ("mix_full_fields" in header["config"]) is (not mix_full_fields)
+
+    fresh, _ = _checkpoint_state(cfg, monkeypatch)
+    _fill_serialized(fresh, seed=20261005)
+    assert _words(fresh) != expected
+    restart.restore_restart(path, fresh, cfg)
+    assert _words(fresh) == expected
+    assert fresh.elapsed_seconds == source.elapsed_seconds
+
+
+@pytest.mark.parametrize("stored_mix", [True, False],
+                         ids=["full-to-perturbations", "perturbations-to-full"])
+def test_changed_mix_selector_refuses_actual_restore_before_mutation(
+        stored_mix, monkeypatch, tmp_path):
+    from gpuwm.io import restart
+    from test_checkpoint_config_echo import _checkpoint_state
+    from test_checkpoint_radiation_defaults import _words
+    from test_restart import _fill_serialized
+
+    stored = _cfg(mix_full_fields=stored_mix)
+    live = replace(stored, mix_full_fields=not stored_mix)
+    source, _ = _checkpoint_state(stored, monkeypatch)
+    _fill_serialized(source, seed=20261004)
+    source.elapsed_seconds = 12.0
+    path = restart.write_restart(tmp_path / "changed-mix.npz", source, stored)
+    header = restart.read_restart_header(path)
+    assert header["config"].get("mix_full_fields", True) is stored_mix
+
+    destination, _ = _checkpoint_state(live, monkeypatch)
+    _fill_serialized(destination, seed=20261005)
+    destination.elapsed_seconds = 3.0
+    before = _words(destination)
+    arrays_before = {name: value for name, value in vars(destination).items()
+                     if isinstance(value, np.ndarray)}
+    physics_before = destination.physics
+    with pytest.raises(restart.RestartMismatchError, match="mix_full_fields"):
+        restart.restore_restart(path, destination, live)
+    assert _words(destination) == before
+    assert destination.elapsed_seconds == 3.0
+    assert destination.physics is physics_before
+    assert all(getattr(destination, name) is value
+               for name, value in arrays_before.items())
+
+
 # ---------------------------------------------------------------- importers
 
 def test_generic_omitted_mix_keeps_its_established_full_field_resolution():

@@ -1,0 +1,54 @@
+{
+  "schema": "gpuwm-sfire-static-routes-v1",
+  "sources": {
+    "usgs-3dep-wcs": {
+      "kind": "wcs-geotiff",
+      "role": "terrain",
+      "url": "https://elevation.nationalmap.gov/arcgis/services/3DEPElevation/ImageServer/WCSServer",
+      "coverage": "DEP3Elevation",
+      "resolution_degrees": 0.00009259259259259259,
+      "source_url": "https://www.usgs.gov/3d-elevation-program",
+      "service_url": "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer",
+      "license": "US-PD",
+      "license_url": "https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits"
+    },
+    "landfire-fbfm13": {
+      "kind": "wcs-geotiff",
+      "role": "fuel",
+      "url": "https://edcintl.cr.usgs.gov/geoserver/landfire_wcs/conus_{year}/wcs",
+      "coverage": "landfire_wcs:LF{year}_FBFM13_CONUS",
+      "years": [2016, 2022, 2023, 2024, 2025],
+      "crs": "EPSG:5070",
+      "resolution": 30.0,
+      "pixel_edge_offset": 15.0,
+      "source_url": "https://landfire.gov/fuel/fbfm13",
+      "service_url": "https://landfire.gov/data/lf_wcs_wms",
+      "license": "US-PD",
+      "license_url": "https://www.usgs.gov/centers/eros/data-citation"
+    },
+    "landfire-fbfm40": {
+      "kind": "wcs-geotiff",
+      "role": "fuel",
+      "url": "https://edcintl.cr.usgs.gov/geoserver/landfire_wcs/conus_{year}/wcs",
+      "coverage": "landfire_wcs:LF{year}_FBFM40_CONUS",
+      "years": [2016, 2022, 2023, 2024, 2025],
+      "crs": "EPSG:5070",
+      "resolution": 30.0,
+      "pixel_edge_offset": 15.0,
+      "source_url": "https://landfire.gov/fuel/fbfm40",
+      "service_url": "https://landfire.gov/data/lf_wcs_wms",
+      "license": "US-PD",
+      "license_url": "https://www.usgs.gov/centers/eros/data-citation"
+    },
+    "usgs-3dep-13as": {
+      "kind": "terrain-tiles",
+      "role": "terrain",
+      "fetch_function": "fetch_three_dep_tiles",
+      "derive_function": "derive_terrain_window",
+      "source_url": "https://www.usgs.gov/3d-elevation-program",
+      "resolution": "1/3 arc-second",
+      "license": "US-PD",
+      "license_url": "https://www.usgs.gov/information-policies-and-instructions/copyrights-and-credits"
+    }
+  }
+}

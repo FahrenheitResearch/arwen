@@ -1,0 +1,18 @@
+{
+ "schema": "gpuwm-field-source-provenance-v1",
+ "source": "NOAA HRRR same-cycle wrfsfc analysis vegetation fraction",
+ "field": "vegetation_fraction",
+ "selector": {
+  "format": "grib2",
+  "discipline": 2,
+  "category": 0,
+  "parameter": 4,
+  "level_type": 1,
+  "level_value": 0,
+  "pdt": 0
+ },
+ "units": "percent",
+ "time_policy": "The source cycle analysis is broadcast as the initial vegetation fraction.",
+ "member_policy": "The source is deterministic.",
+ "input_identity": "Input file paths and SHA-256 values are sealed by the composition input manifest."
+}

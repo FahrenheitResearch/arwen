@@ -68,6 +68,71 @@ const CLOUD_ICE_BEFORE_HRRR_V3: Parameter = Parameter {
     number: 0,
 };
 
+/// The analyzed water- and ice-friendly aerosol number concentrations
+/// (kg-1), read only when the caller asks for them (`--analyzed-aerosol`:
+/// a configuration whose preparation reads the analyzed aerosol,
+/// gpuwm.preparation_assets.analyzed_aerosol_domains) and the file
+/// publishes the pair on all 50 hybrid levels with no GRIB2 bitmap (a
+/// masked pair is withheld: `masked_optional_pair`).  Unrequested, the
+/// pair is never selected, 2.8.6's inventory: NCEP masks PMTF at some
+/// leads of some cycles (2026-10-04 06Z f06 and f07, clean at f00-f05 and
+/// f08), and an as-posted series that read the pair at its reference lead
+/// cannot withhold it at a later one, so reading it unasked stopped
+/// default-profile runs that never use it.
+/// NOAA's operational HRRR Vtable (parm/conus/hrrr_vtable) binds QNWFA and
+/// QNIFA to the NCEP local codes 0/13/193 and 0/13/192 on surface 105;
+/// indexes label them PMTF/PMTC (gpuwm/authorities/
+/// rw-wps-hrrr-native-grib2.provenance.json).  Optional: a file with
+/// neither publishes the same 561 records as before.  Without them an
+/// mp=28 tree on this route asking for the analyzed aerosol
+/// (use_rap_aero_icbc) refused, "missing QNIFA, QNWFA", although the
+/// HRRR file in hand carries both.
+const OPTIONAL_HYBRID_SPECS: [HybridSpec; 2] = [
+    HybridSpec {
+        name: "QNWFA",
+        parameter: Parameter {
+            discipline: 0,
+            category: 13,
+            number: 193,
+        },
+        earlier_parameters: &[],
+        nonnegative: true,
+        require_any_positive: false,
+    },
+    HybridSpec {
+        name: "QNIFA",
+        parameter: Parameter {
+            discipline: 0,
+            category: 13,
+            number: 192,
+        },
+        earlier_parameters: &[],
+        nonnegative: true,
+        require_any_positive: false,
+    },
+];
+
+/// Optional native-level records. Requests come from --extras, never defaults.
+const EXTRA_SPECS: [HybridSpec; 3] = [
+    HybridSpec { name: "MASSDEN", parameter: Parameter { discipline: 0, category: 20, number: 0 }, earlier_parameters: &[], nonnegative: true, require_any_positive: false },
+    HybridSpec { name: "PMTF", parameter: Parameter { discipline: 0, category: 13, number: 193 }, earlier_parameters: &[], nonnegative: true, require_any_positive: false },
+    HybridSpec { name: "PMTC", parameter: Parameter { discipline: 0, category: 13, number: 192 }, earlier_parameters: &[], nonnegative: true, require_any_positive: false },
+];
+
+fn requested_extras(text: &str) -> Result<Vec<HybridSpec>, Box<dyn Error>> {
+    let mut result = Vec::new();
+    for name in text.split(',') {
+        let spec = EXTRA_SPECS.iter().find(|spec| spec.name == name)
+            .ok_or_else(|| format!("unknown extra {name:?}: no numeric selector exists to prevent decoding the wrong tracer"))?;
+        if result.iter().any(|item: &HybridSpec| item.name == name) {
+            return Err(format!("duplicate extra {name}: would duplicate the manifest inventory").into());
+        }
+        result.push(*spec);
+    }
+    result.sort_by_key(|spec| spec.name);
+    Ok(result)
+}
+
 const HYBRID_SPECS: [HybridSpec; 11] = [
     HybridSpec {
         name: "PRES",
@@ -350,6 +415,10 @@ struct AtmosInventory {
     reference_time: String,
     forecast_hour: u32,
     grid: GridFingerprint,
+    /// Why the analyzed aerosol pair was published but not read: a GRIB2
+    /// bitmap masks points of one of its records.  `None` when the pair
+    /// was read or not published at all.
+    optional_hybrid_withheld: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -433,6 +502,17 @@ fn level_matches(actual: f64, expected: f64) -> bool {
     (actual - expected).abs() <= 1.0e-9
 }
 
+/// HRRR's first grid point.  Current files publish it in microdegrees
+/// (21.138123, 237.280472); the 2016 archive files publish the same point
+/// rounded to millidegrees (21.138, 237.28) under an otherwise identical
+/// grid definition -- same 1799 x 1059, 3 km, 38.5/38.5/262.5 cone.  Both
+/// are this grid; any other corner is a different grid and stays refused,
+/// because the crop window is placed on the canonical grid's own geometry.
+fn canonical_corner(lat1: f64, lon1: f64) -> bool {
+    (level_matches(lat1, 21.138123) && level_matches(lon1, 237.280472))
+        || (level_matches(lat1, 21.138) && level_matches(lon1, 237.28))
+}
+
 fn validate_canonical_grid(grid: &GridDefinition) -> Result<(), Box<dyn Error>> {
     if grid.template != 30
         || grid.nx != 1799
@@ -440,8 +520,7 @@ fn validate_canonical_grid(grid: &GridDefinition) -> Result<(), Box<dyn Error>> 
         || grid.scan_mode != 0x40
         || grid.shape_of_earth != 6
         || grid.resolution_flags != 0x08
-        || !level_matches(grid.lat1, 21.138123)
-        || !level_matches(grid.lon1, 237.280472)
+        || !canonical_corner(grid.lat1, grid.lon1)
         || !level_matches(grid.dx, 3000.0)
         || !level_matches(grid.dy, 3000.0)
         || !level_matches(grid.latin1, 38.5)
@@ -551,20 +630,43 @@ fn inventory_atmosphere(
     path: &str,
     expected_cycle: &str,
     forecast_hour: u32,
+    extras: &[HybridSpec],
+    analyzed_aerosol: bool,
 ) -> Result<AtmosInventory, Box<dyn Error>> {
     let file = Grib2File::open(path)?;
-    inventory_atmosphere_messages(&file.messages, expected_cycle, forecast_hour)
+    inventory_atmosphere_with_extras(
+        &file.messages, expected_cycle, forecast_hour, extras, analyzed_aerosol)
 }
 
+/// A test inventory as a configuration that requests the analyzed aerosol
+/// pair takes it (`--analyzed-aerosol`).
+#[cfg(test)]
 fn inventory_atmosphere_messages(
     messages: &[Grib2Message],
     expected_cycle: &str,
     forecast_hour: u32,
 ) -> Result<AtmosInventory, Box<dyn Error>> {
-    let mut selected =
-        Vec::with_capacity(HYBRID_SPECS.len() * N_HYBRID_LEVELS + SURFACE_SPECS.len());
+    inventory_atmosphere_with_extras(messages, expected_cycle, forecast_hour, &[], true)
+}
+
+/// A test inventory as a configuration that does not request the pair
+/// (the default HRRR profile) takes it.
+#[cfg(test)]
+fn inventory_atmosphere_unrequested(
+    messages: &[Grib2Message],
+    expected_cycle: &str,
+    forecast_hour: u32,
+) -> Result<AtmosInventory, Box<dyn Error>> {
+    inventory_atmosphere_with_extras(messages, expected_cycle, forecast_hour, &[], false)
+}
+
+fn inventory_atmosphere_with_extras(
+    messages: &[Grib2Message], expected_cycle: &str, forecast_hour: u32,
+    extras: &[HybridSpec], analyzed_aerosol: bool,
+) -> Result<AtmosInventory, Box<dyn Error>> {
+    let mut selected = Vec::with_capacity((HYBRID_SPECS.len() + extras.len()) * N_HYBRID_LEVELS + SURFACE_SPECS.len());
     let mut common_grid: Option<GridFingerprint> = None;
-    for spec in HYBRID_SPECS {
+    for spec in HYBRID_SPECS.iter().chain(extras.iter()) {
         let parameter = published_parameter(messages, &spec);
         for level in 1..=N_HYBRID_LEVELS {
             let description = format!("{} hybrid level {level}", spec.name);
@@ -592,6 +694,58 @@ fn inventory_atmosphere_messages(
                 level_value: level as f64,
                 parameter,
             });
+        }
+    }
+    // The optional pair, only when requested: both on every hybrid level,
+    // or neither at all.  Unrequested, its records are never looked at.
+    let published: Vec<usize> = OPTIONAL_HYBRID_SPECS
+        .iter()
+        .filter(|_| analyzed_aerosol)
+        .map(|spec| {
+            messages
+                .iter()
+                .filter(|message| {
+                    parameter_matches(message, spec.parameter)
+                        && message.product.template == 0
+                        && message.product.level_type == HYBRID_LEVEL_TYPE
+                })
+                .count()
+        })
+        .collect();
+    let optional_hybrid_withheld = if published.iter().any(|&count| count != 0) {
+        masked_optional_pair(messages, forecast_hour)
+    } else {
+        None
+    };
+    if optional_hybrid_withheld.is_none() && published.iter().any(|&count| count != 0) {
+        if published.iter().any(|&count| count < N_HYBRID_LEVELS) {
+            return Err(format!(
+                "analyzed aerosol numbers QNWFA/QNIFA are published on {published:?} hybrid \
+                 records of {N_HYBRID_LEVELS} each; the pair is read whole or not at all"
+            )
+            .into());
+        }
+        for spec in OPTIONAL_HYBRID_SPECS {
+            for level in 1..=N_HYBRID_LEVELS {
+                let description = format!("{} hybrid level {level}", spec.name);
+                let index = unique_match(messages, &description, |message| {
+                    parameter_matches(message, spec.parameter)
+                        && message.product.template == 0
+                        && message.product.level_type == HYBRID_LEVEL_TYPE
+                        && level_matches(message.product.level_value, level as f64)
+                })?;
+                let message = &messages[index];
+                validate_message_common(message, expected_cycle, forecast_hour)?;
+                if common_grid.as_ref() != Some(&GridFingerprint::from_grid(&message.grid)) {
+                    return Err(format!("{description} grid differs from the hybrid grid").into());
+                }
+                selected.push(SelectedField {
+                    index,
+                    variable: spec.name,
+                    level_value: level as f64,
+                    parameter: spec.parameter,
+                });
+            }
         }
     }
     for spec in SURFACE_SPECS {
@@ -624,7 +778,115 @@ fn inventory_atmosphere_messages(
         reference_time: expected_cycle.to_owned(),
         forecast_hour,
         grid: common_grid.ok_or("empty atmosphere inventory")?,
+        optional_hybrid_withheld,
     })
+}
+
+/// Why a file that publishes the analyzed aerosol pair cannot have it
+/// read: the first of its records, in file order, that carries a GRIB2
+/// bitmap.  NCEP publishes PMTF (QNWFA) on hybrid level 1 with a bitmap
+/// on some cycles (2026-10-04 12Z, 2026-10-07 07Z among them), and every
+/// selected field refuses a bitmap (`validate_payload`), so reading the
+/// pair there stopped a run that never asked for it at prepare.  No fill
+/// policy for masked points exists, so the pair is treated as not
+/// published, the 2.8.6 selection, and the reason rides the gate.
+fn masked_optional_pair(messages: &[Grib2Message], forecast_hour: u32) -> Option<String> {
+    messages.iter().enumerate().find_map(|(index, message)| {
+        let spec = OPTIONAL_HYBRID_SPECS.iter().find(|spec| {
+            parameter_matches(message, spec.parameter)
+                && message.product.template == 0
+                && message.product.level_type == HYBRID_LEVEL_TYPE
+        })?;
+        let bitmap = message.bitmap.as_ref()?;
+        let masked = bitmap.iter().filter(|present| !**present).count();
+        Some(format!(
+            "f{forecast_hour:02} {} hybrid level {} (message {index}) carries a GRIB2 bitmap \
+             ({masked} of {} points masked); no fill policy for masked points exists, so \
+             the pair is not read",
+            spec.name,
+            message.product.level_value,
+            bitmap.len()
+        ))
+    })
+}
+
+/// The gate's lines for the analyzed aerosol pair: declared with its unit
+/// when read; named with the reason when published but withheld, so a
+/// reader can tell a masked cycle from one that never carried the pair;
+/// absent when the file does not publish it or the caller did not request
+/// it (`--analyzed-aerosol`).
+fn optional_hybrid_gate_lines(inventory: &AtmosInventory) -> Vec<String> {
+    let mut lines = Vec::new();
+    let optional_hybrid = optional_hybrid_fields(inventory);
+    if !optional_hybrid.is_empty() {
+        lines.push(format!("optional_hybrid_fields\t{}", optional_hybrid.join(",")));
+        let units = optional_hybrid.iter().map(|name| format!("{name}=kg-1"))
+            .collect::<Vec<_>>().join(",");
+        lines.push(format!("optional_hybrid_units\t{units}"));
+    }
+    if let Some(reason) = &inventory.optional_hybrid_withheld {
+        lines.push(format!("optional_hybrid_withheld\t{}", OPTIONAL_HYBRID_NAMES.join(",")));
+        lines.push(format!("optional_hybrid_withheld_reason\t{reason}"));
+    }
+    lines
+}
+
+const OPTIONAL_HYBRID_NAMES: [&str; 2] = [OPTIONAL_HYBRID_SPECS[0].name, OPTIONAL_HYBRID_SPECS[1].name];
+
+fn strip_optional_pair(inventory: &mut AtmosInventory) {
+    inventory
+        .selected
+        .retain(|field| !OPTIONAL_HYBRID_NAMES.contains(&field.variable));
+}
+
+/// One series, one answer: when any lead withholds the analyzed aerosol
+/// pair, every lead does, so the leads keep one selected inventory (the
+/// cross-time check refuses leads that differ) and the gate declares the
+/// pair for none of them.  Returns the reasons, one per withholding lead.
+fn withhold_optional_pair_across_leads(inventories: &mut [AtmosInventory]) -> Option<String> {
+    let reasons: Vec<String> = inventories
+        .iter()
+        .filter_map(|inventory| inventory.optional_hybrid_withheld.clone())
+        .collect();
+    if reasons.is_empty() {
+        return None;
+    }
+    let reason = reasons.join("; ");
+    for inventory in inventories.iter_mut() {
+        strip_optional_pair(inventory);
+        inventory.optional_hybrid_withheld = Some(reason.clone());
+    }
+    Some(reason)
+}
+
+/// An as-posted lead, read after the reference was published, follows the
+/// reference: withheld there, withheld here.  A lead that masks the pair
+/// the reference read is refused.  Only a configuration that requested the
+/// pair reaches the refusal (`--analyzed-aerosol`); unrequested, no lead
+/// selects it.  Breakage it prevents: the gate already declares the pair
+/// and the reference lead's payloads are written, so dropping it at a
+/// later lead publishes a series the loader maps with a declared payload
+/// missing on that lead, and the requested analyzed aerosol would end at
+/// that lead with nothing saying so.
+fn admit_optional_pair(
+    reference: &AtmosInventory,
+    mut candidate: AtmosInventory,
+) -> Result<AtmosInventory, Box<dyn Error>> {
+    if reference.optional_hybrid_withheld.is_some() {
+        strip_optional_pair(&mut candidate);
+        return Ok(candidate);
+    }
+    if let Some(reason) = &candidate.optional_hybrid_withheld {
+        return Err(format!(
+            "the configuration requests the analyzed aerosol pair QNWFA/QNIFA, and this \
+             cycle publishes it with a GRIB2 bitmap (masked points) at a later lead: \
+             {reason}; the reference lead f{:02} read the pair and the gate already \
+             declares it, so an as-posted series cannot withhold it at a later lead",
+            reference.forecast_hour
+        )
+        .into());
+    }
+    Ok(candidate)
 }
 
 fn inventory_soil(
@@ -702,6 +964,15 @@ fn inventory_soil(
         forecast_hour,
         grid: common_grid.ok_or("empty soil inventory")?,
     })
+}
+
+/// The optional hybrid fields an atmosphere inventory selected, in table order.
+fn optional_hybrid_fields(inventory: &AtmosInventory) -> Vec<&'static str> {
+    OPTIONAL_HYBRID_SPECS
+        .iter()
+        .filter(|spec| inventory.selected.iter().any(|field| field.variable == spec.name))
+        .map(|spec| spec.name)
+        .collect()
 }
 
 fn compare_atmosphere_inventory(
@@ -978,6 +1249,8 @@ fn decode_crop_write(
 fn atmosphere_nonnegative(variable: &str) -> bool {
     HYBRID_SPECS
         .iter()
+        .chain(OPTIONAL_HYBRID_SPECS.iter())
+        .chain(EXTRA_SPECS.iter())
         .find(|spec| spec.name == variable)
         .map(|spec| spec.nonnegative)
         .or_else(|| {
@@ -1008,7 +1281,12 @@ fn write_atmosphere(
 ) -> Result<(), Box<dyn Error>> {
     let file = Grib2File::open(input)?;
     fs::create_dir(output)?;
-    for spec in HYBRID_SPECS {
+    // The analyzed aerosol number pair (written when the file publishes it)
+    // and the --extras records a caller requested, each only when selected.
+    let optional = OPTIONAL_HYBRID_SPECS.iter().chain(EXTRA_SPECS.iter()).copied().filter(|spec| {
+        inventory.selected.iter().any(|field| field.variable == spec.name)
+    });
+    for spec in HYBRID_SPECS.into_iter().chain(optional) {
         let path = output.join(format!("{}.f32le", spec.name));
         let mut writer = BufWriter::new(File::create(&path)?);
         let mut any_positive = false;
@@ -1445,8 +1723,27 @@ fn main() -> Result<(), Box<dyn Error>> {
     // proves a staged bridge by these bytes (see lib.rs).
     let _ = std::hint::black_box(gpuwm_preprocess_cpu::SOURCE_REV_STAMP);
     let process_started = Instant::now();
-    let args: Vec<String> = env::args().skip(1).collect();
-    let usage = "usage: hrrr_grib2_bridge WRFNAT_F00 WRFNAT_F01 SOIL_F00 SOIL_F01 OUTPUT_DIR EXPECTED_CYCLE I_START I_END J_START J_END\n       hrrr_grib2_bridge --series SERIES_TSV OUTPUT_DIR EXPECTED_CYCLE I_START I_END J_START J_END\n       hrrr_grib2_bridge --series-workers WORKERS SERIES_TSV OUTPUT_DIR EXPECTED_CYCLE I_START I_END J_START J_END\n       hrrr_grib2_bridge --series-workers-ready WORKERS SERIES_TSV OUTPUT_DIR SIGNAL_DIR EXPECTED_CYCLE I_START I_END J_START J_END\n       hrrr_grib2_bridge --series-workers-posted WORKERS SERIES_TSV OUTPUT_DIR SIGNAL_DIR ADMIT_DIR EXPECTED_CYCLE I_START I_END J_START J_END";
+    let mut args: Vec<String> = env::args().skip(1).collect();
+    let mut extras = Vec::new();
+    // --analyzed-aerosol: the caller's configuration reads the analyzed
+    // aerosol pair (gpuwm.preparation_assets.analyzed_aerosol_domains), so
+    // QNWFA/QNIFA are selected when published.  Absent, they never are.
+    let mut analyzed_aerosol = false;
+    loop {
+        match args.first().map(String::as_str) {
+            Some("--extras") if extras.is_empty() => {
+                if args.len() < 2 { return Err("--extras needs a comma-separated selector list to prevent an ambiguous inventory".into()); }
+                extras = requested_extras(&args[1])?;
+                args.drain(..2);
+            }
+            Some("--analyzed-aerosol") if !analyzed_aerosol => {
+                analyzed_aerosol = true;
+                args.drain(..1);
+            }
+            _ => break,
+        }
+    }
+    let usage = "usage: hrrr_grib2_bridge WRFNAT_F00 WRFNAT_F01 SOIL_F00 SOIL_F01 OUTPUT_DIR EXPECTED_CYCLE I_START I_END J_START J_END\n       hrrr_grib2_bridge --series SERIES_TSV OUTPUT_DIR EXPECTED_CYCLE I_START I_END J_START J_END\n       hrrr_grib2_bridge --series-workers WORKERS SERIES_TSV OUTPUT_DIR EXPECTED_CYCLE I_START I_END J_START J_END\n       hrrr_grib2_bridge --series-workers-ready WORKERS SERIES_TSV OUTPUT_DIR SIGNAL_DIR EXPECTED_CYCLE I_START I_END J_START J_END\n       hrrr_grib2_bridge --series-workers-posted WORKERS SERIES_TSV OUTPUT_DIR SIGNAL_DIR ADMIT_DIR EXPECTED_CYCLE I_START I_END J_START J_END\n       any form may be preceded by --analyzed-aerosol (select QNWFA/QNIFA when published) and --extras LIST";
     // As posted (A136 L7c): the first lead is inventoried up front and is
     // the reference; every later lead is inventoried, held to that
     // reference and decoded once the parent admits it (ADMIT_DIR).
@@ -1579,7 +1876,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         atmosphere_inventories.push(inventory_atmosphere(
             &input.atmosphere,
             &expected_cycle,
-            input.forecast_hour,
+            input.forecast_hour, &extras, analyzed_aerosol,
         )?);
         soil_inventories.push(inventory_soil(
             &input.soil,
@@ -1587,6 +1884,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             input.forecast_hour,
         )?);
     }
+    withhold_optional_pair_across_leads(&mut atmosphere_inventories);
     let atmosphere_reference = &atmosphere_inventories[0];
     let soil_reference = &soil_inventories[0];
     for index in 0..inventoried {
@@ -1657,8 +1955,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     if supplemented != 0 && supplemented != inputs.len() {
         return Err("PMSL donor coverage must include every requested forcing time".into());
     }
-    let payload_files = 24 + usize::from(supplemented != 0)
-        + soil_reference.optional_surface.len();
+    let optional_hybrid = optional_hybrid_fields(atmosphere_reference);
+    let payload_files = 24 + extras.len() + usize::from(supplemented != 0)
+        + soil_reference.optional_surface.len()
+        + optional_hybrid.len();
 
     let parent = output.parent().unwrap_or_else(|| Path::new("."));
     let stem = output
@@ -1704,7 +2004,16 @@ fn main() -> Result<(), Box<dyn Error>> {
             writeln!(gate, "supplement_alignment\texact_primary_grid_and_source_time")?;
             writeln!(gate, "supplement_units\tPMSL=Pa")?;
         }
+        if !extras.is_empty() {
+            writeln!(gate, "extra_fields\t{}", extras.iter().map(|spec| spec.name).collect::<Vec<_>>().join(","))?;
+            for spec in &extras {
+                writeln!(gate, "extra_{}\tPASS discipline={} category={} parameter={} level_type=105", spec.name, spec.parameter.discipline, spec.parameter.category, spec.parameter.number)?;
+            }
+        }
         writeln!(gate, "hybrid_levels\t{N_HYBRID_LEVELS}")?;
+        for line in optional_hybrid_gate_lines(atmosphere_reference) {
+            writeln!(gate, "{line}")?;
+        }
         if !soil_reference.optional_surface.is_empty() {
             let names = soil_reference.optional_surface.iter().map(|field| field.variable)
                 .collect::<Vec<_>>().join(",");
@@ -1809,8 +2118,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                                     .as_ref()
                                     .ok_or("a lead was not inventoried before decode")?;
                                 wait_admitted(directory, input, &cancelled)?;
-                                let atmosphere = inventory_atmosphere(
-                                    &input.atmosphere, &expected_cycle, hour)?;
+                                let atmosphere = admit_optional_pair(
+                                    atmosphere_reference,
+                                    inventory_atmosphere(
+                                        &input.atmosphere, &expected_cycle, hour, &extras,
+                                        analyzed_aerosol)?,
+                                )?;
                                 let soil = inventory_soil(&input.soil, &expected_cycle, hour)?;
                                 compare_atmosphere_inventory(atmosphere_reference, &atmosphere, hour)?;
                                 compare_soil_inventory(soil_reference, &soil, hour)?;
@@ -2174,6 +2487,26 @@ mod tests {
     }
 
     #[test]
+    fn a_2016_archive_corner_in_millidegrees_is_the_canonical_grid() {
+        // The 2016-05-24 wrfnat/wrfsfc files publish lat1 21.138 and lon1
+        // 237.28 for the same grid; the microdegree corner stays accepted
+        // and a corner that is neither is still refused.
+        let mut record = canonical_record(CICE, HYBRID_LEVEL_TYPE, 1.0, 0);
+        assert!(validate_canonical_grid(&record.grid).is_ok());
+        record.grid.lat1 = 21.138;
+        record.grid.lon1 = 237.28;
+        assert!(validate_canonical_grid(&record.grid).is_ok());
+        record.grid.lat1 = 21.139;
+        assert!(validate_canonical_grid(&record.grid).is_err());
+        record.grid.lat1 = 21.138;
+        record.grid.lon1 = 237.281;
+        assert!(validate_canonical_grid(&record.grid).is_err());
+        record.grid.lon1 = 237.28;
+        record.grid.nx = 1800;
+        assert!(validate_canonical_grid(&record.grid).is_err());
+    }
+
+    #[test]
     fn a_wrfnat_file_from_before_hrrr_v3_reads_its_cloud_ice_as_cice() {
         // HRRRv1 and v2 wrfnat files (2017-01-19 among them) publish cloud
         // ice as CICE, 0/6/0, on all 50 hybrid levels and no CIMIXR.  Read
@@ -2257,6 +2590,323 @@ mod tests {
         let same = inventory_atmosphere_messages(&wrfnat_records(CICE, 1), CYCLE, 1).unwrap();
         let first = inventory_atmosphere_messages(&wrfnat_records(CICE, 0), CYCLE, 0).unwrap();
         compare_atmosphere_inventory(&first, &same, 1).unwrap();
+    }
+
+    fn with_aerosol_numbers(mut records: Vec<Grib2Message>, specs: &[HybridSpec]) -> Vec<Grib2Message> {
+        for spec in specs {
+            for level in 1..=N_HYBRID_LEVELS {
+                records.push(canonical_record(spec.parameter, HYBRID_LEVEL_TYPE, level as f64, 0));
+            }
+        }
+        records
+    }
+
+    #[test]
+    fn a_file_publishing_the_aerosol_number_pair_has_it_selected_and_gated() {
+        let records = with_aerosol_numbers(wrfnat_records(CIMIXR, 0), &OPTIONAL_HYBRID_SPECS);
+        let inventory = inventory_atmosphere_messages(&records, CYCLE, 0).unwrap();
+        assert_eq!(optional_hybrid_fields(&inventory), vec!["QNWFA", "QNIFA"]);
+        assert_eq!(
+            inventory.selected.len(),
+            (HYBRID_SPECS.len() + 2) * N_HYBRID_LEVELS + SURFACE_SPECS.len()
+        );
+        // A file without the pair selects exactly the 561 it always did.
+        let plain = inventory_atmosphere_messages(&wrfnat_records(CIMIXR, 0), CYCLE, 0).unwrap();
+        assert!(optional_hybrid_fields(&plain).is_empty());
+        assert_eq!(plain.selected.len(), 561);
+    }
+
+    #[test]
+    fn half_the_aerosol_number_pair_is_refused() {
+        let records = with_aerosol_numbers(wrfnat_records(CIMIXR, 0), &OPTIONAL_HYBRID_SPECS[..1]);
+        let error = inventory_atmosphere_messages(&records, CYCLE, 0).unwrap_err().to_string();
+        assert!(error.contains("read whole or not at all"), "{error}");
+    }
+
+    const PMTF: Parameter = OPTIONAL_HYBRID_SPECS[0].parameter;
+    const POINTS: usize = 1799 * 1059;
+
+    /// A whole wrfnat lead with the aerosol pair, every record carrying a
+    /// real packed payload: simple packing at zero bits, so the decoder
+    /// expands the reference value over the grid exactly as it does a
+    /// constant field read from a file.
+    fn decodable_lead(forecast_hour: u32) -> Vec<Grib2Message> {
+        let mut records = wrfnat_records(CIMIXR, forecast_hour);
+        for spec in OPTIONAL_HYBRID_SPECS {
+            for level in 1..=N_HYBRID_LEVELS {
+                records.push(canonical_record(
+                    spec.parameter,
+                    HYBRID_LEVEL_TYPE,
+                    level as f64,
+                    forecast_hour,
+                ));
+            }
+        }
+        for record in &mut records {
+            record.data_rep.template = 0;
+            record.data_rep.bits_per_value = 0;
+            record.data_rep.reference_value = 0.5;
+        }
+        records
+    }
+
+    /// Mask two points of `parameter` on hybrid `level` as NCEP does PMTF
+    /// on level 1: a Section 6 bitmap and two fewer packed values.
+    fn mask(records: &mut [Grib2Message], parameter: Parameter, level: usize) -> usize {
+        let index = records
+            .iter()
+            .position(|record| {
+                parameter_matches(record, parameter)
+                    && record.product.level_type == HYBRID_LEVEL_TYPE
+                    && level_matches(record.product.level_value, level as f64)
+            })
+            .unwrap();
+        let mut bitmap = vec![true; POINTS];
+        bitmap[0] = false;
+        bitmap[POINTS - 1] = false;
+        records[index].bitmap = Some(bitmap);
+        records[index].data_rep.section5_num_data_points = (POINTS - 2) as u32;
+        index
+    }
+
+    #[test]
+    fn a_masked_aerosol_pair_is_withheld_and_the_lead_still_decodes() {
+        // 2026-10-07 07Z: NCEP publishes PMTF on hybrid level 1 with a
+        // bitmap.  Reading the pair there refused the whole run at prepare
+        // ("selected initialization field unexpectedly carries a bitmap");
+        // 2.8.6 never selected it.  A configuration that requests the pair
+        // has it withheld with the reason; one that does not never reads it.
+        let mut records = decodable_lead(0);
+        let masked = mask(&mut records, PMTF, 1);
+        let inventory = inventory_atmosphere_messages(&records, CYCLE, 0).unwrap();
+        assert!(optional_hybrid_fields(&inventory).is_empty());
+        assert_eq!(inventory.selected.len(), 561);
+        assert!(inventory.selected.iter().all(|field| field.index != masked));
+        let reason = inventory.optional_hybrid_withheld.clone().unwrap();
+        assert_eq!(
+            reason,
+            format!(
+                "f00 QNWFA hybrid level 1 (message {masked}) carries a GRIB2 bitmap \
+                 (2 of {POINTS} points masked); no fill policy for masked points exists, \
+                 so the pair is not read"
+            )
+        );
+        // The receipt: published, withheld, and why; never declared.
+        assert_eq!(
+            optional_hybrid_gate_lines(&inventory),
+            vec![
+                "optional_hybrid_withheld\tQNWFA,QNIFA".to_owned(),
+                format!("optional_hybrid_withheld_reason\t{reason}"),
+            ]
+        );
+        // Every other field of the lead decodes: each variable's first
+        // level and every surface, through the writer's own decoder.
+        let scratch = std::env::temp_dir().join(format!(
+            "gpuwm-hrrr-masked-pair-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        fs::create_dir_all(&scratch).unwrap();
+        let window = Window { i_start: 10, i_end: 12, j_start: 20, j_end: 21 };
+        let mut decoded = Vec::new();
+        for field in &inventory.selected {
+            if decoded.contains(&field.variable) {
+                continue;
+            }
+            let path = scratch.join(format!("{}.f32le", field.variable));
+            let mut writer = BufWriter::new(File::create(&path).unwrap());
+            let stats = decode_crop_write(
+                &records[field.index],
+                &mut writer,
+                window,
+                field.variable,
+                atmosphere_nonnegative(field.variable),
+                unit_fraction(field.variable),
+            )
+            .unwrap();
+            writer.flush().unwrap();
+            assert_eq!(stats.count, POINTS, "{}", field.variable);
+            assert_eq!((stats.minimum, stats.maximum), (0.5, 0.5), "{}", field.variable);
+            assert_eq!(fs::read(&path).unwrap(), 0.5f32.to_le_bytes().repeat(6));
+            decoded.push(field.variable);
+        }
+        fs::remove_dir_all(&scratch).unwrap();
+        assert_eq!(decoded.len(), HYBRID_SPECS.len() + SURFACE_SPECS.len());
+
+        // Unrequested, the masked lead selects the same 561 records and
+        // its gate says nothing of the pair.
+        let unrequested = inventory_atmosphere_unrequested(&records, CYCLE, 0).unwrap();
+        assert!(unrequested.optional_hybrid_withheld.is_none());
+        assert!(optional_hybrid_gate_lines(&unrequested).is_empty());
+        assert_eq!(
+            unrequested.selected.iter().map(|field| field.index).collect::<Vec<_>>(),
+            inventory.selected.iter().map(|field| field.index).collect::<Vec<_>>()
+        );
+
+        // The same lead unmasked reads the pair, gated as before.
+        let clean = inventory_atmosphere_messages(&decodable_lead(0), CYCLE, 0).unwrap();
+        assert_eq!(optional_hybrid_fields(&clean), vec!["QNWFA", "QNIFA"]);
+        assert!(clean.optional_hybrid_withheld.is_none());
+        assert_eq!(
+            optional_hybrid_gate_lines(&clean),
+            vec![
+                "optional_hybrid_fields\tQNWFA,QNIFA".to_owned(),
+                "optional_hybrid_units\tQNWFA=kg-1,QNIFA=kg-1".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_bitmap_on_a_required_field_is_still_refused() {
+        // Withholding is the aerosol pair's alone: a masked required field
+        // has no published alternative and is refused as before, masked
+        // pair or not.
+        let mut records = decodable_lead(0);
+        mask(&mut records, HYBRID_SPECS[0].parameter, 1);
+        let error = inventory_atmosphere_messages(&records, CYCLE, 0).unwrap_err().to_string();
+        assert_eq!(error, "selected initialization field unexpectedly carries a bitmap");
+        mask(&mut records, PMTF, 1);
+        let error = inventory_atmosphere_messages(&records, CYCLE, 0).unwrap_err().to_string();
+        assert_eq!(error, "selected initialization field unexpectedly carries a bitmap");
+        let mut surface = decodable_lead(0);
+        let index = surface
+            .iter()
+            .position(|record| parameter_matches(record, SURFACE_SPECS[0].parameter)
+                && record.product.level_type == SURFACE_SPECS[0].level_type
+                && level_matches(record.product.level_value, SURFACE_SPECS[0].level_value))
+            .unwrap();
+        surface[index].bitmap = Some(vec![true; POINTS]);
+        let error = inventory_atmosphere_messages(&surface, CYCLE, 0).unwrap_err().to_string();
+        assert_eq!(error, "selected initialization field unexpectedly carries a bitmap");
+        // Unrequested (the default profile) the same: the pair is never
+        // read, every required field still is, under the same refusal.
+        for masked in [&records, &surface] {
+            let error = inventory_atmosphere_unrequested(masked, CYCLE, 0).unwrap_err().to_string();
+            assert_eq!(error, "selected initialization field unexpectedly carries a bitmap");
+        }
+    }
+
+    #[test]
+    fn a_series_withholds_the_pair_from_every_lead_or_none() {
+        // f00 masked, f01 clean: both leads withhold, so the cross-time
+        // check sees one inventory and the gate declares the pair for none.
+        let mut f00 = decodable_lead(0);
+        mask(&mut f00, PMTF, 1);
+        let mut leads = vec![
+            inventory_atmosphere_messages(&f00, CYCLE, 0).unwrap(),
+            inventory_atmosphere_messages(&decodable_lead(1), CYCLE, 1).unwrap(),
+        ];
+        assert_eq!(optional_hybrid_fields(&leads[1]), vec!["QNWFA", "QNIFA"]);
+        assert!(compare_atmosphere_inventory(&leads[0], &leads[1], 1).is_err());
+        let reason = withhold_optional_pair_across_leads(&mut leads).unwrap();
+        assert!(reason.starts_with("f00 QNWFA hybrid level 1"), "{reason}");
+        for lead in &leads {
+            assert!(optional_hybrid_fields(lead).is_empty());
+            assert_eq!(lead.optional_hybrid_withheld.as_deref(), Some(reason.as_str()));
+        }
+        compare_atmosphere_inventory(&leads[0], &leads[1], 1).unwrap();
+        // No lead masked: nothing changes.
+        let mut clean = vec![
+            inventory_atmosphere_messages(&decodable_lead(0), CYCLE, 0).unwrap(),
+            inventory_atmosphere_messages(&decodable_lead(1), CYCLE, 1).unwrap(),
+        ];
+        assert!(withhold_optional_pair_across_leads(&mut clean).is_none());
+        assert_eq!(optional_hybrid_fields(&clean[1]), vec!["QNWFA", "QNIFA"]);
+
+        // As posted: a later lead follows a withholding reference, and a
+        // later lead masking a pair the reference read is refused by name.
+        let reference = leads[0].clone();
+        let admitted = admit_optional_pair(
+            &reference,
+            inventory_atmosphere_messages(&decodable_lead(1), CYCLE, 1).unwrap(),
+        )
+        .unwrap();
+        compare_atmosphere_inventory(&reference, &admitted, 1).unwrap();
+        let mut f01 = decodable_lead(1);
+        mask(&mut f01, PMTF, 1);
+        let error = admit_optional_pair(
+            &clean[0],
+            inventory_atmosphere_messages(&f01, CYCLE, 1).unwrap(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("f01 QNWFA hybrid level 1"), "{error}");
+        assert!(error.contains("cannot withhold it at a later lead"), "{error}");
+    }
+
+    #[test]
+    fn the_default_profile_admits_a_pair_masked_at_a_later_lead_as_posted() {
+        // 2026-10-04 06Z: PMTF hybrid level 1 is clean at f00-f05, carries
+        // a bitmap at f06 and f07 and is clean again at f08.  `gpuwm go`
+        // reads HRRR as posted: f00 is the reference and is inventoried
+        // alone, each later lead is admitted against it.  Reading the pair
+        // unasked declared it at f00 and then refused the whole run at
+        // f06; the default profile (aer_init_opt = wif_input_opt = 1) never
+        // uses the pair, and 2.8.6 never selected it.
+        let lead = |hour: u32, masked: bool| {
+            let mut records = decodable_lead(hour);
+            if masked {
+                mask(&mut records, PMTF, 1);
+            }
+            records
+        };
+        let posted = [(0, false), (5, false), (6, true), (7, true), (8, false)];
+        let reference = inventory_atmosphere_unrequested(&lead(0, false), CYCLE, 0).unwrap();
+        assert!(optional_hybrid_fields(&reference).is_empty());
+        assert!(reference.optional_hybrid_withheld.is_none());
+        assert_eq!(reference.selected.len(), 561);
+        // The gate carries no pair line at all: 2.8.6's bytes.
+        assert!(optional_hybrid_gate_lines(&reference).is_empty());
+        let plain = inventory_atmosphere_unrequested(&wrfnat_records(CIMIXR, 0), CYCLE, 0).unwrap();
+        let indices = |inventory: &AtmosInventory| {
+            inventory.selected.iter().map(|field| field.index).collect::<Vec<_>>()
+        };
+        assert_eq!(indices(&reference), indices(&plain));
+        for &(hour, masked) in &posted[1..] {
+            let admitted = admit_optional_pair(
+                &reference,
+                inventory_atmosphere_unrequested(&lead(hour, masked), CYCLE, hour).unwrap(),
+            )
+            .unwrap();
+            assert!(admitted.optional_hybrid_withheld.is_none(), "f{hour:02}");
+            compare_atmosphere_inventory(&reference, &admitted, hour).unwrap();
+        }
+        // Up front (every lead inventoried first) likewise: nothing to
+        // withhold, one inventory for the series.
+        let mut leads: Vec<AtmosInventory> = posted
+            .iter()
+            .map(|&(hour, masked)| {
+                inventory_atmosphere_unrequested(&lead(hour, masked), CYCLE, hour).unwrap()
+            })
+            .collect();
+        assert!(withhold_optional_pair_across_leads(&mut leads).is_none());
+        for (lead, &(hour, _)) in leads.iter().zip(&posted) {
+            compare_atmosphere_inventory(&leads[0], lead, hour).unwrap();
+        }
+        // Unrequested, a half pair is no refusal either: it is not read.
+        let half = with_aerosol_numbers(wrfnat_records(CIMIXR, 0), &OPTIONAL_HYBRID_SPECS[..1]);
+        assert_eq!(inventory_atmosphere_unrequested(&half, CYCLE, 0).unwrap().selected.len(), 561);
+
+        // A configuration that requests the pair on the same cycle reads
+        // it at f00 and is refused at f06 by name, saying the pair is
+        // published with a bitmap there.
+        let requested = inventory_atmosphere_messages(&lead(0, false), CYCLE, 0).unwrap();
+        assert_eq!(optional_hybrid_fields(&requested), vec!["QNWFA", "QNIFA"]);
+        admit_optional_pair(
+            &requested,
+            inventory_atmosphere_messages(&lead(5, false), CYCLE, 5).unwrap(),
+        )
+        .unwrap();
+        let error = admit_optional_pair(
+            &requested,
+            inventory_atmosphere_messages(&lead(6, true), CYCLE, 6).unwrap(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.starts_with("the configuration requests the analyzed aerosol pair"), "{error}");
+        assert!(error.contains("GRIB2 bitmap (masked points) at a later lead"), "{error}");
+        assert!(error.contains("f06 QNWFA hybrid level 1"), "{error}");
+        assert!(error.contains("the reference lead f00 read the pair"), "{error}");
     }
 
     #[test]
@@ -2409,13 +3059,16 @@ mod tests {
     }
 
     fn posted_test_root(name: &str) -> PathBuf {
+        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "gpuwm-hrrr-posted-{name}-{}-{unique}",
-            std::process::id()
+            "gpuwm-hrrr-posted-{name}-{}-{unique}-{}",
+            std::process::id(),
+            NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ));
         fs::create_dir_all(&root).unwrap();
         root
@@ -2478,4 +3131,35 @@ mod tests {
         assert!(wait_admitted(&root, &input, &open).is_err());
         fs::remove_dir_all(&root).unwrap();
     }
+
+    #[test]
+    fn extra_table_is_explicit_and_numeric() {
+        assert!(requested_extras("NO_SUCH_FIELD").is_err());
+        assert!(requested_extras("MASSDEN,MASSDEN").is_err());
+        let specs = requested_extras("PMTF,MASSDEN,PMTC").unwrap();
+        assert_eq!(specs[0].name, "MASSDEN");
+        assert_eq!(specs[0].parameter, Parameter { discipline: 0, category: 20, number: 0 });
+        assert!(specs.iter().all(|spec| spec.nonnegative && !spec.require_any_positive));
+    }
+
+    #[test]
+    fn extras_require_fifty_matching_records_without_changing_default_inventory() {
+        let extras = requested_extras("MASSDEN").unwrap();
+        let mut records = wrfnat_records(CIMIXR, 0);
+        for level in 1..=50 {
+            records.push(canonical_record(extras[0].parameter, 105, level as f64, 0));
+        }
+        let default = inventory_atmosphere_messages(&records, CYCLE, 0).unwrap();
+        assert_eq!(default.selected.len(), 561);
+        let selected = inventory_atmosphere_with_extras(&records, CYCLE, 0, &extras, false).unwrap();
+        assert_eq!(selected.selected.len(), 611);
+        records.pop();
+        assert!(inventory_atmosphere_with_extras(&records, CYCLE, 0, &extras, false).unwrap_err().to_string().contains("MASSDEN hybrid level 50"));
+        records.push(canonical_record(Parameter { discipline: 0, category: 20, number: 1 }, 105, 50., 0));
+        assert!(inventory_atmosphere_with_extras(&records, CYCLE, 0, &extras, false).is_err());
+        records.push(canonical_record(extras[0].parameter, 105, 50., 0));
+        records.push(canonical_record(extras[0].parameter, 105, 50., 0));
+        assert!(inventory_atmosphere_with_extras(&records, CYCLE, 0, &extras, false).is_err());
+    }
+
 }

@@ -177,14 +177,17 @@ def test_doctor_reports_the_verdict_of_the_door_s_own_probe(
 # -- the held-out GRIB2 exporter --------------------------------------------
 
 def test_every_checked_artifact_is_one_this_release_bundles():
-    """Breakage: 2.8.6 holds the GRIB2 exporter out (it returns in
-    2.8.7), yet a doctor line for it imported the held-out module and
-    reported a door this release does not offer.  A check for an artifact
-    the bundle does not carry is that defect in general form."""
+    """Breakage: 2.8.6 held the GRIB2 exporter out, yet a doctor line for
+    it imported the held-out module and reported a door that release did
+    not offer.  A check for an artifact the bundle does not carry is that
+    defect in general form.  2.8.7 bundles the exporter again, so its line
+    is back, and it is held to the bundle like every other."""
 
     from gpuwm.bridge_assets import BUNDLED_ARTIFACTS
 
     bundled = {artifact.name for artifact in BUNDLED_ARTIFACTS}
     orphans = sorted(set(doctor._CHECKED_ARTIFACTS) - bundled)
     assert not orphans, orphans
-    assert not hasattr(doctor, "_grib2_export_check")
+    assert "rw_grib2export" in bundled
+    assert "rw_grib2export" in doctor._CHECKED_ARTIFACTS
+    assert hasattr(doctor, "_grib2_export_check")

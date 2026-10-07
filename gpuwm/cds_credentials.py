@@ -251,10 +251,15 @@ def _secrets() -> tuple:
     return tuple(secret for secret in secrets if isinstance(secret, str))
 
 
-def client_refusal(error: BaseException) -> str:
+def client_refusal(error: BaseException, *, credential_context: str | None = None,
+                   secrets: tuple = ()) -> str:
     """The sentence for a ``cdsapi.Client()`` that raised: the client's own
     error class and (redacted) message, the file it looked for and whether
     that file exists, the source it would use, and the way out."""
+    if credential_context is not None:
+        message = redact(error, *secrets)
+        return (f"Cannot initialize data-store client ({credential_context}): "
+                f"{message}. No key value is logged.")
     report = inspect()
     message = redact(error, *_secrets()).strip().splitlines()
     raised = f"{type(error).__name__}: {message[0][:300]}" if message else type(error).__name__

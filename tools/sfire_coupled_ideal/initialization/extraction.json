@@ -1,0 +1,18 @@
+{
+  "source_sha256": "c92d30ddb871bd2188fc7c37391b330eb6c9eca24a81abbfc34429fc5ab966b7",
+  "soil_source_sha256": "f981a2cce2cd1a8ca5b8ced100bf2d34eb2725d1d0bc7c42daf05fd05aa2c074",
+  "extracted_block_sha256": {
+    "vertical": "8f1f7113ba45a81159f0cf87e75efd016a3c613eeb281809ed5a3eb9d509f62f",
+    "hybrid": "2c9cdca7ce8959f7d43c54b50804a62caa352c9c5aefc5ddba5fdacf22debafc",
+    "mountain": "f00d77431689f4af48f0b72fc7009590a9706498bf78def1cc5467711eafee11",
+    "gradient": "28f970aa6f083b9111036f6d4cecc5cd2fe3282f06b26b6c8832840ace121a84",
+    "process_soil_ideal": "8152a92931e9b16f45c4535ac57cb4e4decc07676c5b7f5158bc419400858d4d",
+    "init_soil_depth_1": "3cb31417f437b0b22b78a9e6d296ea56caf40b4a372e9a947b03f12750fe1d94",
+    "init_soil_depth_2": "8226077d1b07590dd2a802547b01e56fe41640102d5232665058adea5cc9f01c",
+    "init_soil_depth_3": "89eda8c0e395ed9a0fbca724761eca8b714c682029f8cc855e530b35638a0759",
+    "init_soil_1_ideal": "743c71669d78313d58486ff073bcd699d4a541c8872d090c4bb00440a22db4db",
+    "init_soil_2_ideal": "42a80d04fe99a20b977f58329043a151d30dfd1f794838b5f1cb441b4f0d8284"
+  },
+  "correction": "RUC DZS(2) first midpoint edge preserved; source DZS(2) overlaps layer one",
+  "control_sha256": "b08870fedf1602526caf4df66dc32b373e97eb9fac94a322cbed83b809407c45"
+}

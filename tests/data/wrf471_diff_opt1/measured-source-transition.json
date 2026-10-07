@@ -1,6 +1,6 @@
 {
   "schema": "gpuwm-diffopt1-measured-source-transition-v1",
-  "measured_at_utc": "2026-10-06T06:51:05.432698+00:00",
+  "measured_at_utc": "2026-10-07T02:23:09.587389+00:00",
   "case_count": 88,
   "field_count": 272,
   "words": 178128,
@@ -32,7 +32,7 @@
     },
     {
       "path": "gpuwm/core/kernels/__init__.py",
-      "sha256": "30df9428aa6e896e8bb42cc559658a341978b8538428eaaed22dd9db82441e45"
+      "sha256": "bf70972fd28bd1585bfc10cee4713c57f5e7feadd40325fd03cf00a543c5dc55"
     },
     {
       "path": "gpuwm/core/constants.py",
@@ -40,7 +40,7 @@
     },
     {
       "path": "gpuwm/core/dycore.py",
-      "sha256": "1ce20af7c28d7b74077225241fec7aaa72f6ba34bccb3dabe436ea0fd620de0d"
+      "sha256": "a03335276d95c5d4c89010957dd4c7ed2d31ff0ea44050e4370af745c32138cf"
     },
     {
       "path": "gpuwm/core/kernels/rrtmg_aer3.cu",

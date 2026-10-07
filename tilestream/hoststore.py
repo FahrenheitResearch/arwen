@@ -393,9 +393,17 @@ class FieldSpec:
     #: does not scale with ``nz``, which is why it needs its own slot rather
     #: than an abused ``has_z``.
     layers: int | None = None
+    refinement_y: int = 1
+    refinement_x: int = 1
+    padding_y: int = 0
+    padding_x: int = 0
+    fixed_shape: tuple[int, ...] | None = None
 
     def shape(self, nz: int, ny: int, nx: int) -> tuple[int, ...]:
-        horiz = (ny + int(self.y_stagger), nx + int(self.x_stagger))
+        if self.fixed_shape is not None:
+            return self.fixed_shape
+        horiz = (ny * self.refinement_y + int(self.y_stagger) + 2 * self.padding_y,
+                 nx * self.refinement_x + int(self.x_stagger) + 2 * self.padding_x)
         if self.layers is not None:
             return (int(self.layers),) + horiz
         if not self.has_z:
@@ -529,6 +537,19 @@ def manifest_from_arrays(arrays: Mapping[str, Any], nz: int, ny: int, nx: int,
     specs: list[FieldSpec] = []
     for name, value in arrays.items():
         shape = tuple(int(s) for s in value.shape)
+        from tilestream.global_inventory import global_keys
+        if global_keys((name,)):
+            specs.append(FieldSpec(name, np.dtype(value.dtype), False, False, False, False,
+                                   fixed_shape=shape))
+            continue
+        from tilestream.fire_inventory import fire_field_layout
+        fire_layout = fire_field_layout(name, shape, ny, nx)
+        if fire_layout is not None:
+            ry, rx, py, px = fire_layout
+            specs.append(FieldSpec(name, np.dtype(value.dtype), False, False,
+                                   False, False, refinement_y=ry, refinement_x=rx,
+                                   padding_y=py, padding_x=px))
+            continue
         if len(shape) < 2:
             raise HostStoreError(
                 f"carrier {name!r} has shape {shape}: no horizontal extent, "
@@ -544,7 +565,13 @@ def manifest_from_arrays(arrays: Mapping[str, Any], nz: int, ny: int, nx: int,
                              y_stag, x_stag)
         elif len(shape) == 3:
             lead = shape[0]
-            if lead == nz:
+            if name in ("fire/grid.moisture.fmc_gc", "fire/grid.moisture.fmc_equi",
+                        "fire/grid.moisture.fmc_lag", "fire/grid.moisture.fmep"):
+                # Native moisture-class/parameter axes retain their declared
+                # allocation even when their length equals the weather nz.
+                spec = FieldSpec(name, np.dtype(value.dtype), False, False,
+                                 y_stag, x_stag, layers=lead)
+            elif lead == nz:
                 spec = FieldSpec(name, np.dtype(value.dtype), True, False,
                                  y_stag, x_stag)
             elif lead == nz + 1:

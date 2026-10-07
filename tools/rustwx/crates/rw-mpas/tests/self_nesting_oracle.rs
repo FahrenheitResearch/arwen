@@ -53,13 +53,16 @@ fn skip(what: &str) {
 }
 
 fn scratch(tag: &str) -> PathBuf {
+    // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+    static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = std::env::temp_dir().join(format!(
-        "rw-mpas-self-nesting-{tag}-{}-{}",
+        "rw-mpas-self-nesting-{tag}-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
     ));
     std::fs::create_dir_all(&dir).expect("scratch");
     dir

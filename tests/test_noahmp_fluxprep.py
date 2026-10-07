@@ -2,7 +2,7 @@
 
 ``SFCDIF1``, ``RAGRB`` and ``STOMATA`` at WRF v4.6.1 commit
 ``d66e442fccc04111067e29274c9f9eaccc3cef28``.  The fixture
-``gpuwm/data/noahmp/oracle/noahmp-fluxprep.csv`` is produced by
+``tests/data/oracles/noahmp/noahmp-fluxprep.csv`` is produced by
 ``tools/noahmp_wrf461_oracle/build_fluxprep.sh`` from a *scratch copy* of the
 pinned WRF tree carrying only ``patches/noahmp-lsm-leaf-visibility.patch``
 (50 ``private ::`` -> ``public ::`` accessibility statements, nothing else).
@@ -42,7 +42,7 @@ from gpuwm.core.noahmp_fluxprep import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-ORACLE_DIR = REPO_ROOT / "gpuwm" / "data" / "noahmp" / "oracle"
+ORACLE_DIR = REPO_ROOT / "tests" / "data" / "oracles" / "noahmp"
 FLUXPREP_CSV = ORACLE_DIR / "noahmp-fluxprep.csv"
 DISC_CSV = ORACLE_DIR / "noahmp-fluxprep-discrimination.csv"
 ATANF_CSV = ORACLE_DIR / "glibc-atanf-fp32.csv"

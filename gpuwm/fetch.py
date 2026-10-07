@@ -5039,7 +5039,8 @@ def _rw_fetch_hrrr(*, binary: Path, cycle: datetime, hour: int, kind: str,
                    host: str, mode: str, out: Path,
                    cache_dir: Path | None, progress,
                    retries: int = 0, shown_name: str | None = None,
-                   streams: int | None = None, byte_relay=None) -> dict:
+                   streams: int | None = None, byte_relay=None,
+                   analyzed_aerosol: bool = False, extras=()) -> dict:
     """One HRRR product through the Rust backbone; returns its record.
 
     The backbone names each object after the URL it came from, so the
@@ -5067,8 +5068,9 @@ def _rw_fetch_hrrr(*, binary: Path, cycle: datetime, hour: int, kind: str,
     from tools import download_hrrr_native_subset as range_transport
     from gpuwm import rustwx_fetch
 
-    selectors = (range_transport.atmosphere_selectors() if kind == "atmosphere"
-                 else range_transport.soil_selectors())
+    selectors = (range_transport.atmosphere_selectors(
+                     extras, analyzed_aerosol=analyzed_aerosol)
+                 if kind == "atmosphere" else range_transport.soil_selectors())
     patterns = out / f".rw-fetch-{kind}-f{hour:02d}.selectors"
     rustwx_fetch.write_pattern_file(patterns, selectors)
     attempt = 0
@@ -5203,7 +5205,9 @@ def count_selectors_in_index(index_text: str, selectors: tuple[str, ...],
     return matched
 
 
-def _hrrr_derived_bar(entry: dict, *, kind: str, out: Path) -> int | None:
+def _hrrr_derived_bar(entry: dict, *, kind: str, out: Path,
+                      analyzed_aerosol: bool = False,
+                      extras=()) -> int | None:
     """The live selection count behind one Rust HRRR transfer.
 
     In ``idx-subset`` mode the backbone selected the records itself and
@@ -5232,8 +5236,9 @@ def _hrrr_derived_bar(entry: dict, *, kind: str, out: Path) -> int | None:
         return None
     from tools import download_hrrr_native_subset as range_transport
 
-    selectors = (range_transport.atmosphere_selectors() if kind == "atmosphere"
-                 else range_transport.soil_selectors())
+    selectors = (range_transport.atmosphere_selectors(
+                     extras, analyzed_aerosol=analyzed_aerosol)
+                 if kind == "atmosphere" else range_transport.soil_selectors())
     return count_selectors_in_index(
         index_path.read_text(encoding="utf-8"), selectors,
         range_transport.ACCUMULATION_EXCLUSION)
@@ -5246,7 +5251,8 @@ def _download_one_hrrr_product(
         label: str, cache_dir: Path | None, workers: int, retries: int,
         bar_kind: str, certified: int, accept_inventory_change: bool,
         progress, dedup: list[dict] | None = None,
-        streams: int | None = None, byte_relay=None):
+        streams: int | None = None, byte_relay=None,
+        analyzed_aerosol: bool = False, extras=()):
     """Download one HRRR product from one host; ``(bar, url)``.
 
     ``dedup`` collects each Rust transfer's cache accounting, which the
@@ -5281,7 +5287,11 @@ def _download_one_hrrr_product(
             binary=engine_bin, cycle=cycle, hour=hour, kind=kind,
             host=host, mode=mode, out=out, cache_dir=cache_dir,
             progress=progress, retries=retries, shown_name=dest_name,
-            streams=streams, byte_relay=byte_relay)
+            streams=streams, byte_relay=byte_relay,
+            # Said only when asked, so every other request keeps the
+            # backbone call it always made.
+            **({"analyzed_aerosol": True} if analyzed_aerosol else {}),
+            **({"extras": extras} if extras else {}))
         if dedup is not None and isinstance(entry.get("dedup"), dict):
             dedup.append(entry["dedup"])
         url = entry["grib_url"]
@@ -5297,8 +5307,11 @@ def _download_one_hrrr_product(
         # run also refuses, under a message swearing nothing was
         # downloaded.
         bar = resolve_bar(
-            bar_kind, _hrrr_derived_bar(entry, kind=kind, out=out),
-            accept_inventory_change=accept_inventory_change,
+            bar_kind, _hrrr_derived_bar(
+                entry, kind=kind, out=out,
+                **({"analyzed_aerosol": True} if analyzed_aerosol else {}),
+                extras=extras),
+            accept_inventory_change=accept_inventory_change, certified=certified,
             progress=progress,
             on_refusal=lambda: _quarantine_inventory_payload(
                 dest, out, entry, progress, f"hrrr {label}"))
@@ -5324,6 +5337,7 @@ def _download_one_hrrr_product(
         index_path=out / f"{source_name}.idx",
         destination=dest,
         kind=kind,
+        analyzed_aerosol=analyzed_aerosol,
     )
     # The selection itself is the derivation here: with the count clause
     # left on, an inventory change is refused inside the transport with
@@ -5332,7 +5346,8 @@ def _download_one_hrrr_product(
     try:
         range_transport._download_product(
             request, workers=workers, retries=retries,
-            expected_count=None if accept_inventory_change else certified)
+            expected_count=None if accept_inventory_change else certified,
+            **({"extras": extras} if extras else {}))
     except URLError as error:
         raise RuntimeError(hrrr_reach_refusal(
             host, cycle, hour, kind, error)) from None
@@ -5341,7 +5356,7 @@ def _download_one_hrrr_product(
     # before any range GET.  Should one ever reach here the payload has
     # landed, so this refusal quarantines it and tells the truth too.
     bar = resolve_bar(bar_kind, observed,
-                      accept_inventory_change=accept_inventory_change,
+                      accept_inventory_change=accept_inventory_change, certified=certified,
                       progress=progress,
                       on_refusal=lambda: _quarantine_inventory_payload(
                           dest, out, {"idx_name": f"{source_name}.idx"},
@@ -5422,7 +5437,9 @@ def fetch_hrrr(*, cycle: datetime, hours: tuple[int, ...],
                accept_inventory_change: bool = False,
                file_workers: int | None = None,
                transport_fallback: tuple[str, ...] = (),
-               on_hour_ready=None) -> Path:
+               on_hour_ready=None,
+               runtime_surface: str | None = None,
+               analyzed_aerosol: bool = False, extras=()) -> Path:
     """Byte-range download the native HRRR subset series into ``out``.
 
     Single writer per ``--out``: the prior-receipt read, the ``force``
@@ -5450,7 +5467,8 @@ def fetch_hrrr(*, cycle: datetime, hours: tuple[int, ...],
             accept_inventory_change=accept_inventory_change,
             file_workers=file_workers,
             transport_fallback=transport_fallback,
-            on_hour_ready=on_hour_ready)
+            on_hour_ready=on_hour_ready, runtime_surface=runtime_surface,
+            analyzed_aerosol=analyzed_aerosol, extras=extras)
 
 
 def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
@@ -5469,8 +5487,14 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
                        accept_inventory_change: bool = False,
                        file_workers: int | None = None,
                        transport_fallback: tuple[str, ...] = (),
-                       on_hour_ready=None) -> Path:
+                       on_hour_ready=None,
+                       runtime_surface: str | None = None,
+                       analyzed_aerosol: bool = False, extras=()) -> Path:
     """The HRRR transfer, with the output-root lock already held.
+
+    ``analyzed_aerosol``: the configuration's preparation reads HRRR's
+    analyzed aerosol numbers (QNWFA/QNIFA), so the atmosphere subset
+    selects them too and a kept subset without them is fetched again.
 
     Reuses the proven ``.idx`` selection/range transport in
     :mod:`tools.download_hrrr_native_subset` per product (atmosphere
@@ -5537,12 +5561,20 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
                          f"{FETCH_MODES}")
     if engine == "rust" and engine_bin is None:
         raise ValueError("engine 'rust' needs the resolved rw_fetch binary")
-    bar_kinds = {"atmosphere": "hrrr-atmosphere", "soil": "hrrr-soil"}
-    expected_counts = {"atmosphere": range_transport.ATMOSPHERE_RECORD_COUNT,
+    bar_kinds = {"atmosphere": ("hrrr-atmosphere-aerosol" if analyzed_aerosol
+                                else "hrrr-atmosphere"),
+                 "soil": "hrrr-soil"}
+    from gpuwm.ingest.native_extras import requested_extra_fields
+    extras = requested_extra_fields(extras)
+    expected_counts = {"atmosphere": range_transport.atmosphere_record_count(
+                           analyzed_aerosol=analyzed_aerosol, extras=extras),
                        "soil": range_transport.SOIL_RECORD_COUNT}
     from gpuwm.source_adapters import get_source_adapter
     runtime_adapter = get_source_adapter("hrrr")
     runtime_rows = runtime_adapter.runtime_surface_fields
+    from gpuwm.runtime_surface_fetch import declared_runtime_surface_fields
+    runtime_declared = declared_runtime_surface_fields(
+        runtime_surface, runtime_adapter)
     # Seeded, not empty: a completed resume downloads nothing and would
     # otherwise republish record_bars as [], erasing an accepted
     # inventory change the directory's files really were fetched under.
@@ -5577,6 +5609,15 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
     prior_digests = _prior_manifest_digests(out)
     prior_entries = _prior_manifest_entries(out)
     prior_records = _prior_manifest_records(out)
+    previous = out / FETCH_MANIFEST_NAME
+    previous_extras = ()
+    if previous.is_file():
+        previous_extras = tuple(json.loads(previous.read_text()).get("native_extras", ()))
+    if previous_extras != extras:
+        # A full-file census alone cannot prove which subset was requested.
+        prior_digests = {}
+        prior_entries = {}
+        prior_records = {}
     bars.update(_prior_manifest_bars(out))
     deadline = clock() + wait_timeout_s
     files: list[dict] = []
@@ -5629,6 +5670,8 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
         payload["engine_selection"] = _engine_selection(
             engine, engine_selection)
         payload["mode"] = mode
+        if extras:
+            payload["native_extras"] = list(extras)
         payload["record_bars"] = [
             bar.as_manifest() for bar in bars.values()]
         # What the backbone's disk cache cost this run.  A full-file
@@ -5660,6 +5703,16 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
         file_started = time.perf_counter()
         digest = None
         runtime_binding = None
+        if (dest.exists() and not force and kind == "atmosphere"
+                and analyzed_aerosol
+                and prior_records.get(dest_name, 0) < expected_counts[kind]):
+            # A subset kept from a fetch whose preparation did not read the
+            # aerosol pair: it lacks the records this one needs, so it is
+            # set aside (never deleted) and fetched again.
+            _quarantine_rejected(dest, progress, f"hrrr {label}")
+        if dest.exists() and not force and previous_extras != extras:
+            _quarantine_rejected(dest, progress,
+                "native extra request changed; prevents reusing a different tracer inventory")
         if dest.exists() and not force:
             digest = _existing_hrrr_digest(
                 dest, expected_count=expected,
@@ -5668,7 +5721,12 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
             if kind == "soil" and runtime_rows:
                 prior_runtime = (prior_entries.get(dest_name) or {}).get("runtime_surface")
                 if (not isinstance(prior_runtime, list)
-                        or {row.get("field") for row in prior_runtime} != {row[0] for row in runtime_rows}):
+                        or {row.get("field") for row in prior_runtime} != {row[0] for row in runtime_rows}
+                        # A recorded fallback for a field this request
+                        # declares is not a reusable file: the fetch runs
+                        # again and refuses that field by name.
+                        or any(row.get("fallback_id") and row.get("field") in runtime_declared
+                               for row in prior_runtime)):
                     digest = None
                 else:
                     runtime_binding = prior_runtime
@@ -5741,8 +5799,11 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
                         cache_dir=cache_dir, workers=workers,
                         retries=retries, bar_kind=bar_kinds[kind],
                         certified=expected_counts[kind],
+                        **({"extras": extras} if extras else {}),
                         accept_inventory_change=accept_inventory_change,
                         progress=progress, dedup=cache_dedup,
+                        **({"analyzed_aerosol": True}
+                           if analyzed_aerosol else {}),
                         streams=streams,
                         byte_relay=(None if monitor is None else
                                     functools.partial(monitor.relay,
@@ -5769,7 +5830,8 @@ def _fetch_hrrr_locked(*, cycle: datetime, hours: tuple[int, ...],
                 runtime_binding = append_runtime_surface_records(
                     dest, adapter=runtime_adapter, cycle=cycle, lead=hour, host=chosen,
                     binary=engine_bin if engine == "rust" else None,
-                    cache_dir=cache_dir, progress=progress, streams=streams)
+                    cache_dir=cache_dir, progress=progress, streams=streams,
+                    declared=runtime_declared)
             digest = sha256_file(dest)
             if engine != "rust":
                 # The Rust route has already said this, with the
@@ -6651,10 +6713,7 @@ def _route_fetch_main(args, source: str) -> int:
         # before the first byte moves: a named cycle was never asked, and
         # a cached donor folder is checked for completeness instead.
         for donor in plan.donors:
-            if args.force_refetch or not cached_request_complete(
-                    _route_donor_out(args.out, donor), source=donor.source,
-                    cycle=donor.cycle, area=None, hours=tuple(donor.leads),
-                    mode="full-file", refuse_changed=True):
+            if args.force_refetch or not _donor_cached(donor, args):
                 try:
                     require_published_cycle(
                         donor.source, donor.cycle, max(donor.leads))
@@ -6762,6 +6821,58 @@ def _route_donor_out(out: Path, donor) -> Path:
     return Path(out) / f"donor-{donor.source}"
 
 
+def _donor_is_table_route(donor) -> bool:
+    """Whether a declared donor is itself a row of the fetch-route table."""
+    return (donor.source not in GFS_CONTAINER_SOURCES
+            and fetch_routes.canonical_source(donor.source)
+            in fetch_routes.table_route_sources())
+
+
+def _donor_route_plan(donor, args):
+    """The donor's own table-route plan: its source, its cycle, its leads.
+
+    Refuses by name when the donor has neither a table row nor the
+    GFS-container ladder, because then nothing in this door can move
+    its bytes and the handoff would name a supplement nobody fetched.
+    """
+    if not _donor_is_table_route(donor):
+        raise ValueError(
+            f"the declared {donor.source} donor ({donor.role}) is neither "
+            f"a row of {fetch_routes.ROUTE_TABLE_NAME} nor one of the "
+            f"GFS-container sources {', '.join(GFS_CONTAINER_SOURCES)}; "
+            "nothing in this door can download it, so the handoff would "
+            "name a supplement nobody fetched")
+    start = min(donor.leads)
+    # The primary's --transport pin reaches the donor: a user who pinned
+    # a host asked for every byte of this fetch from it, and a donor that
+    # cannot serve that host refuses in its route's own words instead of
+    # quietly walking its own ladder to another host.
+    return fetch_routes.resolve_request(
+        donor.source, cycle=donor.cycle, hours=max(donor.leads) - start,
+        start_hour=start, host=getattr(args, "transport", None),
+        out=_route_donor_out(args.out, donor))
+
+
+def _donor_route_primary(donor_plan, donor) -> Path:
+    """The one primary object the donor role binds (its lowest lead)."""
+    if not donor_plan.primary_files:
+        raise ValueError(
+            f"the {donor.source} donor route plans no primary object for "
+            f"leads {list(donor.leads)}")
+    return Path(donor_plan.primary_files[0])
+
+
+def _donor_cached(donor, args) -> bool:
+    """Whether the donor folder already holds this exact donor request."""
+    donor_out = _route_donor_out(args.out, donor)
+    if _donor_is_table_route(donor):
+        return fetch_routes.request_cached(_donor_route_plan(donor, args),
+                                           donor_out)
+    return cached_request_complete(
+        donor_out, source=donor.source, cycle=donor.cycle, area=None,
+        hours=tuple(donor.leads), mode="full-file", refuse_changed=True)
+
+
 def _fetch_route_donors(plan, args) -> dict:
     """Fetch the cross-source analysis a hybrid profile declares.
 
@@ -6775,14 +6886,26 @@ def _fetch_route_donors(plan, args) -> dict:
 
     donor_files: dict[str, Path] = {}
     for donor in plan.donors:
-        if donor.source not in GFS_CONTAINER_SOURCES:
-            raise ValueError(
-                f"--source {plan.source_id} declares a {donor.source} donor "
-                "and this ArWen has no route for it")
         donor_out = _route_donor_out(args.out, donor)
         print(f"fetch {plan.source_id}: fetching the declared "
               f"{donor.source} donor into {donor_out}")
         print(f"  why: {donor.why}")
+        if donor.source not in GFS_CONTAINER_SOURCES:
+            # A donor that is itself a table route (hrrr-native's
+            # same-cycle hrrr-prs soil column) is fetched the way its
+            # own ``gpuwm fetch --source`` line would fetch it: the
+            # route's plan for the donor's leads, into the donor
+            # folder.  Only the two GFS-container sources have no row
+            # and keep the whole-file ladder below; a donor with
+            # neither is refused by name because nothing here can
+            # move its bytes.
+            donor_plan = _donor_route_plan(donor, args)
+            fetch_routes.run_plan(donor_plan, out=donor_out,
+                                  force=args.force_refetch,
+                                  file_workers=args.fetch_workers)
+            donor_files[donor.role] = donor_out / _donor_route_primary(
+                donor_plan, donor)
+            continue
         choice = select_fetch_engine("auto")
         manifest = fetch_gfs_fullfile(
             cycle=donor.cycle, hours=tuple(donor.leads), area=None,
@@ -7390,6 +7513,8 @@ def _fetch_main(args) -> int:
                     accept_inventory_change=args.accept_inventory_change,
                     file_workers=args.fetch_workers,
                     transport_fallback=transport_fallback,
+                    runtime_surface=getattr(args, "runtime_surface", None),
+                    analyzed_aerosol=bool(getattr(args, "analyzed_aerosol", False)),
                     **({} if on_hour_ready is None else {
                         "on_hour_ready": on_hour_ready}))
 
@@ -7674,6 +7799,11 @@ FETCH_HINT_ROWS = key_rows(
            "how far past its scheduled time a lead may be before the run "
            "stops with exit 75; absent takes the source table's posting "
            "late_after_minutes"),
+    KeyRow("runtime_surface", "string", None,
+           "comma-separated runtime surface fields (e.g. 'VEGFRA') the "
+           "start must read from the cycle itself; absent, a field the "
+           "source table declares starts from its recorded fallback when "
+           "a cycle publishes no record for it"),
 )
 FETCH_HINT_KEYS = frozenset(FETCH_HINT_ROWS)
 
@@ -7804,6 +7934,17 @@ def validate_fetch_hints(table: dict, *, source: str) -> None:
     # the rows are what a front end is told these keys take.
     for key, value in table.items():
         FETCH_HINT_ROWS[key].check(value, where=prefix)
+    if table.get("runtime_surface") is not None and isinstance(table.get("source"), str):
+        from gpuwm.runtime_surface_fetch import declared_runtime_surface_fields
+        from gpuwm.source_adapters import get_source_adapter
+        try:
+            adapter = get_source_adapter(table["source"])
+        except (KeyError, ValueError):
+            adapter = None
+        try:
+            declared_runtime_surface_fields(table["runtime_surface"], adapter)
+        except ValueError as error:
+            raise ValueError(f"{prefix}: {error}") from None
     late = table.get("late_after_minutes")
     if late is not None and not (math.isfinite(float(late)) and float(late) > 0):
         # A zero budget fails every lead a second late (DESIGN A136 2.1).
@@ -7999,6 +8140,12 @@ def register_cli(subparsers) -> None:
              "does not (a reanalysis published on a delay has a latest, "
              "and it is that delay).  A source that declares neither is "
              "refused by name")
+    parser.add_argument(
+        "--analyzed-aerosol", action="store_true",
+        help="the preparation reads the source's analyzed aerosol numbers "
+             "(QNWFA/QNIFA), so a subset fetch selects them too; implied by "
+             "the native forecast chain when an mp=28 domain asks for the "
+             "analyzed aerosol")
     parser.add_argument(
         "--wif", action="store_true",
         help="stage the SHA-256-verified monthly aerosol climatology in its "
@@ -8208,6 +8355,13 @@ def register_cli(subparsers) -> None:
              "transport: a knob, not a workaround.  The manifest "
              "receipts files, bytes, workers, wall and the effective "
              "speedup under 'concurrency'")
+    parser.add_argument(
+        "--runtime-surface", default=None, metavar="FIELDS",
+        help="comma-separated runtime surface fields (e.g. VEGFRA) the "
+             "start must read from this cycle itself.  A field the source "
+             "table declares but this list omits starts from its recorded "
+             "fallback when the cycle publishes no record for it; a listed "
+             "field the cycle does not publish is refused by name")
     parser.add_argument(
         "--accept-inventory-change", action="store_true",
         help="proceed when the live provider inventory yields a "

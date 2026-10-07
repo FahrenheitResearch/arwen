@@ -100,8 +100,9 @@ def covariance_states(background: dict, setup: dict, run_cfg, *, samples: int,
     from gpuwm.core.diagnostics import update_diagnostics
     if type(samples) is not int or samples < 2:
         raise ValueError('Static covariance needs at least two samples; increase the analysis sample count.')
-    cfg = PerturbationConfig.from_mapping(dict(dx_km=run_cfg.dx / 1000.,
-                                               dy_km=run_cfg.dy / 1000., **options))
+    cfg = PerturbationConfig.from_mapping(dict(
+        dx_km=run_cfg.dx / 1000., dy_km=run_cfg.dy / 1000.,
+        hypsometric_opt=int(run_cfg.hypsometric_opt), **options))
     states = [background]
     receipts = []
     for sample in range(samples):

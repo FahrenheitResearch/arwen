@@ -275,7 +275,7 @@ def test_da_leg_writer_carries_the_callers_labels_into_actual_checkpoints(
 
     # Execute the actual label expression at the cycle's checkpoint call.
     # Calling only the helper would miss the original route's absent label.
-    calls = [node for node in ast.walk(ast.parse(inspect.getsource(driver.cycle)))
+    calls = [node for node in ast.walk(ast.parse(inspect.getsource(__import__("tools.da_member_leg", fromlist=["run_member_leg"]).run_member_leg)))
              if isinstance(node, ast.Call)
              and isinstance(node.func, ast.Name)
              and node.func.id == "write_leg_restart"]

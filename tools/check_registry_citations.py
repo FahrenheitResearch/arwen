@@ -249,10 +249,12 @@ RESOLVED: dict[str, tuple[str, str]] = {
     # one more line, to :1261 and :1355.  Anchors unchanged.)
     # (lane/cut286-fu-diff6-price: the workspace-priced sixth-order edge form
     # moved both six lines, to :1267 and :1361.  Anchors unchanged.)
-    "gpuwm/core/dycore.py:1267": (
+    # (lane/ec-sfire: the open-boundary geopotential launcher moved both 17
+    # lines, to :1284 and :1378.  Anchors unchanged.)
+    "gpuwm/core/dycore.py:1284": (
         "gpuwm/core/dycore.py",
         "WRF v4.6.1 km_opt=2:"),
-    "gpuwm/core/dycore.py:1361": (
+    "gpuwm/core/dycore.py:1378": (
         "gpuwm/core/dycore.py",
         "WRF v4.6.1 km_opt=3:"),
 }

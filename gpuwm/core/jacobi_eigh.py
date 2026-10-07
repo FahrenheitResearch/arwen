@@ -1,6 +1,7 @@
 """Batched symmetric eigendecomposition on the device, without cuSOLVER.
 
-One thread block per matrix, two-sided cyclic Jacobi in shared memory.  The
+One thread block per matrix, two-sided cyclic Jacobi in shared memory up to
+k = 64 and in a launcher-owned global scratch slab above it.  The
 algorithm, the ordering, the padding of odd sizes and the canonical output
 form are all documented in ``gpuwm/core/kernels/jacobi_eigh.cu``; this module
 is the launcher and the refusal surface.
@@ -19,7 +20,7 @@ resolution, and once on a rented node whose CUDA install simply shipped
 without it.  Both faults present as the same masquerade: elementwise CuPy
 works, so the GPU is obviously fine, and only the factorisation fails.
 
-A batch of k <= 64 matrices is also the case a general-purpose library is
+A batch of small matrices is also the case a general-purpose library is
 worst at and a purpose-built kernel is best at, so removing the dependency and
 going faster are the same piece of work rather than a trade.
 
@@ -31,11 +32,21 @@ without raising and :func:`batched_eigh` raises :class:`JacobiEighError`.  A
 caller that wants a library fallback should ask :func:`supported` first --
 ``gpuwm.da.letkf`` does exactly that.
 
-The ceiling is shared memory, not the algorithm.  Each matrix holds two k x k
-working arrays in shared, so a float64 problem needs about ``16 k^2`` bytes,
-and at k = 64 that is 64 KiB -- one block per multiprocessor even with the
-opt-in limit raised.  k = 64 therefore WORKS but is bandwidth-starved; see
-the measurements in ``docs/da_jacobi_eigensolver.md``.
+Two tiers, one algorithm.  Up to :data:`SHARED_MAX_K` each matrix holds two
+k x k working arrays in shared, so a float64 problem needs about ``16 k^2``
+bytes, and at k = 64 that is 64 KiB -- one block per multiprocessor even with
+the opt-in limit raised.  k = 64 therefore WORKS but is bandwidth-starved; see
+the measurements in ``docs/da_jacobi_eigensolver.md``.  Above it the kernel
+is compiled with ``JACOBI_GLOBAL_WORK`` and the two working arrays live in a
+global scratch slab this launcher allocates (bounded by
+:data:`GLOBAL_SCRATCH_BYTES`, the batch launched in slices that fit it); the
+arithmetic, the pair ordering and the canonical form are the same source
+lines, so the answer is still fixed by the input alone.  Before the global
+tier an ensemble above 64 members fell back to cuSOLVER, which is not
+bit-reproducible across cards.
+
+:data:`MAX_K` is the largest size the test battery measures converging
+inside :data:`SWEEP_CAP`; above it this module refuses rather than guess.
 """
 
 from __future__ import annotations
@@ -49,6 +60,8 @@ __all__ = [
     "JacobiEighError",
     "MIN_K",
     "MAX_K",
+    "SHARED_MAX_K",
+    "GLOBAL_SCRATCH_BYTES",
     "SUPPORTED_DTYPES",
     "SWEEP_CAP",
     "Tier",
@@ -72,9 +85,31 @@ class JacobiEighError(RuntimeError):
 MIN_K = 2
 
 #: Largest problem that fits two working copies in the opt-in shared-memory
-#: limit of every architecture this project targets.  Raising it is a
-#: shared-memory question, not an algorithmic one.
-MAX_K = 64
+#: limit of every architecture this project targets: the shared tiers.
+SHARED_MAX_K = 64
+
+#: Largest problem either tier takes.  Above :data:`SHARED_MAX_K` the global
+#: tier runs; 256 is the largest size ``tests/test_jacobi_eigh_gpu.py``
+#: measures converging inside :data:`SWEEP_CAP` and byte-identical run to
+#: run.  Above it convergence inside the cap is unmeasured, and that is the
+#: breakage the refusal prevents: a matrix still rotating at the cap is
+#: refused only after the whole localised gather has been paid for.
+MAX_K = 256
+
+#: Target size of the global tier's scratch slab, in bytes.  Each matrix in
+#: flight needs ``2 * m * m`` reals; a batch whose slab would exceed this is
+#: launched in slices that fit, so the slab is a fixed overhead (inside the
+#: share of the card ``gpuwm.da.letkf``'s auto-sizer leaves unpromised)
+#: rather than a per-gridpoint cost.  Matrices are independent, so slicing
+#: never moves a byte of the answer (``tests/test_jacobi_eigh_gpu.py``).
+#: Sized to stay resident in L2: on an RTX 4090 (72 MB L2) a 2048-matrix
+#: k = 128 batch took 0.95 s at 32 MiB and 3.8 s at 256 MiB, the same bytes.
+GLOBAL_SCRATCH_BYTES = 32 * 1024 * 1024
+
+#: Fewest matrices one global-tier launch carries, whatever the slab target,
+#: so a large k still puts a block on most multiprocessors (k = 256 took
+#: 1.4 s for 256 matrices with 64 in flight, 2.6 s with 32).
+GLOBAL_MIN_IN_FLIGHT = 64
 
 SUPPORTED_DTYPES = (np.dtype(np.float32), np.dtype(np.float64))
 
@@ -91,7 +126,7 @@ SWEEP_CAP = 40
 #: problem from spending its life in ``__syncthreads``.  Above that one matrix
 #: owns the block and the wider tiers buy back the per-thread work that a
 #: single warp would otherwise serialise.
-_THREAD_TIERS = ((32, 32), (48, 128), (64, 256))
+_THREAD_TIERS = ((32, 32), (48, 128), (64, 256), (128, 256), (256, 512))
 
 #: Cap on matrices per block, so one tier cannot monopolise the shared memory
 #: of a multiprocessor.
@@ -112,6 +147,13 @@ class Tier:
     real_bytes: int
     shared_bytes_per_matrix: int
     shared_bytes: int
+    #: ``True`` for the global-work tier (k above :data:`SHARED_MAX_K`).
+    global_work: bool = False
+
+    @property
+    def global_bytes_per_matrix(self) -> int:
+        """Scratch-slab bytes one matrix in flight needs (0 for shared tiers)."""
+        return 2 * self.m * self.m * self.real_bytes if self.global_work else 0
 
     @property
     def defines(self) -> tuple[tuple[str, int], ...]:
@@ -121,13 +163,18 @@ class Tier:
         ``JACOBI_K`` in the preprocessor, so host and device cannot disagree
         about the padding.
         """
-        return (
+        defines = (
             ("JACOBI_K", self.k),
             ("JACOBI_TPB", self.threads_per_matrix),
             ("JACOBI_MPB", self.matrices_per_block),
             ("JACOBI_SWEEPS", self.sweep_cap),
             ("JACOBI_REAL_BYTES", self.real_bytes),
         )
+        # Appended only for the global tier, so every shared tier compiles
+        # from exactly the define tuple (and cache key) it always had.
+        if self.global_work:
+            defines += (("JACOBI_GLOBAL_WORK", 1),)
+        return defines
 
     @property
     def block(self) -> tuple[int, int, int]:
@@ -136,10 +183,13 @@ class Tier:
         return (self.threads_per_matrix, 1, 1)
 
 
-def _shared_per_matrix(m: int, real_bytes: int) -> int:
+def _shared_per_matrix(m: int, real_bytes: int,
+                       global_work: bool = False) -> int:
     # work[m*m] + vecs[m*m] + cos[m/2] + sin[m/2] + diag[m] + sign[m]
-    # then perm[m] + flag[1] as int32.
-    return (2 * m * m + 3 * m) * real_bytes + (m + 1) * 4
+    # then perm[m] + flag[1] as int32.  The global tier keeps work and vecs
+    # in the scratch slab instead.
+    reals = 3 * m if global_work else 2 * m * m + 3 * m
+    return reals * real_bytes + (m + 1) * 4
 
 
 @lru_cache(maxsize=None)
@@ -158,13 +208,16 @@ def plan(k: int, dtype_str: str) -> Tier:
     if k < MIN_K or k > MAX_K:
         raise JacobiEighError(
             f"jacobi_eigh supports {MIN_K} <= k <= {MAX_K}, got k={k}."
-            "  The ceiling is shared memory -- two k x k working copies per"
-            " block -- not the algorithm.  Use a library eigensolver for"
-            " larger problems."
+            "  The two k x k working copies are held in shared memory up to"
+            f" k = {SHARED_MAX_K} and in a global scratch slab above it;"
+            f" {MAX_K} is the largest size measured converging inside the"
+            f" {SWEEP_CAP}-sweep cap.  Use a library eigensolver for larger"
+            " problems."
         )
     m = k + (k & 1)
+    global_work = k > SHARED_MAX_K
     threads = next(t for bound, t in _THREAD_TIERS if m <= bound)
-    per_matrix = _shared_per_matrix(m, dtype.itemsize)
+    per_matrix = _shared_per_matrix(m, dtype.itemsize, global_work)
     if threads == 32:
         per_block = max(
             1, min(_MAX_MATRICES_PER_BLOCK, _DEFAULT_SHARED_LIMIT // per_matrix))
@@ -179,6 +232,7 @@ def plan(k: int, dtype_str: str) -> Tier:
         real_bytes=dtype.itemsize,
         shared_bytes_per_matrix=per_matrix,
         shared_bytes=per_matrix * per_block,
+        global_work=global_work,
     )
 
 
@@ -202,6 +256,28 @@ def _kernel(defines: tuple[tuple[str, int], ...], shared_bytes: int):
         # to happen before the first launch of THIS specialisation.
         fn.max_dynamic_shared_size_bytes = shared_bytes
     return fn
+
+
+def _launch_global(fn, tier: Tier, a, w, v, status, n: int) -> None:
+    """The global tier: one matrix per block, the batch in slab-sized slices.
+
+    The slab holds the working arrays of one slice and is reused slice to
+    slice.  Each matrix reads and writes only its own stretch, indexed by its
+    position in the slice, so the slicing is invisible in the answer.
+    """
+    import cupy as cp
+
+    per_launch = max(1, min(n, max(GLOBAL_MIN_IN_FLIGHT,
+                                   GLOBAL_SCRATCH_BYTES
+                                   // tier.global_bytes_per_matrix)))
+    slab = cp.empty((per_launch * 2 * tier.m * tier.m,), dtype=a.dtype)
+    for lo in range(0, n, per_launch):
+        hi = min(n, lo + per_launch)
+        fn((hi - lo,), tier.block,
+           (a[lo:hi], w[lo:hi], v[lo:hi], status[lo:hi],
+            np.int64(hi - lo), slab),
+           shared_mem=tier.shared_bytes)
+    del slab
 
 
 def batched_eigh(a, *, return_sweeps: bool = False):
@@ -256,10 +332,13 @@ def batched_eigh(a, *, return_sweeps: bool = False):
         return (w, v, 0) if return_sweeps else (w, v)
 
     fn = _kernel(tier.defines, tier.shared_bytes)
-    blocks = (n + tier.matrices_per_block - 1) // tier.matrices_per_block
-    fn((blocks,), tier.block,
-       (a, w, v, status, np.int64(n)),
-       shared_mem=tier.shared_bytes)
+    if tier.global_work:
+        _launch_global(fn, tier, a, w, v, status, n)
+    else:
+        blocks = (n + tier.matrices_per_block - 1) // tier.matrices_per_block
+        fn((blocks,), tier.block,
+           (a, w, v, status, np.int64(n)),
+           shared_mem=tier.shared_bytes)
 
     worst = int(status.min())
     if worst < 0:

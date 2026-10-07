@@ -415,6 +415,11 @@ def _host_cpus(monkeypatch, count):
     monkeypatch.setattr(preparation_workers, "cgroup_cpu_count", lambda: None)
     monkeypatch.setattr(preparation_workers, "memory_worker_limit", lambda: 10**6)
     monkeypatch.delenv(preparation_workers.PREPARATION_THREADS_ENV, raising=False)
+    # ac988f1fd made automatic_workers() reuse its answer for
+    # AUTOMATIC_WORKERS_REUSE_SECONDS inside one process. A simulated host is
+    # a different machine, so an answer read on the previous one (the gate
+    # box's own 24 CPUs, measured) must not carry over into this one.
+    monkeypatch.setattr(cpu_backend, "_AUTOMATIC_WORKERS", {})
 
 
 @pytest.fixture(autouse=True)

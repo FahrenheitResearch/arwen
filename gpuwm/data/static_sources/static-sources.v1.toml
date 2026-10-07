@@ -39,9 +39,12 @@ describes = "Operational HRRR v4 CONUS static file (NCO production tree hrrr.v4.
 format = "wps-geo_em"
 filename = "hrrr_geo_em.d01.nc"
 url = "https://www.nco.ncep.noaa.gov/pmb/codes/nwprod/hrrr.v4.1.21/fix/conus/hrrr_geo_em.d01.nc"
-# The NCO version folder rotates (the v4.1.19 path already returns 404),
-# so a durable mirror belongs here once one is published.
-mirrors = []
+# The NCO version folder rotates with every HRRR code bump (the v4.1.19
+# path already returns 404), so the same bytes are also published as an
+# asset of the v2.8.7 release, a URL that does not move; the fetch tries
+# the mirror when NCO does not answer and holds it to the same pin
+# (PROVENANCE.md).
+mirrors = ["https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.7/hrrr-conus-v4-hrrr_geo_em.d01.nc"]
 sha256 = "a785b53fdb8493e376b88ece6e166ddd8046588dd1c0062181141bf2b012f6e2"
 bytes = 1112724420
 fields = [

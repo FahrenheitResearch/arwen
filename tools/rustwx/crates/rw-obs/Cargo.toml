@@ -80,6 +80,15 @@ path = "src/bin/wis2.rs"
 name = "rw_prepbufr"
 path = "src/bin/prepbufr.rs"
 
+# The MADIS public archive (aircraft, radiosondes, mesonets): the regional
+# analysis's conventional streams for dates NOMADS no longer serves.  Classic
+# NetCDF through the vendored `netcdf-reader`, gzip through flate2, GSI's
+# regional error table through `rw_obs::errtable`, rows in
+# `gpuwm-obs.table.v2`.
+[[bin]]
+name = "rw_madis"
+path = "src/bin/madis.rs"
+
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # `rust_backend` rather than the zlib C shim, matching rustwx-io and
@@ -125,3 +134,8 @@ wrf-core = { git = "https://github.com/FahrenheitResearch/wrf-rust.git", rev = "
 
 [dev-dependencies]
 netcdf-writer = { path = "../netcdf-writer" }
+
+
+[[bin]]
+name = "rw_airnow"
+path = "src/bin/airnow.rs"

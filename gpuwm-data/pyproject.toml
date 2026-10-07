@@ -19,7 +19,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpuwm-data"
-description = "Physics reference tables and map assets for gpuwm (RRTMGP k-distributions, Thompson microphysics lookups, Natural Earth and US Census basemaps)"
+description = "Physics reference tables and map assets for gpuwm (RRTMGP k-distributions, Thompson microphysics lookups, Natural Earth and US Census basemaps, the historical case catalog)"
 readme = "README.md"
 license = "Apache-2.0"
 # `licenses/*` joined at 2.7.0.  A `pip install gpuwm-data` used to

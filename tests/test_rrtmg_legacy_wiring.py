@@ -1022,6 +1022,7 @@ def test_live_latitude_cache_matches_fresh_owners(env, monkeypatch):
             START, latitude.reshape(shape).copy(), env.lon.reshape(shape),
             p_top=env.p_top)
         want = _host_result(_call(fresh, env))
+        want_ozone = fresh._o33d_grid.copy()
         reused.latitude_deg[:] = latitude.reshape(shape)
         with monkeypatch.context() as patch:
             patch.setattr(wrf_ozone, "ozn_latitude_time_int", measured)

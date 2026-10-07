@@ -81,7 +81,7 @@ def test_mynn_surface_oracle_asset_and_regime_inventory_are_pinned():
     )
     path = (
         Path(__file__).parents[1]
-        / "gpuwm" / "data" / "mynn" / "oracle" / "surface-layer.csv"
+        / "tests" / "data" / "oracles" / "mynn" / "surface-layer.csv"
     )
     payload = path.read_bytes()
     assert len(payload) == MYNN_SURFACE_ORACLE_ASSET.bytes
@@ -101,7 +101,7 @@ def test_mynn_pbl_level2_oracle_asset_and_profile_inventory_are_pinned():
     )
     path = (
         Path(__file__).parents[1]
-        / "gpuwm" / "data" / "mynn" / "oracle" / "pbl-level2.csv"
+        / "tests" / "data" / "oracles" / "mynn" / "pbl-level2.csv"
     )
     payload = path.read_bytes()
     assert len(payload) == MYNN_PBL_LEVEL2_ORACLE_ASSET.bytes
@@ -125,7 +125,7 @@ def test_mynn_pblh_scale_oracle_asset_and_column_inventory_are_pinned():
     )
     path = (
         Path(__file__).parents[1]
-        / "gpuwm" / "data" / "mynn" / "oracle" / "pblh-scale.csv"
+        / "tests" / "data" / "oracles" / "mynn" / "pblh-scale.csv"
     )
     payload = path.read_bytes()
     assert len(payload) == MYNN_PBLH_SCALE_ORACLE_ASSET.bytes
@@ -149,7 +149,7 @@ def test_mynn_mixlength_oracle_asset_and_column_inventory_are_pinned():
     )
     path = (
         Path(__file__).parents[1]
-        / "gpuwm" / "data" / "mynn" / "oracle" / "mixlength.csv"
+        / "tests" / "data" / "oracles" / "mynn" / "mixlength.csv"
     )
     payload = path.read_bytes()
     assert len(payload) == MYNN_MIXLENGTH_ORACLE_ASSET.bytes
@@ -171,7 +171,7 @@ def test_mynn_turbulence_oracle_asset_and_column_inventory_are_pinned():
     )
     path = (
         Path(__file__).parents[1]
-        / "gpuwm" / "data" / "mynn" / "oracle" / "turbulence.csv"
+        / "tests" / "data" / "oracles" / "mynn" / "turbulence.csv"
     )
     payload = path.read_bytes()
     assert len(payload) == MYNN_TURBULENCE_ORACLE_ASSET.bytes
@@ -196,7 +196,7 @@ def test_mynn_predict_oracle_asset_and_column_inventory_are_pinned():
     )
     path = (
         Path(__file__).parents[1]
-        / "gpuwm" / "data" / "mynn" / "oracle" / "predict.csv"
+        / "tests" / "data" / "oracles" / "mynn" / "predict.csv"
     )
     payload = path.read_bytes()
     assert len(payload) == MYNN_PREDICT_ORACLE_ASSET.bytes

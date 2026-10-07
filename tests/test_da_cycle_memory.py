@@ -127,9 +127,18 @@ def _drive(monkeypatch, tmp_path, *, free_bytes=1 << 50, members=2,
 
     def restore(*_args, **_kwargs):
         events.append(("restore", alive()))
+        # The surface the MASPT recorder reads before the member's leg-0
+        # insertion (gpuwm.da.maspt, on by default: --maspt-minutes 60):
+        # the lowest level's pressure and theta, the column mass and the
+        # base theta profile.  Without them every member leg failed at
+        # before_insertion with an AttributeError on this stand-in.
         state = remember(make_state() if make_state is not None else _Owner(
             "state", c1h=np.ones(cfg.nz), c2h=np.zeros(cfg.nz),
-            dnw=np.ones(cfg.nz), mub2d=np.ones(shape[1:])))
+            dnw=np.ones(cfg.nz), mub2d=np.ones(shape[1:]),
+            p=np.full(shape, 1.0e5, np.float32),
+            mup=np.zeros(shape[1:], np.float32),
+            thp=np.zeros(shape, np.float32),
+            thb=np.full(cfg.nz, 300.0, np.float32)))
         return SimpleNamespace(initial_result=SimpleNamespace(state=state),
                                met=None, surface=None)
 
@@ -186,22 +195,26 @@ def _drive(monkeypatch, tmp_path, *, free_bytes=1 << 50, members=2,
     # write_leg_restart) and the leg passes it every time; a stub without
     # the keyword fails the leg with a TypeError before anything is
     # measured.
+    written_clocks = {}
     def write_restart(model, directory, *, valid_time, auto_epssm=None):
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / "gpuwmrst_d01.npz"
         path.write_bytes(b"set")
+        written_clocks[str(path)] = model.root.clock.elapsed_seconds
         return path
 
     monkeypatch.setattr(driver, "write_leg_restart", write_restart)
-    monkeypatch.setattr(driver, "restore_leg_restart",
-                        lambda model, path, *, expected_seconds:
-                        SimpleNamespace(elapsed_ticks=expected_seconds,
-                                        tick_den=1))
+    def restore_restart(model, path, *, expected_seconds):
+        model.root.clock.ticks = int(expected_seconds)
+        return SimpleNamespace(elapsed_ticks=expected_seconds, tick_den=1)
+    monkeypatch.setattr(driver, "restore_leg_restart", restore_restart)
     monkeypatch.setattr(driver, "restart_domain_ids", lambda path: (1,))
     monkeypatch.setattr(restart_module, "tree_restart_members",
                         lambda path: {1: Path(path)})
 
+    monkeypatch.setattr(restart_module, "read_restart_header",
+                        lambda path: {"elapsed_seconds": written_clocks[str(path)]})
     out = tmp_path / "out"
     monkeypatch.setattr(sys, "argv", [
         "da_cycle_prepared", "--prepared-root", str(tmp_path / "prepared"),
@@ -312,8 +325,11 @@ def test_a_child_is_priced_with_its_own_scratch():
 def test_the_draw_census_holds_the_spectrum_multiply():
     from gpuwm.da import perturb
 
+    # This test prices the DRAW; the default hydrostatic mass balance of a
+    # theta draw (2026-10-06) is priced on its own below and would
+    # dominate both sides here.
     config = perturb.PerturbationConfig.from_mapping({
-        "dx_km": 1.0, "dy_km": 1.0, "rim_width": 5,
+        "dx_km": 1.0, "dy_km": 1.0, "rim_width": 5, "mass_balance": "none",
         "fields": [{"name": "theta", "amplitude": 1.0,
                     "length_scale_km": 20.0}]})
     nz, ny, nx = 55, 1024, 1792
@@ -326,6 +342,7 @@ def test_the_draw_census_holds_the_spectrum_multiply():
     assert working >= 2_828_165_120
     host = perturb.PerturbationConfig.from_mapping({
         "dx_km": 1.0, "dy_km": 1.0, "rim_width": 5, "fft_host": True,
+        "mass_balance": "none",
         "fields": [{"name": "theta", "amplitude": 1.0,
                     "length_scale_km": 20.0}]})
     assert perturb.device_working_bytes(host, (nz, ny, nx)) < working
@@ -334,8 +351,12 @@ def test_the_draw_census_holds_the_spectrum_multiply():
 def _plan_config():
     from gpuwm.da import perturb
 
+    # A lone u draw prices one transform; the default rotational mode
+    # refuses a lone component (it derives u AND v from one
+    # streamfunction), so the comparison arm's independent draw is used.
     return perturb.PerturbationConfig.from_mapping({
         "dx_km": 1.0, "dy_km": 1.0, "rim_width": 5,
+        "wind_mode": "independent",
         "fields": [{"name": "u", "amplitude": 1.0,
                     "length_scale_km": 20.0}]})
 
@@ -569,3 +590,92 @@ def test_an_observed_leg_the_card_cannot_analyse_is_refused_before_upload(
     message = str(refusal.value)
     assert f"{report['analysis_bytes']:,} bytes" in message
     assert "before the first upload" in message
+
+
+def test_the_census_prices_the_streamfunction_draw_and_the_mass_balance():
+    """Review of the 2026-10-06 balance fix: the default member draw now
+    holds ONE corner-grid streamfunction and both unit components across
+    the loop (rotational winds) and float64 column captures before and
+    after the draws (hydrostatic php).  The census is what admits a cycle
+    onto a card before the state exists; a default path it did not price
+    is an out-of-memory on the first member."""
+    from gpuwm.da import perturb
+
+    nz, ny, nx = 50, 400, 480
+    mass_points = nz * ny * nx
+    winds = [{"name": "u", "amplitude": 1.5, "length_scale_km": 150.0},
+             {"name": "v", "amplitude": 1.5, "length_scale_km": 150.0}]
+    theta = [{"name": "theta", "amplitude": 0.5, "length_scale_km": 60.0}]
+
+    def price(**overrides):
+        table = {"dx_km": 3.0, "dy_km": 3.0, "rim_width": 5,
+                 "hypsometric_opt": 1, "fields": winds + theta}
+        table.update(overrides)
+        return perturb.device_working_bytes(
+            perturb.PerturbationConfig.from_mapping(table), (nz, ny, nx))
+
+    u_points, v_points = nz * ny * (nx + 1), nz * (ny + 1) * nx
+    psi_points = nz * (ny + 1) * (nx + 1)
+    # Winds alone: the streamfunction path draws psi on the corner grid
+    # and then holds psi beside both differences, and both unit
+    # components (8 bytes each at the float64 compute width) across the
+    # loop.  (Its peak can sit BELOW the independent draw's: that draw
+    # pays the FFT temporaries twice, once per component.)
+    rotational_wind = price(fields=winds, mass_balance="none")
+    independent_wind = price(fields=winds, mass_balance="none",
+                             wind_mode="independent")
+    assert rotational_wind >= 8 * (psi_points + u_points + 2 * v_points)
+    assert rotational_wind >= 8 * (u_points + v_points) + 12 * v_points
+    assert independent_wind > 0
+    # The mass balance: captures of thp, p and the seven loading masses
+    # before AND after the draws (float64), plus the column integration's
+    # own float64 temporaries, on the mass shape.
+    balanced = price()
+    unbalanced = price(mass_balance="none")
+    assert balanced - unbalanced >= 2 * 8 * 9 * mass_points
+    # A caller that knows the scheme prices only the masses its state
+    # allocates: Thompson carries no hail, so its two captures are one
+    # float64 mass array smaller each, and nothing else moves.
+    from gpuwm.da.hydrostatic import LOADING_MASSES, loading_masses_for_scheme
+    assert loading_masses_for_scheme(28) == ("qv", "qc", "qr", "qi", "qs", "qg")
+    assert loading_masses_for_scheme(9) == LOADING_MASSES
+    assert loading_masses_for_scheme(0) == LOADING_MASSES      # no row: all
+    table = {"dx_km": 3.0, "dy_km": 3.0, "rim_width": 5,
+             "hypsometric_opt": 1, "fields": winds + theta}
+    thompson = perturb.device_working_bytes(
+        perturb.PerturbationConfig.from_mapping(table), (nz, ny, nx),
+        loading_masses=loading_masses_for_scheme(28))
+    assert balanced - thompson == 2 * 8 * mass_points
+    # A wind-only table has no column to balance: the mass price is zero.
+    assert price(fields=winds) == rotational_wind
+    # And the comparison arm, the pre-2026-10-06 member, is the cheapest.
+    old = price(wind_mode="independent", mass_balance="none")
+    assert old < balanced
+
+    # The plans the card measures are the plans the draw runs: under the
+    # default the winds come from ONE corner-grid streamfunction, so the
+    # measured shapes carry the corner shape and neither face shape (the
+    # review found the face shapes listed and the corner shape missing,
+    # so the plan work area of the only wind transform was priced at
+    # zero and the admission test saw 3 GiB of plan change nothing).
+    table = {"dx_km": 3.0, "dy_km": 3.0, "rim_width": 5,
+             "hypsometric_opt": 1, "fields": winds + theta}
+    rotational_shapes = perturb._draw_shapes(
+        perturb.PerturbationConfig.from_mapping(table), (nz, ny, nx))
+    assert (nz, ny + 1, nx + 1) in rotational_shapes
+    assert (nz, ny, nx + 1) not in rotational_shapes
+    assert (nz, ny + 1, nx) not in rotational_shapes
+    assert (nz, ny, nx) in rotational_shapes                  # theta
+    independent_shapes = perturb._draw_shapes(
+        perturb.PerturbationConfig.from_mapping(
+            {**table, "wind_mode": "independent"}), (nz, ny, nx))
+    assert (nz, ny, nx + 1) in independent_shapes
+    assert (nz, ny + 1, nx) in independent_shapes
+    assert (nz, ny + 1, nx + 1) not in independent_shapes
+    # A priced plan on the corner shape raises the default census (a plan
+    # larger than the column balance's own temporaries, so it is the
+    # peak and not hidden under them).
+    corner = {(nz, ny + 1, nx + 1): (4 << 30, 4 << 30)}
+    assert perturb.device_working_bytes(
+        perturb.PerturbationConfig.from_mapping(table), (nz, ny, nx),
+        plan_work_bytes=corner) > balanced

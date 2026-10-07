@@ -1,0 +1,8 @@
+kemit i4 0
+dtstep f4 0
+rho_phy f4 3 64 12 1
+alt f4 3 64 12 1
+dz8w f4 3 64 12 1
+emis_ant f4 4 64 3 1 7
+chem_in f4 4 64 12 1 20
+chem_out f4 4 64 12 1 20

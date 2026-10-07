@@ -185,3 +185,49 @@ def test_one_read_per_call_site_keeps_the_first_refusal_in_order(tripped, expect
                        if gpu._tripped(kernel, arrays, cp.zeros(64, cp.int32))),
                       None)
     assert sequential == expected
+
+
+@pytest.mark.parametrize('tripped, expected', [
+    ((), None),
+    ((0,), 'finite'),
+    ((0, 2), 'finite'),
+    ((2,), 'third'),
+    ((1, 3), 'second'),
+    ((3,), 'fourth'),
+])
+def test_deferred_site_refuses_at_the_drain_with_the_same_first_message(tripped, expected):
+    """Inside a health ledger a named call site does not read its words: it
+    folds them into one status word, returns None, and the drain raises the
+    message of the first tripped check, the one the immediate read returns."""
+    import cupy as cp
+    from gpuwm.core import health_ledger
+    from gpuwm.core import mynn_pbl_gpu as gpu
+    finite = [cp.ones((7, 5), cp.float32, order='F') for _ in range(6)]
+    second = [cp.ones(9, cp.float32), cp.ones((3, 4), cp.float32)]
+    third = [cp.ones(11, cp.float32)]
+    fourth = [cp.ones((4, 6), cp.float32, order='F') for _ in range(5)]
+    if 0 in tripped:
+        finite[4][6, 2] = cp.nan
+    if 1 in tripped:
+        second[1][2, 3] = 0.0
+    if 2 in tripped:
+        third[0][10] = -1.0
+    if 3 in tripped:
+        fourth[3][0, 5] = 0.0
+    checks = ((gpu._nonfinite(), finite, 'finite'),
+              (gpu._nonpositive(), second, 'second'),
+              (gpu._nonpositive(), third, 'third'),
+              (gpu._nonpositive(), fourth, 'fourth'))
+    flags = cp.full(64, -1, cp.int32)
+    ledger = health_ledger.HealthLedger()
+    with health_ledger.deferring(ledger):
+        assert gpu._first_refusal(checks, flags, site='mynn-test') is None
+        flags.fill(-1)   # the scratch is reused by the next call site
+    if expected is None:
+        ledger.drain()
+    else:
+        with pytest.raises(ValueError, match=rf'^{expected} \(detected at a deferred'):
+            ledger.drain()
+    # Without a ledger the named site still reads immediately.
+    assert gpu._first_refusal(checks, cp.full(64, -1, cp.int32),
+                              site='mynn-test') == expected

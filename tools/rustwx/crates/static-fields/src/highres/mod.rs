@@ -35,6 +35,9 @@ use crate::raster::warp::{self, Resampling};
 use crate::raster::{Crs, Raster, geotiff};
 use crate::types::{Field, FieldSet, Grid2, Stack3};
 
+pub mod urban;
+pub mod soil;
+
 fn invalid(message: impl Into<String>) -> StaticError {
     StaticError::Invalid(message.into())
 }

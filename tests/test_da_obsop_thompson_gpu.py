@@ -304,3 +304,47 @@ def test_hz_leaves_the_observed_state_bitwise_unchanged(mp_physics):
     reference = cp.asnumpy(obsop.simulated_reflectivity(twin, cfg)).copy()
     assert got.tobytes() == reference.tobytes()
     assert float(got.max()) > -35.0
+
+
+def test_mp28_under_the_fork_derives_the_forks_reflectivity_intercept():
+    """``thompson_version = "wrf_39_noaa"``: H_Z(x) forms the fork's own
+    reflectivity intercept (the moment the mp=28 adapter hands
+    calc_refl10cm on every output-due step) -- bit-for-bit against the
+    direct fork-intercept-plus-column launch -- and NOT the v4.6.1 wrapper
+    diagnosis, which on a graupel-bearing state is a different PSD."""
+    import cupy as cp
+
+    from gpuwm.core.refl import launch_refl10cm_thompson
+    from gpuwm.core.thompson_aerosol_launch import thompson_version_scope
+    from gpuwm.core.thompson_aerosol_state import (
+        WRF39_INTERCEPT_REFLECTIVITY, launch_wrf39_graupel_intercept)
+
+    state, _ = _thompson_state()
+    fork_cfg = SimpleNamespace(mp_physics=28, thompson_version="wrf_39_noaa")
+    got = cp.asnumpy(obsop.simulated_reflectivity(state, fork_cfg)).copy()
+
+    reference_state, _ = _thompson_state()
+    t = reference_state.scratch(reference_state.p.shape, "ref_t")
+    t[...] = (reference_state.thb[:, None, None] + reference_state.thp) * cp.power(
+        reference_state.p / np.float32(c.P0), np.float32(c.RCP))
+    shadow = cp.zeros_like(reference_state.qg)
+    with thompson_version_scope("wrf_39_noaa"):
+        launch_wrf39_graupel_intercept(
+            reference_state.qg, reference_state.qr, reference_state.nr, t,
+            reference_state.p, reference_state.qv, shadow,
+            mode=WRF39_INTERCEPT_REFLECTIVITY)
+    expected = cp.zeros_like(reference_state.qg)
+    launch_refl10cm_thompson(
+        reference_state.qv, reference_state.qr, reference_state.nr,
+        reference_state.qs, reference_state.qg, shadow, t,
+        reference_state.p, expected)
+    np.testing.assert_array_equal(got, cp.asnumpy(expected))
+    assert np.all(got > -35.0)
+
+    v461_state, _ = _thompson_state()
+    v461 = cp.asnumpy(obsop.simulated_reflectivity(
+        v461_state, SimpleNamespace(mp_physics=28))).copy()
+    assert np.any(got != v461), (
+        "the fork's reflectivity intercept and the v4.6.1 wrapper diagnosis "
+        "are different graupel PSDs; equal Z on a graupel-bearing state "
+        "means the operator ignored the generation")

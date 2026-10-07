@@ -5,7 +5,7 @@ Three modes:
 
 ``--build``
     Run the compiled oracle over the case deck and write
-    ``gpuwm/data/noahmp/oracle/noahmp-bareflux.csv``.  Requires the oracle
+    ``tests/data/oracles/noahmp/noahmp-bareflux.csv``.  Requires the oracle
     binary, which requires WSL and the pinned WRF tree; that is why the CSV is
     committed rather than regenerated in CI.
 
@@ -44,7 +44,7 @@ from gen_bareflux_cases import (                             # noqa: E402
     build_cases, format_case, hexf, unhexf,
 )
 
-FIXTURE = os.path.join(_ROOT, "gpuwm", "data", "noahmp", "oracle",
+FIXTURE = os.path.join(_ROOT, "tests", "data", "oracles", "noahmp",
                        "noahmp-bareflux.csv")
 
 _ARRAY_COLS = [f"{name}{k}" for name in ARRAY_FIELDS

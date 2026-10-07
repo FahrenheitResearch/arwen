@@ -1,0 +1,19 @@
+{
+  "schema": "gpuwm.chem.diagnostic.v1",
+  "output_name": "SMOKE_COLUMN",
+  "units": "mg m-2",
+  "description": "Column smoke: the smoke mass in the model column per unit area (ug kg-1 x dry-air mass per layer area, scaled to mg m-2)",
+  "kind": "column_integral",
+  "terms": [
+    {
+      "species": [
+        "smoke"
+      ],
+      "ops": [],
+      "from": "DESIGN section 8 (ArWen addition, not a WRF-Chem sum)"
+    }
+  ],
+  "divide_by_alt": false,
+  "column_scale": 0.001,
+  "provenance": "ArWen-only 2-D output (DESIGN section 8), the counterpart of HRRR-Smoke's COLMD over the entire atmosphere; WRF-Chem has no such field."
+}

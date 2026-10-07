@@ -484,7 +484,8 @@ def write_radar_grid(path: str | Path, observations: GriddedObservations,
                 "DY": np.float64(grid.dy_m),
                 "GRIDTYPE": "C",
                 "dealiasing": dealiasing_statement(params),
-                "superob_params": _canonical_json(params.to_payload()),
+                "superob_params": _canonical_json(
+                    _superob_params_payload(params, observations)),
                 "provenance": _canonical_json(
                     _provenance_payload(observations, params, provenance)),
             })
@@ -700,6 +701,14 @@ def read_radar_grid(path: str | Path, *,
     # deliberately, so handing them NaN would change what the DA side sees.
     with netcdf_bridge.open_dataset(path) as dataset:
         dataset.set_auto_mask(False)
+        # Every numeric variable is read below; decode them in one bridge
+        # run rather than one process per variable.  Same decode, same
+        # policy.  Measured on the recent case's slot-01 file: 6.4 s with a
+        # run per variable, 4.8 s with one run; the rest is rw_netcdf's
+        # own decode of the file, one variable after another.
+        if hasattr(dataset, "prefetch"):
+            dataset.prefetch([name for name in dataset.variables
+                              if name not in _CHARACTER_VARIABLES])
         # The schema the FILE declares, checked against every schema this
         # module can read rather than against the one it writes.  A v1 file
         # stays readable after v2 became the default: its contract did not
@@ -1340,11 +1349,25 @@ def _canonical_json(payload) -> str:
                       allow_nan=False)
 
 
+def _superob_params_payload(params: SuperobParams,
+                            observations: GriddedObservations) -> dict:
+    """The parameters, plus the reduction ``z_obs`` carries when stated.
+
+    ``z_obs``'s own description sends a reader to ``z_reduce`` here; a set
+    assembled by hand that never stated one keeps the key set it had.
+    """
+    payload = params.to_payload()
+    z_reduce = getattr(observations, "z_reduce", None)
+    if z_reduce is not None:
+        payload["z_reduce"] = str(z_reduce)
+    return payload
+
+
 def _provenance_payload(observations: GriddedObservations,
                         params: SuperobParams,
                         extra: dict | None) -> dict:
     payload = {
-        "superob_params": params.to_payload(),
+        "superob_params": _superob_params_payload(params, observations),
         "volumes": list(observations.provenance),
         "counts": list(observations.counts),
         "radars": list(observations.radars),

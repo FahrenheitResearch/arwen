@@ -144,6 +144,17 @@ struct MergeRequest {
 }
 
 #[derive(serde::Deserialize)]
+struct UrbanFractionRequest {
+    category_built_fractions: Vec<(usize, f64)>,
+    #[serde(default)]
+    source_category_built_fractions: Option<Vec<(usize, f64)>>,
+    #[serde(default)]
+    source_algorithm: Option<String>,
+    #[serde(default)]
+    source_interpretation: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
 struct DeriveRequest {
     kind: String,
     #[serde(default)]
@@ -434,6 +445,36 @@ pub unsafe extern "C" fn gpuwm_static_highres_overrides(
 // Merge
 // ---------------------------------------------------------------------------
 
+/// Reconcile selected WPS soil categories with an overlaid land mask.
+/// Both handles carry already-built fields; no source data is resampled here.
+///
+/// # Safety
+/// `out_handle` must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpuwm_static_highres_baseline_soil(
+    baseline: u64, mask: u64, out_handle: *mut u64,
+) -> i32 {
+    guard(ERR, || {
+        clear_error();
+        let Some(baseline_set) = with_fieldset(baseline, FieldSet::clone) else {
+            return set_error(format!("unknown fieldset handle {baseline}"));
+        };
+        let Some(Some(Field::Plane(landmask))) = with_fieldset(mask, |set| set.fields.get("LANDMASK").cloned()) else {
+            return set_error("selected WPS soil requires LANDMASK plane");
+        };
+        match highres::soil::from_baseline(&baseline_set, &landmask) {
+            Err(error) => set_error(error.to_string()),
+            Ok((fields, audit)) => {
+                if out_handle.is_null() { return set_error("out_handle is null"); }
+                let handle = register_fieldset(fields);
+                remember_audit(handle, audit.to_string());
+                unsafe { *out_handle = handle };
+                OK
+            }
+        }
+    })
+}
+
 /// Merge overrides into a baseline field set (terrain-only or full,
 /// selected by the request), returning a merged field-set handle; the
 /// audit JSON is queried with `gpuwm_static_highres_audit_json`.
@@ -492,6 +533,58 @@ pub unsafe extern "C" fn gpuwm_static_highres_merge(
                 let handle = register_fieldset(fields);
                 let audit_json = serde_json::to_string(&audit).unwrap_or_else(|_| "{}".into());
                 remember_audit(handle, audit_json);
+                unsafe { *out_handle = handle };
+                OK
+            }
+        }
+    })
+}
+
+/// Estimate FRC_URB2D from mapped LANDUSEF and the selected URBPARM rows.
+///
+/// # Safety
+/// `request_json`/`request_len` readable UTF-8; `out_handle` writable.
+#[unsafe(no_mangle)]
+pub extern "C" fn gpuwm_static_highres_urban_fraction_source_v1() -> u32 {
+    1
+}
+
+/// Estimate the fraction with optional source-class area and coverage.
+///
+/// # Safety
+/// `request_json`/`request_len` readable UTF-8; `out_handle` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpuwm_static_highres_urban_fraction(
+    input: u64,
+    request_json: *const u8,
+    request_len: usize,
+    out_handle: *mut u64,
+) -> i32 {
+    guard(ERR, || {
+        clear_error();
+        let Some(text) = (unsafe { utf8(request_json, request_len) }) else {
+            return set_error("urban fraction request pointer/UTF-8 invalid");
+        };
+        let request: UrbanFractionRequest = match serde_json::from_str(text) {
+            Ok(request) => request,
+            Err(err) => return set_error(format!("urban fraction JSON: {err}")),
+        };
+        let Some(fields) = with_fieldset(input, FieldSet::clone) else {
+            return set_error(format!("unknown fieldset handle {input}"));
+        };
+        match highres::urban::estimate_with_source(
+            &fields, &request.category_built_fractions,
+            request.source_category_built_fractions.as_deref(),
+            request.source_algorithm.as_deref(),
+            request.source_interpretation.as_deref(),
+        ) {
+            Err(err) => set_error(err.to_string()),
+            Ok((fraction, audit)) => {
+                if out_handle.is_null() { return set_error("out_handle is null"); }
+                let mut output = FieldSet::default();
+                output.fields.insert("FRC_URB2D".into(), Field::Plane(fraction));
+                let handle = register_fieldset(output);
+                remember_audit(handle, serde_json::to_string(&audit).unwrap());
                 unsafe { *out_handle = handle };
                 OK
             }

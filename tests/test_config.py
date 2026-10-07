@@ -189,14 +189,11 @@ def test_phase2_defaults_preserve_phase1(tmp_path):
 # open boundaries or bypass the PD limiter; load_config and dycore.step both
 # reject them.)
 
-def test_rejects_open_with_terrain(tmp_path):
-    with pytest.raises(NotImplementedError, match="terrain_opt"):
-        load_config(_write_toml(tmp_path, grid="terrain_opt = 1",
-                                dynamics="open_x = true"))
-    with pytest.raises(NotImplementedError, match="terrain_opt"):
-        load_config(_write_toml(tmp_path, grid="terrain_opt = 1",
-                                dynamics="open_y = true"))
-    # flat + open and terrain + periodic both stay legal
+def test_open_boundaries_admit_boundary_aware_terrain(tmp_path):
+    for axis in ("x", "y"):
+        cfg = load_config(_write_toml(tmp_path, grid="terrain_opt = 1",
+                                     dynamics=f"open_{axis} = true"))
+        assert cfg.terrain_opt == 1 and getattr(cfg, f"open_{axis}")
     assert load_config(_write_toml(tmp_path, dynamics="open_x = true")).open_x
     assert load_config(_write_toml(tmp_path,
                                    grid="terrain_opt = 1")).terrain_opt == 1
@@ -218,9 +215,10 @@ def test_rejects_open_with_constant_k(tmp_path):
 
 
 def test_km_opt_selects_exactly_one_diffusion_scheme(tmp_path):
-    with pytest.raises(ValueError, match="km_opt=4.*khdif/kvdif"):
-        load_config(_write_toml(
-            tmp_path, dynamics="km_opt = 4\nkhdif = 75.0"))
+    for option in (2, 3, 4):
+        cfg = load_config(_write_toml(tmp_path,
+            dynamics=f"km_opt = {option}\nkhdif = 75.0\nkvdif = 25.0\nopen_x = true"))
+        assert (cfg.km_opt, cfg.khdif, cfg.kvdif) == (option, 75.0, 25.0)
     cfg = load_config(_write_toml(
         tmp_path, dynamics="km_opt = 1\nkhdif = 75.0\nkvdif = 25.0"))
     assert (cfg.km_opt, cfg.khdif, cfg.kvdif) == (1, 75.0, 25.0)
@@ -280,20 +278,12 @@ def test_step_guards_unsupported_combinations_cpu():
 
     base = dict(nx=8, ny=4, nz=6, dx=100.0, dy=100.0, ztop=1000.0,
                 dt=0.5, run_seconds=0.0)
-    with pytest.raises(NotImplementedError, match="terrain"):
-        step(_Stub(), RunConfig(**base, open_x=True, terrain_opt=1))
-    bumpy = _Stub()
-    bumpy.ht[2, 3] = 25.0              # nonzero ht without terrain_opt
-    with pytest.raises(NotImplementedError, match="terrain"):
-        step(bumpy, RunConfig(**base, open_y=True))
     with pytest.raises(NotImplementedError, match="khdif"):
         step(_Stub(), RunConfig(**base, open_x=True, khdif=75.0))
     with pytest.raises(NotImplementedError, match="khdif"):
         step(_Stub(), RunConfig(**base, open_y=True, kvdif=75.0))
     with pytest.raises(NotImplementedError, match="khdif"):
         step(_Stub(), RunConfig(**base, specified=True, khdif=75.0))
-    with pytest.raises(ValueError, match="km_opt=4.*khdif/kvdif"):
-        step(_Stub(), RunConfig(**base, km_opt=4, khdif=75.0))
     with pytest.raises(ValueError, match="diff_6th_opt"):
         step(_Stub(moist=True), RunConfig(**base, moist=True,
                                           diff_6th_opt=1))

@@ -201,7 +201,7 @@ def test_captured_lineage_receipt_retains_its_original_digest():
 _AUTHORED_RUSTWX_CRATES = (
     "rw-fetch", "rw-wrfbatch", "rw-nexrad", "rw-odim", "rw-obs",
     "rw-goes", "rw-netcdf", "rw-mpas", "rw-host-memory",
-    "rw-isobaric", "rw-mlexport", "rw-libm",
+    "rw-isobaric", "rw-mlexport", "rw-libm", "rw-post",
 )
 
 #: The 62 files that already carried CR when this gate was widened,
@@ -221,21 +221,14 @@ _CRLF_DEBT = frozenset({
     # hook refuses, so the file stays normalized.
     "gpuwm/core/landuse.py",
     "gpuwm/core/rrtm_taumol.py",
-    "gpuwm/da/letkf.py",
+    # gpuwm/da/letkf.py left this list in the DA speed integration: the
+    # obs-ops lane wrote it back LF (e13abf285) and the line-ending hook
+    # refuses restoring the CR bytes, so the file stays normalized.
     "gpuwm/da/obs_goes.py",
-    # gpuwm/da/obs_radar.py is STILL on this list, and its 650 CR bytes
-    # are deliberate.  The mp=9 radar-DA rows flattened the whole file to
-    # LF inside the commit that changed ten lines of it, which is the one
-    # thing `test_no_authored_file_gains_a_carriage_return` forbids while
-    # telling an author to normalize: "the change must be CR-only".  A
-    # whole-file rewrite folded into a content commit is how two merges
-    # went line-for-line conflicted on 2026-08-27, and history is
-    # forward-only, so the rewrite was undone rather than explained: the
-    # file's endings are the ones it was received with, its diff against
-    # the branch point is 9 insertions and 6 deletions, and the debt entry
-    # is true again.  Normalizing it stays available to anyone who wants
-    # it, as its own commit that changes nothing else.
-    "gpuwm/da/obs_radar.py",
+    # gpuwm/da/obs_radar.py left this list when the DA line merged into
+    # 2.8.7: the radar reflectivity rebuild (098029d01, DA lane 2) wrote it
+    # back LF together with its content change, and the line-ending hook
+    # refuses restoring the CR bytes, so the file stays normalized.
     "gpuwm/obs/goes_cwp.py",
     "gpuwm/obs/goes_grid.py",
     "gpuwm/obs/goes_pack.py",

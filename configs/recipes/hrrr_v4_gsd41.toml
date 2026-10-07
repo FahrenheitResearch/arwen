@@ -30,6 +30,8 @@ bl_mynn_version = "gsd_41"
 bl_mynn_gsd41_unsquared_qtke = false
 bl_mynn_cloud_tendency_form = "wrf_461"
 mynn_sfclay_variant = "gsl_wrf39"
+# The operational WRF 3.9 fork's Thompson generation (mp_physics = 28).
+thompson_version = "wrf_39_noaa"
 scalar_pblmix = 1
 alb_sol = 1
 zadvect_implicit_variant = "wrf_legacy"
@@ -154,4 +156,8 @@ diff_6th_factor = 0.12
 source = "rap-native"
 cycle = "2026-10-02T21"
 hours = 3
-cadence = 3
+# Hourly boundaries, the route's own default: RAP posts every hour. A 3 h row
+# interpolates the inflow state over 3 h, which thinned the inflow cloud and left
+# the rim stations 0.9 K warm and 110 W/m2 sunnier than HRRR at f02 on a HRRR-lattice
+# crop; hourly boundaries halved that (plains-t2-bias, WOOF-FIX-PROGRAM 2026-10-06).
+cadence = 1

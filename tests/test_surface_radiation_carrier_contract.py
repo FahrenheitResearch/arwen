@@ -725,14 +725,14 @@ def _hand_built_compute_driver(monkeypatch, *, carriers):
         dt=60.0, bldt=0.0, ra_physics=0, sf_sfclay_physics=91,
         sf_surface_physics=2, bl_pbl_physics=1, cu_physics=0)
     driver = object.__new__(physics.PhysicsDriver)
+    driver.swint = None
     driver.state = state
     driver.fields = {
         name: np.full((1, 2), value, np.float32)
         for name, value in {
             "psfc": -123.0, "tsk": 290.0, "hfx": 0.0, "qfx": 0.0,
             "qsfc": 0.0, "chs2": 0.0, "cqs2": 0.0,
-            "t2": -999.0, "q2": -999.0, "th2": -999.0,
-            "xland": 1.0,
+            "t2": -999.0, "q2": -999.0, "th2": -999.0, "xland": 1.0,
         }.items()
     }
     driver.surface_enabled = True
@@ -936,10 +936,13 @@ def test_the_per_domain_submit_stamps_carrier_provenance_per_frame():
 
         def __init__(self):
             self.calls = []
+            self.completed_observers = []
 
         def submit(self, path, valid_time, state, *, extra_fields=None,
-                   refl_field=None, global_attrs=None):
+                   refl_field=None, global_attrs=None,
+                   completed_observer=None):
             self.calls.append(global_attrs)
+            self.completed_observers.append(completed_observer)
 
     contract = CarrierContract()
     contract.declare("glw", source=CARRIER_SOURCE_RADIATION_SCHEME,
@@ -967,6 +970,8 @@ def test_the_per_domain_submit_stamps_carrier_provenance_per_frame():
     assert attrs["TITLE"] == "held"            # base attrs kept
     assert attrs["GPUWM_CARRIER_GLW_SOURCE"] == \
         CARRIER_SOURCE_RADIATION_SCHEME
+    assert fake.completed_observers == [None]
+    assert writers._writers[1] is fake
 
     # A state without a driver stamps nothing: the ticket rides with the
     # writer's standing attribute set.
@@ -976,6 +981,8 @@ def test_the_per_domain_submit_stamps_carrier_provenance_per_frame():
         state=SimpleNamespace())
     writers.submit(bare, 1)
     assert fake.calls[-1] is None
+    assert fake.completed_observers == [None, None]
+    assert writers._writers[1] is fake
 
 
 # --------------------------------------------------------------------

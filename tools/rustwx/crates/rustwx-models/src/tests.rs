@@ -429,6 +429,29 @@ fn smoke_recipes_are_selector_backed_native_hrrr_products() {
 }
 
 #[test]
+fn chem_recipes_share_hrrr_reference_selectors_and_keep_local_only_rows() {
+    let smoke = plot_recipe("smoke_near_surface").unwrap();
+    assert_eq!(smoke.filled.selector,
+               Some(FieldSelector::height_agl(CanonicalField::SmokeMassDensity, 8)));
+    assert_eq!(smoke.filled.idx_patterns(), &["MASSDEN:8 m above ground"]);
+    assert_eq!(smoke.style, RenderStyle::AirQualityPm25);
+    assert!(plot_recipe_fetch_plan("smoke_near_surface", ModelId::Hrrr).is_ok());
+    let aod = plot_recipe("aod_550").unwrap();
+    assert_eq!(aod.filled.selector,
+               Some(FieldSelector::entire_atmosphere(CanonicalField::AerosolOpticalDepth550)));
+    assert_eq!(aod.filled.idx_patterns(), &["AOTK:entire atmosphere"]);
+    assert!(plot_recipe_fetch_plan("aod_550", ModelId::Hrrr).is_ok());
+    for (slug, field) in [("pm25_near_surface", CanonicalField::Pm25Dry),
+                         ("dust_near_surface", CanonicalField::DustMassConcentration),
+                         ("ozone_near_surface", CanonicalField::OzoneConcentration)] {
+        let recipe = plot_recipe(slug).unwrap();
+        assert_eq!(recipe.filled.selector, Some(FieldSelector::surface(field)));
+        assert!(recipe.filled.idx_patterns().is_empty());
+        assert!(plot_recipe_fetch_plan(slug, ModelId::Hrrr).is_err());
+    }
+}
+
+#[test]
 fn selector_backed_temperature_recipe_produces_gfs_fetch_plan() {
     let plan = plot_recipe_fetch_plan("500mb_temperature_height_winds", ModelId::Gfs).unwrap();
     assert_eq!(plan.product, "pgrb2.0p25");

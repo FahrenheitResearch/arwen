@@ -31,7 +31,7 @@
 # 2095-2096, `(...)**(-1/BEXP)`, a REAL**REAL that lowers to a call.  Stage [6]
 # runs `nm -u` and fails closed if the object references any glibc libmvec
 # symbol (`_ZGVbN*`), which is the trap that forced the soilwater fixture to
-# -O0 (ADDING_A_LEAF.md, and gpuwm/data/noahmp/oracle/PROVENANCE-soilwater.md).
+# -O0 (ADDING_A_LEAF.md, and tests/data/oracles/noahmp/PROVENANCE-soilwater.md).
 #
 # "nocontract" and "snan" are negative controls and must produce a
 # byte-identical CSV: the first pins that no emitted value depends on compiler

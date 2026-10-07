@@ -1,0 +1,9 @@
+GPUWM_NO_LOCAL_GPU=1 python -m pytest -q tests/test_chem_fire_emissions.py tests/test_chem_wetdep_ls_wrf471_parity.py
+13 passed, 10 skipped.
+GPUWM_NO_LOCAL_GPU=1 python -m pytest -q tests/test_kernel_loader_inert.py -k "thompson_cu_source_is_byte_identical or preamble_is_unchanged_by_the_hook or allow_list_is_a_closed_literal_mapping"
+3 passed, 219 deselected.
+Node Rust reducer: five outputs exact; empty prior HWP refusal fired. rustc 1.93.1, --edition=2021 --crate-type cdylib -C opt-level=0.
+Compiler poison: 678 fixture files byte-identical, WRF and both GSL kinds.
+Six deliberate mutations fired all nine CPU oracle case gates and source mass identity; references restored byte for byte.
+NVRTC 13.4: both CUDA modules compiled for compute_89 and compute_120 using host APIs only.
+Device tests and their mutation checks were not run.

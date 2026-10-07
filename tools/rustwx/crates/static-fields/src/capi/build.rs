@@ -13,6 +13,40 @@ use super::{
 use crate::fields::{build_static, GeogPaths};
 use crate::HALO;
 
+/// Optional extra-continuous-field contract, independent of the native set.
+#[unsafe(no_mangle)]
+pub extern "C" fn gpuwm_static_extra_continuous_v1() -> u32 { 1 }
+
+/// Build a JSON list of ExtraFieldSpec rows into the existing field-set ABI.
+/// # Safety
+/// specs_json/specs_len must be readable UTF-8; out_handle writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gpuwm_static_build_extra_fields(
+    grid: u64, specs_json: *const u8, specs_len: usize, halo: u32, out_handle: *mut u64,
+) -> i32 {
+    guard(ERR, || {
+        clear_error();
+        if out_handle.is_null() { return set_error("out_handle is null"); }
+        unsafe { *out_handle = 0; }
+        let Some(text) = (unsafe { utf8(specs_json, specs_len) }) else {
+            return set_error("extra fields pointer/UTF-8 invalid");
+        };
+        let specs: Vec<crate::extra::ExtraFieldSpec> = match serde_json::from_str(text) {
+            Ok(value) => value,
+            Err(err) => return set_error(format!("extra fields JSON: {err}")),
+        };
+        let halo = if halo == u32::MAX { HALO } else { halo as usize };
+        match with_grid(grid, |g| crate::extra::build_extra_fields(g, &specs, halo)) {
+            None => set_error(format!("unknown grid handle {grid}")),
+            Some(Err(err)) => set_error(err.to_string()),
+            Some(Ok(fields)) => {
+                unsafe { *out_handle = register_fieldset(fields); }
+                OK
+            }
+        }
+    })
+}
+
 /// Build every native static field for a grid handle from nine resolved
 /// GEOG dataset paths (JSON `GeogPaths`).  Writes a field-set handle.
 /// Coverage receipts are queried per field afterwards.  LANE 2.

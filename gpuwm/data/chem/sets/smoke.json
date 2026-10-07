@@ -1,0 +1,13 @@
+{
+  "schema": "gpuwm.chem.set.v1",
+  "name": "smoke",
+  "description": "HRRR-Smoke style smoke: one transported fire PM2.5 tracer with satellite fire emissions (NOAA RAVE), Freitas plume rise refreshed every hour, the GSL fire diurnal cycle, PBL-independent vertical mixing and large-scale washout by grid-scale rain. A run started from HRRR takes HRRR-Smoke's own 3-D smoke as its start state and edge values (the hrrr-native-smoke row); any other start begins with no smoke.",
+  "wrf_chem_opt": null,
+  "wrf_tracer_opt": 1,
+  "namelist_defaults": {
+    "wetscav_onoff": -1,
+    "plumerisefire_frq": 60
+  },
+  "namelist_defaults_provenance": "The scheme this set transcribes runs both by default: NOAA GSL RRFS-SD rrfs_smoke_config.F90 at ccpp-physics 3e6660c6 sets wetdep_ls_opt = 1 (line 31, wetdep_ls every step, rrfs_smoke_wrapper.F90:532-533) and plumerisefire_frq = 60 (line 29, the plume recomputed every 60 minutes, rrfs_smoke_wrapper.F90:326-327); HRRRv4 'represents precipitation scavenging of smoke' (Dowell et al. 2022, Wea. Forecasting 37, 1371-1395, doi:10.1175/WAF-D-21-0151.1, section 2d). WRF-Chem's registry defaults (wetscav_onoff = 0, plumerisefire_frq = 180, registry.chem:3822, :3854) would run the smoke path with no washout and a three-hour plume. Applied only to keys the configuration leaves unset (gpuwm.config.apply_chem_set_defaults).",
+  "provenance": "WRF Registry/registry.chem:4177 (package tracer_smoke, tracer_opt==1, tracer:smoke); the fire, plume and diurnal-cycle physics are NOAA GSL's public RRFS-SD code (gsl-ccpp-physics/physics/smoke_dust at 3e6660c6), the descendant of HRRR-Smoke."
+}

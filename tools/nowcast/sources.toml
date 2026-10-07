@@ -1,0 +1,141 @@
+# Nowcast sources: one row per source that writes gpuwm-obs.nowcast-frames.v1.
+#
+# A new source of an existing driver kind is a new row here, not new code.
+# The runner (run_nowcast.py) reads its row and refuses anything the row
+# does not allow.  Contract: docs/nowcast-frames.md.
+
+schema = "gpuwm-obs.nowcast-sources.v1"
+
+[sources.stormscope-3km-10min]
+kind = "nowcast"
+# A coupled pair: the satellite model's forecast conditions the radar model.
+driver = "earth2studio-coupled-sat-radar"
+package = "hf://nvidia/stormscope-goes-mrms"
+# The only revision the runner accepts.  It is also the revision earth2studio
+# 0.19.0 pins in StormScopeBase.load_default_package.
+revision = "62f0fd2fa52c3cff67c931daac18cdc0d9f58d2a"
+variant = "3km_10min"
+satellite_model = "earth2studio.models.px.stormscope.StormScopeGOES"
+radar_model = "earth2studio.models.px.stormscope.StormScopeMRMS"
+step_minutes = 10
+history_frames = 6
+# Model state channels, in each model's own order; the runner refuses a
+# loaded model whose variables differ.
+satellite_variables = ["abi01c", "abi02c", "abi03c", "abi07c", "abi08c", "abi09c", "abi10c", "abi13c"]
+radar_variables = ["refc", "refc_base"]
+lightning_variables = ["glm_density"]
+output_variables = ["refc", "refc_base", "glm_density"]
+primary_variable = "refc"
+units = "dBZ"
+compile = true
+amp = true
+# A history slot whose object is further than this from nominal is refused.
+history_tolerance_seconds = 300
+# The ABI source accepts only request times on its 5-minute CONUS scan grid
+# and raises mid-fetch otherwise, so the issue time must sit on that grid.
+issue_align_minutes = 5
+# The earliest history request the inputs can serve: earth2studio's MRMS
+# source reads the AWS archive, which starts on 2020-10-14.
+archive_from = "2020-10-14T00:00Z"
+# The observed composite at or below this is "no radar coverage" (MRMS
+# writes -999; -99 is an observed no-echo and stays).  StormScope fills
+# such cells with clear air, so the runner writes NaN wherever any history
+# slot had no coverage.
+no_coverage_ceiling_dbz = -900.0
+
+[sources.stormscope-3km-10min.sampler]
+num_steps = 100
+S_churn = 10
+
+# The model grid is the center crop of the HRRR 3 km Lambert grid on
+# HRRR's sphere.  The runner derives nx, ny, spacing and origin from the
+# model's own lat/lon and refuses them if they do not fit this projection.
+[sources.stormscope-3km-10min.lattice]
+kind = "lambert"
+truelat1 = 38.5
+truelat2 = 38.5
+stand_lon = -97.5
+ref_lat = 38.5
+earth_radius_m = 6371229.0
+
+# GOES-East by date.  earth2studio's ABI source moves East to goes19 on
+# 2025-04-07 while its lightning source moves East to G19 on 2025-04-04;
+# issue times in between fall in no period and are refused.  The first
+# period opens on 2018-02-13, the start of the public GLM archive, because
+# the radar model needs observed lightning in its starting frames.
+[[sources.stormscope-3km-10min.goes_east]]
+satellite = "goes16"
+from = "2018-02-13T00:00Z"
+until = "2025-04-04T00:00Z"
+
+[[sources.stormscope-3km-10min.goes_east]]
+satellite = "goes19"
+from = "2025-04-07T00:00Z"
+
+# Input streams.  Every object a data source reads is matched against
+# key_regex; stamp_group names the time used for causality.  Each history
+# slot is requested at nominal + request_offset_seconds so the source's own
+# nearest-object search lands on the newest object complete at or before
+# the slot; the ledger then checks what was actually read.
+#
+# ABI: the stamp is the scan END, because the frame holds pixels up to then.
+# The source picks the scan whose start is nearest a 5-minute-aligned
+# request, so asking for slot - 5 min gets the scan that ends before the slot.
+[[sources.stormscope-3km-10min.streams]]
+name = "goes-abi-mcmip"
+role = "satellite history (8 ABI channels)"
+fetch = "satellite"
+kind = "single"
+key_regex = 'ABI-L2-MCMIPC/\d{4}/\d{3}/\d{2}/OR_ABI-L2-MCMIPC-M\d_G(?P<sat>\d{2})_s(?P<start>\d{14})_e(?P<end>\d{14})_c\d{14}\.nc$'
+stamp_group = "end"
+stamp_format = "goes"
+request_offset_seconds = -300
+
+# MRMS: the stamp is the product time in the file name.  Files come every
+# 2 minutes about 36 to 41 s past the minute, so the 18:00 nominal file is
+# stamped about 18:00:40, after an 18:00 issue.  Asking for slot - 60 s
+# makes the nearest file the one stamped about 1.4 min before the slot,
+# and the runner drops every candidate stamped after the slot from the
+# source's nearest-first list, so a missing file falls back to the one
+# before it rather than to one after the slot.
+[[sources.stormscope-3km-10min.streams]]
+name = "mrms-composite"
+role = "radar history (refc)"
+fetch = "radar"
+kind = "single"
+key_regex = 'MergedReflectivityQCComposite_00\.50/\d{8}/MRMS_MergedReflectivityQCComposite_00\.50_(?P<stamp>\d{8}-\d{6})\.grib2\.gz$'
+stamp_group = "stamp"
+stamp_format = "%Y%m%d-%H%M%S"
+request_offset_seconds = -60
+
+[[sources.stormscope-3km-10min.streams]]
+name = "mrms-base"
+role = "radar history (refc_base)"
+fetch = "radar"
+kind = "single"
+key_regex = 'MergedBaseReflectivityQC_00\.50/\d{8}/MRMS_MergedBaseReflectivityQC_00\.50_(?P<stamp>\d{8}-\d{6})\.grib2\.gz$'
+stamp_group = "stamp"
+stamp_format = "%Y%m%d-%H%M%S"
+request_offset_seconds = -60
+
+# GLM: 5-minute bins labelled by their start, built from ~20 s LCFA files.
+# The bin labelled at the slot would cover slot to slot + 5 min, so each
+# slot asks for the bin ending at the slot (offset -300 s).  The stamp is
+# the file START: the gridded source keeps only events before the bin end,
+# so a file that starts exactly at the issue time contributes no event.
+# Observed lightning enters only in the six starting frames; the rollout
+# carries the model's own predicted lightning after that.
+[[sources.stormscope-3km-10min.streams]]
+name = "glm-lcfa"
+role = "lightning history (glm_density, starting frames only)"
+fetch = "lightning"
+kind = "binned"
+bin_minutes = 5
+key_regex = 'GLM-L2-LCFA/\d{4}/\d{3}/\d{2}/OR_GLM-L2-LCFA_G(?P<sat>\d{2})_s(?P<start>\d{14})_e(?P<end>\d{14})_c\d{14}\.nc$'
+stamp_group = "start"
+stamp_format = "goes"
+request_offset_seconds = -300
+# GLM files are 20 s long and back to back.  A bin with a stretch longer
+# than one missing file that no read file covers is refused: the
+# gridded source would count an outage as no lightning.
+max_gap_seconds = 21

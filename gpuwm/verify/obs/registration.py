@@ -463,7 +463,129 @@ def validate_registration(registration: Mapping[str, object]
     return reg
 
 
+#: The nowcast radar-heating evaluation (``tools/heat_eval``): WOOF in the
+#: HRRR configuration with and without radar heating for its first hours,
+#: scored against MRMS and surface stations.  Its own registration because
+#: its question is not the battery's: it scores from f01 (the heated hours
+#: are the point), at 20 and 35 dBZ, in 9, 27 and 63 km boxes, and its rule
+#: compares arms of one case rather than patches across a case set.  The
+#: reflectivity block is the battery's own (:func:`reflectivity_parameters`)
+#: so :func:`gpuwm.verify.obs.battery.score_reflectivity` scores it unchanged.
+NOWCAST_HEAT_REGISTRATION_SCHEMA = "gpuwm.nowcast-heat-registration/v1"
+NOWCAST_HEAT_THRESHOLDS_DBZ = (20.0, 35.0)
+#: 9, 27 and 63 km boxes on the 3 km grid.
+NOWCAST_HEAT_HALF_WIDTHS = (1, 4, 10)
+NOWCAST_HEAT_LEAD_HOURS = (1, 2, 3, 4, 5, 6, 12, 18)
+#: MRMS composite files land about 40 s past each two minutes; two minutes
+#: either side always holds the frame nearest the valid time.
+NOWCAST_HEAT_MATCH_SECONDS = 120
+#: Stations whose elevation is more than this far from the model terrain are
+#: left out (the CONUS DA scorer's rule), for every arm and for HRRR alike.
+NOWCAST_HEAT_STATION_ELEVATION_SCREEN_M = 200.0
+#: The decision rule's numbers (cases-and-scoring.md, "Decision rule").
+NOWCAST_HEAT_DECISION: dict[str, object] = {
+    "primary_fss": "fss at 35 dBZ, half-width 4 cells (27 km box)",
+    "early_leads": [1, 2, 3],
+    "surface_leads": [1, 2, 3, 4, 5, 6],
+    "late_leads": [12, 18],
+    "fss_margin": 0.03,
+    "rmse_margin_k": 0.05,
+    "area_ratio_band": [0.5, 2.0],
+    "needed_wins": 3,
+    "decision_cases": 4,
+    "eye_rule": "a person judges the MRMS | A | B | C | E | HRRR sheets first",
+}
+
+
+def nowcast_heat_parameters(*, boundary_width_cells: int = 10,
+                            interior_rim_m: float = DEFAULT_INTERIOR_RIM_M
+                            ) -> dict[str, object]:
+    """Pins for the nowcast heating evaluation, before any score is seen."""
+    if int(boundary_width_cells) < 0:
+        raise ValueError("the boundary width is a non-negative cell count")
+    reflectivity = reflectivity_parameters(
+        thresholds_dbz=NOWCAST_HEAT_THRESHOLDS_DBZ,
+        half_widths=NOWCAST_HEAT_HALF_WIDTHS,
+        primary_threshold_dbz=35.0, primary_half_width=4,
+        obs_match_tolerance_seconds=NOWCAST_HEAT_MATCH_SECONDS,
+        interior_rim_m=interior_rim_m,
+        # A CONUS model box holds ocean, Canada and Mexico, where MRMS has no
+        # radar; the scored region is the covered cells, so a floor on the
+        # covered fraction of the box would exclude every lead.
+        frame_coverage_floor=0.0)
+    reflectivity.update({
+        "boundary_width_cells": int(boundary_width_cells),
+        "area_ratio_thresholds_dbz": list(NOWCAST_HEAT_THRESHOLDS_DBZ),
+        "area_ratio_definition": (
+            "model cells at or above the threshold over MRMS cells at or above "
+            "it, on the shared scored cells (the contingency frequency bias)"),
+        "rmse_definition": (
+            "root mean square of model minus MRMS composite in dBZ, both "
+            "floored at 0 dBZ, on the shared scored cells"),
+        "observed_clear_air": (
+            "MRMS -99 is an observation of no echo and stays valid; -999 is no "
+            "radar coverage and is masked"),
+        "reference_model": (
+            "HRRR REFC from wrfsfcfNN of the case's own cycle, on the run's "
+            "grid as a centred window of HRRR's grid"),
+    })
+    surface = {
+        "instrument": "scoreboard-v2 (rw_scoreboard)",
+        "variables": ["t2", "td2", "wind10"],
+        "observations": "routine METARs from the IEM ASOS archive (rw_asos)",
+        "station_set": (
+            "one frozen station list per case: the ASOS stations the "
+            "scoreboard places on the run grid, with |model terrain - "
+            "station elevation| <= the screen; the same stations score "
+            "every arm and HRRR"),
+        "elevation_screen_m": NOWCAST_HEAT_STATION_ELEVATION_SCREEN_M,
+        "pairing": "scoreboard-v2 rules: nearest report within 600 s",
+    }
+    return {
+        "scored_lead_hours": list(NOWCAST_HEAT_LEAD_HOURS),
+        "lead_keying": (
+            "hours after the case's t0 (the HRRR analysis time); an arm that "
+            "starts earlier is filed by valid time, not by its own lead"),
+        "reflectivity": reflectivity,
+        "surface": surface,
+        "decision": dict(NOWCAST_HEAT_DECISION),
+    }
+
+
+def make_nowcast_heat_registration(*, evaluator_commit: str,
+                                   cases: Sequence[Mapping[str, object]],
+                                   arms: Sequence[Mapping[str, object]],
+                                   parameters: Mapping[str, object] | None = None,
+                                   ratification_reference: str = "",
+                                   ) -> dict[str, object]:
+    """Freeze the nowcast heating pins, the cases and the arms; hash them."""
+    commit = str(evaluator_commit).lower()
+    if len(commit) != 40 or any(ch not in "0123456789abcdef" for ch in commit):
+        raise ValueError("evaluator_commit must be a 40-hex Git SHA")
+    if not cases or not arms:
+        raise ValueError("a nowcast heating registration needs cases and arms")
+    block = dict(parameters if parameters is not None else nowcast_heat_parameters())
+    block["cases"] = [dict(case) for case in cases]
+    block["arms"] = [dict(arm) for arm in arms]
+    status = RATIFIED if str(ratification_reference).strip() else UNRATIFIED
+    block["decision"] = dict(block.get("decision", {}),
+                             ratification_reference=str(ratification_reference).strip())
+    registration = {
+        "schema": NOWCAST_HEAT_REGISTRATION_SCHEMA,
+        "evaluator_commit": commit,
+        "rule_status": status,
+        "parameters": block,
+    }
+    registration["registration_sha256"] = canonical_hash(block)
+    return registration
+
+
 __all__ = [
+    "NOWCAST_HEAT_DECISION", "NOWCAST_HEAT_HALF_WIDTHS",
+    "NOWCAST_HEAT_LEAD_HOURS", "NOWCAST_HEAT_MATCH_SECONDS",
+    "NOWCAST_HEAT_REGISTRATION_SCHEMA",
+    "NOWCAST_HEAT_STATION_ELEVATION_SCREEN_M", "NOWCAST_HEAT_THRESHOLDS_DBZ",
+    "make_nowcast_heat_registration", "nowcast_heat_parameters",
     "DEFAULT_ALPHA", "DEFAULT_ELEVATION_TOLERANCE_M",
     "DEFAULT_FRAME_COVERAGE_FLOOR", "DEFAULT_GUARDRAILS",
     "DEFAULT_INTERIOR_RIM_M", "DEFAULT_MATCH_TOLERANCE_SECONDS",

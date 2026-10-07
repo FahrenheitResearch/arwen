@@ -174,6 +174,27 @@ COUPLE_DIAG = ("ts_urb2d", "sh_urb2d", "lh_urb2d", "g_urb2d", "rn_urb2d")
 @pytest.mark.parametrize("lsm", ["noah", "noahmp"])
 @pytest.mark.parametrize("step", [1, 2])
 def test_after_lsm_end_to_end_matches_wrf(tset, lsm, step):
+    _after_lsm_end_to_end(tset, lsm, step)
+
+
+@requires_gpu
+@pytest.mark.parametrize("tset", ["nlcd", "lcz"])
+def test_after_lsm_matches_wrf_under_the_step_health_ledger(tset):
+    """Since ac988f1fd every single-device forecast step routes the scheme
+    status words into a HealthLedger (uint32 slots).  BEP's int32
+    error_flags word made cupy refuse the OR (TypeError, same_kind), so
+    option 2 crashed on its first deferred step while the immediate-read
+    gates above stayed green.  Same WRF words, recorded, and a clean drain."""
+    from gpuwm.core import health_ledger
+
+    ledger = health_ledger.HealthLedger(label="urban bep test")
+    with health_ledger.deferring(ledger):
+        _after_lsm_end_to_end(tset, "noah", 1)
+    assert ledger.records > 0
+    ledger.drain()
+
+
+def _after_lsm_end_to_end(tset, lsm, step):
     from types import SimpleNamespace
 
     import cupy as cp

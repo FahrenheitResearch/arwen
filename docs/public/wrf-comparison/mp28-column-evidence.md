@@ -22,13 +22,13 @@ evidence, not validation against observations. The scope is:
   comparisons; the separate idealized runs linked above were.
 
 The label's evidence is the measurements in this page, not an assertion that
-no comparison exists. Of 22 committed WRF column fixtures, 18 clear the flat
-gate on all 23 compared quantities. One more clears under one named allowance,
-and three miss; section 3 publishes the residuals field by field, using ULP
-distances where relative differences mislead. These are component code
-verification results. The idealized forecast comparisons above have not
-produced a declared PASS, and no observation-based validation is claimed.
-The column deck is not clean: section 3 states the failed flat-gate conditions.
+no comparison exists. Of 22 committed WRF column fixtures, 22 of 22 clear
+the flat gate on all 23 compared quantities, with no allowance and nothing
+held out, since the 2.8.6 accumulator rework; section 3 publishes the table
+field by field and the history of every residual that closed. These are
+component code verification results. The idealized forecast comparisons
+above have not produced a declared PASS, and no observation-based validation
+is claimed. A clean single-call deck is not a forecast validation.
 
 The idealized comparisons do not establish agreement for real-data or nested
 forecasts. Staying finite and inside WRF's clamps for two hours also does not
@@ -44,7 +44,8 @@ If you only read one section, read
 Most original measurements were made on an RTX 5090 on 2026-08-01.
 Sections 5 and 6.1 were re-measured on 2026-09-28; the wp08-freeze row and
 classic-path comparison changed on 2026-09-23; the per-card rows and stripped
-section 6.1 run were re-measured on 2026-09-30. Each update below states its
+section 6.1 run were re-measured on 2026-09-30, and section 6.1 again on
+2026-10-05 for the 2.8.6 accumulator rework. Each update below states its
 scope. The 2026-09-28 forecasts were bitwise identical on NVRTC 13.0.48 and
 13.4.92, and on an RTX 5070 Ti with NVRTC 13.0.88; that comparison does not
 establish identity for every GPU or compiler.
@@ -56,7 +57,7 @@ establish identity for every GPU or compiler.
 | GPU | NVIDIA GeForce RTX 5090 (cc 12.0), CUDA runtime 13.0, cupy 14.1.1, nvrtc defaults (`--fmad=true`) |
 | host | Ubuntu 24.04.4 LTS on WSL2, Python 3.12.3, NumPy 2.5.1 |
 | aerosol table | `CCN_ACTIVATE.BIN`, 35,288 bytes, sha256 `f2b8d391…c82a3dbd`, **redistributed with ArWen** since 2026-08-01 (deviation D9i in `PROVENANCE.md`; it stays outside the classic mp=8 table set, §7) |
-| date of measurement | mostly 2026-08-01; sections 5 and 6.1 on 2026-09-28; wp08-freeze and the classic-path comparison on 2026-09-23; per-card rows and the stripped section 6.1 run on 2026-09-30 |
+| date of measurement | mostly 2026-08-01; sections 5 and 6.1 on 2026-09-28; wp08-freeze and the classic-path comparison on 2026-09-23; per-card rows and the stripped section 6.1 run on 2026-09-30; section 6.1 on 2026-10-05 (RTX 5090, node-2: Ubuntu, Python 3.13, cupy 14.2.0, NumPy 2.5.3, NVRTC 13.4.92) |
 | §5 and §6.1 | re-measured 2026-09-28 on the same RTX 5090, now on Linux (Ubuntu, Python 3.12, cupy 14.2.0, NumPy 2.5.3), once on NVRTC 13.0.48 and once on 13.4.92: every value bitwise identical between the two |
 
 Arithmetic is float32 on the GPU and REAL(4) in the Fortran reference, which
@@ -101,42 +102,60 @@ and `PROVENANCE.md` all said "nineteen" while the gate drove twenty-two,
 so two residuals (`wp08-freeze`, `wp08-nusweep`) were in no published class
 at all. They are below.
 
-**Result: 18 of 22 clear the flat 2.0e-6 / 2.0e-4 dB gate on every
-compared quantity, with nothing held out at all.** That is
-16 of the 19 spec'd `aero-*` fixtures, plus `wp08-freeze` and `wp08-melt`.
-One more, `aero-reduces-to-classic`, clears only under ONE named allowance
-(§3.2), taking the gated count to 19 of 22. Three miss outright.
-`wp08-freeze` joined on 2026-09-23, when the rain fallout was handed WRF's
-`L_qr` (see the `wp08-freeze` note under §3.1).
+**Result: 22 of 22 clear the flat 2.0e-6 / 2.0e-4 dB gate on every
+compared quantity, with nothing held out and no allowance anywhere** —
+19 of the 19 spec'd `aero-*` fixtures and the three `wp08-*` columns. Five fixtures
+(`aero-ccn-activate`, `aero-ccn-sweep`, `aero-init-profile`,
+`aero-sfc-emit`, `wp08-melt`) are bit-exact against WRF on every quantity at
+every level, and eight more are bit-exact on all 16 fields of the table
+below. This is the 2.8.6 accumulator rework (§3.0); before it the count was
+18 of 22 with one allowance, and the history of how it got to 18 is kept in
+§3.2 and §3.3.
 
-**RE-MEASURED ON THE 1.4.1 LINE (2026-08-01).** Every number on this page
-was measured while the port sat on its own base, ArWen 1.3.1. Merging
-`integration/release-1.4.1` inherited the mp=8 lane's two sedimentation
-reconciliations — `5e4af4e3` ("the rain MVD bound belongs to TAU+1, not to
-sedimentation") and `cb765336` ("the rain-presence gate is a mass
-concentration, floor included") — in the byte-frozen `thompson.cu` this
-port shares for rain fallout. mp=28 did not change; its inputs did. What
-moved, all towards WRF:
+### 3.0 What closed the last four: WRF's tendencies, applied once
 
-| quantity | before the merge | after |
+WRF's `mp_thompson` never writes a hydrometeor during the call. Every
+process adds to a running tendency (`qcten`, `qrten`, `nrten`, `qiten`,
+`niten`, ...), every stage reads the working value `X1d + Xten*DT`, and the
+terminal apply (`module_mp_thompson.F:3972-4053`) rounds each species once,
+with the size bounds after the `:3943-3966` phase cleanup. The port applied
+each stage to the state in turn, so a species was rounded once per stage,
+and the classic rain and ice fallout it shared with mp=8 folded the
+terminal size bounds in before the freeze. Every one of the last misses was
+that, measured stage by stage against WRF's own running tendencies
+(`tools/thompson_wrf461_oracle/build_aero_instrumented.sh` with
+`STAGE_DUMP=1`; its fidelity proof regenerates all 44 committed fixtures
+byte for byte, and `compare_port_stages_aero.py` reports where the port
+first leaves WRF):
+
+* `qcten` is carried through the source networks (`:2987`), the
+  condensation (`:3480`), the cloud fallout (`:3832`) and the cleanup
+  (`:3949`, `:3962`) and applied once (`:3975`). The working cloud is now
+  bitwise WRF's after the condensation, the fallout and the cleanup on all
+  22 columns.
+* `qrten`, `nrten`, `qiten` and `niten` likewise, on the v4.6.1 generation:
+  the source-stage ice and rain balances (`:3033-3055`, `:3070-3091`) run in
+  WRF's tendency form, the rain evaporation adds `:3562`/`:3564`, mp=28 has
+  its own tendency-form rain and ice fallout (`:3611-3640`, `:3664-3698`,
+  `:3790-3870`), and a terminal kernel applies them once with WRF's
+  `:4023-4053` bounds. The fork generation keeps its in-place rain and ice.
+* The cold network's rain-conservation ratio is REAL, as `:1615` declares
+  `sump`, `rate_max` and `ratio`; a double ratio sat 3e-8 away, which at a
+  level the limiter drains is 2.48e-05 of what survives.
+
+| cell | before | after |
 | --- | --- | --- |
-| `aero-reduces-to-classic` `nr` at level 5 | 5.700e-06 | **4.146e-07** |
-| `aero-reduces-to-classic` worst ULP, all 23 quantities | 27.5 | **4.0** |
-| `aero-reduces-to-classic` worst \|dBZ − WRF\| | 3.242e-05 dB | **9.537e-06 dB** |
-| `qr` levels bit-exact against WRF where mp=8 is not | 1, 2, 4 | **1, 2, 4, 5** |
-| relative carve-outs live in the gate | 2 | **1** |
+| `aero-cloud-freeze-nc` `qc`, level 4 | was 4.926e-06 (one extra rounding) | **0 (bit-exact)** |
+| `aero-cold-overlap` `qc` / `nc` / `effc`, level 4 | was 1.0 / 1.0 / 0.810 (one ULP flipping `:4007`) | **0 / 0 / 0** |
+| `aero-cold-overlap` `qr` / `nr`, level 6 | was 4.443e-05 / 1.261e-04 | **0 / 0** |
+| `aero-reduces-to-classic` `qr` / `nr`, level 6 (held by the allowance) | was 0.585 / 0.159 entry-ULP | **0 / 0, every level bit-exact** |
+| `wp08-nusweep` `qr`, level 12 | was 4.642e-06 (60 ULP) | **5.532e-07 (6 ULP, level 11)** |
+| `wp08-freeze` `nr`, level 0 | was 4.006e-07 (5 ULP) | **0 (bit-exact)** |
+| worst ULP of any cell inside the gate | 20.0 | **6.0** |
 
-Nothing moved the other way, and the fixture-level verdicts below are
-otherwise unchanged: the same four fixtures miss, at the same numbers.
-`_END_TO_END_BOUNDS` is now an empty dict — see §3.2.
-
-The last row of that table stopped separating the two schemes on
-2026-09-23: mp=8 now reaches the same bits at those levels (§3.2).
-
-The table below gives, for every spec'd fixture, the worst field and its
-measured relative difference. `PASS`/`MISS` is against the uniform 2.0e-6
-gate with no allowance applied. `aero-reduces-to-classic` now reads `PASS`
-here for the first time: the flat gate and the adapter's gate agree on it.
+The table below gives, for every spec'd fixture, the worst of the 16
+fields and its measured relative difference. `PASS`/`MISS` is against the
+uniform 2.0e-6 gate.
 
 | fixture | verdict | worst field | worst relative difference | what it pins |
 | --- | --- | --- | --- | --- |
@@ -144,195 +163,77 @@ here for the first time: the flat gate and the adapter's gate agree on it.
 | `aero-ccn-sweep` | PASS | - | 0.0 | activation over 10 updraft × 5 CCN cells |
 | `aero-init-profile` | PASS | - | 0.0 | `thompson_init`'s synthetic CCN/IN fill and the `nwfa2d` derivation |
 | `aero-sfc-emit` | PASS | - | 0.0 | surface emission lands only on k=kts and is unclamped |
+| `aero-drop-evap` | PASS | - | 0.0 | the aerosol-only `tnc_wev` droplet-evaporation branch |
+| `aero-nc-accrete` | PASS | - | 0.0 | nu_c-driven accretion, live `t_Efrw` second index |
+| `aero-nc-auto` | PASS | - | 0.0 | nu_c-driven Berry-Reinhardt autoconversion |
+| `aero-nc-cap` | PASS | - | 0.0 | the `Nt_c_max` caps and the `2/rho` floor |
+| `aero-nc-effrad` | PASS | - | 0.0 | all three `inu_c` branches of `calc_effectRad` |
+| `aero-nc-sed` | PASS | - | 0.0 | number-weighted cloud sedimentation |
+| `aero-scav-rain` | PASS | - | 0.0 | rain scavenging of CCN and IN |
+| `aero-warm-overlap` | PASS | - | 0.0 | **cross-network `ncten`/`nwfaten` reconciliation, warm half** |
+| `aero-cloud-freeze-nc` | PASS | temp_k | 6.363e-08 | Bigg freezing with the `nc`-driven cap — **closed by the accumulator rework; see §3.0** |
 | `aero-scav-frozen` | PASS | qg | 9.507e-08 | snow/graupel aerosol scavenging, `Eff_aero` |
-| `aero-nc-effrad` | PASS | nr_per_kg | 1.242e-07 | all three `inu_c` branches of `calc_effectRad` |
-| `aero-nc-sed` | PASS | nr_per_kg | 2.872e-07 | number-weighted cloud sedimentation |
-| `aero-nc-auto` | PASS | nr_per_kg | 1.998e-07 | nu_c-driven Berry-Reinhardt autoconversion |
-| `aero-ice-koop` | PASS | ni_per_kg | 3.396e-07 | **homogeneous haze freezing — closed a revision ago; see §3.4** |
-| `aero-nc-cap` | PASS | nr_per_kg | 3.821e-07 | the `Nt_c_max` caps and the `2/rho` floor |
-| `aero-scav-rain` | PASS | nr_per_kg | 3.285e-07 | rain scavenging of CCN and IN |
-| `aero-drop-evap` | PASS | nr_per_kg | 3.919e-07 | the aerosol-only `tnc_wev` droplet-evaporation branch — **closed this revision; see §3.3** |
-| `aero-warm-overlap` | PASS | nr_per_kg | 4.195e-07 | **cross-network `ncten`/`nwfaten` reconciliation, warm half** |
-| `aero-ice-demott-dep` | PASS | ni_per_kg | 4.339e-07 | `iceDeMott` replacing Cooper nucleation |
-| `aero-nc-accrete` | PASS | nr_per_kg | 5.533e-07 | nu_c-driven accretion, live `t_Efrw` second index |
-| `aero-ice-demott-idxin` | PASS | qr | 6.417e-07 | the only fixture that reads a `freezeH2O` slice other than 27 — **closed this revision; see §3.3** |
-| `aero-cloud-freeze-nc` | MISS | qc | 4.926e-06 | Bigg freezing with the `nc`-driven cap |
-| `aero-reduces-to-classic` | PASS | nr_per_kg | 4.146e-07 | the bridge to mp=8, which has a historical matched WRF run (level 6 is still held in ULPs by section 3.2's surviving allowance) |
-| `aero-cold-overlap` | MISS | qc | 1.0 | **cross-network reconciliation, cold half** — and a one-ULP disagreement reported as full scale; see §3.1 |
+| `aero-ice-demott-idxin` | PASS | temp_k | 1.272e-07 | the only fixture that reads a `freezeH2O` slice other than 27 |
+| `aero-reduces-to-classic` | PASS | temp_k | 1.393e-07 | the bridge to mp=8, which has a historical matched WRF run; `qr` and `nr` bit-exact at every level, no allowance |
+| `aero-ice-koop` | PASS | ni_per_kg | 2.280e-07 | **homogeneous haze freezing; see §3.4** |
+| `aero-ice-demott-dep` | PASS | ni_per_kg | 2.659e-07 | `iceDeMott` replacing Cooper nucleation |
+| `aero-cold-overlap` | PASS | qv | 3.670e-07 | **cross-network reconciliation, cold half — closed by the accumulator rework; see §3.0** |
 
 The three columns outside the spec'd nineteen, measured the same way:
-`wp08-melt` PASS (`nc_per_kg` 1.365e-07), `wp08-freeze` PASS
-(`nr_per_kg` 4.006e-07 on the card; it missed at 2.724e-06 until 2026-09-23),
-`wp08-nusweep` MISS (`qr` 4.642e-06, 2.3x the gate).
+`wp08-melt` PASS (bit-exact on every quantity), `wp08-freeze` PASS
+(`temp_k` 1.326e-07; its `nr` is bit-exact), `wp08-nusweep` PASS (`qr`
+5.532e-07).
 
-**The numbers are per card class.** The table above is sm_120's: an RTX
-5090 and an RTX 5070 Ti read it alike. Until A146 the same kernels compiled
-for an RTX 4090 (sm_89) rounded four rows differently from sm_120, every one
-inside the gate and none changing a verdict or a count. The difference was
-NVRTC compiling a float division by a compile-time constant as a multiply
-by the rounded reciprocal on Blackwell: since the kernels spell those
-divisions `__fdiv_rn`, sm_120 reads these four rows as sm_89 does (it read
-2.328e-07, 1.863e-07, 2.154e-07 and 3.858e-07), measured on the RTX 5070 Ti
-on 2026-09-30:
+**The numbers are per card class, and the two measured classes agree.** The
+table above is sm_120's (RTX 5090). An RTX 4090 (sm_89) reads every row,
+every ULP pin and every per-fixture worst ULP identically with the rework,
+so the per-card table that used to list the rows reading differently is
+empty. The tests still hold each card class to its own row, keyed by
+compute capability; a card class with no row is held to the gate's verdicts
+only, and the test output says so.
 
 | card class | fixture | verdict | worst field | worst relative difference |
 | --- | --- | --- | --- | --- |
-| sm_89 | `aero-nc-auto` | PASS | nr_per_kg | 1.998e-07 |
-| sm_89 | `aero-nc-effrad` | PASS | nr_per_kg | 1.242e-07 |
-| sm_89 | `aero-nc-sed` | PASS | nr_per_kg | 2.872e-07 |
-| sm_89 | `aero-scav-rain` | PASS | nr_per_kg | 3.285e-07 |
-
-In ULPs, sm_89 reads `aero-cold-overlap` `nr_per_kg` 17 at level 1 and the
-worst over all 23 quantities of `aero-nc-effrad` 2, `aero-nc-sed` 4 and
-`aero-reduces-to-classic` 3, and since A146 so does sm_120 (it read 16, 3, 3
-and 4). The tests hold each card class to its own row, keyed by compute
-capability; a card class with no row is held to the gate's verdicts only,
-and the test output says so.
 
 ### 3.1 Every field that misses, with its number
 
 | fixture | fields above 2.0e-6 |
 | --- | --- |
-| `aero-cold-overlap` | `qc` 1.000e+00, `nc` 1.000e+00, `effc` 8.102e-01, `nr` 1.261e-04, `qr` 4.443e-05 |
-| `aero-reduces-to-classic` | nothing at level 5 any more (`nr` 4.146e-07, inside the flat gate); `qr` / `nr` 1.238e-04 at level 6 if that level is measured relatively rather than in ULPs, which is what §3.2's one surviving allowance exists for |
-| `aero-cloud-freeze-nc` | `qc` 4.926e-06 |
-| `wp08-nusweep` | `qr` 4.642e-06 |
 
-**`wp08-freeze` left this table on 2026-09-23.** It was published at `nr`
-2.724e-06 (34 ULP) at level 0 because the rain fallout took `L_qr` from
-the post-evaporation mixing ratio; at level 1 WRF's `:3568` leaves
-`rr(k)` = 1.174815e-12 above R1 under `L_qr` true while ArWen saw
-qr = 8.526513e-13 and gave the level the fall speed from above. The mp=28
-rain evaporation now writes a zero reference density where `:3236`
-failed (and a negative one where `:3568` floored the pair), and the adapter launches the fallout's `_with_presence` entry
-points, which read `L_qr` from it. Level 0 is 5 ULP from WRF (4.006e-07)
-on a card, bit for bit alike on an RTX 4090, an RTX 5090 and an RTX 5070 Ti,
-and that same 5 ULP is the fixture's worst over all 23 quantities and the
-number its pin carries. The host build of the kernels reads 1 ULP
-(8.012e-08) and 3 ULP; it is not the device.
+None. `tests/test_thompson_aerosol_adapter.py::_G3_RESIDUALS` and its
+attribution table are empty and asserted empty, and
+`test_no_residual_survives_and_none_needs_a_regime` asserts the
+unexceptioned table — every level, every field, the seven surface
+diagnostics included — has nothing above the flat gate. `RAINNC`, `RAINNCV`
+and `SR` are bitwise identical to WRF on all 22 columns.
 
-**No surface accumulation misses any more, on any fixture in the deck.**
-All seven are compared separately: `RAINNC`, `RAINNCV` and `SR` are now
-**bitwise identical to WRF on all 22 columns** (0.000e+00 relative), and
-`SNOWNC` / `SNOWNCV` and `GRAUPELNC` / `GRAUPELNCV` peak at 6.285e-08 and
-7.062e-08. Earlier revisions of this table carried `rainnc` / `rainncv` /
-`sr` rows on two fixtures and explained them as **one number seen three
-ways** — `RAINNCV` is the fallout sum (`module_mp_thompson.F:1298`),
-`RAINNC` accumulates it from zero on a first call (`:1299`), and `SR`
-divides the exactly-agreeing frozen part by it (`:1308`). That explanation
-was right and the rows are gone: §3.3 records what removed them.
+The text that used to stand here, for the record of what closed: the four
+missing fixtures were `aero-cold-overlap` (`qc` 1.000e+00, `nc` 1.000e+00,
+`effc` 8.102e-01 at level 4, one float32 ULP of the entry cloud flipping
+`:4007`'s `qc1d <= R1` branch; `nr` 1.261e-04 and `qr` 4.443e-05 at level 6,
+99.97% consumed), `aero-cloud-freeze-nc` (`qc` 4.926e-06 at level 4, the
+second float32 rounding of `qc` inside one step), `wp08-nusweep` (`qr`
+4.642e-06 at level 12, created from zero, ill-conditioned) and, held clean
+only by the allowance below, `aero-reduces-to-classic` (`qr` / `nr`
+1.238e-04 at level 6 measured relatively). §3.0 is what closed each.
 
-**`aero-cold-overlap`'s three full-scale rows are one mechanism, and the
-absolute difference behind them is one ULP.** Measured at 0-based level 4:
-the level enters with `qc` = 2.3252160e-04 kg/kg and `nc` = 9.1306704e+07
-per kg. WRF ends the step with `qc` = 1.4551915228366852e-11 kg/kg — which
-is exactly 2⁻³⁶, and exactly **1.000 float32 ULP** of that entry value —
-and `nc` = 1.8333361 per kg (0.229 ULP). ArWen ends at exactly `0.0`.
-`effc` follows: with no cloud water ArWen takes the 2.49 µm floor while
-WRF's remainder gives 1.31176e-05 m, hence 8.102e-01. It is recorded as a
-MISS rather than absorbed into an allowance, because the accurate thing to
-publish is that a relative metric is the wrong instrument here — not to
-widen the instrument. The fixture's *other* residual is separate and real:
-`nr` 1.261e-04 and `qr` 4.443e-05 at level 6, where the rain number falls
-255.407 → 0.0739 per kg (99.97% consumed) and the difference is 0.611 ULP
-of the entry value (`qr`: 1.789 ULP).
+### 3.2 The allowances: all retired
 
-**Where the rest of them live.** Every surviving residual now sits in one
-of two regimes: the field is **created from zero** inside the step
-(`wp08-nusweep` `qr` at level 12, reaching 2.242e-11 kg/kg on an absolute
-difference of 1.04e-16 kg/kg), or it is driven to **near-total consumption**
-(`aero-cloud-freeze-nc` `qc` at level 4, 98.2% frozen away and the
-survivor differing by exactly 1.000 ULP of entry; `aero-cold-overlap` at
-levels 4 and 6). After the Koop closure below, there is **no surviving
-residual in the "rate disagreement" class at all**. That is stated, not
-used: no bound anywhere was relaxed for it.
+No allowance remains. There is no departure from the flat gate anywhere in
+the deck.
+`test_every_g3_allowance_is_retired_and_none_is_needed` asserts the
+allowance registry and every carve-out constant are empty and that the
+gated and the flat verdicts are the same 22 fixtures, so a re-added
+carve-out fails rather than passing silently.
 
-**The one cell whose mechanism the port can name and could not reach.**
-`aero-cloud-freeze-nc` `qc` at level 4 is the SECOND float32 rounding of
-`qc` inside one step. WRF rounds once, at `module_mp_thompson.F:3975`,
-from a `qcten` that carries the source network and the condensation
-together; ArWen applies the source network to `qc` and then applies the
-condensation to the already-rounded value. Measured and pinned: `qc` is
-8.205620542867109e-05 entering the condensation stage and
-1.4771576388739049e-06 leaving it, and nothing after that touches it —
-cloud sedimentation, the terminal phase cleanup and the terminal apply all
-leave it bit-identical — so the whole 4.926e-06 is that one extra rounding
-and nothing else. Closing it needs a `qcten` accumulator carried across the
-condensation, which needs a scratch slot in `gpuwm/core/preflight.py` and a
-resequencing of the `ncten` balance limiter (`:2996-3019`), the `:3646`
-cloud column mask and `thompson_aerosol_sed.cu`'s cloud sedimentation.
-Recorded, attributed, measured, not absorbed.
+| allowance | what it did | retired |
+| --- | --- | --- |
+| ~~`_NEAR_CANCELLATION_LEVELS`~~ | `aero-reduces-to-classic` level 6 held to 32 ULP of the entry value instead of a relative bound (99.958% of the level's rain evaporates in the step) | **by the 2.8.6 accumulator rework: the level is bit-exact against WRF in `qr` and `nr`** |
+| ~~`_END_TO_END_BOUNDS`~~ | `nr` held to 1.0e-5 instead of 2.0e-6 | at the 1.4.1 merge (level 5's `nr` fell to 4.146e-07) |
+| ~~`_REFL_DB_BOUNDS`~~ | reflectivity held to 1.0e-3 dB instead of 2.0e-4 dB | by WP-13a (3.242e-05 dB, then 9.537e-06 dB) |
 
-### 3.2 The one allowance, named, with what it buys
-
-An auditor found that `aero-reduces-to-classic` was being counted clean
-through three simultaneous allowances with no single place that said so.
-This is that place. The one allowance left applies to that one fixture and
-is required for it; removing it puts the fixture back over the gate.
-**The other two have been retired**, not kept, and each retirement
-inverted its own assertion rather than deleting it.
-
-| allowance | what it does | was | is |
-| --- | --- | --- | --- |
-| `_NEAR_CANCELLATION_LEVELS` | 0-based level 6 held to 32 ULP of the entry value instead of a relative bound | the level was skipped outright | **32 ULP; measured 0.585 (`qr`), 0.159 (`nr`) — the merge took these from 14.9 and 4.05** |
-| ~~`_END_TO_END_BOUNDS`~~ | `nr` held to 1.0e-5 instead of 2.0e-6 | 2.5e-3, then 1.0e-4 covering `qr` and `nr` both, then 1.0e-5 for `nr` alone | **RETIRED at the 1.4.1 merge — level 5's `nr` fell to 4.146e-07, inside the flat 2.0e-6 gate, and the constant is now an empty dict** |
-| ~~`_REFL_DB_BOUNDS`~~ | reflectivity held to 1.0e-3 dB instead of 2.0e-4 dB | 1.0e-2 dB, then 1.0e-3 dB | **RETIRED — the residual it covered fell to 3.242e-05 dB, and then to 9.537e-06 dB at the merge, inside the flat 2.0e-4 dB gate; the constant is now an empty dict** |
-
-**What the "was" column is, and is not.** The current values are read out
-of the gate's own constants and re-measured here. The *previous* values are
-history recorded by the packages that changed them; this port lives on an
-uncommitted branch, so they cannot be re-derived by diffing the tree, and
-they are reproduced rather than verified. What *is* verifiable from the
-tree, and is asserted by
-`test_every_g3_allowance_is_named_and_buys_exactly_one_fixture`, is the
-part that matters to a reader now: these two are the *only* departures
-from the flat gate anywhere in the deck, they both apply to one fixture,
-and removing either of them puts that fixture back over the gate.
-
-Nothing here was widened, in this revision or in any earlier one. The
-numeric bound tightened twice, each time because the mechanism it existed
-for was found and closed. First: `module_mp_thompson.F:3490` overwrites
-`rho(k)` inside the condensation loop while `:3384-3388` had already frozen
-the rain moments from the pre-condensation density, and the adapter was not
-passing that entry density through; that took the level-5 `qr` residual
-from 1.915e-03 to 1.788e-07, left level 1 as the column's worst at
-7.813e-05, and moved the bound 2.5e-3 → 1.0e-4 with it. Second, **in this
-revision**: WRF builds the working rain mass and number that sedimentation
-consumes at `:3237-3238` from the `:3193` τ+1 density for every level
-carrying rain, and rebuilds them at `:3568`/`:3570` from the `:3490`
-post-condensation density only inside the `:3501-3502` gate, while ArWen
-wrote the post-condensation density unconditionally. Restoring the
-level-wise choice made level 1 **bit-exact against WRF** in both `qr` and
-`nr`, so the column's worst `qr` fell 7.813e-05 → 1.788e-07 — inside the
-flat gate, so the `qr` entry was **deleted** rather than kept — and its
-worst `nr` fell 4.832e-05 → 5.700e-06, with the bound following it
-1.0e-4 → 1.0e-5. Both survivors are now at level 5. The same fix put
-the fixture's reflectivity inside the flat dB gate and retired the third
-allowance. The remaining allowance replaced a bare *skip* of level 6 with a
-bound, which is strictly more than the skip asserted — and it is a metric
-change rather than a looser tolerance: the level enters with `qr` =
-3.1695777e-07 kg/kg and evaporates 99.958% of it in one 10 s step, so the
-survivor is the difference of two nearly equal float32 numbers and a
-relative gate there measures the rate's error amplified by
-1/(1 − 0.99958) = 2370. ArWen produces 1.3384e-10 there against WRF's
-1.3426e-10, where it used to produce exactly zero.
-
-**The attribution of what survives CHANGED in this revision, and the old
-one is now false, so it is replaced rather than edited.** This page used to
-say the residual was pre-existing and not introduced by the aerosol port,
-because the frozen mp=8 pipeline reproduced WRF's `qr` bitwise at levels
-2-3 on the identical entry column. That was true and is not any more —
-because mp=28 got **better**. With the level-wise sedimentation density
-restored, mp=28 is bit-exact against WRF at `qr` levels 1, 2 and 4 and at
-`nr` level 1, where mp=8 is 7.61e-05, 4.00e-05, 6.27e-05 and 4.63e-05
-away; over levels 0-7 mp=28 is at least as near WRF as mp=8 at every level
-and strictly nearer at seven of eight. So the surviving `nr` 5.700e-06 is
-**not inherited and is no longer claimed to be**. It sits at 0-based level
-5 alone — the one level of this column where the step removes a large
-fraction of the rain number without emptying it (49.75%: 3.000000e+05 →
-1.507546e+05 per kg) — and it is 27.5 ULP of the entry value, where every
-other unexcluded level of the column is 0, 1, 2 or 3 ULP.
-**It changed again on 2026-09-23.** mp=28 and the frozen mp=8 pipeline are now bitwise identical in `qr` and `nr` at levels 0-5 of this column, because since 2026-09-23 the classic rain evaporation writes the `L_qr` hand-off too and the mp=8 adapter launches the same fallout forms; both are bit-exact against WRF at `qr` levels 1, 2, 4 and 5. They differ only at level 6, the near-cancellation level, and there both are under one ULP of the entry value from WRF (`qr` 0.585 and 0.335 ULP, `nr` 0.159 and 0.091), read alike on an RTX 5070 Ti and an RTX 4090. A relative comparison of the two schemes at that level (1.238e-04 against 7.101e-05) is the metric the level-6 allowance replaces, so `test_the_reduces_to_classic_residual_is_the_classic_paths` compares it in ULPs and asserts the bitwise identity everywhere else.
+Nothing was ever widened: each bound tightened or retired when the
+mechanism it existed for was found and closed.
 
 ### 3.3 What moved since the previous revision — in both directions
 
@@ -741,7 +642,7 @@ not inferred. §6.7 lists what left this section since the previous
 revision, so a reader can see the direction of travel without taking it on
 trust.
 
-### 6.1 Removing the aerosol initial condition moves this case's surface rain by 67.8%
+### 6.1 Removing the aerosol initial condition moves this case's surface rain by 52.9%
 
 This is a **sensitivity**, not a defect — but it is the first thing to
 understand about mp=28, because it is the largest single number the port
@@ -765,15 +666,29 @@ removed:
 | quantity | with the profile (what a run does today) | with it removed | change |
 | --- | --- | --- | --- |
 | initial mean `nwfa` | 6.653e+07 kg⁻¹ | 0 | — |
-| final interior `nwfa` | 2.174e+07 kg⁻¹ | 4.298e+06 kg⁻¹ | floor where the scheme runs, zero in clear columns |
-| peak `nc` over the run | 1.598e+08 kg⁻¹ | 2.945e+07 kg⁻¹ | **5.4× fewer droplets** |
-| domain-total `RAINNC` | 1.958 mm | 3.286 mm | **+67.8%** |
-| peak `RAINNC` | 0.793 mm | 1.016 mm | +28.1% |
+| final interior `nwfa` | 2.174e+07 kg⁻¹ | 4.241e+06 kg⁻¹ | floor where the scheme runs, zero in clear columns |
+| peak `nc` over the run | 1.593e+08 kg⁻¹ | 2.848e+07 kg⁻¹ | **5.6× fewer droplets** |
+| domain-total `RAINNC` | 2.066 mm | 3.158 mm | **+52.9%** |
+| peak `RAINNC` | 0.798 mm | 1.014 mm | +27.0% |
 
 Re-measured 2026-09-30 on the RTX 5070 Ti (sm_120) when A146 made Blackwell
 cards divide by compile-time constants IEEE-correctly: the stripped run's
-rain moved from 3.207 to 3.286 mm, so removing the profile now adds 67.8%
+rain moved from 3.207 to 3.286 mm, so removing the profile then added 67.8%
 rather than 63.8%.
+
+Re-measured 2026-10-05 on an RTX 5090 (sm_120), the published card class,
+for the 2.8.6 accumulator rework (§3.0), with the same script the gate runs
+(the measurement in
+`test_the_published_aerosol_sensitivity_is_a_live_measurement`). At the
+2.8.6 staging tip before the rework (ed2b14e7d) this card already read
+1.994 and 3.165 mm (+58.7%, 5.6 times fewer droplets): the 2.8.6 changes
+merged since 2026-09-30 had moved the trajectory, and the table was stale.
+The rework, which rounds the cloud, rain and ice once per call as WRF
+does, then moved the run with the profile from 1.994 to 2.066 mm and the
+run without it from 3.165 to 3.158 mm. Over 150 steps of a convective
+bubble that is a trajectory difference grown from rounding, not a change
+in what the aerosol does: the droplet ratio and the peak rain change are
+the same to the printed precision.
 
 Both runs are re-executed and this table rebuilt by
 `tests/test_physics_md_aerosol_claims.py::test_the_published_aerosol_sensitivity_is_a_live_measurement`,
@@ -783,8 +698,8 @@ measurement machine and every value was bit-identical across repeats; if
 that stops holding, the right response is to publish the spread.
 
 Read that precisely: removing the CCN loading raises domain-total surface
-precipitation by 67.8% over half an hour and cuts the peak droplet count by
-a factor of 5.4. (Both forecasts were re-run for the 2.8 line. Measured
+precipitation by 52.9% over half an hour and cuts the peak droplet count by
+a factor of 5.6. (Both forecasts were re-run for the 2.8 line. Measured
 commit by commit, most of the move from the earlier 74% rise came from the
 2026-09-24 mp=28 Thompson repairs; WRF's `:2020` column exit, which stopped
 the port clamping aerosol in the columns WRF leaves alone, and the later
@@ -838,7 +753,7 @@ does not measure its forecast effect.
 What *is* known is the endpoint, and §6.1 now measures it directly: after
 `L/U` the whole domain holds inflow air, aerosol-free where it is clear and
 at the CCN floor where the scheme runs, which is the right-hand column of
-the section 6.1 table: 5.4 times fewer droplets and +67.8% domain-total surface rain.
+the section 6.1 table: 5.6 times fewer droplets and +52.9% domain-total surface rain.
 That is an endpoint magnitude inferred from a different experiment, not a
 measured trajectory difference, and it should be read as an order of
 magnitude for this zero-inflow experiment, not a measured effect of the
@@ -881,6 +796,19 @@ fixtures were generated at and the runtime was wired for: `bl_pbl_physics = 5`
 and `bldt = 0`. Anything else refuses by name. (Snow *is* mixed:
 `flag_qs` is true for mp=28, matching `Registry.EM_COMMON:3036`, which was
 a separate defect and is closed.)
+
+Update (2026-10-06): the "requires `mp_physics = 28`" refusal named no
+breakage for a microphysics that carries no number species, where WRF's
+flag-gated solves (`module_bl_mynn.F` `mynn_tendencies`: each solve is
+`bl_mynn_mixscalars > 0 .AND. FLAG_QNx`) mix nothing and the run proceeds.
+The gating is now ported as a table (`MYNN_QN_FLAG_SPECIES`,
+`gpuwm/config.py`): `bl_mynn_mixscalars = 1` mixes the whole family under
+mp=28, is admitted as WRF's no-op under mp 0/1/6 (the driver is handed 0 and
+the key-0 path runs bit for bit, measured on the card by
+`tests/test_mynn_mixscalars_inert_gpu.py`), and is refused by name under
+the schemes WRF would mix only in part (8, 9, 10, 16, 18, 50), because this
+port's solve runs all five species or none. The `bldt = 0` restart
+invariant binds the mixing case only.
 
 ### 6.5 ArWen now runs the configuration `real.exe` admits — **D9a CLOSED**
 
@@ -935,7 +863,8 @@ of the file.)
 **It is also measured, and it was RE-measured for this revision** — by
 substituting the unpinned Horner chains into the header the loader hands
 nvrtc, with no file on disk edited, and re-driving all 22 columns. Removing
-the pin takes the unexceptioned clean count from 17 of 22 to **4 of 22**
+the pin took the unexceptioned clean count, when it was last re-measured, from
+17 of 22 to **4 of 22**
 (only `aero-ice-demott-dep`, `aero-scav-frozen`, `aero-sfc-emit` and
 `wp08-melt` survive), and the damage is not subtle: `aero-nc-accrete`,
 `aero-nc-auto`, `aero-nc-cap`, `aero-nc-sed`, `aero-scav-rain` and
@@ -1092,12 +1021,12 @@ gone with it and the two gates run everywhere.
 
 **679 collected: 664 passed, 14 skipped, 1 failed.**
 
-The failing test is named rather than hidden, because a gate that is red and says so
-is the point of this document:
-
-| test | why it is red |
-| --- | --- |
-| `test_thompson_aerosol_adapter.py::test_g3_end_to_end_against_all_nineteen_oracle_fixtures` | **the §3 gate.** The three fixtures that miss in section 3.1 (excluding the allowanced `aero-reduces-to-classic`) are why. This is the port's headline number and it is red on purpose. |
+The §3 gate, `test_thompson_aerosol_adapter.py::test_g3_end_to_end_against_all_nineteen_oracle_fixtures`,
+was red here until the 2.8.6 accumulator rework closed the last three
+misses and the one allowance (§3.0); it is green with no allowance now.
+The 2.8.6 staging tree carried it for a while as a declared exception in
+`tools/battery/must_run_gates.txt` (6e26fd29c); the same branch as the
+rework deletes that entry, so no 2.8.6 build skips it.
 
 Two gates that were red when this page was last written are green now: the
 mp=8/mp=28 sedimentation bridge ratchet and the reflectivity-residual count
@@ -1217,6 +1146,6 @@ than a review item.
 
 | to reach | what is required | what is missing |
 | --- | --- | --- |
-| a clean `implemented-unverified` | all twenty-two class A fixtures inside 2.0e-6 with no allowance | four fixtures: three misses and one allowance, section 3.1 |
+| a clean `implemented-unverified` | all twenty-two class A fixtures inside 2.0e-6 with no allowance | nothing: reached by the 2.8.6 accumulator rework, section 3.0 |
 | `wrf-matched-run-candidate` | an accepted forecast-scale reference comparison | the idealized gates have not produced a declared PASS; section 5 is self-consistency only |
 | `wrf-matched-run` | a matched multi-hour real-data ArWen-versus-WRF forecast with published decay tables | no real-data matched run exists. The three idealized gates returned HOLD, INCONCLUSIVE and HOLD; none qualifies the current specified-boundary or nested aerosol paths |

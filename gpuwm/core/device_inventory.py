@@ -344,6 +344,59 @@ def state_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
         # or Shin-Hong's per-step TKE diagnostic -- the D1 gray-zone
         # instrument reads state.e_sgs whichever closure produced it.
         shapes["e_sgs"] = m
+    shapes.update(chem_state_array_shapes(cfg))
+    return shapes
+
+
+def chem_state_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
+    """The chem arrays a chem domain allocates, as float32-word shapes.
+
+    Every transported row's field and RK time-t copy and every prescribed
+    row's field, each (nz, ny, nx) float32 (views into one arena, so the
+    sum is the arena), plus the mass ledger's (nrows,) float64 vectors,
+    priced here as 2 * nrows float32 words each
+    (gpuwm/core/chem_state.py:attach_chem_state).  When any process runs,
+    also every array a process declares (``ALLOCATES``, a float64 one at
+    twice its words), the chem_prep met fields
+    (gpuwm/core/chem_prep.py:ChemPrep.refresh) and the per-row deposition
+    velocity plane (gpuwm/core/chem_driver.py:_context), each allocated
+    once per chem domain.  Empty while chem is off.
+    """
+    if not getattr(cfg, "chem_sets", ""):
+        return {}
+    from gpuwm.chem_table import load
+    from gpuwm.core.chem_context import (
+        CHEM_PREP_FIELDS, CHEM_PREP_W_FIELDS, LEDGER_BUCKETS,
+        allocation_shape, chem_processes,
+    )
+    from gpuwm.core.chem_state import LEDGER_TOTALS, ledger_attr, process_attr
+
+    table = load(cfg)
+    nz, ny, nx = cfg.nz, cfg.ny, cfg.nx
+    m = (nz, ny, nx)
+    shapes: dict[str, tuple[int, ...]] = {}
+    for row in table.transported:
+        shapes[row.state_attr] = m
+        shapes[row.time_attr] = m
+    for row in table.prescribed:
+        shapes[row.state_attr] = m
+    n = len(table.transported)
+    for name in (*LEDGER_TOTALS, *LEDGER_BUCKETS):
+        shapes[ledger_attr(name)] = (2 * n,)
+    shapes[ledger_attr("started")] = (1,)
+    processes = chem_processes(table) if table.processes else []
+    for _key, module in processes:
+        rows = module.rows(table)
+        for alloc in getattr(module, "ALLOCATES", ()):
+            shape = allocation_shape(alloc, len(rows), nz, ny, nx)
+            if str(alloc.dtype).endswith("64"):
+                shape = (2, *shape)
+            shapes[process_attr(alloc)] = shape
+    if processes:
+        for name in CHEM_PREP_FIELDS:
+            shapes["chemprep_" + name] = (
+                (nz + 1, ny, nx) if name in CHEM_PREP_W_FIELDS else m)
+        shapes["chemprep_ddvel"] = (len(table.rows), ny, nx)
     return shapes
 
 
@@ -363,6 +416,13 @@ def _lbc_field_dims(cfg: RunConfig, *, boundary_species=()
     for name in potential_external_scalar_fields(
             cfg, boundary_species=boundary_species):
         dims[name] = (nz, ny, nx)
+    if getattr(cfg, "chem_sets", "") and cfg.specified:
+        # The chem rows a data-store source fills ride the same tables
+        # (gpuwm.chem_source_init.chem_boundary_fields).
+        from gpuwm.chem_source_init import chem_boundary_fields
+        from gpuwm.chem_table import load as load_chem_table
+        for name in chem_boundary_fields(load_chem_table(cfg), cfg):
+            dims[name] = (nz, ny, nx)
     return dims
 
 
@@ -382,5 +442,5 @@ __all__ = [
     "CONTEXT_RUNTIME_GROWTH_BYTES", "DeviceLocalMemoryProfile",
     "MEASURED_LOCAL_MEMORY_PROFILE",
     "MODELLED_BARE_CONTEXT_BYTES_PER_RESIDENT_THREAD",
-    "lbc_interval_values", "state_array_shapes",
+    "chem_state_array_shapes", "lbc_interval_values", "state_array_shapes",
 ]

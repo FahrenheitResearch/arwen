@@ -183,12 +183,12 @@ def tables_from_params(params) -> dict[str, object]:
 # the device module
 # ---------------------------------------------------------------------------
 
-def module_source() -> str:
+def module_source(*, kernel_dir=None) -> str:
     """The exact source string NVRTC compiles."""
     from gpuwm.core.kernels import _preamble
 
-    root = Path(__file__).parent / "kernels"
-    return _preamble() + "".join(
+    root = Path(kernel_dir) if kernel_dir is not None else Path(__file__).parent / "kernels"
+    return _preamble(root) + "".join(
         (root / name).read_text(encoding="utf-8") for name in _SOURCES)
 
 
@@ -367,7 +367,11 @@ def launch_bep_bem_columns(dev: Mapping, cls: Mapping, *, gmt, julday,
         args += tuple(scalars[name] for name in COLUMN_SCALAR_ARGUMENTS)
         args += (plan.ws, np.int32(plan.words), err)
         kernel(((count + 31) // 32,), (32,), args)
-        status = err.max().reshape(1)
+        # A uint32 status word, as the health ledger's slots are: err is
+        # int32 (non-negative codes) and cupy refuses to OR an int32 word
+        # into a uint32 slot, which crashed option 3 on the first step of
+        # every single-device forecast once ac988f1fd deferred those reads.
+        status = err.max().reshape(1).astype(cp.uint32)
         code = health_ledger.read_status(status, site="urban_bem",
                                          describe=_refuse)
         if code:

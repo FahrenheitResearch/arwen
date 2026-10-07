@@ -595,8 +595,23 @@ FROZEN_MODULE_DIGESTS = {
         # histories and canonical state remain byte-identical.
         # The small-step vertical and big-step momentum receipts
         # record the current assembled source and card evidence.
-        'd2ddad7b770758cdb6581e6f049db8cf68da292431b804bb1d6dcb7c3b555ca7',
-        '433ab4ba2ae49a20dc1c3abcf83753fd6d831f6267639bc1c9bbf812977fbdaf'),
+        # The SFIRE port (lane/ec-sfire, from lane/283-sfire 2d1de25d6)
+        # adds the compiled open-boundary geopotential kernel
+        # slow_geopotential_open, launched only for open, unforced lateral
+        # boundaries (gpuwm/core/dycore.py _launch_open_geopotential); every
+        # other entry is unchanged. Native RHS controls and the coupled ideal
+        # timeline receipts are in tools/sfire_coupled_ideal/rhs_ph_open/receipts.
+        # Re-pinned for lane/sfire-do1-287 (2.8.7): slow_geopotential_open
+        # follows unmodified WRF v4.7.1 rhs_ph at the west top row, where WRF
+        # reads FNM/FNP(kde) and U(kde), which hold their zero allocation
+        # value at run time; the former min(k,kde-1) correction added a
+        # nonzero upwind term WRF never applies.  Reading: 0 differing words
+        # of 43,008 against compiled unmodified WRF (no allowed-difference
+        # mask), default and strict, RTX 5070 Ti; the previous kernel misses
+        # 192 (the west top row of the 16 open-x fixtures).  Previously
+        # a9567a3d/3d47bada.
+        'dc89c74d8ac33880a8fa697d955f2c96a8bdfd863afc12e3095c06953049bc81',
+        '2b6f1337d83bfaa691db85e762505a88276f52f81e7cf412b6a03b1bb5a63255'),
     'health': (
         # RECOMPUTED at the tilestream port, over the MERGED health.cu that
         # carries both re-pins below.  The pin that arrived with the port

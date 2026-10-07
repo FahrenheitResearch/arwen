@@ -485,14 +485,30 @@ fn carried_ladder(
         if !stacks_vertically(mapping, name)? {
             continue;
         }
-        carried.push(
-            group
-                .iter()
-                .map(|position| records[*position].level_value.to_bits())
-                .collect(),
-        );
+        let mut levels: BTreeSet<u64> = group
+            .iter()
+            .map(|position| records[*position].level_value.to_bits())
+            .collect();
+        // A field declared on part of the ladder (`published_levels`)
+        // holds the levels it is zero on as well as the ones it carries.
+        levels.extend(unpublished_levels(mapping, name, declared)?);
+        carried.push(levels);
     }
     Ok(choose_ladder(declared, &eras, &carried))
+}
+
+/// The declared levels (as bits) a `published_levels` field is not
+/// published on; empty for a field that declares no subset.
+fn unpublished_levels(mapping: &Mapping, name: &str, declared: &[f64]) -> Result<BTreeSet<u64>> {
+    let Some(published) = mapping.field(name)?.published_levels()? else {
+        return Ok(BTreeSet::new());
+    };
+    let published: BTreeSet<u64> = published.iter().map(|level| level.to_bits()).collect();
+    Ok(declared
+        .iter()
+        .map(|level| level.to_bits())
+        .filter(|bits| !published.contains(bits))
+        .collect())
 }
 
 /// The largest of `declared` and the era ladders that every set in
@@ -633,10 +649,32 @@ fn assemble_one_field(
                         )));
                     }
                 }
+                // A level the field is not published on (`published_levels`)
+                // is zero when the file leaves it out; a published level the
+                // file leaves out is still missing.  A record on such a
+                // level is read like any other.
+                let published: Option<BTreeSet<u64>> = if axis_name == "vertical" {
+                    field
+                        .published_levels()?
+                        .map(|levels| levels.iter().map(|level| level.to_bits()).collect())
+                } else {
+                    None
+                };
+                let zero_levels: BTreeSet<u64> = match &published {
+                    Some(published) => vertical_values
+                        .iter()
+                        .map(|level| level.to_bits())
+                        .filter(|bits| !by_level.contains_key(bits) && !published.contains(bits))
+                        .collect(),
+                    None => BTreeSet::new(),
+                };
                 let missing: Vec<f64> = vertical_values
                     .iter()
                     .copied()
-                    .filter(|level| !by_level.contains_key(&level.to_bits()))
+                    .filter(|level| {
+                        !by_level.contains_key(&level.to_bits())
+                            && !zero_levels.contains(&level.to_bits())
+                    })
                     .collect();
                 let declared: BTreeSet<u64> =
                     vertical_values.iter().map(|value| value.to_bits()).collect();
@@ -677,6 +715,9 @@ fn assemble_one_field(
                             }
                             used.push(*position);
                             ordered.push(level_values);
+                        }
+                        None if zero_levels.contains(&level.to_bits()) => {
+                            ordered.push(ArrayD::from_elem(plane.clone(), 0.0))
                         }
                         None => ordered.push(ArrayD::from_elem(plane.clone(), f64::NAN)),
                     }
@@ -1308,6 +1349,139 @@ mod tests {
             choose_ladder(&declared, &eras, &carried),
             vec![5000.0, 10000.0, 20000.0]
         );
+    }
+
+    /// Temperature on the 1000/5000/10000 Pa ladder plus cloud water
+    /// (0.1.22) declared published on 5000 and 10000 Pa only.
+    fn partly_published_mapping(era_ladders: &str) -> Mapping {
+        let text = format!(
+            r#"{{"schema": "rw-wps.mapping.v1", "name": "t", "format": "grib2",
+                "coordinates": {{"vertical": {{"kind": "pressure", "units": "Pa",
+                    "levels": [1000, 5000, 10000]{era_ladders}}}}},
+                "fields": {{
+                  "air_temperature": {{"selectors": [{{"format": "grib2",
+                     "discipline": 0, "category": 0, "parameter": 0,
+                     "level_type": 100}}],
+                   "units": {{"source": "K", "target": "K"}},
+                   "source_axes": ["vertical", "y", "x"],
+                   "target_axes": ["vertical", "y", "x"],
+                   "location": "mass", "staggering": "none",
+                   "missing": {{"kind": "reject"}}}},
+                  "cloud_water_mixing_ratio": {{"selectors": [{{"format": "grib2",
+                     "discipline": 0, "category": 1, "parameter": 22,
+                     "level_type": 100}}],
+                   "units": {{"source": "kg kg-1", "target": "kg kg-1"}},
+                   "source_axes": ["vertical", "y", "x"],
+                   "target_axes": ["vertical", "y", "x"],
+                   "location": "mass", "staggering": "none",
+                   "missing": {{"kind": "reject"}},
+                   "published_levels": {{"levels": [5000, 10000], "absent": "zero"}}}}}}}}"#
+        );
+        let bytes = text.as_bytes().to_vec();
+        Mapping {
+            sha256: crate::digest::bytes_sha256(&bytes),
+            doc: crate::node::Node::parse(&bytes).unwrap(),
+            path: "<test>".to_owned(),
+        }
+    }
+
+    fn partly_published_records(temperature: &[f64], cloud: &[f64]) -> Vec<GribRecord> {
+        let mut records = Vec::new();
+        for level in temperature {
+            records.push(pressure_record(records.len(), 0, 0, *level));
+        }
+        for level in cloud {
+            records.push(pressure_record(records.len(), 1, 22, *level));
+        }
+        records
+    }
+
+    fn field_named<'c>(collection: &'c DecodedCollection, name: &str) -> &'c DirectValue {
+        collection
+            .direct
+            .values()
+            .find(|value| value.name == name)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_field_published_on_part_of_the_ladder_is_zero_on_the_rest() {
+        let mapping = partly_published_mapping("");
+        let all = [1000.0, 5000.0, 10000.0];
+        let records = partly_published_records(&all, &[5000.0, 10000.0]);
+        let collection = assemble_grib(&mapping, &records).unwrap();
+        // The other fields keep the whole declared ladder.
+        assert_eq!(collection.vertical_values, all.to_vec());
+        assert_eq!(field_named(&collection, "air_temperature").values.shape(), &[3, 2, 3]);
+        let cloud = field_named(&collection, "cloud_water_mixing_ratio");
+        assert_eq!(cloud.values.shape(), &[3, 2, 3]);
+        assert!(cloud.values.index_axis(ndarray::Axis(0), 0).iter().all(|value| *value == 0.0));
+        assert_eq!(cloud.values[ndarray::IxDyn(&[1, 0, 0])], 5000.0);
+        assert_eq!(cloud.values[ndarray::IxDyn(&[2, 1, 2])], 10000.0);
+        assert_eq!(cloud.missing_count, 0);
+        assert_eq!(cloud.references, vec!["<test>:3", "<test>:4"]);
+    }
+
+    #[test]
+    fn a_published_level_the_file_leaves_out_still_refuses_by_name() {
+        let mapping = partly_published_mapping("");
+        let all = [1000.0, 5000.0, 10000.0];
+        let records = partly_published_records(&all, &[10000.0]);
+        let refusal = assemble_grib(&mapping, &records).unwrap_err();
+        assert_eq!(
+            refusal.message,
+            "cloud_water_mixing_ratio vertical coverage mismatch; missing=[5000.0], extra=[]"
+        );
+    }
+
+    #[test]
+    fn a_record_on_an_unpublished_level_is_read() {
+        let mapping = partly_published_mapping("");
+        let all = [1000.0, 5000.0, 10000.0];
+        let collection = assemble_grib(&mapping, &partly_published_records(&all, &all)).unwrap();
+        let cloud = field_named(&collection, "cloud_water_mixing_ratio");
+        assert_eq!(cloud.values[ndarray::IxDyn(&[0, 0, 0])], 1000.0);
+    }
+
+    #[test]
+    fn a_partly_published_field_does_not_shorten_the_era_ladder_choice() {
+        // Temperature carries every declared level, so the declared
+        // ladder fits; the cloud field's unpublished 1000 Pa does not
+        // push the decode onto the era ladder that omits it.
+        let mapping = partly_published_mapping(r#", "era_ladders": [[5000, 10000]]"#);
+        let all = [1000.0, 5000.0, 10000.0];
+        let collection =
+            assemble_grib(&mapping, &partly_published_records(&all, &[5000.0, 10000.0])).unwrap();
+        assert_eq!(collection.vertical_values, all.to_vec());
+        // A publication without 1000 Pa anywhere still takes the era ladder.
+        let shorter = assemble_grib(
+            &mapping,
+            &partly_published_records(&[5000.0, 10000.0], &[5000.0, 10000.0]),
+        )
+        .unwrap();
+        assert_eq!(shorter.vertical_values, vec![5000.0, 10000.0]);
+    }
+
+    #[test]
+    fn a_published_levels_declaration_other_than_zero_refuses() {
+        let text = r#"{"schema": "rw-wps.mapping.v1", "name": "t", "format": "grib2",
+            "coordinates": {"vertical": {"kind": "pressure", "units": "Pa",
+                "levels": [1000, 5000]}},
+            "fields": {"cloud_water_mixing_ratio": {"selectors": [{"format": "grib2",
+                 "discipline": 0, "category": 1, "parameter": 22, "level_type": 100}],
+               "units": {"source": "kg kg-1", "target": "kg kg-1"},
+               "source_axes": ["vertical", "y", "x"], "target_axes": ["vertical", "y", "x"],
+               "location": "mass", "missing": {"kind": "reject"},
+               "published_levels": {"levels": [5000], "absent": "nan"}}}}"#;
+        let bytes = text.as_bytes().to_vec();
+        let mapping = Mapping {
+            sha256: crate::digest::bytes_sha256(&bytes),
+            doc: crate::node::Node::parse(&bytes).unwrap(),
+            path: "<test>".to_owned(),
+        };
+        let records = partly_published_records(&[], &[5000.0]);
+        let refusal = assemble_grib(&mapping, &records).unwrap_err();
+        assert!(refusal.message.contains("published_levels.absent"), "{}", refusal.message);
     }
 
     #[test]

@@ -29,9 +29,16 @@
 //! rw_nexrad live-fetch --site KTLX --out DIR [--allow-partial]
 //! rw_nexrad decode     --volume FILE --out FILE.rdrpack [--moments REF,VEL]
 //! rw_nexrad sites      [--site KTLX]
+//! rw_nexrad grid-ref   --grid GRID.json --volumes V1,V2,... --out PREFIX [--reduce mean|max]
+//! rw_nexrad grid-composite --grid GRID.json --frames ROOT --profile-from W/ref.f32
+//!                          --start TIME --window-minutes M --windows N --out DIR
 //! ```
+//!
+//! `grid-ref` and `grid-composite` are the two subcommands that grid: the
+//! radar latent heating door from Level II volumes ([`grid_ref`]) and from
+//! 2D composite frames, a nowcast's or MRMS's ([`grid_composite`]).
 
-use rw_nexrad::{decode, live, pack, s3};
+use rw_nexrad::{decode, grid_composite, grid_ref, live, pack, s3};
 
 use std::error::Error;
 use std::path::PathBuf;
@@ -83,7 +90,7 @@ cache_hits\tsha256\tgpuwm-obs.radar-sweeps.v1\tgpuwm-obs.nexrad-live-fetch.v1\tf
 volume_id\tchunks\tcomplete\tlag_seconds";
 
 const USAGE: &str = "\
-usage: rw_nexrad <list|fetch|live-list|live-fetch|decode|verify|sites> [OPTIONS]
+usage: rw_nexrad <list|fetch|live-list|live-fetch|decode|verify|sites|grid-ref|grid-composite> [OPTIONS]
        rw_nexrad --version | --help | --abi
 
   list        report the Level-II volumes a (site, window) resolves to, moving no payload
@@ -93,6 +100,11 @@ usage: rw_nexrad <list|fetch|live-list|live-fetch|decode|verify|sites> [OPTIONS]
   decode      validate one volume and write a `gpuwm-obs.radar-sweeps.v1` pack
   verify      re-read a pack and re-prove its header, schema and payload digest
   sites       print the vendored NEXRAD site table (id, name, lat, lon, alt)
+  grid-ref    decode volumes and grid their reflectivity onto a model grid in
+              NOAA's ref2tten convention (`rw_nexrad grid-ref --help`)
+  grid-composite
+              expand 2D composite frames (a nowcast, or MRMS) onto a model grid
+              as heating windows (`rw_nexrad grid-composite --help`)
 
 archive acquisition options (list, fetch)
   --site ID               four-character radar id, e.g. KTLX (data, not a gate)
@@ -194,6 +206,20 @@ fn run(args: &[String]) -> Result<String, Box<dyn Error>> {
         "--version" | "-V" => return Ok(format!("rw_nexrad {VERSION}\n")),
         "--abi" => return Ok(format!("{ABI_MARKER}\n")),
         _ => {}
+    }
+    if first == "grid-ref" {
+        if args[1..].iter().any(|a| a == "--help" || a == "-h") {
+            return Ok(grid_ref::GRID_REF_USAGE.to_string());
+        }
+        let request = grid_ref::parse_request(&args[1..])?;
+        return grid_ref::grid_ref(&request);
+    }
+    if first == "grid-composite" {
+        if args[1..].iter().any(|a| a == "--help" || a == "-h") {
+            return Ok(grid_composite::GRID_COMPOSITE_USAGE.to_string());
+        }
+        let request = grid_composite::parse_request(&args[1..])?;
+        return grid_composite::grid_composite(&request);
     }
     let options = Options::parse(&args[1..])?;
     match first.as_str() {
@@ -1187,7 +1213,8 @@ mod tests {
         assert!(run(&[]).unwrap().contains("usage: rw_nexrad"));
         let help = run(&["--help".to_string()]).unwrap();
         for subcommand in [
-            "list", "fetch", "live-list", "live-fetch", "decode", "verify", "sites",
+            "list", "fetch", "live-list", "live-fetch", "decode", "verify", "sites", "grid-ref",
+            "grid-composite",
         ] {
             assert!(help.contains(subcommand), "usage must document {subcommand}");
         }

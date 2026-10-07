@@ -145,8 +145,10 @@ impl Drop for Process {
     }
 }
 fn scratch(mode: &str) -> PathBuf {
+    // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+    static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    let root = env::temp_dir().join(format!("arwen headless {mode} {} {stamp}", std::process::id()));
+    let root = env::temp_dir().join(format!("arwen headless {mode} {} {stamp}-{}", std::process::id(), NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     fs::create_dir(&root).unwrap();
     root
 }

@@ -804,6 +804,108 @@ def _validate_era_ladders(
                 "which are the only ones the decoder admits")
 
 
+#: The canonical fields ``fields.<name>.published_levels`` may declare: the
+#: five hydrometeor mass mixing ratios.  A publisher that carries a
+#: hydrometeor on part of its pressure ladder is stating that the mass it
+#: did not write out there is negligible (NCEP's GFS pgrb2.0p25 writes
+#: CLMR/ICMR/RWMR/SNMR/GRLE on 22 of the 33 isobaric levels its state
+#: carries, 50..1000 hPa less 70 hPa), so the column is zero at the other
+#: levels.  For any other field a zero inside the column is a wrong value
+#: rather than an absent one, so the declaration is refused there.
+PUBLISHED_LEVELS_ZERO_FIELDS = (
+    "cloud_water_mixing_ratio", "rain_water_mixing_ratio",
+    "cloud_ice_mixing_ratio", "snow_mixing_ratio",
+    "graupel_or_hail_mixing_ratio",
+)
+
+
+def _validate_published_levels(
+    name: str,
+    field: Mapping[str, object],
+    levels: Sequence[float],
+    source_format: str,
+) -> None:
+    """``fields.<name>.published_levels``: the ladder levels a field is on.
+
+    A publisher may carry a field on a subset of the ladder its state
+    carries.  Without this the whole mapping must drop to that subset (a
+    ladder is chosen for every stacked field at once), which would take
+    temperature, humidity and wind off the levels above it.  The
+    declaration names the levels the field is published on, held to
+    every frame like the ladder itself; on the other declared levels the
+    field is ``absent``, and ``"zero"`` is the one value it may take,
+    for the fields where zero is what an unwritten mass is
+    (:data:`PUBLISHED_LEVELS_ZERO_FIELDS`).
+    """
+
+    label = f"fields.{name}.published_levels"
+    if name not in PUBLISHED_LEVELS_ZERO_FIELDS:
+        raise ValueError(
+            f"{label} is restricted to the hydrometeor mass mixing ratios "
+            f"({', '.join(PUBLISHED_LEVELS_ZERO_FIELDS)}): their zero is "
+            "what a mass the publisher does not write out at a level is, "
+            "and on any other field a zero inside the column is a wrong "
+            "value rather than an absent one")
+    if source_format not in {"grib1", "grib2"}:
+        raise ValueError(
+            f"{label} is read by the GRIB decoders only; the NetCDF decoder "
+            "selects vertical.levels by coordinate value, so a file without "
+            "one of these levels would still refuse there")
+    if not levels:
+        raise ValueError(
+            f"{label} needs vertical.levels: the declaration is a subset of "
+            "the declared ladder")
+    if not field.get("selectors"):
+        raise ValueError(
+            f"{label} describes the records a publisher writes, so the field "
+            "must be directly selected")
+    if tuple(field["source_axes"]) != ("vertical", "y", "x") \
+            or tuple(field["target_axes"]) != ("vertical", "y", "x"):
+        raise ValueError(
+            f"{label} is a vertical declaration; the field's source and "
+            "target axes must be ('vertical', 'y', 'x')")
+    if field["missing"]["kind"] != "reject":
+        raise ValueError(
+            f"{label} keeps the reject missing policy: a missing cell on a "
+            "level the publisher writes is still a defect in the file, and "
+            "only a level it does not write is zero")
+    if float(field["units"].get("offset", 0.0)) != 0.0:
+        raise ValueError(
+            f"{label} needs a zero unit offset, or the declared zero would "
+            "not stay zero through the unit conversion")
+    value = _object(
+        field["published_levels"], label,
+        allowed={"levels", "absent"}, required={"levels", "absent"})
+    if value["absent"] != "zero":
+        raise ValueError(f"{label}.absent must be 'zero'")
+    published = value["levels"]
+    if not isinstance(published, list) or not published:
+        raise ValueError(f"{label}.levels must be a non-empty numeric list")
+    values = [_number(level, f"{label}.levels[{index}]")
+              for index, level in enumerate(published)]
+    if len(set(values)) != len(values):
+        raise ValueError(f"{label}.levels must be a unique numeric list")
+    declared = set(float(level) for level in levels)
+    stray = [level for level in values if float(level) not in declared]
+    if stray:
+        raise ValueError(
+            f"{label}.levels names levels {stray} that vertical.levels does "
+            "not declare; the decoder admits the declared levels only")
+    if set(float(level) for level in values) == declared:
+        raise ValueError(
+            f"{label}.levels names every declared level, so the declaration "
+            "would change nothing; remove it")
+
+
+def _published_levels(field: Mapping[str, object]) -> frozenset[float] | None:
+    """The levels ``fields.<name>.published_levels`` names, or ``None``."""
+
+    declaration = field.get("published_levels")
+    if declaration is None:
+        return None
+    return frozenset(float(level) for level in declaration["levels"])
+
+
 def _carried_ladder(
     mapping: Mapping[str, object],
     declared: Sequence[float],
@@ -1481,6 +1583,7 @@ def load_mapping(
                 "selectors", "derivation", "units", "source_axes", "target_axes",
                 "location", "staggering", "missing", "selector_stack_axis",
                 "time_binding", "provider", "when_absent", "dependency_only",
+                "published_levels",
             },
             required={"units", "source_axes", "target_axes", "location", "missing"},
         )
@@ -1698,6 +1801,9 @@ def load_mapping(
         if field.get("when_absent") is not None:
             _validate_when_absent(
                 field_name, field, fields, vertical, str(source_format))
+        if field.get("published_levels") is not None:
+            _validate_published_levels(
+                field_name, field, numeric_levels, str(source_format))
 
     if vertical["kind"] == "hybrid_sigma_pressure":
         pressure_field = str(vertical["surface_pressure_field"])
@@ -4571,9 +4677,18 @@ def _assemble_grib(
             key for key in matched
             if "vertical" in tuple(mapping["fields"][key[2]].get("source_axes", ()))
         ]
+        # A field declared on part of the ladder (published_levels) holds
+        # the levels it is zero on as well as the ones it carries.
+        unpublished = {
+            key: set(explicit) - published
+            for key in stacked
+            if (published := _published_levels(
+                mapping["fields"][key[2]])) is not None
+        }
         ladder = _carried_ladder(
             mapping, explicit,
-            ({record.level_value for record in matched[key]} for key in stacked),
+            ({record.level_value for record in matched[key]}
+             | unpublished.get(key, set()) for key in stacked),
         )
         # Records on a declared level the chosen era ladder omits are
         # not stacked: a publication that carries that level for some
@@ -4728,6 +4843,15 @@ def _assemble_grib(
                        if level not in by_level]
             extra = [float(level) for level in by_level
                      if level not in set(stacking_values)]
+            # A level the field is not published on (published_levels)
+            # is zero when the file leaves it out; a published level the
+            # file leaves out is still missing.  A record on such a level
+            # is read like any other.
+            published = (_published_levels(field)
+                         if stacking_axis == "vertical" else None)
+            zero_levels = set() if published is None else {
+                level for level in missing if level not in published}
+            missing = [level for level in missing if level not in zero_levels]
             # A field the frame completes may leave levels out; it is
             # derived there from the frame's own state.  Only under the
             # reject policy, whose NaN can mean nothing but "absent".
@@ -4743,7 +4867,8 @@ def _assemble_grib(
             for level in stacking_values:
                 record = by_level.get(level)
                 if record is None:
-                    ordered.append(np.full(plane, np.nan))
+                    ordered.append(np.zeros(plane) if float(level) in zero_levels
+                                   else np.full(plane, np.nan))
                     continue
                 level_values = scaled(record, level_rank[level])
                 if absent_levels and not np.isfinite(level_values).all():
@@ -7225,11 +7350,28 @@ HYDROMETEOR_LEGACY_NAMES = {
     "graupel_or_hail_mixing_ratio": "QG",
 }
 
+#: The two vertical-velocity planes the regular-source join packs, with
+#: the units each must carry.  ``pressure_vertical_velocity`` is omega
+#: (Pa s-1), what NCEP's native products publish (HRRR wrfnat and RAP
+#: awp130bgrb: 0/2/8 on every hybrid level); ``vertical_velocity`` is
+#: geometric W (m s-1).  The initializer (gpuwm.ingest.real) converts
+#: omega with the target column's own density and interpolates either
+#: onto the W interfaces, so a start from an analysis keeps the updrafts
+#: the analysis holds instead of restarting every storm from W = 0.
+VERTICAL_VELOCITY_LEGACY_NAMES = {
+    "pressure_vertical_velocity": ("OMEGA", "Pa s-1"),
+    "vertical_velocity": ("WW", "m s-1"),
+}
+
 #: Canonical fields a mapping may legitimately declare that the
 #: regular-source join has no consumer for.  Carrying more than the target
 #: consumes is neither impossible nor self-contradictory nor missing, so it
 #: is not refused: the plane is left out of the pack and named once.
-REGULAR_JOIN_DROPPED_FIELDS = ("vertical_velocity",)
+#: Empty since the join took up vertical velocity (the drop it used to name
+#: was the guard that kept every HRRR-analysis start at W = 0, the
+#: hour-one spin-up defect); the machinery stays for the next field a
+#: mapping carries ahead of its consumer.
+REGULAR_JOIN_DROPPED_FIELDS: tuple[str, ...] = ()
 
 
 def regular_join_dropped_fields(declared) -> tuple[str, ...]:
@@ -7338,6 +7480,14 @@ def _regular_snapshot_field_items(frame, pressure, *, soil_land_repair,
             if canonical[name].units != "kg-1":
                 raise ValueError(f"{name} must carry number mixing ratio units kg-1")
             yield legacy, np.asarray(canonical[name].values, dtype=np.float64)
+    # Packed as the number fields are: the plane as the frame carries it
+    # (a windowed frame hands over its own window), with only the units
+    # checked here; the initializer holds the shape to the mass grid.
+    for name, (legacy, units) in VERTICAL_VELOCITY_LEGACY_NAMES.items():
+        if name in canonical:
+            if canonical[name].units != units:
+                raise ValueError(f"{name} must carry {units}")
+            yield legacy, np.asarray(canonical[name].values, dtype=np.float64)
     soil_t = np.asarray(
         canonical["soil_temperature"].values, dtype=np.float64,
     )
@@ -7430,10 +7580,17 @@ def mapped_frames_to_regular_snapshots(
     views and the decoded fields are copied once by the same immutable
     snapshot constructor; no temporary full-grid zero bank is allocated.
 
-    A canonical field the regular join has no consumer for (today:
-    ``vertical_velocity``) is not refused.  It is dropped, and named once
-    through :func:`warn_regular_join_drops`, which the mapped plan review
-    calls on the same question.
+    Vertical velocity is packed per field as well: a frame carrying
+    ``pressure_vertical_velocity`` (omega, Pa s-1) is packed as ``OMEGA``
+    and one carrying ``vertical_velocity`` (m s-1) as ``WW``
+    (VERTICAL_VELOCITY_LEGACY_NAMES); the initializer turns either into
+    the start state's W.  A frame carrying neither leaves W to the
+    initializer's zero policy.
+
+    A canonical field the regular join has no consumer for
+    (REGULAR_JOIN_DROPPED_FIELDS, empty today) is not refused.  It is
+    dropped, and named once through :func:`warn_regular_join_drops`, which
+    the mapped plan review calls on the same question.
     """
 
     frames = tuple(frames)

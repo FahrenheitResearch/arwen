@@ -7,6 +7,17 @@ recipe_sources = ["hrrr", "hrrr-native", "hrrr-prs"]
 
 [request.defaults]
 mynn_sfclay_variant = "gsl_wrf39"
+# The operational fork's Thompson generation and its melting-snow fall;
+# both read only under mp_physics = 28
+# (physics_source_defaults.MP_SCOPED_RECIPE_SETTINGS), and the snow fall
+# only with the fork generation (gpuwm.config refuses it under wrf_461).
+# The two travel together: the fork generation with the v4.6.1 snow fall
+# ("blend") is a physics HRRR never runs.  On the Iowa 2024-05-21 HRRR
+# crop the generation alone moved f01 FSS35 from 0.30 to 0.34; with the
+# fork snow fall it is 0.42, level with HRRR (WOOF-FIX-PROGRAM-2026-10-06,
+# woof-hour1-spinup).
+thompson_version = "wrf_39_noaa"
+thompson_fork_snow_fall = "wrf_39_noaa"
 terrain_clock = "pinned"
 diff_6th_form = "noaa_wrf39"
 diff_6th_factor2 = 0.04
@@ -20,6 +31,23 @@ mix_full_fields = false
 [request.root_defaults]
 v_sca_adv_order = 5
 v_mom_adv_order = 5
+
+# RAP runs the same operational WRF 3.9 fork as HRRR (one code base, the
+# 13 km parent of the 3 km run), so a RAP-sourced configuration takes the
+# fork's surface layer, Thompson generation and melting-snow fall.  Only
+# the scheme generations are declared here: the numeric namelist settings
+# and the clock of the row above were read from HRRR's own namelist and
+# are not claimed for RAP's.  Origin: the WOOF-HRRR door (HRRR analysis,
+# RAP boundaries, fetch source rap-native) got no fork selector from this
+# table and ran the v4.6.1 surface layer and Thompson.
+[[request]]
+source = "gsl_wrf39_rap"
+recipe_sources = ["rap", "rap-native"]
+
+[request.defaults]
+mynn_sfclay_variant = "gsl_wrf39"
+thompson_version = "wrf_39_noaa"
+thompson_fork_snow_fall = "wrf_39_noaa"
 
 [[request]]
 source = "noaa_wrf39_radiation"

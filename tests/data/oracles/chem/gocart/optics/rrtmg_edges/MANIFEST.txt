@@ -1,0 +1,6 @@
+tauaer f4 2 4 50
+waer f4 2 4 50
+gaer f4 2 4 50
+band_tau f4 3 1 50 14
+band_ssa f4 3 1 50 14
+band_asm f4 3 1 50 14

@@ -57,9 +57,16 @@ tick lattice at birth.
 
 **Deliberate simplifications, stated rather than buried.**
 
-* Members share the deterministic run's lateral boundary conditions --
-  the perturbation lane's documented setting, and the reason ensemble
-  spread is suppressed near the rim.
+* Each member runs its own lateral boundary forcing
+  (:func:`gpuwm.da.perturb.perturbed_lateral_boundaries`, scale
+  ``--boundary-perturbation``, default 1): the shared tables ramp over the
+  first boundary interval into the member's own draw, so spread no longer
+  dies toward the rim.  ``--boundary-perturbation 0`` restores the shared
+  boundaries.  After every analysis each member also takes additive
+  inflation (:func:`gpuwm.da.perturb.additive_inflation`,
+  ``--additive-inflation``, default 0.25 of the initial amplitudes) with
+  its ensemble mean removed, so the analysis mean is the filter's and only
+  the spread grows.
 * The observation grid is supplied per leg and is bound to the
   observation file by digest inside the adapter; a member's own column
   heights differ from that grid by the member's own perturbation, which
@@ -92,6 +99,8 @@ from types import MappingProxyType, SimpleNamespace
 
 import numpy as np
 
+from gpuwm.da.iau import IAU_MODES, resolve_iau_mode
+
 try:                                    # python -m tools.da_cycle_prepared
     from tools import da_ensemble_state as ens_state
     from tools import da_solve_ab as ab_bundle
@@ -120,6 +129,98 @@ REPORT_SCHEMA = "gpuwm-da.prepared-cycle-report.v1"
 #: so the flag keeps doing exactly that and nothing more.
 PHYSICS_VOCABULARY_FIELDS = ("maturity", "registry_sha256",
                              "registry_physics")
+
+
+class Iau4dLegRunner:
+    """``run_leg`` for ``--iau-mode 4d``: the analysis forced over a window
+    centred on its own time, from the member's own trajectory.
+
+    The window is ``[t_a - W/2, t_a + W/2]``.  Its first half lies before
+    the analysis, inside the leg that ended there, so that leg is run in two
+    parts and leaves a restart at ``t_end - W/2`` (part A) before it carries
+    on to its end (part B, whose state the filter analyses); the leg after
+    the analysis then starts again from part A's restart -- the member's own
+    trajectory half a window before the analysis -- with the increment
+    forced from there.  The unforced re-integration is the deterministic
+    model on the same restart, so the rewound leg leaves the background
+    trajectory exactly where the forcing begins.
+
+    Part A writes under ``<stage>/iau-mid`` (a root the driver's stage does
+    not own), and this runner -- the controller, which owns every deletion;
+    the member leg deletes nothing -- removes each mid restart once the
+    rewound leg has restored it.  The control is never analysed, so it is never split
+    or rewound.  Serial route only: the packed transport carries neither
+    the mid restart nor the rewind (the driver refuses that pairing).
+    """
+
+    MID_ROOT = "iau-mid"
+
+    def __init__(self, run_leg, *, window_seconds: float):
+        self.run_leg = run_leg
+        self.half = 0.5 * float(window_seconds)
+        self.mid: dict = {}
+
+    def _mid_context(self, context, **changes):
+        return dataclasses.replace(
+            context, stage_root=Path(context.stage_root) / self.MID_ROOT,
+            out=Path(context.out) / self.MID_ROOT, **changes)
+
+    def __call__(self, context, name):
+        import shutil
+
+        import dataclasses
+
+        rewind = (name != CONTROL and bool(context.pending)
+                  and name in self.mid)
+        if name != CONTROL and context.pending and not rewind:
+            raise RuntimeError(
+                f"leg {context.leg} {name}: an analysis is pending and no "
+                "restart half a window before it was kept; 4D-IAU needs "
+                "the leg that ended at the analysis run in this mode")
+        split = (name != CONTROL and context.analysis_due)
+        t_mid = float(context.t_end) - self.half
+        if split and not t_mid > (float(context.t_start)
+                                  - (self.half if rewind else 0.0)):
+            raise RuntimeError(
+                f"leg {context.leg} {name}: a {2 * self.half:.0f} s window "
+                "does not fit a leg of "
+                f"{context.t_end - context.t_start:.0f} s")
+        first = context
+        consumed_mid = None
+        if rewind:
+            consumed_mid = self.mid.pop(name)
+            first = dataclasses.replace(
+                context, t_start=float(context.t_start) - self.half,
+                restart=consumed_mid, resumed=True, iau_rewound=True)
+        records = {}
+        if split:
+            part_a = self.run_leg(self._mid_context(
+                first, t_end=t_mid, analysis_due=False), name)
+            records["part_a"] = part_a.record
+            self.mid[name] = part_a.restart
+            result = self.run_leg(dataclasses.replace(
+                context, t_start=t_mid, restart=part_a.restart, pending=None,
+                resumed=True, iau_rewound=False), name)
+        else:
+            result = self.run_leg(first, name)
+        if consumed_mid is not None:
+            # Restored by the rewound part; nothing else reads it.
+            shutil.rmtree(Path(consumed_mid).parent, ignore_errors=True)
+        result.record["iau4d"] = {
+            "window_half_seconds": self.half,
+            "rewound_from_seconds": (float(context.t_start) - self.half
+                                     if rewind else None),
+            "split_at_seconds": t_mid if split else None,
+            **({"part_a": records["part_a"]} if records else {}),
+        }
+        return result
+
+
+def run_member_leg_entry():
+    """The member leg the roster runs (imported late: the leg module
+    imports this one)."""
+    from tools.da_member_leg import run_member_leg
+    return run_member_leg
 
 
 def to_host(value) -> np.ndarray:
@@ -202,6 +303,65 @@ def restore_leg_restart(model, path, *, expected_seconds: float):
     return info
 
 
+def member_background(result):
+    """The background the analysis reads for one forecast result.
+
+    The in-process mirror when the leg ran in this process; otherwise a
+    lazy view of the member's own leg-end restart, which holds the same
+    bytes (``tools/da_member_leg_proof.py`` checks that on the card) and
+    is read one field at a time, only for the fields the analysis uses.
+    """
+    from gpuwm.da.radar_assimilation import CheckpointStateView
+
+    if result.snapshot is not None:
+        return result.snapshot
+    return CheckpointStateView(result.restart)
+
+
+def release_backgrounds(backgrounds: dict) -> None:
+    """Close every restart view a finished analysis held, then forget all."""
+    for value in backgrounds.values():
+        close = getattr(value, "close", None)
+        if callable(close):
+            close()
+    backgrounds.clear()
+
+
+def write_member_increments(path, increments) -> Path:
+    """Member 0's accepted increments as float32, the analysis's own record.
+
+    Written uncompressed: zlib over fourteen whole-domain fields cost
+    seconds of one core inside every analysis, for a diagnostic that
+    every reader opens with ``np.load`` either way.  The arrays are the
+    same float32 bytes.
+    """
+    path = Path(path)
+    np.savez(path, **{key: np.asarray(value).astype(np.float32)
+                      for key, value in increments.items()})
+    return path
+
+
+def analysis_backgrounds(snapshots, members: int, *, directory, t_end,
+                         files: bool) -> dict:
+    """``{member: background}`` for one analysis.
+
+    The backgrounds themselves, with no copy, unless ``files`` asks for
+    the legacy staged checkpoints the replay bundle copies: then each
+    member's state is saved under ``directory`` exactly as before.
+    """
+    if not files:
+        return {index: snapshots[index] for index in range(int(members))}
+    checkpoints = {}
+    for index in range(int(members)):
+        member_dir = Path(directory) / f"member_{index:03d}"
+        member_dir.mkdir(parents=True)
+        path = member_dir / f"gpuwmrst_d01_{int(t_end):06d}.npz"
+        state = snapshots[index]
+        np.savez(path, **{f"state/{key}": state[key] for key in state})
+        checkpoints[index] = path
+    return checkpoints
+
+
 class StagedRestarts:
     """Where a run stages each trajectory's leg-end restart set, and its removal.
 
@@ -224,9 +384,10 @@ class StagedRestarts:
     #: A set's members, as the restart owner names them.
     MEMBER_GLOB = "gpuwmrst_*.npz"
 
-    def __init__(self, stage_root, *, default: bool):
+    def __init__(self, stage_root, *, default: bool, logs_dir=None):
         self.stage_root = Path(stage_root)
         self.root = self.stage_root / "restart"
+        self.logs_dir = None if logs_dir is None else Path(logs_dir)
         self.default = bool(default)
         self._analysis_dirs: list[Path] = []
         self._cleared: dict | None = None
@@ -291,6 +452,26 @@ class StagedRestarts:
             return self._cleared
         held = self.inventory()
         shutil.rmtree(self.root, ignore_errors=True)
+        # The packed route's per-leg job directories: a member stopped
+        # mid-leg leaves its whole restart in its own output root there.
+        packed = self.stage_root / "packed"
+        packed_bytes = 0
+        logs_kept = 0
+        if packed.is_dir() and self.logs_dir is not None:
+            # The member and control logs are the only record of why a job
+            # failed: moved aside (leg/job layout kept), never deleted.
+            for log in packed.rglob("*.log"):
+                target = self.logs_dir / log.relative_to(packed)
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(log), target)
+                    logs_kept += 1
+                except OSError:
+                    pass
+        if packed.is_dir():
+            packed_bytes = sum(path.stat().st_size for path in
+                               packed.rglob("*") if path.is_file())
+            shutil.rmtree(packed, ignore_errors=True)
         analysis_removed = 0
         for path in self._analysis_dirs:
             if path.exists():
@@ -307,6 +488,10 @@ class StagedRestarts:
             "restart_sets_removed": held["restart_sets"],
             "restart_bytes_removed": held["restart_bytes"],
             "analysis_directories_removed": analysis_removed,
+            "packed_job_bytes_removed": int(packed_bytes),
+            "packed_job_logs_kept": int(logs_kept),
+            "packed_job_logs_directory": (None if self.logs_dir is None
+                                          else str(self.logs_dir)),
             "restart_directory_left": self.root.exists(),
             "stage_root_removed": root_removed,
         }
@@ -351,6 +536,25 @@ def restart_child_birth_seconds(path, *, grid_id: int, start_time) -> float:
 
 
 
+def _reflectivity_floor_argument(text: str):
+    """``none`` switches the common reflectivity echo floor off; else a
+    finite dBZ value."""
+
+    import argparse
+    import math
+
+    if text.strip().lower() == "none":
+        return None
+    try:
+        value = float(text)
+    except ValueError:
+        value = float("nan")
+    if not math.isfinite(value):
+        raise argparse.ArgumentTypeError(
+            f"expected a finite dBZ value or 'none', got {text!r}")
+    return value
+
+
 def _dispersion_ratio_argument(text: str):
     """``none`` switches the dispersion gate (or its batch condition) off;
     else a finite positive ratio."""
@@ -390,6 +594,31 @@ def dispersion_gate_line(ratio, batch_ratio) -> str:
             f"({'default' if default else 'set'})")
 
 
+def cards_except(gpu_uuid):
+    """This process's device ordinals other than the card ``gpu_uuid``.
+
+    ``None`` when the cards cannot be named (no CUDA, or a runtime that
+    does not report UUIDs): the analysis then uses every card and shares
+    one with the control, which is slower and never wrong.
+    """
+    try:
+        import cupy as cp
+
+        ordinals = []
+        for index in range(int(cp.cuda.runtime.getDeviceCount())):
+            raw = cp.cuda.runtime.getDeviceProperties(index).get("uuid")
+            if not raw:
+                return None
+            text = bytes(raw).hex()
+            name = (f"GPU-{text[:8]}-{text[8:12]}-{text[12:16]}-"
+                    f"{text[16:20]}-{text[20:32]}")
+            if name.lower() != str(gpu_uuid).lower():
+                ordinals.append(index)
+        return tuple(ordinals) or None
+    except Exception:
+        return None
+
+
 def plan_radar_assimilation(args, mp_physics, *, analysis_fields,
                             cwp: bool):
     """The analysis configuration this cycle will run, built once.
@@ -422,6 +651,8 @@ def plan_radar_assimilation(args, mp_physics, *, analysis_fields,
     from gpuwm.da.velocity_dispersion import (
         DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO,
         DEFAULT_VELOCITY_DISPERSION_RATIO)
+    from gpuwm.da.reflectivity_echo import (
+        DEFAULT_REFLECTIVITY_OUTLIER_SIGMAS, DEFAULT_REFLECTIVITY_FLOOR_DBZ)
 
     cwp_localization = None
     if cwp:
@@ -436,9 +667,13 @@ def plan_radar_assimilation(args, mp_physics, *, analysis_fields,
             vertical_m=args.vertical_loc_m),
         rtps_alpha=args.rtps_alpha, relaxation=args.relaxation,
         analysis_fields=tuple(analysis_fields),
+        spread_repair=getattr(args,"spread_repair","off"),
+        spread_repair_z_threshold=getattr(args,"spread_repair_z_threshold",25.0),
+        spread_repair_seed=int(getattr(args,"seed",0)),
+        spread_repair_adaptive=bool(getattr(args,"spread_repair_adaptive",False)),
         velocity=True,
         reflectivity=bool(args.reflectivity_analysis),
-        fall_speed="none",
+        fall_speed=resolved_fall_speed(args, mp_physics),
         velocity_thinning_cells=args.thin_cells,
         velocity_error_inflation=args.err_inflation,
         reflectivity_thinning_cells=args.z_thin_cells,
@@ -460,7 +695,75 @@ def plan_radar_assimilation(args, mp_physics, *, analysis_fields,
         velocity_dispersion_batch_ratio=getattr(
             args, "velocity_dispersion_batch_gate",
             DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO),
-        precip_analysis=getattr(args, "precip_analysis", "off"))
+        precip_analysis=getattr(args, "precip_analysis", "off"),
+        reflectivity_floor_dbz=getattr(
+            args, "reflectivity_floor_dbz", DEFAULT_REFLECTIVITY_FLOOR_DBZ),
+        reflectivity_outlier_sigmas=getattr(
+            args, "reflectivity_outlier_sigmas",
+            DEFAULT_REFLECTIVITY_OUTLIER_SIGMAS),
+        **_field_rule_kwargs(args),
+        **_radar_class_kwargs(args))
+
+
+def _field_rule_kwargs(args) -> dict:
+    """The field rules (gpuwm.da.field_rules) from the door's flags; an
+    absent flag (an older argv) takes the default."""
+    from gpuwm.da import field_rules as fr
+
+    pick = (lambda name, default: getattr(args, name, default))
+    return {
+        "field_rules": pick("field_rules", fr.DEFAULT_RULES),
+        "z_thermo_weight": pick("z_thermo_weight", fr.DEFAULT_Z_THERMO_WEIGHT),
+        "z_hydrometeors": pick("z_hydrometeors", fr.DEFAULT_Z_HYDROMETEORS),
+        "z_qv_cap": pick("z_qv_cap", fr.DEFAULT_Z_QV_CAP),
+        "number_rediagnosis": pick("number_rediagnosis",
+                                   fr.DEFAULT_NUMBER_MODE),
+    }
+
+
+def _radar_class_kwargs(args) -> dict:
+    """The radar observation class settings (gpuwm.da.radar_classes) from
+    the door's flags; an absent flag (an older argv) takes the default."""
+    from gpuwm.da import radar_classes as rc
+
+    pick = (lambda name, default: getattr(args, name, default))
+    return {
+        "z_source": pick("z_source", "z_mean"),
+        "reflectivity_clear_floor_dbz": pick(
+            "reflectivity_clear_floor_dbz", rc.DEFAULT_CLEAR_FLOOR_DBZ),
+        "reflectivity_dead_band": pick(
+            "reflectivity_dead_band", rc.DEFAULT_DEAD_BAND),
+        "reflectivity_error_dbz": pick(
+            "reflectivity_error_dbz", rc.DEFAULT_ECHO_ERROR_DBZ),
+        "clear_air_error_dbz": pick(
+            "clear_air_error_dbz", rc.DEFAULT_CLEAR_ERROR_DBZ),
+        "reflectivity_level_stride": pick(
+            "reflectivity_level_stride", rc.DEFAULT_ECHO_LEVEL_STRIDE),
+        "clear_air_level_stride": pick(
+            "clear_air_level_stride", rc.DEFAULT_CLEAR_LEVEL_STRIDE),
+        "radar_top_pa": pick("radar_top_pa", rc.DEFAULT_TOP_PA),
+        "reflectivity_huber_c": pick("reflectivity_huber_c", None),
+    }
+
+
+def resolved_fall_speed(args, mp_physics) -> str:
+    """The radial-velocity fall-speed closure this cycle runs.
+
+    ``auto`` (the default) is ``reflectivity`` -- ``w - vt`` with each
+    species' own fall speed (gpuwm.da.obsop.species_blended_fall_speed) --
+    wherever the scheme has a routed H_Z(x), and ``none`` (plain ``w``)
+    only where it has none, which the leg record states.  Until this
+    default the driver projected plain ``w`` for every scheme, so every
+    elevated beam through precipitation was simulated without the
+    hydrometeors' fall.
+    """
+    from gpuwm.da.radar_assimilation import reflectivity_route_available
+
+    stated = getattr(args, "fall_speed", "auto")
+    if stated != "auto":
+        return stated
+    return ("reflectivity" if reflectivity_route_available(mp_physics)
+            else "none")
 
 
 def planned_analysis_fields(args, mp_physics) -> tuple:
@@ -910,7 +1213,7 @@ def merge_hotstart_increments(filter_increments, hot_increments, *, prior,
         # that leaves this process unbounded.
         merged, receipt = apply_positivity(
             prior, merged, policy=positivity_policy)
-        if positivity_policy in ("clip", "reject"):
+        if positivity_policy in _positivity.BOUNDING_POLICIES:
             # The post-condition that catches a policy applied to the
             # wrong mapping, asked of the bytes the next leg will apply.
             verify_non_negative(prior, merged)
@@ -930,21 +1233,86 @@ def rain_snapshot(driver) -> dict:
             for name in ("RAINC", "RAINNC")}
 
 
+#: The reflectivity a composite frame carries (its npz ``refl_product``).
+#: NATIVE is the model's own REFL_10CM from an output-due microphysics call,
+#: the field WOOF publishes; OPERATOR is the DA forward operator over the
+#: state between steps.  Scores and maps compare like with like.
+REFL_PRODUCT_NATIVE = "native_refl_10cm"
+REFL_PRODUCT_OPERATOR = "da_forward_operator"
+
+
+def _column_max_float32(field) -> np.ndarray:
+    """``to_host(field).astype(np.float32).max(axis=0)``, the same bytes.
+
+    On the card when the field is there: casting to float32 is monotonic
+    and a maximum picks one of its inputs, so the column maximum is exact
+    in either order and only the 2-D answer crosses to the host instead of
+    the whole 3-D reflectivity.
+    """
+    if hasattr(field, "__cuda_array_interface__"):
+        import cupy as cp
+
+        return to_host(cp.asarray(field).astype(cp.float32).max(axis=0))
+    return to_host(field).astype(np.float32).max(axis=0)
+
+
 def _write_rain_composite(npz_path, *, state, driver, grid, cfg,
-                          elapsed_seconds, exp, label, domain=None):
-    """Save a native two-dimensional score frame without modifying state."""
+                          elapsed_seconds, exp, label, domain=None,
+                          reflectivity=None, writer=None):
+    """Save a native two-dimensional score frame without modifying state.
+
+    ``reflectivity`` is the scheme-native REFL_10CM an output-due
+    microphysics call staged; without one (a frame no step has produced,
+    such as an analysis issued before its first step) the DA forward
+    operator stands in.  The two differ on one state (CONUS first light,
+    20Z control: 1,739 against 1,368 cells at 35 dBZ or more), so every
+    frame records which it carries in ``refl_product`` and a scorer must
+    not difference one against the other.
+
+    The frame is taken from the live state here; with ``writer`` (an
+    executor), the compression and the wrfout copy run on it and this
+    returns its future, so a forecast's history alarm costs the step loop
+    only the reads.  Breakage: on the 9 km CONUS free leg the members sat
+    at about 175 % CPU writing the two-minute rain history while the cards
+    idled.
+    """
     from gpuwm.da import obsop
 
     rain = rain_snapshot(driver)
-    composite = to_host(obsop.simulated_reflectivity(state, cfg)).astype(
-        np.float32).max(axis=0)
-    npz_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(npz_path, refl_colmax=composite, **rain,
-                        elapsed_seconds=np.float64(elapsed_seconds),
-                        rain_reset_id=np.int64(0))
-    return _write_composite_wrfout(
-        npz_path, composite, grid, cfg, elapsed_seconds, exp,
-        label=label, domain=domain, rain=rain)
+    if reflectivity is None:
+        field, product = (obsop.simulated_reflectivity(state, cfg),
+                          REFL_PRODUCT_OPERATOR)
+    else:
+        field, product = reflectivity, REFL_PRODUCT_NATIVE
+    composite = _column_max_float32(field)
+    del field
+
+    def persist():
+        npz_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(npz_path, refl_colmax=composite, **rain,
+                            elapsed_seconds=np.float64(elapsed_seconds),
+                            rain_reset_id=np.int64(0),
+                            refl_product=np.str_(product))
+        return _write_composite_wrfout(
+            npz_path, composite, grid, cfg, elapsed_seconds, exp,
+            label=label, domain=domain, rain=rain)
+
+    if writer is None:
+        return persist()
+    return writer.submit(persist)
+
+
+_LATLON_MASS: dict = {}
+
+
+def _latlon_mass(grid):
+    """``grid.latlon_mass()``, once per grid object in a process: every
+    history frame of a leg asked the projection for the same arrays."""
+    key = id(grid)
+    cached = _LATLON_MASS.get(key)
+    if cached is None or cached[0] is not grid:
+        cached = _LATLON_MASS[key] = (grid, grid.latlon_mass())
+    return cached[1]
 
 
 def _write_composite_wrfout(npz_path, refl_colmax, grid, cfg,
@@ -979,7 +1347,7 @@ def _write_composite_wrfout(npz_path, refl_colmax, grid, cfg,
     from gpuwm.io.wrfout import wrf_global_attrs
 
     try:
-        lat, lon = grid.latlon_mass()
+        lat, lon = _latlon_mass(grid)
         snapshot = {
             "XLAT": np.asarray(lat, np.float32),
             "XLONG": np.asarray(lon, np.float32),
@@ -1027,6 +1395,226 @@ def _write_composite_wrfout(npz_path, refl_colmax, grid, cfg,
         print(f"    composite wrfout skipped for {label}: {problem}")
         return None
 
+#: Card memory each packed card keeps back beside its member processes.
+PACKED_CARD_RESERVE_BYTES = 4*1024**3
+
+
+def packed_members_per_card(choice, cards, member_peak_bytes, *,
+                            mps_available=None):
+    """Member processes per card for a packed roster, or ValueError.
+
+    Any number of cards and members: :func:`gpuwm.da.member_wave.plan_wave`
+    runs ``len(cards) x width`` members at once and the rest in later
+    waves.  The route used to accept only 32 or 64 members on exactly
+    eight cards, which named no breakage (the waves were already
+    general) and kept the packed step off every one-to-four-card box.
+    ``auto`` takes 4, 2 or 1, the most the priced complete trajectory
+    fits on the tightest card after the reserve; a stated width that
+    does not fit is refused.
+    """
+    if not cards:
+        raise ValueError("packed DA needs at least one physical card")
+    available = min(min(card["free_bytes"], card["total_bytes"])
+                    - PACKED_CARD_RESERVE_BYTES for card in cards)
+    if choice == "auto":
+        # Four members per card share it through an MPS controller
+        # (gpuwm.da.member_wave refuses four without one).  auto took 4
+        # whenever memory allowed, so on 96 GB cards with no controller
+        # running every packed run failed at launch (box K, 2026-10-05,
+        # twice).  Without an answering controller auto stops at 2.
+        if mps_available is None:
+            from gpuwm.da.member_wave import mps_available as _probe
+            mps_available = _probe()
+        widths = (4, 2, 1) if mps_available else (2, 1)
+        for width in widths:
+            if width*member_peak_bytes <= available:
+                return width
+        raise ValueError(
+            f"one packed member ({member_peak_bytes/1024**3:.1f} GiB priced) "
+            f"does not fit the tightest card ({available/1024**3:.1f} GiB "
+            "after the reserve)")
+    width = int(choice)
+    if width*member_peak_bytes > available:
+        raise ValueError(
+            f"{width} packed members ({width*member_peak_bytes/1024**3:.1f} "
+            "GiB priced) do not fit the tightest card "
+            f"({available/1024**3:.1f} GiB after the reserve)")
+    return width
+
+
+class RecoveryRing:
+    """A packed run's recovery generations, pruned when the run stops early.
+
+    The packed controller writes a recovery generation at every leg
+    boundary into a ring of slots; a run that completes removes the ring
+    (its report says so).  A run that stops early keeps exactly ONE: the
+    newest generation whose manifest landed, the boundary a resume
+    continues from.  Every other slot, and a slot whose write the stop
+    interrupted, is removed, and ``recovery-cleanup.json`` beside the ring
+    says what went.  Breakage: a stopped CONUS run on box E left 188 GB of
+    stage and recovery sets behind and the next run died on a full disk.
+    """
+
+    def __init__(self, root):
+        self.root = Path(root)
+        self.done = None
+
+    def clear(self) -> dict | None:
+        if self.done is not None or not self.root.is_dir():
+            return self.done
+        newest, newest_seconds = None, None
+        for slot in sorted(self.root.glob("slot*")):
+            manifest = slot / "ensemble-manifest.json"
+            try:
+                seconds = float(json.loads(manifest.read_text(
+                    encoding="utf-8"))["elapsed_seconds"])
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            if newest_seconds is None or seconds > newest_seconds:
+                newest, newest_seconds = slot, seconds
+        removed = []
+        for slot in sorted(self.root.glob("slot*")):
+            if slot == newest:
+                continue
+            size = sum(path.stat().st_size for path in slot.rglob("*")
+                       if path.is_file())
+            shutil.rmtree(slot, ignore_errors=True)
+            removed.append({"slot": slot.name, "bytes": int(size)})
+        self.done = {"kept": None if newest is None else newest.name,
+                     "kept_elapsed_seconds": newest_seconds,
+                     "removed": removed,
+                     "rule": "a stopped run keeps its newest complete "
+                             "generation only"}
+        try:
+            (self.root / "recovery-cleanup.json").write_text(
+                json.dumps(self.done, indent=1), encoding="utf-8")
+        except OSError:
+            pass
+        return self.done
+
+
+def control_vr_innovations(document, u_e, v_n, w_m):
+    """``(per_radar, pooled)``: the control's radial-velocity innovation
+    against every radar of a leg's document (no filter, direct H(x)), one
+    row per radar and the residual arrays of the radars that observed.
+
+    Every radar in the file, not radar 0.  Each antenna has its own beam
+    geometry, so a radial-velocity innovation is only defined per radar;
+    indexing [0] and calling the answer "the" control innovation was
+    harmless while every file held one radar and silently wrong the moment
+    one held twenty.  The caller pools the residuals, which is the same
+    statistic when there is one radar.
+
+    On a v2 file the stored plane covers only the radar's reach window and
+    is zero outside it, so the innovation is evaluated on the window: the
+    same points in the same (k, j, i) order as on the expanded domain, so
+    the same residual array.  Expanding five whole-domain planes per radar
+    was about 25 s of every 9 km CONUS analysis (some 140 radars) with
+    seven cards idle.  On v1 (no windows) it is the whole-domain path.
+    """
+    from gpuwm.da.obs_radar import (_radar_window, beam_unit_vectors,
+                                    observation_shape,
+                                    simulated_radial_velocity)
+    from gpuwm.obs.radar_grid import radar_plane
+
+    obs_shape = observation_shape(document)
+    per_radar, pooled = [], []
+    for index, radar in enumerate(document["radars"]):
+        window = _radar_window(document, index, obs_shape)
+        if window is None:
+            vr_mask = np.asarray(
+                radar_plane(document, "vr_mask", index)).astype(bool)
+        else:
+            j0, j1, i0, i1 = window
+            nj, ni = j1 - j0 + 1, i1 - i0 + 1
+            crop = (slice(None), slice(j0, j1 + 1), slice(i0, i1 + 1))
+
+            def stored(name, _index=index, _nj=nj, _ni=ni):
+                return np.asarray(
+                    document["variables"][name][_index])[:, :_nj, :_ni]
+            vr_mask = stored("vr_mask").astype(bool)
+        points = int(vr_mask.sum())
+        row = {"radar": str(radar["id"]), "points": points}
+        if points:
+            if window is None:
+                vr_obs = np.asarray(
+                    radar_plane(document, "vr_obs", index), np.float64)
+                sim = simulated_radial_velocity(
+                    u_e, v_n, w_m, beam_unit_vectors(document, index))
+            else:
+                missing = [name for name in ("vr_beam_east", "vr_beam_north",
+                                             "vr_beam_up")
+                           if name not in document["variables"]]
+                if missing:
+                    # beam_unit_vectors' own refusal, on the window path.
+                    beam_unit_vectors(document, index)
+                vr_obs = np.asarray(stored("vr_obs"), np.float64)
+                sim = simulated_radial_velocity(
+                    np.asarray(u_e)[crop], np.asarray(v_n)[crop],
+                    np.asarray(w_m)[crop],
+                    tuple(np.asarray(stored(name), dtype=np.float64)
+                          for name in ("vr_beam_east", "vr_beam_north",
+                                       "vr_beam_up")))
+            d = vr_obs[vr_mask] - sim[vr_mask]
+            pooled.append(d)
+            row["innovation_mean_ms"] = float(d.mean())
+            row["innovation_rms_ms"] = float(np.sqrt(np.mean(d ** 2)))
+        per_radar.append(row)
+    return per_radar, pooled
+
+
+def prune_recovery_ring(kept) -> list:
+    """Remove every other slot of the ring ``kept`` belongs to.
+
+    Called once generation ``kept`` has landed (its manifest written), so
+    the ring always holds one complete generation -- the newest -- plus,
+    while the next one is written, that one in flight.  Breakage: the ring
+    kept both slots for the whole run, two complete 32-member CONUS
+    generations (76 GB each) on top of the stage and the issuance
+    generation, about 250 GB at peak on box N; box L (243 GB free) could not
+    host a cycled arm at all.  A resume reads the newest landed generation
+    (``latest_generation``), which is the one kept.
+    """
+    kept = Path(kept)
+    removed = []
+    for slot in sorted(kept.parent.glob("slot*")):
+        if slot == kept or not slot.is_dir():
+            continue
+        size = sum(path.stat().st_size for path in slot.rglob("*")
+                   if path.is_file())
+        shutil.rmtree(slot)
+        removed.append({"slot": slot.name, "bytes": int(size)})
+    return removed
+
+
+class _Stopped(SystemExit):
+    """A termination signal turned into an unwind, so the door's cleanup
+    runs (a default SIGTERM ends the process without it)."""
+
+
+def _unwind_on_termination():
+    """While the cycle runs, SIGTERM and SIGHUP raise :class:`_Stopped`.
+
+    Only signals still at their default disposition and only on the main
+    thread; the member waves leave a disposition the controller set alone
+    and stop their workers on the way out."""
+    import signal
+    import threading
+
+    previous = {}
+    if threading.current_thread() is not threading.main_thread():
+        return previous
+
+    def handler(signum, unused_frame):
+        raise _Stopped(128 + signum)
+
+    for name in ("SIGTERM", "SIGHUP"):
+        number = getattr(signal, name, None)
+        if number is not None and signal.getsignal(number) is signal.SIG_DFL:
+            previous[number] = signal.signal(number, handler)
+    return previous
+
+
 def main() -> int:
     """The door: run the cycle, and clear its stage however the run ends.
 
@@ -1038,19 +1626,21 @@ def main() -> int:
     its report; the clearing here is the same call again and removes
     nothing more.
     """
+    import signal
+
     stages: list = []
+    previous = _unwind_on_termination()
     try:
         return cycle(stages)
     finally:
         for stage in stages:
             stage.clear()
+        for number, handler in previous.items():
+            signal.signal(number, handler)
 
 
-def cycle(stages: list) -> int:
-    # Deferred like every other gpuwm import in this driver: the module
-    # has to be importable by a bare `python tools/da_cycle_prepared.py
-    # --help` from a checkout, and the package lands on sys.path only
-    # once the process is actually running the tool.
+def build_parser():
+    """The public serial and packed DA doors share one argument table."""
     from gpuwm.da import background
 
     parser = argparse.ArgumentParser(
@@ -1102,7 +1692,14 @@ def cycle(stages: list) -> int:
     parser.add_argument("--proof-sha256", required=True)
     parser.add_argument("--source-manifest-sha256", required=True)
     parser.add_argument("--prepared-content-sha256", required=True)
-    parser.add_argument("--physics-profile", required=True)
+    parser.add_argument(
+        "--physics-profile", required=True,
+        help="the named physics profile the prepared case was bound to, "
+             "or 'experiment-config' for a case whose physics the "
+             "experiment config itself selects (profile_binding "
+             "'experiment-config' in its sim run report); "
+             "the preflight then binds the experiment's own physics, as "
+             "the sim door does")
     parser.add_argument("--run-seconds", type=float, required=True,
                         help="the hash-bound experiment's own run_seconds")
     parser.add_argument("--history-interval-seconds", type=float,
@@ -1151,7 +1748,27 @@ def cycle(stages: list) -> int:
               "end to <out>/composites/legNN_<name>.npz (float32 "
               "(ny, nx)).  A quicklook diagnostic, deliberately tiny; "
               "wrfout history for cycled arms remains its own package"))
+    parser.add_argument("--rain-history", action="store_true",
+        help="write native rain and column echo on the authority history clock during the free forecast")
+    parser.add_argument("--rain-forecast-start-seconds", type=float, default=None,
+        help="elapsed issuance clock for rain history, identical in DA and clean-start controls")
+    parser.add_argument("--packed-smoke", action="store_true",
+        help="bounded real-data smoke: four members on one card, at most 65x65 and two hours of model time")
     parser.add_argument("--members", type=int, default=10)
+    parser.add_argument(
+        "--forecast-members-per-card", choices=("serial", "auto", "1", "2", "4"), default="serial",
+        help=("member forecast processes on each physical GPU, over any "
+              "number of cards and members (members beyond cards x this "
+              "run in later waves); auto selects 4, 2 or 1, the most the "
+              "priced complete trajectory fits on every card. "
+              "Four requires an active owned CUDA MPS controller"))
+    parser.add_argument(
+        "--forecast-device-uuids", nargs="+", default=None,
+        help="physical GPU UUIDs for packed forecast waves; defaults to the "
+             "cards CUDA_VISIBLE_DEVICES names by UUID, else every card")
+    parser.add_argument(
+        "--forecast-leg-timeout-seconds", type=float, default=1800.0,
+        help="bounded wall time for one complete packed forecast roster")
     # -- the fine nest, over every leg ----------------------------------
     #
     # Off unless asked for.  When on it runs on EVERY leg, observed and
@@ -1276,6 +1893,61 @@ def cycle(stages: list) -> int:
               "tmpfs the next leg overwrites; budget one ensemble of "
               "checkpoints plus one observation file per leg"))
     parser.add_argument("--no-hotstart", action="store_true")
+    parser.add_argument(
+        "--no-card-servers", action="store_true",
+        help="start a new worker process for every packed member leg instead "
+             "of one long-lived card server per card (the default keeps the "
+             "interpreter, CUDA context, kernels and proved prepared-cache "
+             "arrays across members: gpuwm.da.member_wave.CardServer)")
+    # -- spread that does not come from the one initial draw --------------
+    parser.add_argument(
+        "--spread-repair", choices=("off", "innovation", "blanket"), default="off",
+        help="Lane 8 spread maintenance: observed-echo and positive-innovation "
+             "gates, targeted missed-echo covariance, and mean-preserving "
+             "0.5 K / 0.5 m/s / 5 percent vapour noise. Replaces the two "
+             "older noise arms when selected. blanket is a comparison arm")
+    parser.add_argument("--spread-repair-z-threshold", type=float, default=25.0)
+    parser.add_argument("--spread-repair-adaptive", action="store_true", default=argparse.SUPPRESS,
+        help="carry spatial inverse-gamma inflation through accepted ensemble "
+             "generations; resume requires the matching saved uncertainty")
+    parser.add_argument("--spread-repair-vtsm", action="store_true", default=argparse.SUPPRESS,
+        help="retain actual native t-900/t/t+900 forecasts and their observers; "
+             "use 3K covariance samples and return K central trajectories")
+    parser.add_argument("--spread-vts-ram-gib", type=float, default=argparse.SUPPRESS,
+        help="explicit admitted RAM budget for sealed VTSM forecast retention")
+    parser.add_argument(
+        "--additive-inflation", type=float, default=0.25,
+        help="after every analysis add to each member a fresh smooth draw "
+             "of the initial perturbation's own fields and length scales at "
+             "this fraction of its amplitudes, ensemble mean removed "
+             "(gpuwm.da.perturb.additive_inflation). Default 0.25: each "
+             "analysis re-adds about 6 percent of the initial variance, "
+             "which keeps unobserved regions from collapsing under RTPS "
+             "without rivalling the radial-velocity increments. 0 turns "
+             "it off")
+    parser.add_argument(
+        "--echo-noise", type=float, default=1.0,
+        help="after every analysis add, where the radar observed echo of "
+             "25 dBZ or more (spread over the perturbation's own length "
+             "scale), a further smooth draw of the initial perturbation's "
+             "fields at this fraction of their amplitudes, ensemble mean "
+             "removed (Dowell and Wicker 2009; gpuwm.da.perturb.echo_weight). "
+             "The filter can only build echo some member has; this gives "
+             "the members differences where the storm is observed. 0 turns "
+             "it off")
+    parser.add_argument(
+        "--boundary-perturbation", type=float, default=1.0,
+        help="each member's lateral boundary forcing is perturbed at this "
+             "fraction of the initial perturbation's amplitudes "
+             "(gpuwm.da.perturb.perturbed_lateral_boundaries), so members "
+             "no longer share one boundary and spread does not die toward "
+             "the rim. 0 restores the shared boundaries (needed to resume "
+             "a generation saved by a tree without member boundaries: the "
+             "restart's setup fingerprint hashes the attached tables)")
+    parser.add_argument(
+        "--boundary-perturbation-hours", type=float, default=6.0,
+        help="e-folding time of a member's boundary perturbation between "
+             "boundary frames (default 6 h)")
     # -- the moisture / hydrometeor half ---------------------------------
     # All default to zero amplitude, so a caller that does not ask for
     # them gets the wind-only ensemble this driver has always built and
@@ -1303,6 +1975,14 @@ def cycle(stages: list) -> int:
                              "beside the velocity batches; requires "
                              "--hydrometeors, since reflectivity against "
                              "a wind-only state vector analyses nothing")
+    parser.add_argument(
+        "--fall-speed", default="auto",
+        choices=("auto", "reflectivity", "none"),
+        help="radial velocity's vertical term: 'reflectivity' is w minus "
+             "the hydrometeor fall speed (rain by Sun and Crook from the "
+             "member's own dBZ, snow, graupel and hail at their own Lin "
+             "et al. speeds); 'none' is plain w. 'auto' (default) is "
+             "reflectivity wherever the scheme has an H_Z(x)")
     parser.add_argument("--z-thin-cells", type=int, default=2)
     parser.add_argument("--z-err-inflation", type=float, default=1.0)
     parser.add_argument("--clear-air-analysis", action="store_true",
@@ -1364,11 +2044,16 @@ def cycle(stages: list) -> int:
              "condensate (gpuwm/core/rrtmgp.py:1097-1098). "
              "'qc,qi' is docs/obs-goes-cwp-operator-spec.md's v1 rule; "
              "which is right is a scoreboard question")
-    parser.add_argument("--positivity-policy", default=None,
-                        choices=("clip", "reject", "none"),
-                        help="required once a non-negative field is "
-                             "analysed; gpuwm.da.positivity documents "
-                             "what each choice costs")
+    parser.add_argument("--positivity-policy", default="mean-preserving",
+                        choices=("mean-preserving", "clip", "reject",
+                                 "none"),
+                        help="what a negative analysed mixing ratio "
+                             "becomes. Default mean-preserving: the "
+                             "undershooting members end at zero and the "
+                             "ensemble keeps the filter's mean, where the "
+                             "clip added mass at every analysis. "
+                             "gpuwm.da.positivity documents what each "
+                             "choice costs")
     # -- the radial-velocity dispersion gate (default ON) ------------------
     # gpuwm.da.velocity_dispersion names the breakage (an under-dispersed
     # Vr ensemble writing vapour into theta and vapour) and the measurement
@@ -1377,6 +2062,8 @@ def cycle(stages: list) -> int:
     from gpuwm.da.velocity_dispersion import (
         DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO,
         DEFAULT_VELOCITY_DISPERSION_RATIO)
+    from gpuwm.da.reflectivity_echo import (
+        DEFAULT_REFLECTIVITY_OUTLIER_SIGMAS, DEFAULT_REFLECTIVITY_FLOOR_DBZ)
     parser.add_argument(
         "--velocity-dispersion-gate", type=_dispersion_ratio_argument,
         default=DEFAULT_VELOCITY_DISPERSION_RATIO, metavar="RATIO|none",
@@ -1397,6 +2084,88 @@ def cycle(stages: list) -> int:
              "one at most 1.97. 'none' gates every batch on its columns "
              "alone, which once cycled withheld Vr from theta and vapour in "
              "a fifth to over half of a storm's columns")
+    parser.add_argument(
+        "--reflectivity-floor-dbz", type=_reflectivity_floor_argument,
+        default=DEFAULT_REFLECTIVITY_FLOOR_DBZ, metavar="DBZ|none",
+        help="raise reflectivity observations AND the members' H(x) to this "
+             "common floor before differencing (gpuwm.da.reflectivity_echo). "
+             "Default 15 dBZ, the engine's echo threshold. 'none' differences "
+             "returns from -15 dBZ against the scheme's -35 dBZ H(x) floor, "
+             "which on the CONUS 9 km first-light analysis drove +36 dBZ "
+             "mean innovations and 2.8x MRMS's strong-echo area one hour "
+             "later")
+    parser.add_argument(
+        "--reflectivity-outlier-sigmas", type=_dispersion_ratio_argument,
+        default=DEFAULT_REFLECTIVITY_OUTLIER_SIGMAS, metavar="K|none",
+        help="temper reflectivity observations whose innovation lies more "
+             "than K standard deviations outside sqrt(spread^2 + sigma_o^2): "
+             "their error is raised just enough to sit at K sigma, so the "
+             "filter is not asked to extrapolate past the members. Default "
+             "3 (DART's outlier threshold); observations inside it are "
+             "untouched; 'none' turns it off")
+    # -- field rules (gpuwm.da.field_rules, design D1) ------------------------
+    from gpuwm.da import field_rules as _fr
+    parser.add_argument(
+        "--field-rules", choices=_fr.RULES, default=_fr.DEFAULT_RULES,
+        help="design: reflectivity and clear air move hydrometeor mass, and "
+             "theta/qv only by --z-thermo-weight inside observed echo; no "
+             "number or aerosol is analysed. joint: every observation moves "
+             "every field (the 10-01 campaign, where radar added 3x more "
+             "vapour than condensate)")
+    parser.add_argument("--z-thermo-weight", type=float,
+                        default=_fr.DEFAULT_Z_THERMO_WEIGHT,
+                        help="share of the radar's theta/qv increment kept "
+                             "inside observed echo (0 = Z to mass only)")
+    parser.add_argument("--z-hydrometeors",
+                        action=argparse.BooleanOptionalAction,
+                        default=_fr.DEFAULT_Z_HYDROMETEORS,
+                        help="reflectivity moves hydrometeor mass "
+                             "(--no-z-hydrometeors: KENDA-style)")
+    parser.add_argument("--z-qv-cap", type=_reflectivity_floor_argument,
+                        default=_fr.DEFAULT_Z_QV_CAP, metavar="KGKG|none",
+                        help="cap on |qv| increment from reflectivity, kg/kg")
+    parser.add_argument("--number-rediagnosis", choices=_fr.NUMBER_MODES,
+                        default=_fr.DEFAULT_NUMBER_MODE,
+                        help="rain/ice number after the update: scheme "
+                             "relation from analysed mass, background size, "
+                             "or off")
+    # -- radar observation classes (gpuwm.da.radar_classes, design A1) ------
+    from gpuwm.da import radar_classes as _rc
+    parser.add_argument(
+        "--z-source", choices=("z_mean", "z_obs", "z_max"), default="z_mean",
+        help="reflectivity reduction: z_mean (in-cell linear-Z mean, the "
+             "default) or z_max/z_obs (the in-cell maximum, which sat 6.6 dB "
+             "above the mean on the CONUS case)")
+    parser.add_argument(
+        "--reflectivity-clear-floor-dbz", type=_reflectivity_floor_argument,
+        default=_rc.DEFAULT_CLEAR_FLOOR_DBZ, metavar="DBZ|none",
+        help="clear-air floor shared by observation and H(x); weak echo below "
+             "it joins the clear class. 'none' keeps the legacy unclassified "
+             "batches")
+    parser.add_argument(
+        "--reflectivity-dead-band", action=argparse.BooleanOptionalAction,
+        default=_rc.DEFAULT_DEAD_BAND,
+        help="do not assimilate echo between the clear floor and 15 dBZ")
+    parser.add_argument(
+        "--reflectivity-error-dbz", type=_reflectivity_floor_argument,
+        default=_rc.DEFAULT_ECHO_ERROR_DBZ, metavar="DBZ|none",
+        help="fixed echo observation error (none = the file's gate-count error)")
+    parser.add_argument(
+        "--clear-air-error-dbz", type=_reflectivity_floor_argument,
+        default=_rc.DEFAULT_CLEAR_ERROR_DBZ, metavar="DBZ|none",
+        help="clear-class observation error (none = the file's)")
+    parser.add_argument("--reflectivity-level-stride", type=int,
+                        default=_rc.DEFAULT_ECHO_LEVEL_STRIDE)
+    parser.add_argument("--clear-air-level-stride", type=int,
+                        default=_rc.DEFAULT_CLEAR_LEVEL_STRIDE)
+    parser.add_argument(
+        "--radar-top-pa", type=_reflectivity_floor_argument,
+        default=_rc.DEFAULT_TOP_PA, metavar="PA|none",
+        help="assimilate no radar observation above this pressure (11 km)")
+    parser.add_argument(
+        "--reflectivity-huber-c", type=_reflectivity_floor_argument,
+        default=None, metavar="C|none",
+        help="Huber weighting of echo beyond C standard deviations")
     # -- surface observations (default OFF) -------------------------------
     # METAR/ASOS through the rw_asos seam (gpuwm-obs.asos-surface.v2, and
     # the v1 records written before it).  A quantity is enabled by stating
@@ -1417,6 +2186,11 @@ def cycle(stages: list) -> int:
              "representativeness, not instrument precision -- WoFS-like "
              "practice is 1.5-2.5 K at storm-scale grids")
     parser.add_argument(
+        "--sfc-td-sigma-k", type=float, default=None,
+        help=("enable observed dewpoint via the pinned native Q2/PSFC operator; "
+              "stated dewpoint standard deviation in K, with forecast-pressure "
+              "proxy recorded. Requires hydrometeor state analysis"))
+    parser.add_argument(
         "--sfc-wspd-sigma-ms", type=float, default=None,
         help="assimilate 10 m wind SPEED (the v1 seam carries no "
              "direction) with this error stddev (m/s); H is "
@@ -1434,6 +2208,98 @@ def cycle(stages: list) -> int:
         help="surface localization override; both --sfc-*-loc-m or "
              "neither (default: the run's --horizontal/vertical-loc-m)")
     parser.add_argument("--sfc-vertical-loc-m", type=float, default=None)
+    # -- conventional observations (default OFF) ----------------------------
+    # Aircraft, sondes, motion vectors and mesonet as neutral-table rows
+    # (gpuwm-obs.table.v2, written by the rw-obs front doors), each row
+    # typed by the conventional type table (gpuwm.da.obs_conventional):
+    # its operator, batch, error and localization are table data.
+    parser.add_argument(
+        "--obs-table", type=Path, action="append", default=[],
+        help="a gpuwm-obs.table.v2 (or v1) neutral observation table "
+             "covering the run; repeatable. Each row is assimilated by the "
+             "analysis whose window holds its valid time. OFF unless given")
+    parser.add_argument(
+        "--obs-type-table", type=Path, default=None,
+        help="the conventional type table (default: the shipped "
+             "gpuwm/data/da/conventional-obs-types.v1.json)")
+    parser.add_argument(
+        "--obs-type-override", type=str, default=None,
+        help="JSON mapping a batch name (or *) to fields replaced on that "
+             "batch's type rows, e.g. horizontal_m or use")
+    # -- incremental analysis update (default OFF) --------------------------
+    parser.add_argument(
+        "--iau-window-seconds", type=float, default=None,
+        help="add each member's analysis increment as a forcing over the "
+             "first this-many seconds of the next leg (gpuwm.da.iau), "
+             "instead of all at once at its start. OFF unless given")
+    parser.add_argument(
+        "--iau-fields", choices=("dynamics", "all"), default="dynamics",
+        help="under --iau-window-seconds: spread only thp, qv, u, v (w, php, "
+             "mup) and add hydrometeor increments at the leg start "
+             "(dynamics, default), or spread every analysed field (all)")
+    parser.add_argument(
+        "--iau-mode", choices=IAU_MODES, default=None,
+        help="how the increment enters the next leg: oneshot (all at its "
+             "start), split (a fraction after each step, gpuwm.da.iau."
+             "IncrementalUpdate), 3d (a held tendency inside every RK stage "
+             "over --iau-window-seconds from the analysis time, gpuwm.da."
+             "iau.IauForcing). Default: split when --iau-window-seconds is "
+             "given, else oneshot")
+    parser.add_argument(
+        "--hydrostatic-rebalance", action=argparse.BooleanOptionalAction,
+        default=False,
+        help="re-integrate php so the analysed column stays hydrostatic at "
+             "its own dry mass (gpuwm.da.hydrostatic); under an IAU mode the "
+             "php change is spread with the increment")
+    # --balance-perturbations (lane 7) is retired: the member perturbation
+    # re-integrates php itself by default (gpuwm.da.perturb mass_balance =
+    # "hydrostatic", 2026-10-06), so the leg-0 guard it was has no defect
+    # left to cite.
+    from gpuwm.da.perturb import WIND_MODES
+    parser.add_argument(
+        "--wind-perturbation", choices=list(WIND_MODES),
+        default="rotational",
+        help="how the members' u and v draws relate (gpuwm.da.perturb "
+             "wind_mode): 'rotational' (one streamfunction, non-divergent "
+             "on the C grid, the default) or 'independent' (the "
+             "pre-2026-10-06 unrelated draws, a comparison arm only)")
+    parser.add_argument(
+        "--maspt-minutes", type=float, default=60.0,
+        help="record the mean absolute surface pressure tendency over each "
+             "leg's first this-many minutes (gpuwm.da.maspt; reads only); "
+             "0 turns it off")
+    # -- lane 6 (design E3): windows, members, options, comparison arm ------
+    parser.add_argument(
+        "--radar-tten-windows", default=None,
+        help="with --radar-tten: a tools/radar_tten_windows.py product root "
+             "(<root>/<YYYYmmddTHHMMZ>/ref.f32). Each forced leg is split "
+             "into 15-minute windows, each heated from its own Level II "
+             "volume valid at the window's end (HRRR's four slots per "
+             "hour), instead of the leg-end file for the whole leg")
+    parser.add_argument(
+        "--radar-tten-mode", choices=("heating", "lhn"), default="heating",
+        help="heating: NOAA's radar latent heating; lhn: latent heat "
+             "nudging, the comparison arm (the model's own heating scaled "
+             "by observed over model rain rate, 0.5 to 2)")
+    parser.add_argument(
+        "--radar-tten-dt-cond", type=float, default=20.0,
+        help="minutes over which observed condensate formed (NOAA 20)")
+    parser.add_argument(
+        "--radar-tten-pbl-extension", action="store_true",
+        help="heat down to the PBL top (not NOAA's level-7 floor) where at "
+             "least 200 hPa of the column is observed")
+    parser.add_argument(
+        "--radar-tten-strict-suppression", action="store_true",
+        help="exactly zero heating at every point the radar observed as no "
+             "echo, after NOAA's smoothing (which bleeds heat into them)")
+    parser.add_argument(
+        "--radar-tten-perturb-members", action="store_true",
+        help="draw dt_cond (15-30 min) and the 28 dBZ thresholds (+/-3 dBZ) "
+             "per member, deterministically from --seed")
+    parser.add_argument(
+        "--radar-tten-control", action="store_true",
+        help="force the control trajectory too, with the unperturbed "
+             "parameters (design Tier A: every member and the control)")
     # -- radar latent heating (default OFF) ---------------------------------
     # HRRR's mp_tend_radar kernel: on each observed leg every member's
     # theta takes a radar-derived tendency in place of the microphysics
@@ -1464,7 +2330,67 @@ def cycle(stages: list) -> int:
              "mp_tend_lim = 0.07 K/s (hrrr_wrfpre.nl:108) while forced. "
              "The control and the free legs are never forced. OFF unless "
              "given")
+    return parser
+
+
+def _radar_tten_slots(args) -> int:
+    """Slots one forced leg holds: one per 15-minute window of the longest
+    leg with ``--radar-tten-windows``, else NOAA's one-slot arrangement."""
+    if not getattr(args, "radar_tten_windows", None):
+        return 1
+    durations = (args.leg_durations_seconds
+                 or [args.leg_seconds] * max(len(args.obs or ()), 1))
+    return max(int(round(float(max(durations)) / 900.0)), 1)
+
+
+def cycle(stages: list) -> int:
+    # Deferred like every other gpuwm import in this driver: the module
+    # has to be importable by a bare `python tools/da_cycle_prepared.py
+    # --help` from a checkout, and the package lands on sys.path only
+    # once the process is actually running the tool.
+    import math
+    from gpuwm.da import background
+    parser = build_parser()
     args = parser.parse_args()
+    # ``--physics-profile experiment-config`` stays the string it was
+    # given: preflight_prepared_forecast binds that name as the
+    # experiment's own physics (EXPERIMENT_CONFIG_PROFILE), and the
+    # workers replay this argument record and rebuild the ensemble
+    # identity from the same string.  Mapping it to None here made the
+    # controller's identity "experiment-config" and every worker's
+    # "None"; each member leg was refused (box S 2026-10-06 18:51Z).
+    adaptive_spread = bool(getattr(args,"spread_repair_adaptive",False))
+    vts_enabled = bool(getattr(args, "spread_repair_vtsm", False))
+    if vts_enabled:
+        from gpuwm.da.spread_vts import validate_request
+        if not args.obs or not args.hydrometeors:
+            parser.error("VTSM needs actual observation legs and native hydrometeor covariance fields")
+        if args.radar_tten:
+            parser.error("VTSM refuses current-volume TTEN because it leaks analysis-time observations into the shifted prior")
+        if args.dump_analysis_bundle is not None:
+            parser.error("VTSM retained native RAM observers cannot be represented by the central-only replay bundle")
+        budget = getattr(args, "spread_vts_ram_gib", None)
+        if budget is None or not math.isfinite(budget) or budget <= 0:
+            parser.error("VTSM needs --spread-vts-ram-gib with an explicit positive admitted RAM budget")
+        args.history_interval_seconds = math.gcd(int(args.history_interval_seconds), 900)
+    if adaptive_spread and args.spread_repair == "off":
+        parser.error("--spread-repair-adaptive needs --spread-repair so its uncertainty is used and persisted")
+    if args.spread_repair != "off" and not (
+            args.hydrometeors and args.reflectivity_analysis):
+        parser.error("--spread-repair needs --hydrometeors and --reflectivity-analysis "
+                     "to distinguish missed observed echo from clear or uncovered air")
+    lane6_options = (args.radar_tten_windows, args.radar_tten_mode != "heating",
+                     args.radar_tten_dt_cond != 20.0,
+                     args.radar_tten_pbl_extension,
+                     args.radar_tten_strict_suppression,
+                     args.radar_tten_perturb_members, args.radar_tten_control)
+    if any(lane6_options) and not args.radar_tten:
+        parser.error(
+            "a --radar-tten-* option was given without --radar-tten: the "
+            "run would be unforced while its command line says how to force")
+    if args.radar_tten_windows and not Path(args.radar_tten_windows).is_dir():
+        parser.error(f"--radar-tten-windows {args.radar_tten_windows} is not "
+                     "a directory")
     if args.radar_tten and not args.obs:
         parser.error(
             "--radar-tten builds its heating from the observation files, "
@@ -1479,10 +2405,11 @@ def cycle(stages: list) -> int:
             "heated by radar and the child by its scheme, two answers for "
             "the same columns")
     if args.surface_obs is not None:
-        if args.sfc_t2_sigma_k is None and args.sfc_wspd_sigma_ms is None:
+        if (args.sfc_t2_sigma_k is None and args.sfc_wspd_sigma_ms is None
+                and args.sfc_td_sigma_k is None):
             parser.error(
                 "--surface-obs was given but neither --sfc-t2-sigma-k "
-                "nor --sfc-wspd-sigma-ms states an error; a quantity is "
+                "nor --sfc-wspd-sigma-ms nor --sfc-td-sigma-k states an error; a quantity is "
                 "enabled by stating its sigma, and there is no default "
                 "sigma on purpose")
         if not args.obs:
@@ -1490,13 +2417,21 @@ def cycle(stages: list) -> int:
                 "--surface-obs joins the radar analysis legs; a "
                 "surface-only cycle has no analysis times to join and "
                 "is not wired")
-    elif (args.sfc_t2_sigma_k is not None
+    elif (args.sfc_td_sigma_k is not None
+          or args.sfc_t2_sigma_k is not None
           or args.sfc_wspd_sigma_ms is not None
           or args.sfc_horizontal_loc_m is not None
           or args.sfc_vertical_loc_m is not None):
         parser.error(
             "surface flags were given without --surface-obs; they would "
             "silently assimilate nothing")
+    if args.sfc_td_sigma_k is not None:
+        if not args.hydrometeors:
+            parser.error("--sfc-td-sigma-k requires --hydrometeors so Q2 can constrain vapor")
+        if not np.isfinite(args.sfc_td_sigma_k) or args.sfc_td_sigma_k <= 0:
+            parser.error("--sfc-td-sigma-k must be a finite positive standard deviation in K")
+        from gpuwm.da.surface_dewpoint import require_native_operator
+        require_native_operator()
     if (args.sfc_horizontal_loc_m is None) != (
             args.sfc_vertical_loc_m is None):
         parser.error(
@@ -1534,13 +2469,6 @@ def cycle(stages: list) -> int:
             f"--goes-cwp was given {len(args.goes_cwp)} file(s) but --obs "
             f"has {len(args.obs)}; satellite files are matched to legs by "
             "position and a leg with no radar file runs no analysis at all")
-    if args.hydrometeors and args.positivity_policy is None:
-        parser.error(
-            "--hydrometeors analyses physically non-negative fields and "
-            "--positivity-policy is unstated. clip / reject / none are not "
-            "equivalent: clipping at zero ADDS mass and is biased wetward, "
-            "rejecting conserves the background and invents gradients, and "
-            "none lets the microphysics meet the negatives")
 
     nest_requested = (args.nest_half_width_km is not None
                       or args.nest_nx is not None
@@ -1592,14 +2520,25 @@ def cycle(stages: list) -> int:
             parser.error(
                 "--leg-durations-seconds needs one finite positive duration "
                 "per observed or free leg; clocks cannot be dropped or reordered")
+    if args.rain_history:
+        if not args.save_composites or args.rain_forecast_start_seconds is None:
+            parser.error("--rain-history needs --save-composites and an explicit --rain-forecast-start-seconds")
+        if not np.isfinite(args.rain_forecast_start_seconds) or args.rain_forecast_start_seconds < 0:
+            parser.error("rain issuance clock must be finite and nonnegative")
+    if args.packed_smoke and args.forecast_members_per_card == "serial":
+        parser.error("--packed-smoke requires the packed member route")
     authority = (args.authority_dir if args.authority_dir is not None
                  else args.prepared_root.parent / "authority")
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     stage_root = Path(args.stage_dir) if args.stage_dir else out / "stage"
-    stage = StagedRestarts(stage_root, default=args.stage_dir is None)
+    stage = StagedRestarts(stage_root, default=args.stage_dir is None,
+                           logs_dir=out / "packed-job-logs")
     stages.append(stage)
+    # Registered after the stage: a completed run has removed the ring
+    # already (nothing to prune); a stopped one keeps its newest boundary.
+    stages.append(RecoveryRing(out / "packed-recovery"))
     report: dict = {"schema": REPORT_SCHEMA, "stability": "experimental",
                     "args": {key: str(value) for key, value
                              in vars(args).items()}, "legs": []}
@@ -1620,8 +2559,8 @@ def cycle(stages: list) -> int:
                                       local_memory_profile_from_device)
     from gpuwm.core.model import (DomainNode, ExperimentState,
                                   ModelRuntimeStatus, execute_experiment)
-    from gpuwm.da import (cycle_admission, moments, nested_forecast, obsop,
-                          perturb, radar_tten)
+    from gpuwm.da import (cycle_admission, ensemble_stats, moments,
+                          nested_forecast, obsop, perturb, radar_tten)
     from gpuwm.da.hotstart import HotStartConfig, hotstart_increments
     from gpuwm.da.letkf import Localization
     from gpuwm.da.obs_radar import read_document
@@ -1823,8 +2762,19 @@ def cycle(stages: list) -> int:
         "rim_width": 5,
         "fields": perturb_fields,
         "species": perturb_species,
+        "wind_mode": str(getattr(args, "wind_perturbation", "rotational")),
+        "hypsometric_opt": int(cfg.hypsometric_opt),
     })
     hot_cfg = HotStartConfig()
+    if args.additive_inflation < 0.0 or args.boundary_perturbation < 0.0:
+        raise SystemExit("--additive-inflation and --boundary-perturbation "
+                         "are fractions of the initial amplitudes and "
+                         "cannot be negative")
+    # Each member's own lateral boundaries are built and attached by the
+    # member leg itself (tools.da_member_leg, the same deterministic draw
+    # every leg, so the restart's setup fingerprint is stable); its record
+    # comes back in the trajectory's leg record.  The control keeps the
+    # shared tables.
 
     # ---- how each trajectory's background was built --------------------
     # Planned BEFORE any GPU work, from the perturbation configuration
@@ -1862,7 +2812,15 @@ def cycle(stages: list) -> int:
             # lateral boundary conditions, so the rim taper is what keeps
             # the perturbation legal and spread decays toward the rim by
             # construction (gpuwm/da/perturb.py documents the whole list).
-            "shared_lateral_boundaries": True,
+            "shared_lateral_boundaries": (
+                float(args.boundary_perturbation) == 0.0),
+            "member_lateral_boundaries": {
+                "scale": float(args.boundary_perturbation),
+                "time_scale_hours": float(
+                    args.boundary_perturbation_hours),
+                "rule": "gpuwm.da.perturb.perturbed_lateral_boundaries; "
+                        "the control keeps the shared tables"},
+            "additive_inflation_scale": float(args.additive_inflation),
         })
     print("background: " + json.dumps({
         "source": report["background"]["source"],
@@ -1942,6 +2900,10 @@ def cycle(stages: list) -> int:
             f"prepared case is bound to {float(args.run_seconds):.0f} s "
             "of boundary data; shorten the legs or prepare a case on a "
             "newer background")
+    if vts_enabled:
+        last_analysis = base_seconds+sum(leg_length(i) for i in range(len(args.obs)))
+        if last_analysis+900 > float(args.run_seconds):
+            raise SystemExit("VTSM future continuation exceeds the hash-bound native LBC horizon; prepare a longer forcing root")
     #: The absolute leg number of a within-run leg index.
     def leg_number(index: int) -> int:
         return int(args.leg_number_offset) + index
@@ -2077,109 +3039,6 @@ def cycle(stages: list) -> int:
         return (nest_child_dc is not None and leg in nest_leg_numbers
                 and name in nest_trajectories)
 
-    def child_config_for(name, born_at: float):
-        """This trajectory's child, activating at ``born_at`` seconds.
-
-        One configuration per birth instant rather than one for the run:
-        the instant is the child's calendar, and it is what the restart
-        header carries and checks.
-        """
-        return nested_forecast.child_born_at(nest_child_dc, exp, born_at)
-
-    # ---- model wiring, per member-leg ---------------------------------------
-
-    def wire(run_seconds_total: float, *, child_dc=None):
-        """Build one leg's parent model, and the clocks the child needs.
-
-        With ``child_dc`` the clock and the schedule are the TWO-domain
-        ones, but the child itself is NOT built here.  It is derived from
-        the parent's state by SINT, and which parent state that is
-        depends on the leg: a child born this leg is built from the
-        ANALYSED parent after the restart set is restored and the
-        increment applied, and a child the trajectory already carries is
-        built before the restore so the restore can fill it.  Building a
-        newborn from a pre-analysis parent would hand the nest a
-        forecast nobody corrected, which is the very failure this whole
-        design exists to avoid.  :func:`assemble` closes the model once
-        the child is real.
-
-        The root's external boundary clock is BOUND here, as
-        ``run_prepared_forecast`` binds it, so a leg's Davies relaxation
-        consumes WRF's post-increment ``dtbc`` recurrence from the clock
-        the restart owner places rather than the retired elapsed-seconds
-        calculation, and the checkpoint header records that semantic.
-        """
-        from gpuwm.ingest.lateral_bc import bind_lateral_boundary_clock
-
-        exp_leg = dataclasses.replace(exp,
-                                      run_seconds=float(run_seconds_total))
-        live_born = ()
-        if child_dc is not None:
-            exp_leg = nested_forecast.nested_experiment(exp_leg, child_dc)
-            live_born = (int(child_dc.grid_id),)
-        restored = restore_prepared_cache(
-            inputs.prepared_cache_path, expected_identity=inputs.cache_identity,
-            cfg=cfg, static=inputs.static)
-        driver = initialize_prepared_physics(
-            restored.initial_result, cfg, restored.met, restored.surface,
-            inputs.static, inputs.landuse_identity, inputs.grid,
-            exp.start_time,
-            constant_glw_wm2=declared_constant_glw(exp))
-        tick = resolve_clock(
-            exp_leg, lbc_interval_s=float(inputs.boundary_interval_seconds),
-            live_born_children=live_born)
-        schedule = build_schedule(exp_leg, tick)
-        clocks = tick.clocks()
-        node = DomainNode(exp.root, inputs.grid,
-                          restored.initial_result.state, clocks[1],
-                          None, [], None)
-        if getattr(cfg, "specified", False):
-            bind_lateral_boundary_clock(node.state, node.clock)
-        return SimpleNamespace(node=node, restored=restored, driver=driver,
-                               clocks=clocks, schedule=schedule,
-                               child_dc=child_dc)
-
-    def assemble(wired, *, name, child_node=None):
-        """Turn the wired pieces into the ExperimentState the executor runs.
-
-        The fingerprint is the TRAJECTORY's (:func:`trajectory_fingerprint`),
-        so the restart owner refuses a checkpoint set that belongs to
-        another member, another ensemble or another case before it reads
-        an array, and names the component that differs.
-        """
-        nodes = {1: wired.node}
-        if child_node is not None:
-            nodes[child_node.cfg.grid_id] = child_node
-        model = ExperimentState(wired.node, MappingProxyType(nodes),
-                                wired.schedule, None,
-                                trajectory_fingerprint(identity, name))
-        model._experiment_fingerprint_components = trajectory_identity(
-            identity, name)
-        model._runtime_status = ModelRuntimeStatus()
-        model._resumed = False
-        model._resume_committed_history_grid_ids = frozenset()
-        # The shared scratch arena hands every domain a prefix VIEW of one
-        # backing buffer, on the premise that the schedule steps exactly
-        # one domain at a time; the shared dycore workspace is the same
-        # bargain.  Both stay None on this route -- with a nest attached
-        # that is no longer a memory question but a correctness one, and
-        # it is asserted rather than assumed.
-        model._scratch_arena = None
-        model._dycore_state_workspace = None
-        if model._scratch_arena is not None \
-                or model._dycore_state_workspace is not None:
-            raise RuntimeError(
-                "the DA cycling path requires per-domain scratch: a "
-                "shared arena would let parent and child write the same "
-                "bytes with no exception raised")
-        model._io_manager = None
-        model._last_checkpoint = None
-        model._prepared_by_grid_id = MappingProxyType({
-            1: SimpleNamespace(static_fields=inputs.static,
-                               geog_selection=None,
-                               initial_result=wired.restored.initial_result)})
-        return model
-
     def release_device_memory() -> None:
         """Collect a finished trajectory and return its pool blocks.
 
@@ -2219,11 +3078,13 @@ def cycle(stages: list) -> int:
         surface_cfg = SurfaceObsConfig(
             temperature_error_k=args.sfc_t2_sigma_k,
             wind_speed_error_ms=args.sfc_wspd_sigma_ms,
+            dewpoint_error_k=args.sfc_td_sigma_k,
             error_inflation=float(args.sfc_err_inflation),
             elevation_max_diff_m=float(args.sfc_elev_max_diff_m),
             max_age_seconds=float(args.sfc_max_age_s),
             temperature_localization=surface_localization,
-            wind_localization=surface_localization)
+            wind_localization=surface_localization,
+            dewpoint_localization=surface_localization)
         #: One analysis time per OBSERVED leg -- the same t_end the radar
         #: analysis runs at.  The adapter routes each hourly report to
         #: exactly one of these.
@@ -2234,9 +3095,57 @@ def cycle(stages: list) -> int:
         report["surface_observations"] = {
             "record": str(args.surface_obs),
             "t2_sigma_k": args.sfc_t2_sigma_k,
+            "td_sigma_k": args.sfc_td_sigma_k,
             "wspd_sigma_ms": args.sfc_wspd_sigma_ms,
             "analysis_times": [t.isoformat() for t in surface_schedule],
         }
+
+    # ---- conventional observations (neutral tables), default OFF ---------
+    conv_table = conv_rows = conv_schedule = None
+    if args.obs_table:
+        from datetime import datetime as _datetime  # noqa: PLC0415
+        from datetime import timedelta as _timedelta  # noqa: PLC0415
+
+        from gpuwm.da.obs_conventional import read_tables, read_type_table
+
+        if not isinstance(exp.start_time, _datetime):
+            raise SystemExit(
+                "--obs-table needs the experiment's absolute start time to "
+                "route reports to analyses, and exp.start_time is "
+                f"{type(exp.start_time).__name__}")
+        overrides = (json.loads(args.obs_type_override)
+                     if args.obs_type_override else None)
+        conv_table = read_type_table(args.obs_type_table,
+                                     overrides=overrides)
+        conv_rows = read_tables(args.obs_table)
+        conv_schedule = [
+            exp.start_time + _timedelta(seconds=leg_starts[i]
+                                        + leg_length(i))
+            for i in range(len(args.obs))]
+        report["conventional_observations"] = {
+            "tables": list(conv_rows.receipts),
+            "rows": len(conv_rows),
+            "type_table": {"path": conv_table.path,
+                           "sha256": conv_table.sha256},
+            "overrides": overrides,
+            "analysis_times": [t.isoformat() for t in conv_schedule],
+        }
+    if args.iau_window_seconds is not None:
+        if not (args.iau_window_seconds > 0):
+            raise SystemExit("--iau-window-seconds must be positive")
+        report["iau"] = {"window_seconds": float(args.iau_window_seconds),
+                         "fields": args.iau_fields,
+                         "form": "forward, from each analysis time"}
+    try:
+        args.iau_mode = resolve_iau_mode(args.iau_mode,
+                                         args.iau_window_seconds)
+    except ValueError as error:
+        raise SystemExit(str(error)) from None
+    if "iau" in report:
+        report["iau"]["mode"] = args.iau_mode
+    report["hydrostatic_rebalance"] = bool(args.hydrostatic_rebalance)
+    if args.maspt_minutes < 0:
+        raise SystemExit("--maspt-minutes must be zero or positive")
 
     # ---- the fit decision, before the first upload ----------------------
     # One decision for the whole run, taken before the first observation
@@ -2256,8 +3165,11 @@ def cycle(stages: list) -> int:
         analysis_prices.append(analysis_device_price(
             planned_analysis, members=int(args.members), grid=obs_grid,
             document=read_document(obs_file, expected_grid=obs_grid),
-            extra_localizations=(() if surface_cfg is None
-                                 else surface_cfg.batch_localizations())))
+            extra_localizations=(
+                (() if surface_cfg is None
+                 else tuple(surface_cfg.batch_localizations()))
+                + (() if conv_table is None
+                   else conv_table.batch_localizations()))))
     analysis_price = cycle_admission.worst_analysis(analysis_prices)
     unsolvable = cycle_admission.unsolvable_analysis_message(analysis_price)
     if unsolvable is not None:
@@ -2269,6 +3181,7 @@ def cycle(stages: list) -> int:
             "the heating, and every forced member would refuse at its first "
             "leg after the ensemble was already built")
     mass_shape = (int(cfg.nz), int(cfg.ny), int(cfg.nx))
+    from gpuwm.da.hydrostatic import loading_masses_for_scheme
     admission = cycle_admission.price_cycle(
         (nested_forecast.nested_experiment(exp, nest_child_dc)
          if nest_trajectories else exp),
@@ -2279,12 +3192,14 @@ def cycle(stages: list) -> int:
             perturb.device_working_bytes(
                 cfg_perturb, mass_shape,
                 plan_work_bytes=perturb.fft_plan_work_bytes(
-                    cfg_perturb, mass_shape, cp))
+                    cfg_perturb, mass_shape, cp),
+                loading_masses=loading_masses_for_scheme(cfg.mp_physics))
             if resumed_from is None and int(args.members) > 0 else 0),
         profile=local_memory_profile_from_device(cp),
         analysis=analysis_price,
         radar_tten_points=(int(cfg.nz) * int(cfg.ny) * int(cfg.nx)
-                           if args.radar_tten else 0))
+                           if args.radar_tten else 0),
+        radar_tten_slots=_radar_tten_slots(args))
     free_bytes, _total_bytes = device_free_and_total_bytes()
     try:
         admission = cycle_admission.admit_cycle(admission,
@@ -2321,16 +3236,104 @@ def cycle(stages: list) -> int:
                 "while a member is forced its microphysics runs under "
                 "HRRR's companion clamp (parm/conus/hrrr_wrfpre.nl:108); "
                 "the control and unforced legs keep the case's"),
+            "mode": args.radar_tten_mode,
+            "windows": (
+                {"root": str(args.radar_tten_windows), "minutes": 15,
+                 "rule": "each window heated from its own gridded Level II "
+                         "volume valid at the window's end"}
+                if args.radar_tten_windows else
+                "one slot per leg from the leg-end observation file"),
+            "dt_cond_min": args.radar_tten_dt_cond,
+            "pbl_extension": bool(args.radar_tten_pbl_extension),
+            "strict_suppression": bool(args.radar_tten_strict_suppression),
+            "members_perturbed": (
+                dict(radar_tten.MEMBER_PERTURBATION, seed=args.seed)
+                if args.radar_tten_perturb_members else False),
+            "control_forced": bool(args.radar_tten_control),
         }
+        if args.radar_tten_control:
+            report["radar_tten"]["arrangement"] = (
+                "every member and the control forced on observed legs whose "
+                "analysis is applied (design Tier A); free legs unforced")
 
-    for leg in range(legs):
+    packed_forecasts = args.forecast_members_per_card != "serial"
+    run_leg_route = run_member_leg_entry()
+    if args.iau_mode == "4d":
+        # Each refusal names what 4D-IAU would silently lose.
+        if packed_forecasts:
+            raise SystemExit(
+                "--iau-mode 4d runs on --forecast-members-per-card serial: "
+                "the packed transport carries neither the mid-window "
+                "restart nor the rewound leg start, so a packed member "
+                "would get a forward window labelled centred")
+        if nest_requested:
+            raise SystemExit(
+                "--iau-mode 4d with a nest: the child's carry-down of a "
+                "rewound, two-part leg is not wired, and the child would "
+                "keep a trajectory its parent left")
+        if args.resume_ensemble is not None:
+            raise SystemExit(
+                "--iau-mode 4d with --resume-ensemble: the generation "
+                "carries no restart half a window before its analysis, "
+                "so the first leg could not be centred")
+        if args.save_ensemble is not None:
+            raise SystemExit(
+                "--iau-mode 4d with --save-ensemble: a generation written "
+                "here would carry no mid-window restart for the next run")
+        run_leg_route = Iau4dLegRunner(
+            run_leg_route, window_seconds=float(args.iau_window_seconds))
+        report["iau"]["form"] = ("centred on each analysis time: the leg "
+                                 "before it is split at t - W/2 and the "
+                                 "leg after it restarts there")
+    forecast_cards, forecast_pack, forecast_peak = [], 1, 0
+    if packed_forecasts:
+        from gpuwm.da.member_wave import query_cards, GIB
+        if args.packed_smoke:
+            if int(args.members) != 4 or max(int(cfg.nx), int(cfg.ny)) > 65 or sum(leg_length(i) for i in range(legs)) > 7200:
+                raise SystemExit("packed smoke requires four members, at most 65x65 cells and two hours of model time")
+        forecast_cards = query_cards(args.forecast_device_uuids)
+        if args.packed_smoke and len(forecast_cards) != 1:
+            raise SystemExit("packed smoke runs on one physical card; name it with --forecast-device-uuids")
+        forecast_only = cycle_admission.price_cycle(
+            (nested_forecast.nested_experiment(exp, nest_child_dc)
+             if nest_trajectories else exp),
+            forcing_intervals=max(1, len(inputs.forcing_hours) - 1),
+            observation_points=(int(cfg.nz)*int(cfg.ny)*int(cfg.nx)
+                                if args.obs and not args.no_hotstart else 0),
+            perturbation_bytes=admission.perturbation_bytes,
+            profile=local_memory_profile_from_device(cp), analysis=None,
+            radar_tten_points=(int(cfg.nz)*int(cfg.ny)*int(cfg.nx)
+                               if args.radar_tten else 0),
+            radar_tten_slots=_radar_tten_slots(args))
+        forecast_peak = forecast_only.required_bytes
+        try:
+            forecast_pack = packed_members_per_card(
+                args.forecast_members_per_card, forecast_cards, forecast_peak)
+        except ValueError as error:
+            raise SystemExit(str(error)) from None
+        report["packed_forecast_admission"] = {
+            "forecast_only": forecast_only.receipt(), "cards": forecast_cards,
+            "members_per_card": forecast_pack, "mps_required": forecast_pack == 4,
+            "decode_threads": 12, "decode_total_cap_bytes": 160*GIB,
+            "host_reserve_bytes": (4 if args.packed_smoke else 48)*GIB,
+            "smoke": bool(args.packed_smoke)}
+
+    from tools.da_member_leg import MemberLegContext, run_member_leg
+    from gpuwm.da.member_roster import ControlLaunch, forecast_roster
+
+    leg_input_cache: dict = {}
+
+    def leg_inputs(leg):
+        """One leg's clocks and observation-side inputs, read once.
+
+        A function rather than the top of the leg loop because the packed
+        route starts the NEXT leg's control during this leg's analysis,
+        and that control needs the next leg's inputs then.
+        """
+        if leg in leg_input_cache:
+            return leg_input_cache[leg]
         t_start = leg_starts[leg]
         t_end = t_start + leg_length(leg)
-        leg_record: dict = {"leg": leg_number(leg), "leg_in_run": leg,
-                            "start_s": t_start, "end_s": t_end,
-                            "trajectories": {}}
-        member_dbz.clear()
-        member_sfc.clear()
         has_obs = leg < len(args.obs)
         goes_path = None
         if leg < len(args.goes_cwp):
@@ -2380,534 +3383,326 @@ def cycle(stages: list) -> int:
         # the score, and forcing the forecast with it would grade the
         # forecast against the observations that drove it.
         tten_reflectivity = tten_source = None
+        tten_note = None
         if args.radar_tten and document is not None and analysis_due:
             tten_reflectivity, tten_source = \
                 radar_tten.reflectivity_from_document(document)
-            leg_record["radar_tten_observations"] = tten_source
+            tten_note = tten_source
         elif args.radar_tten:
-            leg_record["radar_tten_observations"] = (
+            tten_note = (
                 "none: a free leg" if document is None else
                 "none: this leg's observations verify the run and are "
                 "not used to force it")
-        z_obs_cp = z_mask_cp = None
-        if document is not None and not args.no_hotstart:
-            z_obs_cp = cp.asarray(np.asarray(
-                document["variables"]["z_obs"], np.float32))
-            z_mask_cp = cp.asarray(np.asarray(
-                document["variables"]["z_mask"]).astype(bool))
+        echo_columns = None
+        if (document is not None and analysis_due
+                and float(args.echo_noise) > 0.0):
+            # Host weight for the echo-located noise (audit S5), from the
+            # leg's own observation file.
+            echo_columns = perturb.echo_weight(
+                document["variables"]["z_obs"],
+                document["variables"]["z_mask"],
+                dx_km=float(cfg_perturb.dx_km),
+                dy_km=float(cfg_perturb.dy_km),
+                length_scale_km=float(min(
+                    spec.length_scale_km for spec in cfg_perturb.fields)))
+        leg_input_cache[leg] = SimpleNamespace(
+            t_start=t_start, t_end=t_end, has_obs=has_obs,
+            goes_path=goes_path, obs_path=obs_path, grid_h=grid_h,
+            document=document, analysis_due=analysis_due,
+            verification_only=verification_only,
+            tten_reflectivity=tten_reflectivity, tten_note=tten_note,
+            echo_columns=echo_columns)
+        return leg_input_cache[leg]
 
-        def run_trajectory(name) -> None:
-            """One trajectory's leg, in a scope that ends with it.
+    def contexts_for(leg, li):
+        """``context_for(name)`` for one leg, from the driver's state now."""
+        def context_for(name):
+            return MemberLegContext(
+                args=args, inputs=inputs, identity=identity,
+                cfg_perturb=cfg_perturb, hot_cfg=hot_cfg,
+                leg=leg, absolute_leg_number=leg_number(leg),
+                t_start=li.t_start, t_end=li.t_end, stage_root=stage.stage_root,
+                out=out, resumed=resumed_from is not None,
+                restart=restarts.get(name), pending=pending.get(name),
+                nest_child_dc=nest_child_dc, nested=nests_this_leg(leg, name),
+                nest_birth=nest_birth.get(name), document=li.document,
+                analysis_due=li.analysis_due,
+                tten_reflectivity=li.tten_reflectivity,
+                obs_path=li.obs_path,
+                surface_enabled=(surface_cfg is not None
+                                 or (conv_table is not None
+                                     and conv_table.needs_surface())),
+                setup_arrays=setup_arrays, thb_host=thb_host)
+        return context_for
 
-            Every device owner the leg builds -- the restored state, the
-            physics driver, the model, the child and its driver, the
-            leg-end diagnostics -- is a local of this call, so returning
-            drops the last reference to each of them.  What the leg hands
-            on leaves as host data only, through the run's own tables:
-            the restart set, the host mirror, the leg-end H(x), the hot
-            start increments and the leg record.  The trajectory loop body
-            used to run in :func:`cycle`'s own scope, where those names
-            stayed bound after the old ``teardown`` deleted only its loop
-            variable, so the previous trajectory's whole model was still
-            alive while the next one was restored beside it, and a domain
-            whose one trajectory fits the card ran out of memory building
-            its second.
-            """
-            nonlocal setup_arrays, thb_host
-            t_leg = time.time()
-            nested_leg = nests_this_leg(leg, name)
-            # -- what this leg starts from ---------------------------------
-            #
-            # Leg 0 of a fresh run starts from the prepared background
-            # (perturbed for a member).  Every other leg starts from the
-            # trajectory's own restart set: the one the previous leg
-            # wrote, or the one the resumed generation carried.
-            source = None
-            child_in_checkpoint = False
-            born_at = None
-            if not (leg == 0 and resumed_from is None):
-                source = restarts[name]
-                if source is None:
+    def packed_workdir(leg):
+        return stage.stage_root / "packed" / f"leg{leg_number(leg):03d}"
+
+    # -- the packed route's overlaps ------------------------------------------
+    # The control's next leg runs on the last card while this leg's analysis
+    # runs on the others, and the recovery generation is written while the
+    # next leg's members start: each member's request links the pending file
+    # the generation wrote for it (gpuwm.da.member_roster).  On the 9 km
+    # CONUS case the control (39 s a leg, 155 s at leg 0) and the
+    # generation (30 s) were serial with everything else.
+    from concurrent.futures import ThreadPoolExecutor as _Background
+    import threading as _threading
+    background = _Background(max_workers=2, thread_name_prefix="da-overlap")
+    next_control = None
+    control_card = forecast_cards[-1]["uuid"] if packed_forecasts else None
+    analysis_cards = None
+    if packed_forecasts:
+        analysis_cards = cards_except(control_card)
+    generation_job = None
+    card_servers: dict = {}
+    if packed_forecasts and not getattr(args, "no_card_servers", False):
+        from gpuwm.da.member_wave import start_card_servers
+
+        card_servers = start_card_servers(
+            forecast_cards, stage.stage_root / "card-servers",
+            per_card=forecast_pack)
+
+        class _CloseServers:
+            def clear(self):
+                for server in card_servers.values():
+                    server.close()
+                return None
+
+        stages.append(_CloseServers())
+        report["card_servers"] = {
+            "cards": sorted(card_servers),
+            "servers_per_card": forecast_pack,
+            "rule": "one long-lived member worker per member slot for the run "
+                    "(gpuwm.da.member_wave.CardServer); --no-card-servers "
+                    "starts a process per member leg"}
+
+    def join_generation():
+        """Wait for the generation being written; record it; raise its error."""
+        nonlocal generation_job
+        if generation_job is None:
+            return
+        job, generation_record, generation_dir, t_written = generation_job
+        generation_job = None
+        generation, removed = job["future"].result()
+        generation_record["written"] = generation["written"]
+        generation_record["background_wall_seconds"] = round(
+            time.monotonic() - t_written, 3)
+        if removed is not None:
+            generation_record["older_slots_removed"] = removed
+        print(f"ensemble generation written to "
+              f"{generation_dir} at {generation_record['elapsed_seconds']:.0f}"
+              " s elapsed", flush=True)
+
+    def pending_file_from_generation(name):
+        if generation_job is None:
+            return None
+        job = generation_job[0]
+        while not job["events"][name].wait(0.25):
+            if job["future"].done():
+                job["future"].result()
+                if not job["events"][name].is_set():
                     raise RuntimeError(
-                        f"leg {leg} {name}: no restart set to continue "
-                        "from; the previous leg wrote none")
-                stored_ids = restart_domain_ids(source)
-                if nested_leg:
-                    child_in_checkpoint = (
-                        int(nest_child_dc.grid_id) in stored_ids)
-                elif len(stored_ids) > 1:
-                    raise RuntimeError(
-                        f"leg {leg} {name}: the restart set carries "
-                        f"domains {list(stored_ids)} and this leg runs "
-                        "the root alone; a child cannot be dropped at "
-                        "a leg boundary silently")
-            if nested_leg:
-                born_at = (nest_birth[name] if child_in_checkpoint
-                           else float(t_start))
-            child_dc_leg = (child_config_for(name, born_at)
-                            if nested_leg else None)
-            wired = wire(t_end, child_dc=child_dc_leg)
-            node, restored, driver = wired.node, wired.restored, wired.driver
-            state = node.state
-            if setup_arrays is None:
-                # The eta coordinate arrays and the base column mass a
-                # checkpoint does not serialize (STATE_SETUP_ARRAYS in
-                # gpuwm/state_serialization_contract.py). The CWP operator
-                # integrates in the model's own mass measure and cannot
-                # rebuild them from the npz, so they are captured here off
-                # a live state, once, exactly as the reflectivity provider
-                # would need thb.
-                setup_arrays = {
-                    "c1h": to_host(state.c1h).astype(np.float64),
-                    "c2h": to_host(state.c2h).astype(np.float64),
-                    "dnw": to_host(state.dnw).astype(np.float64),
-                    "mub2d": to_host(state.mub2d).astype(np.float64),
-                }
-            child_node = child_driver = None
-            nest_entry = None
-            if nested_leg:
-                nest_entry = leg_record["trajectories"].setdefault(
-                    str(name), {}).setdefault("nest", {})
-                nest_entry["grid_id"] = nest_child_dc.grid_id
-                nest_entry["born_at_seconds"] = float(born_at)
+                        f"the generation finished without writing {name}'s "
+                        "pending increments")
+        return job["paths"][name]
 
-            def _build_child():
-                """The child object, from the parent's live state.
-
-                Its clock is placed at the child's own birth first, and
-                the builder refreshes the model time from it before the
-                physics is attached, so the child's driver counts its
-                ITIMESTEP from its activation.
-                """
-                clock = wired.clocks[nest_child_dc.grid_id]
-                nested_forecast.place_newborn_clock(clock)
-                return nested_forecast.build_nested_child(
-                    node, child_dc_leg,
-                    static=inputs.static, surface=restored.surface,
-                    landuse_identity=inputs.landuse_identity,
-                    valid_time=exp.start_time, clock=clock,
-                    parent_driver=driver,
-                    constant_glw_wm2=declared_constant_glw(exp))
-
-            # A child the trajectory already carries is built BEFORE the
-            # restore, because the restart owner restores the whole set
-            # into the whole tree: the SINT below only builds the object
-            # and its base state, and every array it holds is then
-            # overwritten from the checkpoint.
-            if child_in_checkpoint:
-                child_node, child_driver, _land_receipt = _build_child()
-            # `resumed` drives model._resumed below, which stops the
-            # resumed leg from rewriting history the previous process
-            # already committed.  `resumed_from is None` is the separate
-            # and more dangerous condition: a generation carried in from
-            # --resume-ensemble is ALREADY perturbed, and perturbing it
-            # again at leg 0 would throw away the analysis it carried with
-            # no error raised anywhere.  Both guards are required; they are
-            # not the same question.
-            resumed = False
-            #: The parent's fields the pending increment names, as the
-            #: restart set restored them and BEFORE the increment: the
-            #: background side of the correction a carried child takes.
-            restored_background: dict = {}
-            if source is None:
-                if name != CONTROL:
-                    perturb.apply_perturbations(
-                        state, args.seed + int(name), cfg_perturb)
-                    refresh_diagnostics(
-                        state, hypsometric_opt=cfg.hypsometric_opt)
-            else:
-                model = assemble(wired, name=name, child_node=child_node)
-                restart_info = restore_leg_restart(
-                    model, source, expected_seconds=t_start)
-                resumed = True
-                entry_restore = leg_record["trajectories"].setdefault(
-                    str(name), {})
-                entry_restore["restored_from"] = {
-                    "root_member": Path(source).name,
-                    "domain_ids": list(restart_domain_ids(source)),
-                    "elapsed_seconds": (restart_info.elapsed_ticks
-                                        / restart_info.tick_den),
-                }
-                # A staged set is consumed by exactly one leg; a
-                # generation's set is the durable record and stays.
-                entry_restore["staged_set_removed"] = stage.consume(source)
-                if pending[name]:
-                    if child_in_checkpoint:
-                        for field in sorted(pending[name]):
-                            live = getattr(state, field, None)
-                            if live is None or getattr(
-                                    child_node.state, field, None) is None:
-                                continue
-                            restored_background[field] = to_host(live)
-                    to_apply, pair_report = keep_moment_pairs(
-                        state, pending[name], mp_physics=cfg.mp_physics)
-                    receipt = apply_increments(
-                        state, to_apply, mp_physics=cfg.mp_physics)
-                    leg_record["trajectories"].setdefault(str(name), {})[
-                        "apply_fields"] = receipt["field_count"]
-                    if pair_report["conditioned"]:
-                        leg_record["trajectories"].setdefault(str(name), {})[
-                            "moment_pairs_kept"] = pair_report
-                    refresh_diagnostics(
-                        state, hypsometric_opt=cfg.hypsometric_opt)
-            health = StateHealthValidator(state).validate(
-                phase=f"leg{leg}.{name}")
-            if not health.ok:
-                raise FloatingPointError(
-                    f"leg {leg} {name}: pre-leg health failed: "
-                    f"{vars(health)}")
-
-            # -- the fine nest ------------------------------------------------
-            #
-            # A child born this leg is built AFTER the restore, the
-            # increment application and the health gate: the parent state
-            # it is derived from has to be the ANALYSED one, or the nest
-            # would inherit a forecast nobody corrected and the whole
-            # exercise would be worth less than interpolating the output.
-            if nested_leg:
-                if child_node is None:
-                    child_node, child_driver, _land_receipt = _build_child()
-                    nest_birth[name] = float(born_at)
-                    nest_entry["initialization"] = "parent-live-state-sint"
-                else:
-                    # A later nested leg: the child already has fine
-                    # structure of its own, restored above from the
-                    # trajectory's own checkpoint set; flattening it back
-                    # to a parent interpolation every leg boundary would
-                    # throw away exactly what the nest is for.
-                    nest_entry["initialization"] = "restart-set"
-                    # The child is not analysed itself -- the filter runs
-                    # on the parent ensemble, and a 1 km member set is a
-                    # different (and much larger) experiment.  What the
-                    # child gets is the correction the analysis made to
-                    # its parent, carried down by the operator it was
-                    # born through: SINT(analysed) - SINT(background),
-                    # differenced rather than interpolated as one
-                    # increment because SINT is monotonicity-limited and
-                    # therefore not linear.  Both sides are raw
-                    # interpolations of the PARENT -- the restored parent
-                    # before the increment, and the live parent after it.
-                    # Over exactly the fields the increment names: a
-                    # moment the applier repaired on a field the analysis
-                    # did not name stays on the parent, and a leg with no
-                    # analysis leaves the child bitwise alone.
-                    child_state = child_node.state
-                    analysed_parent = {
-                        field: getattr(state, field)
-                        for field in sorted(restored_background)}
-                    carried = {}
-                    if restored_background:
-                        correction = nested_forecast.nest_down_analysis(
-                            restored_background, analysed_parent,
-                            child_dc_leg, cfg, array_module=cp)
-                        # The parent's analysis was bounded against the
-                        # PARENT's background; the child's background is
-                        # its own evolved state, so the same correction
-                        # can drive a positive-definite species below
-                        # zero there.  Same policy, child's background.
-                        correction, child_positivity = (
-                            bound_child_correction(
-                                child_state, correction,
-                                policy=args.positivity_policy,
-                                array_module=cp))
-                        if child_positivity is not None:
-                            nest_entry["positivity_on_correction"] = (
-                                child_positivity)
-                        for field, delta in correction.items():
-                            largest = float(cp.abs(delta).max())
-                            if largest == 0.0:
-                                continue
-                            target = getattr(child_state, field)
-                            target[...] = target + delta.astype(
-                                target.dtype)
-                            carried[field] = largest
-                        del correction
-                        refresh_diagnostics(
-                            child_state,
-                            hypsometric_opt=child_dc_leg.run.hypsometric_opt)
-                    del analysed_parent
-                    nest_entry["analysis_carried_down"] = {
-                        "how": ("sint(analysed parent) - sint(restored "
-                                "parent), the child's own state kept"),
-                        "fields": sorted(carried),
-                        "max_abs_correction": {
-                            field: carried[field]
-                            for field in sorted(carried)},
-                    }
-                child_state = child_node.state
-                child_health = StateHealthValidator(child_state).validate(
-                    phase=f"leg{leg}.{name}.nest")
-                if not child_health.ok:
-                    raise FloatingPointError(
-                        f"leg {leg} {name}: nest pre-leg health failed: "
-                        f"{vars(child_health)}")
-            del restored_background
-
-            model = assemble(wired, name=name, child_node=child_node)
-            if resumed:
-                model._resumed = True
-                model._resume_committed_history_grid_ids = frozenset(
-                    model.nodes_by_grid_id)
-
-            # An exact issuance endpoint is needed before differencing
-            # accumulations. The first free leg starts after the final
-            # pending analysis has been applied, so its reflectivity is
-            # the issued analysis rather than the pre-analysis forecast.
-            if args.save_composites and (leg == 0 or leg == len(args.obs)):
-                start_name = (out / "composites" /
-                              f"start{leg_number(leg):02d}_{name}.npz")
-                _write_rain_composite(
-                    start_name, state=state, driver=driver,
-                    grid=inputs.grid, cfg=cfg, elapsed_seconds=t_start,
-                    exp=exp, label=f"start leg {leg_number(leg)} member {name}")
-                if child_node is not None:
-                    _write_rain_composite(
-                        start_name.with_name(
-                            start_name.stem + f"_d{nest_child_dc.grid_id:02d}.npz"),
-                        state=child_node.state, driver=child_driver,
-                        grid=child_node.grid, cfg=child_dc_leg.run,
-                        elapsed_seconds=t_start, exp=exp,
-                        label=f"start leg {leg_number(leg)} member {name} nest",
-                        domain=child_dc_leg)
-
-            # -- radar latent heating for this leg --------------------------
-            # External data, like the boundary data: attached for the
-            # integration and detached before anything reads the state as
-            # a whole (the restart set below would refuse an unclassified
-            # attribute).  Members only; the control stays the no-DA arm.
-            tten_forcing = None
-            if tten_reflectivity is not None and name != CONTROL:
-                background = radar_tten.background_from_state(state)
-                tten_slot, tten_receipt = radar_tten.build_tendency(
-                    tten_reflectivity, **background)
-                del background
-                tten_forcing = radar_tten.RadarTtenForcing(
-                    [tten_slot], [leg_length(leg) / 60.0],
-                    receipts=[tten_receipt],
-                    provenance={"observations": str(obs_path),
-                                "background": "member state at leg start"},
-                    mp_tend_lim=radar_tten.HRRR_MP_TEND_LIM)
-                radar_tten.attach(state, tten_forcing, cfg)
-            try:
-                execute_experiment(model, history_handler=None,
-                                   progress_callback=None,
-                                   validate_state=True,
-                                   skip_feedback_path=True)
-            finally:
-                if tten_forcing is not None:
-                    radar_tten.detach(state)
-            cp.cuda.Stream.null.synchronize()
-            if tten_forcing is not None:
-                tten_record = tten_forcing.receipt()
-                leg_record["trajectories"].setdefault(str(name), {})[
-                    "radar_tten"] = tten_record
-                if not (sum(tten_record["calls_by_slot"])
-                        + tten_record["calls_skipped_no_mp_heating"]):
-                    raise RuntimeError(
-                        f"leg {leg} {name}: the radar heating was attached "
-                        "for the leg and no microphysics call read it, so "
-                        "the member ran unforced while this record says "
-                        "forced")
-                del tten_forcing, tten_slot
-
-            # -- the leg join: this trajectory's restart set --------------
-            #
-            # Written FIRST, before any diagnostic reads the state, so the
-            # set is the model exactly as the integration left it.  The
-            # writer refuses anything but a period boundary with nothing
-            # pending, which is what a completed integration is.
-            restart_root = stage.directory(leg_number(leg), name)
-            restarts[name] = write_leg_restart(
-                model, restart_root,
-                auto_epssm=(nested_forecast.nested_experiment(
-                    exp, nest_child_dc).auto_epssm
-                    if len(model.nodes_by_grid_id) > 1 else exp.auto_epssm),
-                valid_time=exp.start_time + timedelta(seconds=float(
-                    node.clock.ticks / node.clock.tick_den)))
-            written_members = tree_restart_members(restarts[name])
-            entry = leg_record["trajectories"].setdefault(str(name), {})
-            entry["pool_trim"] = model._pool_trim_policy
-            entry["restart"] = {
-                "root_member": restarts[name].name,
-                "domain_ids": sorted(int(gid) for gid in written_members),
-                "bytes": int(sum(member.stat().st_size
-                                 for member in written_members.values())),
-                "elapsed_seconds": float(node.clock.elapsed_seconds),
-            }
-
-            thb_live = getattr(state, "thb", None)
-            thb_snapshot = to_host(thb_live) if thb_live is not None \
-                else None
-
-            # -- leg-end diagnostics on the live device state ---------------
-            refl = obsop.simulated_reflectivity(state, cfg)
-            refl_host = to_host(refl).astype(np.float32)
-            if name != CONTROL:
-                member_dbz[int(name)] = refl_host.astype(np.float64)
-            if surface_cfg is not None and name != CONTROL:
-                # Leg-END surface diagnostics off the live driver: the
-                # 2m/10m fields the surface layer diagnosed for the very
-                # state that was mirrored, taken here beside member_dbz
-                # and nowhere else.
-                absent = [key for key in ("t2", "u10", "v10")
-                          if key not in driver.fields]
-                if absent:
-                    raise RuntimeError(
-                        f"leg {leg} {name}: --surface-obs needs the "
-                        f"driver's {absent} diagnostics and this physics "
-                        "profile does not allocate them")
-                member_sfc[int(name)] = {
-                    key: to_host(driver.fields[key]).astype(np.float64)
-                    for key in ("t2", "u10", "v10")}
-            if args.save_composites:
-                comp_dir = out / "composites"
-                comp_dir.mkdir(parents=True, exist_ok=True)
-                composite_npz = (comp_dir /
-                                 f"leg{leg_number(leg):02d}_{name}.npz")
-                rain = rain_snapshot(driver)
-                np.savez_compressed(
-                    composite_npz,
-                    refl_colmax=refl_host.max(axis=0),
-                    **rain, rain_reset_id=np.int64(0),
-                    elapsed_seconds=np.float64(
-                        node.clock.elapsed_seconds))
-                # ...and the same composite as a real wrfout beside it, so
-                # `gpuwm render --engine rust` -- the renderer the render
-                # law names -- can draw this member.  The npz is what the
-                # cycle's own analysis reads and is untouched; this is a
-                # second copy in the format a different tool reads.
-                _write_composite_wrfout(
-                    composite_npz, refl_host.max(axis=0), inputs.grid, cfg,
-                    node.clock.elapsed_seconds, exp,
-                    label=f"leg {leg_number(leg):02d} member {name}", rain=rain)
-            # -- the nest's own leg-end product ------------------------------
-            #
-            # Written under a d02 name beside the parent's rather than
-            # replacing it: the point of the exercise is a fine view OF the
-            # parent's forecast, and a reader has to be able to see both.
-            refl_nest = None
-            if child_node is not None:
-                refl_nest = obsop.simulated_reflectivity(
-                    child_node.state, child_dc_leg.run)
-                refl_nest_host = to_host(refl_nest).astype(np.float32)
-                nest_entry["refl_max_dbz"] = float(refl_nest_host.max())
-                nest_entry["elapsed_seconds"] = float(
-                    child_node.clock.elapsed_seconds)
-                nest_entry["step_count"] = int(child_node.clock.step_count)
-                nest_entry["domain_start_offset_seconds"] = float(
-                    child_node.state.domain_start_offset)
-                if args.save_composites:
-                    # ``leg_number(leg)``, the same author as every other
-                    # leg-named artifact this driver writes.  The child's
-                    # frame and the parent's frame of the SAME leg have to
-                    # carry the same number, or a run given a leg-number
-                    # offset writes a nest under a leg the parent frames
-                    # never use and nothing finds it.
-                    nest_npz = (comp_dir /
-                                f"leg{leg_number(leg):02d}_{name}_d"
-                                f"{nest_child_dc.grid_id:02d}.npz")
-                    nest_colmax = refl_nest_host.max(axis=0)
-                    nest_rain = rain_snapshot(child_driver)
-                    np.savez_compressed(
-                        nest_npz,
-                        refl_colmax=nest_colmax,
-                        **nest_rain, rain_reset_id=np.int64(0),
-                        elapsed_seconds=np.float64(
-                            child_node.clock.elapsed_seconds),
-                        dx_m=np.float64(nest_child_dc.run.dx),
-                        i_parent_start=np.int32(
-                            nest_child_dc.i_parent_start),
-                        j_parent_start=np.int32(
-                            nest_child_dc.j_parent_start),
-                        parent_grid_ratio=np.int32(
-                            nest_child_dc.parent_grid_ratio))
-                    # ...and the child's own wrfout beside it, for the
-                    # same reason the parent gets one and by the same
-                    # call.  Without it the nest's product had no route
-                    # to the renderer the render law names: an ``.npz``
-                    # states no geolocation, so rw_wrfbatch cannot read
-                    # one, and a door that can ask for a nest whose
-                    # picture nobody can draw is not a shipped door.
-                    _write_composite_wrfout(
-                        nest_npz, nest_colmax, child_node.grid,
-                        nest_child_dc.run,
-                        child_node.clock.elapsed_seconds, exp,
-                        label=(f"leg {leg_number(leg):02d} member {name} "
-                               f"d{nest_child_dc.grid_id:02d}"),
-                        domain=nest_child_dc, rain=nest_rain)
-            entry["wall_seconds"] = round(time.time() - t_leg, 1)
-            entry["elapsed_seconds"] = float(node.clock.elapsed_seconds)
-            if document is not None:
-                z_mask = np.asarray(
-                    document["variables"]["z_mask"]).astype(bool)
-                z_obs = np.asarray(document["variables"]["z_obs"],
-                                   np.float64)
-                inside = z_mask
-                model_in_mask = refl_host[inside].astype(np.float64)
-                entry["z_obs_space"] = {
-                    "points": int(inside.sum()),
-                    "obs_mean_dbz": float(z_obs[inside].mean()),
-                    "model_mean_dbz": float(model_in_mask.mean()),
-                    "model_max_dbz": float(model_in_mask.max()),
-                    "model_cols_gt35_in_echo": int(
-                        (refl_host.max(axis=0) >= 35.0)[
-                            z_mask.any(axis=0)].sum()),
-                    "obs_cols_gt35": int(
-                        ((z_obs * z_mask).max(axis=0) >= 35.0).sum()),
-                    "innovation_mean_dbz": float(
-                        (z_obs[inside] - model_in_mask).mean()),
-                }
-            if (analysis_due and name != CONTROL
-                    and not args.no_hotstart):
-                increments_hot, hot_prov = hotstart_increments(
-                    state, z_obs_cp, z_mask_cp, hot_cfg,
-                    simulated_dbz=refl)
-                hot_pending[name] = {
-                    field: to_host(values).astype(np.float32)
-                    for field, values in increments_hot.items()}
-                entry["hotstart"] = {
-                    key: hot_prov[key] for key in hot_prov
-                    if isinstance(hot_prov[key], (int, float, str))}
-
-            # The host mirror the FILTER reads.  Not the leg join: that
-            # is the restart set above, which carries this and everything
-            # the mirror does not.
-            snapshot = {}
-            for field in STATE_SERIALIZED_ATTRS:
-                value = getattr(state, field, None)
-                if value is not None:
-                    snapshot[field] = to_host(value)
-            snapshots[name] = snapshot
-            entry["analysis_state_fields"] = sorted(snapshot)
-            if thb_host is None and thb_snapshot is not None:
-                thb_host = thb_snapshot
+    spread_controller = None
+    spread_grid_sha = None
+    if (resumed_from is not None and "spread_repair" in resumed_from
+            and not adaptive_spread):
+        from gpuwm.da.spread_restart import SpreadRestartError
+        raise SpreadRestartError("this generation carries adaptive spread; disabling it on resume would silently discard its saved uncertainty")
+    if args.spread_repair != "off":
+        from gpuwm.da.spread_repair import SpreadRepairConfig, SpreadRepairController
+        spread_config = SpreadRepairConfig(
+            policy=args.spread_repair, observed_threshold_dbz=args.spread_repair_z_threshold,
+            adaptive=adaptive_spread)
+        spread_state = None
+        spread_metadata = None
+        if adaptive_spread:
+            from gpuwm.da.spread_restart import read_sidecar, clock_valid_time
+            first_grid = leg_inputs(0).grid_h
+            if first_grid is None:
+                raise ValueError("adaptive spread needs the observation grid to bind its spatial uncertainty")
+            spread_grid_sha = first_grid.identity_sha256()
+            if resumed_from is not None:
+                spread_state, spread_metadata = read_sidecar(
+                    args.resume_ensemble, resumed_from, identity=identity.to_payload(),
+                    config=spread_config, seed=args.seed,
+                    grid_identity_sha256=spread_grid_sha,
+                    valid_time=clock_valid_time(exp.start_time, base_seconds))
+        spread_controller = SpreadRepairController(spread_config, seed=args.seed, state=spread_state)
+        if spread_metadata is not None:
+            spread_controller.last_receipt = {"analysis_valid_time": spread_metadata["analysis_valid_time"]}
+    vts_cycle = None
+    if vts_enabled:
+        import psutil
+        from gpuwm.da.spread_vts import VtsCycle
+        retained_budget = int(args.spread_vts_ram_gib * 1024**3)
+        if psutil.virtual_memory().available < retained_budget+48*1024**3:
+            raise MemoryError("VTSM admission needs its explicit retained RAM budget plus the cycle's 48 GiB analysis reserve")
+        vts_cycle = VtsCycle(stage.stage_root / "vts.sock", max_bytes=retained_budget)
+        stages.append(vts_cycle)
+        args.spread_vts_socket = str(vts_cycle.server.path)
+    for leg in range(legs):
+        li = leg_inputs(leg)
+        for done_leg in [k for k in leg_input_cache if k < leg]:
+            del leg_input_cache[done_leg]      # its observation document
+        t_start, t_end = li.t_start, li.t_end
+        if vts_enabled and li.analysis_due:
+            validate_request(analysis_seconds=t_end, origin_seconds=t_start,
+                             history_seconds=args.history_interval_seconds)
+            args.spread_vts_grid_identity = li.grid_h.identity_sha256()
+        if adaptive_spread and li.grid_h is not None:
+            if li.grid_h.identity_sha256() != spread_grid_sha:
+                raise ValueError("adaptive spread target grid changed between cycles; uncertainty would move to different cells")
+        leg_record: dict = {"leg": leg_number(leg), "leg_in_run": leg,
+                            "start_s": t_start, "end_s": t_end,
+                            "trajectories": {}}
+        # The complete restart and pending increments own the leg join.
+        # Previous host mirrors have already served analysis and are not input
+        # to the next forecast. Keeping them beside a new 32-member roster
+        # would double the host-state residency of large regional domains.
+        release_backgrounds(snapshots)
+        # Pending owns the accepted float32 increments; the solver result
+        # from the previous analysis is not another leg input.
+        increments = None
+        member_dbz.clear()
+        member_sfc.clear()
+        goes_path, obs_path = li.goes_path, li.obs_path
+        echo_columns = li.echo_columns
+        grid_h, document = li.grid_h, li.document
+        analysis_due, verification_only = li.analysis_due, li.verification_only
+        if args.radar_tten:
+            leg_record["radar_tten_observations"] = li.tten_note
+        # The public serial and packed routes use the same complete-tree leg.
+        # Every result is accepted before any input is consumed or analysis runs.
+        forecast_started = time.monotonic()
+        control = None
+        if next_control is not None:
+            control = next_control.result()
+            next_control = None
+        results, forecast_receipt = forecast_roster(
+            trajectories, context_for=contexts_for(leg, li),
+            packed=packed_forecasts, devices=forecast_cards,
+            members_per_card=forecast_pack, member_peak_bytes=forecast_peak,
+            workdir=packed_workdir(leg),
+            stage=stage, run_leg=run_leg_route,
+            release=release_device_memory,
+            timeout_seconds=args.forecast_leg_timeout_seconds,
+            host_reserve_bytes=(4 if args.packed_smoke else 48)*1024**3,
+            control=control,
+            pending_files=(pending_file_from_generation if packed_forecasts
+                           else None),
+            before_consume=join_generation,
+            servers=card_servers or None)
+        for name, result in results.items():
+            restarts[name] = result.restart
+            # A packed member publishes no host mirror: its leg-end restart
+            # (already adopted into this run's stage) IS that state, and the
+            # analysis reads the few fields it needs from it on demand.
+            snapshots[name] = member_background(result)
             pending[name] = None
-            print(f"leg {leg} {name}: {entry['wall_seconds']} s, "
-                  f"elapsed {entry['elapsed_seconds']:.0f} s", flush=True)
+            if result.H_Z is not None:
+                member_dbz[int(name)] = result.H_Z
+            if result.H_surface is not None:
+                member_sfc[int(name)] = result.H_surface
+            if result.hot_pending is not None:
+                hot_pending[name] = result.hot_pending
+            if result.nest_birth is not None:
+                nest_birth[name] = result.nest_birth
+            leg_record["trajectories"][str(name)] = result.record
+            if "member_lateral_boundaries" in result.record:
+                report.setdefault("member_lateral_boundaries", {})[
+                    str(name)] = result.record["member_lateral_boundaries"]
+            if setup_arrays is None:
+                setup_arrays = result.setup_arrays
+            if thb_host is None:
+                thb_host = result.thb_host
+        leg_record["forecast_barrier"] = forecast_receipt
+        leg_record["forecast_plus_io_wall_seconds"] = time.monotonic() - forecast_started
+        analysis_started = time.monotonic()
+        # Wall clock of the driver's own stages around the solve, in run
+        # order (the solve splits its own in stage_wall_seconds).
+        driver_clock: dict = {}
+        driver_mark = [time.monotonic()]
 
-        for name in trajectories:
-            run_trajectory(name)
-            # The trajectory's owners died with its scope; the collection
-            # and the pool drain hand their blocks back before the next
-            # trajectory is wired, and before the analysis below.
-            release_device_memory()
+        def _driver_stage(name):
+            now = time.monotonic()
+            driver_clock[name] = round(driver_clock.get(name, 0.0)
+                                       + now - driver_mark[0], 3)
+            driver_mark[0] = now
+        if packed_forecasts and leg + 1 < legs:
+            # The control is unanalysed: its next leg needs only the restart
+            # it just wrote, so it starts now, beside this leg's analysis.
+            next_context = contexts_for(leg + 1, leg_inputs(leg + 1))("control")
+            next_control = background.submit(
+                ControlLaunch, next_context, workdir=packed_workdir(leg + 1),
+                gpu_uuid=control_card,
+                server=card_servers.get(control_card))
 
         # -- analysis at t_end ------------------------------------------------
+        # The additive-inflation and echo-noise draws depend only on the
+        # members' leg-end states, the seed and the leg, never on the
+        # filter, so they are drawn on a background thread from here, beside
+        # the solve, and joined where they are added.  Drawn after the
+        # filter they were 118-128 s of every 32-member 9 km CONUS analysis
+        # (box L check1, 2026-10-06) with seven cards idle.  The same calls
+        # with the same arguments: the same noise, byte for byte.
+        inflation_jobs: dict = {}
+        if analysis_due:
+            wants_additive = float(args.additive_inflation) > 0.0
+            wants_echo = (echo_columns is not None
+                          and bool(np.any(echo_columns > 0.0)))
+            if wants_additive or wants_echo:
+                inflation_pool = _Background(
+                    max_workers=1, thread_name_prefix="da-inflation")
+                inflation_priors = {index: snapshots[index]
+                                    for index in range(args.members)}
+                if wants_additive:
+                    inflation_jobs["additive"] = inflation_pool.submit(
+                        perturb.additive_inflation, inflation_priors,
+                        cfg_perturb, seed=args.seed,
+                        leg=int(leg_number(leg)),
+                        scale=float(args.additive_inflation))
+                if wants_echo:
+                    inflation_jobs["echo"] = inflation_pool.submit(
+                        perturb.additive_inflation, inflation_priors,
+                        cfg_perturb, seed=args.seed,
+                        leg=int(leg_number(leg)),
+                        scale=float(args.echo_noise), weight=echo_columns,
+                        stream="echo-noise")
+                inflation_pool.shutdown(wait=False)
         if analysis_due or verification_only:
+            # The members' backgrounds go to the analysis as they are: the
+            # in-process mirror, or a lazy view of the member's own leg-end
+            # restart.  Saving a whole-state copy of every member to a
+            # second npz and reading it back whole was three passes of the
+            # ensemble through host memory and disk per analysis
+            # (gpuwm.da.radar_assimilation.CheckpointStateView).  Files are
+            # staged only for the replay bundle, which copies files.
             shm_leg = stage.analysis_directory(leg_number(leg))
             if shm_leg.exists():
                 shutil.rmtree(shm_leg)
-            checkpoints = {}
-            for index in range(args.members):
-                member_dir = shm_leg / f"member_{index:03d}"
-                member_dir.mkdir(parents=True)
-                path = member_dir / f"gpuwmrst_d01_{int(t_end):06d}.npz"
-                np.savez(path, **{f"state/{k}": v
-                                  for k, v in snapshots[index].items()})
-                checkpoints[index] = path
+            vts_roster = None
+            analysis_snapshots = snapshots
+            analysis_members = int(args.members)
+            if vts_cycle is not None and analysis_due:
+                from gpuwm.da.spread_vts_observers import pool_retained_slots
+                vts_roster = pool_retained_slots(vts_cycle.slots(results),
+                    members=int(args.members), analysis_seconds=t_end,
+                    grid_identity_sha256=grid_h.identity_sha256())
+                analysis_snapshots = vts_roster.snapshots
+                analysis_members = 3*int(args.members)
+            checkpoints = analysis_backgrounds(
+                analysis_snapshots, analysis_members, directory=shm_leg,
+                t_end=t_end, files=(args.dump_analysis_bundle is not None
+                                    and obs_path is not None))
 
             analysis_fields = ("u", "v")
             provider = None
+            cfg_fall_speed = resolved_fall_speed(args, cfg.mp_physics)
+            leg_record["fall_speed"] = cfg_fall_speed
             if args.hydrometeors:
                 # Derived from the scheme, then intersected with what the
                 # checkpoints actually carry: a scheme may advance a
@@ -2919,21 +3714,19 @@ def cycle(stages: list) -> int:
                 # filter refuses a spreadless field, correctly, and a
                 # species the model has not made anywhere is a species
                 # with nothing to update.
-                carried = set(snapshots[0])
+                carried = set(analysis_snapshots[0])
                 candidates = tuple(
                     name for name in moments.analysis_fields(
                         int(cfg.mp_physics)) if name in carried)
                 spreads = {}
                 for name in candidates:
-                    stack = np.stack([snapshots[i][name] for i in
-                                      range(args.members)]).astype(
-                                          np.float64)
-                    scale = float(np.abs(stack).max())
-                    widest = float(stack.std(axis=0, ddof=1).max())
+                    # The whole-stack float64 expressions, on every core
+                    # (gpuwm.da.ensemble_stats: the same bytes).
+                    scale, widest = ensemble_stats.field_spread(
+                        [analysis_snapshots[i][name] for i in range(analysis_members)])
                     spreads[name] = {"max_abs": scale,
                                      "max_spread": widest,
                                      "usable": widest > 1e-12 * scale}
-                    del stack
                 dropped = {name for name, entry in spreads.items()
                            if not entry["usable"]}
                 for pair in moments.pairs_present(
@@ -2964,6 +3757,14 @@ def cycle(stages: list) -> int:
                         one Python call per column and a second Z
                         authority in the same cycle."""
                         return _t[int(index)]
+            if provider is None and cfg_fall_speed == "reflectivity":
+                # The fall speed reads the member's own dBZ, the same device
+                # diagnostic the reflectivity batch would difference.
+                def provider(index, state, _t=dict(member_dbz)):
+                    """H_Z(x) from the leg-end device diagnostic."""
+                    return _t[int(index)]
+            if vts_roster is not None:
+                provider = vts_roster.reflectivity_provider
             cwp_provider = None
             if goes_path is not None:
                 if setup_arrays is None:
@@ -2980,13 +3781,27 @@ def cycle(stages: list) -> int:
                                 if name.strip()))
                 cwp_provider = checkpoint_cwp_provider(
                     cfg, composition=composition, **setup_arrays)
+                if vts_roster is not None:
+                    from gpuwm.da.spread_vts import setup_identity
+                    from gpuwm.da.spread_vts_observers import make_cwp_provider
+                    setup_digest = setup_identity({**setup_arrays,
+                        "phb": vts_roster.central_states[0]["phb"],
+                        "thb": vts_roster.central_states[0]["thb"]})
+                    cwp_provider = make_cwp_provider(vts_roster, cfg,
+                        setup_arrays=setup_arrays, setup_identity_sha256=setup_digest,
+                        composition=composition)
             # The SAME function the plan-time probe above the leg loop
             # called, with this leg's measured field set: one construction,
             # so the configuration that was reviewed before leg 0 and the
             # configuration that runs cannot differ by a knob.
+            _driver_stage("backgrounds_and_field_selection")
             cfg_da = plan_radar_assimilation(
                 args, cfg.mp_physics, analysis_fields=analysis_fields,
                 cwp=goes_path is not None)
+            if next_control is not None and analysis_cards:
+                # Every card but the one the next control runs on.
+                cfg_da = dataclasses.replace(cfg_da,
+                                             solve_cards=analysis_cards)
             # -- the replayable copy of this leg's analysis inputs -------
             # Written BEFORE the solve, from the same objects the solve is
             # about to consume, so a bundle can never describe a different
@@ -2998,6 +3813,7 @@ def cycle(stages: list) -> int:
             # arms on an analysis neither of them performed.
             if args.dump_analysis_bundle is not None and obs_path is not None:
                 if cfg_da.cwp or cfg_da.reflectivity or cfg_da.clear_air \
+                        or cfg_da.fall_speed == "reflectivity" \
                         or surface_cfg is not None:
                     print(f"leg {leg}: analysis bundle NOT dumped -- this "
                           "analysis carries batches whose forward operator "
@@ -3005,6 +3821,7 @@ def cycle(stages: list) -> int:
                           f"(reflectivity={cfg_da.reflectivity}, "
                           f"clear_air={cfg_da.clear_air}, "
                           f"cwp={cfg_da.cwp}, "
+                          f"fall_speed={cfg_da.fall_speed}, "
                           f"surface={surface_cfg is not None})", flush=True)
                 else:
                     bundle_dir = (Path(args.dump_analysis_bundle)
@@ -3032,8 +3849,8 @@ def cycle(stages: list) -> int:
                           flush=True)
             surface_batches = None
             surface_prov = None
-            if surface_cfg is not None:
-                simulated = {"t2": None, "u10": None, "v10": None}
+            if surface_cfg is not None and vts_roster is None:
+                simulated = {"t2": None, "u10": None, "v10": None, "q2": None, "psfc": None}
                 stacks = [member_sfc[i] for i in range(args.members)]
                 if surface_cfg.temperature:
                     simulated["t2"] = np.stack(
@@ -3043,6 +3860,9 @@ def cycle(stages: list) -> int:
                         [entry["u10"] for entry in stacks])
                     simulated["v10"] = np.stack(
                         [entry["v10"] for entry in stacks])
+                if surface_cfg.dewpoint:
+                    simulated["q2"] = np.stack([entry["q2"] for entry in stacks])
+                    simulated["psfc"] = np.stack([entry["psfc"] for entry in stacks])
                 surface_batches, surface_prov = surface_to_gridded_obs(
                     args.surface_obs, target_grid=grid_h,
                     analysis_time=surface_schedule[leg],
@@ -3050,26 +3870,111 @@ def cycle(stages: list) -> int:
                     config=surface_cfg,
                     simulated_t2=simulated["t2"],
                     simulated_u10=simulated["u10"],
-                    simulated_v10=simulated["v10"])
+                    simulated_v10=simulated["v10"],
+                    simulated_q2=simulated["q2"],
+                    simulated_psfc=simulated["psfc"])
+            conv_batches = None
+            conv_prov = None
+            if conv_table is not None and vts_roster is None:
+                from gpuwm.da.obs_conventional import conventional_batches
+                t_conv = time.time()
+                conv_surface = None
+                if conv_table.needs_surface():
+                    conv_surface = {
+                        key: np.stack([member_sfc[i][key]
+                                       for i in range(args.members)])
+                        for key in ("t2", "q2", "psfc", "u10", "v10")
+                        if key in member_sfc[0]}
+                conv_batches, conv_prov = conventional_batches(
+                    conv_rows, conv_table,
+                    states=[snapshots[i] for i in range(args.members)],
+                    thb=thb_host, grid=grid_h,
+                    analysis_time=conv_schedule[leg],
+                    surface=conv_surface,
+                    rotation=grid_rotation(grid_h))
+                conv_prov["seconds"] = round(time.time() - t_conv, 2)
+                print(f"leg {leg}: conventional "
+                      + ", ".join(f"{b['batch']} {b['superobservations']}"
+                                  f"/{b['reports']}"
+                                  for b in conv_prov["batches"])
+                      + f" ({conv_prov['seconds']} s)", flush=True)
+            extra_batches = list(surface_batches or ()) + list(
+                conv_batches or ())
+            extra_prov = surface_prov
+            if conv_prov is not None:
+                extra_prov = {
+                    "batches": list((surface_prov or {}).get("batches")
+                                    or ()) + list(conv_prov["batches"]),
+                    "surface": surface_prov,
+                    "conventional": conv_prov,
+                }
+            if vts_roster is not None:
+                from gpuwm.da.spread_vts_observers import build_extra_observations
+                extra_batches, extra_prov = build_extra_observations(
+                    vts_roster, target_grid=grid_h,
+                    analysis_time=(surface_schedule[leg] if surface_cfg is not None
+                                   else conv_schedule[leg] if conv_table is not None
+                                   else exp.start_time+timedelta(seconds=t_end)),
+                    surface_source=args.surface_obs, surface_config=surface_cfg,
+                    analysis_times=surface_schedule if surface_cfg is not None else None,
+                    conventional_rows=conv_rows if conv_table is not None else None,
+                    conventional_table=conv_table, thb=thb_host,
+                    rotation=grid_rotation(grid_h))
+                surface_prov = extra_prov.get("surface")
+                conv_prov = extra_prov.get("conventional")
+            _driver_stage("bundle_and_surface_batches")
             t_solve = time.time()
+            # The leg's document was read and grid-bound once already
+            # (leg_inputs); handing the path again re-read the whole radar
+            # file inside the analysis, 12.5 s of every 9 km CONUS
+            # analysis on box E with seven cards idle.
+            analysis_spread_controller = spread_controller
+            if spread_controller is not None and (vts_roster is not None or (adaptive_spread and not analysis_due)):
+                from gpuwm.da.spread_restart import fork_controller
+                analysis_spread_controller = fork_controller(spread_controller)
             increments, prov = assimilate_radar_grid(
-                checkpoints, obs_path, grid_h, cfg_da,
+                checkpoints,
+                li.document if li.document is not None else obs_path,
+                grid_h, cfg_da,
                 reflectivity_provider=provider,
-                extra_obs=surface_batches,
-                extra_obs_provenance=surface_prov,
+                extra_obs=extra_batches or None,
+                extra_obs_provenance=extra_prov,
                 cwp_observations=goes_path,
-                cwp_provider=cwp_provider)
+                cwp_provider=cwp_provider,
+                analysis_runner=(analysis_spread_controller.analysis_runner(
+                    pressure=tuple(analysis_snapshots[i]["p"] for i in range(analysis_members)))
+                    if analysis_spread_controller is not None
+                    and (analysis_due or adaptive_spread) else None))
+            if vts_roster is not None:
+                from gpuwm.da.spread_vts import reduce_and_bound
+                increments, vts_bounds = reduce_and_bound(vts_roster, increments, cfg_da)
+                prov["valid_time_shifting"] = {**vts_roster.receipt,
+                                              "central_rebind": vts_bounds}
+                if spread_controller is not None:
+                    spread_controller.state = analysis_spread_controller.state
+                    spread_controller.last_receipt = analysis_spread_controller.last_receipt
+                checkpoints = None
+                analysis_snapshots = snapshots
+                provider = cwp_provider = None
+                vts_roster = None
+                vts_cycle.release()
             leg_record["analysis"] = {
                 "applied": bool(analysis_due),
                 "solve_seconds": round(time.time() - t_solve, 1),
+                "stage_wall_seconds": prov.get("stage_wall_seconds"),
                 "analysis_fields": list(analysis_fields),
                 "innovations": prov["innovations"],
                 "filter": prov["filter"],
                 "velocity_thinning": prov["velocity_thinning"],
                 "reflectivity_thinning": prov["reflectivity_thinning"],
+                "reflectivity_echo_conditioning": prov.get(
+                    "reflectivity_echo_conditioning"),
                 "moment_policy": prov["moment_policy"],
                 "positivity": prov["positivity"],
+                **({"valid_time_shifting": prov["valid_time_shifting"]}
+                   if "valid_time_shifting" in prov else {}),
                 "surface": surface_prov,
+                "conventional": conv_prov,
                 # What was actually assimilated this leg, COUNTED off the
                 # batches the filter solved rather than inferred from
                 # which flags were on. A leg whose satellite file held no
@@ -3095,18 +4000,11 @@ def cycle(stages: list) -> int:
                     None if cwp_provider is None
                     else composition.to_payload()),
             }
+            _driver_stage("solve")
             inc_stats = {}
             for field in analysis_fields:
-                stack = np.stack([increments[i][field]
-                                  for i in sorted(increments)])
-                inc_stats[field] = {
-                    "finite": bool(np.isfinite(stack).all()),
-                    "max_abs": float(np.abs(stack).max()),
-                    "rms_where_nonzero": float(np.sqrt(np.mean(
-                        stack[stack != 0.0] ** 2)))
-                    if np.any(stack != 0.0) else 0.0,
-                    "nonzero_fraction": float(np.mean(stack != 0.0)),
-                }
+                inc_stats[field] = ensemble_stats.increment_stats(
+                    [increments[i][field] for i in sorted(increments)])
                 if field in ("u", "v"):
                     inc_stats[field]["max_abs_ms"] = inc_stats[field][
                         "max_abs"]
@@ -3121,9 +4019,8 @@ def cycle(stages: list) -> int:
             for field in analysis_fields:
                 if field in ("u", "v", "w"):
                     continue
-                stack = np.stack([increments[i][field]
-                                  for i in sorted(increments)])
-                touched = np.any(stack != 0.0, axis=0)
+                touched = ensemble_stats.support(
+                    [increments[i][field] for i in sorted(increments)])
                 if support is None:
                     support = touched
                 elif not np.array_equal(support, touched):
@@ -3136,45 +4033,15 @@ def cycle(stages: list) -> int:
                     prov["filter"]["active_points"]),
             }
 
+            _driver_stage("increment_record_and_support")
             # control-member Vr innovation (no filter, direct H(x)).
             control_state = snapshots[CONTROL]
             u_e, v_n, w_m = member_earth_winds(
                 control_state, grid_rotation(grid_h),
                 where="control snapshot")
-            from gpuwm.da.obs_radar import (beam_unit_vectors,
-                                            simulated_radial_velocity)
-            # Every radar in the file, not radar 0.  Each antenna has its
-            # own beam geometry, so a radial-velocity innovation is only
-            # defined per radar; indexing [0] and calling the answer "the"
-            # control innovation was harmless while every file held one
-            # radar and silently wrong the moment one held twenty.  The
-            # aggregate below pools the residuals, which is the same
-            # statistic when there is one radar -- so single-radar
-            # receipts keep the numbers they had.
+            # Every radar in the file, not radar 0 (control_vr_innovations).
             radars = list(document["radars"])
-            per_radar = []
-            pooled = []
-            from gpuwm.obs.radar_grid import radar_plane
-            for index, radar in enumerate(radars):
-                # radar_plane, not variables[...][index]: on a v2 file the
-                # stored plane covers only this radar's reach window, and
-                # the control innovation is computed against a whole-domain
-                # wind field.  On v1 it is the same array it always was.
-                vr_mask = np.asarray(
-                    radar_plane(document, "vr_mask", index)).astype(bool)
-                points = int(vr_mask.sum())
-                row = {"radar": str(radar["id"]), "points": points}
-                if points:
-                    vr_obs = np.asarray(
-                        radar_plane(document, "vr_obs", index), np.float64)
-                    sim = simulated_radial_velocity(
-                        u_e, v_n, w_m, beam_unit_vectors(document, index))
-                    d = vr_obs[vr_mask] - sim[vr_mask]
-                    pooled.append(d)
-                    row["innovation_mean_ms"] = float(d.mean())
-                    row["innovation_rms_ms"] = float(
-                        np.sqrt(np.mean(d ** 2)))
-                per_radar.append(row)
+            per_radar, pooled = control_vr_innovations(document, u_e, v_n, w_m)
             alld = (np.concatenate(pooled) if pooled
                     else np.zeros(0, np.float64))
             leg_record["analysis"]["control_vr"] = {
@@ -3190,31 +4057,85 @@ def cycle(stages: list) -> int:
                 "per_radar": per_radar,
             }
 
+            _driver_stage("control_vr")
+            if spread_controller is not None and analysis_due:
+                leg_record["analysis"]["spread_repair"] = spread_controller.last_receipt
+            elif adaptive_spread:
+                leg_record["analysis"]["spread_repair"] = analysis_spread_controller.last_receipt
+            if analysis_due and spread_controller is None and float(args.additive_inflation) > 0.0:
+                # After the filter, before the merge that bounds the sum:
+                # fresh smooth noise per member, its ensemble mean removed,
+                # so the analysis mean stays the filter's and only spread
+                # is added (gpuwm.da.perturb.additive_inflation).
+                noise, noise_record = inflation_jobs["additive"].result()
+                for index, fields in noise.items():
+                    increments[index] = dict(increments[index])
+                    for field, values in fields.items():
+                        if field in increments[index]:
+                            base = np.asarray(increments[index][field])
+                            increments[index][field] = (
+                                base.astype(np.float64) + values).astype(
+                                    base.dtype)
+                        else:
+                            increments[index][field] = values
+                leg_record["analysis"]["additive_inflation"] = noise_record
+            if (analysis_due and spread_controller is None and echo_columns is not None
+                    and bool(np.any(echo_columns > 0.0))):
+                # Where the radar sees echo, a further echo-weighted draw on
+                # its own stream (audit S5), ensemble mean removed.
+                echo_noise, echo_record = inflation_jobs["echo"].result()
+                for index, fields in echo_noise.items():
+                    increments[index] = dict(increments[index])
+                    for field, values in fields.items():
+                        if field in increments[index]:
+                            base = np.asarray(increments[index][field])
+                            increments[index][field] = (
+                                base.astype(np.float64) + values).astype(
+                                    base.dtype)
+                        else:
+                            increments[index][field] = values
+                echo_record["echo_columns"] = int(
+                    np.count_nonzero(echo_columns >= 1.0))
+                leg_record["analysis"]["echo_noise"] = echo_record
+            _driver_stage("additive_inflation_and_echo_noise")
             if analysis_due:
                 overlap: dict[str, dict] = {}
                 bound_points = 0
                 bound_mass = 0.0
                 bound_fields: set[str] = set()
                 bounded_members = 0
-                for index in range(args.members):
+                def merge_one(index):
                     hot = (hot_pending.get(index) or {}
                            if not args.no_hotstart else {})
-                    merged, member_overlap, positivity = (
-                        merge_hotstart_increments(
-                            increments[index], hot,
-                            prior=snapshots[index],
-                            positivity_policy=args.positivity_policy,
-                            report_overlap=(index == 0)))
+                    return merge_hotstart_increments(
+                        increments[index], hot,
+                        prior=snapshots[index],
+                        positivity_policy=args.positivity_policy,
+                        report_overlap=(index == 0))
+
+                # Members are independent (each its own increments and its
+                # own background), so they are bounded side by side; the
+                # results are taken in member order as before.  One after
+                # another this was about 1.5 s per member on the CONUS case.
+                from concurrent.futures import ThreadPoolExecutor
+                with ThreadPoolExecutor(max_workers=max(1, min(
+                        32, int(args.members)))) as merge_pool:
+                    merged_all = list(merge_pool.map(
+                        merge_one, range(args.members)))
+                for index in range(args.members):
+                    merged, member_overlap, positivity = merged_all[index]
                     if index == 0:
                         overlap = member_overlap
                     if positivity is not None:
                         bounded_members += 1
                         bound_points += int(positivity["negative_points"])
-                        bound_mass += float(
-                            positivity.get("mass_added_by_clip", 0.0))
+                        bound_mass += float(positivity.get(
+                            "mass_added",
+                            positivity.get("mass_added_by_clip", 0.0)))
                         bound_fields.update(
                             positivity["constrained_fields"])
                     pending[index] = merged
+                del merged_all
                 if overlap or bounded_members:
                     leg_record["analysis"]["hotstart_overlap"] = {
                         "fields": sorted(overlap),
@@ -3235,13 +4156,28 @@ def cycle(stages: list) -> int:
                         },
                     }
                 hot_pending.clear()
+            _driver_stage("merge_and_positivity_rebind")
             if pending.get(0):
-                np.savez_compressed(
+                write_member_increments(
                     out / f"increments_m000_leg{leg_number(leg)}.npz",
-                    **{k: v.astype(np.float32) for k, v
-                       in pending[0].items()})
+                    pending[0])
             shutil.rmtree(shm_leg, ignore_errors=True)
+            # The analysis is over: ``pending`` owns the accepted increments.
+            # The solver's whole-ensemble output and the members' background
+            # arrays are not inputs to anything after this point, and kept
+            # until the next leg's top they sat in host memory through the
+            # recovery write and the whole next forecast leg, beside the
+            # workers' decoders.
+            increments = None
+            checkpoints = None
+            release_backgrounds(snapshots)
 
+        if analysis_due or verification_only:
+            _driver_stage("member0_record_and_release")
+            leg_record["analysis"]["driver_stage_wall_seconds"] = dict(
+                driver_clock)
+        leg_record["analysis_plus_io_wall_seconds"] = time.monotonic() - analysis_started
+        recovery_started = time.monotonic()
         # -- carry the cycle across the process boundary ------------------
         # At the end of the last OBSERVED leg the staged state is exactly
         # what the next leg would have consumed: each trajectory's
@@ -3249,7 +4185,8 @@ def cycle(stages: list) -> int:
         # Writing it here (before any free legs run) is what lets the
         # next observation -- which does not exist yet -- be assimilated
         # by a different process without re-initialising the ensemble.
-        if save_at_leg is not None and leg == save_at_leg:
+        if (packed_forecasts or adaptive_spread
+                or (save_at_leg is not None and leg == save_at_leg)):
             # The child travels in the generation, inside its
             # trajectory's own set.  A cycling generation is where the
             # next process picks the ensemble up, and a child dropped
@@ -3279,27 +4216,79 @@ def cycle(stages: list) -> int:
                         str(n): nest_birth[n] for n in nest_trajectories
                         if nest_birth.get(n) is not None},
                 }
-            generation = ens_state.write_generation(
-                args.save_ensemble, identity=identity,
+            generation_dir = (args.save_ensemble if save_at_leg is not None and leg == save_at_leg
+                              else ens_state.slot_dir(out / "packed-recovery", leg_number(leg)))
+            generation_kwargs = dict(
+                identity=identity,
                 elapsed_seconds=t_end, leg_number=leg_number(leg),
-                restarts=restarts, pending=pending,
+                # Copies of the two mappings: the next leg rebinds their
+                # entries while a background write may still be reading.
+                restarts=dict(restarts), pending=dict(pending),
                 nest=nest_receipt,
-                note=("written at the end of the last observed leg; "
+                note=("written at an accepted complete-roster boundary; "
                       "any free legs after it are a branch and are not "
                       "part of this ensemble's history.  Each nesting "
                       "trajectory carries the child it has been running "
                       "since the cycle started, so the next process "
                       "continues it rather than building a new one"))
-            leg_record["ensemble_generation"] = {
-                "directory": str(args.save_ensemble),
+            if adaptive_spread:
+                from gpuwm.da.spread_restart import capture, clock_valid_time
+                generation_kwargs["spread_repair"] = capture(
+                    spread_controller, identity=identity.to_payload(),
+                    grid_identity_sha256=spread_grid_sha,
+                    valid_time=clock_valid_time(exp.start_time, t_end),
+                    elapsed_seconds=t_end, leg_number=leg_number(leg))
+            generation_record = {
+                "directory": str(generation_dir),
                 "elapsed_seconds": t_end,
                 "leg_number": leg_number(leg),
-                "written": generation["written"],
             }
-            print(f"ensemble generation written to "
-                  f"{args.save_ensemble} at {t_end:.0f} s elapsed",
-                  flush=True)
+            leg_record["ensemble_generation"] = generation_record
+            if packed_forecasts:
+                # Written beside the next leg: the next members' requests
+                # link the pending files as they land, and the next barrier
+                # waits for the whole generation before any restart it
+                # links is consumed.
+                join_generation()
+                events = {name: _threading.Event() for name in trajectories}
+                paths: dict = {}
 
+                def written(name, entry, _dir=Path(generation_dir),
+                            _paths=paths, _events=events):
+                    _paths[name] = (_dir / entry["pending"]
+                                    if "pending" in entry else None)
+                    _events[name].set()
+
+                def write_and_prune(_dir=Path(generation_dir),
+                                    _kwargs=generation_kwargs,
+                                    _written=written):
+                    # The older ring slot goes the moment this generation's
+                    # manifest lands, not at the next barrier: box L's
+                    # 3-cycle run held both 76 GB slots through a whole
+                    # leg and the disk fell to 37 GB free.
+                    generation = ens_state.write_generation(
+                        _dir, on_written=_written, **_kwargs)
+                    removed = (prune_recovery_ring(_dir)
+                               if _dir.parent == out / "packed-recovery"
+                               else None)
+                    return generation, removed
+
+                job = {"events": events, "paths": paths}
+                job["future"] = background.submit(write_and_prune)
+                generation_record["written"] = "in the background"
+                generation_job = (job, generation_record, generation_dir,
+                                  time.monotonic())
+            else:
+                generation = ens_state.write_generation(
+                    generation_dir, **generation_kwargs)
+                generation_record["written"] = generation["written"]
+                print(f"ensemble generation written to "
+                      f"{generation_dir} at {t_end:.0f} s elapsed",
+                      flush=True)
+
+        leg_record["recovery_io_wall_seconds"] = time.monotonic() - recovery_started
+        leg_record["cycle_wall_seconds"] = (leg_record["forecast_plus_io_wall_seconds"]
+            + leg_record["analysis_plus_io_wall_seconds"] + leg_record["recovery_io_wall_seconds"])
         report["legs"].append(leg_record)
 
         # ---- the treatment proof --------------------------------------
@@ -3335,7 +4324,17 @@ def cycle(stages: list) -> int:
     # written above already copied every set it needed, so what is
     # removed here is scratch, and the receipt of the removal is in the
     # report beside the sizes the legs recorded.
+    join_generation()
+    if next_control is not None:
+        next_control.result().stop()
+    background.shutdown(wait=True)
     report["staging"] = stage.clear()
+    if packed_forecasts and (out / "packed-recovery").is_dir():
+        recovery = out / "packed-recovery"
+        report["packed_recovery_cleanup"] = {
+            "bytes": sum(p.stat().st_size for p in recovery.rglob("*") if p.is_file()),
+            "reason": "successful run; failed runs retain the last accepted boundary"}
+        shutil.rmtree(recovery)
     report["total_wall_seconds"] = round(time.time() - t_total, 1)
     (out / "cycle-report.json").write_text(
         json.dumps(report, indent=2, default=str), encoding="utf-8")

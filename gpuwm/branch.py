@@ -110,11 +110,13 @@ _DOMAIN_FIELD_SPELLING: dict[str, str] = {
     "history_end_s": "history_end_s",
     "tiles": "tiles",
     "output": "output",
+    "surface_energy_diag": "surface_energy_diag",
 }
 _RUN_FIELD_SPELLING: dict[str, str] = {
     "run_seconds": "run_seconds",
     "restart_interval_s": "restart_interval_s",
     "output_interval_s": "domain.<grid_id>.history_interval_s",
+    "surface_energy_diag": "domain.<grid_id>.surface_energy_diag",
 }
 
 _unspelled = (set(RESTART_TOLERATED_EXPERIMENT_FIELDS)
@@ -142,7 +144,8 @@ CHANGEABLE_SETTINGS = (
     "run_seconds, restart_interval_s, acknowledgements, relocation.*, "
     "tiles.*, devices.*, output.*, simulated_radar.*, domain.<grid_id>.history_interval_s, "
     "domain.<grid_id>.history_begin_s, domain.<grid_id>.history_end_s, "
-    "domain.<grid_id>.tiles.*, domain.<grid_id>.output.*")
+    "domain.<grid_id>.tiles.*, domain.<grid_id>.output.*, "
+    "domain.<grid_id>.surface_energy_diag")
 
 #: Tables an experiment TOML knows about.  A head that is not one of
 #: these and not an ``[experiment]`` key is a TYPO, and a typo must be

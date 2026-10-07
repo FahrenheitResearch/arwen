@@ -207,21 +207,21 @@
     "mapping": "rw-wps-rap-native-grib2.mapping.json",
     "grid": "451 x 337 Lambert native vertical source",
     "grid_points": 151987,
-    "layers_per_valid_time": 829,
+    "layers_per_valid_time": 879,
     "soil_layers": 18,
-    "windowed_layers": 800,
+    "windowed_layers": 850,
     "bytes_per_value": 8,
-    "measured": "Declared frame-stream shape: sixteen atmospheric fields on fifty levels, eleven surfaces, eighteen soil planes; decoded values are float64."
+    "measured": "Declared frame-stream shape: seventeen atmospheric fields on fifty levels, eleven surfaces, eighteen soil planes; decoded values are float64."
    },
    "hrrr-native": {
     "mapping": "rw-wps-hrrr-native-grib2.mapping.json",
     "grid": "1799 x 1059 Lambert native vertical source",
     "grid_points": 1905141,
-    "layers_per_valid_time": 829,
+    "layers_per_valid_time": 879,
     "soil_layers": 18,
-    "windowed_layers": 800,
+    "windowed_layers": 850,
     "bytes_per_value": 8,
-    "measured": "Declared frame-stream shape: sixteen atmospheric fields on fifty levels, eleven surfaces, eighteen soil planes; decoded values are float64."
+    "measured": "Declared frame-stream shape: seventeen atmospheric fields on fifty levels, eleven surfaces, eighteen soil planes; decoded values are float64."
    },
    "rap": {
     "mapping": "rw-wps-rap-awip32-grib2.mapping.json",

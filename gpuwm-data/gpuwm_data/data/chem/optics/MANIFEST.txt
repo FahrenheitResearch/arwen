@@ -1,0 +1,59 @@
+extpsw f4 4 50 7 7 4
+abspsw f4 4 50 7 7 4
+ascatpsw f4 4 50 7 7 4
+asmpsw f4 4 50 7 7 4
+sbackpsw f4 4 50 7 7 4
+pmom2psw f4 4 50 7 7 4
+pmom3psw f4 4 50 7 7 4
+pmom4psw f4 4 50 7 7 4
+pmom5psw f4 4 50 7 7 4
+pmom6psw f4 4 50 7 7 4
+pmom7psw f4 4 50 7 7 4
+extplw f4 4 50 7 7 16
+absplw f4 4 50 7 7 16
+ascatplw f4 4 50 7 7 16
+asmplw f4 4 50 7 7 16
+refrtabsw f4 2 7 4
+refitabsw f4 2 7 4
+refrtablw f4 2 7 16
+refitablw f4 2 7 16
+wavmidsw f4 1 4
+wavmidlw f4 1 16
+rmmin f4 0
+rmmax f4 0
+xrmin f4 0
+xrmax f4 0
+pie f4 0
+mass_i f4 1 9
+mass_j f4 1 9
+mass_c f4 1 9
+diam_cm f4 1 9
+rs f4 1 200
+bma f4 0
+bpa f4 0
+nrefr i4 0
+nrefi i4 0
+seasfrc_goc9bin f4 2 4 9
+dustfrc_goc9bin f4 2 5 9
+dlo_sectm f4 1 9
+dhi_sectm f4 1 9
+refrwsw f4 1 4
+refiwsw f4 1 4
+refrwlw f4 1 16
+refiwlw f4 1 16
+refrsw_sulf f4 1 4
+refisw_sulf f4 1 4
+refrlw_sulf f4 1 16
+refilw_sulf f4 1 16
+refrsw_dust f4 1 4
+refisw_dust f4 1 4
+refrlw_dust f4 1 16
+refilw_dust f4 1 16
+refrsw_oc f4 1 4
+refisw_oc f4 1 4
+refrlw_oc f4 1 16
+refilw_oc f4 1 16
+refrsw_seas f4 1 4
+refisw_seas f4 1 4
+refrlw_seas f4 1 16
+refilw_seas f4 1 16

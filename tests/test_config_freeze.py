@@ -64,7 +64,19 @@ def _pop_fork_dycore_defaults(actual: dict) -> bool:
 
 def test_new_fields_are_reviewed_defaults_appended_last():
     """New fields remain appended, preserving positional construction."""
+    from gpuwm.config import CHEM_RUN_FIELDS, FIRE_RUN_FIELDS
     names = [f.name for f in dataclasses.fields(RunConfig)]
+    # The fire block is appended keyword-only after every other field.
+    assert names[-len(FIRE_RUN_FIELDS):] == list(FIRE_RUN_FIELDS)
+    for field in FIRE_RUN_FIELDS:
+        assert RunConfig.__dataclass_fields__[field].kw_only, field
+    names = names[:-len(FIRE_RUN_FIELDS)]
+    assert names[-len(CHEM_RUN_FIELDS):] == list(CHEM_RUN_FIELDS)
+    names = names[:-len(CHEM_RUN_FIELDS)]
+    # Output-only surface energy carriers, appended after the smoke
+    # manifest: off writes the history it always wrote.
+    assert names.pop() == "surface_energy_diag"
+    assert RunConfig.__dataclass_fields__["surface_energy_diag"].default is False
     assert names.pop() == "rrtmg_smoke_manifest"
     assert RunConfig.__dataclass_fields__["rrtmg_smoke_manifest"].default == ""
     # Lane-only radiation selectors follow the complete staged prefix.
@@ -118,7 +130,7 @@ def test_new_fields_are_reviewed_defaults_appended_last():
     assert RunConfig.__dataclass_fields__["h_mom_adv_order"].default == 5
     names = names[:-3]
     # Export choices belong to the run plan, outside forecast settings.
-    assert "verify_visuals" not in names
+    assert not {"grib2", "grib2_out", "verify_visuals"} & set(names)
     assert names.pop() == "upper_wind_limiter_form"
     assert RunConfig.__dataclass_fields__["upper_wind_limiter_form"].default == "wrf_461"
     # The sixth-order filter's source form with the NOAA WRFV3.9 fork's
@@ -681,6 +693,10 @@ def test_every_existing_legacy_toml_resolves_identically():
             "tests/data/config_freeze_golden.json consciously.")
         cfg = load_config(path)
         actual = dataclasses.asdict(cfg)
+        from gpuwm.config import CHEM_RUN_FIELDS, FIRE_RUN_FIELDS
+        for field in CHEM_RUN_FIELDS + FIRE_RUN_FIELDS:
+            assert actual.pop(field) == RunConfig.__dataclass_fields__[field].default
+        assert actual.pop("surface_energy_diag") is False
         assert actual.pop("terrain_clock") == "measured"
         assert actual.pop("use_rap_aero_icbc") is False
         assert actual.pop("diff_opt") == 2
@@ -737,6 +753,10 @@ def test_frozen_case_constructed_configs_resolve_identically():
         cfg = ctor()
         assert key in GOLDEN, key
         actual = dataclasses.asdict(cfg)
+        from gpuwm.config import CHEM_RUN_FIELDS, FIRE_RUN_FIELDS
+        for field in CHEM_RUN_FIELDS + FIRE_RUN_FIELDS:
+            assert actual.pop(field) == RunConfig.__dataclass_fields__[field].default
+        assert actual.pop("surface_energy_diag") is False
         assert actual.pop("terrain_clock") == "measured"
         assert actual.pop("use_rap_aero_icbc") is False
         assert actual.pop("diff_opt") == 2
@@ -851,7 +871,7 @@ def test_generic_and_non_feature_emitted_config_bytes_are_frozen(payload):
     assert emit_experiment_toml(raw).encode("utf-8") == payload
 
 
-@pytest.mark.parametrize("option,default", [("verify_visuals", True)])
+@pytest.mark.parametrize("option,default", [("grib2", False), ("verify_visuals", True)])
 def test_output_choice_leaves_forecast_identity_unchanged(tmp_path, option, default):
     """The output choice changes neither forecast settings nor restart identity."""
     from types import SimpleNamespace

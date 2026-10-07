@@ -70,6 +70,35 @@ from gpuwm.wrf_physics_inventory import EXPORT_USE_THETA_M
 
 
 SCHEMA = "gpuwm-native-hrrr-hierarchy-direct-v1"
+
+
+def publish_hierarchy_forecast_companions(root, *, resolved_experiment,
+                                         experiment, wps_namelist,
+                                         perturbation_deferral=None):
+    """Publish the actual native tree authority before its atomic handoff.
+
+    Prepared arrays without a matching experiment and WPS file cannot reach
+    the forecast door. Domain identities, vertical levels and start time are
+    round-tripped by the same writer the root preparation uses.
+    """
+    from gpuwm.experiment_document import publish_experiment_document
+    raw = tomllib.loads(resolved_experiment)
+    expected = experiment
+    if perturbation_deferral is not None:
+        perturbation = deferred_perturbation_config(perturbation_deferral)
+        raw["perturbation"] = asdict(perturbation)
+        expected = replace(experiment, perturbation=perturbation)
+    root = Path(root)
+    config = publish_experiment_document(root / "experiment.toml", raw, expected)
+    wps = root / "namelist.wps"
+    if wps.exists():
+        raise FileExistsError(f"refusing to replace published WPS authority: {wps}")
+    shutil.copyfile(wps_namelist, wps)
+    validate_native_lambert_contracts(expected, wps, source_name="native HRRR hierarchy handoff")
+    return {"experiment_config": {"path": config.name, "sha256": sha256_file(config)},
+            "wps_namelist": {"path": wps.name, "sha256": sha256_file(wps)}}
+
+
 _DOMAIN_PREPARATION_OVERRIDES = frozenset({
     "cu_physics", "cudt_minutes", "radt", "radt_minutes", "bldt",
     # The Grell-Freitas closure and shallow-arm selectors ride with
@@ -1853,6 +1882,10 @@ def prepare_hrrr_hierarchy(
         raise FileExistsError(staging)
     staging.mkdir()
     try:
+        publish_hierarchy_forecast_companions(
+            staging, resolved_experiment=native_resolved,
+            experiment=native_exp, wps_namelist=wps_namelist,
+            perturbation_deferral=identity.get("source_identity", {}).get("initial_perturbation"))
         preflight_seconds = time.perf_counter() - started
 
         restore_started = time.perf_counter()

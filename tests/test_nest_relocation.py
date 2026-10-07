@@ -770,6 +770,7 @@ def test_relocate_refuses_a_move_the_bounds_disallow_before_rebuilding():
 # ---------------------------------------------------------------------------
 
 @requires_gpu
+@pytest.mark.gpu
 def test_relocation_verify_case_passes_every_component(tmp_path):
     """Run the artifact, not a mock: the idealized ratio-3 tree integrates,
     relocates twice, and integrates again.  ~5 s on a 5090."""

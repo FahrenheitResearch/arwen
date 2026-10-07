@@ -910,6 +910,10 @@ class LiveProducts:
             written = finished_pictures(scratch, iter_rendered(scratch),
                                         completed.returncode)
             if not written:
+                from gpuwm.render_receipts import preserve_inactive_fire_skip
+                with self._publish:
+                    if preserve_inactive_fire_skip(scratch, render_dir, completed.returncode):
+                        return
                 self._warn(
                     "live_products_empty",
                     f"{frame.name} produced no picture as it landed (render "

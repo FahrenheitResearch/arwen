@@ -74,10 +74,34 @@ def derive(scan, cutoff: str) -> dict:
     }
 
 
+def derive_identity(scan, cutoff: str, document: dict) -> dict:
+    """The identity half at ``cutoff`` (lead ruling 2026-10-07): flagged
+    commits whose only flagged lines are their author or committer line with
+    the scan module's IDENTITY_ALLOWANCE_ADDRESS, not already registered."""
+
+    cutoff = _git("rev-parse", "--verify", cutoff + "^{commit}")
+    if subprocess.run(["git", "merge-base", "--is-ancestor", document["cutoff"],
+                       cutoff], cwd=REPO_ROOT).returncode != 0:
+        raise SystemExit(f"refused: the message cutoff {document['cutoff']} is "
+                         f"not an ancestor of the identity cutoff {cutoff}")
+    records = scan._commit_objects(document["clean_base"] + ".." + cutoff)
+    already = set(document["commits"]) | set(scan._MESSAGE_ALLOWANCE_PINNED)
+    return {
+        "reason": scan.IDENTITY_ALLOWANCE_REASON,
+        "cutoff": cutoff,
+        "scanned_commits": len(records),
+        "commits": scan._identity_commits(records, already),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--cutoff", help="the last commit to register (a merged tip)")
+    mode.add_argument("--identity-cutoff",
+                      help="register the mis-set identity (lead ruling "
+                           "2026-10-07) up to this commit; later commits with "
+                           "it still fail")
     mode.add_argument("--check", action="store_true",
                       help="re-derive at the recorded cutoff and compare")
     args = parser.parse_args(argv)
@@ -86,12 +110,35 @@ def main(argv: list[str] | None = None) -> int:
     if args.check:
         recorded = json.loads(path.read_text(encoding="utf-8"))
         fresh = derive(scan, recorded["cutoff"])
+        if "identity" in recorded:
+            fresh["identity"] = derive_identity(
+                scan, recorded["identity"]["cutoff"], fresh)
         if fresh != recorded:
             print(f"{path.relative_to(REPO_ROOT)} differs from the derivation at "
                   f"{recorded['cutoff'][:12]}", file=sys.stderr)
             return 1
         print(f"ok: {len(recorded['commits'])} registered commits match the scan "
               f"over {recorded['scanned_commits']} commits to {recorded['cutoff'][:12]}")
+        if "identity" in recorded:
+            ident = recorded["identity"]
+            print(f"ok: {len(ident['commits'])} identity-only commits match the scan "
+                  f"over {ident['scanned_commits']} commits to {ident['cutoff'][:12]}")
+        return 0
+    if args.identity_cutoff:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        previous = (document.get("identity") or {}).get("cutoff")
+        target = _git("rev-parse", "--verify", args.identity_cutoff + "^{commit}")
+        if previous and subprocess.run(
+                ["git", "merge-base", "--is-ancestor", previous, target],
+                cwd=REPO_ROOT).returncode != 0:
+            raise SystemExit(f"refused: the recorded identity cutoff {previous} "
+                             f"is not an ancestor of {target}")
+        document["identity"] = derive_identity(scan, target, document)
+        path.write_text(json.dumps(document, indent=1) + "\n", encoding="utf-8",
+                        newline="\n")
+        ident = document["identity"]
+        print(f"wrote {path.relative_to(REPO_ROOT)} identity: {len(ident['commits'])} "
+              f"commits of {ident['scanned_commits']} to {ident['cutoff'][:12]}")
         return 0
     if path.exists():
         previous = json.loads(path.read_text(encoding="utf-8"))["cutoff"]

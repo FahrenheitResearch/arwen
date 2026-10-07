@@ -29,6 +29,7 @@ tests/test_obs_radar_grid_v2.py # netcdf-writer and rw_netcdf write/read the v2 
 tests/test_offline_child_vertical.py # rw_netcdf reads parent fields for vertical remapping.
 tests/test_progress_log.py # netcdf-writer writes product output during the progress control.
 tests/test_render_rust.py # netcdf-writer and rw_wrfbatch produce and render weather output.
+tests/test_rustwx_lanes.py # rw_ensbatch, rw_obsgrid and rw_compare answer the --abi contract and draw the ensemble and observation panels.
 tests/test_simulated_radar_resources.py # rw_simradar prices and refuses unsafe geometry before sampling; pure Python checks cannot prove the native allocation policy.
 tests/test_soil_layer_geometry.py # netcdf-writer writes soil-layer state for geometry checks.
 tests/test_spectral_receipt_v2.py # rw_netcdf decodes the spectral receipt's retained output.
@@ -66,3 +67,11 @@ tests/test_ruc_fork_configuration_doors.py # gpuwm_preprocess_cpu prepares the s
 tests/test_noah_initialization_guard.py # gpuwm_preprocess_cpu's Noah cold-init entries are the code under test.
 tests/test_ensemble_batch_product_spool.py # netcdf-writer writes the spooled ensemble products in 1 of its 13 tests.
 tests/test_fetch_analysis_first.py # the vendored Rust fetch backbone orders the analysis-hour downloads in 5 of its 13 tests.
+tests/test_noah_init_rust.py # gpuwm_preprocess_cpu executes Noah soil liquid-water cold initialization and ABI/category refusals.
+tests/test_obs_score_rust_parity.py # obs-score executes retained field/station scoring, exact reductions and missing-export refusals.
+tests/test_renderer_theme_sections.py # netcdf-writer writes the stored-plane section fixture and rw_wrfbatch proves section theme/default pixels at fixed and automatic size.
+tests/test_chem_source_cache_identity.py # gpuwm_preprocess_cpu executes real GRIB2 decoding and axis reads for cache authority and atomic publication controls.
+tests/test_urban_ucm_wrf461_parity.py # C++ compiles the shared-source SLUCM host twin against the original WRF column words.
+tests/test_urban_ucm_host.py # C++ compiles the shared-source SLUCM host twin against every WRF column variant.
+tests/test_highres_urban_fraction.py # static-fields computes the land-cover area and URBPARM built-fraction product.
+tests/test_bnu_soil_geog.py # static-fields executes the baseline soil-category carrier.

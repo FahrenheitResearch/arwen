@@ -1013,6 +1013,12 @@ def _prepare_child_input_on_grid_uncached(
             landmask=_child_landmask_static,
             lu_index=static_fields["LU_INDEX"],
             landuse_attrs=landuse_attrs))
+    # The child's inland water takes the root forcing's daily-mean 2 m
+    # air temperature where the source does not resolve it (WRF
+    # use_tavg_for_tsk), the same series the root averages.
+    from gpuwm.ingest.horiz import with_inland_air_temperature
+    water_statics = with_inland_air_temperature(
+        water_statics, getattr(catalog, "snapshots", None))
     lake_mask = (
         (np.asarray(static_fields["LU_INDEX"]) ==
          int(landuse_attrs["ISLAKE"])) if water_statics is None
@@ -1070,7 +1076,9 @@ def _prepare_child_input_on_grid_uncached(
         # No lake skin override on the regular-grid lane: metgrid's
         # masked=both SKINTEMP chain with static-landmask targets already
         # yields water-source skin at lakes, matching real.exe's no-TAVGSFC
-        # behavior (module_initialize_real.F:2844-2866).
+        # behavior (module_initialize_real.F:2844-2866), except inland water
+        # with no source water within INLAND_WATER_SOURCE_REACH_M, which
+        # takes the daily-mean 2 m air temperature (use_tavg_for_tsk).
         lake_skin_temperature = None
         # (1) REAL INPUT FIRST, on the child's own grid and unblended HGT_M.
         # Masked-field target cells classify by the child's static LANDMASK,
@@ -1553,6 +1561,19 @@ RK_TIME_T_SEED_PAIRS = (
 )
 
 
+def require_parent_chem_fields(child, parent) -> None:
+    """A child's chemical rows must have live donors on its parent."""
+    chem = getattr(child, "chem", None)
+    if chem is None:
+        return
+    for row in (*chem.transported, *chem.prescribed):
+        if getattr(parent, row.state_attr, None) is None:
+            raise ValueError(
+                f"child chemistry requires parent field {row.state_attr!r}; "
+                "include the child's species in the parent's chem_sets "
+                "before chemical cold fill or nest forcing")
+
+
 def seed_rk_time_t_copies(state) -> tuple[str, ...]:
     """Seed the RK time-t copies from the current fields (WRF start_domain).
 
@@ -1567,6 +1588,11 @@ def seed_rk_time_t_copies(state) -> tuple[str, ...]:
         if value is not None and seed is not None:
             seed[...] = value
             written.append(initial)
+    chem = getattr(state, "chem", None)
+    if chem is not None:
+        for row in chem.transported:
+            getattr(state, row.time_attr)[...] = getattr(state, row.state_attr)
+            written.append(row.time_attr)
     return tuple(written)
 
 
@@ -1759,6 +1785,11 @@ def parent_only_init(child_dc: DomainConfig,
     its existing unconditional nonnegative-field floor after terrain rebuild.
     """
     cfg = child_dc.run
+    if getattr(cfg, "chem_sets", "") and array_module is np:
+        raise ValueError(
+            "chemical parent cold fill requires a CUDA child: the host "
+            "SINT backend is Python numerical code, so use the GPU "
+            "reconstruction path; CPU metadata and serialization remain available")
     parent = parent_node.state
     if cfg.nz != parent_node.cfg.run.nz:
         raise ValueError(
@@ -1802,6 +1833,12 @@ def parent_only_init(child_dc: DomainConfig,
     if array_module is not None:
         state_kwargs["array_module"] = array_module
     child = DomainState(cfg, **state_kwargs)
+    if (getattr(child, "chem", None) is not None
+            and isinstance(child.thp, np.ndarray)):
+        raise ValueError(
+            "chemical parent cold fill requires a CUDA child: the host "
+            "SINT backend is Python numerical code, so use the GPU "
+            "reconstruction path; CPU metadata and serialization remain available")
     interpolation_window = window
     if (interpolation_window is None and not isinstance(child.thp, np.ndarray)
             and isinstance(parent.thp, np.ndarray)):
@@ -1924,6 +1961,28 @@ def parent_only_init(child_dc: DomainConfig,
                 source, registrations[stagger], window=field_window,
                 device_windows=not isinstance(target, np.ndarray))
 
+    chem_clamped = {}
+    chem = getattr(child, "chem", None)
+    if chem is not None:
+        # Every chemical concentration is a mass-grid scalar. A newborn
+        # child and the fresh strip of a relocated child inherit the live
+        # parent through the same native/GPU SINT operator as moisture.
+        # Prescribed composition also follows the new footprint; its
+        # external source can refresh it on the next chemistry step.
+        require_parent_chem_fields(child, parent)
+        for row in (*chem.transported, *chem.prescribed):
+            source = getattr(parent, row.state_attr)
+            target = getattr(child, row.state_attr)
+            target[...] = _reconstruction_sint(
+                source, mass_reg, window=interpolation_window,
+                device_windows=not isinstance(target, np.ndarray))
+            # The same bounded SINT roundoff repair as other positive
+            # scalars, with no particle-number absolute floor. The full
+            # parent donor peak is known even for a reconstructed slab.
+            entry = _clamp_one_moment(target, floor_scale=0.0, reference=source)
+            if entry is not None:
+                chem_clamped[row.state_attr] = entry
+
     # A scheme boundary is a reconstructed child cold start.  NSSL-only
     # moments above are canonicalized from parent mass, while retained latent
     # heating must begin at zero rather than inheriting Thompson's closure.
@@ -1937,6 +1996,10 @@ def parent_only_init(child_dc: DomainConfig,
     # here would be duplicated into them and then refused by the
     # full-state gate at the newborn's first leg.
     clamped = clamp_parent_sint_undershoot(child) if clamp_undershoot else None
+    if chem_clamped:
+        if clamped is None:
+            clamped = {}
+        clamped.update(chem_clamped)
 
     seed_rk_time_t_copies(child)
     _set_map_fields(child, grid)

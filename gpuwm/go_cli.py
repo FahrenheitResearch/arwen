@@ -455,10 +455,15 @@ def _stage_env() -> dict:
     so it passes each one on instead of keeping it to its own log.
     """
 
+    from gpuwm.parent_death import child_environment
     from gpuwm.progress import PREP_EVENT_PARENT_ENV
 
+    # child_environment(): the stage's parent-pid watchdog watches THIS
+    # process (gpuwm.parent_death), so a chain killed by pid takes its
+    # stage with it instead of leaving it on the card as an orphan.
     return _with_git_handle({**os.environ, "PYTHONSAFEPATH": "1",
-                             PREP_EVENT_PARENT_ENV: "1"})
+                             PREP_EVENT_PARENT_ENV: "1",
+                             **child_environment()})
 
 
 def _with_git_handle(environment: dict) -> dict:
@@ -806,9 +811,26 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
     root = run_stamp_module.resolve(
         case_root, init=fetch_table["cycle"], launch=launch,
         enabled=run_stamp, create=claim)
+    # The WPS namelist the authority stage binds: the one a door wrote
+    # beside the config, or, where there is none (a shipped recipe, a
+    # hand-written or imported config), the one rendered from the
+    # config's own grid into this run's folder when the folder is claimed
+    # (claim_run_root).  Asked here, before any gate spends anything, so
+    # a config nothing can render for is refused at the door.
+    wps_namelist = base / f"{config.stem}.namelist.wps"
+    wps_rendered = not wps_namelist.is_file()
+    if wps_rendered:
+        from gpuwm.companion_domains import configuration_wps_namelist
+
+        try:
+            configuration_wps_namelist(config, experiment, raw=payload)
+        except ValueError as refusal:
+            raise GoRefusal(str(refusal)) from None
+        wps_namelist = Path(root) / "route-inputs" / wps_namelist.name
     plan = {
         "config": config,
-        "wps_namelist": base / f"{config.stem}.namelist.wps",
+        "wps_namelist": wps_namelist,
+        "wps_namelist_rendered": wps_rendered,
         "source": source,
         "cycle": str(fetch_table["cycle"]),
         "hours": int(fetch_table["hours"]),
@@ -854,6 +876,10 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
                      else fetch_table.get("as_posted")) is False
             else late_after_minutes if late_after_minutes is not None
             else fetch_table.get("late_after_minutes")),
+        # The runtime surface fields this config requires from the cycle
+        # itself; None leaves every table-declared field on its fallback
+        # rule (recorded) when a cycle publishes no record for it.
+        "runtime_surface": fetch_table.get("runtime_surface"),
         "area": str(fetch_table["area"]),
         "data": data,
         "profile": profile,
@@ -895,6 +921,9 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
         # sentence out of one place.
         "statics_corridor": config_declares_follow_source(experiment),
     }
+    if any(domain.run.chem_sets for domain in experiment.domains):
+        plan["chem_data_store_sources"] = chem_data_store_sources(experiment)
+        plan["chem_window"] = chem_window(experiment)
     if getattr(getattr(experiment, "devices", None), "enabled", False) or devices is not None:
         from gpuwm.core.devices import describe_split
         options = experiment.devices
@@ -902,8 +931,48 @@ def plan_from_config(config: Path, *, outdir: Path | None = None,
         plan["devices_sentence"] = describe_split(experiment, options)
         if devices is not None:
             plan["devices_count_override"] = devices
-    return plan
+    # claim=True made the folder above, so the namelist lands in it now.
+    return _render_plan_wps(plan) if claim else plan
 
+
+
+def chem_window(experiment) -> tuple[str, str]:
+    """The experiment's own start and end, ISO UTC, for the chem fetch."""
+    from datetime import timedelta
+    end = experiment.start_time + timedelta(seconds=float(experiment.run_seconds))
+    return experiment.start_time.isoformat(), end.isoformat()
+
+
+def chem_data_store_sources(experiment) -> tuple[str, ...]:
+    """The enabled chem sources of ``experiment`` that a data store serves.
+
+    Read off the root domain's RunConfig: chem sets and sources are
+    [shared]-only, so every domain carries the same ones.  Empty when chem is
+    off, which leaves every existing chain exactly as it was.
+    """
+    from gpuwm.chem_table import chem_names, load_sets
+    run = experiment.domains[0].run
+    sets = chem_names(getattr(run, "chem_sets", None))
+    if not sets:
+        return ()
+    sources = chem_names(getattr(run, "chem_sources", None), "chem_sources")
+    table = load_sets(sets, sources)
+    return tuple(name for name in sources
+                 if name in table.sources
+                 and table.sources[name].acquisition is not None)
+
+
+def chem_fetch_command(plan: dict) -> list[str] | None:
+    """The chem-source download, or None when the config names none."""
+    sources = tuple(plan.get("chem_data_store_sources") or ())
+    if not sources:
+        return None
+    command = [sys.executable, "-m", "gpuwm.data_store_fetch", "fetch"]
+    for name in sources:
+        command.extend(("--source", name))
+    start, end = plan["chem_window"]
+    command.extend(("--area", plan["area"], "--start", start, "--end", end))
+    return command
 
 
 # ---------------------------------------------------------------------------
@@ -935,7 +1004,7 @@ def claim_run_root(plan: dict) -> dict:
         # -- the predicted child's NAME is a run stamp too, so asking
         # the name instead would never allocate anything.
         root.mkdir(parents=True, exist_ok=True)
-        return plan
+        return _render_plan_wps(plan)
     # The plan's own launch instant, not the clock now: the stamp names
     # when this run was launched, and the gates between naming and
     # claiming must not move it.  Only a folder of that exact name made
@@ -950,6 +1019,33 @@ def claim_run_root(plan: dict) -> dict:
     plan["prepared"] = claimed / "prepared"
     plan["run"] = claimed / "run"
     plan["render"] = claimed / "png"
+    return _render_plan_wps(plan)
+
+
+def _render_plan_wps(plan: dict) -> dict:
+    """Write the WPS namelist a config without one runs from, into its run folder.
+
+    :func:`plan_from_config` already asked the renderer this config's
+    question; this writes the answer under the claimed folder, where the
+    authority stage binds it.  A config with its own namelist beside it
+    is left alone.
+    """
+
+    if not plan.get("wps_namelist_rendered"):
+        return plan
+    import tomllib
+
+    from gpuwm.companion_domains import configuration_wps_namelist
+    from gpuwm.experiment import load_experiment
+
+    config = Path(plan["config"])
+    try:
+        plan["wps_namelist"] = configuration_wps_namelist(
+            config, load_experiment(config),
+            raw=tomllib.loads(config.read_text(encoding="utf-8")),
+            into=Path(plan["root"]) / "route-inputs")
+    except ValueError as refusal:
+        raise GoRefusal(str(refusal)) from None
     return plan
 
 
@@ -1065,6 +1161,8 @@ def fetch_command(plan: dict) -> list[str]:
     if plan.get("late_after_minutes") is not None:
         command.extend(("--late-after-minutes",
                         f"{float(plan['late_after_minutes']):g}"))
+    if plan.get("runtime_surface"):
+        command.extend(("--runtime-surface", str(plan["runtime_surface"])))
     return command
 
 
@@ -2624,6 +2722,36 @@ _STAGE_PROCESSES_LOCK = threading.Lock()
 END_STAGE_GRACE_SECONDS = 2.0
 
 
+#: How long ``gpuwm go`` waits, after a Ctrl-C, for the stage that received
+#: the same SIGINT to finish its own stop before go exits.  The forecast
+#: worker gets ten seconds (``forecast_supervisor.STOP_GRACE_SECONDS``) to
+#: halt its renders and write its failure receipt; the rest is margin.
+INTERRUPTED_STAGE_WAIT_SECONDS = 15.0
+
+
+def _await_interrupted_stage(process, *,
+                             timeout: float = INTERRUPTED_STAGE_WAIT_SECONDS
+                             ) -> None:
+    """Let an interrupted stage finish its own stop, signalling nothing.
+
+    A stage dies with the ``gpuwm go`` that launched it
+    (:mod:`gpuwm.parent_death`), so go leaving the instant Ctrl-C lands
+    would cut the stage's own SIGINT cleanup short.  This waits for it,
+    bounded; a second Ctrl-C ends the wait.  Past the bound go exits and
+    the stage's parent-death signal ends it, so a stage that ignored the
+    interrupt still cannot outlive the run.
+    """
+
+    if process is None:
+        return
+    try:
+        process.wait(timeout)
+    except KeyboardInterrupt:
+        return
+    except Exception:  # noqa: BLE001 - a timeout or a test double; go is exiting
+        return
+
+
 def end_stage_processes(*, grace: float = END_STAGE_GRACE_SECONDS) -> bool:
     """End every stage subprocess this process is waiting on.
 
@@ -2820,10 +2948,19 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
             # Popen spelled out publishes the child's pid, which the
             # interrupt path has to be able to NAME (it does not signal
             # it -- see GoInterrupted).
+            #
+            # popen_options(): the stage dies with this process.  THE
+            # BREAKAGE: a `gpuwm go` killed by pid (box B, 2026-10-07)
+            # left its forecast supervisor reparented to init, holding
+            # 63.9 GB on a card for 43 minutes with no owner.  This thread
+            # stays blocked on the child until it ends, which is what
+            # PR_SET_PDEATHSIG's per-thread "parent" needs.
+            from gpuwm.parent_death import popen_options
+
             proc = subprocess.Popen(
                 command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, errors="replace", cwd=str(_stage_cwd()),
-                env={**_stage_env(), **(env or {})})
+                env={**_stage_env(), **(env or {})}, **popen_options())
             box["pid"] = proc.pid
             box["process"] = proc
             with _STAGE_PROCESSES_LOCK:
@@ -2877,6 +3014,12 @@ def _run_stage(label: str, command: list[str], *, explain: bool,
         # foreground process group, and a `kill` issued by gpuwm at a
         # pid it merely observed is how a tool ends up stopping
         # something that was never its to stop.
+        #
+        # It does WAIT, bounded, for the stage to finish answering that
+        # SIGINT: the stage dies with this process (gpuwm.parent_death),
+        # so leaving at once would cut a forecast's failure receipt and
+        # render halt short with the SIGTERM its parent's death sends.
+        _await_interrupted_stage(box.get("process"))
         raise GoInterrupted(label, box.get("pid")) from None
     if "error" in box:
         error = box["error"]
@@ -4145,6 +4288,23 @@ def geography_refusal(geog_root: Path) -> str | None:
         + "\n".join(f"  {gap.name}: {gap.detail}" for gap in gaps))
 
 
+def _prepare_only_needs_no_card(args) -> bool:
+    """``--prepare-only``: no device probe, no GPU runtime, no card budget.
+
+    The run fetches and prepares and stops before the forecast stage, and
+    preparation runs on the CPU backends when no card is visible (the
+    preprocess backend's ``auto`` says so and takes them).  Each gate
+    skipped here exists to stop a FORECAST that cannot run: the device
+    probe, the CuPy runtime and the card memory budget.  Asking them of a
+    prepare-only run refused every CPU box (and every shell exporting
+    GPUWM_NO_LOCAL_GPU) for a stage it was told not to run.  The
+    preparation still admits its own host memory and workers
+    (gpuwm.ingest.preprocess_backend.admit_preparation).
+    """
+
+    return bool(getattr(args, "prepare_only", False))
+
+
 def _require_forecast_device() -> None:
     """Prove the GPU can run kernels before a launch downloads its inputs."""
     from gpuwm.doctor import _cuda_headers_check
@@ -4191,6 +4351,32 @@ def failed_line(fields: dict, *, explain: bool) -> str:
     if remedy and " ".join(str(remedy).split()) != " ".join((stated_remedy(text) or "").split()):
         line += f" Next: {remedy}"
     return line
+
+
+def static_source_note(payload: dict, geog_root: Path, *, base_dir: Path) -> str | None:
+    """The dry run's line for a published static file the run will fetch.
+
+    ``None`` when every static file the configuration reads is staged
+    (or it reads none).  A present file is named by its path only here;
+    the run verifies its bytes when it resolves it.
+    """
+
+    from gpuwm.static.external_source import (cache_roots, fetch_command,
+                                              required_static_rows)
+
+    try:
+        rows = required_static_rows(payload, base_dir=base_dir)
+    except ValueError:
+        return None  # The static build refuses a malformed table by name.
+    missing = [row for row in rows
+               if not any((root / row.id / row.filename).is_file()
+                          for root in cache_roots(geog_root))]
+    if not missing:
+        return None
+    return "go: " + "; ".join(
+        f"static source {row.id} ({row.bytes / 1e9:.2f} GB) is not staged; "
+        f"the run fetches it before the forcing (`{fetch_command(row, geog_root)}`)"
+        for row in missing)
 
 
 def _registered_launch(args, *, config: Path, payload: dict) -> int:
@@ -4268,6 +4454,8 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
                              else str(Path(args.geog_root).resolve())),
                "render_products": (args.render_products if args.render_products is not None
                                    else DEFAULT_RENDER_PRODUCTS)}
+    if getattr(args, "grib2", False):
+        options["grib2"] = True
     from gpuwm.ensemble.runtime_context import current_session
     ensemble_session = current_session()
     if ensemble_session is not None:
@@ -4354,6 +4542,14 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
         if bundle is not None:
             for warning in resolution["warnings"]:
                 print("warning: " + warning["action"], file=sys.stderr)
+        else:
+            from gpuwm.geog_assets import default_geog_root
+            note = static_source_note(
+                payload, (data.geog_root if data is not None
+                          else Path(args.geog_root) if args.geog_root is not None
+                          else default_geog_root()), base_dir=config.parent)
+            if note is not None:
+                print(note)
         print(f"Output: {output}")
         print("Run: " + printable(["gpuwm", "go", str(config),
               *([] if args.outdir is None else ["--outdir", str(args.outdir)]),
@@ -4366,14 +4562,18 @@ def _registered_launch(args, *, config: Path, payload: dict) -> int:
                 if getattr(args, key, None) is not None
                 for token in ("--" + key.replace("_", "-"), str(getattr(args, key)))),
               *([] if args.render_products is None else ["--products", args.render_products]),
+              *(["--grib2"] if options.get("grib2") else []),
               *([] if section is None else [f"--section={section}"]),
               *([] if keep is None else ["--keep-checkpoints", str(keep)]),
               *(["--run-stamp", "off"] if not stamp else []),
               *(["--no-memory-gate"] if args.no_memory_gate else [])]))
         return 0
-    capabilities.require_for_command("go")
-    _require_forecast_device()
-    if bundle is None and not getattr(args, "no_memory_gate", False):
+    prepare_only = _prepare_only_needs_no_card(args)
+    if not prepare_only:
+        capabilities.require_for_command("go")
+        _require_forecast_device()
+    if (bundle is None and not prepare_only
+            and not getattr(args, "no_memory_gate", False)):
         gate = memory_gate({"config": config, "source": source,
                             "cadence": fetch.get("cadence")}, experiment=exp)
         print(f"go: memory -- {gate['verdict']}")
@@ -4794,6 +4994,11 @@ def go_main(args, *, observer=None) -> int:
                    if Path(args.config).is_file() else None)
     except recipe_door.RecipeRefusal as refusal:
         raise GoRefusal(str(refusal)) from None
+    from gpuwm.grib2_live import validate_member_contract
+    try:
+        validate_member_contract(bool(getattr(args, "grib2", False)), request)
+    except ValueError as refusal:
+        raise GoRefusal(str(refusal)) from None
     if getattr(args, "command", None) == "ensemble" and request is None and Path(args.config).is_file():
         raise GoRefusal("ensemble requires --members N or [ensemble].members in CONFIG")
     if getattr(args, "restart_roster", None) is not None:
@@ -5099,6 +5304,16 @@ def _go_launch(args, *, observer=None) -> int:
     if cycle is not None:
         config, payload = _at_flag_cycle(args, config, payload, cycle)
     _extend_outdir(args, config, payload)
+    if getattr(args, "prepare_only", False):
+        # Decided before ANY other branch.  The registered run-plan
+        # launch has no prepare-only option, so every prepare-only run
+        # that reached it ran the whole forecast after its preparation:
+        # the 2.8.6 HRRR route (box B, the two-domain Toronto 750 m city
+        # template: 12 h, 27 history writes, 441 s), and still on
+        # integrate/2.8.7 a [case_data] config or one given --wps-namelist
+        # or --prepared-root, because that branch sat above this one.
+        return _prepare_only_launch(args, config=config, payload=payload,
+                                    observer=observer)
     if ("case_data" in payload or getattr(args, "prepared_root", None) is not None
             or getattr(args, "restart", None) is not None
             or getattr(args, "wps_namelist", None) is not None):
@@ -5115,6 +5330,8 @@ def _go_launch(args, *, observer=None) -> int:
     if getattr(args, "supplement", None):
         from gpuwm.launch_supplements import validate_route
         validate_route(args.supplement, chain=chain)
+    if getattr(args, "grib2", False) and observer is None:
+        return _registered_launch(args, config=config, payload=payload)
     return _go_prepared_main(args, observer=observer)
 
 
@@ -5124,17 +5341,72 @@ def _prepare_only_launch(args, *, config, payload, observer=None):
     from gpuwm import runplan
     from gpuwm.experiment import load_experiment
     from gpuwm.ensemble.runtime_context import current_session
-    if any(getattr(args, key, None) is not None for key in
-           ("restart", "prepared_root", "restart_roster")) or current_session() is not None:
-        raise GoRefusal("--prepare-only requires one source trajectory without a restart")
-    fetch = payload.get("fetch") or {}
-    chain = runplan.prepared_chain_for_source(str(fetch.get("source")),
-                                            source_root=fetch.get("source_root"))
+    given = [flag for flag, key in (("--restart", "restart"),
+                                    ("--prepared-root", "prepared_root"),
+                                    ("--restart-roster", "restart_roster"),
+                                    ("--wps-namelist", "wps_namelist"))
+             if getattr(args, key, None) is not None]
+    if given or current_session() is not None:
+        # Breakage it prevents: these name inputs that are already
+        # prepared (or one member of a session), so there is nothing for
+        # a preparation to build and the run plan they route to forecasts
+        # them -- a prepare-only command that ran a whole forecast.
+        raise GoRefusal(
+            "--prepare-only fetches and prepares one source trajectory and "
+            + (f"{', '.join(given)} {'names' if len(given) == 1 else 'name'} "
+               "inputs that are already prepared, so there is nothing to "
+               "prepare. Next: drop --prepare-only to run them, or drop "
+               + ", ".join(given) + "." if given else
+               "this process is one member of an ensemble session. "
+               "Next: run --prepare-only outside the session."))
+    if "case_data" in payload:
+        # Breakage it prevents: a [case_data] config runs on the
+        # experiment route, which prepares inside the forecast process and
+        # has no seal to stop at, so the run would go on to the forecast.
+        raise GoRefusal(
+            "--prepare-only stops a fetched source's preparation at its seal, "
+            "and this config names its input files in [case_data], whose "
+            "route prepares inside the forecast with no seal to stop at. "
+            "Next: drop --prepare-only, or launch a config with a [fetch] table.")
+    fetch = payload.get("fetch")
+    source = fetch.get("source") if isinstance(fetch, dict) else None
+    if not source:
+        raise GoRefusal("The config has no [fetch] table with a source. "
+                        "Next: gpuwm domain --help")
+    try:
+        # --data-dir is the source root a local-bytes source is prepared
+        # from, as on every other route; reading only the table refused
+        # such a source under --prepare-only with --data-dir given.
+        chain = runplan.prepared_chain_for_source(
+            str(source),
+            source_root=getattr(args, "data_dir", None) or fetch.get("source_root"))
+    except runplan.PlanError as refused:
+        raise GoRefusal(str(refused)) from None
     if chain == "prepared:go":
         return _go_prepared_main(args, observer=observer)
     if chain not in ("prepared:hrrr", "prepared:staged"):
         raise GoRefusal("--prepare-only requires a native prepared source route")
-    output = Path(args.outdir or config.parent / (config.stem + "-prepare"))
+    # The run folder every other go route claims: --outdir (default
+    # <config-stem>-go) is the case folder and the run gets its own
+    # stamped run-... child unless --run-stamp off or --outdir names a
+    # run folder.  This launch used --outdir as the run folder itself, so
+    # a second prepare-only run into the same --outdir met the first one's
+    # preparation and --run-stamp was parsed and dropped.
+    case_root = Path(args.outdir) if args.outdir is not None else (
+        config.parent / f"{config.stem}-go")
+    stamp = run_stamp_module.run_stamp_enabled(args)
+    if getattr(args, "dry_run", False):
+        # A dry run spends nothing: it said nothing here and ran the whole
+        # preparation, fetch included.
+        output = run_stamp_module.resolve(case_root, init=fetch.get("cycle"),
+                                          enabled=stamp, create=False)
+        domains = len(payload.get("domain") or ()) or 1
+        print(f"go: {source}, {domains} domain(s); fetch -> prepare "
+              "(--prepare-only: stops at the preparation's seal, no forecast)")
+        print(f"Output: {output}")
+        return 0
+    output = run_stamp_module.resolve(case_root, init=fetch.get("cycle"),
+                                      enabled=stamp, create=True)
     options = {key: str(Path(getattr(args, key)).resolve()) for key in
                ("data_dir", "geog_root") if getattr(args, key, None) is not None}
     if getattr(args, "transport", None) is not None:
@@ -5153,12 +5425,38 @@ def _prepare_only_launch(args, *, config, payload, observer=None):
                              sha256=hashlib.sha256(json.dumps(raw, sort_keys=True).encode()).hexdigest())
     events = None
     if observer is None:
-        events = runplan.EventStream(output / "preparation-events.jsonl")
+        class _SaidEvents(runplan.EventStream):
+            # The stream goes to its file; the terminal gets the stage
+            # lines every other go route prints.  It was mirrored to
+            # stdout raw, so this route printed JSONL records where a
+            # reader expected "go: prepare".
+            def emit(self, event, **fields):
+                record = super().emit(event, **fields)
+                if event == "stage_started":
+                    print(f"go: {fields.get('phase') or fields.get('stage')}", flush=True)
+                elif event == "warning" and fields.get("code") != "preparation_progress":
+                    from gpuwm.explain import split
+                    said = f"warning: {split(str(fields.get('message', '')))[0]}"
+                    if _first_showing(said):
+                        print(said, file=sys.stderr, flush=True)
+                return record
+
+        events = _SaidEvents(output / "preparation-events.jsonl", mirror=None)
         observer = runplan.RunObserver(events)
     operation = runplan._hrrr_chain if chain == "prepared:hrrr" else runplan._staged_chain
     try:
         result = operation(plan, config_path=config, exp=load_experiment(config),
                            observer=observer, run_dir=output, prepare_only=True)
+    except GoStageFailed as failure:
+        # The stage's own words are already on the terminal above; a
+        # Python traceback after them told the reader nothing more and
+        # read as a crash of the door itself.
+        print(f"go: --prepare-only stopped: stage exited {failure.code}; "
+              f"the partial preparation is kept under {output}",
+              file=sys.stderr)
+        return failure.code
+    except runplan.PlanError as refused:
+        raise GoRefusal(str(refused)) from None
     finally:
         if events is not None:
             events.close()
@@ -5283,7 +5581,7 @@ def _go_prepared_main(args, *, observer=None) -> int:
                   f"(forecast): {requirement.label} is not installed.",
                   file=sys.stderr)
             print(requirement.remedy, file=sys.stderr)
-    else:
+    elif not _prepare_only_needs_no_card(args):
         capabilities.require_for_command("go")
     section = render_section_value(getattr(args, "render_section", None))
     admit_render_products(getattr(args, "render_products", None),
@@ -5335,12 +5633,14 @@ def _go_prepared_main(args, *, observer=None) -> int:
                 ("2. fetch" + (" (as posted, beside step 4, which starts on "
                                "the window's first leads)" if beside else ""),
                  fetch_command(plan)),
+                ("2b. chem fetch", chem_fetch_command(plan)),
                 ("3. manifest" + (" (only for a window the fetch finds "
                                   "already here whole; as posted, step 4's "
                                   "seal writes it)" if beside else ""),
                  manifest_command(plan, bridge)),
         ):
-            print(f"{label}\n     {printable(command)}")
+            if command is not None:
+                print(f"{label}\n     {printable(command)}")
         # The last two carry values that do not exist yet.  Naming the
         # FILE each one is read from beats printing a plausible-looking
         # hash: the point of a dry run is to show what will happen, and
@@ -5449,7 +5749,8 @@ def _go_prepared_main(args, *, observer=None) -> int:
         # BEFORE the download, not after it.  `gpuwm fetch` is the stage that
         # costs the user gigabytes and minutes; a configuration that cannot
         # fit has to be told so on this side of it.
-        if not getattr(args, "no_memory_gate", False):
+        if (not getattr(args, "no_memory_gate", False)
+                and not _prepare_only_needs_no_card(args)):
             gate = memory_gate(plan)
             print(f"go: memory -- {gate['verdict']}")
             if gate["refuse"]:
@@ -5464,11 +5765,30 @@ def _go_prepared_main(args, *, observer=None) -> int:
             if gate.get("decode_warning"):
                 print(f"go: WARNING -- {gate['decode_warning']}.")
 
-        _require_forecast_device()
+        if not _prepare_only_needs_no_card(args):
+            _require_forecast_device()
         # Same rule as the memory gate, same side of the download.
         geography = geography_refusal(geog_root)
         if geography is not None:
             raise GoRefusal(geography)
+        # A published static file the config reads ([static] source),
+        # staged by fetch-geog's own fetch, on the same side of the
+        # download: the static build reads it after the forcing arrives.
+        import tomllib
+
+        from gpuwm.geog_assets import GeogFetchError
+        from gpuwm.static.external_source import (
+            StaticSourceError, stage_required_static_sources)
+
+        try:
+            stage_required_static_sources(
+                tomllib.loads(Path(plan["config"]).read_text(encoding="utf-8")),
+                geog_root, base_dir=Path(plan["config"]).parent,
+                progress=lambda line: print(
+                    line if line.startswith("note:") else f"go: {line}",
+                    flush=True))
+        except (GeogFetchError, StaticSourceError) as error:
+            raise GoRefusal(str(error)) from None
         # And the disk, on the same side of the download and of the claim
         # below.  A hosting `gpuwm run-plan` (a caller that brought its
         # own observer) asked this before it started the chain.
@@ -5522,6 +5842,10 @@ def _go_prepared_main(args, *, observer=None) -> int:
             posting = _await_posting(beside, plan)
         else:
             _run_stage("fetch", fetch_command(plan), explain=explain,
+                       observer=observer)
+        chem_fetch = chem_fetch_command(plan)
+        if chem_fetch is not None:
+            _run_stage("chem fetch", chem_fetch, explain=explain,
                        observer=observer)
         if posting is None:
             beside = None
@@ -5975,6 +6299,9 @@ def register_cli(subparsers) -> None:
                              "--products` takes")
     parser.add_argument("--no-verify-visuals", action="store_false", dest="verify_visuals", default=None,
                         help="skip postforecast observation verification; the physical run is unchanged")
+    parser.add_argument("--grib2", action="store_true",
+                        help="write native surface and pressure-level GRIB2 as each frame lands, "
+                             "then <run>/grib2-grib2.zip")
     # `gpuwm render --section`, carried to every render this chain runs:
     # the frames drawn as they land, the early first frame and the
     # end-of-run batch.  Without it an `xsec:` term in --products passed

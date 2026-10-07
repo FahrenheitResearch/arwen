@@ -1,0 +1,23 @@
+{
+  "compiler": "NVRTC 13.4.92, NVVM 7.0.1",
+  "source_sha256": "43ab60c6a8373bb3281c65b1882c969bc456b4c71c2c4407b8c73d448b1dcfe6",
+  "options": [
+    "--std=c++17",
+    "--fmad=false"
+  ],
+  "device_contact": false,
+  "ptx": {
+    "compute_89": {
+      "bytes": 1840058,
+      "sha256": "c6eea05335f0ba282304dfc8841721c67878faebcb404d04ef746d20e547c331"
+    },
+    "compute_120": {
+      "bytes": 1840776,
+      "sha256": "1ea32c278b303ed8468cdf061e0b32bb087e947721e7a56032f73b0669b1b2ba"
+    }
+  },
+  "state_estimate_bytes": 92112,
+  "heat_table_scratch_bytes": 4040,
+  "one_scratch_vector_bytes": 808,
+  "note": "Compile only. Actual cubin local memory/register counts and GPU parity were not measured."
+}

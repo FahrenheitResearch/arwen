@@ -1,0 +1,8 @@
+types i4 2 25 8
+sizes f4 2 25 8
+mass f4 2 25 8
+rh f4 2 25 8
+tau f4 3 25 8 14
+ssa f4 3 25 8 14
+g f4 3 25 8 14
+absorption f4 3 25 8 14

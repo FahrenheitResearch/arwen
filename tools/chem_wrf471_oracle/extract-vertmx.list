@@ -1,0 +1,2 @@
+oracle_chem_prep chem_prep-prelude.inc chem/module_chem_utilities.F chem_prep
+oracle_vertmx - chem/module_vertmx_wrf.F vertmx,rlhside,tridiag,coeffs

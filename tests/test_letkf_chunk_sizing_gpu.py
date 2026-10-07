@@ -96,9 +96,15 @@ def test_the_real_device_exception_classes_degrade(monkeypatch):
 
     grid, prior, obs, fields = _tiny_device_case()
     loc = Localization(horizontal_m=3000.0, vertical_m=1500.0)
+    # The dense chunk loop is the path under test.  Since 2ac908c52 the
+    # card's default route packs from the neighbour roster, whose build
+    # calls gaspari_cohn on the device before the chunk loop exists, so
+    # the injected allocation failure landed in the build instead of the
+    # loop's halving; neighbor_search="forward" keeps the loop's own
+    # device stencil, the one this cell exercises.
     baseline = analyze(prior, [obs], grid, LetkfConfig(
         localization=loc, analysis_fields=fields, rtps_alpha=0.0,
-        chunk_points=32))
+        chunk_points=32, neighbor_search="forward"))
 
     real = letkf_mod.gaspari_cohn
     calls = {"n": 0}
@@ -123,7 +129,7 @@ def test_the_real_device_exception_classes_degrade(monkeypatch):
     d = LetkfDiagnostics()
     degraded = analyze(prior, [obs], grid, LetkfConfig(
         localization=loc, analysis_fields=fields, rtps_alpha=0.0,
-        chunk_points=32), diagnostics=d)
+        chunk_points=32, neighbor_search="forward"), diagnostics=d)
 
     assert d.chunk_points_initial == 32
     assert d.chunk_oom_shrinks == 1

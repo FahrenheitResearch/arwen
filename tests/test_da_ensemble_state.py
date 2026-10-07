@@ -157,6 +157,31 @@ class TestRoundTrip:
         assert back_pend[CONTROL] is None
         assert np.array_equal(back_pend[0]["u"], pend[0]["u"])
 
+    def test_a_generation_survives_the_stage_consuming_its_sets(
+            self, tmp_path):
+        """Restart members are linked, not copied, when the filesystem
+        allows: the generation must still hold every byte after the stage
+        removes its own names, and a set is never shared with a later
+        rewrite of the same slot."""
+        import os
+        import shutil
+
+        ident = identity(3)
+        sets = sets_for(tmp_path, 3)
+        expected = {name: root.read_bytes() for name, root in sets.items()}
+        out = tmp_path / "gen"
+        write_generation(out, identity=ident, elapsed_seconds=900.0,
+                         leg_number=1, restarts=sets,
+                         pending={name: None for name in sets})
+        linked = os.stat(sets[0]).st_ino == os.stat(
+            restart_dir(out, 0) / sets[0].name).st_ino
+        shutil.rmtree(tmp_path / "stage")
+        back_sets, _, _ = read_generation(out, ident)
+        for name, root in back_sets.items():
+            assert root.read_bytes() == expected[name]
+        # One filesystem here, so the restart bytes were linked, not copied.
+        assert linked
+
     def test_control_without_pending_is_recorded_as_absent(self, tmp_path):
         ident = identity(1)
         out = tmp_path / "gen"

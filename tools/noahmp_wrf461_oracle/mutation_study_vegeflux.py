@@ -30,7 +30,7 @@ from gpuwm.core.noahmp_vegeflux import (  # noqa: E402
     R4, VegeFluxParameters, esat, ragrb, sfcdif1, stomata, vege_flux,
 )
 
-FIXTURE = REPO / "gpuwm" / "data" / "noahmp" / "oracle" / "noahmp-vegeflux.csv"
+FIXTURE = REPO / "tests" / "data" / "oracles" / "noahmp" / "noahmp-vegeflux.csv"
 NSNOW, NSOIL = 3, 4
 
 

@@ -185,6 +185,12 @@ def test_projection_reproduces_the_measured_run():
     wrote = {"history": 0, "checkpoint": 0}
     for name, size in record["files"].items():
         wrote["history" if name.startswith("wrfout") else "checkpoint"] += size
+    # The record predates the history CLDFRA (RULINGS 1, 2.8.7): every frame
+    # now also carries one (nz, ny, nx) FP32 radiation cloud fraction, which
+    # the projection prices and this measured run never wrote.
+    wrote["history"] += sum(
+        (int(7200 // intervals[name]) + 1) * 4 * g["levels"] * g["columns"][0] * g["columns"][1]
+        for name, g in record["grids"].items())
     for key in ("history", "checkpoint"):
         assert wrote[key] <= p[f"{key}_bytes"] <= 1.03 * wrote[key], key
     pictures = sum(g["picture_bytes"] for g in record["grids"].values())

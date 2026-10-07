@@ -341,12 +341,14 @@ THOMPSON_FORK_TABLE_ROOT_ENV = "GPUWM_THOMPSON_FORK_TABLE_ROOT"
 def thompson_fork_table_root() -> str:
     """Where the WRF 3.9 fork's Thompson tables live.
 
-    The override first, then ``~/.gpuwm/tables/thompson-wrf39-noaa``.  The
-    set is generated from the fork's own ``thompson_init`` by
-    ``tools/thompson_fork_oracle/build.sh`` (gfortran on any Linux CPU, about
-    two minutes) and is pinned by size and SHA-256 in
-    :data:`gpuwm.core.thompson_contract.FORK_TABLE_ASSETS`, so a root with
-    other bytes fails closed exactly as the v4.6.1 root does.  The fork's
+    The override first, then ``~/.gpuwm/tables/thompson-wrf39-noaa``, the
+    root ``gpuwm fetch-tables --thompson-fork`` stages and a run that
+    selects the fork fills on first use from the release assets
+    (:mod:`gpuwm.thompson_fork_assets`).  The set is generated from the
+    fork's own ``thompson_init`` by ``tools/thompson_fork_oracle/build.sh``
+    (gfortran on any Linux CPU, about two minutes) and is pinned by size and
+    SHA-256 in :data:`gpuwm.core.thompson_contract.FORK_TABLE_ASSETS`, so a
+    root with other bytes fails closed exactly as the v4.6.1 root does.  The fork's
     CCN activation table is byte-identical to the v4.6.1 one and is read
     from :func:`thompson_table_root`.
     """

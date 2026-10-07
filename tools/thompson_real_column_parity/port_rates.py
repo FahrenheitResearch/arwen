@@ -106,7 +106,9 @@ RAIN_EVAPORATION = {"prv_rev": "prv_rev", "pnr_rev": "pnr_rev"}
 #: the anchor, which must occur exactly once in the module's source.
 ANCHORS = {
     "thompson_aerosol_cold": [
-        ("    qi[idx] = fmaxf(0.0f, thompson_aa_add(qi[idx],\n", COLD),
+        # Where every cold rate is final, before the in-place and the
+        # accumulator apply forms branch.
+        ("    // :3022-3031.  REAL + DOUBLE*orho, rounded once.\n", COLD),
         ("        graupel_number_shadow[idx] = thompson_aa_add("
          "initial_number_per_kg,\n", COLD_SHADOW)],
     "thompson_aerosol_warm": [

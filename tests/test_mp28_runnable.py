@@ -468,7 +468,7 @@ def test_the_unfilled_aerosol_profile_is_physics_visible_not_cosmetic():
         cp.cuda.Stream.null.synchronize()
         results[filled] = {
             name: cp.asnumpy(getattr(state, name)).astype(np.float64)
-            for name in ("qc", "nc", "qr", "effc", "nwfa", "nifa")
+            for name in ("qc", "qi", "nc", "qr", "effc", "nwfa", "nifa")
         }
     unfilled, filled = results[False], results[True]
     # The aerosol state itself: the unfilled column sits on WRF's floors.
@@ -478,7 +478,12 @@ def test_the_unfilled_aerosol_profile_is_physics_visible_not_cosmetic():
     assert filled["nifa"].max() > 50.0 * unfilled["nifa"].max()
     # ... and it propagates into the cloud field within one step, including
     # the effective radius radiation consumes.
-    assert not np.array_equal(filled["qc"], unfilled["qc"])
+    # The cloud MASS is no longer a witness: the filled column's ice
+    # nucleation (iceDeMott reads nifa) moves qcten by 2.5e-11 kg/kg/s at one
+    # level, and since the 2.8.7 accumulator rework applies the cloud once
+    # (:3975) that lands on the same float32 qc as the unfilled column.  The
+    # ice it nucleates and the droplet number do differ.
+    assert not np.array_equal(filled["qi"], unfilled["qi"])
     assert not np.array_equal(filled["nc"], unfilled["nc"])
     effc_relative = np.abs(filled["effc"] - unfilled["effc"]) / np.maximum(
         unfilled["effc"], 1.0e-30)
@@ -791,11 +796,15 @@ def test_the_two_netcdf_name_maps_stand_in_the_declared_relation():
     from gpuwm.io.wrf_output_schema import (
         HISTORY_FIELDS_BY_NETCDF_NAME, OUTPUT_FIELDS_BY_NETCDF_NAME,
         PRECIPITATION_OUTPUT_FIELDS, SCHEME_OUTPUT_FIELDS,
-        SURFACE_IDENTITY_OUTPUT_FIELDS, THOMPSON_AEROSOL_OUTPUT_FIELDS)
+        SFIRE_OUTPUT_FIELDS, SURFACE_IDENTITY_OUTPUT_FIELDS,
+        THOMPSON_AEROSOL_OUTPUT_FIELDS)
 
     model_state_groups = {
         "THOMPSON_AEROSOL_OUTPUT_FIELDS": THOMPSON_AEROSOL_OUTPUT_FIELDS,
         "SURFACE_IDENTITY_OUTPUT_FIELDS": SURFACE_IDENTITY_OUTPUT_FIELDS,
+        # The SFIRE Registry rows (gpuwm.io.sfire_schema), a model-state
+        # group the schema module declares by name.
+        "SFIRE_OUTPUT_FIELDS": SFIRE_OUTPUT_FIELDS,
     }
     declared = set().union(*(set(group)
                              for group in model_state_groups.values()))
@@ -2345,11 +2354,15 @@ def test_the_reflectivity_residual_is_the_declared_rain_residual_in_db():
     #    this column's biggest rain residual by far (3.155e-03) and WRF puts
     #    it AT the -35 dBZ floor, where mp_gt_driver:1461's clamp destroys the
     #    signal and both ports are required to be bitwise -35.0 above.
-    rain_eps = np.where(floor, 0.0, np.abs(2.0 * eps_qr - eps_nr))
-    assert level == int(np.argmax(rain_eps)), (level, int(np.argmax(rain_eps)))
-    assert floor[int(np.argmax(np.abs(2.0 * eps_qr - eps_nr)))], (
-        "the column's largest rain residual is no longer at the dBZ floor; "
-        "this test's restriction to non-floor levels needs re-deriving")
+    #    SINCE THE 2.8.7 ACCUMULATOR REWORK there is no rain residual left to
+    #    attribute to: qr and nr are bit-exact against WRF at every level of
+    #    this column, so the rain-moment prediction is identically zero and
+    #    what remains of |dBZ - WRF| is the temp_k
+    #    residual reaching ze_snow/ze_graupel plus float32 dBZ rounding,
+    #    bounded by assertion 3.  Asserted as that closure.
+    assert not np.any(eps_qr) and not np.any(eps_nr), (
+        "a rain residual is back on this column; restore the attribution "
+        "of the worst dB level to the worst rain-residual level")
 
     # 3. THE MECHANISM, in the only units that still resolve it.  At every
     #    non-floor level the measured dB residual may exceed the rain-moment

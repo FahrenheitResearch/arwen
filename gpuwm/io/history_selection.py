@@ -127,6 +127,20 @@ STRUCTURAL_FIELDS: frozenset[str] = frozenset({
     "T",
 })
 
+#: Grid-relative wind components, and the rotation that makes them
+#: earth-relative.  On a projected grid U10/V10 (and U/V) point along the
+#: grid's own axes; without SINALPHA/COSALPHA beside them no reader can
+#: say which way the wind blows.  The frozen station scoreboard refuses
+#: such a wind rather than guess it is east-north (rw-scoreboard
+#: ``extract.rs``: "a projected wind with no orientation is absent"), so
+#: a run whose ``history_vars`` named U10 and V10 but not the rotation got
+#: no 10 m wind score against a single station (the 2026-10-07
+#: boundary-head proof: wind10_rmse empty for both WOOF arms, scored for
+#: HRRR).  A kept wind therefore keeps its rotation, the way a kept field
+#: keeps its georeference.
+PROJECTED_WIND_FIELDS: frozenset[str] = frozenset({"U10", "V10", "U", "V"})
+WIND_ROTATION_FIELDS: frozenset[str] = frozenset({"SINALPHA", "COSALPHA"})
+
 #: The ``minimal`` preset's science: the 2-D surface state and the
 #: accumulators every surface product is drawn from.  One row per field;
 #: adding a surface product's input to the preset is adding a row.
@@ -167,6 +181,9 @@ _SEVERE_EXTRA_FIELDS: frozenset[str] = frozenset({
     "QNCLOUD", "QNRAIN", "QNICE", "QNSNOW", "QNGRAUPEL", "QNHAIL",
     # Simulated reflectivity, the volume every radar product is built on.
     "REFL_10CM",
+    # The radiation cloud fraction the GRIB2 post's cloud cover, base,
+    # top and ceiling are drawn from.
+    "CLDFRA",
 })
 
 #: Named presets: name -> the set of droppable fields it keeps, or
@@ -371,6 +388,16 @@ class HistorySelection:
                         f"variable.{_did_you_mean(name, HISTORY_VOCABULARY)}"
                         "  The valid set is: "
                         f"{', '.join(sorted(HISTORY_VOCABULARY))}.")
+        if (WIND_ROTATION_FIELDS & set(self.history_drop)
+                and not PROJECTED_WIND_FIELDS <= set(self.history_drop)):
+            raise ValueError(
+                f"[output] history_drop of {self.source} drops "
+                f"{sorted(WIND_ROTATION_FIELDS & set(self.history_drop))} "
+                "while the tape keeps a grid-relative wind "
+                f"({sorted(PROJECTED_WIND_FIELDS - set(self.history_drop))}): "
+                "without SINALPHA and COSALPHA no reader can turn that wind "
+                "earth-relative, and station scoring drops it.  Keep the "
+                "rotation, or drop U10, V10, U and V as well.")
         for name in self.history_drop:
             if name in STRUCTURAL_FIELDS:
                 raise ValueError(
@@ -386,6 +413,8 @@ class HistorySelection:
         include: frozenset[str] | None
         if self.history_vars:
             include = frozenset(self.history_vars)
+            if include & PROJECTED_WIND_FIELDS:
+                include |= WIND_ROTATION_FIELDS
         else:
             include = HISTORY_PRESETS[self.preset]
         object.__setattr__(self, "_include", include)

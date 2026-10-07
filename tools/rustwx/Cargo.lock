@@ -2014,6 +2014,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "region-global-dealias"
+version = "0.2.0"
+
+[[package]]
 name = "reqwest"
 version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2394,6 +2398,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "rw-grib2export"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "netcrust",
+ "rayon",
+ "rw-mlexport",
+ "rw-post",
+ "rw-wrfbatch",
+ "serde",
+ "serde_json",
+ "wrf-core 0.1.0 (git+https://github.com/FahrenheitResearch/wrf-rust.git?rev=93bd2ca670c13fec35bcfc27a58108e6fd71c627)",
+ "wx-core 0.3.10",
+]
+
+[[package]]
 name = "rw-host-memory"
 version = "0.1.0"
 dependencies = [
@@ -2478,12 +2498,14 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "flate2",
+ "rayon",
  "rustls",
  "rustls-rustcrypto",
  "rw-store",
  "serde",
  "serde_json",
  "sha2",
+ "static-fields",
  "ureq",
  "wx-radar 0.3.6",
 ]
@@ -2524,6 +2546,19 @@ dependencies = [
  "hdf5-reader",
  "rw-nexrad",
  "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
+name = "rw-post"
+version = "0.1.0"
+dependencies = [
+ "cudarc",
+ "grib-core",
+ "netcrust",
+ "rayon",
  "serde_json",
  "sha2",
  "thiserror",
@@ -2589,6 +2624,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rw-superob"
+version = "0.1.0"
+dependencies = [
+ "rayon",
+ "region-global-dealias",
+ "serde",
+ "serde_json",
+ "static-fields",
+]
+
+[[package]]
 name = "rw-wrfbatch"
 version = "0.1.0"
 dependencies = [
@@ -2615,6 +2661,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "static-fields",
  "thiserror",
  "wrf-core 0.1.0 (git+https://github.com/FahrenheitResearch/wrf-rust.git?rev=93bd2ca670c13fec35bcfc27a58108e6fd71c627)",
  "wx-core 0.3.10",

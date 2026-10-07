@@ -317,12 +317,15 @@ def plan_prepared_component_reservation(member_inputs, *, domain_metadata=None,
             return decline("member configurations, calendar or nest layout differ; a common bank cannot substitute their original authorities")
         if getattr(getattr(exp, "relocation", None), "enabled", False):
             return decline("moving nests retain original relocation and rebuilt geometry owners")
-    from gpuwm.config import RunConfig, radiation_scheme_ids
+    from gpuwm.config import (RunConfig, mynn_mixscalars_driver_value,
+                              radiation_scheme_ids)
     from gpuwm.physics_compat import rrtmg_variant, RRTMG_VARIANT_RTE_RRTMGP
     from gpuwm.core.preflight import soil_layer_count
     from gpuwm.ensemble.batch_mynn import _pbl_options
     for domain in domains:
         cfg, gid = domain.run, int(domain.grid_id)
+        if cfg.chem_sets:
+            return decline(f"domain {gid}: active chemistry keeps its original member species arrays, source-hour caches and mass ledger; component banks lack their typed state ownership and producer handoff")
         if (cfg.sf_surface_physics, cfg.sf_sfclay_physics, cfg.bl_pbl_physics) != (3, 5, 5):
             return decline(f"domain {gid}: packed production binds RUC/MYNN surface and PBL leaves; selected land or turbulence scheme retains its original driver")
         if cfg.bl_mynn_version != "wrf_461":
@@ -346,7 +349,10 @@ def plan_prepared_component_reservation(member_inputs, *, domain_metadata=None,
             _pbl_options({**options, "closure": cfg.bl_mynn_closure, "bl_mynn_version": cfg.bl_mynn_version,
                 "bl_mynn_gsd41_unsquared_qtke": cfg.bl_mynn_gsd41_unsquared_qtke,
                 "bl_mynn_cloud_tendency_form": cfg.bl_mynn_cloud_tendency_form,
-                "icloud_bl": cfg.icloud_bl, "bl_mynn_mixscalars": cfg.bl_mynn_mixscalars})
+                "icloud_bl": cfg.icloud_bl,
+                # The value the driver is handed: 0 when the key is inert
+                # (no qn family in the microphysics), as in the single run.
+                "bl_mynn_mixscalars": mynn_mixscalars_driver_value(cfg)})
         except (ValueError, TypeError) as error:
             return decline(f"domain {gid}: {error}")
         for name, allowed in (("ruc_irrigation", ("wrf_45", "wrf_461")),

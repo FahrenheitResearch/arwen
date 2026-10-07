@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from conftest import requires_gpu
 DATA=Path(__file__).parent/"data/wrf471_diff_opt1"
-SOURCE_TRANSITION_SHA256="6ebec4f303d838f403000e873a593098e21ee981da8b2024ff117523c2b8b09f"
+SOURCE_TRANSITION_SHA256="e77eb3f8f3ce1c483a53b4e89c9784824df37b305a2f1b0da578373ce9d6fdc6"
 
 
 def _measured_current_sources(receipt):
@@ -21,7 +21,11 @@ def _measured_current_sources(receipt):
     by tools/wrf_diffopt1_oracle/source_transition.py, which refuses on any
     moved word.  Re-measured again for the 2.8.6 release tree (the sixth-order
     edge-form workspace and order-5 transport fixes moved dycore.py) on node-4's
-    RTX 5070 Ti: all 178128 words.
+    RTX 5070 Ti: all 178128 words.  Re-measured for the 2.8.7 tree (the DA
+    IAU hook, 838a7d92b, moved dycore.py) on node-4's RTX 5070 Ti: all
+    178128 words.  Re-measured for the AQ line merged into 2.8.7 (the chem
+    hooks and SFIRE's open-boundary geopotential moved dycore.py and
+    dycore.cu) on node-4's RTX 5070 Ti: all 178128 words.
     """
     import hashlib
     from gpuwm.core.kernels import module_options
@@ -303,7 +307,7 @@ def test_metric_merge_receipt_preserves_original_words_and_seals_attribution():
     assert receipt["original_commit"]=="a4177ebbf342252405df3f6ed8309704daee94fc"
     assert {row["commit"] for row in receipt["control_groups"]}==set(receipt["native_provenance"])
     assert len(receipt["word_attribution_sha256"])==64
-    assert len(receipt["controls"])==5
+    assert len(receipt["controls"])==6
     assert all(row["runtime_sources"] for row in receipt["controls"])
     with np.load(DATA/"diff2-baseline.npz") as old,np.load(DATA/"diff2-merged-baseline.npz") as current:
         measured={key:stats(current[key],old[key]) for key in old.files}

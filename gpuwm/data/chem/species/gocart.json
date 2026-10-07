@@ -1,0 +1,1372 @@
+{
+  "schema": "gpuwm.chem.species.v1",
+  "owner": "aq-gocart",
+  "description": "The GOCART aerosol family of WRF-Chem v4.7.1 (chem_opt=300 gocart_simple package, registry.chem:4022), one row per species; the sets gocart_simple, gocart_lite, dust and gocart_primary select among them.",
+  "rows": [
+    {
+      "name": "so2",
+      "output_name": "so2",
+      "long_name": "SO2 mixing ratio",
+      "units": "ppmv",
+      "phase": "gas",
+      "family": "sulfur_gas",
+      "sets": [
+        "gocart_simple",
+        "gocart_lite",
+        "cams_aq"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 5e-06,
+      "molar_mass_g_mol": 64.066,
+      "processes": [
+        "emission.inventory",
+        "chem.sulfur",
+        "drydep.wesely",
+        "mixing.vertmx"
+      ],
+      "emissions": [
+        {
+          "source": "edgar-v81",
+          "field": "so2",
+          "weight": 56192051946.430244,
+          "vertical": "surface",
+          "provenance": "EDGAR v8.1 SO2 total flux, kg m-2 s-1 to WRF emis_ant mol km-2 hr-1 (emissions_driver.F:1601-1603)"
+        }
+      ],
+      "boundary": [
+        {
+          "source": "cams-global",
+          "fields": [
+            "sulphur_dioxide"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ppmv_dry",
+          "provenance": "CAMS mass mixing ratio per moist air is taken to dry air as q/(1-q_v) with the same frame's CAMS specific humidity, then to ppmv as q_dry * mwdry / M_i * 1e6 with mwdry = 28.966 g/mol (share/module_model_constants.F:34) and M_i this row's molar_mass_g_mol."
+        }
+      ],
+      "drydep": {
+        "scheme": "wesely",
+        "wesely": {
+          "hstar": 253000.0,
+          "dhr": 5816.0,
+          "f0": 0.0,
+          "dratio": 1.9783283,
+          "scpr23": 1.4261369,
+          "arm": "sulfur_dioxide",
+          "from": "hstar chem/module_dep_simple.F:2198, dhr :2475, f0 :2687, dvj 0.126 :2902, dratio and scpr23 :3478-3489; SO2 resistance arm rc :1081-1150 (Registry dname so2, registry.chem:1580)"
+        }
+      },
+      "settling": null,
+      "wetdep_ls_alpha": 0.0,
+      "aging": null,
+      "optics": null,
+      "mp_coupling": null,
+      "exclusive_group": null,
+      "provenance": "registry.chem:3610 row so2; default_inflow: bdy_chem_value_gocart, chem/module_input_chem_data.F:1267-1298; molar mass 64.066 (WRF-Chem's GOCART value; the CAMS conversion and the mass ledger read it); EDGAR weight kg m-2 s-1 -> mol km-2 hr-1 = 1e6*3600/0.064066; dry deposition through wesely_driver (chem/dry_dep_driver.F:377) with dep_init's general (non-MOZART, non-CBM4/CB05) branch numbers, the dratio and scpr23 float32 words dep_init derives from dvj (tests/test_chem_wesely_wrf471_parity.py holds them to the Fortran dump); chem.sulfur only in the GOCART sulfur sets (process_sets), so the CAMS set carries SO2 without chemistry; wetdep_ls_alpha 0 (large-scale wet scavenging skips gases, chem/module_wetdep_ls.F:39-46)",
+      "sulfur_role": "so2",
+      "process_sets": {
+        "chem.sulfur": [
+          "gocart_simple",
+          "gocart_lite"
+        ]
+      }
+    },
+    {
+      "name": "sulf",
+      "output_name": "sulf",
+      "long_name": "SULF mixing ratio (sulfate)",
+      "units": "ppmv",
+      "phase": "aerosol",
+      "family": "sulfate",
+      "sets": [
+        "gocart_simple",
+        "gocart_lite"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 3e-06,
+      "molar_mass_g_mol": 96.0576,
+      "processes": [
+        "chem.sulfur",
+        "drydep.gocart",
+        "mixing.vertmx",
+        "wetdep.ls",
+        "optics.gocart",
+        "coupling.thompson"
+      ],
+      "emissions": [],
+      "boundary": [
+        {
+          "source": "cams-global",
+          "fields": [
+            "sulphate"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ppmv_dry",
+          "provenance": "CAMS sulphate aerosol mass mixing ratio (as SO4) to GOCART's sulf in ppmv with the row's molar mass (SO4, 96.0576 g/mol, chem/module_gocart_aerosols.F:85) and mwdry 28.966."
+        }
+      ],
+      "drydep": {
+        "scheme": "gocart_aerosol"
+      },
+      "settling": null,
+      "wetdep_ls_alpha": 1.0,
+      "aging": null,
+      "optics": {
+        "wrfchem_component": "sulfate",
+        "wrf_order": 1,
+        "size_treatment": "modal",
+        "target": 0,
+        "conversion": "ppmv_sulfate",
+        "mass_multiplier": 1.0,
+        "aitken_fraction": 0.25,
+        "hygroscopic": true,
+        "secondary_target": 1,
+        "secondary_multiplier": 0.375,
+        "from": "chem/module_optical_averaging.F:3928-4016",
+        "merra_type": 3,
+        "merra_bin": 1,
+        "merra_radius_um": 0.55,
+        "merra_mass_scale": 3.316219135740539e-06
+      },
+      "mp_coupling": {
+        "target": "nwfa",
+        "group": 1,
+        "order": 0,
+        "group_factor": 5,
+        "unit_mass": 0.3053104,
+        "from": "ccpp-physics 3e6660c6 physics/MP/Thompson/mp_thompson.F90:1062-1066 (get_niwfa, Apache-2.0)"
+      },
+      "exclusive_group": null,
+      "provenance": "registry.chem:3610 row sulf; default_inflow: bdy_chem_value_gocart, chem/module_input_chem_data.F:1267-1298; wetdep_ls_alpha: chem/module_wetdep_ls.F:39-46 (chem_opt >= 300) (1.0); molar mass 96.0576 (sum_pm_gocart mwso4, chem/module_gocart_aerosols.F:85); gocart_drydep_driver hands sulf the aerosol velocity (chem/module_gocart_drydep.F:116)",
+      "sulfur_role": "so4"
+    },
+    {
+      "name": "dms",
+      "output_name": "dms",
+      "long_name": "DMS mixing ratio",
+      "units": "ppmv",
+      "phase": "gas",
+      "family": "sulfur_gas",
+      "sets": [
+        "gocart_simple"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 1e-06,
+      "molar_mass_g_mol": 62.13,
+      "processes": [
+        "chem.sulfur",
+        "mixing.vertmx"
+      ],
+      "emissions": [],
+      "boundary": [],
+      "drydep": null,
+      "settling": null,
+      "wetdep_ls_alpha": 0.0,
+      "aging": null,
+      "optics": null,
+      "mp_coupling": null,
+      "exclusive_group": null,
+      "provenance": "registry.chem:3610 row dms; default_inflow: bdy_chem_value_gocart, chem/module_input_chem_data.F:1267-1298; no emission until a DMS seawater source row exists (dmsemis_opt refused); ddvel(dms) = 0 for GOCART_SIMPLE (chem/module_dep_simple.F:437)",
+      "sulfur_role": "dms"
+    },
+    {
+      "name": "msa",
+      "output_name": "msa",
+      "long_name": "MSA mixing ratio",
+      "units": "ppmv",
+      "phase": "gas",
+      "family": "sulfur_gas",
+      "sets": [
+        "gocart_simple"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 1e-06,
+      "molar_mass_g_mol": 96.109,
+      "processes": [
+        "chem.sulfur",
+        "drydep.gocart",
+        "mixing.vertmx"
+      ],
+      "emissions": [],
+      "boundary": [],
+      "drydep": {
+        "scheme": "gocart_aerosol"
+      },
+      "settling": null,
+      "wetdep_ls_alpha": 0.0,
+      "aging": null,
+      "optics": {
+        "wrfchem_component": "msa",
+        "wrf_order": 3,
+        "size_treatment": "modal",
+        "target": 7,
+        "conversion": "ppmv_sulfate",
+        "mass_multiplier": 1.0,
+        "aitken_fraction": 0.25,
+        "hygroscopic": true,
+        "secondary_target": null,
+        "secondary_multiplier": null,
+        "from": "chem/module_optical_averaging.F:3928-4016"
+      },
+      "mp_coupling": null,
+      "exclusive_group": null,
+      "provenance": "registry.chem:3610 row msa; default_inflow: bdy_chem_value_gocart, chem/module_input_chem_data.F:1267-1298; aerosol deposition velocity (chem/module_gocart_drydep.F:117)",
+      "sulfur_role": "msa"
+    },
+    {
+      "name": "p25",
+      "output_name": "P25",
+      "long_name": "other gocart primary pm25",
+      "units": "ug kg-1",
+      "phase": "aerosol",
+      "family": "pm_other",
+      "sets": [
+        "gocart_simple"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 1.0,
+      "molar_mass_g_mol": null,
+      "processes": [
+        "drydep.gocart",
+        "mixing.vertmx",
+        "wetdep.ls",
+        "optics.gocart"
+      ],
+      "emissions": [],
+      "boundary": [],
+      "drydep": {
+        "scheme": "gocart_aerosol"
+      },
+      "settling": null,
+      "wetdep_ls_alpha": 0.5,
+      "aging": null,
+      "optics": {
+        "wrfchem_component": "other_inorganic",
+        "wrf_order": 4,
+        "size_treatment": "modal",
+        "target": 2,
+        "conversion": "ug_kg",
+        "mass_multiplier": 1.0,
+        "aitken_fraction": 0.25,
+        "hygroscopic": true,
+        "secondary_target": null,
+        "secondary_multiplier": null,
+        "from": "chem/module_optical_averaging.F:3928-4016"
+      },
+      "mp_coupling": null,
+      "exclusive_group": null,
+      "provenance": "registry.chem:3610; default_inflow: bdy_chem_value_gocart, chem/module_input_chem_data.F:1267-1298; wetdep_ls_alpha: chem/module_wetdep_ls.F:39-46 (chem_opt >= 300) (0.5); no inventory row yet (unspeciated PM needs PM minus BC and OC)"
+    },
+    {
+      "name": "p10",
+      "output_name": "P10",
+      "long_name": "other gocart primary pm10",
+      "units": "ug kg-1",
+      "phase": "aerosol",
+      "family": "pm_other",
+      "sets": [
+        "gocart_simple"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 1e-12,
+      "molar_mass_g_mol": null,
+      "processes": [
+        "drydep.gocart",
+        "mixing.vertmx",
+        "wetdep.ls",
+        "optics.gocart"
+      ],
+      "emissions": [],
+      "boundary": [],
+      "drydep": {
+        "scheme": "gocart_aerosol"
+      },
+      "settling": null,
+      "wetdep_ls_alpha": 0.5,
+      "aging": null,
+      "optics": null,
+      "mp_coupling": null,
+      "exclusive_group": null,
+      "provenance": "registry.chem:3610; default_inflow: bdy_chem_value_gocart, chem/module_input_chem_data.F:1267-1298; wetdep_ls_alpha: chem/module_wetdep_ls.F:39-46 (chem_opt >= 300) (0.5); no inventory row yet (unspeciated PM needs PM minus BC and OC)"
+    },
+    {
+      "name": "bc1",
+      "output_name": "BC1",
+      "long_name": "Hydrophobic Black Carbon",
+      "units": "ug kg-1",
+      "phase": "aerosol",
+      "family": "bc",
+      "sets": [
+        "gocart_simple",
+        "gocart_lite",
+        "gocart_primary"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 0.01,
+      "molar_mass_g_mol": null,
+      "processes": [
+        "emission.inventory",
+        "aging.gocart",
+        "drydep.gocart",
+        "mixing.vertmx",
+        "optics.gocart"
+      ],
+      "emissions": [
+        {
+          "source": "edgar-v81",
+          "field": "bc",
+          "weight": 1000000000.0,
+          "vertical": "surface",
+          "provenance": "EDGAR v8.1 BC total flux, kg m-2 s-1 to ug m-2 s-1 (emissions_driver.F:1604-1605)"
+        }
+      ],
+      "boundary": [
+        {
+          "source": "cams-global",
+          "fields": [
+            "black_carbon_hydrophobic"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "Hydrophobic black carbon to bc1, hydrophilic to bc2, as GOCART ages bc1 into bc2 (chem/module_gocart_aerosols.F:6-75)."
+        }
+      ],
+      "drydep": {
+        "scheme": "gocart_aerosol"
+      },
+      "settling": null,
+      "wetdep_ls_alpha": 0.0,
+      "aging": {
+        "to": "bc2",
+        "efold_s": 215982.72138228943,
+        "rate_per_s": 4.63e-06,
+        "coproduct": {
+          "to": "oc2",
+          "factor": 8.0
+        },
+        "from": "chem/module_gocart_aerosols.F:155 (r1 = 4.63D-6 s-1, 2.5 d) and :70 (oc2 += 8*dBC2)"
+      },
+      "optics": {
+        "wrfchem_component": "black_carbon",
+        "wrf_order": 5,
+        "size_treatment": "modal",
+        "target": 5,
+        "conversion": "ug_kg",
+        "mass_multiplier": 1.0,
+        "aitken_fraction": 0.25,
+        "hygroscopic": false,
+        "secondary_target": null,
+        "secondary_multiplier": null,
+        "from": "chem/module_optical_averaging.F:3928-4016",
+        "merra_type": 5,
+        "merra_bin": 1,
+        "merra_radius_um": 0.55,
+        "merra_mass_scale": 1e-09
+      },
+      "mp_coupling": null,
+      "exclusive_group": null,
+      "provenance": "registry.chem:3610; default_inflow: bdy_chem_value_gocart, chem/module_input_chem_data.F:1267-1298; wetdep_ls_alpha: chem/module_wetdep_ls.F:39-46 (chem_opt >= 300) (bc1 skipped); all anthropogenic BC enters bc1 (emissions_driver.F:1604-1605); chem/module_gocart_aerosols.F:155 (r1 = 4.63D-6 s-1, 2.5 d) and :70 (oc2 += 8*dBC2)"
+    },
+    {
+      "name": "bc2",
+      "output_name": "BC2",
+      "long_name": "Hydrophilic Black Carbon",
+      "units": "ug kg-1",
+      "phase": "aerosol",
+      "family": "bc",
+      "sets": [
+        "gocart_simple",
+        "gocart_lite",
+        "gocart_primary"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 0.01,
+      "molar_mass_g_mol": null,
+      "processes": [
+        "aging.gocart",
+        "drydep.gocart",
+        "mixing.vertmx",
+        "wetdep.ls",
+        "optics.gocart"
+      ],
+      "emissions": [],
+      "boundary": [
+        {
+          "source": "cams-global",
+          "fields": [
+            "black_carbon_hydrophilic"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "Hydrophobic black carbon to bc1, hydrophilic to bc2, as GOCART ages bc1 into bc2 (chem/module_gocart_aerosols.F:6-75)."
+        }
+      ],
+      "drydep": {
+        "scheme": "gocart_aerosol"
+      },
+      "settling": null,
+      "wetdep_ls_alpha": 0.8,
+      "aging": null,
+      "optics": {
+        "wrfchem_component": "black_carbon",
+        "wrf_order": 6,
+        "size_treatment": "modal",
+        "target": 6,
+        "conversion": "ug_kg",
+        "mass_multiplier": 1.0,
+        "aitken_fraction": 0.25,
+        "hygroscopic": true,
+        "secondary_target": null,
+        "secondary_multiplier": null,
+        "from": "chem/module_optical_averaging.F:3928-4016",
+        "merra_type": 4,
+        "merra_bin": 1,
+        "merra_radius_um": 0.55,
+        "merra_mass_scale": 1e-09
+      },
+      "mp_coupling": null,
+      "exclusive_group": null,
+      "provenance": "registry.chem:3610; default_inflow: bdy_chem_value_gocart, chem/module_input_chem_data.F:1267-1298; wetdep_ls_alpha: chem/module_wetdep_ls.F:39-46 (chem_opt >= 300) (0.8)"
+    },
+    {
+      "name": "oc1",
+      "output_name": "OC1",
+      "long_name": "Hydrophobic Organic Carbon",
+      "units": "ug kg-1",
+      "phase": "aerosol",
+      "family": "oc",
+      "sets": [
+        "gocart_simple",
+        "gocart_lite",
+        "gocart_primary"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 0.01,
+      "molar_mass_g_mol": null,
+      "processes": [
+        "emission.inventory",
+        "aging.gocart",
+        "drydep.gocart",
+        "mixing.vertmx",
+        "optics.gocart"
+      ],
+      "emissions": [
+        {
+          "source": "edgar-v81",
+          "field": "oc",
+          "weight": 1000000000.0,
+          "vertical": "surface",
+          "provenance": "EDGAR v8.1 OC total flux (carbon mass), kg m-2 s-1 to ug m-2 s-1 (emissions_driver.F:1606-1607)"
+        }
+      ],
+      "boundary": [
+        {
+          "source": "cams-global",
+          "fields": [
+            "organic_matter_hydrophobic"
+          ],
+          "weights": [
+            0.555555556
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "CAMS carries organic MATTER; GOCART's oc rows carry organic CARBON and its PM sums multiply them back by oc_mfac = 1.8 (chem/module_data_gocartchem.F:20, chem/module_gocart_aerosols.F:120), so OC = OM/1.8. Hydrophobic to oc1, hydrophilic to oc2, as GOCART ages oc1 into oc2 (chem/module_gocart_aerosols.F:6-75)."
+        }
+      ],
+      "drydep": {
+        "scheme": "gocart_aerosol"
+      },
+      "settling": null,
+      "wetdep_ls_alpha": 0.0,
+      "aging": {
+        "to": "oc2",
+        "efold_s": 215982.72138228943,
+        "rate_per_s": 4.63e-06,
+        "from": "chem/module_gocart_aerosols.F:155 (r1 = 4.63D-6 s-1, 2.5 d) and :70 (oc2 += 8*dBC2)"
+      },
+      "optics": {
+        "wrfchem_component": "organic_carbon",
+        "wrf_order": 7,
+        "size_treatment": "modal",
+        "target": 3,
+        "conversion": "ug_kg",
+        "mass_multiplier": 1.8,
+        "aitken_fraction": 0.25,
+        "hygroscopic": false,
+        "secondary_target": null,
+        "secondary_multiplier": null,
+        "from": "chem/module_optical_averaging.F:3928-4016",
+        "merra_type": 7,
+        "merra_bin": 1,
+        "merra_radius_um": 0.55,
+        "merra_mass_scale": 1.7999999268880629e-09
+      },
+      "mp_coupling": null,
+      "exclusive_group": null,
+      "provenance": "registry.chem:3610 (WRF's long name says Black Carbon, a Registry typo); default_inflow: bdy_chem_value_gocart, chem/module_input_chem_data.F:1267-1298; wetdep_ls_alpha: chem/module_wetdep_ls.F:39-46 (chem_opt >= 300) (oc1 skipped); chem/module_gocart_aerosols.F:155 (r1 = 4.63D-6 s-1, 2.5 d) and :70 (oc2 += 8*dBC2)"
+    },
+    {
+      "name": "oc2",
+      "output_name": "OC2",
+      "long_name": "Hydrophilic Organic Carbon",
+      "units": "ug kg-1",
+      "phase": "aerosol",
+      "family": "oc",
+      "sets": [
+        "gocart_simple",
+        "gocart_lite",
+        "gocart_primary"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 0.01,
+      "molar_mass_g_mol": null,
+      "processes": [
+        "aging.gocart",
+        "drydep.gocart",
+        "mixing.vertmx",
+        "wetdep.ls",
+        "optics.gocart",
+        "coupling.thompson"
+      ],
+      "emissions": [],
+      "boundary": [
+        {
+          "source": "cams-global",
+          "fields": [
+            "organic_matter_hydrophilic"
+          ],
+          "weights": [
+            0.555555556
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "CAMS carries organic MATTER; GOCART's oc rows carry organic CARBON and its PM sums multiply them back by oc_mfac = 1.8 (chem/module_data_gocartchem.F:20, chem/module_gocart_aerosols.F:120), so OC = OM/1.8. Hydrophobic to oc1, hydrophilic to oc2, as GOCART ages oc1 into oc2 (chem/module_gocart_aerosols.F:6-75)."
+        }
+      ],
+      "drydep": {
+        "scheme": "gocart_aerosol"
+      },
+      "settling": null,
+      "wetdep_ls_alpha": 0.8,
+      "aging": null,
+      "optics": {
+        "wrfchem_component": "organic_carbon",
+        "wrf_order": 8,
+        "size_treatment": "modal",
+        "target": 4,
+        "conversion": "ug_kg",
+        "mass_multiplier": 1.8,
+        "aitken_fraction": 0.25,
+        "hygroscopic": true,
+        "secondary_target": null,
+        "secondary_multiplier": null,
+        "from": "chem/module_optical_averaging.F:3928-4016",
+        "merra_type": 6,
+        "merra_bin": 1,
+        "merra_radius_um": 0.55,
+        "merra_mass_scale": 1.7999999268880629e-09
+      },
+      "mp_coupling": {
+        "target": "nwfa",
+        "group": 2,
+        "order": 0,
+        "group_factor": 8,
+        "unit_mass": 0.3232698,
+        "from": "ccpp-physics 3e6660c6 physics/MP/Thompson/mp_thompson.F90:1062-1066 (get_niwfa, Apache-2.0)"
+      },
+      "exclusive_group": null,
+      "provenance": "registry.chem:3610; default_inflow: bdy_chem_value_gocart, chem/module_input_chem_data.F:1267-1298; wetdep_ls_alpha: chem/module_wetdep_ls.F:39-46 (chem_opt >= 300) (0.8)"
+    },
+    {
+      "name": "dust_1",
+      "output_name": "DUST_1",
+      "long_name": "dust size bin 1: 0.73um effective radius",
+      "units": "ug kg-1",
+      "phase": "aerosol",
+      "family": "dust",
+      "sets": [
+        "gocart_simple",
+        "gocart_lite",
+        "dust",
+        "gocart_primary"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 1e-12,
+      "molar_mass_g_mol": null,
+      "processes": [
+        "emission.dust",
+        "drydep.gocart",
+        "settling.gocart",
+        "mixing.vertmx",
+        "wetdep.ls",
+        "optics.gocart",
+        "coupling.thompson"
+      ],
+      "emissions": [],
+      "boundary": [
+        {
+          "source": "cams-global",
+          "fields": [
+            "dust_0p03_0p55um",
+            "dust_0p55_0p9um",
+            "dust_0p9_20um"
+          ],
+          "weights": [
+            1.0,
+            1.0,
+            0.0339752864
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "CAMS dust bins are radius 0.03-0.55, 0.55-0.9 and 0.9-20 um (ADS variable names); GOCART's are 0.1-1.0, 1.0-1.8, 1.8-3.0, 3.0-6.0 and 6.0-10.0 um (phys/module_data_gocart_dust.F:33-34). Mass is taken as uniform in ln(r) inside each CAMS bin, the assumption WRF-Chem's own PM sums make inside GOCART bins (chem/module_gocart_aerosols.F:97-99, d_2_5 = ln(2.5/2)/ln(3.6/2)). Mass outside GOCART's range goes to the nearest GOCART bin (below 0.1 um to dust_1, 10-20 um to dust_5), so the column mass is conserved. A declared data choice: WRF-Chem defines no map from CAMS bins."
+        }
+      ],
+      "drydep": {
+        "scheme": "gocart_aerosol"
+      },
+      "settling": {
+        "radius_m": 7.3e-07,
+        "density_kg_m3": 2500.0,
+        "growth": "none",
+        "from": "phys/module_data_gocart_dust.F:18-19"
+      },
+      "wetdep_ls_alpha": 0.5,
+      "aging": null,
+      "optics": {
+        "wrfchem_component": "dust",
+        "wrf_order": 9,
+        "size_treatment": "fixed_bin",
+        "distribution_table": "dustfrc_goc9bin",
+        "distribution_bin": 0,
+        "bin_radius_um": [
+          0.1,
+          1.0
+        ],
+        "hygroscopic": true,
+        "from": "chem/module_optical_averaging.F:3928-4016",
+        "merra_type": 1,
+        "merra_bin": 1,
+        "merra_radius_um": 0.73,
+        "merra_mass_scale": 1e-09
+      },
+      "mp_coupling": {
+        "target": "nifa",
+        "group": 0,
+        "order": 1,
+        "group_factor": 1,
+        "unit_mass": 4.0737762,
+        "from": "ccpp-physics 3e6660c6 physics/MP/Thompson/mp_thompson.F90:1062-1066 (get_niwfa, Apache-2.0)"
+      },
+      "exclusive_group": null,
+      "provenance": "registry.chem:3610; default_inflow: bdy_chem_value_gocart, chem/module_input_chem_data.F:1267-1298; wetdep_ls_alpha: chem/module_wetdep_ls.F:39-46 (chem_opt >= 300) (0.5); bin constants phys/module_data_gocart_dust.F:18-21, :28",
+      "dust_emission": {
+        "erod_class": 3,
+        "frac_s": 0.1,
+        "ch_dust": 8e-10,
+        "afwa_distr": 0.1074,
+        "afwa_vis_coefficient": 1.47e-06,
+        "from": "phys/module_data_gocart_dust.F:20-21, :28; chem/chemics_init.F:1742; chem/module_gocart_dust_afwa.F:357-361"
+      }
+    },
+    {
+      "name": "dust_2",
+      "output_name": "DUST_2",
+      "long_name": "dust size bin 2: 1.4um effective radius",
+      "units": "ug kg-1",
+      "phase": "aerosol",
+      "family": "dust",
+      "sets": [
+        "gocart_simple",
+        "gocart_lite",
+        "dust",
+        "gocart_primary"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 1e-12,
+      "molar_mass_g_mol": null,
+      "processes": [
+        "emission.dust",
+        "drydep.gocart",
+        "settling.gocart",
+        "mixing.vertmx",
+        "wetdep.ls",
+        "optics.gocart",
+        "coupling.thompson"
+      ],
+      "emissions": [],
+      "boundary": [
+        {
+          "source": "cams-global",
+          "fields": [
+            "dust_0p9_20um"
+          ],
+          "weights": [
+            0.189541786
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "CAMS dust bins are radius 0.03-0.55, 0.55-0.9 and 0.9-20 um (ADS variable names); GOCART's are 0.1-1.0, 1.0-1.8, 1.8-3.0, 3.0-6.0 and 6.0-10.0 um (phys/module_data_gocart_dust.F:33-34). Mass is taken as uniform in ln(r) inside each CAMS bin, the assumption WRF-Chem's own PM sums make inside GOCART bins (chem/module_gocart_aerosols.F:97-99, d_2_5 = ln(2.5/2)/ln(3.6/2)). Mass outside GOCART's range goes to the nearest GOCART bin (below 0.1 um to dust_1, 10-20 um to dust_5), so the column mass is conserved. A declared data choice: WRF-Chem defines no map from CAMS bins."
+        }
+      ],
+      "drydep": {
+        "scheme": "gocart_aerosol"
+      },
+      "settling": {
+        "radius_m": 1.4e-06,
+        "density_kg_m3": 2650.0,
+        "growth": "none",
+        "from": "phys/module_data_gocart_dust.F:18-19"
+      },
+      "wetdep_ls_alpha": 0.5,
+      "aging": null,
+      "optics": {
+        "wrfchem_component": "dust",
+        "wrf_order": 10,
+        "size_treatment": "fixed_bin",
+        "distribution_table": "dustfrc_goc9bin",
+        "distribution_bin": 1,
+        "bin_radius_um": [
+          1.0,
+          1.8
+        ],
+        "hygroscopic": true,
+        "from": "chem/module_optical_averaging.F:3928-4016",
+        "merra_type": 1,
+        "merra_bin": 2,
+        "merra_radius_um": 1.4,
+        "merra_mass_scale": 1e-09
+      },
+      "mp_coupling": {
+        "target": "nifa",
+        "group": 0,
+        "order": 2,
+        "group_factor": 1,
+        "unit_mass": 30.459203,
+        "from": "ccpp-physics 3e6660c6 physics/MP/Thompson/mp_thompson.F90:1062-1066 (get_niwfa, Apache-2.0)"
+      },
+      "exclusive_group": null,
+      "provenance": "registry.chem:3610; default_inflow: bdy_chem_value_gocart, chem/module_input_chem_data.F:1267-1298; wetdep_ls_alpha: chem/module_wetdep_ls.F:39-46 (chem_opt >= 300) (0.5); bin constants phys/module_data_gocart_dust.F:18-21, :28",
+      "dust_emission": {
+        "erod_class": 2,
+        "frac_s": 0.25,
+        "ch_dust": 8e-10,
+        "afwa_distr": 0.1012,
+        "afwa_vis_coefficient": 7.877e-07,
+        "from": "phys/module_data_gocart_dust.F:20-21, :28; chem/chemics_init.F:1742; chem/module_gocart_dust_afwa.F:357-361"
+      }
+    },
+    {
+      "name": "dust_3",
+      "output_name": "DUST_3",
+      "long_name": "dust size bin 3: 2.4um effective radius",
+      "units": "ug kg-1",
+      "phase": "aerosol",
+      "family": "dust",
+      "sets": [
+        "gocart_simple",
+        "gocart_lite",
+        "dust",
+        "gocart_primary"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 1e-12,
+      "molar_mass_g_mol": null,
+      "processes": [
+        "emission.dust",
+        "drydep.gocart",
+        "settling.gocart",
+        "mixing.vertmx",
+        "wetdep.ls",
+        "optics.gocart",
+        "coupling.thompson"
+      ],
+      "emissions": [],
+      "boundary": [
+        {
+          "source": "cams-global",
+          "fields": [
+            "dust_0p9_20um"
+          ],
+          "weights": [
+            0.164724392
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "CAMS dust bins are radius 0.03-0.55, 0.55-0.9 and 0.9-20 um (ADS variable names); GOCART's are 0.1-1.0, 1.0-1.8, 1.8-3.0, 3.0-6.0 and 6.0-10.0 um (phys/module_data_gocart_dust.F:33-34). Mass is taken as uniform in ln(r) inside each CAMS bin, the assumption WRF-Chem's own PM sums make inside GOCART bins (chem/module_gocart_aerosols.F:97-99, d_2_5 = ln(2.5/2)/ln(3.6/2)). Mass outside GOCART's range goes to the nearest GOCART bin (below 0.1 um to dust_1, 10-20 um to dust_5), so the column mass is conserved. A declared data choice: WRF-Chem defines no map from CAMS bins."
+        }
+      ],
+      "drydep": {
+        "scheme": "gocart_aerosol"
+      },
+      "settling": {
+        "radius_m": 2.4e-06,
+        "density_kg_m3": 2650.0,
+        "growth": "none",
+        "from": "phys/module_data_gocart_dust.F:18-19"
+      },
+      "wetdep_ls_alpha": 0.5,
+      "aging": null,
+      "optics": {
+        "wrfchem_component": "dust",
+        "wrf_order": 11,
+        "size_treatment": "fixed_bin",
+        "distribution_table": "dustfrc_goc9bin",
+        "distribution_bin": 2,
+        "bin_radius_um": [
+          1.8,
+          3.0
+        ],
+        "hygroscopic": true,
+        "from": "chem/module_optical_averaging.F:3928-4016",
+        "merra_type": 1,
+        "merra_bin": 3,
+        "merra_radius_um": 2.4,
+        "merra_mass_scale": 1e-09
+      },
+      "mp_coupling": {
+        "target": "nifa",
+        "group": 0,
+        "order": 3,
+        "group_factor": 1,
+        "unit_mass": 153.45048,
+        "from": "ccpp-physics 3e6660c6 physics/MP/Thompson/mp_thompson.F90:1062-1066 (get_niwfa, Apache-2.0)"
+      },
+      "exclusive_group": null,
+      "provenance": "registry.chem:3610; default_inflow: bdy_chem_value_gocart, chem/module_input_chem_data.F:1267-1298; wetdep_ls_alpha: chem/module_wetdep_ls.F:39-46 (chem_opt >= 300) (0.5); bin constants phys/module_data_gocart_dust.F:18-21, :28",
+      "dust_emission": {
+        "erod_class": 2,
+        "frac_s": 0.25,
+        "ch_dust": 8e-10,
+        "afwa_distr": 0.2078,
+        "afwa_vis_coefficient": 4.623e-07,
+        "from": "phys/module_data_gocart_dust.F:20-21, :28; chem/chemics_init.F:1742; chem/module_gocart_dust_afwa.F:357-361"
+      }
+    },
+    {
+      "name": "dust_4",
+      "output_name": "DUST_4",
+      "long_name": "dust size bin 4: 4.5um effective radius",
+      "units": "ug kg-1",
+      "phase": "aerosol",
+      "family": "dust",
+      "sets": [
+        "gocart_simple",
+        "gocart_lite",
+        "dust",
+        "gocart_primary"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 1e-12,
+      "molar_mass_g_mol": null,
+      "processes": [
+        "emission.dust",
+        "drydep.gocart",
+        "settling.gocart",
+        "mixing.vertmx",
+        "wetdep.ls",
+        "optics.gocart",
+        "coupling.thompson"
+      ],
+      "emissions": [],
+      "boundary": [
+        {
+          "source": "cams-global",
+          "fields": [
+            "dust_0p9_20um"
+          ],
+          "weights": [
+            0.223517072
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "CAMS dust bins are radius 0.03-0.55, 0.55-0.9 and 0.9-20 um (ADS variable names); GOCART's are 0.1-1.0, 1.0-1.8, 1.8-3.0, 3.0-6.0 and 6.0-10.0 um (phys/module_data_gocart_dust.F:33-34). Mass is taken as uniform in ln(r) inside each CAMS bin, the assumption WRF-Chem's own PM sums make inside GOCART bins (chem/module_gocart_aerosols.F:97-99, d_2_5 = ln(2.5/2)/ln(3.6/2)). Mass outside GOCART's range goes to the nearest GOCART bin (below 0.1 um to dust_1, 10-20 um to dust_5), so the column mass is conserved. A declared data choice: WRF-Chem defines no map from CAMS bins."
+        }
+      ],
+      "drydep": {
+        "scheme": "gocart_aerosol"
+      },
+      "settling": {
+        "radius_m": 4.5e-06,
+        "density_kg_m3": 2650.0,
+        "growth": "none",
+        "from": "phys/module_data_gocart_dust.F:18-19"
+      },
+      "wetdep_ls_alpha": 0.5,
+      "aging": null,
+      "optics": {
+        "wrfchem_component": "dust",
+        "wrf_order": 12,
+        "size_treatment": "fixed_bin",
+        "distribution_table": "dustfrc_goc9bin",
+        "distribution_bin": 3,
+        "bin_radius_um": [
+          3.0,
+          6.0
+        ],
+        "hygroscopic": true,
+        "from": "chem/module_optical_averaging.F:3928-4016",
+        "merra_type": 1,
+        "merra_bin": 4,
+        "merra_radius_um": 4.5,
+        "merra_mass_scale": 1e-09
+      },
+      "mp_coupling": {
+        "target": "nifa",
+        "group": 0,
+        "order": 4,
+        "group_factor": 1,
+        "unit_mass": 1011.5142,
+        "from": "ccpp-physics 3e6660c6 physics/MP/Thompson/mp_thompson.F90:1062-1066 (get_niwfa, Apache-2.0)"
+      },
+      "exclusive_group": null,
+      "provenance": "registry.chem:3610; default_inflow: bdy_chem_value_gocart, chem/module_input_chem_data.F:1267-1298; wetdep_ls_alpha: chem/module_wetdep_ls.F:39-46 (chem_opt >= 300) (0.5); bin constants phys/module_data_gocart_dust.F:18-21, :28",
+      "dust_emission": {
+        "erod_class": 2,
+        "frac_s": 0.25,
+        "ch_dust": 8e-10,
+        "afwa_distr": 0.4817,
+        "afwa_vis_coefficient": 2.429e-07,
+        "from": "phys/module_data_gocart_dust.F:20-21, :28; chem/chemics_init.F:1742; chem/module_gocart_dust_afwa.F:357-361"
+      }
+    },
+    {
+      "name": "dust_5",
+      "output_name": "DUST_5",
+      "long_name": "dust size bin 5: 8um effective radius",
+      "units": "ug kg-1",
+      "phase": "aerosol",
+      "family": "dust",
+      "sets": [
+        "gocart_simple",
+        "gocart_lite",
+        "dust",
+        "gocart_primary"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 1e-12,
+      "molar_mass_g_mol": null,
+      "processes": [
+        "emission.dust",
+        "drydep.gocart",
+        "settling.gocart",
+        "mixing.vertmx",
+        "wetdep.ls",
+        "optics.gocart",
+        "coupling.thompson"
+      ],
+      "emissions": [],
+      "boundary": [
+        {
+          "source": "cams-global",
+          "fields": [
+            "dust_0p9_20um"
+          ],
+          "weights": [
+            0.388241464
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "CAMS dust bins are radius 0.03-0.55, 0.55-0.9 and 0.9-20 um (ADS variable names); GOCART's are 0.1-1.0, 1.0-1.8, 1.8-3.0, 3.0-6.0 and 6.0-10.0 um (phys/module_data_gocart_dust.F:33-34). Mass is taken as uniform in ln(r) inside each CAMS bin, the assumption WRF-Chem's own PM sums make inside GOCART bins (chem/module_gocart_aerosols.F:97-99, d_2_5 = ln(2.5/2)/ln(3.6/2)). Mass outside GOCART's range goes to the nearest GOCART bin (below 0.1 um to dust_1, 10-20 um to dust_5), so the column mass is conserved. A declared data choice: WRF-Chem defines no map from CAMS bins."
+        }
+      ],
+      "drydep": {
+        "scheme": "gocart_aerosol"
+      },
+      "settling": {
+        "radius_m": 8e-06,
+        "density_kg_m3": 2650.0,
+        "growth": "none",
+        "from": "phys/module_data_gocart_dust.F:18-19"
+      },
+      "wetdep_ls_alpha": 0.5,
+      "aging": null,
+      "optics": {
+        "wrfchem_component": "dust",
+        "wrf_order": 13,
+        "size_treatment": "fixed_bin",
+        "distribution_table": "dustfrc_goc9bin",
+        "distribution_bin": 4,
+        "bin_radius_um": [
+          6.0,
+          10.0
+        ],
+        "hygroscopic": true,
+        "from": "chem/module_optical_averaging.F:3928-4016",
+        "merra_type": 1,
+        "merra_bin": 5,
+        "merra_radius_um": 8.0,
+        "merra_mass_scale": 1e-09
+      },
+      "mp_coupling": {
+        "target": "nifa",
+        "group": 0,
+        "order": 5,
+        "group_factor": 1,
+        "unit_mass": 5683.3501,
+        "from": "ccpp-physics 3e6660c6 physics/MP/Thompson/mp_thompson.F90:1062-1066 (get_niwfa, Apache-2.0)"
+      },
+      "exclusive_group": null,
+      "provenance": "registry.chem:3610; default_inflow: bdy_chem_value_gocart, chem/module_input_chem_data.F:1267-1298; wetdep_ls_alpha: chem/module_wetdep_ls.F:39-46 (chem_opt >= 300) (0.5); bin constants phys/module_data_gocart_dust.F:18-21, :28",
+      "dust_emission": {
+        "erod_class": 2,
+        "frac_s": 0.25,
+        "ch_dust": 8e-10,
+        "afwa_distr": 0.1019,
+        "afwa_vis_coefficient": 1.387e-07,
+        "from": "phys/module_data_gocart_dust.F:20-21, :28; chem/chemics_init.F:1742; chem/module_gocart_dust_afwa.F:357-361"
+      }
+    },
+    {
+      "name": "seas_1",
+      "output_name": "SEAS_1",
+      "long_name": "sea-salt size bin 1: 0.3um effective radius",
+      "units": "ug kg-1",
+      "phase": "aerosol",
+      "family": "seasalt",
+      "sets": [
+        "gocart_simple",
+        "gocart_lite",
+        "gocart_primary"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 1e-12,
+      "molar_mass_g_mol": null,
+      "processes": [
+        "emission.seasalt",
+        "drydep.gocart",
+        "settling.gocart",
+        "mixing.vertmx",
+        "wetdep.ls",
+        "optics.gocart",
+        "coupling.thompson"
+      ],
+      "emissions": [],
+      "boundary": [
+        {
+          "source": "cams-global",
+          "fields": [
+            "sea_salt_0p03_0p5um",
+            "sea_salt_0p5_5um"
+          ],
+          "weights": [
+            0.23255814,
+            0.0695007154
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "CAMS sea-salt bins (radius 0.03-0.5, 0.5-5, 5-20 um) and mass are stated at 80 % relative humidity. Dry radius = r80/1.99 and dry mass = mass80/4.3, the CAMS/IFS convention for converting its sea salt to dry matter (the 4.3 mass factor with sea-salt densities 2160 dry and 1182 kg m-3 wet gives the 1.99 radius ratio). GOCART sea-salt bins are dry radius 0.1-0.5, 0.5-1.5, 1.5-5.0, 5.0-10.0 um (chem/module_data_gocart_seas.F:2-3). Mass uniform in ln(r) inside each CAMS bin, out-of-range mass to the nearest GOCART bin. A declared data choice."
+        }
+      ],
+      "drydep": {
+        "scheme": "gocart_aerosol"
+      },
+      "settling": {
+        "radius_m": 3e-07,
+        "density_kg_m3": 2200.0,
+        "growth": "gerber_seasalt",
+        "from": "chem/module_data_gocart_seas.F:4-5; Gerber growth chem/module_gocart_settling.F:249, :262, :328-331"
+      },
+      "wetdep_ls_alpha": 1.0,
+      "aging": null,
+      "optics": {
+        "wrfchem_component": "sea_salt",
+        "wrf_order": 14,
+        "size_treatment": "fixed_bin",
+        "distribution_table": "seasfrc_goc9bin",
+        "distribution_bin": 0,
+        "bin_radius_um": [
+          0.1,
+          0.5
+        ],
+        "hygroscopic": true,
+        "from": "chem/module_optical_averaging.F:3928-4016",
+        "merra_type": 2,
+        "merra_bin": 1,
+        "merra_radius_um": 0.3,
+        "merra_mass_scale": 1e-09
+      },
+      "mp_coupling": {
+        "target": "nwfa",
+        "group": 0,
+        "order": 7,
+        "group_factor": 9.0,
+        "unit_mass": 0.2907854,
+        "from": "ccpp-physics 3e6660c6 physics/MP/Thompson/mp_thompson.F90:1062-1066 (get_niwfa, Apache-2.0); GOCART seas_1 = MERRA-2 sea-salt bin 7"
+      },
+      "exclusive_group": null,
+      "provenance": "registry.chem:3610; default_inflow: bdy_chem_value_gocart, chem/module_input_chem_data.F:1267-1298; wetdep_ls_alpha: chem/module_wetdep_ls.F:39-46 (chem_opt >= 300) (1.0); bin constants chem/module_data_gocart_seas.F:2-5",
+      "seasalt_emission": {
+        "r_lo_um": 0.1,
+        "r_hi_um": 0.5,
+        "from": "chem/module_data_gocart_seas.F:2-3"
+      }
+    },
+    {
+      "name": "seas_2",
+      "output_name": "SEAS_2",
+      "long_name": "sea-salt size bin 2: 1um effective radius",
+      "units": "ug kg-1",
+      "phase": "aerosol",
+      "family": "seasalt",
+      "sets": [
+        "gocart_simple",
+        "gocart_lite",
+        "gocart_primary"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 1e-12,
+      "molar_mass_g_mol": null,
+      "processes": [
+        "emission.seasalt",
+        "drydep.gocart",
+        "settling.gocart",
+        "mixing.vertmx",
+        "wetdep.ls",
+        "optics.gocart",
+        "coupling.thompson"
+      ],
+      "emissions": [],
+      "boundary": [
+        {
+          "source": "cams-global",
+          "fields": [
+            "sea_salt_0p5_5um"
+          ],
+          "weights": [
+            0.110958431
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "CAMS sea-salt bins (radius 0.03-0.5, 0.5-5, 5-20 um) and mass are stated at 80 % relative humidity. Dry radius = r80/1.99 and dry mass = mass80/4.3, the CAMS/IFS convention for converting its sea salt to dry matter (the 4.3 mass factor with sea-salt densities 2160 dry and 1182 kg m-3 wet gives the 1.99 radius ratio). GOCART sea-salt bins are dry radius 0.1-0.5, 0.5-1.5, 1.5-5.0, 5.0-10.0 um (chem/module_data_gocart_seas.F:2-3). Mass uniform in ln(r) inside each CAMS bin, out-of-range mass to the nearest GOCART bin. A declared data choice."
+        }
+      ],
+      "drydep": {
+        "scheme": "gocart_aerosol"
+      },
+      "settling": {
+        "radius_m": 1e-06,
+        "density_kg_m3": 2200.0,
+        "growth": "gerber_seasalt",
+        "from": "chem/module_data_gocart_seas.F:4-5; Gerber growth chem/module_gocart_settling.F:249, :262, :328-331"
+      },
+      "wetdep_ls_alpha": 1.0,
+      "aging": null,
+      "optics": {
+        "wrfchem_component": "sea_salt",
+        "wrf_order": 15,
+        "size_treatment": "fixed_bin",
+        "distribution_table": "seasfrc_goc9bin",
+        "distribution_bin": 1,
+        "bin_radius_um": [
+          0.5,
+          1.5
+        ],
+        "hygroscopic": true,
+        "from": "chem/module_optical_averaging.F:3928-4016",
+        "merra_type": 2,
+        "merra_bin": 2,
+        "merra_radius_um": 1.0,
+        "merra_mass_scale": 1e-09
+      },
+      "mp_coupling": {
+        "target": "nwfa",
+        "group": 0,
+        "order": 8,
+        "group_factor": 9.0,
+        "unit_mass": 12.91224,
+        "from": "ccpp-physics 3e6660c6 physics/MP/Thompson/mp_thompson.F90:1062-1066 (get_niwfa, Apache-2.0); GOCART seas_2 = MERRA-2 sea-salt bin 8"
+      },
+      "exclusive_group": null,
+      "provenance": "registry.chem:3610; default_inflow: bdy_chem_value_gocart, chem/module_input_chem_data.F:1267-1298; wetdep_ls_alpha: chem/module_wetdep_ls.F:39-46 (chem_opt >= 300) (1.0); bin constants chem/module_data_gocart_seas.F:2-5",
+      "seasalt_emission": {
+        "r_lo_um": 0.5,
+        "r_hi_um": 1.5,
+        "from": "chem/module_data_gocart_seas.F:2-3"
+      }
+    },
+    {
+      "name": "seas_3",
+      "output_name": "SEAS_3",
+      "long_name": "sea-salt size bin 3: 3.25um effective radius",
+      "units": "ug kg-1",
+      "phase": "aerosol",
+      "family": "seasalt",
+      "sets": [
+        "gocart_simple",
+        "gocart_lite",
+        "gocart_primary"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 1e-12,
+      "molar_mass_g_mol": null,
+      "processes": [
+        "emission.seasalt",
+        "drydep.gocart",
+        "settling.gocart",
+        "mixing.vertmx",
+        "wetdep.ls",
+        "optics.gocart",
+        "coupling.thompson"
+      ],
+      "emissions": [],
+      "boundary": [
+        {
+          "source": "cams-global",
+          "fields": [
+            "sea_salt_0p5_5um",
+            "sea_salt_5_20um"
+          ],
+          "weights": [
+            0.0520989928,
+            0.11543819
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "CAMS sea-salt bins (radius 0.03-0.5, 0.5-5, 5-20 um) and mass are stated at 80 % relative humidity. Dry radius = r80/1.99 and dry mass = mass80/4.3, the CAMS/IFS convention for converting its sea salt to dry matter (the 4.3 mass factor with sea-salt densities 2160 dry and 1182 kg m-3 wet gives the 1.99 radius ratio). GOCART sea-salt bins are dry radius 0.1-0.5, 0.5-1.5, 1.5-5.0, 5.0-10.0 um (chem/module_data_gocart_seas.F:2-3). Mass uniform in ln(r) inside each CAMS bin, out-of-range mass to the nearest GOCART bin. A declared data choice."
+        }
+      ],
+      "drydep": {
+        "scheme": "gocart_aerosol"
+      },
+      "settling": {
+        "radius_m": 3.25e-06,
+        "density_kg_m3": 2200.0,
+        "growth": "gerber_seasalt",
+        "from": "chem/module_data_gocart_seas.F:4-5; Gerber growth chem/module_gocart_settling.F:249, :262, :328-331"
+      },
+      "wetdep_ls_alpha": 1.0,
+      "aging": null,
+      "optics": {
+        "wrfchem_component": "sea_salt",
+        "wrf_order": 16,
+        "size_treatment": "fixed_bin",
+        "distribution_table": "seasfrc_goc9bin",
+        "distribution_bin": 2,
+        "bin_radius_um": [
+          1.5,
+          5.0
+        ],
+        "hygroscopic": true,
+        "from": "chem/module_optical_averaging.F:3928-4016",
+        "merra_type": 2,
+        "merra_bin": 4,
+        "merra_radius_um": 3.25,
+        "merra_mass_scale": 1e-09
+      },
+      "mp_coupling": {
+        "target": "nwfa",
+        "group": 0,
+        "order": 9,
+        "group_factor": 9.0,
+        "unit_mass": 206.2216,
+        "from": "ccpp-physics 3e6660c6 physics/MP/Thompson/mp_thompson.F90:1062-1066 (get_niwfa, Apache-2.0); GOCART seas_3 = MERRA-2 sea-salt bin 9"
+      },
+      "exclusive_group": null,
+      "provenance": "registry.chem:3610; default_inflow: bdy_chem_value_gocart, chem/module_input_chem_data.F:1267-1298; wetdep_ls_alpha: chem/module_wetdep_ls.F:39-46 (chem_opt >= 300) (1.0); bin constants chem/module_data_gocart_seas.F:2-5",
+      "seasalt_emission": {
+        "r_lo_um": 1.5,
+        "r_hi_um": 5.0,
+        "from": "chem/module_data_gocart_seas.F:2-3"
+      }
+    },
+    {
+      "name": "seas_4",
+      "output_name": "SEAS_4",
+      "long_name": "sea-salt size bin 4: 7.5um effective radius",
+      "units": "ug kg-1",
+      "phase": "aerosol",
+      "family": "seasalt",
+      "sets": [
+        "gocart_simple",
+        "gocart_lite",
+        "gocart_primary"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 1e-12,
+      "molar_mass_g_mol": null,
+      "processes": [
+        "emission.seasalt",
+        "drydep.gocart",
+        "settling.gocart",
+        "mixing.vertmx",
+        "wetdep.ls",
+        "optics.gocart",
+        "coupling.thompson"
+      ],
+      "emissions": [],
+      "boundary": [
+        {
+          "source": "cams-global",
+          "fields": [
+            "sea_salt_5_20um"
+          ],
+          "weights": [
+            0.11711995
+          ],
+          "conversion": "kg_kg_moist_to_ug_kg_dry",
+          "provenance": "CAMS sea-salt bins (radius 0.03-0.5, 0.5-5, 5-20 um) and mass are stated at 80 % relative humidity. Dry radius = r80/1.99 and dry mass = mass80/4.3, the CAMS/IFS convention for converting its sea salt to dry matter (the 4.3 mass factor with sea-salt densities 2160 dry and 1182 kg m-3 wet gives the 1.99 radius ratio). GOCART sea-salt bins are dry radius 0.1-0.5, 0.5-1.5, 1.5-5.0, 5.0-10.0 um (chem/module_data_gocart_seas.F:2-3). Mass uniform in ln(r) inside each CAMS bin, out-of-range mass to the nearest GOCART bin. A declared data choice."
+        }
+      ],
+      "drydep": {
+        "scheme": "gocart_aerosol"
+      },
+      "settling": {
+        "radius_m": 7.5e-06,
+        "density_kg_m3": 2200.0,
+        "growth": "gerber_seasalt",
+        "from": "chem/module_data_gocart_seas.F:4-5; Gerber growth chem/module_gocart_settling.F:249, :262, :328-331"
+      },
+      "wetdep_ls_alpha": 1.0,
+      "aging": null,
+      "optics": {
+        "wrfchem_component": "sea_salt",
+        "wrf_order": 17,
+        "size_treatment": "fixed_bin",
+        "distribution_table": "seasfrc_goc9bin",
+        "distribution_bin": 3,
+        "bin_radius_um": [
+          5.0,
+          10.0
+        ],
+        "hygroscopic": true,
+        "from": "chem/module_optical_averaging.F:3928-4016",
+        "merra_type": 2,
+        "merra_bin": 5,
+        "merra_radius_um": 7.5,
+        "merra_mass_scale": 1e-09
+      },
+      "mp_coupling": {
+        "target": "nwfa",
+        "group": 0,
+        "order": 10,
+        "group_factor": 9.0,
+        "unit_mass": 4326.23,
+        "from": "ccpp-physics 3e6660c6 physics/MP/Thompson/mp_thompson.F90:1062-1066 (get_niwfa, Apache-2.0); GOCART seas_4 = MERRA-2 sea-salt bin 10"
+      },
+      "exclusive_group": null,
+      "provenance": "registry.chem:3610; default_inflow: bdy_chem_value_gocart, chem/module_input_chem_data.F:1267-1298; wetdep_ls_alpha: chem/module_wetdep_ls.F:39-46 (chem_opt >= 300) (1.0); bin constants chem/module_data_gocart_seas.F:2-5",
+      "seasalt_emission": {
+        "r_lo_um": 5.0,
+        "r_hi_um": 10.0,
+        "from": "chem/module_data_gocart_seas.F:2-3"
+      }
+    }
+  ]
+}

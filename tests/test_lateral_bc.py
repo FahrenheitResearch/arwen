@@ -1270,6 +1270,56 @@ def test_state_boundary_frames_match_the_all_at_once_builder_bit_for_bit():
                             f"{name}/{side} tendency")
 
 
+def test_a_replaced_start_state_becomes_the_first_frame_bit_for_bit():
+    """--initial-inputs: the start comes from another analysis than the
+    boundary.  The first interval must run from the start state's own
+    coupling to the boundary's next time (WRFDA da_update_bc's rule, which
+    operational HRRR runs after GSI), exactly as if that state had been
+    added there, and the replacement is refused once the interval exists.
+    """
+    from test_real_init import _analyzed_hrrr_real_init
+    from gpuwm.ingest.lateral_bc import _coupled_device_fields
+
+    result, _cfg = _analyzed_hrrr_real_init(
+        6, shape=(12, 12), map_proj=1, specified=True, nested=False,
+        spec_bdy_width=5, spec_zone=1, relax_zone=4)
+    state = result.state
+    start = datetime(2026, 7, 30, 0)
+    times = [start, start + timedelta(hours=1)]
+    head = {name: np.array(value, copy=True)
+            for name, value in _coupled_device_fields(state).items()}
+    later = {name: value * np.float32(1.01) for name, value in head.items()}
+
+    frames = StateBoundaryFrames(spec_bdy_width=5, spec_zone=1, relax_zone=4)
+    frames.add_state(state, index=0)          # the boundary source's start
+    frames.add_snapshot(later, index=1)
+    state.u[...] += np.float32(1.5)           # the separate analysis
+    state.thp[...] += np.float32(0.4)
+    state.mup[...] += np.float32(40.0)
+    frames.replace_start_state(state, index=0)
+    candidate = frames.interval(0, times)
+
+    reference = build_lateral_boundaries(
+        [_coupled_device_fields(state), later], times,
+        spec_bdy_width=5, spec_zone=1, relax_zone=4).intervals[0]
+    stale = build_lateral_boundaries(
+        [head, later], times, spec_bdy_width=5, spec_zone=1,
+        relax_zone=4).intervals[0]
+    for name in reference.fields:
+        for side in ("west", "east", "south", "north"):
+            expected = getattr(reference.fields[name], side)
+            actual = getattr(candidate.fields[name], side)
+            assert actual.value.tobytes() == expected.value.tobytes(), (
+                name, side)
+            assert actual.tendency.tobytes() == expected.tendency.tobytes(), (
+                name, side)
+    for name in ("u", "theta", "mu"):
+        assert not np.array_equal(candidate.fields[name].west.value,
+                                  stale.fields[name].west.value), name
+    with pytest.raises(ValueError, match="already read forcing-time frame 0"):
+        frames.replace_start_state(state, index=0)
+
+
 def test_state_boundary_frames_retain_only_the_perimeter():
     """The whole point: a retained time costs a perimeter, not a volume."""
     width = 5

@@ -1,0 +1,81 @@
+{
+  "seconds": 7.37097705504857,
+  "ulp": {
+    "ebu": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 21384
+    },
+    "ztopmax": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 1056
+    },
+    "steps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 1056
+    },
+    "solver_k_min": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 528
+    },
+    "solver_k_max": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 528
+    },
+    "k_min": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 132
+    },
+    "k_max": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 132
+    },
+    "flam_frac": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 132
+    },
+    "w": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 26400
+    },
+    "t": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 26400
+    },
+    "qv": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 26400
+    },
+    "qc": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 26400
+    },
+    "qh": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 26400
+    },
+    "qi": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 26400
+    },
+    "radius": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 26400
+    }
+  },
+  "failures": []
+}

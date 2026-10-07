@@ -789,6 +789,10 @@ def prepare_era5_wrf(
     # it: the declared source-orography artifact when there is one, else
     # the invariant SOILGEO the snapshot carries.  Off, this does nothing.
     terrain_blend = RootTerrainBlend(exp, static, route="era5")
+    # Inland water the source does not resolve takes the forcing's
+    # daily-mean 2 m air temperature (WRF use_tavg_for_tsk).
+    from gpuwm.ingest.horiz import with_inland_air_temperature
+    water_statics = with_inland_air_temperature(water_statics, snapshots)
 
     def build_forcing_time(index):
         # One forcing time's build, unchanged.  A single domain calls it
@@ -842,10 +846,17 @@ def prepare_era5_wrf(
         initial_met, initial_result = build_forcing_time(0)
         forcing.add_state(initial_result.state, index=0)
         boundaries = None
+    # The chem processes' preparation-time arrays (dust statics, sulfur
+    # lat/lon), before the head is published; nothing on a chem-off state
+    # (gpuwm/core/chem_statics.py).
+    from gpuwm.core.chem_statics import attach_chem_statics
+    attach_chem_statics(initial_result.state, grid, geog_root, None)
 
     # No lake skin override: metgrid's masked=both SKINTEMP chain with
     # static-landmask targets already yields water-source skin at lakes,
-    # matching real.exe's no-TAVGSFC behavior (SST only where valid).  The
+    # matching real.exe's no-TAVGSFC behavior (SST only where valid), except
+    # inland water with no source water within INLAND_WATER_SOURCE_REACH_M,
+    # which takes the daily-mean 2 m air temperature (use_tavg_for_tsk).  The
     # router forwards this exact argument list to preprocess_noah_soil for
     # Noah-geometry schemes, so their soil state is unchanged by the LSM
     # dispatch seam.

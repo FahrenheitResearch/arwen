@@ -21,7 +21,7 @@ fixture adds weak buoyancy, zero scale factor, a deep boundary layer, and
 high TKE columns, for 96 levels total. The other fixtures cover five
 initialization columns, four turbulence columns, and five two-step driver
 columns. Inputs and outputs are recorded together. Source, harness and CSV
-hashes are in `gpuwm/data/mynn/oracle/mixlength2-provenance.txt`.
+hashes are in `tests/data/oracles/mynn/mixlength2-provenance.txt`.
 
 `tests/test_mynn_mixlength2.py` compares these WRF outputs with the CPU and
 CUDA ports. The CPU leaf, initialization, turbulence and warm-driver checks

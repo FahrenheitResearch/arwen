@@ -489,3 +489,66 @@ def test_a_slow_outbound_pack_cannot_see_the_next_step(grid, monkeypatch):
             assert cp.asnumpy(array).tobytes() == joined[name].tobytes(), name
     finally:
         run.close()
+
+
+@pytest.mark.parametrize("grid", [(1, 2), (2, 2)])
+def test_a_checkpoint_snapshot_does_not_wait_for_the_frame_writer(grid):
+    """``checkpoint_store``: the hourly checkpoint without the history wait.
+
+    At an output step the frame's members are downloaded and the history
+    writer borrows their store views (a store guard).  A checkpoint of the
+    same step used to drain, and the drain waited on that guard: about 8 to
+    12 s of every hourly checkpoint stall on the 1 km CONUS run of
+    2026-10-04.  The snapshot must equal the resident state member for
+    member (including a member reset on the slabs after its download), must
+    not call the guard, must leave the borrowed copy as the frame saw it,
+    and must leave the trajectory unchanged.
+    """
+    import cupy as cp
+    from gpuwm.core import dycore, streaming
+    from gpuwm.core.devices import DeviceOptions
+    from tilestream.ranks_gate import config, fixture
+    cfg = config(96, 80, 12)
+    state, bundle = fixture(cfg)
+    count = grid[0] * grid[1]
+    options = DeviceOptions(count=count, grid=grid, ids=(0,) * count)
+    streamed = streaming.ranked_domain_builder(
+        bundle, clock=None, options=options)(
+            None, cfg, streaming.ranked_decision(cfg, options))
+    run = streamed.tiled_run
+    take = streaming.streamed_store_inventory()
+    keys = ["state/thp", "state/u", "state/p", "state/qv"]
+    reset = "state/qv"
+    calls = []
+    try:
+        for _ in range(2):
+            dycore.step(state, cfg)
+            run.sweep(1)
+        assert run.download(keys) == keys
+        run.wait_downloads(run.pending_downloads())
+        framed = run.raw_store[reset].copy()
+        run.add_store_guard(lambda: calls.append("frame writer"))
+        run.zero_scratch(reset)
+        take(state)[reset].fill(0)
+        snapshot = run.checkpoint_store()
+        assert calls == [], "the snapshot waited for the frame writer"
+        for name, array in take(state).items():
+            assert cp.asnumpy(array).tobytes() == snapshot[name].tobytes(), name
+        assert run.raw_store[reset].tobytes() == framed.tobytes(), \
+            "the frame's borrowed member was overwritten"
+        assert run.output_report["full_drains"] == 0
+        for _ in range(2):
+            dycore.step(state, cfg)
+            run.sweep(1)
+        joined = run.store
+        for name, array in take(state).items():
+            assert cp.asnumpy(array).tobytes() == joined[name].tobytes(), name
+        # Control: with no download this generation the guards have not run,
+        # so the snapshot is a drain and waits for them.
+        calls.clear()
+        dycore.step(state, cfg)
+        run.sweep(1)
+        run.checkpoint_store()
+        assert calls == ["frame writer"]
+    finally:
+        run.close()

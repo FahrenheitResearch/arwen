@@ -346,7 +346,7 @@ def distribution_contract(
             # masked chain, the native HRRR route's soil stencil, and the
             # lake skin search with the water-temperature blends, the
             # water repairs and the per-body assembly.
-            "masked_surface_chain": "rust-wps-masked-chain-f64-v2",
+            "masked_surface_chain": "rust-wps-masked-chain-f64-v3",
             "masked_bilinear_stencil": "rust-masked-bilinear-stencil-f64-v1",
             "water_blend": "rust-water-blend-f64-v3",
         },

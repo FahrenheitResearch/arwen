@@ -38,7 +38,12 @@ pub(crate) fn direct_recipe_render_controls(
     recipe: &PlotRecipe,
     filled_selector: FieldSelector,
 ) -> (Option<LegendMode>, Option<f64>) {
-    if matches!(recipe.style, RenderStyle::WeatherDewpoint) {
+    if filled_selector.field == CanonicalField::SmokeMassDensity {
+        // Smoke aliases retain the sparse-signal legend and transparent scale.
+        (None, None)
+    } else if matches!(recipe.style, RenderStyle::AirQualityPm25 | RenderStyle::AirQualityOzone) {
+        (Some(LegendMode::Thresholds), None)
+    } else if matches!(recipe.style, RenderStyle::WeatherDewpoint) {
         let tick = matches!(
             filled_selector.vertical,
             VerticalSelector::HeightAboveGroundMeters(2)

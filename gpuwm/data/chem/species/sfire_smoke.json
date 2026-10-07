@@ -1,0 +1,42 @@
+{
+  "schema": "gpuwm.chem.species.v1",
+  "owner": "sfire",
+  "description": "Resolved-fire endogenous bulk smoke in the existing AQ tracer arena.",
+  "rows": [
+    {
+      "name": "fire_smoke",
+      "output_name": "FIRE_SMOKE",
+      "long_name": "bulk SFIRE smoke mass mixing ratio per dry air, not PM2.5",
+      "units": "ug kg-1",
+      "phase": "aerosol",
+      "family": "tracer",
+      "sets": [
+        "sfire_smoke",
+        "sfire_smoke_mixed"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 0.0,
+      "molar_mass_g_mol": null,
+      "processes": [
+        "emission.sfire",
+        "mixing.vertmx"
+      ],
+      "process_sets": {
+        "mixing.vertmx": [
+          "sfire_smoke_mixed"
+        ]
+      },
+      "emissions": [],
+      "boundary": [],
+      "drydep": null,
+      "settling": null,
+      "wetdep_ls_alpha": 0.0,
+      "aging": null,
+      "optics": null,
+      "mp_coupling": null,
+      "exclusive_group": null,
+      "provenance": "WRF4.7.1 registry.fire:328,337-338 and module_fr_fire_atm.F:15-106. Native bulk source is fire_tracer_smoke*burnt_area_dt*FGIP; g/kg-air increments become ug/kg-dry through1e6*rho_air/rho_dry. No PM2.5 fraction is defined."
+    }
+  ]
+}

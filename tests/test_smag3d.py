@@ -534,8 +534,21 @@ def test_km_opt3_config_admission():
     assert ok.km_opt == 3
     validate_run_config(RunConfig(**base, km_opt=3, isfflx=2,
                                   bl_pbl_physics=0))
-    with pytest.raises(ValueError, match="khdif"):
-        validate_run_config(RunConfig(**base, km_opt=3, khdif=75.0))
+    # Under diff_opt = 2 WRF ignores khdif/kvdif outside km_opt = 1, and so
+    # does gpuwm/core/diffusion.py, so km_opt = 3 beside a dormant constant
+    # imports as written (890e2523a, WRF fire namelists).  diff_opt = 1
+    # still refuses it (f586d1128): WRF's diff_opt = 1 vertical diffusion
+    # reads kvdif whatever km_opt is, and this engine would drop that term.
+    dormant = validate_run_config(RunConfig(**base, km_opt=3, khdif=75.0,
+                                            kvdif=25.0))
+    assert (dormant.diff_opt, dormant.km_opt, dormant.khdif,
+            dormant.kvdif) == (2, 3, 75.0, 25.0)
+    for option in (2, 4):
+        for name in ("khdif", "kvdif"):
+            with pytest.raises(ValueError, match="khdif"):
+                validate_run_config(RunConfig(**base, diff_opt=1,
+                                              km_opt=option,
+                                              **{name: 75.0}))
     with pytest.raises(ValueError, match="isfflx=2"):
         validate_run_config(RunConfig(**base, km_opt=1, isfflx=2))
     with pytest.raises(ValueError, match="isfflx=0"):

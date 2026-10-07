@@ -7,7 +7,7 @@ Runge-Kutta outer integration wrapping split-explicit acoustic steps
 (forward-backward horizontal, implicit vertical, recoupled to the large step), on a
 hybrid terrain-following dry-mass vertical coordinate, FP32 on CUDA
 [docs/gpuwm-project-history.md:65; README.md, current release scope]. The RK stage table is a
-config-visible knob (`rk_ord`, default 3) [docs/public/CONFIGURATION.md:785].
+config-visible knob (`rk_ord`, default 3) [docs/public/CONFIGURATION.md:931].
 
 Advection is WRF's stencils: horizontal momentum and scalars are the WRF flux5
 (5th-order) stencil, and the vertical faces take WRF's `vert_order` ladder,
@@ -17,9 +17,9 @@ selected by `v_sca_adv_order` for scalars, theta, TKE and w and by
 operational HRRR runs 5). Transported-scalar horizontal stencils are fixed at
 5th order, so the importer accepts only the Registry default
 `h_sca_adv_order = 5`; the configurable `h_sca_adv_order` (legacy default 2) feeds
-the geopotential equation only [docs/public/CONFIGURATION.md:430]. Moist transport
+the geopotential equation only [docs/public/CONFIGURATION.md:501]. Moist transport
 runs WRF option 1 (positive-definite limiter) with `scalar_adv_opt` required to
-match [docs/public/CONFIGURATION.md:434, 790]. At vertical order 5 its
+match [docs/public/CONFIGURATION.md:505, 936]. At vertical order 5 its
 low-order eta flux takes the operational fork's semi-Lagrangian sum of the
 upstream cells above face Courant 1 (`gpuwm/core/kernels/pd_vertical_sl.cu`)
 and the upwind flux elsewhere, so the limiter stays positive definite.
@@ -31,7 +31,7 @@ the upwind low-order flux at every face.
 
 Lateral boundaries use specified/relaxation zones with Davies-style weighting;
 `spec_bdy_width` defaults to 5 and must be at least `spec_zone + relax_zone`
-[docs/public/CONFIGURATION.md:115]. The damping stack is described in section 1.2.
+[docs/public/CONFIGURATION.md:143]. The damping stack is described in section 1.2.
 
 No symbolic statement of the governing equation set exists in the documentation
 tree; the prose description above and the WRF-ARW technical-note lineage are the
@@ -41,7 +41,7 @@ reference. This is recorded as a documentation gap, not a claim.
 
 `hybrid_opt` supports 0/1 (sigma, `B(eta)=eta`) and 2 (WRF cubic-B hybrid); anything
 else is refused by name. The importer and the domain wizard default to 2 with
-`etac = 0.2` [docs/public/CONFIGURATION.md:155-156; gpuwm/namelist_import.py:3011-3012;
+`etac = 0.2` [docs/public/CONFIGURATION.md:183-184; gpuwm/namelist_import.py:3011-3012;
 gpuwm/domain_wizard.py:867]. That `etac` is the value asked for, not always the
 value run: at `hybrid_opt = 2` the cubic orders a column only while its surface
 pressure stays above a floor set by `etac` and `p_top` (46408 Pa, about 6082 m of
@@ -66,7 +66,7 @@ Eta levels are explicit, not generated: `eta_levels` is required for real runs,
 automatic level generation (`auto_levels_opt`, `max_dz`, `dzbot`,
 `dzstretch_s/u`) is not implemented, and with explicit `eta_levels` those keys
 are inert in WRF too, so they import as dropped. `p_top` defaults on import to
-the Registry's 5000 Pa [docs/public/CONFIGURATION.md:154].
+the Registry's 5000 Pa [docs/public/CONFIGURATION.md:182].
 
 Two hard properties a WRF user must plan around:
 
@@ -113,14 +113,14 @@ as an experimental path: it runs, it is stamped as experimental in the run's own
 provenance, and one-way consumers refuse a feedback-modified parent. It feeds back
 dynamic state only, where WRF also feeds back hundreds of masked land-surface
 fields, so it is not a WRF-equivalent claim [README.md, current release scope;
-docs/public/CONFIGURATION.md:112-113]. `smooth_option` admits 0 only (the parent
+docs/public/CONFIGURATION.md:140-141]. `smooth_option` admits 0 only (the parent
 smoother acts only under two-way feedback). No receipt, gate, or measurement exists
 yet for the two-way path beyond its stamping; treat it accordingly.
 
 Execution walks parent before child on a flat integer-tick schedule so no
 floating-point clock drift can reorder coupling; child timestep derives exactly as
 `dt_child = dt_parent / parent_time_step_ratio`
-[docs/gpuwm-project-history.md:75; docs/public/CONFIGURATION.md:207].
+[docs/gpuwm-project-history.md:75; docs/public/CONFIGURATION.md:235].
 Parent-to-child initialization uses WRF's SINT interpolation family with
 stagger-aware geometry; lateral forcing is stored as value/tendency tables in WRF
 `bdy_interp1` form [docs/gpuwm-project-history.md:77]. All 128 WRF boundary tables
@@ -277,7 +277,7 @@ one line naming the ratio and the limit, and reported by the preflight checker
 `gpuwm check` (section 8.5) as what the run will do. A config that writes
 `mix_isotropic = 0` keeps it, in the danger zone
 too, and gets the advisory carrying the override state
-[docs/public/LES.md:430-442; docs/public/CONFIGURATION.md:409]. Because
+[docs/public/LES.md:430-442; docs/public/CONFIGURATION.md:480]. Because
 `mix_isotropic` is inside the restart fingerprint, a checkpoint written under the
 old anisotropic default does not bit-continue under the auto-selected isotropic
 form. A guard test fails if any shipped config arrives on the exposed path, and the

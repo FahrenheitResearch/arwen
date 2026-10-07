@@ -1,0 +1,155 @@
+{
+  "CPU/wetdep_ls/step": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 123120
+  },
+  "CPU/wetdep_ls/removed": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 2280
+  },
+  "CPU/add_emiss_burn_gsl/chem": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 14160
+  },
+  "CPU/add_emiss_burn_gsl/coef": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 240
+  },
+  "CPU/add_emiss_burn_gsl/hist": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 240
+  },
+  "CPU/add_emiss_burn_gsl/emitted": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 240
+  },
+  "CPU/add_emiss_burn_gsl/carry": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 14160
+  },
+  "CPU/add_emiss_burn_gsl/frp": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 240
+  },
+  "CPU/smoke_prep_gsl/uspdavg2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 96
+  },
+  "CPU/smoke_prep_gsl/windgustpot": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 96
+  },
+  "CPU/smoke_prep_gsl/hpbl2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 96
+  },
+  "CPU/smoke_prep_gsl/hwp": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 96
+  },
+  "CPU/smoke_prep_gsl/kpbl": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 96
+  },
+  "CPU/smoke_prep_gsl/kpbl_thetav": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 96
+  },
+  "KIND8/add_emiss_burn_gsl/chem": {
+    "max_ulp": 7,
+    "n_nonzero": 6557,
+    "n": 14160,
+    "max_absolute_difference": 0.00146484375
+  },
+  "KIND8/add_emiss_burn_gsl/coef": {
+    "max_ulp": 9,
+    "n_nonzero": 36,
+    "n": 240,
+    "max_absolute_difference": 1.1641532182693481e-10
+  },
+  "KIND8/add_emiss_burn_gsl/hist": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 240,
+    "max_absolute_difference": 0
+  },
+  "KIND8/add_emiss_burn_gsl/emitted": {
+    "max_ulp": 958663268,
+    "n_nonzero": 197,
+    "n": 240,
+    "max_absolute_difference": 2.0
+  },
+  "KIND8/add_emiss_burn_gsl/carry": {
+    "max_ulp": 10,
+    "n_nonzero": 7552,
+    "n": 14160,
+    "max_absolute_difference": 4.57763671875e-05
+  },
+  "KIND8/add_emiss_burn_gsl/frp": {
+    "max_ulp": 10,
+    "n_nonzero": 116,
+    "n": 240,
+    "max_absolute_difference": 7.62939453125e-06
+  },
+  "KIND8/smoke_prep_gsl/kpbl": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 96,
+    "max_absolute_difference": 0
+  },
+  "KIND8/smoke_prep_gsl/kpbl_thetav": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 96,
+    "max_absolute_difference": 0
+  },
+  "KIND8/smoke_prep_gsl/uspdavg2d": {
+    "max_ulp": 2,
+    "n_nonzero": 64,
+    "n": 96,
+    "max_absolute_difference": 1.9073486328125e-06
+  },
+  "KIND8/smoke_prep_gsl/windgustpot": {
+    "max_ulp": 1,
+    "n_nonzero": 40,
+    "n": 96,
+    "max_absolute_difference": 9.5367431640625e-07
+  },
+  "KIND8/smoke_prep_gsl/hpbl2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 96,
+    "max_absolute_difference": 0
+  },
+  "KIND8/smoke_prep_gsl/hwp": {
+    "max_ulp": 3,
+    "n_nonzero": 40,
+    "n": 96,
+    "max_absolute_difference": 3.814697265625e-06
+  },
+  "CPU/fire_rules_gsl/fire_type": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 30
+  },
+  "CPU/source_mass/recovered": {
+    "max_ulp": 1,
+    "n_nonzero": 1,
+    "n": 3,
+    "note": "Unclipped fresh hourly source injection, float32 conversion and model map-factor area."
+  }
+}

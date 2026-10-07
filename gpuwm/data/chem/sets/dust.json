@@ -1,0 +1,8 @@
+{
+  "schema": "gpuwm.chem.set.v1",
+  "name": "dust",
+  "description": "Dust only: the five GOCART dust bins (chem_opt=401).",
+  "wrf_chem_opt": 401,
+  "wrf_tracer_opt": null,
+  "provenance": "registry.chem:4031 package dust chem_opt==401"
+}

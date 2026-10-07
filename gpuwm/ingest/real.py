@@ -194,19 +194,29 @@ def _host_owned_float64(value) -> np.ndarray:
 HRRR_ANALYZED_HYDROMETEORS = ("QC", "QR", "QI", "QS", "QG")
 DECLARED_ANALYZED_HYDROMETEORS = (*HRRR_ANALYZED_HYDROMETEORS, "QH")
 
-#: Vertical velocity at a real-data cold start: exact zero, on every route,
-#: whether or not the source publishes one.  WRF real never interpolates a
-#: source W: v4.6.1 ``dyn_em/module_initialize_real.F`` (sha256
+#: Vertical velocity at a real-data cold start when the source carries
+#: none: exact zero.  WRF real never interpolates a source W: v4.6.1
+#: ``dyn_em/module_initialize_real.F`` (sha256
 #: b4199371567369fa93471f66eef60cb63a55407718b828d724e43587bc4dc82e)
 #: contains no assignment to ``grid%w_1`` or ``grid%w_2`` at all, so the W
 #: real.exe writes is the allocation zero, and the first thing the model
 #: does with it is diagnose the terrain-following lower boundary
-#: (``dyn_em/start_em.F:1519-1530``, ``set_w_surface``).  The regular-source
-#: join drops a carried ``vertical_velocity`` by name
-#: (gpuwm.mapped_source.REGULAR_JOIN_DROPPED_FIELDS) and the hrrr-prs
-#: mapping zeroes it by policy, so the five hydrometeor masses are carried
-#: from the analysis while W is not.  The receipt says so rather than
-#: leaving it to be inferred from an absence.
+#: (``dyn_em/start_em.F:1519-1530``, ``set_w_surface``).  That is the
+#: right start for a source whose analysis holds no vertical motion.  It
+#: was the WRONG start for an analysis that does: HRRR's own forecast
+#: launches from a cycled state that keeps every updraft, while a start
+#: from its published wrfnat analysis under this zero policy dropped them
+#: all, so every storm the analysis held collapsed and had to re-form in
+#: the first hour (2024-05-21 18Z Iowa crop: f01 FSS35 at 27 km 0.30
+#: against HRRR's own 0.42; hour-one spin-up defect, fix program
+#: 2026-10-06).  A source that publishes a vertical velocity on its model
+#: levels (HRRR wrfnat and RAP awp130bgrb publish omega, 0/2/8, on all
+#: fifty) now reaches ``initialize_real`` as ``OMEGA`` (Pa s-1) or ``WW``
+#: (m s-1) through the regular-source join
+#: (gpuwm.mapped_source.VERTICAL_VELOCITY_LEGACY_NAMES) and is carried:
+#: see :func:`vertical_velocity_from_omega` and
+#: :func:`interface_vertical_velocity`.  The receipt names which of the
+#: two happened rather than leaving it to be inferred from an absence.
 WRF_REAL_VERTICAL_VELOCITY_POLICY = {
     "state_field": "w",
     "policy": "exact-fp32-zero",
@@ -215,8 +225,81 @@ WRF_REAL_VERTICAL_VELOCITY_POLICY = {
     "real_citation": (
         "dyn_em/module_initialize_real.F assigns neither grid%w_1 nor "
         "grid%w_2; dyn_em/start_em.F:1519-1530 diagnoses the lower boundary"),
-    "source_vertical_velocity": "not interpolated on any route",
+    "source_vertical_velocity": "the source carried none (no OMEGA or WW field)",
 }
+
+#: The constants UPP uses to publish omega from WRF's W
+#: (``INITPOST.F``: ``omga = -w * pmid * g / (rd * t * (1 + d608 * q))``),
+#: inverted here exactly so a round trip through the published product
+#: returns the model's own W.
+UPP_OMEGA_RD = 287.04
+UPP_OMEGA_G = 9.81
+UPP_OMEGA_D608 = 0.608
+
+#: What the carried-W receipt says, before its measured numbers are added.
+CARRIED_VERTICAL_VELOCITY_POLICY = {
+    "state_field": "w",
+    "policy": "carried-from-source",
+    "interface_rule": (
+        "W is interpolated on the mass levels (linear in pressure, constant "
+        "below the source's lowest level), then each interior interface "
+        "takes the mean of its two bounding mass levels; the surface "
+        "interface is left to set_w_surface (WRF start_em.F:1519-1530) and "
+        "the model top is zero"),
+}
+
+
+def vertical_velocity_from_omega(omega, temperature, qv, pressure, *, xp=np):
+    """Geometric W (m s-1) from omega (Pa s-1), inverting UPP's publication.
+
+    ``w = -omega * Rd * T * (1 + 0.608 qv) / (p * g)`` with UPP's own
+    constants, on whatever array module ``xp`` the four operands share.
+    """
+
+    virtual = temperature * (1.0 + UPP_OMEGA_D608 * qv)
+    return -(omega * (UPP_OMEGA_RD / UPP_OMEGA_G)) * virtual / pressure
+
+
+def interface_vertical_velocity(w_mass, *, xp=np):
+    """W on the ``nz + 1`` interfaces from W on the ``nz`` mass levels.
+
+    Interior interfaces average their bounding mass levels; the surface
+    interface is zero here (set_w_surface diagnoses it from the terrain
+    slope on the first step, as it does for a zero start) and the model
+    top is zero, WRF's upper boundary condition for W.
+    """
+
+    if w_mass.ndim != 3 or w_mass.shape[0] < 2:
+        raise ValueError("mass-level W must be (nz, ny, nx) with nz >= 2")
+    nz = w_mass.shape[0]
+    out = xp.zeros((nz + 1,) + tuple(w_mass.shape[1:]), dtype=w_mass.dtype)
+    out[1:nz] = 0.5 * (w_mass[:-1] + w_mass[1:])
+    return out
+
+
+def vertical_velocity_receipt(source_name, w_mass, w_interfaces, *, xp=np):
+    """The carried-W receipt: the source field, the formula and the numbers."""
+
+    receipt = dict(CARRIED_VERTICAL_VELOCITY_POLICY)
+    receipt["source_field"] = source_name
+    if source_name == "OMEGA":
+        receipt["conversion"] = (
+            "w = -omega * Rd * T * (1 + 0.608 qv) / (p * g) on the target "
+            f"mass levels, Rd={UPP_OMEGA_RD}, g={UPP_OMEGA_G} (UPP INITPOST.F "
+            "inverted)")
+    else:
+        receipt["conversion"] = "source geometric vertical velocity in m s-1, no conversion"
+    receipt["mass_level_w_m_s"] = {
+        "minimum": float(xp.min(w_mass)), "maximum": float(xp.max(w_mass)),
+        "cells_above_1_m_s": int(xp.count_nonzero(w_mass > 1.0)),
+        "cells_below_minus_1_m_s": int(xp.count_nonzero(w_mass < -1.0)),
+    }
+    receipt["interface_w_m_s"] = {
+        "minimum": float(xp.min(w_interfaces)),
+        "maximum": float(xp.max(w_interfaces)),
+        "nonzero_count": int(xp.count_nonzero(w_interfaces)),
+    }
+    return receipt
 
 HRRR_HYDROMETEOR_CORRESPONDENCE_SCHEMA_V1 = (
     "gpuwm-real-hydrometeor-correspondence-v1")
@@ -3588,6 +3671,13 @@ class RealInitResult:
     #: native-HRRR lane and the pressure-level/RH lane, and that map only
     #: exists on the former.
     aerosol_initialization: dict[str, object] = field(default_factory=dict)
+    #: What the start state's W is: the zero policy
+    #: (WRF_REAL_VERTICAL_VELOCITY_POLICY) or the carried source field with
+    #: its measured range (vertical_velocity_receipt).  Kept beside, not
+    #: inside, ``hydrometeor_initialization`` for the same reason as the
+    #: aerosol receipt: W is carried on any route whose source publishes
+    #: one, and that map only exists on the analyzed-hydrometeor lane.
+    vertical_velocity_initialization: dict[str, object] = field(default_factory=dict)
     #: How many cells of ``surface_qv`` ABOVE were floored at WRF's
     #: ``qv_min_value`` on the way out, and how far below it they were
     #: (:func:`_floor_flag_sh_surface_mixing_ratio`).  Only the FLAG_SH
@@ -3611,6 +3701,12 @@ class RealInitResult:
     #: always empty on the RH lane, whose :func:`_saturation_mixing_ratio`
     #: floors inline.
     prognostic_moisture_floor: dict[str, object] = field(default_factory=dict)
+    #: Row-unit unstaggered eta fields for IC and boundary table callers.
+    boundary_tracers: dict[str, object] = field(default_factory=dict)
+    #: One receipt per chem boundary source that filled this frame's chem
+    #: rows (:func:`gpuwm.chem_source_init.fill_boundary_sources`): the
+    #: frames, weights, files and operators.  Empty on a chem-off run.
+    chem_initialization: tuple = ()
 
 
 def _wif_grid_latlon_from(grid, state):
@@ -3921,8 +4017,18 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         if (_resolved_mp28_aerosol_source(cfg) == "analysis"
                 and len(_carried_aerosol) != len(AEROSOL_NUMBER_FIELDS)):
             missing = sorted(set(AEROSOL_NUMBER_FIELDS) - set(_carried_aerosol))
+            # A source that PUBLISHED the pair but whose decoder withheld
+            # it (a GRIB2 bitmap masking points, with no fill policy) says
+            # so: "missing" alone sends the operator looking for fields
+            # the file in hand carries.
+            withheld = getattr(snapshot, "withheld_fields", None) or {}
+            reasons = sorted({withheld[name] for name in missing if name in withheld})
+            published = ("; the source published " + ", ".join(name for name in missing if name in withheld)
+                         + " with a GRIB2 bitmap (masked points) on this cycle and the decoder withheld them: "
+                         + "; ".join(reasons)) if reasons else ""
             raise ValueError("analyzed aerosol IC/BC requires QNWFA and QNIFA on every initial and boundary frame; missing "
-                             + ", ".join(missing) + "; substituting climatology would change the requested forcing")
+                             + ", ".join(missing) + "; substituting climatology would change the requested forcing"
+                             + published)
         if cfg.use_rap_aero_icbc and not boundary_only:
             validate_run_preparation(cfg)
         if not (len(_carried_aerosol) == len(AEROSOL_NUMBER_FIELDS)
@@ -4042,6 +4148,16 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                if name in host_required else snapshot.fields[name])
         for name in required
     }
+    # The source's vertical velocity, when the join packed one: geometric
+    # (WW, m s-1) is taken ahead of omega (OMEGA, Pa s-1) because it needs
+    # no conversion.  Neither is required; a source without one keeps the
+    # zero start (WRF_REAL_VERTICAL_VELOCITY_POLICY).
+    vertical_velocity_source = next(
+        (name for name in ("WW", "OMEGA") if name in snapshot.fields), None)
+    if vertical_velocity_source is not None and not boundary_only:
+        fields[vertical_velocity_source] = snapshot.fields[vertical_velocity_source]
+    else:
+        vertical_velocity_source = None
     # Source precedence is explicit: a case may declare an artifact OR use
     # the forcing catalog's validated era5_z_invariant provider.  Silently
     # replacing a declaration would make provenance depend on GRIB inventory.
@@ -4058,6 +4174,8 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     mass_names = ["TT", "GHT"]
     mass_names += (["PRES", "SPFH"] if has_specific_humidity else ["RH"])
     mass_names += list(decoded_species) + list(main_numbers)
+    if vertical_velocity_source is not None:
+        mass_names.append(vertical_velocity_source)
     if any(fields[name].shape != mass_shape for name in mass_names):
         raise ValueError(
             f"mass-field shapes do not match levels and mass grid: {mass_names}")
@@ -4260,6 +4378,16 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         plan_float32(pressure),
         plan_float32(fields["PSFC"]),
         interp_in_logp=False, extrap="temperature")
+    # The source's vertical velocity rides the same mass-level plan as
+    # pressure (linear in p); below the source's lowest level it holds
+    # that level's value, and the surface pseudo-level is zero, the
+    # kinematic ground value, so nothing is invented beneath the source.
+    source_w_target = None
+    if vertical_velocity_source is not None:
+        source_w_target = mass_vertical_plan.apply(
+            backend_ordered_levels(fields[vertical_velocity_source]),
+            plan_float32(np.zeros((cfg.ny, cfg.nx), dtype=np.float32)),
+            interp_in_logp=False, extrap="constant")
     temperature_h = (_setup(temperature).astype(np.float64) if device_route
                      else _host_owned_float64(temperature))
     rh_h = (None if rh is None else
@@ -4321,6 +4449,29 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                 column_workers=column_workers),
             total_pressure_h, column_workers=column_workers)
     mark_timing("thermodynamic_vertical_interpolation")
+    # The carried vertical velocity on the target mass levels, in m s-1,
+    # converted from omega with this column's own interpolated T, qv and
+    # p (vertical_velocity_from_omega) or taken as published (WW).  Held
+    # as one FP32 field until the state's W interfaces are formed below;
+    # the receipt it fills is the one hydrometeor_initialization carries.
+    w_mass_h = None
+    vertical_velocity_initialization = dict(WRF_REAL_VERTICAL_VELOCITY_POLICY)
+    if source_w_target is not None:
+        carried_w = (_setup(source_w_target).astype(np.float64) if device_route
+                     else _host_owned_float64(source_w_target))
+        if vertical_velocity_source == "OMEGA":
+            carried_w = vertical_velocity_from_omega(
+                carried_w, temperature_h, qv_h, total_pressure_h, xp=np)
+        if not bool(np.isfinite(carried_w).all()):
+            raise ValueError(
+                f"the source vertical velocity ({vertical_velocity_source}) "
+                "interpolated to a non-finite value: a defect in the forcing "
+                "column, not a value to be clamped away")
+        w_mass_h = carried_w.astype(np.float32)
+        del carried_w, source_w_target
+        if release_completed_host:
+            del fields[vertical_velocity_source]
+    mark_timing("vertical_velocity_conversion")
     if release_completed_host:
         # Their final consumers have finished. Retaining widened source
         # fields beside the finished host state needlessly doubled host RAM.
@@ -4439,7 +4590,7 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
             },
             "discarded_source_species": discarded,
             "vertical_disposition": vertical_disposition,
-            "vertical_velocity": dict(WRF_REAL_VERTICAL_VELOCITY_POLICY),
+            "vertical_velocity": vertical_velocity_initialization,
         }
         if supplied_mass_surfaces:
             hydrometeor_initialization["schema"] = "gpuwm-metgrid-hydrometeor-initialization-v1"
@@ -4454,6 +4605,14 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
                 "surface_dry_pressure": receipt_fingerprint(mass_surface_pd_f32),
                 "target_dry_pressure": receipt_fingerprint(mass_target_pd_f32),
             }
+    from gpuwm.ingest.native_extras import interpolate_boundary_tracers
+    # A snapshot-shaped namespace (the HRRR runner's boundary strips, a
+    # detached mapped hour) may carry no tracer mapping at all: no tracers.
+    source_tracers = getattr(snapshot, "boundary_tracers", None)
+    boundary_tracers = interpolate_boundary_tracers(
+        source_tracers, mass_vertical_plan, backend_ordered_levels,
+        backend_xp.zeros((cfg.ny, cfg.nx), dtype=backend_xp.float32), cfg.nz
+    ) if source_tracers else {}
     mark_timing("hydrometeor_vertical_interpolation")
 
     number_moments, number_receipt = {}, {}
@@ -5286,9 +5445,23 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         u, v = _host_float32(u), _host_float32(v)
     state.u[...] = state_xp.asarray(u, dtype=state_xp.float32)
     state.v[...] = state_xp.asarray(v, dtype=state_xp.float32)
-    # WRF_REAL_VERTICAL_VELOCITY_POLICY: W starts at exact zero on every
-    # route, and the hydrometeor receipt above says so.
-    state.w[...] = 0.0
+    if w_mass_h is None:
+        # WRF_REAL_VERTICAL_VELOCITY_POLICY: the source carried no vertical
+        # velocity, so W starts at exact zero and the receipt says so.
+        state.w[...] = 0.0
+    else:
+        # The source's vertical motion, on the W interfaces: the start keeps
+        # the updrafts its analysis holds.  The receipt replaces the zero
+        # policy with the measured field.
+        w_interfaces = interface_vertical_velocity(w_mass_h, xp=np)
+        vertical_velocity_initialization.clear()
+        vertical_velocity_initialization.update(vertical_velocity_receipt(
+            vertical_velocity_source, w_mass_h, w_interfaces, xp=np))
+        if state_xp is host_numpy:
+            w_interfaces = _host_float32(w_interfaces)
+        state.w[...] = state_xp.asarray(w_interfaces, dtype=state_xp.float32)
+        del w_interfaces, w_mass_h
+    mark_timing("vertical_velocity_upload")
     total_phi = None if boundary_only else _setup(state.phb + state.php)
     mark_timing("remaining_state_upload_and_geopotential_readback")
     # The ONE place a surface mixing ratio is published rather than
@@ -5298,6 +5471,19 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
     # already returned nothing below this floor.
     published_surface_qv, surface_qv_floor = (
         _ops._floor_flag_sh_surface_mixing_ratio(surface_qv, fields["PSFC"]))
+    # CHEM BOUNDARY SOURCES (gpuwm/chem_source_init.py).  Rows whose first
+    # enabled boundary source is a data-store composition source take their
+    # field for THIS frame on its final total hydrostatic pressure (WRF's
+    # p+pb, the target WRF-Chem's mozbc uses), so source and target are both
+    # total pressure.  A chem-off state has no ``chem`` attribute and nothing
+    # here runs; a chem state with no such source returns at once.
+    chem_initialization = ()
+    if getattr(state, "chem", None) is not None:
+        from gpuwm.chem_source_init import fill_boundary_sources
+        chem_initialization = tuple(fill_boundary_sources(
+            state, cfg, valid_time=getattr(snapshot, "valid_time", None),
+            latlon=_wif_grid_latlon_from(grid, state),
+            pressure=_host_float32(total_pressure_h)))
     # The native and preprocessing workers above free on their own threads
     # too; the next forcing time and the companion files start without it.
     _return_freed_host_memory()
@@ -5311,11 +5497,14 @@ def initialize_real(snapshot: HorizontalSnapshot, cfg: RunConfig,
         total_specific_volume=alpha,
         integrated_moisture_pressure=intq,
         hypsometric_opt=cfg.hypsometric_opt,
+        boundary_tracers=boundary_tracers,
         hydrometeor_initialization=hydrometeor_initialization,
         aerosol_initialization=aerosol_initialization,
+        vertical_velocity_initialization=vertical_velocity_initialization,
         surface_moisture_floor=surface_qv_floor,
         initial_perturbation=perturbation_receipt,
-        prognostic_moisture_floor=prognostic_qv_floor)
+        prognostic_moisture_floor=prognostic_qv_floor,
+        chem_initialization=chem_initialization)
     if device_route and not boundary_only:
         result = _ops.export_result(result, base=host_base)
     return result

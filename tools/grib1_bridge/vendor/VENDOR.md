@@ -76,8 +76,25 @@ auditable local deltas required by the native GFS bridge:
   `DECODE_TEMPLATES` lists the Section-5 templates `parse_section5` has
   a reader for, in the spelling a binary compiles into its contract
   marker, with a test that each listed template parses.
+  The generic constituent delta (2026-09-30) adds PDT 4.40, 4.41, 4.42,
+  4.44 and 4.48 with their own process, forecast-time and fixed-surface
+  octets. Optional fields expose constituent and aerosol identifiers,
+  size intervals and optical wavelength intervals. Missing interval
+  bounds remain absent; scales use sign-magnitude. PDT 4.44 retains its
+  two-octet forecast time. Coordinate-tail lengths cover every modeled
+  layout (4.0/1/2/5/6/8/9/10/11/12/40/41/42/44/48), including repeated
+  statistical specifications. Unmodeled NV tails still refuse. Existing
+  no-tail templates retain their original parsing path. Tests reparse
+  existing synthetic Section 4 fixtures, assert every chemical layout,
+  refuse every truncation and read NV=276. WMO Manual on Codes, Volume
+  I.2 tables:
+  <https://github.com/wmo-im/GRIB2/blob/master/GRIB2_Template_4_40_ProductDefinitionTemplate_en.csv>,
+  <https://github.com/wmo-im/GRIB2/blob/master/GRIB2_Template_4_41_ProductDefinitionTemplate_en.csv>,
+  <https://github.com/wmo-im/GRIB2/blob/master/GRIB2_Template_4_42_ProductDefinitionTemplate_en.csv>,
+  <https://github.com/wmo-im/GRIB2/blob/master/GRIB2_Template_4_44_ProductDefinitionTemplate_en.csv>,
+  <https://github.com/wmo-im/GRIB2/blob/master/GRIB2_Template_4_48_ProductDefinitionTemplate_en.csv>.
   Patched-file SHA-256:
-  `d6163611772b33aa90a72b74e5722050540ae77e6b2a3e653670f867b0c2f950`.
+  `51e6f481a82605537da897fa1fbb04c3ee7a2d3bc2d2eb0734aeed8364146ee9`.
 - `src/grib2/mod.rs` re-exports that identification value object and
   `DECODE_TEMPLATES`, and `MissingValueMode` / `missing_value_mode`
   beside the unpackers, and (A135, 2026-09-30) `StoredRect` and

@@ -1,0 +1,16 @@
+initial f4 4 10 3 9 6
+chem f4 4 10 3 9 6
+u f4 3 11 3 9
+v f4 3 10 3 10
+has_bc i4 1 6
+default_inflow f4 1 6
+bxs f4 3 9 3 6
+btxs f4 3 9 3 6
+bxe f4 3 9 3 6
+btxe f4 3 9 3 6
+bys f4 3 10 3 6
+btys f4 3 10 3 6
+bye f4 3 10 3 6
+btye f4 3 10 3 6
+spec_zone i4 0
+dt f4 0

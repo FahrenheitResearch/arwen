@@ -3819,7 +3819,7 @@ def render_config(*, name: str, start_time: datetime, hours: int,
                                                recipe_physics_defaults)
     shared.update(land_scoped_defaults(
         recipe_physics_defaults((fetch_hints or {}).get("source")),
-        shared.get("sf_surface_physics")))
+        shared.get("sf_surface_physics"), shared.get("mp_physics")))
     if tiles is not None and tiles not in {"off", "auto", "on"}:
         raise ValueError("--tiles must be off, auto, or on")
     # The vertical default is bounded by the source's certified column:

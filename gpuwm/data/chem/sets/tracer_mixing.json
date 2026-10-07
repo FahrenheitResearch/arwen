@@ -1,0 +1,9 @@
+{
+  "schema": "gpuwm.chem.set.v1",
+  "name": "tracer_mixing",
+  "description": "One passive tracer with unit inflow and WRF-Chem vertical mixing (mixing.vertmx): the chem step's process path in a real forecast. Needs a PBL scheme. Never a product.",
+  "wrf_chem_opt": null,
+  "wrf_tracer_opt": null,
+  "test_only": true,
+  "provenance": "ArWen test set; no WRF namelist maps to it."
+}

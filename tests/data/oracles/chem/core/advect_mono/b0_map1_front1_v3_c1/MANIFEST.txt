@@ -1,0 +1,25 @@
+q f4 3 12 8 10
+q0 f4 3 12 8 10
+ru f4 3 13 8 10
+rv f4 3 12 8 11
+ww f4 3 12 9 10
+wi f4 3 12 9 10
+mut f4 2 12 10
+mub f4 2 12 10
+mu0 f4 2 12 10
+mx f4 2 12 10
+my f4 2 12 10
+c1 f4 1 8
+c2 f4 1 8
+rd f4 1 8
+fnm f4 1 8
+fnp f4 1 8
+dt f4 0
+dx f4 0
+dy f4 0
+boundary i4 0
+vorder i4 0
+initial_tendency f4 3 12 8 10
+tendency f4 3 12 8 10
+h_tendency f4 3 12 8 10
+z_tendency f4 3 12 8 10

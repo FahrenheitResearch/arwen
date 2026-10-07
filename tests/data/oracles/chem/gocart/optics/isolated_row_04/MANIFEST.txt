@@ -1,0 +1,23 @@
+chem f4 4 3 50 1 20
+alt f4 3 3 50 1
+relhum f4 3 3 50 1
+dz8w f4 3 3 50 1
+radius f4 4 3 50 1 9
+number f4 4 3 50 1 9
+swri_real f4 4 9 50 4 3
+swri_imag f4 4 9 50 4 3
+lwri_real f4 4 9 50 16 3
+lwri_imag f4 4 9 50 16 3
+tauaer f4 3 4 50 3
+extaer f4 3 4 50 3
+waer f4 3 4 50 3
+gaer f4 3 4 50 3
+bscoef f4 3 4 50 3
+tauaerlw f4 3 16 50 3
+extaerlw f4 3 16 50 3
+moments f4 4 4 50 6 3
+EXTCOF55 f4 3 3 50 1
+AOD5502D f4 1 3
+band_tau f4 3 3 50 14
+band_ssa f4 3 3 50 14
+band_asm f4 3 3 50 14

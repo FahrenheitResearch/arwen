@@ -106,6 +106,7 @@ from gpuwm.da.moments import (MOMENT_POLICIES, DEFAULT_MOMENT_POLICY,
                               validate_analysis_fields)
 from gpuwm.da.obs_goes import goes_grid_to_gridded_obs
 from gpuwm.da.obs_radar import (Z_SOURCES, beam_unit_vectors,
+                                observed_radial_velocity,
                                 letkf_grid_geometry, radar_grid_to_gridded_obs,
                                 read_document, simulated_radial_velocity)
 from gpuwm.da.obsop import (CLEAR_AIR_FLOOR_DBZ, clear_air_floor_dbz,
@@ -115,10 +116,19 @@ from gpuwm.da.obsop import (CLEAR_AIR_FLOOR_DBZ, clear_air_floor_dbz,
                             reflectivity_fall_speed)
 from gpuwm.da.velocity_dispersion import (
     DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO, DEFAULT_VELOCITY_DISPERSION_RATIO,
-    DispersionGateError, check_ratio, velocity_dispersion, withhold)
-from gpuwm.da.positivity import (NON_NEGATIVE_FIELDS, POLICIES,
-                                 apply_positivity, constrained_fields,
-                                 verify_non_negative)
+    DispersionGateError, check_ratio, column_plan, velocity_dispersion,
+    withhold)
+from gpuwm.da.letkf_device import ColumnWithhold
+from gpuwm.da.reflectivity_echo import (
+    DEFAULT_REFLECTIVITY_OUTLIER_SIGMAS, DEFAULT_REFLECTIVITY_FLOOR_DBZ,
+    ReflectivityEchoError, check_floor, check_sigmas,
+    condition_reflectivity_batch)
+from gpuwm.da import field_rules as _fr
+from gpuwm.da import radar_classes as _rc
+from gpuwm.da.positivity import (BOUNDING_POLICIES,
+                                 NON_NEGATIVE_FIELDS, POLICIES,
+                                 DevicePositivity, apply_positivity,
+                                 constrained_fields, verify_non_negative)
 
 #: Provenance schema for the analysis receipt this module emits.
 METHOD_SCHEMA = "gpuwm-da.radar-assimilation.v1"
@@ -236,13 +246,19 @@ class RadarAssimilationConfig:
     rtps_alpha: float
     analysis_fields: tuple[str, ...] = ("u", "v")
     prior_inflation: float = 1.0
+    #: Named Lane 8 replay policy, retained by dataclasses.replace in da-tune.
+    spread_repair: str = "off"
+    spread_repair_z_threshold: float = 25.0
+    spread_repair_seed: int = 0
+    spread_repair_adaptive: bool = False
     #: Assimilate the per-radar radial-velocity batches.
     velocity: bool = True
     #: Assimilate the merged reflectivity batch.  Needs a provider.
     reflectivity: bool = False
     #: Which reflectivity reduction to difference against; see
-    #: :data:`gpuwm.da.obs_radar.Z_SOURCES` for why ``z_mean`` is absent.
-    z_source: str = "z_obs"
+    #: :data:`gpuwm.da.obs_radar.Z_SOURCES`: the in-cell linear-Z mean by
+    #: default, the maximum as an arm.
+    z_source: str = "z_mean"
     #: Restrict velocity batches to these radar ids (None = all in file).
     radars: tuple[str, ...] | None = None
     #: "reflectivity" (Sun & Crook from the provider's dBZ) or "none"
@@ -427,6 +443,13 @@ class RadarAssimilationConfig:
     eigensolver: str = "auto"
     memory_budget_mib: float = 512.0
     chunk_points: int | None = None
+    #: The cards the device analysis spreads its chunks over: "all", the
+    #: DEFAULT, every card this process can see, or a tuple of device
+    #: ordinals.  Every point's increment is one warp's fixed-order
+    #: arithmetic on its own inputs, so the bytes are the same on one card
+    #: or eight (gpuwm.da.letkf_device); on the 9 km CONUS case one card
+    #: ran all 51 chunks while seven sat idle.
+    solve_cards: object = "all"
     #: The radial-velocity dispersion gate
     #: (:mod:`gpuwm.da.velocity_dispersion`): a Vr batch is withheld from
     #: theta and vapour in the columns where its innovation variance
@@ -450,8 +473,80 @@ class RadarAssimilationConfig:
     #: member; "trim-build" is refused here
     #: (:data:`PRECIP_ANALYSIS_MEMBER_REFUSAL`).
     precip_analysis: str = "off"
+    #: Which observations may move which fields (gpuwm.da.field_rules,
+    #: design D1): "design" keeps reflectivity and clear air out of the
+    #: winds, adds only ``z_thermo_weight`` of their thermodynamic increment
+    #: inside observed echo (|dqv| capped at ``z_qv_cap``), lets only them
+    #: move hydrometeor mass (none when ``z_hydrometeors`` is off), and
+    #: analyses no number or aerosol; "joint" is every batch on every field.
+    field_rules: str = _fr.DEFAULT_RULES
+    z_thermo_weight: float = _fr.DEFAULT_Z_THERMO_WEIGHT
+    z_hydrometeors: bool = _fr.DEFAULT_Z_HYDROMETEORS
+    z_qv_cap: float | None = _fr.DEFAULT_Z_QV_CAP
+    #: Rain and ice number after the update: the scheme's own relation from
+    #: analysed mass ("scheme"), the background size kept ("preserve-size"),
+    #: or left alone ("off").
+    number_rediagnosis: str = _fr.DEFAULT_NUMBER_MODE
+    #: Common echo floor, dBZ, applied to the reflectivity batch's
+    #: observations AND its H(x) before differencing
+    #: (:mod:`gpuwm.da.reflectivity_echo`).  ``None`` switches it off and
+    #: differences raw returns from -15 dBZ against the scheme's -35 dBZ
+    #: H(x) floor, which on the CONUS first-light analysis doubled the echo
+    #: area an hour later.  The clear-air batch is not affected.
+    reflectivity_floor_dbz: float | None = DEFAULT_REFLECTIVITY_FLOOR_DBZ
+    #: Outlier tempering on the reflectivity batch, in standard deviations
+    #: of sqrt(spread^2 + sigma_o^2): an observation beyond it has its error
+    #: raised just enough to sit at it, so an innovation the ensemble cannot
+    #: reach is not extrapolated past the members.  ``None`` switches it
+    #: off.  Observations inside it are untouched.
+    reflectivity_outlier_sigmas: float | None = (
+        DEFAULT_REFLECTIVITY_OUTLIER_SIGMAS)
+    #: Radar observation classes (gpuwm.da.radar_classes, design A1): the
+    #: clear-air floor shared by observation and H(x) (None = the legacy
+    #: unclassified batches), whether weak echo between it and the 15 dBZ
+    #: echo floor is a dead band, the per-class errors (None = the file's),
+    #: the level strides, the 11 km top and Huber weighting.
+    reflectivity_clear_floor_dbz: float | None = _rc.DEFAULT_CLEAR_FLOOR_DBZ
+    reflectivity_dead_band: bool = _rc.DEFAULT_DEAD_BAND
+    reflectivity_error_dbz: float | None = _rc.DEFAULT_ECHO_ERROR_DBZ
+    clear_air_error_dbz: float | None = _rc.DEFAULT_CLEAR_ERROR_DBZ
+    reflectivity_level_stride: int = _rc.DEFAULT_ECHO_LEVEL_STRIDE
+    clear_air_level_stride: int = _rc.DEFAULT_CLEAR_LEVEL_STRIDE
+    radar_top_pa: float | None = _rc.DEFAULT_TOP_PA
+    reflectivity_huber_c: float | None = None
+    #: Which analysed fields each KIND of observation may move
+    #: (gpuwm.da.field_rules): cloud water path never moves vapour or heat,
+    #: a surface report never moves a hydrometeor moment.  On by default
+    #: (audit S9); False lets every batch update every analysed field.
+    kind_field_rules: bool = True
 
     def __post_init__(self) -> None:
+        if self.spread_repair != "off":
+            from gpuwm.da.spread_repair import SpreadRepairConfig
+            SpreadRepairConfig(policy=self.spread_repair,
+                observed_threshold_dbz=self.spread_repair_z_threshold,
+                adaptive=self.spread_repair_adaptive)
+            if not self.reflectivity:
+                raise RadarAssimilationError("spread repair needs precipitation reflectivity to distinguish observed clear air")
+        elif self.spread_repair_adaptive:
+            raise RadarAssimilationError("adaptive spread needs an enabled spread-repair policy to carry its inflation state")
+        try:
+            _fr.check_settings(self.field_rules, self.z_thermo_weight,
+                               self.z_qv_cap, self.number_rediagnosis)
+        except _fr.FieldRuleError as exc:
+            raise RadarAssimilationError(str(exc)) from None
+        try:
+            check_floor(self.reflectivity_floor_dbz)
+            check_sigmas(self.reflectivity_outlier_sigmas)
+            _rc.check_settings(
+                clear_floor=self.reflectivity_clear_floor_dbz,
+                echo_error=self.reflectivity_error_dbz,
+                clear_error=self.clear_air_error_dbz,
+                echo_stride=self.reflectivity_level_stride,
+                clear_stride=self.clear_air_level_stride,
+                top_pa=self.radar_top_pa, huber_c=self.reflectivity_huber_c)
+        except (ReflectivityEchoError, _rc.RadarClassError) as exc:
+            raise RadarAssimilationError(str(exc)) from None
         if not self.analysis_fields:
             raise RadarAssimilationError(
                 "analysis_fields is empty: an analysis that updates nothing "
@@ -523,8 +618,9 @@ class RadarAssimilationConfig:
                     f"field(s) {list(constrained)} and states no "
                     "positivity_policy. A Gaussian filter applied to a "
                     "bounded, zero-inflated variable routinely proposes a "
-                    "negative mixing ratio, and clip / reject / none are "
-                    "not equivalent -- clipping at zero ADDS mass and is "
+                    "negative mixing ratio, and mean-preserving / clip / "
+                    "reject / none are not equivalent -- clipping at zero "
+                    "ADDS mass and is "
                     "biased wetward, rejecting conserves the background and "
                     "invents gradients, and none lets the microphysics meet "
                     f"the negatives. Choose one of {POLICIES}; "
@@ -681,6 +777,17 @@ class RadarAssimilationConfig:
             raise RadarAssimilationError(
                 f"solve_device must be one of {SOLVE_DEVICES}, got "
                 f"{self.solve_device!r}")
+        if self.solve_cards != "all":
+            try:
+                cards = tuple(int(card) for card in self.solve_cards)
+            except (TypeError, ValueError):
+                cards = ()
+            if not cards or any(card < 0 for card in cards) \
+                    or len(set(cards)) != len(cards):
+                raise RadarAssimilationError(
+                    "solve_cards must be 'all' or distinct non-negative "
+                    f"device ordinals, got {self.solve_cards!r}")
+            object.__setattr__(self, "solve_cards", cards)
         if self.precip_analysis == "trim-build":
             raise RadarAssimilationError(PRECIP_ANALYSIS_MEMBER_REFUSAL)
         if self.precip_analysis not in PRECIP_ANALYSIS_MODES:
@@ -825,6 +932,149 @@ def read_checkpoint_state(path: str | Path,
     return out
 
 
+class CheckpointStateView(Mapping):
+    """A member's ``state/`` arrays, read from its checkpoint on demand.
+
+    The analysis touches a fraction of what a restart carries (the analysed
+    fields plus what H(x) and the bounds read), and the cycle driver used to
+    mirror the WHOLE serialized state of every member into host memory, save
+    that mirror to a second ``.npz`` and read it back here with
+    ``fields=None``.  At 241 x 241 x 49 and 32 members that was three whole
+    copies of the ensemble crossing the host per analysis.  This view reads
+    one array the first time it is asked for, keeps it, and never reads the
+    rest.  The bytes are the checkpoint's own ``.npy`` payload, so a field
+    read through the view is identical to the same field read by
+    :func:`read_checkpoint_state`.
+
+    The archive stays open until :meth:`close`; a consumed restart that is
+    unlinked while the analysis still holds the view remains readable on
+    POSIX, and every field the analysis needs is cached by then anyway.
+
+    A restart member is an UNCOMPRESSED zip of raw ``.npy`` payloads, so a
+    stored field is mapped read-only straight from the file rather than
+    read through ``zipfile`` (which copies it in chunks and CRCs it on one
+    core): the analysis then reads the page cache the worker's write left
+    behind.  The barrier already hashed the whole file.  A compressed or
+    unexpected member falls back to the ordinary read.  The mapped arrays
+    are read-only, so an analysis step that tried to write a background
+    in place would fail loudly instead of corrupting the restart.
+    """
+
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+        if not self.path.is_file():
+            raise RadarAssimilationError(f"no checkpoint at {self.path}")
+        self._archive = np.load(self.path, allow_pickle=False)
+        self._keys = {key[len(CHECKPOINT_STATE_PREFIX):]: key
+                      for key in self._archive.files
+                      if key.startswith(CHECKPOINT_STATE_PREFIX)}
+        self._cache: dict[str, np.ndarray] = {}
+
+    @property
+    def name(self) -> str:
+        return self.path.name
+
+    def __getitem__(self, field: str) -> np.ndarray:
+        value = self._cache.get(field)
+        if value is not None:
+            return value
+        key = self._keys.get(field)
+        if key is None:
+            raise KeyError(field)
+        if self._archive is None:
+            raise RadarAssimilationError(
+                f"checkpoint view {self.path} was closed before field "
+                f"{field!r} was read")
+        value = self._mapped(key)
+        if value is None:
+            value = np.asarray(self._archive[key])
+        self._cache[field] = value
+        return value
+
+    def _mapped(self, key: str):
+        """The stored ``.npy`` payload of ``key`` mapped read-only, or None."""
+        import zipfile
+
+        try:
+            info = self._archive.zip.getinfo(key + ".npy")
+        except (AttributeError, KeyError):
+            return None
+        if info.compress_type != zipfile.ZIP_STORED:
+            return None
+        try:
+            with open(self.path, "rb") as stream:
+                stream.seek(info.header_offset)
+                header = stream.read(30)
+                if len(header) != 30 or header[:4] != b"PK\x03\x04":
+                    return None
+                start = (info.header_offset + 30
+                         + int.from_bytes(header[26:28], "little")
+                         + int.from_bytes(header[28:30], "little"))
+                stream.seek(start)
+                version = np.lib.format.read_magic(stream)
+                if version == (1, 0):
+                    shape, fortran, dtype = (
+                        np.lib.format.read_array_header_1_0(stream))
+                elif version == (2, 0):
+                    shape, fortran, dtype = (
+                        np.lib.format.read_array_header_2_0(stream))
+                else:
+                    return None
+                offset = stream.tell()
+        except (OSError, ValueError):
+            return None
+        count = int(np.prod(shape, dtype=np.int64))
+        if (dtype.hasobject or count == 0 or not shape
+                or offset - start + count * dtype.itemsize != info.file_size):
+            return None
+        mapped = np.memmap(self.path, dtype=dtype, mode="r", offset=offset,
+                           shape=tuple(shape), order="F" if fortran else "C")
+        return np.asarray(mapped)
+
+    def __iter__(self):
+        return iter(self._keys)
+
+    def __len__(self) -> int:
+        return len(self._keys)
+
+    def __contains__(self, field) -> bool:
+        return field in self._keys
+
+    @property
+    def cached_bytes(self) -> int:
+        return int(sum(value.nbytes for value in self._cache.values()))
+
+    def close(self) -> None:
+        """Close the archive and drop every cached array."""
+        if self._archive is not None:
+            self._archive.close()
+            self._archive = None
+        self._cache.clear()
+
+
+def member_states(checkpoints: Mapping[int, object]) -> dict:
+    """``{index: Mapping}`` for the analysis, without copying a state.
+
+    A value may be a checkpoint path (read whole, as before) or an
+    already-open mapping of ``state/`` arrays -- a :class:`CheckpointStateView`
+    or the in-memory mirror of a live member -- which is used as it is.
+    """
+    out = {}
+    for index in sorted(int(key) for key in checkpoints):
+        source = checkpoints[index]
+        out[index] = (source if isinstance(source, Mapping)
+                      else read_checkpoint_state(source))
+    return out
+
+
+def checkpoint_label(source, index: int) -> str:
+    """How the provenance names one member's background."""
+    if isinstance(source, (str, Path)):
+        return Path(source).name
+    name = getattr(source, "name", None)
+    return str(name) if name else f"in-memory member {int(index):03d}"
+
+
 # ---------------------------------------------------------------------------
 # staggering: mass-point analysis, face-point increments
 # ---------------------------------------------------------------------------
@@ -907,6 +1157,122 @@ def _saturation_bound(prior, increments, states, indices):
     return out, {**receipt, "evaluated": True}
 
 
+def _by_member(function, indices):
+    """``[function(index) for index in indices]`` on threads, in order.
+
+    Each call reads its own member and returns a new array, so threads
+    change when it runs, never what; an exception is the first member's
+    in order, as in the loop.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    indices = list(indices)
+    if len(indices) < 2:
+        return [function(index) for index in indices]
+    with ThreadPoolExecutor(max_workers=min(32, len(indices))) as pool:
+        return list(pool.map(function, indices))
+
+
+class MemberStack:
+    """One analysis field's prior, ``(R, nz, ny, nx)`` float64, not stacked.
+
+    The analysis used to stack every analysed field of every member into a
+    private float64 prior before the filter (about 37 GB on the 9 km CONUS
+    case, 32 members, fourteen fields; with the float64 increments beside
+    it about 95 GB of controller memory per analysis).  The filter on the
+    card never needed it whole: it stages the prior chunk by chunk.  This
+    holds each member's own field -- the background array itself, or the
+    mass-point projection of a staggered wind -- and hands out spans of
+    points; ``np.asarray`` builds the whole float64 stack when a host
+    stage needs one.  Every value is what :func:`_mass_field` and
+    ``np.stack`` gave: a float32 background widens to float64 exactly
+    wherever it is copied.
+    """
+
+    def __init__(self, name, states, indices, shape):
+        self.name = name
+        self.shape = (len(indices),) + tuple(int(v) for v in shape)
+        self.ndim = 4
+        self.dtype = np.dtype(np.float64)
+        def member_field(index):
+            where = f"member {index} checkpoint"
+            if name in _DESTAGGER:
+                field = _mass_field(name, states[index], where)
+            else:
+                if name not in states[index]:
+                    _mass_field(name, states[index], where)   # its refusal
+                field = np.asarray(states[index][name])
+                if field.dtype.kind != "f":
+                    field = np.asarray(field, dtype=np.float64)
+            if field.shape != tuple(shape):
+                raise RadarAssimilationError(
+                    f"member {index} field {name!r} is {field.shape} at "
+                    f"mass points but the observation file's grid is "
+                    f"{tuple(shape)}; these checkpoints are not from this "
+                    "domain")
+            return np.ascontiguousarray(field).reshape(-1)
+
+        # Members side by side (a staggered wind's projection, or the first
+        # touch of a mapped restart); a refusal is the first member's.
+        self._members = _by_member(member_field, indices)
+        self._whole = None
+
+    @property
+    def nbytes(self) -> int:
+        return int(np.prod(self.shape)) * 8
+
+    def reshape(self, *shape):
+        if len(shape) == 1 and isinstance(shape[0], tuple):
+            shape = shape[0]
+        points = int(np.prod(self.shape[1:]))
+        if tuple(shape) in ((self.shape[0], -1), (self.shape[0], points)):
+            return _MemberSpans(self)
+        return np.asarray(self).reshape(*shape)
+
+    def __array__(self, dtype=None, copy=None):
+        if self._whole is None:
+            from concurrent.futures import ThreadPoolExecutor
+
+            out = np.empty(self.shape, dtype=np.float64)
+            flat = out.reshape(self.shape[0], -1)
+
+            def fill(slot):
+                flat[slot] = self._members[slot]
+
+            with ThreadPoolExecutor(max_workers=max(1, min(
+                    32, self.shape[0]))) as pool:
+                list(pool.map(fill, range(self.shape[0])))
+            self._whole = out
+        whole = self._whole
+        return whole if dtype is None else whole.astype(dtype, copy=False)
+
+    def __getitem__(self, key):
+        return np.asarray(self)[key]
+
+
+class _MemberSpans:
+    """``(R, points)`` view of a :class:`MemberStack`: ``[:, a:b]`` stacks
+    the members' points ``a..b`` in their own dtype."""
+
+    def __init__(self, stack):
+        self._stack = stack
+        self.shape = (stack.shape[0], int(np.prod(stack.shape[1:])))
+        self.dtype = stack.dtype
+        self.ndim = 2
+
+    def __getitem__(self, key):
+        rows, cols = key if isinstance(key, tuple) else (key, slice(None))
+        if rows != slice(None) or not isinstance(cols, slice):
+            return np.asarray(self._stack).reshape(self.shape)[key]
+        return np.stack([member[cols] for member in self._stack._members])
+
+
+def materialized(prior, names=None):
+    """``{name: ndarray}`` of ``prior``'s fields (all, or ``names``)."""
+    names = tuple(prior) if names is None else tuple(names)
+    return {name: np.asarray(prior[name]) for name in names}
+
+
 def _mass_field(name: str, state: Mapping[str, np.ndarray],
                 where: str) -> np.ndarray:
     """One analysis field on mass points, float64, from checkpoint arrays."""
@@ -955,6 +1321,24 @@ def member_earth_winds(state: Mapping[str, np.ndarray], rotation,
     return u_mass, v_mass, w_mass
 
 
+def reflectivity_route_available(mp_physics) -> bool:
+    """Whether the registry routes an H_Z(x) for ``mp_physics``.
+
+    The question :meth:`RadarAssimilationConfig._require_reflectivity_route`
+    refuses on, asked without refusing, so a door can default the fall
+    speed on where the scheme has an operator and say why it is off where
+    it has none.
+    """
+    from gpuwm.physics_registry import consumer_row_for_selector
+
+    if mp_physics is None:
+        return False
+    row = consumer_row_for_selector("microphysics", "radar_da",
+                                    int(mp_physics))
+    return (isinstance(row, dict) and row.get("reflectivity_route")
+            in ("operator", "scheme-diagnostic"))
+
+
 def _member_fall_speed(state: Mapping[str, np.ndarray], dbz: np.ndarray,
                        *, where: str) -> np.ndarray:
     """Sun & Crook vt (m/s downward) on mass points, from the member's own
@@ -975,9 +1359,19 @@ def _member_fall_speed(state: Mapping[str, np.ndarray], dbz: np.ndarray,
     hydrometeors = types.SimpleNamespace(
         **{name: state.get(name) for name in ("qr", "qs", "qg", "qh")})
     active = precipitating_activity_mask(hydrometeors)
+    # Each frozen species at its own fall speed, not the rain relation
+    # (gpuwm.da.obsop.species_blended_fall_speed); the checkpoint carries
+    # alt, the inverse density the frozen speeds need.
+    species = {name: np.asarray(state[name], dtype=np.float64)
+               for name in ("qr", "qs", "qg", "qh")
+               if state.get(name) is not None}
+    alt = state.get("alt")
     return np.asarray(reflectivity_fall_speed(
         np.asarray(dbz, dtype=np.float64), pressure, active,
-        surface_pressure=pressure[0]))
+        surface_pressure=pressure[0],
+        species=species if alt is not None else None,
+        inverse_density=(None if alt is None
+                         else np.asarray(alt, dtype=np.float64))))
 
 
 def scheme_reflectivity_provider(run_cfg, *, base_theta):
@@ -1328,15 +1722,26 @@ def innovation_summary(batches: Sequence[GriddedObs]) -> list[dict]:
     """
     out = []
     for batch in batches:
-        mask = np.asarray(batch.mask, dtype=bool)
-        n = int(np.count_nonzero(mask))
+        points = getattr(batch, "points", None)
+        if points is not None:
+            # A point batch states its observations directly; the dense
+            # H(x) it would otherwise build is (R, nz, ny, nx).
+            n = int(np.size(points.flat_index))
+        else:
+            mask = np.asarray(batch.mask, dtype=bool)
+            n = int(np.count_nonzero(mask))
         entry: dict = {"name": batch.name, "observations": n}
-        if n:
+        if n and points is not None:
+            y = np.asarray(points.values, dtype=np.float64)
+            sim = np.asarray(points.simulated, dtype=np.float64)
+            err = np.asarray(points.errors, dtype=np.float64)
+        elif n:
             y = np.asarray(batch.values, dtype=np.float64)[mask]
             sim = np.asarray(batch.simulated, dtype=np.float64)[:, mask]
             err = np.asarray(batch.errors, dtype=np.float64)
             err = (np.full(y.shape, float(err)) if err.ndim == 0
                    else err[mask])
+        if n:
             hx = sim.mean(axis=0)
             d = y - hx
             spread = sim.std(axis=0, ddof=1) if sim.shape[0] > 1 else \
@@ -1439,10 +1844,15 @@ def _resident_memory_failure(exc):
 
 
 def _analysis_attempt(solver, prior, batches, geometry, config, *, namespace,
-                      storage, supports_staging, progress, diagnostics=None):
+                      storage, supports_staging, progress, diagnostics=None,
+                      device_options=None):
     """Own every device reference until the result is back on the host."""
     if diagnostics is None:
         diagnostics = LetkfDiagnostics()
+    if storage != 'cuda-obs-sparse' and any(
+            isinstance(value, MemberStack) for value in prior.values()):
+        # Only the device route stages a MemberStack itself.
+        prior = materialized(prior)
     solve_prior, solve_batches = prior, batches
     stage_seconds = unstage_seconds = 0.
     if storage == 'cuda-resident':
@@ -1456,8 +1866,20 @@ def _analysis_attempt(solver, prior, batches, geometry, config, *, namespace,
         if hasattr(namespace, 'cuda'):
             namespace.cuda.runtime.deviceSynchronize()
         stage_seconds = time.perf_counter()-started
+    if storage == 'cuda-obs-sparse':
+        from gpuwm.da.letkf_device import analyze_device  # noqa: PLC0415
+        increments = analyze_device(prior, batches, geometry, config,
+                                    diagnostics, progress=progress,
+                                    **(device_options or {}))
+        return (increments, diagnostics,
+                float(getattr(diagnostics, 'stage_seconds', 0.0)),
+                float(getattr(diagnostics, 'unstage_seconds', 0.0)))
     options = dict(progress=progress) if supports_staging else {}
-    if supports_staging and storage != 'cuda-resident':
+    if supports_staging and storage == 'host':
+        # The host route stages on the host and solves there: the forked
+        # chunk loop runs only when the solve namespace is numpy.
+        options['solve_namespace'] = np
+    elif supports_staging and storage != 'cuda-resident':
         options['solve_namespace'] = namespace
     increments = solver(solve_prior, solve_batches, geometry, config, diagnostics, **options)
     if storage == 'cuda-resident':
@@ -1467,12 +1889,59 @@ def _analysis_attempt(solver, prior, batches, geometry, config, *, namespace,
     return increments, diagnostics, stage_seconds, unstage_seconds
 
 
+def _obs_sparse_takes(solver, prior, config) -> tuple[bool, str | None]:
+    """``(takes, reason)``: whether the observation-sparse device route
+    solves this analysis, and why not when it does not.
+
+    Only the ensemble transform itself (a static-covariance runner keeps its
+    own routes), and only shapes the route's warp-per-point kernels take.
+    A missing CUDA stack is a capability answer and is recorded; any other
+    failure to import the route is a defect and raises, because swallowing
+    it silently returned every cycle to a 23-minute host solve with nothing
+    in the receipt to say why.
+    """
+    from gpuwm.da import letkf as _letkf  # noqa: PLC0415
+
+    if solver is not _letkf.analyze:
+        return False, None
+    try:
+        from gpuwm.da.letkf_device import supported  # noqa: PLC0415
+    except ImportError as exc:
+        return False, f'device LETKF unavailable: {type(exc).__name__}: {exc}'
+    members = int(next(iter(prior.values())).shape[0])
+    if not supported(members, config.solve_dtype):
+        return False, (f'{members} members at {config.solve_dtype} is outside '
+                       'the device LETKF kernels')
+    return True, 'observation-sparse device LETKF'
+
+
+#: Breakage these routes remove: on the 241 x 241 x 49, 32-member
+#: storm-scale case the resident route could not fit the dense stencil
+#: block and the host-staged route spent 23 minutes per analysis in
+#: single-threaded numpy.  The device route (gpuwm.da.letkf_device) puts
+#: weights, transform and diagnostics on the card and sizes its own chunk
+#: from free memory.  Its fallback is the host route, which runs the chunk
+#: loop on forked workers (gpuwm.da.letkf_host_parallel) and needs no card
+#: memory at all, so it cannot fail the way the device route just did.
+OBS_SPARSE_ROUTES = ('cuda-obs-sparse', 'host')
+
+
 def _execute_analysis(solver, prior, batches, geometry, config, *, namespace,
-                      device, progress=None, diagnostics=None):
+                      device, progress=None, diagnostics=None,
+                      device_options=None):
     supports_staging = bool(getattr(solver, 'supports_host_staging', False))
     routes = (['cuda-resident', 'host-staged-cuda'] if device == 'cuda' and supports_staging
               else ['cuda-resident'] if device == 'cuda' else ['host'])
-    attempts = []
+    route_note = None
+    if device == 'cuda':
+        takes, why = _obs_sparse_takes(solver, prior, config)
+        if takes:
+            routes = list(OBS_SPARSE_ROUTES)
+        elif why is not None:
+            route_note = dict(attempt=0, storage='cuda-obs-sparse',
+                              status='not-taken', reason=why,
+                              wall_seconds=0.0, committed=False)
+    attempts = [] if route_note is None else [route_note]
     last_progress = None
     for number, storage in enumerate(routes, 1):
         def relay(value):
@@ -1485,7 +1954,8 @@ def _execute_analysis(solver, prior, batches, geometry, config, *, namespace,
         try:
             result = _analysis_attempt(solver, prior, batches, geometry, config,
                 namespace=namespace, storage=storage, supports_staging=supports_staging,
-                progress=callback, diagnostics=diagnostics if len(routes) == 1 else None)
+                progress=callback, diagnostics=diagnostics if len(routes) == 1 else None,
+                device_options=device_options)
         except Exception as exc:
             if number == len(routes) or not _resident_memory_failure(exc):
                 raise
@@ -1659,7 +2129,7 @@ def _precip_analysis(cfg: RadarAssimilationConfig, document, increments,
     return out, receipt
 
 
-def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
+def assimilate_radar_grid(checkpoints: Mapping[int, str | Path | Mapping],
                           observations, grid,
                           cfg: RadarAssimilationConfig, *,
                           reflectivity_provider=None,
@@ -1683,7 +2153,10 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
     ----------
     checkpoints
         ``{member_index: checkpoint path}`` -- each member's background,
-        the file the driver will add the increments to.
+        the file the driver will add the increments to.  A value may
+        instead be the member's ``{field: ndarray}`` state itself, exactly
+        what :func:`read_checkpoint_state` would return for its file; it is
+        read, never written.
     observations
         A ``gpuwm-obs.radar-grid.v1`` path or an already-read document.
         May be ``None`` when none of ``cfg.velocity``, ``cfg.reflectivity``
@@ -1777,6 +2250,18 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
             "cwp is enabled but no cwp_observations were given; a "
             "gpuwm-obs.goes-grid.v1 path or document is required")
 
+    # Wall clock per stage of the observation side and around the filter,
+    # in the order they run, so a receipt says where an analysis that is
+    # not the filter spent its time (the filter splits its own).
+    stage_clock = {}
+    stage_mark = [time.perf_counter()]
+
+    def _stage(name):
+        now = time.perf_counter()
+        stage_clock[name] = round(stage_clock.get(name, 0.0)
+                                  + now - stage_mark[0], 3)
+        stage_mark[0] = now
+
     needs_radar = cfg.velocity or cfg.reflectivity or cfg.clear_air
     document = None
     observed_document = None
@@ -1809,10 +2294,11 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
                  int(dims["west_east"]))
     else:
         shape = (int(grid.nz), int(grid.ny), int(grid.nx))
+    _stage("observations_read_and_thinned")
 
     indices = sorted(int(index) for index in checkpoints)
-    states = {index: read_checkpoint_state(checkpoints[index])
-              for index in indices}
+    states = member_states(checkpoints)
+    _stage("checkpoints_read")
 
     # The moment policy is checked against what the BACKGROUND carries,
     # before a single H(x) is evaluated.  Doing it here rather than
@@ -1826,19 +2312,12 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
         mp_physics=cfg.mp_physics, policy=cfg.moment_policy)
 
     # -- prior: analysis fields at mass points ------------------------------
-    prior = {}
-    for name in cfg.analysis_fields:
-        stack = []
-        for index in indices:
-            field = _mass_field(name, states[index],
-                                f"member {index} checkpoint")
-            if field.shape != shape:
-                raise RadarAssimilationError(
-                    f"member {index} field {name!r} is {field.shape} at "
-                    f"mass points but the observation file's grid is "
-                    f"{shape}; these checkpoints are not from this domain")
-            stack.append(field)
-        prior[name] = np.stack(stack)
+    # Each field's prior is the members' own arrays, staged into the
+    # filter's float64 chunks as the chunks run (MemberStack); a whole
+    # float64 stack is built only where a host stage needs one.
+    prior = {name: MemberStack(name, states, indices, shape)
+             for name in cfg.analysis_fields}
+    _stage("prior_stacked")
 
     # -- H(x) ----------------------------------------------------------------
     rotation = grid_rotation(grid)
@@ -1866,8 +2345,12 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
     clear_air_simulated = None
     clear_air_value = None
     if cfg.clear_air:
-        clear_air_simulated = np.stack(
-            [dbz_by_member[index] for index in indices])
+        # The SAME array, not a second stack of the same members: nothing
+        # downstream writes into a batch's H(x), and one whole-domain
+        # member cube is 0.7 GB on the recent case.
+        clear_air_simulated = (
+            reflectivity_simulated if reflectivity_simulated is not None
+            else np.stack([dbz_by_member[index] for index in indices]))
         clear_air_value = (
             float(cfg.clear_air_value_dbz)
             if cfg.clear_air_value_dbz is not None
@@ -1875,22 +2358,27 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
 
     velocity_simulated = None
     if cfg.velocity:
-        winds = {}
-        for index in indices:
+        def member_winds(index):
             u_e, v_n, w_m = member_earth_winds(
                 states[index], rotation, where=f"member {index} checkpoint")
             if cfg.fall_speed == "reflectivity":
                 w_m = w_m - _member_fall_speed(
                     states[index], dbz_by_member[index],
                     where=f"member {index} checkpoint")
-            winds[index] = (u_e, v_n, w_m)
+            return (u_e, v_n, w_m)
+
+        winds = dict(zip(indices, _by_member(member_winds, indices)))
 
         def velocity_simulated(radar_index, radar):
-            beam = beam_unit_vectors(document, radar_index)
-            return np.stack([
-                simulated_radial_velocity(*winds[index], beam)
-                for index in indices])
+            # Evaluated only where this radar's batch observes, on the
+            # batch's own extent: the same products of the same numbers
+            # at those points, zero elsewhere (where the filter zeroes
+            # H(x) anyway).  The whole-domain evaluation cost a member
+            # cube per radar, held alive by the cropped batch view.
+            return observed_radial_velocity(
+                document, radar_index, [winds[index] for index in indices])
 
+    _stage("forward_operator_inputs")
     batches = []
     adapter_provenance = None
     if needs_radar:
@@ -1911,6 +2399,63 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
             clear_air_error_inflation=1.0,
             radars=None if cfg.radars is None else list(cfg.radars))
 
+    # -- reflectivity echo conditioning --------------------------------------
+    # The common echo floor and the outlier tempering, on the echo batch only
+    # (gpuwm.da.reflectivity_echo names the breakage: weak returns
+    # differenced against the -35 dBZ H(x) floor doubled the echo area an
+    # hour after the CONUS first-light analysis).  Recorded every analysis.
+    reflectivity_echo_receipt = None
+    spread_gate_batch = None
+    radar_class_receipt = None
+    if cfg.reflectivity or cfg.clear_air:
+        from gpuwm.da.obs_radar import (  # noqa: PLC0415
+            CLEAR_AIR_NAME, REFLECTIVITY_NAME)
+        pressure = (np.asarray(states[indices[0]]["p"])
+                    if "p" in states[indices[0]] else None)
+        if pressure is not None and pressure.shape != shape:
+            pressure = None
+        z_keep = (None if pressure is None else _rc.level_keep(
+            pressure, cfg.reflectivity_level_stride, cfg.radar_top_pa))
+        z0_keep = (None if pressure is None else _rc.level_keep(
+            pressure, cfg.clear_air_level_stride, cfg.radar_top_pa))
+        classed = cfg.reflectivity_clear_floor_dbz is not None
+        radar_class_receipt = {
+            "schema": _rc.SCHEMA, "z_source": cfg.z_source,
+            "vertical_thinning_evaluated": pressure is not None}
+        conditioned = []
+        for batch in batches:
+            if batch.name == REFLECTIVITY_NAME:
+                # Preserve raw dry-member H(x) before radar class floors.
+                spread_gate_batch = batch
+                batch, floor, radar_class_receipt["echo"] = (
+                    _rc.classify_echo_batch(
+                        batch, clear_floor=cfg.reflectivity_clear_floor_dbz,
+                        dead_band=cfg.reflectivity_dead_band,
+                        echo_error=cfg.reflectivity_error_dbz,
+                        clear_error=cfg.clear_air_error_dbz, keep=z_keep))
+                batch = _rc.apply_floor(batch, floor)
+                # With classes on, the per-class floor above IS the common
+                # floor; the A7 conditioning keeps only its tempering.
+                batch, reflectivity_echo_receipt = (
+                    condition_reflectivity_batch(
+                        batch,
+                        floor_dbz=(None if classed
+                                   else cfg.reflectivity_floor_dbz),
+                        outlier_sigmas=cfg.reflectivity_outlier_sigmas))
+                batch, radar_class_receipt["echo_huber"] = _rc.huber_errors(
+                    batch, cfg.reflectivity_huber_c)
+                _rc.assert_shared_floor(batch, floor)
+            elif batch.name == CLEAR_AIR_NAME:
+                batch, floor, radar_class_receipt["clear_air"] = (
+                    _rc.classify_clear_batch(
+                        batch, clear_floor=cfg.reflectivity_clear_floor_dbz,
+                        clear_error=cfg.clear_air_error_dbz, keep=z0_keep))
+                batch = _rc.apply_floor(batch, floor)
+                _rc.assert_shared_floor(batch, floor)
+            conditioned.append(batch)
+        batches = conditioned
+
+    _stage("radar_batches")
     if extra_batches:
         if extra_obs_provenance is None:
             raise RadarAssimilationError(
@@ -1985,7 +2530,9 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
             "nothing. The config enabled a type whose adapter returned "
             "nothing, which is a bug rather than an empty cycle")
 
+    _stage("extra_and_satellite_batches")
     innovations = innovation_summary(batches)
+    _stage("innovation_summary")
 
     # -- the radial-velocity dispersion gate ---------------------------------
     # Where a Vr batch's innovations outrun its ensemble and error, as a
@@ -2004,6 +2551,7 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
     dispersion_gates = tuple(
         gate for gate in dispersion_gates
         if set(gate.fields) & set(cfg.analysis_fields))
+    _stage("velocity_dispersion_gate")
 
     # -- the filter ----------------------------------------------------------
     if diagnostics is None:
@@ -2016,25 +2564,160 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
     if solve_device == 'cuda':
         import cupy as namespace
     solver = analyze if analysis_runner is None else analysis_runner
+    spread_controller = None
+    if cfg.spread_repair != "off" and analysis_runner is None:
+        from gpuwm.da.spread_repair import SpreadRepairConfig, SpreadRepairController
+        spread_controller = SpreadRepairController(SpreadRepairConfig(
+            policy=cfg.spread_repair, observed_threshold_dbz=cfg.spread_repair_z_threshold,
+            adaptive=cfg.spread_repair_adaptive), seed=cfg.spread_repair_seed)
+        solver = spread_controller.analysis_runner(
+            pressure=tuple(states[index]["p"] for index in indices),
+            gate_radar=spread_gate_batch)
+    if hasattr(solver,"gate_radar"):
+        solver.gate_radar = spread_gate_batch
+        spread_controller = solver.spread_controller
+    if spread_controller is not None:
+        # Reconstructed replay factories and the persistent cycle runner
+        # must draw the same noise for the same validated observation slot.
+        spread_controller.set_analysis_time(
+            document.get("valid_time") if document is not None else None)
+    # On the device route the gated columns are re-solved, and the
+    # positivity policy applied, inside the filter's own pass over the
+    # grid, on the card each chunk is on (gpuwm.da.letkf_device): the same
+    # bytes as the host stages below, which run only when another route
+    # solved.  On the 9 km CONUS case those two host stages were 114 s of
+    # 391 small solves and 35 to 265 s of one host core.
+    # -- which fields each kind of observation may move ---------------------
+    # Gates grouped by identical field sets (gpuwm.da.field_rules): the
+    # dispersion gate's (thp, qv) and the cloud water path rule's share one
+    # group, the surface rule's hydrometeors are another.  On the device
+    # route every group is re-solved inside the filter's pass; otherwise one
+    # exact local withhold per group runs after it.
+    from gpuwm.da import field_rules
+
+    field_rules_receipt = None
+    kind = []
+    if cfg.kind_field_rules:
+        kind, field_rules_receipt = field_rules.kind_gates(
+            batches, tuple(cfg.analysis_fields), shape=shape,
+            dx_m=float(dispersion_geometry.dx_m),
+            dy_m=float(dispersion_geometry.dy_m),
+            localization=cfg.localization)
+    # Lane 3's radar rules as gates in the same groups (gpuwm.da.field_rules
+    # .radar_rule_gates): one pass, no extra full solve.
+    radar_rule_receipt = {"rules": cfg.field_rules}
+    radar_gates, echo_gates, echo = [], None, None
+    if cfg.field_rules == "design" and any(
+            b.name in _fr.RADAR_BATCHES for b in batches):
+        echo = _fr.echo_columns(
+            batches, echo_floor=15.0,
+            dilate=max(1, int(cfg.reflectivity_thinning_cells)))
+        keep0 = np.zeros(np.shape(echo), dtype=bool)
+        for gate in list(dispersion_gates) + kind:
+            if set(gate.fields) == {"thp", "qv"}:
+                keep0 |= np.asarray(_fr._host(gate.columns), dtype=bool)
+        radar_gates, echo_gates, radar_rule_receipt = _fr.radar_rule_gates(
+            batches, tuple(cfg.analysis_fields), shape=shape, echo=echo,
+            z_thermo_weight=cfg.z_thermo_weight,
+            z_hydrometeors=cfg.z_hydrometeors,
+            in_pass_keep=cfg.z_qv_cap is None, keep0_thermo=keep0)
+    gate_groups = field_rules.group_by_fields(
+        list(dispersion_gates) + kind + radar_gates)
+    # A group none of whose fields is analysed has nothing to re-solve
+    # (column_plan gives None, and withhold would return the increments).
+    in_filter = [plan for plan in (
+        column_plan(group, tuple(cfg.analysis_fields))
+        for group in gate_groups) if plan is not None]
+    device_options = {"devices": cfg.solve_cards}
+    if in_filter:
+        device_options["withhold"] = tuple(
+            ColumnWithhold(fields=fields, column_zone=column_zone,
+                           zones=zones,
+                           keep=tuple(entry["keep"] for entry in _receipt))
+            for fields, column_zone, zones, _receipt in in_filter)
+    if cfg.positivity_policy is not None:
+        device_options["chunk_hook"] = DevicePositivity(
+            cfg.positivity_policy, fields=tuple(cfg.analysis_fields))
     increments, completed_diagnostics, stage_seconds, unstage_seconds, storage, attempts = _execute_analysis(
         solver, prior, batches, letkf_grid_geometry(grid), letkf_cfg,
-        namespace=namespace, device=solve_device, progress=progress, diagnostics=diagnostics)
+        namespace=namespace, device=solve_device, progress=progress, diagnostics=diagnostics,
+        device_options=device_options)
     # Failed attempts never contaminate the caller's success diagnostics.
     vars(diagnostics).update(vars(completed_diagnostics))
+    _stage("filter")
 
     def _gated_solve(gated_prior, gated_batches, fields, gated_geometry):
         gated_cfg = replace(letkf_cfg, analysis_fields=tuple(fields))
         solved, *_ = _execute_analysis(
-            solver, gated_prior, gated_batches, gated_geometry,
+            getattr(solver,"subsolve",solver), gated_prior, gated_batches, gated_geometry,
             gated_cfg, namespace=namespace, device=solve_device,
             progress=None, diagnostics=LetkfDiagnostics())
         return solved
 
-    increments, dispersion_solves = withhold(
-        _gated_solve, prior, batches, increments, dispersion_gates,
-        tuple(cfg.analysis_fields), geometry=dispersion_geometry,
-        localization=cfg.localization)
+    in_filter_withheld = getattr(completed_diagnostics, "withheld", None)
+    if in_filter and in_filter_withheld is not None:
+        dispersion_solves = {
+            "gates": [gate.payload() for gate in dispersion_gates],
+            "route": in_filter_withheld["route"],
+            "groups": in_filter_withheld.get("groups"),
+            "points": in_filter_withheld["points"],
+            "active_points": in_filter_withheld["active_points"],
+            "seconds": in_filter_withheld["seconds"],
+            "solves": [entry for plan in in_filter for entry in plan[3]]}
+    else:
+        dispersion_solves = {"gates": [gate.payload()
+                                       for gate in dispersion_gates],
+                             "solves": []}
+        for group in gate_groups:
+            increments, solves = withhold(
+                _gated_solve, materialized(prior, tuple(
+                    name for name in cfg.analysis_fields
+                    if any(name in gate.fields for gate in group))),
+                batches, increments, group,
+                tuple(cfg.analysis_fields), geometry=dispersion_geometry,
+                localization=cfg.localization)
+            dispersion_solves["solves"].extend(solves["solves"])
+    if field_rules_receipt is not None:
+        field_rules_receipt["solves"] = [
+            entry for entry in dispersion_solves["solves"]
+            if set(entry["withheld"]) & {
+                row["batch"] for row in field_rules_receipt["gates"]}]
     dispersion_receipt["withheld"] = dispersion_solves
+    _stage("withheld_solves")
+
+    # -- radar field rules: the inside-echo blend --------------------------
+    # The gates above already gave winds, masses and theta/qv outside echo
+    # their rules in the filter's own pass.  Inside observed echo the design
+    # keeps z_thermo_weight of the radar's theta/qv increment: one local
+    # re-solve without the radar over the echo columns only (its cost
+    # follows the echo area), then a blend.  Numbers and aerosols take no
+    # filter increment; they are rediagnosed below.
+    field_rule_receipt = radar_rule_receipt
+    rule_fields = ()
+    if cfg.field_rules == "design" and radar_gates:
+        thermo = tuple(f for f in ("thp", "qv") if f in cfg.analysis_fields)
+        if echo_gates and thermo:
+            from gpuwm.da.velocity_dispersion import DispersionGate
+            radar_names = set(_fr.RADAR_BATCHES)
+            same = [DispersionGate(batch=g.batch, fields=g.fields,
+                                   columns=np.asarray(g.columns, bool) & echo)
+                    for g in list(dispersion_gates) + kind
+                    if set(g.fields) == {"thp", "qv"}
+                    and g.batch not in radar_names]
+            withheld, blend_solves = withhold(
+                _gated_solve, materialized(prior, thermo), batches,
+                {f: increments[f] for f in thermo}, same + echo_gates,
+                thermo, geometry=dispersion_geometry,
+                localization=cfg.localization)
+            increments = _fr.blend_echo(
+                increments, withheld, columns=echo,
+                weight=cfg.z_thermo_weight, qv_cap=cfg.z_qv_cap)
+            field_rule_receipt["echo_blend_solves"] = len(
+                blend_solves.get("solves", []))
+        increments = _fr.zero_unanalysed(increments,
+                                         tuple(cfg.analysis_fields))
+        rule_fields = thermo
+    _stage("field_rules")
 
     # -- positivity ----------------------------------------------------------
     # On the MASS-POINT increments, before restaggering, because the
@@ -2044,22 +2727,46 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
     # against a field that no longer lines up with it -- and every
     # constrained field is mass-shaped anyway, so nothing is lost.
     positivity_receipt = None
-    if cfg.positivity_policy is not None:
+    in_filter_positivity = getattr(completed_diagnostics,
+                                   "chunk_hook_result", None)
+    if cfg.positivity_policy is not None and in_filter_positivity is not None:
+        # Applied and verified chunk by chunk on the card, before the
+        # increments left it (gpuwm.da.positivity.DevicePositivity).
+        positivity_receipt = in_filter_positivity
+        redo = tuple(f for f in rule_fields if f in NON_NEGATIVE_FIELDS)
+        if redo:
+            # The field rules replaced these after the device clipped the
+            # joint solve, so they are bounded again here.
+            increments, positivity_receipt_rules = apply_positivity(
+                prior, increments, policy=cfg.positivity_policy, fields=redo)
+            positivity_receipt = {"device": in_filter_positivity,
+                                  "after_field_rules": positivity_receipt_rules}
+    elif cfg.positivity_policy is not None:
         increments, positivity_receipt = apply_positivity(
             prior, increments, policy=cfg.positivity_policy,
             fields=tuple(cfg.analysis_fields))
-        if cfg.positivity_policy in ("clip", "reject"):
+        if cfg.positivity_policy in BOUNDING_POLICIES:
             # The post-condition that catches a policy applied to the
             # wrong mapping: a receipt claiming N clipped points beside
             # increments that were never clipped.
             verify_non_negative(prior, increments,
                                 fields=tuple(cfg.analysis_fields))
 
+    # Full-domain maintenance follows the caller's positivity step exactly
+    # once. Cropped field-rule re-solves do not redraw or move its gates.
+    if hasattr(solver,"finish"):
+        increments = solver.finish(prior,increments,diagnostics=diagnostics,
+                                   solve_namespace=namespace)
+        if cfg.positivity_policy in BOUNDING_POLICIES:
+            verify_non_negative(prior,increments,fields=tuple(cfg.analysis_fields))
+    _stage("spread_maintenance")
+
     # -- the radar precipitation analysis ------------------------------------
     # After the solve and positivity, before the saturation bound and the
     # applier's moment repair: the order the HRRR runs its cloud analysis in
     # (after the last outer loop).  Off, it is not called and nothing here
     # changes a byte (gpuwm.da.hydrometeor_analysis).
+    _stage("positivity")
     precip_receipt = None
     output_fields = tuple(cfg.analysis_fields)
     if cfg.precip_analysis != "off":
@@ -2078,13 +2785,25 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
     # .mean_preserving_saturation_bound).  It never makes vapour negative:
     # a member over its limit ends at it, and a member under its limit
     # keeps a share of its headroom, so it only gains vapour.
+    _stage("precip_analysis")
     saturation_bound_receipt = None
     if "qv" in increments:
         increments, saturation_bound_receipt = _saturation_bound(
             prior, increments, states, indices)
+    _stage("saturation_bound")
 
-    increments_by_member: dict[int, dict[str, np.ndarray]] = {}
-    for slot, index in enumerate(indices):
+    number_receipt = None
+    if cfg.field_rules == "design" and cfg.number_rediagnosis != "off":
+        increments, number_receipt = _fr.rediagnose_numbers(
+            materialized(prior), increments, states, indices,
+            mode=cfg.number_rediagnosis, mp_physics=cfg.mp_physics)
+        output_fields = output_fields + tuple(
+            name for name in number_receipt["species"]
+            if name not in output_fields)
+    _stage("number_rediagnosis")
+
+    def restaggered(slot):
+        index = indices[slot]
         member: dict[str, np.ndarray] = {}
         for name in output_fields:
             mass_inc = np.asarray(increments[name][slot])
@@ -2097,7 +2816,11 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
                 raise RadarAssimilationError(
                     f"member {index} increment for {name!r} came out "
                     f"{member[name].shape}, checkpoint field is {expected}")
-        increments_by_member[index] = member
+        return member
+
+    increments_by_member: dict[int, dict[str, np.ndarray]] = dict(zip(
+        indices, _by_member(restaggered, range(len(indices)))))
+    _stage("restaggered")
 
     provenance = {
         "schema": METHOD_SCHEMA,
@@ -2109,14 +2832,22 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
         "wind_frame": "grid-relative; H(x) rotates with the grid "
                       "projection's own SINALPHA/COSALPHA",
         "fall_speed": cfg.fall_speed,
+        "kind_field_rules": (field_rules_receipt if cfg.kind_field_rules
+                             else {"enabled": False}),
         "localization_horizontal_m": float(cfg.localization.horizontal_m),
         "localization_vertical_m": float(cfg.localization.vertical_m),
         "rtps_alpha": float(cfg.rtps_alpha),
         "relaxation": cfg.relaxation,
         "prior_inflation": float(cfg.prior_inflation),
+        "spread_repair": (spread_controller.last_receipt
+                          if spread_controller is not None else None),
         "velocity_thinning": thinning_receipt,
         "velocity_error_inflation": float(cfg.velocity_error_inflation),
         "reflectivity_thinning": z_thinning_receipt,
+        "reflectivity_echo_conditioning": reflectivity_echo_receipt,
+        "radar_field_rules": field_rule_receipt,
+        "number_rediagnosis": number_receipt,
+        "radar_classes": radar_class_receipt,
         "reflectivity_error_inflation": float(
             cfg.reflectivity_error_inflation),
         "clear_air": {
@@ -2163,9 +2894,13 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
         # and the copy of the increments back.  Both are exactly zero on
         # the host arm, which is what makes them comparable.
         "solve_stage_seconds": round(float(stage_seconds), 3),
+        # Wall clock of each stage of this call, in run order; "filter" is
+        # the whole storage attempt the filter split above belongs to.
+        "stage_wall_seconds": dict(stage_clock),
         "solve_unstage_seconds": round(float(unstage_seconds), 3),
         "members": len(indices),
-        "checkpoints": {int(index): Path(checkpoints[index]).name
+        "checkpoints": {int(index): checkpoint_label(checkpoints[index],
+                                                     index)
                         for index in indices},
         "observations": adapter_provenance,
         "extra_observations": (extra_obs_provenance if extra_batches
@@ -2177,6 +2912,14 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
             "max_local_obs": int(diagnostics.max_local_obs),
             "batches": int(diagnostics.batches),
             "host_staging": bool(getattr(diagnostics, "host_staging", False)),
+            # How many processes ran a host solve's chunk loop and why
+            # (gpuwm.da.letkf_host_parallel); 1 on a device solve.
+            "host_workers": int(getattr(diagnostics, "host_workers", 1)),
+            "host_workers_reason": str(
+                getattr(diagnostics, "host_workers_reason", "")),
+            "host_row_blocks": int(getattr(diagnostics, "host_row_blocks", 0)),
+            "host_transform_pieces": int(
+                getattr(diagnostics, "host_transform_pieces", 0)),
             "host_geometry_bytes_per_point": int(getattr(diagnostics, "host_geometry_bytes_per_point", 0)),
             "device_chunks": int(getattr(diagnostics, "device_chunks", 0)),
             "staging_bytes": int(getattr(diagnostics, "staging_bytes", 0)),
@@ -2250,6 +2993,10 @@ def assimilate_radar_grid(checkpoints: Mapping[int, str | Path],
             # localised matrix is worse conditioned than expected.  0 under
             # the library solver.
             "eigensolver": str(getattr(diagnostics, "eigensolver", "")),
+            # Which neighbour search found the localised observations, and
+            # the roster's own receipt when it was the once-built index.
+            "neighbor_search": str(getattr(diagnostics, "neighbor_search", "")),
+            "neighbor_index": dict(getattr(diagnostics, "neighbor_index", {}) or {}),
             "max_jacobi_sweeps": int(
                 getattr(diagnostics, "max_jacobi_sweeps", 0)),
             "mean_increment_rms": {

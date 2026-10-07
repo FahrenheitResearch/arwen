@@ -131,6 +131,9 @@ def _loader_tables():
         "case_data": (C._KNOWN_KEYS, (C.CaseDataConfig,), {}),
         "fetch": (F.FETCH_HINT_KEYS, (), {}),
         "ingest": (S.INGEST_TABLE_KEYS, (), {}),
+        # [radar_heating]: rows declared beside the typed table it builds.
+        "radar_heating": (config_module.RADAR_HEATING_KEYS,
+                          (config_module.RadarHeatingConfig,), {}),
     }
 
 

@@ -1,0 +1,23 @@
+p f4 3 1 50 1
+pb f4 3 1 50 1
+alt f4 3 1 50 1
+ph f4 3 1 50 1
+phb f4 3 1 50 1
+t f4 3 1 50 1
+qv f4 3 1 50 1
+u f4 3 2 50 1
+v f4 3 1 50 2
+fnm f4 1 50
+fnp f4 1 50
+eta f4 1 50
+p_phy f4 3 1 50 1
+t_phy f4 3 1 50 1
+rho f4 3 1 50 1
+u_phy f4 3 1 50 1
+v_phy f4 3 1 50 1
+z_at_w f4 3 1 50 1
+dz8w f4 3 1 50 1
+z f4 3 1 50 1
+rh f4 3 1 50 1
+p8w f4 3 1 50 1
+t8w f4 3 1 50 1

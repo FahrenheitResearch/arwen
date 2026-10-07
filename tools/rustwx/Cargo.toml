@@ -32,14 +32,19 @@ members = [
     "crates/rw-libm",
     "crates/rw-mpas",
     "crates/rw-mlexport",
+    "crates/rw-post",
     "crates/rw-netcdf",
     "crates/rw-nexrad",
     "crates/rw-odim",
+    "crates/rw-post",
     "crates/rw-obs",
+    "crates/rw-post",
     "crates/rw-sat",
     "crates/rw-simradar",
     "crates/rw-goes",
+    "crates/rw-grib2export",
     "crates/rw-store",
+    "crates/rw-superob",
     "crates/rw-wrfbatch",
     "crates/static-fields",
 ]
@@ -91,14 +96,20 @@ netcdf-reader = { path = "vendor/netcrust/vendor/netcdf-reader" }
 [profile.release]
 lto = "thin"
 codegen-units = 1
-# The bundled binaries are package data in a platform wheel now, and the
-# wheel is measured against PyPI's 100 MB per-file cap with about four
-# megabytes of headroom (physics tables account for 67 MB of it before a
-# single binary is added).  Symbols are the cheapest megabytes to give
-# back: they are pure debug weight on Linux, where they live inside the
-# ELF rather than in a side .pdb as they do under MSVC.  Nothing that
-# proves an artifact reads them -- the source-revision stamp
-# (`GPUWM_BRIDGE_SOURCE_REV=`) and the contract markers are string
-# constants in .rodata, which stripping does not touch, and the library
-# ABI probe resolves an EXPORTED symbol, which is not a debug symbol.
-strip = "debuginfo"
+# The bundled binaries are package data in a platform wheel, and the
+# manylinux wheel is measured against PyPI's 100,000,000-byte per-file
+# limit.  The whole static symbol table goes, not only the debug info:
+# on Linux both live inside the ELF.  Under MSVC they live in the side
+# .pdb either way (a probe crate built with rustc 1.94.0 gave an .exe of
+# the same size and a .pdb for both settings), so the Windows binaries
+# do not change.  Keeping .symtab after dropping the debug info cost
+# 5,084,832 B compressed across the 42 Linux bridges in the 2.8.7
+# manylinux wheel (74,526,220 -> 69,441,388 B, measured on
+# weather-node-4 on 2026-10-07).  Nothing that proves an artifact reads
+# .symtab: the
+# source-revision stamp (`GPUWM_BRIDGE_SOURCE_REV=`) and the contract
+# markers are string constants in .rodata, the executables' ABI probes
+# run the binary and read its answer, and the library ABI probe and the
+# manylinux qualification (`readelf --dyn-syms`) resolve EXPORTED
+# symbols, which live in .dynsym and survive a symbol strip.
+strip = "symbols"

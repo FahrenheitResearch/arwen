@@ -88,7 +88,8 @@ def drop_default_spp_selectors(values: dict) -> None:
 #: (``sase_moist_n2``, ``sase_stable_dissipation``,
 #: ``sase_additive_dissipation``) move the trajectory and are NOT here.
 CONFIG_DIAGNOSTIC_FIELDS = frozenset(
-    {"nwp_diagnostics", "tke_budget", "sase_flux_diag", "hmix_k_diag"})
+    {"nwp_diagnostics", "tke_budget", "sase_flux_diag", "hmix_k_diag",
+     "surface_energy_diag"})
 
 #: Versioned semantic identities.  These are deliberately explicit instead
 #: of inferred from scheme numbers: a trajectory-changing implementation or

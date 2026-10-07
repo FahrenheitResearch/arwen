@@ -108,7 +108,7 @@ Takes no options of its own.
 | `--prep-timeout SECONDS` | optional preparation heartbeat timeout; default is no timeout until integration begins |
 | `--prepare-only` | write the branch run directory, its config and its receipts, then stop without integrating -- the price-it-first step a what-if screen shows before committing a card |
 | `--restart-roster JSON` | continue the exact original members from a durable ensemble restart roster |
-| `--set KEY=VALUE` | a setting to change in the branched run, repeatable. Changeable from a checkpoint: run_seconds, restart_interval_s, acknowledgements, relocation.*, tiles.*, devices.*, output.*, simulated_radar.*, domain.<grid_id>.history_interval_s, domain.<grid_id>.history_begin_s, domain.<grid_id>.history_end_s, domain.<grid_id>.tiles.*, domain.<grid_id>.output.*. Everything else is refused by name, because the restart identity binds it |
+| `--set KEY=VALUE` | a setting to change in the branched run, repeatable. Changeable from a checkpoint: run_seconds, restart_interval_s, acknowledgements, relocation.*, tiles.*, devices.*, output.*, simulated_radar.*, domain.<grid_id>.history_interval_s, domain.<grid_id>.history_begin_s, domain.<grid_id>.history_end_s, domain.<grid_id>.tiles.*, domain.<grid_id>.output.*, domain.<grid_id>.surface_energy_diag. Everything else is refused by name, because the restart identity binds it |
 | `--supervisor-max-restarts N` | fresh-process recovery attempts (default 3) |
 
 ## `gpuwm case-catalog`
@@ -626,6 +626,7 @@ Takes no options of its own.
 | `--dry-run` | validate the route and show how to launch it; fetch and run nothing |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--geog-root DIR` | override the geography tree (default: [case_data].geog_root for declared inputs, otherwise the staged WPS_GEOG tree) |
+| `--grib2` | write native surface and pressure-level GRIB2 as each frame lands, then <run>/grib2-grib2.zip |
 | `--keep-checkpoints N` | how many complete checkpoint sets the run keeps in its folder (default 1, enough to resume); 0 keeps every hourly set, which a later branch or downscale from an earlier checkpoint needs |
 | `--keep-member-files` | also retain every member's full history files |
 | `--late-after-minutes MIN` | download routes only: how far past its scheduled time a lead may be before the run stops with exit 75; wins over the config's [fetch] late_after_minutes and the source row's budget |
@@ -649,12 +650,44 @@ Takes no options of its own.
 | `--whole-cycle` | download routes only: the fetch stage waits for the whole cycle (the old rule) instead of taking each lead as it posts; wins over the config's [fetch] as_posted |
 | `--wps-namelist PATH` | with --prepared-root: the exact WPS authority required by a single-domain portable bundle |
 
+## `gpuwm export-grib2`
+
+| argument | what it does |
+|---|---|
+| `[INPUT ...]` | _(the parser declares no help text for this option)_ |
+
+| option | what it does |
+|---|---|
+| `--append` | append chronologically ordered frames |
+| `--bits` | quantization bits, default 20 |
+| `--definitions {woof,renderer,arwen,upp}` | who computes the fields: woof (default, the WOOF post-processor, catalog woof-post/v1); renderer takes the fields the product maps draw from the renderer's own diagnostics (arwen is the same); upp is a one-release alias of woof |
+| `--domains` | comma-separated d01,d02,... |
+| `--end` | last UTC valid time to write |
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--extrema-interval-seconds SECONDS` | also write maximum and minimum updraft helicity and maximum 10 m wind over this window ending at each frame (3600 = hourly), from the running extremes the history frames of the window carry; pass the whole run folder |
+| `--fields {standard,surface,pressure,all}` | _(the parser declares no help text for this option)_ |
+| `--finalize` | close an incremental export |
+| `--gust {auto,similarity,tke}` | surface gust method: auto (default) is the mixed-layer TKE gust when the history carries TKE (TKE_PBL or QKE), else the surface-layer similarity gust (RULINGS 7, scored against ASOS) |
+| `--json` | machine-readable options or progress |
+| `--levels` | comma-separated hPa levels, default 100 through 1000 by 25 |
+| `--list` | show field and packing options |
+| `--out` | export directory |
+| `--packing {complex,simple}` | _(the parser declares no help text for this option)_ |
+| `--post-device {auto,gpu,cpu}` | where products are computed: auto (default) uses a GPU with room, else the CPU |
+| `--start` | first UTC valid time to write |
+| `--threads` | Rust worker threads |
+| `--times` | comma-separated UTC valid times |
+| `--upp-control {srw,rapr}` | composite reflectivity level label: srw (default) writes the entire-atmosphere layer 200, rapr writes 10 as RAP and HRRR files do |
+| `--winds {grid,earth}` | wind component frame, default grid-relative |
+| `--zip` | write sibling <out>-grib2.zip |
+
 ## `gpuwm fetch`
 
 | option | what it does |
 |---|---|
 | `--accept-inventory-change` | proceed when the live provider inventory yields a different record count than this ArWen was certified against. Without it such a mismatch is a refusal naming both counts; with it the live count becomes the bar and the fetch manifest records the acceptance |
 | `--all-levels` | gfs/gdas only: take every isobaric level the product publishes instead of choosing a ladder. On the default NOMADS grib-filter transport this selects every level; with --mode full-file the whole object already carries every level and this declares them all for the decode. Either way level subsetting stays an opt-in bandwidth saver rather than a ceiling on the model top |
+| `--analyzed-aerosol` | the preparation reads the source's analyzed aerosol numbers (QNWFA/QNIFA), so a subset fetch selects them too; implied by the native forecast chain when an mp=28 domain asks for the analyzed aerosol |
 | `--area LAT0,LON0,LAT1,LON1` | bounding box corners in degrees (order free); allow several degrees of margin beyond the outer domain -- for gfs, 15 deg, so every model lake's nearest source-water donor lies inside the crop (a lake whose nearest donor may lie outside it is counted; `gpuwm domain` suggests areas with this margin built in) |
 | `--as-posted` | fetch each lead the moment one host holds all of it, in lead order, writing <out>/posting/ (schedule.json and one fNNN.json per verified lead) as the manifest grows; the default. --cycle latest is then the newest cycle whose first leads are posted. A lead later than its budget stops the fetch with exit 75 and posting/failed.json; a re-run resumes from the fetched prefix |
 | `--author-front-door-manifest` | author the front-door input manifest for the fetched series; requires --wps-namelist and --experiment-config (--bridge defaults to the built decoder this install resolves) |
@@ -682,6 +715,7 @@ Takes no options of its own.
 | `--radius-km KM` | half-width of the box around --point |
 | `--readiness` | print gpuwm.readiness.v1 for this window on stdout and fetch nothing: exit 0 ready (or nothing to probe), 75 not yet (with expected_ready_at and retry_after_seconds), 2 refused (the window can never start) |
 | `--retrieve` | ERA5: download and validate with the selected provider (default CDS); otherwise write a CDS retrieval template |
+| `--runtime-surface FIELDS` | comma-separated runtime surface fields (e.g. VEGFRA) the start must read from this cycle itself. A field the source table declares but this list omits starts from its recorded fallback when the cycle publishes no record for it; a listed field the cycle does not publish is refused by name |
 | `--source MODEL` | public data source: 20crv3-cf, aifs, aigefs, aigfs, ecmwf-ens, ecmwf-open-data, era5, gdas, gefs, gem-gdps, gfs, hrrr, hrrr-native, hrrr-prs, icon-d2, icon-eu, icon-global, rap, rap-native, rrfs, rrfs-ens. Registry aliases work too (gdps, ifs, hrrr-wrfprs). A registered source with no public bytes -- the 20CRv3 every-member archive, the generic 'mapped' adapter -- refuses by name and points at `gpuwm prep --source-root` |
 | `--static-input NPZ` | optional prebuilt static cache (with --static-receipt); omit when the front door builds statics from --geog-root |
 | `--static-receipt JSON` | receipt for --static-input |
@@ -709,7 +743,7 @@ Takes no options of its own.
 |---|---|
 | `--allow-upstream-drift` | accept an NCAR archive whose bytes no longer match the packaged pin (recorded as unpinned; refused outside a sanity size band); never applies to the mirror |
 | `--bundle` | fetch NCAR's single geog_high_res_mandatory.tar.gz (2.6 GiB) instead of the per-dataset tarballs and extract the requested datasets from it (fallback; NCAR only) |
-| `--datasets all\|CONSUMER\|NAME,NAME` | which datasets to stage (default 'all', every pin -- the 13 above). A consumer name stands for one door's whole set: 'wrf' is the 9 the WRF static builder opens, 'mesh' is what gpuwm mesh needs for the static half of its pair. Use '--datasets wrf' to skip the ~12 GiB Noah-MP soil archive that only gpuwm mesh reads |
+| `--datasets default\|all\|CONSUMER\|NAME,NAME` | which datasets to stage (default keeps the WRF and mesh set; chem-dust opts into the three upstream dust datasets; all selects every pin). A consumer name stands for one door's whole set: 'wrf' is the 9 the WRF static builder opens, 'mesh' is what gpuwm mesh needs for the static half of its pair. Use '--datasets wrf' to skip the ~12 GiB Noah-MP soil archive that only gpuwm mesh reads |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--keep-archives` | keep the verified tarballs under <root>/.fetch-geog after extraction (default: remove each one after its datasets validate) |
 | `--list` | print the dataset/size/source table and per-dataset staged state, then exit without touching the network |
@@ -723,12 +757,43 @@ Takes no options of its own.
 |---|---|
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--from DIR` | stage from a local directory instead of downloading (offline installs); verification is identical |
-| `--thompson-fork` | stage the pinned WRF 3.9 fork Thompson coefficient set from --from DIR, packaged fork data, or an explicitly selected mirror |
+| `--thompson-fork` | also stage the pinned WRF 3.9 fork Thompson coefficient set (thompson_version = "wrf_39_noaa", the HRRR configurations' tables; 330 MiB) into ~/.gpuwm/tables/thompson-wrf39-noaa: from --from DIR, packaged fork data, an explicitly selected mirror, or the release assets, SHA-256-verified against the packaged pins before install. Runs that select the fork acquire it automatically |
 | `--thompson-fork-only` | stage only the fork coefficient set and leave classic tables alone |
 | `--thompson-fork-root DIR` | stage fork tables into DIR instead of the selected fork cache |
 | `--wif` | also stage QNWFA_QNIFA_SIGMA_MONTHLY.dat (215 MiB), the global monthly aerosol climatology the mp_physics=28 WIF ingest reads (aer_init_opt=1 with wif_input_opt=1), into ~/.gpuwm/wif under the same SHA-256 contract. Opt-in: it is an input dataset, not a coefficient table. Forecast fetches acquire it automatically when selected physics needs it |
 | `--wif-only` | with --wif, stage only that dataset and leave the coefficient tables alone |
 | `--wif-root DIR` | stage the WIF dataset into DIR instead of ~/.gpuwm/wif (same meaning as GPUWM_WIF_DATA_ROOT) |
+
+## `gpuwm fire-ideal`
+
+| argument | what it does |
+|---|---|
+| `config` | RunConfig TOML or native namelist.input with --namelist |
+
+| option | what it does |
+|---|---|
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--input-directory` | native input files (default: configuration directory) |
+| `--namelist` | read native WRF ideal namelist.input |
+| `--outdir` | _(the parser declares no help text for this option)_ |
+| `--prepare-only` | initialize the complete ideal state and write its receipt |
+| `--restart` | restore the byte-exact fire and atmosphere checkpoint |
+| `--run-seconds` | _(the parser declares no help text for this option)_ |
+| `--sounding` | native input_sounding (default: input directory) |
+
+## `gpuwm fire-static`
+
+| argument | what it does |
+|---|---|
+| `config` | static REQUEST.json or resolved EXPERIMENT.toml |
+
+| option | what it does |
+|---|---|
+| `--domain` | experiment domain grid_id; defaults to its only SFIRE domain |
+| `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--output` | _(the parser declares no help text for this option)_ |
+| `--receipt` | _(the parser declares no help text for this option)_ |
+| `--request` | source routes, bound rasters and optional captured observed_perimeter JSON |
 
 ## `gpuwm go`
 
@@ -746,6 +811,7 @@ Takes no options of its own.
 | `--dry-run` | validate the route and show how to launch it; fetch and run nothing |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
 | `--geog-root DIR` | override the geography tree (default: [case_data].geog_root for declared inputs, otherwise the staged WPS_GEOG tree) |
+| `--grib2` | write native surface and pressure-level GRIB2 as each frame lands, then <run>/grib2-grib2.zip |
 | `--keep-checkpoints N` | how many complete checkpoint sets the run keeps in its folder (default 1, enough to resume); 0 keeps every hourly set, which a later branch or downscale from an earlier checkpoint needs |
 | `--keep-member-files` | also retain every member's full history files |
 | `--late-after-minutes MIN` | download routes only: how far past its scheduled time a lead may be before the run stops with exit 75; wins over the config's [fetch] late_after_minutes and the source row's budget |
@@ -1016,6 +1082,14 @@ Takes no options of its own.
 | option | what it does |
 |---|---|
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+
+## `gpuwm obs airnow`
+
+| argument | what it does |
+|---|---|
+| `ARGS ...` | arguments passed to the instrument's binary unchanged, --help included; gpuwm's own flags must come before the instrument name |
+
+Takes no options of its own.
 
 ## `gpuwm obs asos`
 
@@ -1528,6 +1602,7 @@ Takes no options of its own.
 | `--dpi N` | PNG resolution, matplotlib engine (default 150) |
 | `--engine {auto,rust,matplotlib}` | render engine: the vendored Rusty Weather renderer (campaign plot quality; 151 implicit-render catalog candidates per file) or the matplotlib workaround; 'auto' (default) uses rust whenever its binary is built and probes as runnable, and REFUSES otherwise rather than drawing weather fields with matplotlib -- 'matplotlib' asks for that workaround by name and announces itself |
 | `--explain` | print the full reasoning, alternate routes and per-item evidence behind this command's output, instead of the default one-line-per-item summary |
+| `--grib2-out DIR` | also export every input frame as native surface and pressure-level GRIB2 |
 | `--heavy` | rust engine: also compute the heavy ECAPE product family at import (SBECAPE/SBNCAPE/SBECIN, ECAPE SCP/EHI/...; adds substantial per-frame import time) |
 | `--inputs-from FILE` | _(accepted, but not listed by --help)_ |
 | `--isotherms L,L,...[@H]` | rust engine: the isotherms (C) drawn on every section, with an optional highlighted one after '@' (e.g. 0,-5,-10,-15,-20@-10); default 0,-10,-20,-30,-40 |
@@ -2161,11 +2236,12 @@ Takes no options of its own.
 | `--progress-format {text,jsonl,off}` | how this run reports its progress. `text` (the default) prints one WRF-shaped `Timing for main:` line per model time step per domain on stdout and ALSO writes the machine stream to OUTDIR/progress.jsonl; `jsonl` writes only that stream, leaving stdout free of sentences; `off` disables per-step reporting entirely |
 | `--progress-output PATH` | where the machine stream is written; defaults to OUTDIR/progress.jsonl. Append-only JSONL at gpuwm.step-log/v3 (gpuwm.step-log/v4 when the run carries an adaptive time step, which adds `dt` to every step record), one record per printed line, with a dense `sequence` so a consumer can detect a lost line. `-` sends the records to stdout instead of to a file, which with --progress-format jsonl is a pure record pipe |
 | `--proof-sha256` | sha256 of the sealed preparation's proof.json; with --prepared-content-sha256, binds a finished preparation |
+| `--radar-heating-table JSON` | [radar_heating] as JSON: radar latent heating windows for the first active_minutes of the run, without editing a prepared configuration |
 | `--render-dir DIR` | where --render-products publishes; defaults to OUTDIR/png. Ignored without --render-products |
 | `--render-products SPEC` | `gpuwm render --products`' own spec -- a comma-separated product list, or `all`, or `none` -- for every frame this run commits, each drawn on a worker thread as it lands while the forecast is still integrating, one render at a time. Absent is off, and off is the default: there is deliberately no second switch, so "which products" has one answer that cannot disagree with itself. The first frame is the analysis at t = 0, durable before a single step is integrated |
 | `--render-section lat,lon,lat,lon\|FILE.json` | `gpuwm render --section`'s own value: the line every xsec: product in --render-products is cut along. Ignored without --render-products |
 | `--restart` | Resume a canonical checkpoint with this exact sealed preparation/configuration. |
-| `--run-seconds` | forecast length; must equal the hash-bound experiment's run_seconds, and defaults to it when omitted |
+| `--run-seconds` | forecast length the model integrates; defaults to the hash-bound experiment's run_seconds when omitted. A shorter length runs the first part of the prepared forecast from the same prepared state; a length past the prepared boundary forcing refuses naming the last prepared lead |
 | `--show-capabilities` | print this runner's capability JSON and exit; it must be the only argument |
 | `--simulated-radar-table JSON` | [simulated_radar] options as JSON; overrides output options without editing a prepared configuration |
 | `--source {20crv3,20crv3-cf,aifs,aigefs,aigfs,ecmwf-ens,ecmwf-open-data,era5,era5-l137,gdas,gefs,gem-gdps,gfs,hrrr,hrrr-native,hrrr-prs,icon-d2,icon-eu,icon-global,mapped,rap,rap-native,rrfs}` | _(the parser declares no help text for this option)_ |
@@ -2215,6 +2291,19 @@ Takes no options of its own.
 | `--sealed-forcing-extension` | write/restore checkpoints using the explicit append-only forcing-prefix contract |
 | `--show-capabilities` | print this runner's capability JSON and exit; it must be the only argument |
 | `--simulated-radar-table JSON` | [simulated_radar] options as JSON; overrides output options without editing a prepared configuration |
+
+## `gpuwm-sfire-static`
+
+| argument | what it does |
+|---|---|
+| `config` | static REQUEST.json or resolved EXPERIMENT.toml |
+
+| option | what it does |
+|---|---|
+| `--domain` | experiment domain grid_id; defaults to its only SFIRE domain |
+| `--output` | _(the parser declares no help text for this option)_ |
+| `--receipt` | _(the parser declares no help text for this option)_ |
+| `--request` | source routes, bound rasters and optional captured observed_perimeter JSON |
 
 ## `gpuwm-wrf-runtime-check`
 

@@ -103,6 +103,7 @@ from gpuwm.config import (CUMULUS_ADVECTIVE_FORCING_SCHEMES,
                           DEFAULT_COLUMN_CHUNK, MYJ_PBL_SCHEME,
                           MYJ_SFCLAY_SCHEME, SASE_PBL_SCHEME,
                           UW_PBL_SCHEME, RunConfig,
+                          mynn_mixscalars_active,
                           radiation_enabled, radiation_scheme_ids,
                           soil_layer_count)
 from gpuwm.core import kernel_frame_recordings as _kernel_frame_recordings
@@ -1363,6 +1364,242 @@ ENVELOPE_A163_BASIS = (
     "forecast, and 6 h of the default suite with legacy RRTMG; NVML at "
     "100 ms; plus the RTX PRO 6000 CONUS runs of 2026-09-30")
 
+#: A13: THE POOL RESIDUE IS BOUNDED, AND THE RANKED ROAD PRICES IT SO.
+#:
+#: THE DEFECT.  Full HRRR (1797 x 1057 x 50, HRRR physics) on four RTX
+#: 5090 cards was refused: the 2x2 split priced 31.23-31.66 GiB per card
+#: against a 30.86 GiB budget, and the four cards measured 27.6-29.5 GiB
+#: at their peaks (box E, 2026-10-06, the A13 receipts).  Each rank's
+#: price is the A163 envelope of a 25-26 GiB itemized subtotal: x1.13
+#: (the measured worst ratio 1.09 plus the 0.04 safety) prices a 3.3 GiB
+#: pool margin per rank.  The ratio was measured on 3.5-11 GiB subtotals
+#: (:data:`FORECAST_PEAK_BATTERY`), where the pool held 0.63-1.82 GiB
+#: beyond the itemization and that residue reads as 9-17% of the
+#: subtotal.  On the 24.6-26.2 GiB ranks the pool held 0.42-0.72 GiB
+#: beyond the itemization (the run report's per-card ``pool_held_bytes``
+#: against this module's itemization of each rank, the rows below): the
+#: residue did not grow with the subtotal, so the ratio priced 2.5 GiB
+#: per card that no card used, and the price refused a run that fits
+#: with 1.3-3.2 GiB to spare.
+#:
+#: THE MEASUREMENT.  Over every forecast whose pool-held peak was
+#: recorded (:data:`FORECAST_PEAK_BATTERY` rows with a held receipt,
+#: subtotals 3.5-11 GiB, and the four ranks below at 25-28 GiB) the pool
+#: held at most 1.82 GiB beyond the itemization (the default suite with
+#: legacy RRTMG at 500 x 500 x 49 on the 5070 Ti), and the card-to-card
+#: swing of the held residue on the configuration the itemization prices
+#: most exactly (lean 528 x 528 x 49) is 0.34 GiB.  The bound is their
+#: sum rounded up to the next quarter gibibyte: 2.25 GiB.  A rank's pool
+#: margin is the smaller of the A163 ratio's margin and this bound, so
+#: below 17.3 GiB of itemized pool nothing changes, and above it the
+#: margin is the bound.  On the single-card road the ratio stands: its
+#: only rows above 11 GiB are the RTX PRO 6000 CONUS runs of 2026-09-30,
+#: which recorded a device peak and no pool-held peak, and one of them
+#: (HRRR physics, 1620 x 953 x 50) peaked 4.24 GiB over its itemized pool
+#: plus non-pool, which a 2.25 GiB bound would not cover; it is left as
+#: measured until a single-card run of that size records its pool.
+#:
+#: Each row: ``(label, card, layout, rank, itemized pool bytes (the
+#: rank's subtotal plus its seam buffers, this module's pricing with the
+#: prepared statics' lake bound), pool-held peak bytes, device peak
+#: bytes, itemized non-pool bytes)``.  Box E, four RTX 5090, HRRR physics
+#: on the full HRRR grid, 2026-10-03 21Z, 3 h, hourly history,
+#: ``[devices] 1x4``; pool-held from the run report
+#: (``peak_memory_per_card``, post-step samples: the CuPy pool never
+#: shrinks, so a post-step high-water mark is the run's), device peak
+#: from NVML at 200 ms.
+#:
+#: The two band rows are the bounded price's own run, admitted BY
+#: DEFAULT (no refusal override): a 1797 x 557 x 50 exact crop of the
+#: HRRR lattice, HRRR physics, 2024-05-21 18Z, 1 h, ``[devices] 1x2`` on
+#: two RTX 5090 (box S, 2026-10-06), whose ranks (557 x 926 and 557 x
+#: 927) are the rank shape of the full grid split 2x2.  Priced
+#: 30.70 / 30.75 GiB per card against 30.82 / 30.84 budgets with the
+#: MYNN chunk widened to 24,576 / 28,672 columns; the pool held 0.52 /
+#: 0.40 GiB beyond the itemization and the cards peaked 28.35 / 28.44
+#: GiB, 2.3 GiB under the price.
+RANK_POOL_RESIDUE_BATTERY = (
+    ("full HRRR 1797x1057x50, HRRR physics, 1x4", "RTX 5090", "1x4", 0,
+     27_201_817_616, 27_974_908_928, 29_605_494_784, 1_475_592_192),
+    ("full HRRR 1797x1057x50, HRRR physics, 1x4", "RTX 5090", "1x4", 1,
+     29_344_842_752, 30_016_247_296, 31_610_372_096, 1_475_592_192),
+    ("full HRRR 1797x1057x50, HRRR physics, 1x4", "RTX 5090", "1x4", 2,
+     29_668_728_384, 30_123_004_416, 31_717_326_848, 1_475_592_192),
+    ("full HRRR 1797x1057x50, HRRR physics, 1x4", "RTX 5090", "1x4", 3,
+     27_570_478_776, 28_188_711_936, 29_773_266_944, 1_475_592_192),
+    ("HRRR lattice band 1797x557x50, HRRR physics, 1x2 (bounded price, "
+     "default admission)", "RTX 5090", "1x2", 0,
+     28_324_674_648, 28_882_237_952, 30_435_966_976, 1_475_592_192),
+    ("HRRR lattice band 1797x557x50, HRRR physics, 1x2 (bounded price, "
+     "default admission)", "RTX 5090", "1x2", 1,
+     28_590_739_680, 29_016_986_624, 30_538_727_424, 1_475_592_192),
+)
+
+
+def _pool_residue_receipts() -> tuple[tuple[str, int, int], ...]:
+    """``(label, itemized pool bytes, pool-held peak bytes)`` for every
+    measured forecast with a pool-held receipt: the A163 battery rows
+    that recorded one and the ranked rows."""
+    rows = [(row[0], row[4], row[7]) for row in FORECAST_PEAK_BATTERY
+            if row[7]]
+    rows += [(f"{row[0]} rank {row[3]}", row[4], row[5])
+             for row in RANK_POOL_RESIDUE_BATTERY]
+    return tuple(rows)
+
+
+#: The widest pool residue any receipt measured, bytes: pool-held peak
+#: less the itemized pool, worst over :func:`_pool_residue_receipts`.
+POOL_RESIDUE_MEASURED_BYTES = max(
+    held - itemized for _label, itemized, held in _pool_residue_receipts())
+
+#: The card-to-card swing of the pool-held residue on the configuration
+#: the itemization prices most exactly (lean 528 x 528 x 49, the two
+#: cards of :data:`FORECAST_PEAK_BATTERY`), bytes: the same swing the
+#: A163 safety term is, in bytes rather than as a fraction.
+POOL_RESIDUE_SWING_BYTES = abs(
+    [row[7] for row in FORECAST_PEAK_BATTERY if row[0] == "lean 528x528x49"][0]
+    - [row[7] for row in FORECAST_PEAK_BATTERY if row[0] == "lean 528x528x49"][1])
+
+#: The bound a device rank's pool margin never exceeds, bytes: the worst
+#: measured residue plus the swing, rounded up to the next quarter
+#: gibibyte.  2.25 GiB at the receipts above.
+RANK_POOL_RESIDUE_BOUND_BYTES = int(math.ceil(
+    (POOL_RESIDUE_MEASURED_BYTES + POOL_RESIDUE_SWING_BYTES) / (GIB // 4))
+    * (GIB // 4))
+
+#: What the rank bound rests on, printed beside the number it makes.
+RANK_POOL_RESIDUE_BASIS = (
+    f"the bound is the widest pool residue any receipt measured "
+    f"({POOL_RESIDUE_MEASURED_BYTES / GIB:.2f} GiB, pool held less itemized, "
+    f"over {len(_pool_residue_receipts())} forecasts of 3.5-28 GiB on the "
+    "RTX 5070 Ti and RTX 5090 including the four ranks of full HRRR on 4 "
+    "x RTX 5090 and the two ranks of its 1797 x 557 lattice band under this "
+    f"bound) plus the card-to-card swing ({POOL_RESIDUE_SWING_BYTES / GIB:.2f} "
+    "GiB), rounded up to the quarter gibibyte (A13)")
+
+#: Why a rank keeps the ratio when an itemization-gap row raised its
+#: headroom, printed beside the verdict in the bound's place.
+RANK_POOL_RESIDUE_GAP_BASIS = (
+    "the byte bound (A13) covers the pool's residue over a COMPLETE "
+    "itemization; this suite matches an itemization-gap row "
+    "(FORECAST_ITEMIZATION_GAP_ROWS: pool USED above the subtotal, a "
+    "shortfall that grows with the rank, 4.1 GiB on a 25 GiB rank of "
+    "full HRRR under RTE-RRTMGP where the bound would price 2.25), so "
+    "the measured ratio stands until those arrays are itemized")
+
+#: The suites whose pool residue was measured AT RANK SCALE (every row
+#: of :data:`RANK_POOL_RESIDUE_BATTERY`), one row per suite: the
+#: radiation lane (RRTMG on both streams, legacy or RTE-RRTMGP) and the
+#: scheme ids every domain must carry.  Only a suite on this table
+#: carries the byte bound; a suite off it keeps the ratio
+#: (:func:`rank_pool_residue_cap_bytes`).  A new suite joins the
+#: table with its own rank receipts, as rows of the battery and a row
+#: here; nothing else changes.
+#:
+#: Why the table (A13 review): "the residue does not grow with the
+#: rank" is shown for one suite only.  The single-card battery
+#: (:data:`FORECAST_PEAK_BATTERY`) shows the default suite's pool-held
+#: residue growing WITH the subtotal, 0.73 GiB at 300 x 300 x 49 and
+#: 1.82 GiB at 500 x 500 x 49 (3.53 and 8.43 GiB itemized, 20.6% and
+#: 21.6%), and by the device-peak measure 0.52-1.26 GiB on 8.3-8.9 GiB
+#: (6-14%).  At that rate a 27 GiB rank of the default suite holds
+#: 1.6-3.8 GiB beyond its itemization, up to 1.5 GiB over the 2.25 GiB
+#: bound: the gate would admit a card that then allocates past its
+#: price, the mid-run out-of-memory the gate exists to refuse.  HRRR
+#: physics under legacy RRTMG measured 0.40-0.72 GiB on six 25-28 GiB
+#: ranks (1.5-2.8%), which is what the bound covers.
+RANK_POOL_RESIDUE_SUITES = (
+    {"label": "HRRR physics under legacy RRTMG, no cumulus",
+     "radiation": "legacy-rrtmg",
+     "all_of": (("mp_physics", 28), ("bl_pbl_physics", 5),
+                ("sf_sfclay_physics", 5), ("sf_surface_physics", 3),
+                ("cu_physics", 0))},
+)
+
+#: Why a rank keeps the ratio when its suite has no rank-scale receipt,
+#: printed beside the verdict in the bound's place.
+RANK_POOL_RESIDUE_UNMEASURED_BASIS = (
+    "the byte bound (A13) rests on rank-scale receipts of the suites in "
+    "RANK_POOL_RESIDUE_SUITES only; this suite has none, and the "
+    "single-card battery shows the default suite's pool residue growing "
+    "with the subtotal (0.73 GiB at 3.5 GiB, 1.82 GiB at 8.4 GiB, about "
+    "21%), which on a 27 GiB rank would exceed the 2.25 GiB bound by up "
+    "to 1.5 GiB, so the measured ratio stands until a ranked run of this "
+    "suite above 17 GiB per rank records its pool-held peak")
+
+
+def rank_pool_residue_suite(runs):
+    """The :data:`RANK_POOL_RESIDUE_SUITES` row every one of these
+    domains' run configs matches, or ``None``: the domains share one
+    pool, so one domain off the table takes the whole forecast off it."""
+    from gpuwm.physics_compat import RRTMG_VARIANT_LEGACY, rrtmg_variant
+
+    matched = None
+    for run in runs:
+        run = getattr(run, "run", run)
+        # Every rank receipt ran RRTMG on BOTH streams; a run that pairs
+        # RRTMG with another scheme on one stream is a suite without a
+        # receipt (A13 review 3), whatever its other scheme ids say.
+        if tuple(radiation_scheme_ids(run)) != (4, 4):
+            return None
+        lane = ("legacy-rrtmg" if rrtmg_variant(run) == RRTMG_VARIANT_LEGACY
+                else "rte-rrtmgp")
+        row_for_run = None
+        for row in RANK_POOL_RESIDUE_SUITES:
+            if row["radiation"] != lane:
+                continue
+            if all(int(getattr(run, key, -1)) == int(value)
+                   for key, value in row["all_of"]):
+                row_for_run = row
+                break
+        if row_for_run is None or (matched is not None
+                                   and row_for_run is not matched):
+            return None
+        matched = row_for_run
+    return matched
+
+
+def rank_pool_residue_cap_bytes(runs) -> int | None:
+    """The byte bound a device rank's pool margin carries for these
+    domains' run configs (A13), or ``None`` when the ratio must stand.
+
+    The bound (:data:`RANK_POOL_RESIDUE_BOUND_BYTES`) was measured as
+    the pool's residue over a complete itemization: what the CuPy pool
+    holds beyond arrays the itemization already counts, which the rank
+    receipts show does not grow with the rank FOR THE SUITES THEY
+    MEASURED (:data:`RANK_POOL_RESIDUE_SUITES`); a suite with no
+    rank-scale receipt keeps the ratio, since the single-card battery
+    shows the default suite's residue growing with the subtotal and a
+    27 GiB rank of it would exceed the bound.  An itemization-gap row
+    (:data:`FORECAST_ITEMIZATION_GAP_ROWS`) names the opposite: a suite
+    whose pool is USED beyond the subtotal (1.16x, HRRR physics under
+    RTE-RRTMGP), arrays the forecast allocates and the itemization does
+    not list, a shortfall proportional to the rank by construction.
+    Capping that margin at the bound would price 2.25 GiB on a 25 GiB
+    rank whose unlisted arrays alone take about 4.1 GiB, so the gate
+    would admit a card that then allocates past its price, the
+    mid-run out-of-memory the gate exists to refuse.  Such a suite
+    keeps the ratio its gap row measured."""
+    runs = tuple(runs)
+    if forecast_pool_headroom(runs) > FORECAST_POOL_HEADROOM:
+        return None
+    if rank_pool_residue_suite(runs) is None:
+        return None
+    return int(RANK_POOL_RESIDUE_BOUND_BYTES)
+
+
+def rank_pool_residue_basis(runs) -> str:
+    """What the ranked road's pool margin rests on for these domains'
+    run configs, printed beside the gate's verdict: the bound's receipts,
+    the itemization-gap row that keeps the ratio, or the missing
+    rank-scale receipt that keeps it."""
+    runs = tuple(runs)
+    if forecast_pool_headroom(runs) > FORECAST_POOL_HEADROOM:
+        return RANK_POOL_RESIDUE_GAP_BASIS
+    if rank_pool_residue_suite(runs) is None:
+        return RANK_POOL_RESIDUE_UNMEASURED_BASIS
+    return RANK_POOL_RESIDUE_BASIS
+
 
 def machine_peak_envelope_bytes(
         *, alloc_estimate_bytes: int, non_pool_bytes: int,
@@ -1417,9 +1654,23 @@ def machine_peak_envelope_bytes(
 
 def forecast_pool_estimate_bytes(subtotal_bytes: int, *,
                                  held_exact_bytes: int = 0,
-                                 headroom: float) -> int:
+                                 headroom: float,
+                                 residue_cap_bytes: int | None = None) -> int:
     """The forecast's pool estimate: the measured margin on what the pool
     turns over, and the held arrays at their allocated size.
+
+    ``residue_cap_bytes`` bounds the margin in bytes (A13, the ranked
+    road: :data:`RANK_POOL_RESIDUE_BOUND_BYTES`).  The margin is a ratio
+    measured on 3.5-11 GiB subtotals, where the pool's residue over the
+    itemization reads as 9-17%; on 25-28 GiB device ranks every pool
+    receipt measured that residue at 0.40-0.72 GiB, so the ratio alone
+    priced 2.5 GiB per card that no card used.  Below the crossover
+    (``residue_cap / (headroom - 1)``, 17.3 GiB at the measured margin
+    and bound) the cap is inactive and the price is unchanged.  The cap
+    bounds a residue over a COMPLETE itemization: a caller prices a
+    suite that matches an itemization-gap row with the ratio alone
+    (:func:`rank_pool_residue_cap_bytes`; :func:`estimate_experiment`
+    drops the cap for such a suite itself).
 
     A163.  The margin (:data:`FORECAST_POOL_HEADROOM`) is what the CuPy
     pool holds beyond the itemization: blocks a step frees and the pool
@@ -1437,7 +1688,11 @@ def forecast_pool_estimate_bytes(subtotal_bytes: int, *,
     14.79 GB envelope.
     """
     held = max(0, min(int(held_exact_bytes), int(subtotal_bytes)))
-    return math.ceil(float(headroom) * (int(subtotal_bytes) - held)) + held
+    turnover = int(subtotal_bytes) - held
+    margin = math.ceil(float(headroom) * turnover) - turnover
+    if residue_cap_bytes is not None:
+        margin = min(margin, max(0, int(residue_cap_bytes)))
+    return turnover + margin + held
 
 
 def urban_held_item_names(run) -> frozenset:
@@ -1818,6 +2073,12 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "pd_vertical_sl": 0,
     "rrtmg_smoke_manifest": 0,
     "upper_wind_limiter": 0,
+    # The coupled fire's standalone units (lane/ec-sfire), 0 B each on
+    # sm_120 / NVRTC 13.4.92 (node-4 RTX 5070 Ti, 2026-10-06).
+    "chem_sfire": 0,
+    "sfire_coupling": 0,
+    "sfire_ideal": 0,
+    "sfire_ideal_atmos": 0,
     # Initialization-only parameter-table scaler, measured 2026-10-04
     # through the production loader on RTX 5090 / NVRTC 13.4.92: 0 B.
     "physics_params": 0,
@@ -1827,17 +2088,60 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     "ensemble_bookkeeping": 0,
     "ensemble_stochastic": 0,
     "ruc_spp": 0,
-    # Production lake loader, measured 2026-10-03: step 14,224 B on
-    # RTX 5090 / NVRTC 13.4.92 and 14,400 B on RTX PRO 6000 / 12.8.93.
-    # Init is 4,720 B on both; charge the larger measured step frame.
-    "lake": 14400,
+    # Production lake loader.  Measured 2026-10-03 at 14,224 B (RTX 5090,
+    # NVRTC 13.4.92) and 14,400 B (RTX PRO 6000, NVRTC 12.8.93) while the
+    # column arrays lived in the local frame; that frame was the widest of
+    # every HRRR-physics run and its backing store cost 3.3 GiB per 5090.
+    # The arrays moved to a priced device arena (``lake/arena`` in
+    # physics_array_shapes, kernels/lake_support.cuh), and the same probe
+    # read 2026-10-05 on RTX 5090 / cupy-cuda13x through the production
+    # loader: step 1,240 B, init 0 B; the card's non-pool residency after a
+    # 40,800-column step fell from 3,288 MiB to 58 MiB.
+    "lake": 1240,
     # Test-only math grading unit, read on sm_89 and sm_120, NVRTC 13.4.59.
     "portable_libm64_grade": 48,
     # Added with this box's recording at 0 B. 'ntiedtke' is what
     # cu_physics = 16 needs to be priceable at all.
+    # The GOCART kernels (lane/aq-gocart), read 2026-09-30 on sm_120 at
+    # NVRTC 13.4.92 (RTX 5090) and sm_89 at 13.0.48 (RTX 4090): the maximum
+    # of the two, which is sm_89's for chem_dust (72 B against 0) and
+    # chem_optics (1,904 B against 1,648).  lane/aq-core's chem rows and
+    # the dycore-host units follow in their own places below.
+    "chem_ageing": 0,
+    "chem_drydep_gocart": 0,
+    "chem_dust": 72,
+    "chem_inventory": 0,
+    "chem_mp_coupling": 0,
+    "chem_optics": 1904,
+    "chem_rrtmgp_aerosol": 0,
+    "chem_seasalt": 0,
+    "chem_settling": 0,
+    "chem_sulfur": 32,
+    # WRF-Chem's Wesely gas dry deposition (lane/aq-cams): 0 B on sm_120 and
+    # sm_89 at NVRTC 13.4.92 (read 2026-09-30, RTX 5090 and RTX 4090).
+    "chem_drydep_wesely": 0,
+    # Added with this box's recording; all three are 0 B and none
+    # was in the ceiling before. 'ntiedtke' is what cu_physics = 16
+    # needs to be priceable at all.
     'ntiedtke': 0,
     "acoustic": 544,
     "advection": 0,
+    # The chem program (gpuwm/core/chem_*.py, lane/aq-core), read on the
+    # sm_120 NVRTC 13.4.92 recording.  chem_vertmx is level-specialized
+    # (LEVEL_SPECIALIZED_KERNEL_FRAMES): 2,048 B is its CHEM_NZ = 256
+    # ceiling; a 59-level run launches 472 B.  mono_advection (WRF's
+    # advect_scalar_mono) is 0 B; its row sits in order below.
+    "chem_bdy": 0,
+    # The smoke lane's units (lane/aq-smoke), the same recording: the fire
+    # classifier's 16 group sums, and the Freitas plume state in its global
+    # workspace rather than the thread frame.
+    "chem_fire": 64,
+    "chem_ledger": 0,
+    "chem_outputs": 0,
+    "chem_plumerise": 0,
+    "chem_prep": 0,
+    "chem_vertmx": 2048,
+    "chem_wetdep_ls": 0,
     "coriolis_map": 0,
     "diagnostics": 0,
     "diff6": 0,
@@ -1945,6 +2249,7 @@ KERNEL_MAX_LOCAL_SIZE_BYTES: dict[str, int] = {
     # for exact equality against them at import, so the 0 here IS that
     # reading rather than a second statement of it.
     "milbrandt2_zet": 0,
+    "mono_advection": 0,
     "morrison": 5120,
     "microphysics_validation": 0,
     # MYJ.  MEASURED on an RTX 5090 by the driver sweep this table is
@@ -2365,6 +2670,10 @@ LEVEL_SPECIALIZED_KERNEL_FRAMES: dict[str, LevelSpecializedFrame] = {
     # tests/test_wdm6.py pins the realistic bounds rather than that one.
     "wdm6_refl": LevelSpecializedFrame(
         "wdm6_refl", "REFL_KMAX", 256, 63, alignment_bytes=16),
+    # WRF-Chem's vertmx (gpuwm/core/chem_vertmx.py specializes CHEM_NZ to
+    # the column): its two Thomas recurrences, 8 B per level, read at nine
+    # bounds from 11 to 256 on the sm_120 NVRTC 13.4.92 recording.
+    "chem_vertmx": LevelSpecializedFrame("chem_vertmx", "CHEM_NZ", 256, 8),
 }
 
 # The launchers select only 64-level fallout variants at nz <= 64.
@@ -2533,6 +2842,17 @@ UNMEASURED_KERNEL_MODULES = frozenset({
     # below -- so unlike the Noah-MP fragments this one is priced, not a
     # refusal.
     "p3",
+    # P3's radar reflectivity operator (acb8faf25) is appended to that
+    # composed unit by gpuwm/core/p3_device.p3_reflectivity_source() and
+    # calls p3.cu's own __device__ helpers (p3_get_rain_dsd2,
+    # p3_access_lookup_table, ...), so p3_zdiag.cu alone fails NVRTC
+    # (read 2026-10-07 on node-4's RTX 5070 Ti, sm_120, NVRTC 13.4.92:
+    # 'identifier "P3_RD" is undefined').  It is the DA observation
+    # operator (gpuwm/da/obsop.py), launched by no forecast scheme, so no
+    # mp_physics row selects it and no forecast price reads it.  The unit
+    # that launches it, p3_reflectivity_module, read p3k_reflectivity at
+    # 0 B local frame (40 registers) on the same card the same day.
+    "p3_zdiag",
     "rrtmg_sw", "rrtmg_lw_chain", "rrtmg_lw_chain_coalesced", "rrtmg_lw_zbatched",
     "rrtmg_lw_taugb02_10_11_12", "rrtmg_lw_taugb03_05",
     "rrtmg_lw_taugb06_09", "rrtmg_lw_taugb13_16",
@@ -2541,7 +2861,13 @@ UNMEASURED_KERNEL_MODULES = frozenset({
     "urban_bep_bem",
     # The drag unit borrows glibc helpers from the composed source in
     # gpuwm.core.terrain_drag.module_source(); it cannot compile alone.
-    "terrain_drag"})
+    "terrain_drag",
+    # The coupled fire's fragments (lane/ec-sfire): gpuwm/core/sfire_core.py
+    # composes them with their shared headers into the units it compiles,
+    # and NVRTC refuses each handed over alone (node-4, 2026-10-06).  No
+    # selector row names them; a row that did is priced at the assumed bound.
+    "sfire_atm", "sfire_core", "sfire_moisture", "sfire_phys",
+    "sfire_spotting", "sfire_wind"})
 # face_mass, held_heating, rk_bookkeeping and surface_w (the dycore-host
 # speed lane's point-local units, 66af318bc) sat in this set on
 # 2026-09-30 under the same "no measurement platform in this lane"
@@ -3159,6 +3485,15 @@ def domain_kernel_modules(dc: DomainConfig, *,
         # a WDM6 domain must never reserve refl.cu's wider frame and a
         # non-WDM6 domain must never reserve wdm6_refl.cu's.
         modules.add("wdm6_refl" if mp_physics == 16 else "refl")
+    if getattr(dc.run, "chem_sets", ""):
+        # A chem domain's own units (gpuwm/core/chem_context.py:
+        # chem_kernel_modules), fail-closed on a process that does not
+        # name the kernels its step launches.
+        from gpuwm.chem_table import load as load_chem_table
+        from gpuwm.core.chem_context import chem_kernel_modules
+
+        modules.update(chem_kernel_modules(load_chem_table(dc.run),
+                                           dc.run.chem_adv_opt))
     return frozenset(modules)
 
 
@@ -4108,6 +4443,12 @@ def physics_field_names_2d(cfg: RunConfig | None = None) -> tuple[str, ...]:
                 f"{name}_sea" for name in MYNN_SURFACE_OUTPUTS))
         union.update(dict.fromkeys(SURFACE_PRECIPITATION_FIELDS))
         union["gsw"] = None
+    if cfg is not None:
+        # A chem process that reads GSW keeps the plane outside RUC too
+        # (physics.initialize_physics, the same chem_physics_reads answer).
+        from gpuwm.core.chem_context import chem_physics_reads
+        if "gsw" in chem_physics_reads(cfg):
+            union["gsw"] = None
     if cfg is not None and int(cfg.sf_surface_physics) == 4:
         from gpuwm.core.noahmp_runtime import (
             NOAHMP_DIAGNOSTICS_2D, NOAHMP_STATE_2D, NOAHMP_STATE_INT_2D,
@@ -4193,6 +4534,12 @@ def physics_array_shapes(cfg: RunConfig, *, cam_ozone: bool = False,
         # an out buffer is supplied; this also covers the smaller init seed.
         shapes["lake/gather_work"] = (LAKE_STATE_WORDS, count)
         shapes["lake/precipitation"] = s2
+        # The column arrays' device arena (kernels/lake_support.cuh), one
+        # launch window wide, in place of the 14,400 B local frame the
+        # backing store used to charge every resident thread of the card.
+        from gpuwm.core.lake import LAKE_ARENA_SLOTS, LAKE_LAUNCH_COLUMNS
+        shapes["lake/arena"] = (2 * LAKE_ARENA_SLOTS,
+                                max(1, min(count, LAKE_LAUNCH_COLUMNS)))
     if int(getattr(cfg, "sf_surface_mosaic", 0)) == 1:
         from gpuwm.core.noah_mosaic import mosaic_array_shapes
         for name, (shape, dtype) in mosaic_array_shapes(
@@ -4384,6 +4731,70 @@ def physics_array_shapes(cfg: RunConfig, *, cam_ozone: bool = False,
         # direction for a VRAM estimate.
         shapes["olr"] = s2
         # Classic LW call/packing arrays are priced as transients below.
+    if ra_lw_physics in (1, 4) or ra_sw_physics == 4:
+        # The CLDFRA publication buffer (physics.py PhysicsDriver
+        # __init__): one resident (nz, ny, nx) FP32 driver persistent
+        # holding the radiation cloud fraction for output, allocated when
+        # the attached radiation callable declares ``publishes_cldfra``.
+        # RTE+RRTMGP and legacy RRTMG declare it on either spectrum, the
+        # classic RRTM longwave on its own; Dudhia alone computes no
+        # fraction.  Over-counting a caller-injected adapter that does not
+        # declare it is the safe direction for a VRAM estimate.
+        shapes["cldfra"] = m
+    if int(getattr(cfg, "ifire", 0) or 0) == 2:
+        shapes.update(fire_array_shapes(cfg))
+    return shapes
+
+
+#: Halo of the coarse spotting accumulation grids (sfire_spotting), cells.
+_SPOTTING_HALO = 4
+
+
+def fire_array_shapes(cfg: RunConfig) -> dict[str, tuple[int, ...]]:
+    """The SFIRE coupler's resident arrays at ``ifire`` 2, as priced shapes.
+
+    The breakage this prevents: ``PhysicsDriver.fire`` (the FireCoupler) and
+    ``fire_tendencies`` were serialized by the restart manifest but priced by
+    nothing, so a refined fire grid (sr_x * sr_y fine cells per column, 43
+    padded fine planes) could be admitted on a card it does not fit.
+
+    Every count is the inventory of an actual FireCoupler read on an RTX
+    4090 (tests/test_sfire_preflight_price_gpu.py re-reads it and requires
+    these shapes to equal the allocated bytes): 43 padded fine float32
+    planes; coarse planes (20 without spotting, 12 with it, whose particle
+    owner replaces eight); two coarse 3-D heating tendencies; the two
+    staggered fire winds; the moisture model's three (nfmc, ny, nx) class
+    fields, one (2, ny, nx) pair and one scalar; and with spotting the
+    unpadded fine landing field, eight halo-4 coarse accumulators, eleven
+    particle vectors of fs_array_maxsize and a three-word counter.  Integer
+    arrays are int32, so every entry prices at four bytes a word.
+    """
+    nz, ny, nx = int(cfg.nz), int(cfg.ny), int(cfg.nx)
+    sr_x, sr_y = int(cfg.sr_x), int(cfg.sr_y)
+    fine_y, fine_x = ny * sr_y, nx * sr_x
+    spotting = int(getattr(cfg, "fs_firebrand_gen_lim", 0) or 0) > 0
+    shapes = {
+        "fire/fine_padded": (43, fine_y + 2, fine_x + 2),
+        "fire/coarse": (12 if spotting else 20, ny, nx),
+        "fire/heating": (2, nz, ny, nx),
+        "fire/uah": (ny, nx + 1),
+        "fire/vah": (ny + 1, nx),
+        "fire/moisture_classes": (3, int(cfg.nfmc), ny, nx),
+        "fire/moisture_pair": (2, ny, nx),
+        "fire/lfn_time": (1,),
+        # PhysicsTendencies.zeros: ru, rv and three mass-point scalars.
+        "fire_tendencies/ru": (nz, ny, nx + 1),
+        "fire_tendencies/rv": (nz, ny + 1, nx),
+        "fire_tendencies/scalars": (3, nz, ny, nx),
+    }
+    if spotting:
+        halo = 2 * _SPOTTING_HALO
+        shapes.update({
+            "fire/spotting_landing": (fine_y, fine_x),
+            "fire/spotting_coarse": (8, ny + halo, nx + halo),
+            "fire/spotting_particles": (11, int(cfg.fs_array_maxsize)),
+            "fire/spotting_counter": (3,),
+        })
     return shapes
 
 
@@ -4565,9 +4976,11 @@ def scratch_slot_registry(cfg: RunConfig, *,
     if cfg.emdiv > 0.0:
         slots.update(acoustic_mudf=s2)
 
-    if cfg.moist or cfg.km_opt == 2:
-        # dycore.py acoustic time-averaged mass fluxes (moist scalars
-        # and/or the km_opt=2 TKE carrier advect with them).
+    chem_on = bool(getattr(cfg, "chem_sets", ""))
+    if cfg.moist or cfg.km_opt == 2 or chem_on:
+        # dycore.py acoustic time-averaged mass fluxes (moist scalars,
+        # the km_opt=2 TKE carrier and the chem rows advect with them;
+        # dycore.step accumulates them for a chem state even when dry).
         slots.update(rk_ru_m=xs, rk_rv_m=ys, rk_ww_m=fl)
         slots["moist_rq_t"] = m                     # moist.py:247
         allocated = state_array_shapes(cfg)
@@ -4585,10 +4998,23 @@ def scratch_slot_registry(cfg: RunConfig, *,
             # tests/test_p3_port.py pins it to moist.ABSENT_MASS_SLOT.
             slots["moist_absent_mass"] = m
         pd = ((cfg.moist and cfg.moist_adv_opt == 1) or cfg.km_opt == 2)             and not (cfg.open_x or cfg.open_y)
-        if pd:
+        # gpuwm/core/chem_transport.py: the chem rows' limited final stage
+        # borrows the same six face buffers and fold copy, positive
+        # definite (chem_adv_opt 1, not on open domains) or monotonic (2).
+        chem_limited = chem_on and (
+            cfg.chem_adv_opt == 2
+            or (cfg.chem_adv_opt == 1 and not (cfg.open_x or cfg.open_y)))
+        if pd or chem_limited:
             slots.update(pd_fxl=xs, pd_fxc=xs, pd_fyl=ys, pd_fyc=ys,
                          pd_fzl=fl, pd_fzc=fl)      # moist.py:283-288
             slots["moist_pd_q0"] = m                # moist.py:197
+        if chem_on and cfg.chem_adv_opt == 2:
+            from gpuwm.core.chem_context import (
+                MONO_IMPLICIT_SLOT, MONO_SCRATCH_SLOTS,
+            )
+            for slot in MONO_SCRATCH_SLOTS:
+                slots[slot] = m
+            slots[MONO_IMPLICIT_SLOT] = fl
         if cfg.specified:
             from gpuwm.boundary_fields import potential_external_scalar_fields
             for name in potential_external_scalar_fields(cfg):
@@ -4760,11 +5186,16 @@ def scratch_slot_registry(cfg: RunConfig, *,
         #   nwfa_work_m3           -- the :3211 working CCN snapshot, which
         #       has no 9999E6 ceiling, uses tau+1 density and feeds
         #       activ_ncloud only.
-        #   qc_entry               -- frozen qc1d, required by the ncten
-        #       balance limiter (:2996-3019), which needs BOTH the entry and
-        #       the post-source cloud mass.
-        #   ni_entry               -- frozen ni1d, credited to ncten by the
-        #       cloud-ice melt branch of the final phase cleanup (:3943-3966).
+        #   qcten                  -- WRF's cloud water accumulator
+        #       (:1670 zero, :3975 apply), written by every stage that moves
+        #       cloud water so the cloud is rounded once per call.  The entry
+        #       cloud itself needs no copy: state.qc stays qc1d until :3975.
+        #   qrten/nrten/qiten/niten -- v4.6.1 generation: WRF's rain and
+        #       ice accumulators, applied once with the :4023-4053 bounds
+        #       (state.qr/nr/qi/ni stay the entry state, so no copy).
+        #   ni_entry               -- fork generation only: frozen ni1d,
+        #       credited to ncten by the cloud-ice melt branch of the final
+        #       phase cleanup (:3943-3966), whose sources write ni in place.
         #   condensation_rate      -- prw_vcd, held so rain evaporation can
         #       reproduce the :3502 gate that suppresses evaporation in a
         #       cell that just condensed.
@@ -4780,10 +5211,20 @@ def scratch_slot_registry(cfg: RunConfig, *,
             mp_thompson_aero_entry_density=m,
             mp_thompson_aero_tau1_density=m,
             mp_thompson_aero_nwfa_work_m3=m,
-            mp_thompson_aero_qc_entry=m,
-            mp_thompson_aero_ni_entry=m,
+            mp_thompson_aero_qcten=m,
             mp_thompson_aero_condensation_rate=m,
         )
+        if getattr(cfg, "thompson_version", "wrf_461") == "wrf_39_noaa":
+            # The fork keeps its in-place rain and ice: no rain or ice
+            # accumulator, and the entry ice number held for the cleanup.
+            slots.update(mp_thompson_aero_ni_entry=m)
+        else:
+            slots.update(
+                mp_thompson_aero_qrten=m,
+                mp_thompson_aero_nrten=m,
+                mp_thompson_aero_qiten=m,
+                mp_thompson_aero_niten=m,
+            )
     if cfg.mp_physics == 9:
         # milbrandt2.py::apply -- the WRF prep pair, the thirteen scratch
         # volumes the six kernels hand to one another (Part 1 leaves DZ/iDZ
@@ -4947,6 +5388,13 @@ def scratch_slot_registry(cfg: RunConfig, *,
                 for name in ("qh", "qndrop", "qnr", "qni", "qns", "qng",
                              "qnh", "qnn", "qvolg", "qvolh"):
                     slots["smag_r" + name] = m
+        if getattr(cfg, "chem_sets", ""):
+            # One held tendency per transported chem row, dry state or
+            # moist: dycore._smag2d_specs appends the chem rows whenever
+            # the state carries chem (their slots are smag_rchem_<row>).
+            from gpuwm.chem_table import load as load_chem_table
+            for row in load_chem_table(cfg).transported:
+                slots["smag_r" + row.state_attr] = m
     if cfg.km_opt in (2, 3, 4) or cfg.diff_6th_opt:
         # Smagorinsky reuses the x/y face workspaces for u/v staging,
         # W stresses and metric scalar fluxes (km_opt=3 stages BN2 in the
@@ -5095,6 +5543,19 @@ def scratch_slot_registry(cfg: RunConfig, *,
         if cfg.specified and n_lbc_intervals > 0:
             slots["lbc_forcing_tables"] = (
                 n_lbc_intervals * lbc_interval_values(cfg),)
+        if cfg.specified and getattr(cfg, "chem_sets", ""):
+            # WRF-Chem's chem_b/chem_bt of the rows a data-store source
+            # fills (have_bcs_chem): the outer row of every side, packed
+            # per served interval for the chem flow boundary launch
+            # (lateral_bc.chem_boundary_rows), one row per transported row.
+            from gpuwm.chem_source_init import chem_boundary_fields
+            from gpuwm.chem_table import load as load_chem_table
+            from gpuwm.ingest.lateral_bc import CHEM_BOUNDARY_SLOTS
+            table = load_chem_table(cfg)
+            if chem_boundary_fields(table, cfg):
+                rows = len(table.transported)
+                for index, slot in enumerate(CHEM_BOUNDARY_SLOTS):
+                    slots[slot] = (rows, nz, ny if index < 4 else nx)
     elif cfg.nested:
         # Rolling tables themselves live in the F4/F16 nest manifest.
         # Only the tiny Davies weights and MU finalizer frame use the legacy
@@ -5319,7 +5780,11 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
          # lifetime: they are transported scalars like the number moments,
          # so prepare_fixed_tendencies writes each held tendency once
          # before the RK loop and every stage only reads it.
-         "smag_rqir", "smag_rqib"),
+         "smag_rqir", "smag_rqib",
+         # Chem rows' held tendencies (gpuwm/core/chem_transport.py), one
+         # per transported row, named by the chem table.  Same
+         # construction, same lifetime.
+         "smag_rchem_*"),
         "write_before_read",
         "gpuwm/core/dycore.py:prepare_fixed_tendencies",
         "time-t K and its held tendencies are written and consumed before "
@@ -5384,6 +5849,23 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
         "launch_diff6_to_edge call whose result is added into the caller's "
         "diff6_* temporary before it returns; nothing is read across "
         "calls, so no arena neighbour can be observed through them"),
+    ScratchSlotLifetime(
+        ("chem_mono_qmin", "chem_mono_qmax", "chem_mono_si",
+         "chem_mono_so", "chem_mono_ht", "chem_mono_zt"),
+        "write_before_read",
+        "gpuwm/core/chem_advect_mono.py:launch_mono_fluxes; "
+        "gpuwm/core/kernels/mono_advection.cu:mono_fluxes,mono_scales,"
+        "mono_apply",
+        "mono_fluxes writes both extrema of every cell, mono_scales both "
+        "scales of every cell and mono_apply both diagnostics of every cell, "
+        "each before the next kernel reads them, once per chem row"),
+    ScratchSlotLifetime(
+        ("chem_mono_wwi",), "carrying",
+        "gpuwm/core/chem_transport.py:advance_chem_stage",
+        "WRF's implicit vertical mass flux, read as the zeros the slot is "
+        "allocated with on every monotonic stage and never written; lending "
+        "its backing to any other slot would hand the limiter a nonzero "
+        "implicit flux"),
     ScratchSlotLifetime(
         ("moist_pd_q0", "moist_rq_t", "moist_absent_mass",
          "pd_fxl", "pd_fxc", "pd_fyl",
@@ -5514,7 +5996,11 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
          "mp_thompson_aero_entry_density",
          "mp_thompson_aero_tau1_density",
          "mp_thompson_aero_nwfa_work_m3",
-         "mp_thompson_aero_qc_entry",
+         "mp_thompson_aero_qcten",
+         "mp_thompson_aero_qrten",
+         "mp_thompson_aero_nrten",
+         "mp_thompson_aero_qiten",
+         "mp_thompson_aero_niten",
          "mp_thompson_aero_ni_entry",
          "mp_thompson_aero_condensation_rate"),
         "write_before_read",
@@ -5738,8 +6224,11 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
     # EXCLUDED (carrying/setup): weights are cached by key and forcing views
     # remain attached across all steps (lateral_bc.py:282-301,535-577).
     ScratchSlotLifetime(
-        ("lbc_weights_*", "lbc_forcing_tables", "lbc_evaluated_tables"), "carrying",
-        "gpuwm/ingest/lateral_bc.py:282-301,535-577",
+        ("lbc_weights_*", "lbc_forcing_tables", "lbc_evaluated_tables",
+         # The chem rows' packed outer boundary rows, cut once per served
+         # interval and read by every RK stage until it changes.
+         "lbc_chem_*"), "carrying",
+        "gpuwm/ingest/lateral_bc.py:282-301,535-577,chem_boundary_rows",
         "resident forcing tables and cached weights are cross-step setup"),
     # MYNN's declared workspace.  Split three ways on purpose.
     #
@@ -5760,6 +6249,7 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
          "mynn_pbl_mixlength_work", "mynn_pbl_turbulence",
          "mynn_pbl_predict", "mynn_pbl_predict_work",
          "mynn_pbl_condensation", "mynn_pbl_initialize",
+         "mynn_pbl_gsd41_condensation_work", "mynn_pbl_gsd41_pblh_thetav",
          "mynn_pbl_initialize_work", "mynn_pbl_plume_layer",
          "mynn_pbl_plume_face", "mynn_pbl_plume_column",
          "mynn_pbl_plume_work", "mynn_pbl_plume_scratch",
@@ -5771,11 +6261,15 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
          "mynn_pbl_out_dqi"),
         "write_before_read",
         "gpuwm/core/mynn_pbl_scratch.py; gpuwm/core/mynn_pbl_gpu.py; "
-        "gpuwm/core/kernels/mynn_pbl.cu:945,2482-2489,2799-2821,1400-1406",
+        "gpuwm/core/kernels/mynn_pbl.cu:945,2482-2489,2799-2821,1400-1406; "
+        "mynn_condensation_gsd41_columns; mynn_gsd41_thvl_columns",
         "each solver leaf fills its own outputs and work vectors before any "
         "reader; the six returned A-grid tendency fields are fully written "
         "across the chunk walk and are dead the moment "
-        "couple_ysu_tendencies has multiplied them into new arrays",
+        "couple_ysu_tendencies has multiplied them into new arrays; GSD "
+        "condensation writes all five consumed work vectors before its "
+        "second loop reads them, and the GSD driver fills liquid-water "
+        "virtual theta before every PBL-height reader",
     ),
     # EXCLUDED (constant): nothing writes these.  WRF passes them to systems
     # this lane's pinned identity switches off, and every reader requires
@@ -5833,7 +6327,10 @@ SCRATCH_SLOT_LIFETIME_AUDIT = (
                "qi", "qs", "qg", "nr", "ni", "ns", "ng", "nh", "qh",
                "qir", "qib",
                "qndrop", "qnr", "qni", "qns", "qng", "qnh", "qnn",
-               "qvolg", "qvolh", "nc", "nn", "nwfa", "nifa")),
+               "qvolg", "qvolh", "nc", "nn", "nwfa", "nifa"))
+        # Chem rows' rolling frames, one per transported row a nest carries
+        # (gpuwm/core/nest_fields.py), named by the chem table.
+        + ("nest_chem_*",),
         "carrying", "gpuwm/core/nest.py:force; "
         "gpuwm/ingest/lateral_bc.py:attach_nest_boundaries",
         "rolling value/tendency frames are consumed through the complete "
@@ -6362,7 +6859,10 @@ def mynn_mixscalars_memory_items(cfg: RunConfig, *, tile_buffer: bool = False
     allocations. Owners: mynn_pbl_runtime.py, mynn_pbl_gpu.py and
     mynn_scalar_mix_gpu.py.
     """
-    if int(cfg.bl_pbl_physics) != 5 or int(cfg.bl_mynn_mixscalars) != 1:
+    # Priced for the ACTIVE key only: with a microphysics that carries no
+    # qn family the key is inert (config.mynn_mixscalars_active) and the
+    # runtime stages none of this storage.
+    if not mynn_mixscalars_active(cfg):
         return ()
     from gpuwm.core.mynn_pbl import DMP_NUP
     from gpuwm.core.mynn_scalar_mix import QN_SOLVE_ORDER
@@ -6715,6 +7215,7 @@ def estimate_domain(dc: DomainConfig, *, spec_bdy_width: int | None = None,
                     boundary_species=(),
                     tile_buffer: bool = False,
                     urban_columns: int | None = None,
+                    lake_columns: int | None = None,
                     ) -> DomainMemoryEstimate:
     """Itemized :class:`DomainMemoryEstimate` for one domain.
 
@@ -6738,7 +7239,8 @@ def estimate_domain(dc: DomainConfig, *, spec_bdy_width: int | None = None,
         (HeldMemoryItem if name in held else MemoryItem)(
             name, "physics", tuple(shape), 4)
         for name, shape in physics_array_shapes(
-            run, cam_ozone=cam_ozone, urban_columns=urban_columns).items())
+            run, cam_ozone=cam_ozone, urban_columns=urban_columns,
+            lake_columns=lake_columns).items())
     from gpuwm.core.cfl_inventory import (
         WRF_CFL_SHAPE, wrf_cfl_recording_requested)
     if wrf_cfl_recording_requested(run, adaptive=cfl_recording):
@@ -6838,6 +7340,10 @@ class ExperimentMemoryEstimate:
     column_chunk: int
     #: The measured forecast margin (A163), not the plan's 1.15.
     headroom: float = FORECAST_POOL_HEADROOM
+    #: A byte bound on the margin ``headroom`` prices (A13): set by the
+    #: ranked road to :data:`RANK_POOL_RESIDUE_BOUND_BYTES`, ``None``
+    #: (the ratio alone) on every other road.
+    pool_residue_cap_bytes: int | None = None
     retention_residual_bytes: int = field(default=0)
     device_overhead_bytes: int = field(
         default_factory=lambda: platform_projection_constants()[1])
@@ -6948,7 +7454,20 @@ class ExperimentMemoryEstimate:
     def alloc_estimate_bytes(self) -> int:
         return forecast_pool_estimate_bytes(
             self.subtotal_bytes, held_exact_bytes=self.held_exact_bytes,
-            headroom=self.headroom)
+            headroom=self.headroom,
+            residue_cap_bytes=self.pool_residue_cap_bytes)
+
+    @property
+    def pool_residue_cap_active(self) -> bool:
+        """Is the pool margin this estimate carries the byte bound rather
+        than the ratio (A13)?  False whenever no cap was given or the
+        ratio's margin is already under it."""
+        cap = self.pool_residue_cap_bytes
+        if cap is None:
+            return False
+        turnover = self.subtotal_bytes - max(
+            0, min(self.held_exact_bytes, self.subtotal_bytes))
+        return math.ceil(self.headroom * turnover) - turnover > int(cap)
 
     @property
     def held_projection_bytes(self) -> int:
@@ -8478,6 +8997,8 @@ def estimate_experiment(
         boundary_species=(),
         urban_columns=None,
         tile_buffer: bool = False,
+        lake_columns=None,
+        pool_residue_cap_bytes: int | None = None,
 ) -> ExperimentMemoryEstimate:
     """Sum the per-domain itemizations; count the lru_cache-shared
     k-distribution tables ONCE (rrtmgp.py:324/:436 -- baseline behavior,
@@ -8497,7 +9018,17 @@ def estimate_experiment(
     (:func:`gpuwm.core.urban_state.prepared_urban_columns`); a domain it
     does not name is priced at every column urban (A176). ``tile_buffer``
     prices the workspace policy used by ``prepared_tile_state_factory``;
-    permanently resident device ranks use that factory too."""
+    permanently resident device ranks use that factory too.
+
+    ``lake_columns`` maps grid id to an upper bound on the domain's CLM
+    lake columns (a device rank's count of lake-eligible columns in its
+    compute window, :func:`gpuwm.core.devices_memory.rank_lake_column_bounds`);
+    a domain it does not name prices the sparse lake work arrays at every
+    column, the configuration door's bound.
+
+    ``pool_residue_cap_bytes`` bounds the pool margin in bytes
+    (:func:`forecast_pool_estimate_bytes`); the ranked road passes
+    :data:`RANK_POOL_RESIDUE_BOUND_BYTES` for its device ranks (A13)."""
     column_chunk = (exp.column_chunk if column_chunk is None
                     else column_chunk)
     if (isinstance(column_chunk, bool)
@@ -8526,7 +9057,8 @@ def estimate_experiment(
             p_top=exp.vertical.p_top,
             column_chunk=column_chunk,
             tile_buffer=tile_buffer,
-            urban_columns=(urban_columns or {}).get(int(dc.grid_id)))
+            urban_columns=(urban_columns or {}).get(int(dc.grid_id)),
+            lake_columns=(lake_columns or {}).get(int(dc.grid_id)))
         for dc in exp.domains)
     from gpuwm.physics_compat import RRTMG_VARIANT_LEGACY, rrtmg_variant
     variants = {rrtmg_variant(dc.run) for dc in exp.domains
@@ -8618,6 +9150,15 @@ def estimate_experiment(
         uses_shared_dycore_state_workspace=uses_arena,
         column_chunk=column_chunk,
         headroom=forecast_pool_headroom(dc.run for dc in exp.domains),
+        # A suite an itemization-gap row raised the headroom for keeps
+        # the ratio whatever the caller passed: its shortfall is pool
+        # USED beyond the subtotal, proportional to the rank, which the
+        # byte bound would under-price (rank_pool_residue_cap_bytes).
+        pool_residue_cap_bytes=(
+            None if pool_residue_cap_bytes is None
+            or rank_pool_residue_cap_bytes(
+                dc.run for dc in exp.domains) is None
+            else int(pool_residue_cap_bytes)),
         retention_residual_bytes=(
             platform_projection_constants(vram_gib=vram_gib)[0]
             if uses_rrtmgp else 0),
@@ -12347,6 +12888,12 @@ __all__ = [
     "ENVELOPE_AFFINE_BASIS", "ENVELOPE_A163_BASIS", "ENVELOPE_PER_NEST_FRACTION",
     "FORECAST_PEAK_RATIO_MEASURED", "FORECAST_PEAK_RATIO_SAFETY",
     "FORECAST_POOL_HEADROOM", "FORECAST_PEAK_BATTERY",
+    "RANK_POOL_RESIDUE_BATTERY", "RANK_POOL_RESIDUE_BOUND_BYTES",
+    "RANK_POOL_RESIDUE_BASIS", "POOL_RESIDUE_MEASURED_BYTES",
+    "POOL_RESIDUE_SWING_BYTES", "RANK_POOL_RESIDUE_GAP_BASIS",
+    "RANK_POOL_RESIDUE_SUITES", "RANK_POOL_RESIDUE_UNMEASURED_BASIS",
+    "rank_pool_residue_cap_bytes", "rank_pool_residue_suite",
+    "rank_pool_residue_basis",
     "HeldMemoryItem", "bem_workspace_bound_note",
     "forecast_pool_estimate_bytes", "urban_held_bytes",
     "urban_held_item_names",

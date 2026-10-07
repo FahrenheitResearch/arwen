@@ -848,6 +848,16 @@ def _configured_soil_mesh(grid, experiment_tables):
         None, grid, experiment_tables, source_grid=hrrr_source_grid())
 
 
+def _fetch_receipt_path(args):
+    """The fetch receipt beside the source files, where ``gpuwm fetch``
+    records each runtime surface row (appended, or its fallback)."""
+    from gpuwm.fetch import FETCH_MANIFEST_NAME
+    root = getattr(args, "source_root", None)
+    if root is not None:
+        return Path(root) / FETCH_MANIFEST_NAME
+    return getattr(args, "source_manifest", None)
+
+
 def _source_identity() -> dict[str, object]:
     paths = (
         REPO / "gpuwm/hrrr_forecast.py",
@@ -2283,7 +2293,8 @@ def _experiment_tables(
                 raise ValueError(f"{name} override must be boolean")
             raw["shared"][name] = value
     from gpuwm.physics_source_defaults import (
-        recipe_physics_defaults, recipe_root_defaults, with_recipe_root_defaults)
+        MP_SCOPED_RECIPE_SETTINGS, recipe_physics_defaults,
+        recipe_root_defaults, with_recipe_root_defaults)
     defaults = recipe_physics_defaults("hrrr")
     for name, value in defaults.items():
         if name in ("usemonalb", "rdlai2d"):
@@ -2292,6 +2303,10 @@ def _experiment_tables(
             # declared controls, including explicit false.
             if int(switches["sf_surface_physics"]) in (2, 3):
                 raw["shared"].setdefault(name, value)
+        elif name in MP_SCOPED_RECIPE_SETTINGS:
+            # The fork Thompson generation exists for mp_physics = 28 only.
+            if int(switches["mp_physics"]) in MP_SCOPED_RECIPE_SETTINGS[name]:
+                raw["shared"][name] = value
         else:
             raw["shared"][name] = value
     with_recipe_root_defaults(
@@ -2951,7 +2966,8 @@ def _crop_horizontal_snapshot(snapshot, *, y0, y1, x0, x1,
     return SimpleNamespace(
         valid_time=snapshot.valid_time,
         levels_hpa=np.array(snapshot.levels_hpa, copy=True),
-        fields=cropped)
+        fields=cropped,
+        withheld_fields=dict(getattr(snapshot, "withheld_fields", None) or {}))
 
 
 def _crop_boundary_static(static, *, y0, y1, x0, x1, full_shape):
@@ -3038,7 +3054,10 @@ def _detach_mapped_snapshot(met):
     return SimpleNamespace(
         valid_time=met.valid_time,
         levels_hpa=np.array(met.levels_hpa, copy=True),
-        fields=fields)
+        fields=fields,
+        # A boundary strip that asks for a withheld field is refused with
+        # the decoder's reason, as the start state is.
+        withheld_fields=dict(getattr(met, "withheld_fields", None) or {}))
 
 
 def _map_boundary_snapshot(
@@ -3081,8 +3100,18 @@ def _map_boundary_snapshot(
     return compact, time.perf_counter() - started
 
 
-def _compact_boundary_static(static, run_cfg, *, width):
-    """Copy the four static side rectangles once for worker initialization."""
+def _compact_boundary_static(static, run_cfg, *, width, latlon_mass=None):
+    """Copy the four static side rectangles once for worker initialization.
+
+    ``latlon_mass`` is the domain's mass-point ``(lat2d, lon2d)``; each
+    side then carries its own rectangle of it as ``XLAT_M``/``XLONG_M``,
+    the geodesy :func:`gpuwm.ingest.real.initialize_real` reads (through
+    ``grid=``) to build an mp=28 strip's aerosol from the monthly WIF
+    climatology.  Without it an mp=28 tree on this route asking for the
+    climatology refused in every boundary worker ("could not derive the
+    model mass-point latitudes/longitudes"), although the start state
+    beside it had them.
+    """
     ny, nx = run_cfg.ny, run_cfg.nx
     rectangles = {
         "west": (0, ny, 0, width),
@@ -3090,7 +3119,7 @@ def _compact_boundary_static(static, run_cfg, *, width):
         "south": (0, width, 0, nx),
         "north": (ny - width, ny, 0, nx),
     }
-    return {
+    sides = {
         side: {
             name: np.ascontiguousarray(value)
             for name, value in _crop_boundary_static(
@@ -3099,6 +3128,36 @@ def _compact_boundary_static(static, run_cfg, *, width):
         }
         for side, (y0, y1, x0, x1) in rectangles.items()
     }
+    if latlon_mass is not None:
+        latitude, longitude = (np.asarray(value, dtype=np.float64)
+                               for value in latlon_mass)
+        if latitude.shape != (ny, nx) or longitude.shape != (ny, nx):
+            raise ValueError(
+                "boundary strip geodesy must be the mass grid "
+                f"({ny} x {nx}); got {latitude.shape} and {longitude.shape}")
+        for side, (y0, y1, x0, x1) in rectangles.items():
+            sides[side]["XLAT_M"] = np.ascontiguousarray(latitude[y0:y1, x0:x1])
+            sides[side]["XLONG_M"] = np.ascontiguousarray(longitude[y0:y1, x0:x1])
+    return sides
+
+
+def _boundary_static_sides(static, grid, run_cfg, *, width):
+    """The controller's boundary strip statics, geodesy included.
+
+    The coordinates come from ``grid``, never from ``static``: a root whose
+    statics come from a static source (``[static] source =
+    "hrrr-conus-v4"``) carries no ``XLAT_M``/``XLONG_M`` in its field set,
+    so a strip that looked there found nothing.  With no coordinates every
+    mp=28 boundary worker refused the WIF climatology at forecast start
+    ("could not derive the model mass-point latitudes/longitudes"),
+    blocking every plain HRRR regional run on 2.8.6.  Only an mp=28 domain
+    reads strip geodesy (its aerosol climatology); other schemes keep the
+    small payload.
+    """
+    return _compact_boundary_static(
+        static, run_cfg, width=width,
+        latlon_mass=(grid.latlon_mass() if int(run_cfg.mp_physics) == 28
+                     else None))
 
 
 @preprocess_math_call
@@ -3161,57 +3220,22 @@ def _initialize_boundary_sides(
             coord = make_vertical_coord(
                 strip_cfg.nz, hybrid_opt=strip_cfg.hybrid_opt,
                 etac=strip_cfg.etac, eta_levels=eta)
-            # NO ``grid=`` HERE, AND THAT IS THE DECISION, not an
-            # omission.  Every full-domain real route passes the mp=28
-            # aerosol front door; this one must not, for three reasons
-            # that all point the same way.
-            #
-            #  * NOTHING READS WHAT IT WOULD FILL.  These four states are
-            #    built to be thrown away: the only thing taken out of them
-            #    is ``extract_lateral_side(_coupled_device_fields(...))``,
-            #    and that dict is u, v, theta, phi, mu, qv and the analysed
-            #    hydrometeors with their seeded numbers
-            #    (gpuwm.boundary_fields).  nwfa/nifa are deliberately absent
-            #    from it (gpuwm/ingest/lateral_bc.py:639-646, the
-            #    registered mp=28 boundary deviation whose full argument
-            #    is in gpuwm/core/moist.py).  Wiring here would resolve,
-            #    read and interpolate a 225 MB global dataset to populate
-            #    fields that this function's one consumer is documented
-            #    never to look at.
-            #  * THE COST IS PER STRIP, PER HOUR, PER PROCESS.  This runs
-            #    four times per forcing hour inside SPAWNED preparation
-            #    workers (_prepare_boundary_hour), so the load and the
-            #    monthly + vertical interpolation would be paid 4 x hours
-            #    x workers over for a result nobody reads.
-            #  * IT HAS NO GEODESY TO PASS.  ``_crop_boundary_static``
-            #    ships eight named fields and no XLAT/XLONG, on purpose --
-            #    the crop exists to keep the per-worker payload small.
-            #    Wiring would mean widening that payload too.
-            #
-            # WHAT MAKES THIS SAFE rather than a silent gap.  The f00 /
-            # reference state that actually becomes the forecast IS wired
-            # (``_initialize_state`` below passes ``grid=grid``) and the
-            # report this runner writes names THAT state's aerosol source,
-            # so the run's answer is recorded and no second answer exists
-            # to disagree with it.  And this runner cannot reach the mp=28
-            # block at all today: its physics selection is the closed
-            # ``_NATIVE_HRRR_RUNTIME_SWITCHES`` registry, whose profiles
-            # resolve mp_physics 1, 6, 8, 10, 18 and 50 and nothing else
-            # -- none of them aerosol-aware.  (50 joined with the P3
-            # profile row and changes nothing here: P3 carries no aerosol
-            # scalars either.)
-            #
-            # IF AN AEROSOL-AWARE PROFILE IS EVER ADDED TO THAT REGISTRY,
-            # this is the line to revisit -- not by pasting ``grid=`` in,
-            # but by deciding what a boundary strip's aerosol scope IS.
-            # As written it would emit the synthetic-fallback warning four
-            # times per forcing hour per worker, and under
-            # ``mp28_aerosol_source='climatology'`` it would RAISE, because
-            # a strip carries no mass-point geodesy for the resolver to
-            # honour the request with.
+            # The strip's own mass-point geodesy, when the controller
+            # shipped it (``_compact_boundary_static(latlon_mass=...)``):
+            # an mp=28 domain's boundary rows carry nwfa/nifa
+            # (gpuwm.boundary_fields.AEROSOL_BOUNDARY_FIELDS), and under the
+            # monthly WIF climatology initialize_real builds them from this
+            # lat/lon, lazily and only on its mp=28 climatology branch, the
+            # same door the start state takes with ``grid=grid``.  Every
+            # other scheme reads none of it.
+            strip_geodesy = (
+                {"XLAT_M": strip_static["XLAT_M"],
+                 "XLONG_M": strip_static["XLONG_M"]}
+                if "XLAT_M" in strip_static else None)
             result = initialize_real(
                 strip_met, strip_cfg, coord, strip_static["HGT_M"],
                 landmask=strip_static["LANDMASK"],
+                **({} if strip_geodesy is None else {"grid": strip_geodesy}),
                 p_top=p_top, sfcp_to_sfcp=sfcp_to_sfcp,
                 preprocess_backend=preprocess,
                 state_backend="preprocess",
@@ -3699,8 +3723,13 @@ def _write_chained_head(
     writer.write_head(
         initial_result=root_result, met=root_met,
         surface=root_surface.fields, metadata=metadata,
+        # The configuration's zones, which the forecast door compares
+        # against this head (prepared_single_domain_forecast: "prepared
+        # cache LBC width differs from experiment"); a literal 1/4 refused
+        # every HRRR-route tree on other zones, HRRR v4's own 1/9 among them.
         lbc={"spec_bdy_width": int(dc.run.spec_bdy_width),
-             "spec_zone": 1, "relax_zone": 4,
+             "spec_zone": int(dc.run.spec_zone),
+             "relax_zone": int(dc.run.relax_zone),
              "schedule": [[float(k * 3600), float((k + 1) * 3600)]
                           for k in range(len(requested_hours) - 1)],
              "fields": sorted(boundary_sides["west"])},
@@ -4035,8 +4064,13 @@ def _write_posted_head(
     writer.write_head(
         initial_result=root_result, met=root_met,
         surface=root_surface.fields, metadata=metadata,
+        # The configuration's zones, which the forecast door compares
+        # against this head (prepared_single_domain_forecast: "prepared
+        # cache LBC width differs from experiment"); a literal 1/4 refused
+        # every HRRR-route tree on other zones, HRRR v4's own 1/9 among them.
         lbc={"spec_bdy_width": int(dc.run.spec_bdy_width),
-             "spec_zone": 1, "relax_zone": 4,
+             "spec_zone": int(dc.run.spec_zone),
+             "relax_zone": int(dc.run.relax_zone),
              "schedule": [[float(k * 3600), float((k + 1) * 3600)]
                           for k in range(len(requested_hours) - 1)],
              "fields": sorted(boundary_sides["west"])},
@@ -4328,10 +4362,18 @@ def _budgeted_preprocess_backend(args, price=None):
         cpu_bridge=args.cpu_preprocess_bridge, price=price)
     if getattr(preprocess, "name", None) == "cuda":
         return preprocess, None
+    # The count the backend itself will run, through the same budget its
+    # constructor applies (affinity, cgroup CPU quota, memory headroom,
+    # GPUWM_PREPROCESS_THREADS).  os.cpu_count() ignores the first three,
+    # so on a host whose cgroup grants fewer CPUs than it has cores every
+    # CPU preparation was refused at f00 ("used 245 native workers;
+    # expected 256") by its own receipt check.
+    from gpuwm.ingest.cpu_backend import automatic_workers
+    from gpuwm.ingest.preparation_workers import effective_workers
     effective_preprocess_workers = (
-        int(args.preprocess_workers)
+        effective_workers(int(args.preprocess_workers))
         if args.preprocess_workers is not None
-        else int(os.cpu_count() or 1))
+        else automatic_workers())
     if getattr(preprocess, "workers", None) != effective_preprocess_workers:
         chosen = getattr(preprocess, "selection", None)
         preprocess = resolve_preprocess_backend(
@@ -4500,6 +4542,14 @@ def run(args):
     seal_started = None
 
     requested_hours = model_forcing_hours
+    # The decoder reads HRRR's analyzed aerosol pair only for a
+    # configuration that uses it (use_rap_aero_icbc, or
+    # mp28_aerosol_source = "analysis"), the rule the fetch's record
+    # subset already follows.  Read unasked, a pair NCEP masks with a
+    # GRIB2 bitmap at a later lead stopped an as-posted default-profile
+    # preparation that never used it.
+    from gpuwm.preparation_assets import analyzed_aerosol_domains
+    decoder_reads_analyzed_aerosol = bool(analyzed_aerosol_domains(exp))
     source_identity = {
         **_source_identity(),
         "source_cycle": requested_cycle.isoformat(),
@@ -4708,6 +4758,9 @@ def run(args):
     # ...]` while the answer sat in surface/.  None on the fresh road,
     # which holds the native pair and no surface yet.
     root_surface = None
+    # Recorded runtime surface fallbacks (fetch receipt rows); empty on a
+    # restored cache, whose own prepare receipt already carries them.
+    runtime_surface_fallbacks: dict = {}
     last_valid_time = None
     boundaries = None
     if restore_cached:
@@ -4795,7 +4848,8 @@ def run(args):
             window=source_window.bridge_tuple(),
             workers=args.pipeline_workers,
             log=args.pipeline_signals.with_suffix(".decoder.log"),
-            admissions=admitter.admissions)
+            admissions=admitter.admissions,
+            analyzed_aerosol=decoder_reads_analyzed_aerosol)
         started = time.perf_counter()
         pipeline_producer.start()
         admitter.start()
@@ -4844,7 +4898,8 @@ def run(args):
             cycle=requested_cycle.strftime("%Y-%m-%d %H:%M:%S"),
             window=source_window.bridge_tuple(),
             workers=args.pipeline_workers,
-            log=args.pipeline_signals.with_suffix(".decoder.log"))
+            log=args.pipeline_signals.with_suffix(".decoder.log"),
+            analyzed_aerosol=decoder_reads_analyzed_aerosol)
         started = time.perf_counter()
         pipeline_producer.start()
         pipeline_producer.wait_preflight()
@@ -4965,8 +5020,8 @@ def run(args):
         valid_time_by_hour = {}
         setup_record_by_hour = {}
         width = int(dc.run.spec_bdy_width)
-        static_sides = _compact_boundary_static(
-            static, dc.run, width=width)
+        static_sides = _boundary_static_sides(
+            static, grid, dc.run, width=width)
         boundary_targets = _boundary_mapping_targets(
             grid, static, dc.run, width=width)
         try:
@@ -5465,6 +5520,16 @@ def run(args):
 
         _verify_preparation_overlay(overlay_series, physical_input=physical_input,
                                     binding=water_overlay_binding)
+        # Every preparation road (posted bundle, sealed bridge, prepared
+        # cache) checks the source-declared runtime surface fields here and
+        # carries any fallback its fetch receipt recorded into the report.
+        from gpuwm.static.external_source import static_source_for
+        from gpuwm.runtime_surface_fetch import require_runtime_surface_fields
+        from gpuwm.source_adapters import get_source_adapter
+        runtime_surface_fallbacks = require_runtime_surface_fields(
+            root_met, get_source_adapter("hrrr"),
+            source_manifest=_fetch_receipt_path(args),
+            refuse_dropped=static_source_for(static_highres) is not None)
         posted_proof = None
         if writer is not None and (admitter is not None or shared_posted is not None):
             try:
@@ -5541,11 +5606,6 @@ def run(args):
                 seal_process = None
 
             from gpuwm.ingest.prepared_cache import write_prepared_cache
-            from gpuwm.static.external_source import static_source_for
-            if static_source_for(static_highres) is not None:
-                from gpuwm.runtime_surface_fetch import require_runtime_surface_fields
-                from gpuwm.source_adapters import get_source_adapter
-                require_runtime_surface_fields(root_met, get_source_adapter("hrrr"))
             from gpuwm.ingest.hrrr_physics import resolve_prepared_noah_surface
             from gpuwm.ingest.preprocess_backend import (
                 preprocess_reports_identity)
@@ -5679,6 +5739,11 @@ def run(args):
                 "bridge": str(args.bridge.resolve()),
                 "bridge_manifest_sha256": args.manifest_sha256,
                 "source_manifest_sha256": args.source_manifest_sha256,
+                # Present only when a runtime surface field started from its
+                # fallback because the cycle publishes no record for it; the
+                # rows are the fetch receipt's own (id, reason, cycle).
+                **({"runtime_surface_fallback": runtime_surface_fallbacks}
+                   if runtime_surface_fallbacks else {}),
                 "source_cycle": requested_cycle.isoformat(),
                 "model_start_time": model_start_time.isoformat(),
                 "source_forecast_hours": list(source_forecast_hours),
@@ -5726,10 +5791,12 @@ def run(args):
 
     started = time.perf_counter()
     from gpuwm.static.external_source import static_source_for
-    if static_source_for(static_highres) is not None:
-        from gpuwm.runtime_surface_fetch import require_runtime_surface_fields
-        from gpuwm.source_adapters import get_source_adapter
-        require_runtime_surface_fields(root_met, get_source_adapter("hrrr"))
+    from gpuwm.runtime_surface_fetch import require_runtime_surface_fields
+    from gpuwm.source_adapters import get_source_adapter
+    runtime_surface_fallbacks = require_runtime_surface_fields(
+        root_met, get_source_adapter("hrrr"),
+        source_manifest=_fetch_receipt_path(args),
+        refuse_dropped=static_source_for(static_highres) is not None)
     driver = initialize_hrrr_physics(
         root_result, dc.run, root_met, static, attrs, grid,
         initial_snapshot.valid_time,
@@ -6049,6 +6116,11 @@ def run(args):
             "bridge": str(args.bridge.resolve()),
             "bridge_manifest_sha256": args.manifest_sha256,
             "source_manifest_sha256": args.source_manifest_sha256,
+            # Present only when a runtime surface field started from its
+            # fallback because the cycle publishes no record for it; the
+            # rows are the fetch receipt's own (id, reason, cycle).
+            **({"runtime_surface_fallback": runtime_surface_fallbacks}
+               if runtime_surface_fallbacks else {}),
             "source_cycle": requested_cycle.isoformat(),
             "model_start_time": model_start_time.isoformat(),
             "source_forecast_hours": list(source_forecast_hours),

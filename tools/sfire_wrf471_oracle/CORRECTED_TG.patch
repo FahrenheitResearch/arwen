@@ -1,0 +1,102 @@
+--- WRF-v4.7.1/module_fr_fire_atm.F
++++ corrected-TG/module_fr_fire_atm.F
+@@ -53 +53 @@
+-real, dimension(its:ite,kts:kte,jts:jte) :: prop_smk
++real, dimension(ims:ime,kms:kme,jms:jme) :: prop_smk
+@@ -81 +81 @@
+-    do i=i_st,i_st
++    do i=i_st,i_en
+@@ -171 +171,2 @@
+-   REAL, DIMENSION( its:ite,kts:kte,jts:jte ) :: prop_heat !proportion of heat to be released fro TG dist.
++   REAL, DIMENSION( ims:ime,kms:kme,jms:jme ) :: prop_crown
++   REAL, DIMENSION( ims:ime,kms:kme,jms:jme ) :: prop_heat !proportion of heat to be released fro TG dist.
+@@ -213 +214 @@
+-                   i_st,i_en, j_st,j_en, k_st,k_en, dz8w, &
++                   i_st,i_en, j_st,j_en, k_st,k_en-1, dz8w, &
+@@ -215,0 +217,6 @@
++      prop_crown=0.
++      if(any(canhfx.ne.0.).or.any(canqfx.ne.0.)) then
++         call tg_dist(ims,ime,kms,kme,jms,jme, &
++              i_st,i_en,j_st,j_en,k_st,k_en-1,dz8w, &
++              fire_heat_peak,fire_tg_ub,alfc,z_at_w,zs+z1can,prop_crown)
++      endif
+@@ -254,18 +261,9 @@
+-            else if (fire_sfc_flx .eq. 1) then !Truncated Gaussian scheme
+-               ! heat flux
+-               fact_g = prop_heat(i,k,j) * cp_i
+-               IF ( z_w < z1can ) THEN
+-                  fact_c = cp_i
+-               ELSE
+-                  fact_c = cp_i * prop_heat(i,k,j)
+-               END IF
+-               hfx(i,k,j) = fact_g * grnhfx(i,j) + fact_c * canqfx(i,j)
+-            
+-               ! vapor flux
+-               fact_g = prop_heat(i,k,j) * xlv_i
+-               IF (z_w < z1can) THEN
+-                  fact_c = xlv_i
+-               ELSE
+-                  fact_c = xlv_i * prop_heat(i,k,j)
+-               END IF
+-               qfx(i,k,j) = fact_g * grnqfx(i,j) + fact_c * canqfx(i,j)
++            else if (fire_sfc_flx .eq. 1) then
++               ! Corrected TG: each nonnegative fraction is a source in a mass layer.
++               if(k.lt.k_en)then
++                  rho_i=1./rho(i,k,j)
++                  hfx(i,k,j)=(prop_heat(i,k,j)*grnhfx(i,j)+prop_crown(i,k,j)*canhfx(i,j))*cp_i
++                  qfx(i,k,j)=(prop_heat(i,k,j)*grnqfx(i,j)+prop_crown(i,k,j)*canqfx(i,j))*xlv_i
++                  rthfrten(i,k,j)=(c1h(k)*mu(i,j)+c2h(k))*rho_i*hfx(i,k,j)/dz8w(i,k,j)
++                  rqvfrten(i,k,j)=(c1h(k)*mu(i,j)+c2h(k))*rho_i*qfx(i,k,j)/dz8w(i,k,j)
++               endif
+@@ -285,0 +284 @@
++   IF (fire_sfc_flx.eq.0) THEN
+@@ -302,0 +302,2 @@
++
++   END IF
+@@ -324 +325 @@
+-   REAL, INTENT(out), DIMENSION( i_st:i_en,k_st:k_en,j_st:j_en ) :: prop !proportion of heat or smoke to be released
++   REAL, INTENT(out), DIMENSION( ims:ime,kms:kme,jms:jme ) :: prop !proportion of heat or smoke to be released
+@@ -337,26 +338,17 @@
+-   xia = (fire_tg_lb-fire_peak_hgt)/(0.5*fire_ext_depth)
+-   xib = (fire_tg_ub-fire_peak_hgt)/(0.5*fire_ext_depth)
+-
+-   phi_a = 0.5*(1.+tanh(acoef*xia+bcoef*(xia**3)))
+-   phi_b = 0.5*(1.+tanh(acoef*xib+bcoef*(xib**3)))
+-
+-   DO j = j_st,j_en
+-      DO k = k_st,k_en
+-         DO i = i_st,i_en
+-
+-            xi=(z_w-fire_peak_hgt)/(0.5*fire_ext_depth)
+-
+-            prop_temp = 0.5*(acoef+3.*bcoef*(xi**2))/(0.5*fire_ext_depth)*(1.-(tanh(acoef*xi+bcoef*(xi**3)))**2)
+-            prop_temp = prop_temp / (phi_b-phi_a)
+-   
+-            !discretize the continuous function
+-            if (k .eq. k_st) then
+-               dz = 0.5 * dz8w(i,k,j)
+-            else if (k .eq. k_en) then
+-               dz = 0.5 * dz8w(i,k-1,j)
+-            else
+-               dz = 0.5 * (dz8w(i,k,j) + dz8w(i,k-1,j))
+-            end if
+-
+-            prop(i,k,j) = prop_temp * dz
+-
++   ! Corrected TG: integrate the original approximate CDF over complete
++   ! mass layers. Normalize over the represented column and clipped support.
++   prop=0.
++   DO j=j_st,j_en
++      DO i=i_st,i_en
++         dz=0.
++         DO k=k_st,k_en
++            xia=(min(max(z_at_w(i,k,j)-zs(i,j),0.),fire_tg_ub)-fire_peak_hgt)/(0.5*fire_ext_depth)
++            xib=(min(max(z_at_w(i,k+1,j)-zs(i,j),0.),fire_tg_ub)-fire_peak_hgt)/(0.5*fire_ext_depth)
++            phi_a=0.5*(1.+tanh(acoef*xia+bcoef*(xia**3)))
++            phi_b=0.5*(1.+tanh(acoef*xib+bcoef*(xib**3)))
++            prop(i,k,j)=max(phi_b-phi_a,0.)
++            dz=dz+prop(i,k,j)
++         END DO
++         if(.not.(dz.gt.0.)) call wrf_error_fatal('Corrected TG has no representable mass in the active column')
++         DO k=k_st,k_en
++            prop(i,k,j)=prop(i,k,j)/dz

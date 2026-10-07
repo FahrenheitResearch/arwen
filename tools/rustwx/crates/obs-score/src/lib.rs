@@ -10,6 +10,7 @@ use std::cell::RefCell;
 use std::slice;
 
 mod rain_gate;
+mod surface_dewpoint;
 
 thread_local! { static ERROR: RefCell<String> = const { RefCell::new(String::new()) }; }
 

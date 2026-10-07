@@ -48,7 +48,7 @@ from gpuwm.core.noahmp_energy_gpu import (                    # noqa: E402
     evaluate_energy, evaluate_tanhf,
 )
 
-FIXTURE = os.path.join(_ROOT, "gpuwm", "data", "noahmp", "oracle",
+FIXTURE = os.path.join(_ROOT, "tests", "data", "oracles", "noahmp",
                        "noahmp-energy.csv")
 NSOIL = 4
 

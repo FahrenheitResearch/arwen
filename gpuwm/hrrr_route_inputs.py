@@ -576,6 +576,82 @@ def _terrain_radiation_and_mosaic_rows(runs) -> list[str]:
     return rows
 
 
+def _run_wide(runs, key):
+    """The one value a WRF run-wide key carries for this tree, or a refusal."""
+
+    values = {getattr(run, key) for run in runs}
+    if len(values) > 1:
+        raise HrrrRouteInputError(
+            f"{key} differs between domains; WRF reads one value for the "
+            f"whole run and the domains carry {sorted(values)}")
+    return values.pop()
+
+
+def _land_lake_and_drag_rows(runs) -> list[str]:
+    """WRF &physics rows for RUC mosaic, the CLM lake, sea-ice albedo and
+    the YSU topographic wind correction.
+
+    Every one is a stock WRF 4.6.1 &physics key the route's importer reads
+    (``mosaic_lu`` and ``mosaic_soil`` run-wide, ``seaice_albedo_default``
+    a scalar, ``topo_wind`` and the four lake keys max_domains columns),
+    so both halves of the pair carry them alike and the hierarchy's raw
+    native-to-stock delta is unchanged.  The renderer never wrote them:
+    a TOML with ``mosaic_lu = 1`` or ``sf_lake_physics = 1`` emitted a
+    pair that said 0, so the round trip refused the shipped HRRR recipes
+    (configs/recipes/hrrr_v4_gsd41.toml, hrrr_configuration_cut.toml) on
+    this route, and had it not, the root preparation, the hierarchy stage
+    and the mirrored WRF arm would have run without the setting the
+    forecast integrated.  Each row is written only where the
+    configuration leaves the WRF Registry default (which is also what the
+    importer fills for an omitted key: no recipe row names them), so
+    every emission that does not use them keeps its bytes.
+    """
+
+    from gpuwm.config import RunConfig
+
+    defaults = RunConfig.__dataclass_fields__
+    rows: list[str] = []
+    for key in ("mosaic_lu", "mosaic_soil"):
+        value = int(_run_wide(runs, key))
+        if value != defaults[key].default:
+            rows.append(f" {key:<35} = {value},")
+    albedo = float(_run_wide(runs, "seaice_albedo_default"))
+    if albedo != defaults["seaice_albedo_default"].default:
+        rows.append(f" {'seaice_albedo_default':<35} = {_f(albedo)},")
+    for key in ("topo_wind", "sf_lake_physics", "use_lakedepth"):
+        column = [int(getattr(run, key)) for run in runs]
+        if any(value != defaults[key].default for value in column):
+            rows.append(f" {key:<35} = {_column(column)}")
+    for key in ("lakedepth_default", "lake_min_elev"):
+        column = [float(getattr(run, key)) for run in runs]
+        if any(value != defaults[key].default for value in column):
+            rows.append(f" {key:<35} = {_column(_f(v) for v in column)}")
+    return rows
+
+
+def _drag_and_implicit_advection_rows(runs) -> list[str]:
+    """WRF &dynamics rows for gravity-wave drag and implicit vertical advection.
+
+    ``gwd_opt`` is a max_domains column WRF v4 reads in &dynamics (the
+    importer reads it there, or in &physics for a pre-v4 namelist), and
+    ``zadvect_implicit`` one value for the run (Registry.EM_COMMON:2873).
+    Both are stock WRF 4.6.1 keys, written to both halves alike and only
+    where the configuration leaves WRF's default 0.  Unwritten, a TOML
+    with ``gwd_opt = 3`` (the GSL drag suite of
+    configs/recipes/hrrr_v4_gsd41.toml) or ``zadvect_implicit = 1`` was
+    read back as 0 and refused by the round trip.
+    """
+
+    rows: list[str] = []
+    column = [int(run.gwd_opt) for run in runs]
+    if any(column):
+        rows.append(f" {'gwd_opt':<35} = {_column(column)}")
+    implicit = int(_run_wide(runs, "zadvect_implicit"))
+    if implicit:
+        rows.append(f" {'zadvect_implicit':<35} = {implicit},")
+    return rows
+
+
 def render_namelist_input(exp, *, stock: bool = False) -> str:
     """One WRF ``namelist.input`` for this experiment.
 
@@ -697,6 +773,10 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
     # without a domain index.
     radar_ref = " do_radar_ref                        = 1," if stock else ""
 
+    # WRF's WIF climatology request, (aer_init_opt, wif_input_opt) = (1, 1);
+    # real.exe derives aer_init_opt from use_aero_icbc.  Run-wide in WRF.
+    wif_pair = (int(_run_wide(runs, "aer_init_opt")),
+                int(_run_wide(runs, "wif_input_opt"))) != (0, 0)
     stock_deltas = _STOCK_DELTAS
     if int(getattr(root.run, "alb_sol", 0)) == 1:
         stock_deltas += ", native-only alb_sol=1 (absent from stock WRF 4.6.1)"
@@ -790,8 +870,13 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         f" num_metgrid_levels                  = {NUM_METGRID_LEVELS},",
         f" num_metgrid_soil_levels             = "
         f"{NUM_METGRID_SOIL_LEVELS},",
+        # The WIF key triple's &domains half.  Written for every gsd_41
+        # tree (its established bytes) and wherever the configuration
+        # selects the climatology pair: unwritten, a non-gsd_41 TOML with
+        # aer_init_opt = wif_input_opt = 1 (configs/hrrr_v4_vertical_order5)
+        # was read back as (0, 0) and refused by the round trip.
         *([f" wif_input_opt                       = {root.run.wif_input_opt},"]
-          if root.run.bl_mynn_version == "gsd_41" else []),
+          if root.run.bl_mynn_version == "gsd_41" or wif_pair else []),
         " sfcp_to_sfcp                        = .true.,",
         "/",
         "",
@@ -799,7 +884,7 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
         f" mp_physics                          = "
         f"{_column(r.mp_physics for r in runs)}",
         *([f" use_aero_icbc                       = {_logical(root.run.aer_init_opt == 1)},"]
-          if root.run.bl_mynn_version == "gsd_41" else []),
+          if root.run.bl_mynn_version == "gsd_41" or wif_pair else []),
         f" ra_lw_physics                       = "
         f"{_column(longwave)}",
         f" ra_sw_physics                       = {_column(shortwave)}",
@@ -917,6 +1002,7 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
                 and not (stock and key == "alb_sol")):
             lines.append(f" {key:<36s}= {value},")
     lines.extend(_terrain_radiation_and_mosaic_rows(runs))
+    lines.extend(_land_lake_and_drag_rows(runs))
     lines.extend([
         "/",
         "",
@@ -1031,6 +1117,7 @@ def render_namelist_input(exp, *, stock: bool = False) -> str:
            f"{_column(r.v_sca_adv_order for r in runs)}"]
           if any(r.v_mom_adv_order != 3 or r.v_sca_adv_order != 3
                  for r in runs) else []),
+        *_drag_and_implicit_advection_rows(runs),
         "/",
         "",
         "&bdy_control",
@@ -1204,40 +1291,6 @@ def route_shared_domain_keys(source) -> frozenset[str]:
     return frozenset(ROUTE_SHARED_DOMAIN_KEYS)
 
 
-#: Switches of gpuwm's schema that no WRF namelist has a key for, which
-#: THIS route therefore does not read from the configuration: the
-#: importer answers each from
-#: :func:`gpuwm.physics_compat.implicit_runtime_switches` for the physics
-#: the namelists select.  ``top_lid`` is not one of them, because
-#: :func:`render_namelist_input` writes it into &dynamics.  A
-#: configuration stating another value is refused by
-#: :func:`verify_round_trip`, which names the value the namelists carry.
-ROUTE_IMPLICIT_SWITCHES = ("moist_cq",)
-
-
-def route_implicit_switches(source, switches) -> dict[str, object]:
-    """What this candidate's route runs for the switches its namelists cannot state.
-
-    ``switches`` is a resolved physics switch table: a suite's, or a
-    physics mix's as :mod:`gpuwm.physics_catalog` resolves it for the
-    root.  Empty on every route that reads the configuration itself.  On
-    this route it is physics_compat's answer for that selection, the
-    lookup the importer makes when it reads the namelists back, so a set
-    written with it runs as written.  The shared authority enables WRF's
-    moisture pressure correction for every suite; a dry state bypasses
-    it because it has no moisture carrier.  An explicit verification
-    opt-out cannot be encoded in these namelists.
-    """
-
-    from gpuwm.physics_compat import implicit_runtime_switches
-    from gpuwm.source_drivability import candidate_route_chain
-
-    if candidate_route_chain(source) != "prepared:hrrr":
-        return {}
-    implicit = implicit_runtime_switches(**{str(key): value for key, value in dict(switches).items()})
-    return {key: implicit[key] for key in ROUTE_IMPLICIT_SWITCHES}
-
-
 #: The request source this route's namelists are read under, by
 #: :func:`verify_round_trip` here and by the hierarchy stage
 #: (:func:`gpuwm.hrrr_hierarchy_direct._native_experiment`).  The
@@ -1273,8 +1326,11 @@ def route_fallback_settings(rendered_sections) -> dict[str, object]:
 
     surface = rendered_sections.get("physics", {}).get(
         "sf_surface_physics", [None])
+    microphysics = rendered_sections.get("physics", {}).get(
+        "mp_physics", [None])
     fallback = land_scoped_defaults(
-        recipe_physics_defaults(ROUTE_REQUEST_SOURCE), surface[0])
+        recipe_physics_defaults(ROUTE_REQUEST_SOURCE), surface[0],
+        microphysics[0])
     fallback.update(operational_fork_ruc_defaults(rendered_sections))
     fallback.update(operational_fork_thompson_defaults(rendered_sections))
     return fallback
@@ -1339,6 +1395,19 @@ ROUTE_FORECAST_TOML_FIELDS: Mapping[str, str] = MappingProxyType({
     "rrtmg_smoke_manifest": (
         "gpuwm/core/rrtmg_smoke_manifest.py, prescribed smoke in the "
         "radiation call"),
+    # WRF has no namelist key for it (calc_cq runs whenever water vapor
+    # exists), and only the forecast's acoustic and big-step drivers read
+    # it.  The importer states the physics_compat answer, True, for every
+    # pair, so before this entry a TOML moist_cq = false (the verification
+    # counterfactual of configs/les_tornado_100m_mayfield_20211210_attempt2,
+    # attempt2b, configs/recipes/conus_hrrr_configuration.toml and the
+    # three configs/frozen/ archives) was refused on this route for a
+    # value no prepared array depends on.  The mirrored WRF arm runs
+    # WRF's own calc_cq whatever the TOML says; a counterfactual has no
+    # WRF twin on any route.
+    "moist_cq": (
+        "gpuwm/core/acoustic.py prepare_moist_cq, the acoustic and "
+        "big-step moisture coefficients"),
 })
 
 
@@ -1734,9 +1803,7 @@ __all__ = [
     "candidate_companions",
     "configuration_reading_sources",
     "ROUTE_DEFAULT_PHYSICS_PROFILE",
-    "ROUTE_IMPLICIT_SWITCHES",
     "ROUTE_SHARED_DOMAIN_KEYS",
-    "route_implicit_switches",
     "route_shared_domain_keys",
     "SUPPORTED_MICROPHYSICS",
     "render_namelist_input",

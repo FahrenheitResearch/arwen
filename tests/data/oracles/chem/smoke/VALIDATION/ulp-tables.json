@@ -1,0 +1,1427 @@
+{
+  "wetdep_ls/nz49/step1": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 11172
+  },
+  "wetdep_ls/nz49/removed1": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 228
+  },
+  "wetdep_ls/nz49/step2": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 11172
+  },
+  "wetdep_ls/nz49/removed2": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 228
+  },
+  "wetdep_ls/nz49/step3": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 11172
+  },
+  "wetdep_ls/nz49/removed3": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 228
+  },
+  "wetdep_ls/nz49/step4": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 11172
+  },
+  "wetdep_ls/nz49/removed4": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 228
+  },
+  "wetdep_ls/nz49/step5": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 11172
+  },
+  "wetdep_ls/nz49/removed5": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 228
+  },
+  "wetdep_ls/nz59/step1": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 13452
+  },
+  "wetdep_ls/nz59/removed1": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 228
+  },
+  "wetdep_ls/nz59/step2": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 13452
+  },
+  "wetdep_ls/nz59/removed2": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 228
+  },
+  "wetdep_ls/nz59/step3": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 13452
+  },
+  "wetdep_ls/nz59/removed3": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 228
+  },
+  "wetdep_ls/nz59/step4": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 13452
+  },
+  "wetdep_ls/nz59/removed4": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 228
+  },
+  "wetdep_ls/nz59/step5": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 13452
+  },
+  "wetdep_ls/nz59/removed5": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 228
+  },
+  "add_emiss_burn_gsl/mode1/chem1": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 1180
+  },
+  "add_emiss_burn_gsl/mode1/coef1": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode1/hist1": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode1/emitted1": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode1/carry1": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 1180
+  },
+  "add_emiss_burn_gsl/mode1/frp1": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode1/chem2": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 1180
+  },
+  "add_emiss_burn_gsl/mode1/coef2": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode1/hist2": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode1/emitted2": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode1/carry2": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 1180
+  },
+  "add_emiss_burn_gsl/mode1/frp2": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode1/chem3": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 1180
+  },
+  "add_emiss_burn_gsl/mode1/coef3": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode1/hist3": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode1/emitted3": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode1/carry3": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 1180
+  },
+  "add_emiss_burn_gsl/mode1/frp3": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode1/chem4": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 1180
+  },
+  "add_emiss_burn_gsl/mode1/coef4": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode1/hist4": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode1/emitted4": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode1/carry4": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 1180
+  },
+  "add_emiss_burn_gsl/mode1/frp4": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode1/chem5": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 1180
+  },
+  "add_emiss_burn_gsl/mode1/coef5": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode1/hist5": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode1/emitted5": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode1/carry5": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 1180
+  },
+  "add_emiss_burn_gsl/mode1/frp5": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode1/chem6": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 1180
+  },
+  "add_emiss_burn_gsl/mode1/coef6": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode1/hist6": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode1/emitted6": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode1/carry6": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 1180
+  },
+  "add_emiss_burn_gsl/mode1/frp6": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode2/chem1": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 1180
+  },
+  "add_emiss_burn_gsl/mode2/coef1": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode2/hist1": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode2/emitted1": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode2/carry1": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 1180
+  },
+  "add_emiss_burn_gsl/mode2/frp1": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode2/chem2": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 1180
+  },
+  "add_emiss_burn_gsl/mode2/coef2": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode2/hist2": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode2/emitted2": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode2/carry2": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 1180
+  },
+  "add_emiss_burn_gsl/mode2/frp2": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode2/chem3": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 1180
+  },
+  "add_emiss_burn_gsl/mode2/coef3": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode2/hist3": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode2/emitted3": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode2/carry3": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 1180
+  },
+  "add_emiss_burn_gsl/mode2/frp3": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode2/chem4": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 1180
+  },
+  "add_emiss_burn_gsl/mode2/coef4": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode2/hist4": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode2/emitted4": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode2/carry4": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 1180
+  },
+  "add_emiss_burn_gsl/mode2/frp4": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode2/chem5": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 1180
+  },
+  "add_emiss_burn_gsl/mode2/coef5": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode2/hist5": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode2/emitted5": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode2/carry5": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 1180
+  },
+  "add_emiss_burn_gsl/mode2/frp5": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode2/chem6": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 1180
+  },
+  "add_emiss_burn_gsl/mode2/coef6": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode2/hist6": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode2/emitted6": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "add_emiss_burn_gsl/mode2/carry6": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 1180
+  },
+  "add_emiss_burn_gsl/mode2/frp6": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20
+  },
+  "smoke_prep_gsl/method1_poison1/uspdavg2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method1_poison1/windgustpot": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method1_poison1/hpbl2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method1_poison1/hwp": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method1_poison1/kpbl": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method1_poison1/kpbl_thetav": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method1_poison2/uspdavg2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method1_poison2/windgustpot": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method1_poison2/hpbl2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method1_poison2/hwp": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method1_poison2/kpbl": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method1_poison2/kpbl_thetav": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method2_poison1/uspdavg2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method2_poison1/windgustpot": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method2_poison1/hpbl2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method2_poison1/hwp": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method2_poison1/kpbl": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method2_poison1/kpbl_thetav": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method2_poison2/uspdavg2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method2_poison2/windgustpot": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method2_poison2/hpbl2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method2_poison2/hwp": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method2_poison2/kpbl": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method2_poison2/kpbl_thetav": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method3_poison1/uspdavg2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method3_poison1/windgustpot": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method3_poison1/hpbl2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method3_poison1/hwp": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method3_poison1/kpbl": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method3_poison1/kpbl_thetav": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method3_poison2/uspdavg2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method3_poison2/windgustpot": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method3_poison2/hpbl2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method3_poison2/hwp": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method3_poison2/kpbl": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method3_poison2/kpbl_thetav": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method4_poison1/uspdavg2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method4_poison1/windgustpot": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method4_poison1/hpbl2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method4_poison1/hwp": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method4_poison1/kpbl": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method4_poison1/kpbl_thetav": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method4_poison2/uspdavg2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method4_poison2/windgustpot": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method4_poison2/hpbl2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method4_poison2/hwp": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method4_poison2/kpbl": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "smoke_prep_gsl/method4_poison2/kpbl_thetav": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/chem1": {
+    "max_ulp": 1,
+    "n_nonzero": 136,
+    "n": 1180,
+    "max_absolute_difference": 1.1920928955078125e-07
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/chem2": {
+    "max_ulp": 3,
+    "n_nonzero": 509,
+    "n": 1180,
+    "max_absolute_difference": 0.00048828125
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/chem3": {
+    "max_ulp": 3,
+    "n_nonzero": 639,
+    "n": 1180,
+    "max_absolute_difference": 0.00048828125
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/chem4": {
+    "max_ulp": 4,
+    "n_nonzero": 660,
+    "n": 1180,
+    "max_absolute_difference": 0.0009765625
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/chem5": {
+    "max_ulp": 4,
+    "n_nonzero": 678,
+    "n": 1180,
+    "max_absolute_difference": 0.0009765625
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/chem6": {
+    "max_ulp": 4,
+    "n_nonzero": 707,
+    "n": 1180,
+    "max_absolute_difference": 0.00146484375
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/coef1": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/coef2": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/coef3": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/coef4": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/coef5": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/coef6": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/hist1": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/hist2": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/hist3": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/hist4": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/hist5": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/hist6": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/emitted1": {
+    "max_ulp": 2640,
+    "n_nonzero": 19,
+    "n": 20,
+    "max_absolute_difference": 2.0
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/emitted2": {
+    "max_ulp": 2640,
+    "n_nonzero": 18,
+    "n": 20,
+    "max_absolute_difference": 0.08056640625
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/emitted3": {
+    "max_ulp": 2640,
+    "n_nonzero": 18,
+    "n": 20,
+    "max_absolute_difference": 0.08056640625
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/emitted4": {
+    "max_ulp": 2640,
+    "n_nonzero": 18,
+    "n": 20,
+    "max_absolute_difference": 0.08056640625
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/emitted5": {
+    "max_ulp": 2640,
+    "n_nonzero": 18,
+    "n": 20,
+    "max_absolute_difference": 0.08056640625
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/emitted6": {
+    "max_ulp": 2640,
+    "n_nonzero": 18,
+    "n": 20,
+    "max_absolute_difference": 0.08056640625
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/carry1": {
+    "max_ulp": 1,
+    "n_nonzero": 472,
+    "n": 1180,
+    "max_absolute_difference": 5.960464477539063e-08
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/carry2": {
+    "max_ulp": 1,
+    "n_nonzero": 472,
+    "n": 1180,
+    "max_absolute_difference": 5.960464477539063e-08
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/carry3": {
+    "max_ulp": 1,
+    "n_nonzero": 472,
+    "n": 1180,
+    "max_absolute_difference": 5.960464477539063e-08
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/carry4": {
+    "max_ulp": 1,
+    "n_nonzero": 472,
+    "n": 1180,
+    "max_absolute_difference": 5.960464477539063e-08
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/carry5": {
+    "max_ulp": 1,
+    "n_nonzero": 472,
+    "n": 1180,
+    "max_absolute_difference": 5.960464477539063e-08
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/carry6": {
+    "max_ulp": 1,
+    "n_nonzero": 472,
+    "n": 1180,
+    "max_absolute_difference": 5.960464477539063e-08
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/frp1": {
+    "max_ulp": 1,
+    "n_nonzero": 8,
+    "n": 20,
+    "max_absolute_difference": 4.76837158203125e-07
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/frp2": {
+    "max_ulp": 1,
+    "n_nonzero": 8,
+    "n": 20,
+    "max_absolute_difference": 4.76837158203125e-07
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/frp3": {
+    "max_ulp": 1,
+    "n_nonzero": 8,
+    "n": 20,
+    "max_absolute_difference": 4.76837158203125e-07
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/frp4": {
+    "max_ulp": 1,
+    "n_nonzero": 8,
+    "n": 20,
+    "max_absolute_difference": 4.76837158203125e-07
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/frp5": {
+    "max_ulp": 1,
+    "n_nonzero": 8,
+    "n": 20,
+    "max_absolute_difference": 4.76837158203125e-07
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode1/frp6": {
+    "max_ulp": 1,
+    "n_nonzero": 8,
+    "n": 20,
+    "max_absolute_difference": 4.76837158203125e-07
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/chem1": {
+    "max_ulp": 6,
+    "n_nonzero": 304,
+    "n": 1180,
+    "max_absolute_difference": 4.57763671875e-05
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/chem2": {
+    "max_ulp": 6,
+    "n_nonzero": 532,
+    "n": 1180,
+    "max_absolute_difference": 0.00048828125
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/chem3": {
+    "max_ulp": 6,
+    "n_nonzero": 590,
+    "n": 1180,
+    "max_absolute_difference": 0.00048828125
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/chem4": {
+    "max_ulp": 7,
+    "n_nonzero": 581,
+    "n": 1180,
+    "max_absolute_difference": 5.340576171875e-05
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/chem5": {
+    "max_ulp": 7,
+    "n_nonzero": 597,
+    "n": 1180,
+    "max_absolute_difference": 5.340576171875e-05
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/chem6": {
+    "max_ulp": 7,
+    "n_nonzero": 624,
+    "n": 1180,
+    "max_absolute_difference": 5.340576171875e-05
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/coef1": {
+    "max_ulp": 3,
+    "n_nonzero": 4,
+    "n": 20,
+    "max_absolute_difference": 5.4569682106375694e-12
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/coef2": {
+    "max_ulp": 4,
+    "n_nonzero": 8,
+    "n": 20,
+    "max_absolute_difference": 1.1641532182693481e-10
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/coef3": {
+    "max_ulp": 5,
+    "n_nonzero": 4,
+    "n": 20,
+    "max_absolute_difference": 2.8421709430404007e-13
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/coef4": {
+    "max_ulp": 9,
+    "n_nonzero": 4,
+    "n": 20,
+    "max_absolute_difference": 1.2789769243681803e-13
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/coef5": {
+    "max_ulp": 6,
+    "n_nonzero": 8,
+    "n": 20,
+    "max_absolute_difference": 1.4551915228366852e-11
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/coef6": {
+    "max_ulp": 8,
+    "n_nonzero": 8,
+    "n": 20,
+    "max_absolute_difference": 2.9103830456733704e-11
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/hist1": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/hist2": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/hist3": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/hist4": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/hist5": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/hist6": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 20,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/emitted1": {
+    "max_ulp": 418375,
+    "n_nonzero": 16,
+    "n": 20,
+    "max_absolute_difference": 0.25
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/emitted2": {
+    "max_ulp": 2723054,
+    "n_nonzero": 17,
+    "n": 20,
+    "max_absolute_difference": 0.01171875
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/emitted3": {
+    "max_ulp": 919245966,
+    "n_nonzero": 16,
+    "n": 20,
+    "max_absolute_difference": 0.0184326171875
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/emitted4": {
+    "max_ulp": 988096,
+    "n_nonzero": 13,
+    "n": 20,
+    "max_absolute_difference": 0.009765625
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/emitted5": {
+    "max_ulp": 958663268,
+    "n_nonzero": 13,
+    "n": 20,
+    "max_absolute_difference": 0.009765625
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/emitted6": {
+    "max_ulp": 6777989,
+    "n_nonzero": 13,
+    "n": 20,
+    "max_absolute_difference": 0.005859375
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/carry1": {
+    "max_ulp": 4,
+    "n_nonzero": 767,
+    "n": 1180,
+    "max_absolute_difference": 4.57763671875e-05
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/carry2": {
+    "max_ulp": 9,
+    "n_nonzero": 885,
+    "n": 1180,
+    "max_absolute_difference": 3.814697265625e-06
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/carry3": {
+    "max_ulp": 2,
+    "n_nonzero": 708,
+    "n": 1180,
+    "max_absolute_difference": 4.76837158203125e-07
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/carry4": {
+    "max_ulp": 8,
+    "n_nonzero": 708,
+    "n": 1180,
+    "max_absolute_difference": 4.76837158203125e-07
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/carry5": {
+    "max_ulp": 2,
+    "n_nonzero": 767,
+    "n": 1180,
+    "max_absolute_difference": 2.384185791015625e-07
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/carry6": {
+    "max_ulp": 10,
+    "n_nonzero": 885,
+    "n": 1180,
+    "max_absolute_difference": 2.384185791015625e-07
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/frp1": {
+    "max_ulp": 4,
+    "n_nonzero": 11,
+    "n": 20,
+    "max_absolute_difference": 7.62939453125e-06
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/frp2": {
+    "max_ulp": 5,
+    "n_nonzero": 12,
+    "n": 20,
+    "max_absolute_difference": 7.62939453125e-06
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/frp3": {
+    "max_ulp": 6,
+    "n_nonzero": 10,
+    "n": 20,
+    "max_absolute_difference": 7.62939453125e-06
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/frp4": {
+    "max_ulp": 10,
+    "n_nonzero": 11,
+    "n": 20,
+    "max_absolute_difference": 7.62939453125e-06
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/frp5": {
+    "max_ulp": 8,
+    "n_nonzero": 12,
+    "n": 20,
+    "max_absolute_difference": 7.62939453125e-06
+  },
+  "KIND8-vs4/add_emiss_burn_gsl/mode2/frp6": {
+    "max_ulp": 9,
+    "n_nonzero": 12,
+    "n": 20,
+    "max_absolute_difference": 7.62939453125e-06
+  },
+  "KIND8-vs4/smoke_prep_gsl/method1_poison1/kpbl": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/smoke_prep_gsl/method1_poison1/kpbl_thetav": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/smoke_prep_gsl/method1_poison1/uspdavg2d": {
+    "max_ulp": 2,
+    "n_nonzero": 8,
+    "n": 12,
+    "max_absolute_difference": 1.9073486328125e-06
+  },
+  "KIND8-vs4/smoke_prep_gsl/method1_poison1/windgustpot": {
+    "max_ulp": 1,
+    "n_nonzero": 5,
+    "n": 12,
+    "max_absolute_difference": 9.5367431640625e-07
+  },
+  "KIND8-vs4/smoke_prep_gsl/method1_poison1/hpbl2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/smoke_prep_gsl/method1_poison1/hwp": {
+    "max_ulp": 2,
+    "n_nonzero": 4,
+    "n": 12,
+    "max_absolute_difference": 3.814697265625e-06
+  },
+  "KIND8-vs4/smoke_prep_gsl/method1_poison2/kpbl": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/smoke_prep_gsl/method1_poison2/kpbl_thetav": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/smoke_prep_gsl/method1_poison2/uspdavg2d": {
+    "max_ulp": 2,
+    "n_nonzero": 8,
+    "n": 12,
+    "max_absolute_difference": 1.9073486328125e-06
+  },
+  "KIND8-vs4/smoke_prep_gsl/method1_poison2/windgustpot": {
+    "max_ulp": 1,
+    "n_nonzero": 5,
+    "n": 12,
+    "max_absolute_difference": 9.5367431640625e-07
+  },
+  "KIND8-vs4/smoke_prep_gsl/method1_poison2/hpbl2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/smoke_prep_gsl/method1_poison2/hwp": {
+    "max_ulp": 2,
+    "n_nonzero": 4,
+    "n": 12,
+    "max_absolute_difference": 3.814697265625e-06
+  },
+  "KIND8-vs4/smoke_prep_gsl/method2_poison1/kpbl": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/smoke_prep_gsl/method2_poison1/kpbl_thetav": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/smoke_prep_gsl/method2_poison1/uspdavg2d": {
+    "max_ulp": 2,
+    "n_nonzero": 8,
+    "n": 12,
+    "max_absolute_difference": 1.9073486328125e-06
+  },
+  "KIND8-vs4/smoke_prep_gsl/method2_poison1/windgustpot": {
+    "max_ulp": 1,
+    "n_nonzero": 5,
+    "n": 12,
+    "max_absolute_difference": 9.5367431640625e-07
+  },
+  "KIND8-vs4/smoke_prep_gsl/method2_poison1/hpbl2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/smoke_prep_gsl/method2_poison1/hwp": {
+    "max_ulp": 3,
+    "n_nonzero": 7,
+    "n": 12,
+    "max_absolute_difference": 2.86102294921875e-06
+  },
+  "KIND8-vs4/smoke_prep_gsl/method2_poison2/kpbl": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/smoke_prep_gsl/method2_poison2/kpbl_thetav": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/smoke_prep_gsl/method2_poison2/uspdavg2d": {
+    "max_ulp": 2,
+    "n_nonzero": 8,
+    "n": 12,
+    "max_absolute_difference": 1.9073486328125e-06
+  },
+  "KIND8-vs4/smoke_prep_gsl/method2_poison2/windgustpot": {
+    "max_ulp": 1,
+    "n_nonzero": 5,
+    "n": 12,
+    "max_absolute_difference": 9.5367431640625e-07
+  },
+  "KIND8-vs4/smoke_prep_gsl/method2_poison2/hpbl2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/smoke_prep_gsl/method2_poison2/hwp": {
+    "max_ulp": 3,
+    "n_nonzero": 7,
+    "n": 12,
+    "max_absolute_difference": 2.86102294921875e-06
+  },
+  "KIND8-vs4/smoke_prep_gsl/method3_poison1/kpbl": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/smoke_prep_gsl/method3_poison1/kpbl_thetav": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/smoke_prep_gsl/method3_poison1/uspdavg2d": {
+    "max_ulp": 2,
+    "n_nonzero": 8,
+    "n": 12,
+    "max_absolute_difference": 1.9073486328125e-06
+  },
+  "KIND8-vs4/smoke_prep_gsl/method3_poison1/windgustpot": {
+    "max_ulp": 1,
+    "n_nonzero": 5,
+    "n": 12,
+    "max_absolute_difference": 9.5367431640625e-07
+  },
+  "KIND8-vs4/smoke_prep_gsl/method3_poison1/hpbl2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/smoke_prep_gsl/method3_poison1/hwp": {
+    "max_ulp": 1,
+    "n_nonzero": 3,
+    "n": 12,
+    "max_absolute_difference": 1.9073486328125e-06
+  },
+  "KIND8-vs4/smoke_prep_gsl/method3_poison2/kpbl": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/smoke_prep_gsl/method3_poison2/kpbl_thetav": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/smoke_prep_gsl/method3_poison2/uspdavg2d": {
+    "max_ulp": 2,
+    "n_nonzero": 8,
+    "n": 12,
+    "max_absolute_difference": 1.9073486328125e-06
+  },
+  "KIND8-vs4/smoke_prep_gsl/method3_poison2/windgustpot": {
+    "max_ulp": 1,
+    "n_nonzero": 5,
+    "n": 12,
+    "max_absolute_difference": 9.5367431640625e-07
+  },
+  "KIND8-vs4/smoke_prep_gsl/method3_poison2/hpbl2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/smoke_prep_gsl/method3_poison2/hwp": {
+    "max_ulp": 1,
+    "n_nonzero": 3,
+    "n": 12,
+    "max_absolute_difference": 1.9073486328125e-06
+  },
+  "KIND8-vs4/smoke_prep_gsl/method4_poison1/kpbl": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/smoke_prep_gsl/method4_poison1/kpbl_thetav": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/smoke_prep_gsl/method4_poison1/uspdavg2d": {
+    "max_ulp": 2,
+    "n_nonzero": 8,
+    "n": 12,
+    "max_absolute_difference": 1.9073486328125e-06
+  },
+  "KIND8-vs4/smoke_prep_gsl/method4_poison1/windgustpot": {
+    "max_ulp": 1,
+    "n_nonzero": 5,
+    "n": 12,
+    "max_absolute_difference": 9.5367431640625e-07
+  },
+  "KIND8-vs4/smoke_prep_gsl/method4_poison1/hpbl2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/smoke_prep_gsl/method4_poison1/hwp": {
+    "max_ulp": 3,
+    "n_nonzero": 6,
+    "n": 12,
+    "max_absolute_difference": 3.814697265625e-06
+  },
+  "KIND8-vs4/smoke_prep_gsl/method4_poison2/kpbl": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/smoke_prep_gsl/method4_poison2/kpbl_thetav": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/smoke_prep_gsl/method4_poison2/uspdavg2d": {
+    "max_ulp": 2,
+    "n_nonzero": 8,
+    "n": 12,
+    "max_absolute_difference": 1.9073486328125e-06
+  },
+  "KIND8-vs4/smoke_prep_gsl/method4_poison2/windgustpot": {
+    "max_ulp": 1,
+    "n_nonzero": 5,
+    "n": 12,
+    "max_absolute_difference": 9.5367431640625e-07
+  },
+  "KIND8-vs4/smoke_prep_gsl/method4_poison2/hpbl2d": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 12,
+    "max_absolute_difference": 0.0
+  },
+  "KIND8-vs4/smoke_prep_gsl/method4_poison2/hwp": {
+    "max_ulp": 3,
+    "n_nonzero": 6,
+    "n": 12,
+    "max_absolute_difference": 3.814697265625e-06
+  },
+  "fire_rules_gsl/edges/fire_type": {
+    "max_ulp": 0,
+    "n_nonzero": 0,
+    "n": 30
+  }
+}

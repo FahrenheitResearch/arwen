@@ -511,6 +511,10 @@ def test_the_runner_prices_the_child_on_the_card_whatever_the_tiles_setting(
     # And the old runner's price, on no card, is the one that disagreed.
     unpriced = real_price(child, streaming.OFF, machine=None,
                           basis=downscale_pricing.MEASURED_BASIS)
+    # Current itemization fits on this capacity even with the reference
+    # profile. Capacity crossing was historical evidence, not the contract:
+    # dropping the measured card must still change its non-pool price.
+    assert unpriced.peak_envelope_bytes > review.peak_envelope_bytes
     assert unpriced.peak_envelope_bytes > _CARD_BUDGET_GIB * GIB
 
 

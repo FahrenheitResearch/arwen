@@ -1570,21 +1570,28 @@ def test_a_copied_mass_velocity_would_freeze_the_mean_droplet_mass():
 # it does own must tile and gate exactly like its classic sibling.
 
 def test_this_module_sediments_cloud_and_nothing_else():
-    """No rain/ice/snow/graupel fallout may be duplicated here.
+    """No snow/graupel or aerosol fallout may be duplicated here.
 
     Aerosol number in particular has NO fallout term anywhere in
-    module_mp_thompson.F; the other four species have one and it is already
-    written, verified and frozen in thompson.py.
+    module_mp_thompson.F.  Snow and graupel fallout are mp=8's, verified and
+    frozen in thompson.py.  Rain and ice are the one deliberate exception
+    since the 2.8.6 accumulator rework: the v4.6.1 generation carries WRF's
+    qrten/nrten/qiten/niten through its own TENDENCY-FORM rain and ice
+    fallout (the classic kernels apply in place and fold the terminal size
+    bounds in before the cleanup's freeze, which WRF does not), so those two
+    exist here only as ``_accumulate`` launchers.
     """
     import gpuwm.core.thompson_aerosol_sed as module
 
     assert sorted(module.__all__) == [
         "DIAGNOSTIC_FIELDS", "VERTICAL_LEVEL_BOUNDS",
-        "launch_aa_cloud_sedimentation", "launch_aa_final_phase_cleanup"]
+        "launch_aa_cloud_sedimentation", "launch_aa_final_phase_cleanup",
+        "launch_aa_ice_sedimentation_accumulate",
+        "launch_aa_rain_sedimentation_accumulate"]
     source = Path(module.__file__).read_text(encoding="utf-8")
     for species in ("rain", "ice", "snow", "graupel", "aerosol_sediment",
                     "nwfa", "nifa"):
-        assert f"def launch_aa_{species}_sedimentation" not in source, species
+        assert f"def launch_aa_{species}_sedimentation(" not in source, species
     # ...and the four it delegates really do exist to be delegated to.
     for species in ("rain", "ice", "snow", "graupel"):
         assert hasattr(classic_thompson, f"launch_{species}_sedimentation")
@@ -1668,6 +1675,14 @@ def test_only_cloud_fallout_is_a_single_pass_in_the_frozen_kernel_too():
     import re
     aerosol = re.sub(r"^#if defined\(THOMPSON_AA_WRF39\)\n.*?^#endif[^\n]*\n",
                      "", aerosol, flags=re.S | re.M)
+    # The v4.6.1 accumulator path's rain and ice fallout (2.8.6) carry the
+    # substep loop rain and ice have; set aside likewise.
+    start = aerosol.index("// RAIN AND ICE FALLOUT IN WRF'S TENDENCY FORM")
+    stop = aerosol.rindex("THOMPSON_AA_ICE_ACCUMULATE_ARGUMENTS);")
+    stop = aerosol.index("}", stop) + 1
+    tendency_form = aerosol[start:stop]
+    assert "nstep" in tendency_form and "onstep" in tendency_form
+    aerosol = aerosol[:start] + aerosol[stop:]
     code = "\n".join(line for line in aerosol.splitlines()
                      if not line.lstrip().startswith("//"))
     assert "nstep" not in code and "onstep" not in code

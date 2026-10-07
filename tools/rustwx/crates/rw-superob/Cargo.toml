@@ -1,0 +1,43 @@
+# The Rust radar superob: the port target for gpuwm/obs/superob.py, the
+# stage that turns rw_nexrad sweep packs into the gridded reflectivity,
+# clear-air and radial-velocity observations the DA reads.
+#
+# Everything between the decoded pack and the observation fields runs
+# here: gate geometry on the effective-earth model, placement on the
+# target grid (the static-fields projection), the per-cell accumulators,
+# correlation-coefficient QC with the debris-fringe exemption, the four
+# velocity alias masks, the clear-air census, the multi-radar merge, the
+# error model and the windowed (v2) velocity layout.  The region-global
+# dealiaser stays its own vendored crate; this one links it as a library
+# (below) so each sweep's dealias runs inside the superob call.
+#
+# Before this crate the whole stage was numpy, which the Python boundary
+# law (Python is orchestration and driver code only) does not allow for
+# a data path.  gpuwm/obs/superob.py stays as the parity reference and as
+# an explicit opt-out (GPUWM_SUPEROB_PYTHON=1).
+
+[package]
+name = "rw-superob"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "Radar gate-to-cell superobbing and multi-radar merge (port of gpuwm/obs/superob.py)"
+
+[lib]
+name = "rw_superob"
+# cdylib: the ctypes seam gpuwm/obs/superob_bridge.py loads (src/capi.rs).
+# rlib:   Rust callers and the crate's own tests.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The vendored region-global solver (tools/region_global_dealias), linked
+# as a library so a sweep's dealias -- including the per-sector solve and
+# reconciliation of a mixed-Nyquist sweep -- runs natively inside the
+# superob call.  It has no dependencies of its own.
+region-global-dealias = { path = "../../../region_global_dealias" }
+rayon = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+static-fields = { path = "../static-fields" }

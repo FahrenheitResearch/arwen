@@ -1188,6 +1188,92 @@ def candidate_wps_text(raw, original_exp, exp, output, *, original_wps=None):
                                           for domain in original_exp.domains])
 
 
+def configuration_wps_namelist(config_path, exp, *, raw, into=None):
+    """The WPS namelist one run of ``config_path`` hands its preparation.
+
+    ``<stem>.namelist.wps`` beside the configuration when it is there: a
+    door wrote it, and its geography choices are the user's.  Otherwise
+    the run renders it from the configuration by the doors' own renderer
+    (:func:`candidate_wps_text`, the one a save and a re-time use), holds
+    the bytes to the forecast stage's own geometry comparison
+    (:func:`gpuwm.native_wrf_contract.validate_wps_geometry`), and writes
+    it into ``into`` -- never beside the user's file, which may sit in an
+    installed package.  Every number in it already exists in the
+    configuration's ``[projection]`` and ``[[domain]]`` tables and its
+    ``[fetch]`` cadence, so a twin file kept by hand beside each
+    configuration could only ever drift from them.
+
+    The boundary interval is ``[case_data] forcing_interval_s``, else the
+    ``[fetch]`` cadence, else the source registry's forcing interval -- the
+    interval ``gpuwm domain`` writes for a configuration it emits.
+
+    ``into=None`` is the door's question (dry run, plan review): the
+    namelist is rendered and checked in a scratch folder and ``None``
+    comes back, so a configuration the run could not render for is
+    refused before anything is fetched.
+
+    Breakage it prevents: ``gpuwm go`` on every shipped HRRR configuration
+    recipe stopped before any stage ("the staged route reads
+    hrrr_configuration_cut.namelist.wps beside ..."), because none of
+    them carried a WPS twin (WOOF 1.0.3 GPU smoke, 2026-10-06).
+
+    Raises ``ValueError`` naming what the renderer or the geometry check
+    refused.
+    """
+
+    import tempfile
+
+    from gpuwm.native_wrf_contract import validate_wps_geometry
+
+    config_path = Path(config_path)
+    beside = config_path.with_name(f"{config_path.stem}.namelist.wps")
+    if beside.is_file():
+        return beside
+    fetch = raw.get("fetch") if isinstance(raw.get("fetch"), dict) else {}
+    if ((raw.get("case_data") or {}).get("forcing_interval_s") is None
+            and fetch.get("cadence") is None and fetch.get("source")):
+        from gpuwm.source_adapters import source_forcing_interval_seconds
+
+        try:
+            interval = source_forcing_interval_seconds(str(fetch["source"]))
+        except (KeyError, ValueError):
+            interval = None
+        if interval is not None and float(interval) % 3600 == 0:
+            raw = {**raw, "fetch": {**fetch, "cadence": int(interval) // 3600}}
+    text = candidate_wps_text(raw, exp, exp, config_path)
+    data = text.encode("utf-8")
+    source = str(fetch.get("source") or "configuration")
+
+    def checked(path: Path) -> Path:
+        path.write_bytes(data)
+        try:
+            validate_wps_geometry(exp, path, source_name=source)
+        except ValueError as error:
+            raise ValueError(
+                f"the WPS namelist rendered from {config_path.name} does not "
+                f"match its own grid ({error}); put the namelist `gpuwm "
+                f"domain` writes beside it as {beside.name}") from error
+        return path
+
+    if into is None:
+        with tempfile.TemporaryDirectory(prefix="arwen-wps-") as staging:
+            checked(Path(staging) / beside.name)
+        return None
+    into = Path(into)
+    into.mkdir(parents=True, exist_ok=True)
+    target = into / beside.name
+    if target.is_file() and target.read_bytes() == data:
+        return target
+    staged = target.with_name(f"{target.name}.{os.getpid()}.tmp")
+    try:
+        checked(staged)
+    except BaseException:
+        staged.unlink(missing_ok=True)
+        raise
+    os.replace(staged, target)
+    return target
+
+
 def candidate_route_blocker(raw, original_exp, exp, output):
     """What this candidate's ROUTE would refuse about it, or ``None``.
 

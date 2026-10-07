@@ -669,15 +669,45 @@ def test_every_other_target_projects_exactly_as_before():
 
     snapshot = _declared_snapshot()
     transform, _ = source_coordinate_transform(snapshot)
-    for target in (_wps_target(1797, 1057), _wps_target(ref_lon=-97.6),
-                   _wps_target(dx=3010.0), _wps_target(64, 48, ref_lat=39.0,
-                                                       ref_lon=-110.0)):
+    for target in (_wps_target(ref_lon=-97.6), _wps_target(dx=3010.0),
+                   _wps_target(64, 48, ref_lat=39.0, ref_lon=-110.0)):
         for lat, lon in (target.latlon_mass(), target.latlon_u(),
                          target.latlon_v()):
             y, x = transform(lat, lon)
             raw_y, raw_x = _raw_projection(HRRR_PARAMETERS, lat, lon)
             np.testing.assert_array_equal(y, raw_y)
             np.testing.assert_array_equal(x, raw_x)
+
+
+def test_an_index_aligned_window_of_the_declared_grid_copies_cell_for_cell():
+    """The one-cell inset (the 1797 x 1057 HRRR door) and an event crop of
+    the HRRR lattice are the declared grid's own cells, so they pair index
+    for index instead of interpolating at the GRIB-sphere drift."""
+
+    snapshot = _declared_snapshot()
+    transform, _ = source_coordinate_transform(snapshot)
+    unit = ms.PROJECTED_AXIS_UNIT_M
+    step = 3000.0
+    # (nx, ny, anchor i0, anchor j0): the inset, and the Iowa crop of
+    # 2026-10-06 (HRRR cells i 815..1313, j 427..993, centred on 1064, 710).
+    for nx, ny, i0, j0 in ((1797, 1057, 1, 1), (499, 567, 815, 427)):
+        full = _wps_target()
+        centre_lat, centre_lon = (np.asarray(v)[j0 + ny // 2, i0 + nx // 2]
+                                  for v in full.latlon_mass())
+        target = _wps_target(nx, ny, ref_lat=float(centre_lat),
+                             ref_lon=float(centre_lon))
+        y, x = transform(*target.latlon_mass())
+        rows, cols = np.indices((ny, nx), dtype=np.float64)
+        np.testing.assert_array_equal(y, (rows + j0) * step / unit)
+        np.testing.assert_array_equal(x, (cols + i0) * step / unit)
+        y, x = transform(*target.latlon_u())
+        rows, cols = np.indices((ny, nx + 1), dtype=np.float64)
+        np.testing.assert_array_equal(x, (cols - 0.5 + i0) * step / unit)
+        np.testing.assert_array_equal(y, (rows + j0) * step / unit)
+        y, x = transform(*target.latlon_v())
+        rows, cols = np.indices((ny + 1, nx), dtype=np.float64)
+        np.testing.assert_array_equal(y, (rows - 0.5 + j0) * step / unit)
+        np.testing.assert_array_equal(x, (cols + i0) * step / unit)
 
 
 def test_lattice_identity_takes_only_the_grids_own_staggerings():
@@ -695,10 +725,41 @@ def test_lattice_identity_takes_only_the_grids_own_staggerings():
     rows, cols = np.indices((3, 5), dtype=np.float64)
     snapped = lattice_identity(rows, cols - 0.5, nx=4, ny=3)
     np.testing.assert_array_equal(snapped[1][0], [0.0, 0.5, 1.5, 2.5, 3.0])
-    # Not the grid: another shape, a first point off its cell, a point
-    # half a cell or more from its own, a non-finite point.
+    # An index-aligned window of the grid IS the grid, cell for cell: a
+    # 2 x 2 mass window anchored on cell (1, 1), under either sphere, and
+    # a u-face window of it.  A window reaching past the grid is not.
+    rows, cols = np.indices((2, 2), dtype=np.float64)
+    for scale in (1.0, 1.01):
+        snapped = lattice_identity((rows + 1.0) * scale, (cols + 1.0) * scale,
+                                   nx=4, ny=3, sphere_scale=1.01)
+        assert snapped is not None
+        np.testing.assert_array_equal(snapped[0], rows + 1.0)
+        np.testing.assert_array_equal(snapped[1], cols + 1.0)
+    rows, cols = np.indices((2, 3), dtype=np.float64)
+    snapped = lattice_identity(rows + 1.0, cols + 0.5, nx=4, ny=3)
+    np.testing.assert_array_equal(snapped[1][0], [0.5, 1.5, 2.5])
+    assert lattice_identity(rows + 2.0, cols + 2.5, nx=4, ny=3) is None
+    # A window may reach past the grid only by the outermost FACE of a
+    # staggered axis.  A mass window whose last column or row is a full
+    # cell past the edge is not the grid: returning it would copy the
+    # edge cell into the overhang and silence the coverage refusal.
     rows, cols = np.indices((3, 4), dtype=np.float64)
-    assert lattice_identity(rows[:, :3], cols[:, :3], nx=4, ny=3) is None
+    assert lattice_identity(rows, cols + 1.0, nx=4, ny=3) is None
+    rows, cols = np.indices((3, 5), dtype=np.float64)
+    assert lattice_identity(rows, cols, nx=4, ny=3) is None
+    rows, cols = np.indices((4, 4), dtype=np.float64)
+    assert lattice_identity(rows, cols, nx=4, ny=3) is None
+    # ... while the u-face window ending on the grid's own last face
+    # (3.5 for nx=4) and the v-face window ending on its last face are.
+    rows, cols = np.indices((3, 3), dtype=np.float64)
+    snapped = lattice_identity(rows, cols + 1.5, nx=4, ny=3)
+    np.testing.assert_array_equal(snapped[1][0], [1.5, 2.5, 3.0])
+    rows, cols = np.indices((3, 2), dtype=np.float64)
+    snapped = lattice_identity(rows + 0.5, cols + 2.0, nx=4, ny=3)
+    np.testing.assert_array_equal(snapped[0][:, 0], [0.5, 1.5, 2.0])
+    # Not the grid: a first point off its cell, a point half a cell or
+    # more from its own, a non-finite point.
+    rows, cols = np.indices((3, 4), dtype=np.float64)
     assert lattice_identity(rows, cols + 2 * LATTICE_IDENTITY_ANCHOR_CELLS,
                             nx=4, ny=3) is None
     far = cols.copy()
@@ -781,7 +842,9 @@ def test_the_proof_names_the_identity_pairing_only_for_the_declared_grid():
 
     declaration = _declaration()
     assert declared_grid_pairing(declaration, _wps_target()) == "identity"
-    assert declared_grid_pairing(declaration, _wps_target(1797, 1057)) is None
+    assert declared_grid_pairing(declaration, _wps_target(1797, 1057)) == "identity"
+    assert declared_grid_pairing(
+        declaration, _wps_target(64, 48, ref_lat=39.0, ref_lon=-110.0)) is None
     assert declared_grid_pairing(declaration,
                                  _wps_target(ref_lon=-97.6)) is None
     assert declared_grid_pairing(None, _wps_target()) is None

@@ -1,0 +1,34 @@
+{
+  "schema": "sfire-native-geographic-units-v1",
+  "sha256": "11c95e348f2dee163a2a2e45bc71d55e2585655b8e17af7c066a36e1e9ca6295",
+  "streams_sha256": {
+    "latitude": "8d972ff6f09da7c2f8eea0dcac32fb415de1fa018e33b406016bc25a0ca5bee8",
+    "units": "93e3a62fd53f80d2d58065a3d64437ff64a980e1274eb103fe865d7e112bd751",
+    "coords": "e6e521987383338e514bd8357c27a57859a9a423ddfbf60dd98df04872d61bf0",
+    "nearest": "440c38764354ad2cec48ead9fe5cb302deaf11fcd3c8fbcca62614f6245c486c"
+  },
+  "extraction": {
+    "source_sha256": {
+      "driver": "7662f29bb003697d08ccee585e272a3ed7362edc73bcef5ea8dc95d100d9e578",
+      "core": "7679945766e20219934daacfa4b174ffea9cabdd442ccd347ccde5a3afda7bd2",
+      "constants": "5b80377fecdc18a5f0ad38d3b6c15cfc86ad5d76701adbbbb08a08698d0f7062"
+    },
+    "original_expression_sha256": "b1b06140b4c000dbe8c6885d9eef506a6a58533f7ed54f7ba3eeef6f7eee8ce4",
+    "original_nearest_sha256": "2714f88e96527cbda35e4a1fbfee766d1763f07dccae7add7dbc3da0d619efd1",
+    "original_constants_sha256": "6c751cba78e72daeae48ed1cb6218e613070e59f1f39bfab1f1bd6304531d291",
+    "scientific_transformations": [],
+    "wrapper_sha256": "17a6d5478c9068590ba6fc46d0810ab8a7baf2cc1746e702e7d716a1798d883d"
+  },
+  "build": {
+    "compiler": "GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+    "flags": [
+      "-O0",
+      "-ffp-contract=off",
+      "-ffree-line-length-none",
+      "-fcheck=all"
+    ],
+    "command": "gfortran FLAGS native.F90 -o native-oracle; ./native-oracle",
+    "executable_sha256": "2eaf27b3b7aac96075d3a825ae7599b1845f489454c8a3cff54949c13f148a4b",
+    "wrapper_sha256": "17a6d5478c9068590ba6fc46d0810ab8a7baf2cc1746e702e7d716a1798d883d"
+  }
+}

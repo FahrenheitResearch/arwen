@@ -4930,12 +4930,16 @@ def gpu_rrtmg_lw_batched_device(ncol, nlay, icld, play, plev, tlay, tlev,
         del (totuflux, totdflux, totuclfl, totdclfl, fnet, fnetc, htr,
              htrc)
 
-    errors = cp.asnumpy(err_flags)
-    failed = np.flatnonzero(errors)
-    err = int(errors[failed[0]]) if failed.size else 0
-    if err:
-        raise ValueError(f"rlw_cldprmc device abort, code {err} "
-                         "(bounds violation, mirrors the Fortran stop)")
+    def _cldprmc_verdict(errors):
+        failed = np.flatnonzero(errors)
+        err = int(errors[failed[0]]) if failed.size else 0
+        if err:
+            raise ValueError(f"rlw_cldprmc device abort, code {err} "
+                             "(bounds violation, mirrors the Fortran stop)")
+
+    # Read now, or once per radiation call (gpuwm.core.deferred_device_checks).
+    from gpuwm.core.deferred_device_checks import check
+    check(err_flags, _cldprmc_verdict)
     return {
         "uflx": uflx, "dflx": dflx, "hr": hr,
         "uflxc": uflxc, "dflxc": dflxc, "hrc": hrc,

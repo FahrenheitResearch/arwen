@@ -28,7 +28,8 @@ from gpuwm.vertical_adaptation import (
 )
 from gpuwm.experiment import load_experiment, validate_boundary_timing
 from gpuwm.fortran_namelist import parse_namelist
-from gpuwm.ingest.horiz import declared_grid_pairing, interpolate_era5_to_lambert
+from gpuwm.ingest.horiz import (
+    declared_grid_pairing, interpolate_era5_to_lambert, with_inland_air_temperature)
 from gpuwm.ingest.soil_downscale import (
     declared_soil_texture_downscale, soil_mesh_plan_from_case)
 from gpuwm.ingest.lateral_bc import (
@@ -1970,6 +1971,9 @@ def prepare_mapped_wrf(
         route=_WATER_ROUTE, policy=case_policy["water_temperature_policy"],
         landmask=static["LANDMASK"], lu_index=static["LU_INDEX"],
         landuse_attrs=selection.landuse_global_attrs())
+    # Inland water the source does not resolve takes the forcing's
+    # daily-mean 2 m air temperature (WRF use_tavg_for_tsk).
+    water_statics = with_inland_air_temperature(water_statics, snapshots)
     with prep_stage("root_initialize", label="Initialize root forcing states",
                     backend=str(preprocess_receipt["backend"]),
                     count=(len(snapshots) if hierarchy and not chain_tree
@@ -2228,6 +2232,13 @@ def prepare_mapped_wrf(
                         initial_met, initial_result = build_forcing_time(
                             0, source_override=analysis.snapshot,
                             aerosol_snapshot=aerosol_met)
+                        # The first boundary record is the start state's
+                        # own coupling, its tendency running to the next
+                        # boundary-source record: WRFDA da_update_bc's rule,
+                        # which operational HRRR runs after GSI.  It was the
+                        # boundary source's atmosphere at the start time.
+                        forcing.replace_start_state(
+                            initial_result.state, index=0)
                         initial_soil_contract = analysis.soil_layer_contract
                         initial_soil_mesh = soil_mesh_plan_from_case(
                             analysis.snapshot, grid, experiment_config)
@@ -2242,9 +2253,16 @@ def prepare_mapped_wrf(
                     aerosol_met = None
                     release_backend_memory(boundary_head_backend)
             boundaries = None
+        # The chem processes' preparation-time arrays (dust statics, sulfur
+        # lat/lon), before the head is published; nothing on a chem-off
+        # state (gpuwm/core/chem_statics.py).
+        from gpuwm.core.chem_statics import attach_chem_statics
+        attach_chem_statics(initial_result.state, grid, geog_root, selection)
         # No lake skin override: the masked=both SKINTEMP chain with
         # static-landmask targets already yields water-source skin at lakes,
-        # matching real.exe's no-TAVGSFC behavior.  The static landmask drives
+        # matching real.exe's no-TAVGSFC behavior, except inland water with no
+        # source water within INLAND_WATER_SOURCE_REACH_M, which takes the
+        # daily-mean 2 m air temperature (use_tavg_for_tsk).  The static landmask drives
         # WRF's process_soil_real land/water branches, and terrain plus the
         # composition's canonical source orography enable adjust_soil_temp_new's
         # elevation lapse on skin and soil temperature inputs.  The router

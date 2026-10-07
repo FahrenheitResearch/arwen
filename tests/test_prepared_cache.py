@@ -1266,6 +1266,41 @@ def test_a_header_from_a_NEWER_gpuwm_is_refused_not_tolerated():
     assert differing == ["a_field_this_build_does_not_have"]
 
 
+def test_acoustic_off_centering_reuses_prepared_arrays_without_ignoring_grid_changes():
+    from copy import deepcopy
+    from gpuwm.ingest.prepared_cache import compare_prepared_domain_config
+    cached = _live_domain_identity()
+    configured = deepcopy(cached)
+    cached["run"]["epssm"] = 0.1
+    configured["run"]["epssm"] = 0.2
+    assert compare_prepared_domain_config(cached, configured) == ([], [])
+    configured["run"]["dx"] += 1.0
+    assert "run.dx" in compare_prepared_domain_config(cached, configured)[1]
+
+
+def test_prior_atmosphere_header_can_enable_fire_without_dropping_moisture_or_grid_identity():
+    from copy import deepcopy
+    from dataclasses import fields
+    from gpuwm.sfire_config import FireRunFields
+    from gpuwm.ingest.prepared_cache import (
+        SFIRE_PREPARATION_INERT_RUN_FIELDS, compare_prepared_domain_config)
+    assert SFIRE_PREPARATION_INERT_RUN_FIELDS == frozenset(f"run.{field.name}" for field in fields(FireRunFields))
+    cached = _live_domain_identity()
+    configured = deepcopy(cached)
+    for key in SFIRE_PREPARATION_INERT_RUN_FIELDS:
+        cached["run"].pop(key.removeprefix("run."), None)
+    configured["run"].update(ifire=2, sr_x=5, sr_y=5, fire_static="fire-static.npz",
+        fire_smoke=True, fire_is_real_perim=True, fmoist_run=True)
+    assert compare_prepared_domain_config(cached, configured) == ([], [])
+    cached["run"]["fire_moisture_namelist"] = ""
+    assert compare_prepared_domain_config(cached, configured) == ([], [])
+    cached["run"]["fire_moisture_namelist"] = "unavailable-moisture-state"
+    assert "run.fire_moisture_namelist" in compare_prepared_domain_config(cached, configured)[1]
+    cached["run"].pop("fire_moisture_namelist")
+    configured["run"]["moist"] = not cached["run"]["moist"]
+    assert "run.moist" in compare_prepared_domain_config(cached, configured)[1]
+
+
 def test_only_the_domain_config_is_default_tolerant():
     """Every other identity member is a hash of bytes and stays strict."""
 

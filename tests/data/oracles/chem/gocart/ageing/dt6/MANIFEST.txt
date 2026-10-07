@@ -1,0 +1,17 @@
+dt f4 0
+input_bc1 f4 3 8 4 2
+input_oc1 f4 3 8 4 2
+input_bc2 f4 3 8 4 2
+input_oc2 f4 3 8 4 2
+step1_bc1 f4 3 8 4 2
+step1_oc1 f4 3 8 4 2
+step1_bc2 f4 3 8 4 2
+step1_oc2 f4 3 8 4 2
+step2_bc1 f4 3 8 4 2
+step2_oc1 f4 3 8 4 2
+step2_bc2 f4 3 8 4 2
+step2_oc2 f4 3 8 4 2
+step3_bc1 f4 3 8 4 2
+step3_oc1 f4 3 8 4 2
+step3_bc2 f4 3 8 4 2
+step3_oc2 f4 3 8 4 2

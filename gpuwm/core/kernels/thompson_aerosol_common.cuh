@@ -1546,6 +1546,121 @@ __device__ __forceinline__ void thompson_aa_bound_ice_number(
     *ice_number_per_kg = fminf(ice_number, 999.0e3f) / density;
 }
 
+// ---------------------------------------------------------------------------
+// THE SOURCE-STAGE ICE AND RAIN BALANCES IN WRF'S TENDENCY FORM, for the
+// accumulator path (qrten/nrten/qiten/niten non-null).  module_mp_thompson.F
+// :3033-3055 and :3070-3091 do not touch the state: they rewrite niten /
+// nrten (or qrten) so that X1d + Xten*DT lands inside the size bounds, and
+// the terminal apply (:4023-4053) applies the result once.  The in-place
+// bounds above (thompson_aa_bound_ice_number / _rain_number) are the same
+// physics with the state as the carrier; they round differently, and they
+// put the terminal size bound before the :3956 freeze where WRF puts it
+// after.  Every product, quotient and sum below is REAL(4) and pinned as
+// gfortran -O2 (no FMA) forms it; lami/lamr are DOUBLE (:1597-1599), the
+// powers of REAL bases are correctly rounded (thompson_aa_powf_cr) and the
+// DOUBLE**REAL(3.0) is pow(x, 3.0), as the graupel balance in the cold
+// network already writes it.
+//
+// rho/orho are the entry density and its REAL reciprocal (:1802, :2959),
+// odts = 1./DT, and the *ten in/out are per kilogram per second.
+__device__ __forceinline__ void thompson_aa_ice_balance_tendency(
+    float qi1d, float ni1d, float qiten, float* __restrict__ niten,
+    float rho, float orho, float odts, float dt)
+{
+    // :3036-3037.
+    const float xri = fmaxf(THOMPSON_AA_R1, thompson_aa_mul(
+        thompson_aa_add(qi1d, thompson_aa_mul(qiten, dt)), rho));
+    float xni = fmaxf(THOMPSON_AA_R2, thompson_aa_mul(
+        thompson_aa_add(ni1d, thompson_aa_mul(*niten, dt)), rho));
+    if (xri > THOMPSON_AA_R1) {
+        // :3039-3041.  cig(2) = 6 and oig1 = 1 exactly.
+        double lami = (double)thompson_aa_powf_cr(
+            thompson_aa_div(thompson_aa_mul(thompson_aa_mul(
+                thompson_aa_mul(THOMPSON_AA_AM_I, THOMPSON_AA_CIG2),
+                THOMPSON_AA_OIG1), xni), xri),
+            THOMPSON_AA_OBMI);
+        const double ilami = 1.0 / lami;
+        // (bm_i + mu_i + 1.) is REAL 4.0; the product with DOUBLE ilami is
+        // DOUBLE, rounded on assignment to REAL xDi.
+        const float xdi = (float)(4.0 * ilami);
+        // cig(1)*oig2*xri/am_i, REAL, with cig(1) = 1 and oig2 = 1/6.
+        if (xdi < 5.0e-6f) {
+            // :3043-3045.  cie(2)/5.E-6 is a REAL quotient widened to DOUBLE.
+            lami = (double)thompson_aa_div(4.0f, 5.0e-6f);
+            xni = (float)fmin(999.0e3, (double)thompson_aa_div(
+                thompson_aa_mul(thompson_aa_mul(1.0f, 1.0f / 6.0f), xri),
+                THOMPSON_AA_AM_I) * pow(lami, 3.0));
+            *niten = thompson_aa_mul(thompson_aa_mul(thompson_aa_sub(
+                xni, thompson_aa_mul(ni1d, rho)), odts), orho);
+        } else if (xdi > 300.0e-6f) {
+            // :3047-3049.
+            lami = (double)thompson_aa_div(4.0f, 300.0e-6f);
+            xni = (float)((double)thompson_aa_div(
+                thompson_aa_mul(thompson_aa_mul(1.0f, 1.0f / 6.0f), xri),
+                THOMPSON_AA_AM_I) * pow(lami, 3.0));
+            *niten = thompson_aa_mul(thompson_aa_mul(thompson_aa_sub(
+                xni, thompson_aa_mul(ni1d, rho)), odts), orho);
+        }
+    } else {
+        // :3051.
+        *niten = thompson_aa_mul(-ni1d, odts);
+    }
+    // :3053-3055, the 999 per litre ceiling on the result.
+    const float xni_after = fmaxf(0.0f, thompson_aa_mul(
+        thompson_aa_add(ni1d, thompson_aa_mul(*niten, dt)), rho));
+    if (xni_after > 999.0e3f) {
+        *niten = thompson_aa_mul(thompson_aa_mul(thompson_aa_sub(
+            999.0e3f, thompson_aa_mul(ni1d, rho)), odts), orho);
+    }
+}
+
+__device__ __forceinline__ void thompson_aa_rain_balance_tendency(
+    float qr1d, float nr1d, float* __restrict__ qrten,
+    float* __restrict__ nrten, float rho, float orho, float odts, float dt)
+{
+    // :3072-3073.
+    const float xrr = fmaxf(THOMPSON_AA_R1, thompson_aa_mul(
+        thompson_aa_add(qr1d, thompson_aa_mul(*qrten, dt)), rho));
+    const float xnr = fmaxf(THOMPSON_AA_R2, thompson_aa_mul(
+        thompson_aa_add(nr1d, thompson_aa_mul(*nrten, dt)), rho));
+    if (xrr > THOMPSON_AA_R1) {
+        // :3075-3076.  crg(3) = 6 and org2 = 1 exactly.
+        double lamr = (double)thompson_aa_powf_cr(
+            thompson_aa_div(thompson_aa_mul(thompson_aa_mul(
+                thompson_aa_mul(THOMPSON_AA_AM_R, 6.0f), 1.0f), xnr), xrr),
+            THOMPSON_AA_OBMR);
+        // (3.0 + mu_r + 0.672) is REAL; over DOUBLE lamr, rounded to REAL.
+        const float mvd_num = thompson_aa_add(
+            thompson_aa_add(3.0f, 0.0f), 0.672f);
+        float mvd_r = (float)((double)mvd_num / lamr);
+        const float d0r_low = thompson_aa_mul(THOMPSON_AA_D0R, 0.75f);
+        bool bounded = false;
+        if (mvd_r > 2.5e-3f) {
+            mvd_r = 2.5e-3f;
+            bounded = true;
+        } else if (mvd_r < d0r_low) {
+            mvd_r = d0r_low;
+            bounded = true;
+        }
+        if (bounded) {
+            // :3079-3082 / :3084-3087.  lamr is a REAL quotient widened;
+            // crg(2)*org3*xrr is REAL (crg(2) = 1, org3 = 1/6), times the
+            // DOUBLE power, over am_r in DOUBLE, rounded to REAL xnr.
+            lamr = (double)thompson_aa_div(mvd_num, mvd_r);
+            const float xnr_bounded = (float)(
+                (double)thompson_aa_mul(thompson_aa_mul(1.0f, 1.0f / 6.0f),
+                                        xrr)
+                * pow(lamr, 3.0) / (double)THOMPSON_AA_AM_R);
+            *nrten = thompson_aa_mul(thompson_aa_mul(thompson_aa_sub(
+                xnr_bounded, thompson_aa_mul(nr1d, rho)), odts), orho);
+        }
+    } else {
+        // :3089-3090.
+        *qrten = thompson_aa_mul(-qr1d, odts);
+        *nrten = thompson_aa_mul(-nr1d, odts);
+    }
+}
+
 // module_mp_thompson.F:1878-1898 (the bounded LOCAL rain distribution WRF
 // diagnoses at entry, deliberately distinct from the prognostic nr1d)
 // followed by :2144-2150 (the y-intercept pass, which RE-DERIVES lamr from

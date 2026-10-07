@@ -392,7 +392,7 @@ fn full_domain_projected_map_options(
     options
 }
 
-fn build_full_domain_projected_map_with_projection(
+pub fn build_full_domain_projected_map_with_projection(
     lat_deg: &[f32],
     lon_deg: &[f32],
     projection: Option<&GridProjection>,
@@ -408,6 +408,16 @@ fn build_full_domain_projected_map_with_projection(
         inverse_raster_projection_for_latlon_mesh(projection, basemap_bounds, lat_deg, lon_deg);
     drop_layers_the_frame_is_too_large_for(&mut projected, bounds);
     Ok(projected)
+}
+
+/// The exact transform of the native-grid frame, without requested geographic
+/// padding that would shrink a fine grid inside its intended canvas.
+pub fn full_domain_panel_resolved_projection(
+    lat_deg: &[f32], lon_deg: &[f32], projection: Option<&GridProjection>,
+    bounds: (f64, f64, f64, f64), target_ratio: f64,
+) -> Result<rustwx_render::ResolvedProjection, Box<dyn std::error::Error>> {
+    let options = full_domain_projected_map_options(lat_deg, lon_deg, projection, bounds, target_ratio);
+    rustwx_render::resolved_projection_for_options(lat_deg, lon_deg, &options.domain)
 }
 
 fn full_domain_projected_frame_enabled(

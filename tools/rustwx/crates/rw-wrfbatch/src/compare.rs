@@ -646,6 +646,11 @@ pub fn difference_step(display_units: &str) -> Option<f64> {
         "mm" | "kg/m^2" | "kg m-2" => Some(2.0),
         "hpa" | "mb" => Some(1.0),
         "w/m^2" | "w/m2" | "w m-2" | "w m^-2" | "w m**-2" => Some(10.0),
+        // Smoke: near-surface mass density and column mass, as the smoke
+        // styles draw them (kg m-3 x 1e9, kg m-2 x 1e6).  Ten ug m-3 is
+        // about one EPA AQI PM2.5 band; twenty mg m-2 one column step.
+        "ug/m^3" | "ug m-3" | "\u{b5}g/m^3" | "\u{b5}g m-3" => Some(10.0),
+        "mg/m^2" | "mg m-2" => Some(20.0),
         _ => None,
     }
 }
@@ -854,6 +859,96 @@ pub fn compose_sheet(panels: &[RgbaImage], header: &SheetHeader) -> Result<RgbaI
         metrics.subtitle_scale,
     );
     Ok(sheet)
+}
+
+/// Compose rows of finished panels (one row per valid time, say) under one
+/// header band.
+///
+/// One row is [`compose_sheet`] exactly, so a one-row sheet is the same
+/// image whichever function drew it.  Several rows are stacked with the
+/// same gutter between rows as between columns.  Every row must hold the
+/// same number of panels and every panel must be one size: a short row
+/// would leave a hole that reads as a missing panel, and a panel of another
+/// size would have to be resampled.
+pub fn compose_sheet_rows(
+    rows: &[Vec<RgbaImage>],
+    header: &SheetHeader,
+) -> Result<RgbaImage, String> {
+    if rows.len() == 1 {
+        return compose_sheet(&rows[0], header);
+    }
+    let first = rows
+        .first()
+        .and_then(|row| row.first())
+        .ok_or("a sheet needs at least one panel")?;
+    let (width, height) = (first.width(), first.height());
+    let columns = rows[0].len();
+    for (row_index, row) in rows.iter().enumerate() {
+        if row.len() != columns {
+            return Err(format!(
+                "row {row_index} holds {} panel(s) and row 0 holds {columns}; rows of two lengths \
+                 are not composed",
+                row.len()
+            ));
+        }
+        for (index, panel) in row.iter().enumerate() {
+            if panel.width() != width || panel.height() != height {
+                return Err(format!(
+                    "row {row_index} panel {index} is {}x{} and the first panel is \
+                     {width}x{height}; panels of two sizes are not composed",
+                    panel.width(),
+                    panel.height()
+                ));
+            }
+        }
+    }
+    let corner = first.get_pixel(0, 0).0;
+    let background = Color::rgba(corner[0], corner[1], corner[2], 255);
+    let metrics = sheet_metrics(width);
+    let row_count = u32::try_from(rows.len()).map_err(|_| "row count exceeds image dimensions")?;
+    let column_count =
+        u32::try_from(columns).map_err(|_| "panel count exceeds image dimensions")?;
+    let layout = PanelGridLayout::new(row_count, column_count, width, height)
+        .map_err(|error| error.to_string())?
+        .with_gaps(metrics.gap, metrics.gap)
+        .with_padding(PanelPadding {
+            top: metrics.header_height,
+            right: 0,
+            bottom: 0,
+            left: 0,
+        })
+        .with_background(background);
+    let panels: Vec<RgbaImage> = rows.iter().flat_map(|row| row.iter().cloned()).collect();
+    let mut sheet = compose_panel_images(&layout, &panels).map_err(|error| error.to_string())?;
+    let (title_ink, subtitle_ink) = ink_for(background);
+    rustwx_render::draw_text_bold(
+        &mut sheet,
+        &header.title,
+        metrics.margin_x as i32,
+        metrics.title_y as i32,
+        title_ink,
+        metrics.title_scale,
+    );
+    rustwx_render::draw_text(
+        &mut sheet,
+        &header.subtitle,
+        metrics.margin_x as i32,
+        metrics.subtitle_y as i32,
+        subtitle_ink,
+        metrics.subtitle_scale,
+    );
+    Ok(sheet)
+}
+
+/// Where panel `(row, column)` of a sheet of `width x height` panels sits:
+/// its top-left pixel.  The inverse of the composition above, for a caller
+/// (a proof, a viewer) that needs a panel's exact region back.
+pub fn sheet_panel_origin(row: u32, column: u32, width: u32, height: u32) -> (u32, u32) {
+    let metrics = sheet_metrics(width);
+    (
+        column * (width + metrics.gap),
+        metrics.header_height + row * (height + metrics.gap),
+    )
 }
 
 #[cfg(test)]
@@ -1208,6 +1303,8 @@ mod tests {
         assert_eq!(difference_step(" m "), Some(10.0));
         assert_eq!(difference_step("W m-2"), Some(10.0));
         assert_eq!(difference_step("W/m^2"), Some(10.0));
+        assert_eq!(difference_step("ug/m^3"), Some(10.0));
+        assert_eq!(difference_step("mg/m^2"), Some(20.0));
         assert_eq!(difference_step("furlongs"), None);
     }
 

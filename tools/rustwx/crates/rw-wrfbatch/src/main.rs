@@ -41,6 +41,7 @@ mod input_list;
 mod run_difference;
 mod sheet;
 mod store_render;
+use rw_wrfbatch::sfire;
 mod viewer_profile;
 
 use std::path::PathBuf;
@@ -334,6 +335,11 @@ meshdiff:<...> (need --mesh-grid FILE.nc; meshdiff also --mesh-reference)"
         // fields, and a same-prefixed two-field line is a trap.
         println!("  {slug}");
     }
+    for (slug,field,_,_) in sfire::PRODUCTS {
+        println!("  {slug}");
+        println!("NEEDS\t{slug}\tFXLAT\tFXLONG\tLFN\t{field}");
+        println!("WRFOUT\t{slug}\tdirect\teligible\t\trefined fire fields with geographic coordinates");
+    }
     // The fileless half of availability: what each slug NEEDS, in the
     // store's own selector vocabulary, and what this build's wrfout
     // import is PLANNED to write.  Neither opens a file, so both can be
@@ -384,7 +390,7 @@ meshdiff:<...> (need --mesh-grid FILE.nc; meshdiff also --mesh-reference)"
     // Not "total=": the store-aware listing already owns that word for its
     // own count of catalog ROWS (which includes rows no --products spelling
     // selects).  This is the size of the --products vocabulary.
-    println!("selectable_slugs={}", slugs.len());
+    println!("selectable_slugs={}", slugs.len()+sfire::PRODUCTS.len());
     println!(
         "pass --store-root DIR --out-dir DIR wrfout... with --list-products \
          for per-frame availability"
@@ -1126,15 +1132,16 @@ fn validate_request(args: &Args) -> Result<(), CliError> {
     // slugs, so it reads `mesh:qi:colmax` and `xsec:QICE` as typos and
     // refuses a command line that is correct -- which is what a
     // mesh-only or section-only invocation is.
+    let (non_fire,fire_products)=sfire::split_products(&args.products);
     let (non_mesh, mesh_products) =
-        mesh::split_product_spec(&args.products).map_err(CliError::Usage)?;
+        mesh::split_product_spec(&non_fire).map_err(CliError::Usage)?;
     let (store_products, section_products) =
         section::split_product_spec(&non_mesh).map_err(CliError::Usage)?;
     // A spec made only of the catalog keywords this binary expands
     // against the store (`all`, `windowed`, `variables`) names no slug
     // the partition could check; it is expanded after the import.
     if (!store_products.trim().is_empty()
-        || (mesh_products.is_empty() && section_products.is_empty()))
+        || (mesh_products.is_empty() && section_products.is_empty() && fire_products.is_empty()))
         && !is_catalog_keyword_spec(&store_products)
     {
         rusty_weather::render_all::partition_products(&store_products)
@@ -1257,13 +1264,9 @@ fn domain_token_from_filename(path: &std::path::Path) -> Option<String> {
     Some(format!("d{digits}"))
 }
 
-/// `3km`, `1.5km`, `333m` -- the resolution half of the output token.
-/// Sub-kilometre nests read as integer metres because `0.333km` is a
-/// worse label for a 333 m nest than `333m` is.
-fn resolution_token(spacing_m: f64) -> Option<String> {
-    let (value, unit) = spacing_parts(spacing_m)?;
-    Some(format!("{value}{unit}"))
-}
+// The resolution token and its parts live in the library, so the fire
+// renderer (rw_wrfbatch::sfire) names its domain folder the same way.
+use rw_wrfbatch::domain_naming::{resolution_token, spacing_parts};
 
 /// `Δx 3 km`, `Δx 333 m` -- the same number, spelled for the subtitle.
 fn spacing_subtitle(spacing_m: f64) -> Option<String> {
@@ -1271,29 +1274,6 @@ fn spacing_subtitle(spacing_m: f64) -> Option<String> {
     Some(format!("\u{0394}x {value} {unit}"))
 }
 
-fn spacing_parts(spacing_m: f64) -> Option<(String, &'static str)> {
-    if !spacing_m.is_finite() || spacing_m <= 0.0 {
-        return None;
-    }
-    let metres = spacing_m.round();
-    if metres >= 1_000.0 {
-        Some((trimmed_number(spacing_m / 1_000.0), "km"))
-    } else {
-        Some((format!("{metres:.0}"), "m"))
-    }
-}
-
-/// Three decimals at most, with the trailing zeros dropped: `3`, `1.5`,
-/// `1.333`.
-fn trimmed_number(value: f64) -> String {
-    let text = format!("{value:.3}");
-    let trimmed = text.trim_end_matches('0').trim_end_matches('.');
-    if trimmed.is_empty() {
-        "0".to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
 
 /// The slug that replaces `native_grid` in every output filename:
 /// `d02-3km`, or `d02` when the file declares no usable `DX`.
@@ -1396,9 +1376,10 @@ fn run(mut args: Args) -> Result<(), String> {
     // frame and its grid file; `xsec:` cuts the wrfout files directly.
     // Both are split off here, and when they are all that was asked for the
     // import is skipped entirely.
-    let (non_mesh_products, mesh_products) = mesh::split_product_spec(&args.products)?;
+    let (non_fire_products,fire_products)=sfire::split_products(&args.products);
+    let (non_mesh_products, mesh_products) = mesh::split_product_spec(&non_fire_products)?;
     let (store_products, section_products) = section::split_product_spec(&non_mesh_products)?;
-    if !mesh_products.is_empty() && !(store_products.is_empty() && section_products.is_empty()) {
+    if !mesh_products.is_empty() && !(store_products.is_empty() && section_products.is_empty() && fire_products.is_empty()) {
         // The INPUTS differ, not just the drawing.  A mesh: product's input
         // is an MPAS history frame; every other family's is a wrfout.  One
         // invocation cannot be handed both lists, and importing a history
@@ -1501,6 +1482,23 @@ fn run(mut args: Args) -> Result<(), String> {
         reference_km: args.section_reference_km,
     };
     let section_started = std::time::Instant::now();
+    let fire_rows=sfire::catalog(&args.inputs);
+    let (fire_rendered,fire_skipped,fire_failed,fire_georefs)=if args.list_products || fire_products.is_empty() {(0,0,0,Vec::new())} else {
+        sfire::render(&fire_products,&sfire::RenderConfig {inputs:&args.inputs,out_dir:&args.out_dir,
+            frame:args.frames,width:args.width,height:args.height,source_label:&args.source_label,
+            overlays:args.overlays.as_ref(),annotations:args.annotations.as_ref()})?
+    };
+    if store_products.is_empty() && section_products.is_empty() && !fire_products.is_empty() {
+        if args.list_products {
+            for (slug,kind,status,detail,code) in &fire_rows {println!("PRODUCT\t{slug}\t{kind}\t{status}\t{detail}\t{code}");}
+            println!("CATALOG total={}",fire_rows.len());
+        } else {
+            if !fire_georefs.is_empty() {write_georef_manifest(&args.out_dir,&fire_georefs)?;}
+            println!("FINISHED rendered={fire_rendered} skipped={fire_skipped} failed={fire_failed} elapsed_ms={}",section_started.elapsed().as_millis());
+            if fire_failed>0 || (fire_rendered==0 && !sfire::all_inactive(&args.inputs)) {return Err("Fire render incomplete; see frame-attributed diagnostics".into());}
+        }
+        return Ok(());
+    }
     if store_products.is_empty() && !section_products.is_empty() && !args.list_products {
         let (rendered, failed) = render_section_products(
             &section_products,
@@ -1549,6 +1547,7 @@ fn run(mut args: Args) -> Result<(), String> {
             &import_run_slug,
             &stored_slots,
             args.heavy,
+            fire_rows,
         );
     }
 
@@ -1616,7 +1615,7 @@ fn run(mut args: Args) -> Result<(), String> {
     // geographic transforms beside the PNGs.  The pinned stdout grammar
     // is untouched: the collection rides the same event the RENDERED
     // line already prints.
-    let mut panel_georefs: Vec<RenderedPanelGeoref> = Vec::new();
+    let mut panel_georefs: Vec<RenderedPanelGeoref> = fire_georefs;
     let summary = run_batch_render(request, &cancel, |event| match event {
         BatchRenderEvent::Started {
             planned_items,
@@ -1654,7 +1653,7 @@ fn run(mut args: Args) -> Result<(), String> {
         }
         BatchRenderEvent::Finished(summary) => println!(
             "FINISHED rendered={} skipped={} failed={} elapsed_ms={}",
-            summary.rendered, summary.skipped, summary.failed, summary.elapsed_ms
+            summary.rendered+fire_rendered, summary.skipped+fire_skipped, summary.failed+fire_failed, summary.elapsed_ms
         ),
         _ => {}
     })?;
@@ -1684,12 +1683,12 @@ fn run(mut args: Args) -> Result<(), String> {
         );
         counts
     };
-    if summary.rendered + section_rendered == 0 || summary.failed + section_failed > 0 {
+    if summary.rendered + section_rendered + fire_rendered == 0 || summary.failed + section_failed + fire_failed > 0 {
         return Err(format!(
             "batch render incomplete: rendered={} skipped={} failed={}",
-            summary.rendered + section_rendered,
-            summary.skipped,
-            summary.failed + section_failed
+            summary.rendered + section_rendered + fire_rendered,
+            summary.skipped + fire_skipped,
+            summary.failed + section_failed + fire_failed
         ));
     }
     Ok(())
@@ -2318,6 +2317,7 @@ fn list_products(
     run_slug: &str,
     stored_slots: &[u16],
     heavy_imported: bool,
+    fire_rows:Vec<sfire::CatalogRow>,
 ) -> Result<(), String> {
     use rusty_weather::batch_render::BatchProductKind;
     use rusty_weather::render_all::StoreFieldSource;
@@ -2348,7 +2348,7 @@ fn list_products(
     // reader sees and is never matched on; `code` is the stable machine
     // spelling a consumer decides with, so a reworded reason cannot
     // silently turn an excluded slug back into a forwarded one.
-    let mut rows: Vec<(String, &str, &str, String, &str)> = Vec::new();
+    let mut rows: Vec<(String, &str, &str, String, &str)> = fire_rows;
 
     for spec in rustwx_products::spec::direct_product_specs() {
         // The ensemble/probabilistic families stay out of `all` -- that

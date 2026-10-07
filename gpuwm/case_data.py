@@ -1097,6 +1097,17 @@ def load_experiment_case_bytes(
     if fetch_table is not None:
         from gpuwm.fetch import validate_fetch_hints
         validate_fetch_hints(fetch_table, source=source)
+        # The same route chem sources the experiment loader resolves.
+        from gpuwm.config import apply_route_chem_sources
+        apply_route_chem_sources(raw, fetch_table)
+        # The same fill the config-table loader applies
+        # (gpuwm.experiment.build_experiment_from_config_tables): a
+        # configuration naming an operational-fork source and omitting a
+        # scheme-generation selector runs that source's generation through
+        # this door too, so `gpuwm run` and `gpuwm sim` read one physics
+        # from one file.
+        from gpuwm.physics_source_defaults import fill_omitted_generation_selectors
+        fill_omitted_generation_selectors(raw, fetch_table)
     # The optional [static] table (high-resolution static geography)
     # splits off identically; its schema is owned by
     # gpuwm.static.highres_production and validated, never dropped.

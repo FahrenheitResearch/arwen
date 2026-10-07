@@ -694,6 +694,7 @@ def test_artifact_filenames_agree_with_the_resolvers_on_this_host():
         library_names as obsregrid_names)
     from gpuwm.obs_score_bridge import library_names as obsscore_names
     from gpuwm.isobaric_bridge import library_names as isobaric_names
+    from gpuwm.obs.superob_bridge import library_name as superob_name
 
     # One expected filename per library, from the resolver that actually
     # searches for it: libraries with one shared expectation would
@@ -704,7 +705,8 @@ def test_artifact_filenames_agree_with_the_resolvers_on_this_host():
                  "static_fields": static_names()[0],
                  "obs_regrid": obsregrid_names()[0],
                  "obs_score": obsscore_names()[0],
-                 "rw_isobaric": isobaric_names()[0]}
+                 "rw_isobaric": isobaric_names()[0],
+                 "rw_superob": superob_name()}
     for artifact in bridge_assets.BUNDLED_ARTIFACTS:
         produced = bridge_assets.artifact_filename(artifact, host)
         if artifact.kind == "library":
@@ -772,6 +774,37 @@ def test_every_bundled_artifact_is_one_the_resolver_searches_for():
         dealias_region.region_bridge_candidates())
     for name, env in bridges.BRIDGE_ENV.items():
         assert envs[name] == env
+
+
+def test_ensemble_bundle_contract_matches_the_default_cpu_reducer():
+    from gpuwm import rustwx
+
+    artifact = next(row for row in bridge_assets.BUNDLED_ARTIFACTS
+                    if row.name == "rw_ensbatch")
+    assert artifact.kind == "executable"
+    assert artifact.crate == bridges.RUSTWX_CRATE_RELATIVE
+    assert artifact.env_var == "GPUWM_ENSEMBLE_RENDERER"
+    assert bridges.BRIDGE_ABI_MARKERS[artifact.name] == (
+        rustwx.CPU_ENSEMBLE_REDUCTION_ABI.encode("ascii"))
+    assert bridge_assets.artifact_filename(artifact, "linux-x86_64") == "rw_ensbatch"
+    assert bridge_assets.artifact_filename(artifact, "win-x86_64") == "rw_ensbatch.exe"
+
+
+def test_bundle_with_every_other_artifact_refuses_missing_ensemble_reducer(tmp_path):
+    archive = tmp_path / "gpuwm-bridges-v0.0.0-test-linux-x86_64.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        for artifact in bridge_assets.BUNDLED_ARTIFACTS:
+            if artifact.name != "rw_ensbatch":
+                bundle.writestr(bridge_assets.artifact_filename(artifact, "linux-x86_64"),
+                                b"member-list fixture, not executable proof")
+    result = subprocess.run(
+        [sys.executable, str(BUNDLE_TOOL), "pin", "--release", "v0.0.0-test",
+         "--source-rev", "ab12" * 10, "--bundle", str(archive),
+         "--out", str(tmp_path / "pins.json")], capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "missing rw_ensbatch; refusing to pin a partial bundle" in (
+        result.stderr + result.stdout)
+    assert not (tmp_path / "pins.json").exists()
 
 
 def test_missing_zarr_reader_names_the_actual_install_or_source_build_remedy(tmp_path, monkeypatch):
@@ -1040,6 +1073,11 @@ def test_the_bundle_tool_writes_a_deterministic_archive(tmp_path, platform):
             capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
         archive = out / f"gpuwm-bridges-v0.0.0-test-{platform}.zip"
+        ensemble = next(row for row in bridge_assets.BUNDLED_ARTIFACTS
+                        if row.name == "rw_ensbatch")
+        name = bridge_assets.artifact_filename(ensemble, platform)
+        with zipfile.ZipFile(archive) as bundle:
+            assert bundle.read(name) == (source / name).read_bytes()
         digests.append(bridge_assets.sha256_file(archive))
     assert digests[0] == digests[1]
 
@@ -1360,3 +1398,69 @@ def test_the_published_bundle_downloads_and_verifies(tmp_path):
         assert staged.is_file(), f"pinned map asset not staged: {pin.path}"
         assert staged.stat().st_size == pin.bytes
         assert bridge_assets.sha256_file(staged) == pin.sha256
+
+
+def test_the_superob_bundle_entry_and_handshake_match_the_module():
+    """The bundle stages the file this seam opens, under its own variable,
+    and the release probe asks it the question this module asks: without
+    the entry `gpuwm fetch-bridges` stages a bundle the superob stage
+    refuses on, and every radar DA cycle stops at observation prep."""
+    from gpuwm import bridge_assets, bridges
+    from gpuwm.obs import superob_bridge as sb
+
+    artifact, = [a for a in bridge_assets.BUNDLED_ARTIFACTS
+                 if a.name == "rw_superob"]
+    assert artifact.env_var == sb.SUPEROB_BRIDGE_ENV
+    assert artifact.kind == "library"
+    assert artifact.crate == bridges.RUSTWX_CRATE_RELATIVE
+    for platform in bridge_assets.SUPPORTED_PLATFORMS:
+        windows = platform.startswith("win-")
+        assert bridge_assets.artifact_filename(artifact, platform) == (
+            "rw_superob.dll" if windows else "librw_superob.so")
+    assert bridge_assets.library_abi_for("rw_superob") == (
+        "gpuwm_superob_abi_version", sb.SUPEROB_ABI)
+    assert bridges.BRIDGE_ABI_MARKERS["rw_superob"] == sb.ABI_MARKER
+
+
+def test_the_nowcast_frames_bundle_entry_matches_its_resolver_and_source(
+        monkeypatch, tmp_path):
+    """The bundle stages the converter under the variable its resolver
+    reads, and the static marker, the ``--abi`` literal the wrapper
+    expects and the Rust constant are one string.  Without the row the
+    cut built rw_nowcast_frames and threw it away, so a wheel install had
+    no way to turn a NetCDF nowcast into a frames root; with a marker that
+    drifted from the binary, `gpuwm fetch-bridges` would refuse the bundle
+    the release just built."""
+    import re
+
+    from gpuwm import rustwx_lanes as lanes
+
+    artifact, = [a for a in bridge_assets.BUNDLED_ARTIFACTS
+                 if a.name == lanes.NOWCAST_FRAMES_NAME]
+    assert artifact.env_var == lanes.NOWCAST_FRAMES_ENV
+    assert artifact.kind == "executable"
+    assert artifact.crate == bridges.RUSTWX_CRATE_RELATIVE
+    assert (bridges.BRIDGE_ABI_MARKERS[lanes.NOWCAST_FRAMES_NAME]
+            == lanes.NOWCAST_FRAMES_ABI_MARKER.encode())
+
+    source = (REPO_ROOT / bridges.RUSTWX_CRATE_RELATIVE / "crates"
+              / "rw-wrfbatch" / "src" / "bin" / "nowcast_frames.rs")
+    if not source.is_file():
+        pytest.skip("the Rust source is not in this install")
+    match = re.search(r'const ABI_MARKER: &str = "((?:[^"\\]|\\.)*)";',
+                      source.read_text(encoding="utf-8"), re.S)
+    assert match, "rw_nowcast_frames ABI_MARKER not found"
+    # Rust's string continuation: a backslash before a newline drops the
+    # newline and the next line's leading whitespace.
+    literal = re.sub(r"\\\n\s*", "", match.group(1)).replace("\\t", "\t")
+    assert literal == lanes.NOWCAST_FRAMES_ABI_MARKER
+
+    # The resolver honours its own variable: a file named there is found,
+    # a missing one is a loud refusal rather than a fall-through.
+    binary = tmp_path / bridges.executable_name(lanes.NOWCAST_FRAMES_NAME)
+    binary.write_bytes(b"build " + lanes.NOWCAST_FRAMES_ABI_MARKER.encode())
+    monkeypatch.setenv(lanes.NOWCAST_FRAMES_ENV, str(binary))
+    assert lanes.find_nowcast_frames_bin() == binary.resolve()
+    monkeypatch.setenv(lanes.NOWCAST_FRAMES_ENV, str(tmp_path / "absent"))
+    with pytest.raises(FileNotFoundError, match=lanes.NOWCAST_FRAMES_ENV):
+        lanes.find_nowcast_frames_bin()

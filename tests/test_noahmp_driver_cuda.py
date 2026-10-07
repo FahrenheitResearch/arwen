@@ -43,7 +43,7 @@ from gpuwm.core.noahmp_driver_gpu import (  # noqa: E402
     driver_module, driver_source, run_noahmp_init, run_snow_init,
 )
 
-_DATA = os.path.join(_ROOT, "gpuwm", "data", "noahmp", "oracle")
+_DATA = os.path.join(_ROOT, "tests", "data", "oracles", "noahmp")
 FIXTURE = os.path.join(_DATA, "noahmp-driver.csv")
 LIBM = os.path.join(_DATA, "glibc-libm-fp32.csv")
 

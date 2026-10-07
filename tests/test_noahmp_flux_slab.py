@@ -62,7 +62,7 @@ from gen_bareflux_cases import (                                # noqa: E402
     ARRAY_FIELDS, INT_FIELDS, NSNOW, NSOIL, REAL_FIELDS, unhexf,
 )
 
-_ORACLE = _ROOT / "gpuwm" / "data" / "noahmp" / "oracle"
+_ORACLE = _ROOT / "tests" / "data" / "oracles" / "noahmp"
 _BARE_FIXTURE = _ORACLE / "noahmp-bareflux.csv"
 _PARAM_FIXTURE = _ORACLE / "noahmp-parameters.csv"
 

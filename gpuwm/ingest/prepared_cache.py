@@ -164,6 +164,14 @@ def prepared_domain_config_identity(domain_config) -> dict[str, object]:
         # scaled source words before interpolation. Those arrays remain
         # internally hash-consistent but produce different terrain drag.
         document["orographic_sampling_contract"] = OROGRAPHIC_MARKER
+    # A chem domain binds the chem table it was prepared with (schema, every
+    # row/set/source file, the selection), so an edited row can never serve
+    # a cache prepared under the old one.  Absent -- not null -- on a
+    # chem-off domain, so every existing identity is unchanged.
+    run = getattr(domain_config, "run", None)
+    if run is not None and getattr(run, "chem_sets", ()):
+        from gpuwm.chem_table import load as load_chem_table
+        document["chem_table_identity"] = load_chem_table(run).identity
     return _json_copy(document)
 
 
@@ -421,6 +429,12 @@ DEFAULT_TOLERANT_IDENTITY_FIELDS = frozenset({
     # boundary table set are built ON the ladder, so a cache prepared for a
     # 49-level child cannot serve a 96-level one.
     "run.eta_levels",
+    # The chem door, on argument (b): empty (the default) means no chem
+    # species, which is exactly what every prepared state before the field
+    # carried.  A chem tree holds its sets (and its enabled sources) in its
+    # header and is compared strictly: its prepared state carries chem_<row>
+    # fields and chem boundary tables a chem-off cache does not.
+    "run.chem_sets", "run.chem_sources",
     # The downscaled child's relaxation time scale and w treatment, on
     # argument (c): both choose how the FORECAST applies the boundary
     # tables, and neither is read while the tables or the initial state
@@ -638,7 +652,63 @@ INERT_DIAGNOSTIC_IDENTITY_FIELDS = frozenset(
 #: controller ruling 2026-08-03 under ArWen's standing delegation,
 #: recorded in docs/superpowers/receipts/les/
 #: INFLOW-GENERATOR-ACCEPTANCE-V2.md item 10.
-PREPARATION_INERT_RUN_FIELDS = frozenset({
+
+# Explicit SFIRE v4.7.1 controls. Fire state and smoke emissions are initialized
+# by forecast physics after atmospheric cache restore. Native atmospheric
+# initialization and boundary preparation read none of these fields. This
+# closed list permits inactive prior headers and fire on/off cache reuse;
+# every control stays in forecast and restart identity.
+SFIRE_PREPARATION_INERT_RUN_FIELDS = frozenset({
+    "run.nfmc", "run.fmoist_run", "run.fmoist_interp", "run.fmoist_only",
+    "run.fmoist_freq", "run.fmoist_dt", "run.fmep_decay_tlag", "run.ifire",
+    "run.fire_boundary_guard", "run.fire_num_ignitions", "run.fire_ignition_ros1", "run.fire_ignition_start_lon1",
+    "run.fire_ignition_start_lat1", "run.fire_ignition_end_lon1", "run.fire_ignition_end_lat1", "run.fire_ignition_radius1",
+    "run.fire_ignition_start_time1", "run.fire_ignition_end_time1", "run.fire_ignition_ros2", "run.fire_ignition_start_lon2",
+    "run.fire_ignition_start_lat2", "run.fire_ignition_end_lon2", "run.fire_ignition_end_lat2", "run.fire_ignition_radius2",
+    "run.fire_ignition_start_time2", "run.fire_ignition_end_time2", "run.fire_ignition_ros3", "run.fire_ignition_start_lon3",
+    "run.fire_ignition_start_lat3", "run.fire_ignition_end_lon3", "run.fire_ignition_end_lat3", "run.fire_ignition_radius3",
+    "run.fire_ignition_start_time3", "run.fire_ignition_end_time3", "run.fire_ignition_ros4", "run.fire_ignition_start_lon4",
+    "run.fire_ignition_start_lat4", "run.fire_ignition_end_lon4", "run.fire_ignition_end_lat4", "run.fire_ignition_radius4",
+    "run.fire_ignition_start_time4", "run.fire_ignition_end_time4", "run.fire_ignition_ros5", "run.fire_ignition_start_lon5",
+    "run.fire_ignition_start_lat5", "run.fire_ignition_end_lon5", "run.fire_ignition_end_lat5", "run.fire_ignition_radius5",
+    "run.fire_ignition_start_time5", "run.fire_ignition_end_time5", "run.fire_ignition_start_x1", "run.fire_ignition_start_y1",
+    "run.fire_ignition_end_x1", "run.fire_ignition_end_y1", "run.fire_ignition_start_x2", "run.fire_ignition_start_y2",
+    "run.fire_ignition_end_x2", "run.fire_ignition_end_y2", "run.fire_ignition_start_x3", "run.fire_ignition_start_y3",
+    "run.fire_ignition_end_x3", "run.fire_ignition_end_y3", "run.fire_ignition_start_x4", "run.fire_ignition_start_y4",
+    "run.fire_ignition_end_x4", "run.fire_ignition_end_y4", "run.fire_ignition_start_x5", "run.fire_ignition_start_y5",
+    "run.fire_ignition_end_x5", "run.fire_ignition_end_y5", "run.fire_lat_init", "run.fire_lon_init",
+    "run.fire_ign_time", "run.fire_shape", "run.fire_sprd_mdl", "run.fire_crwn_hgt",
+    "run.fire_ext_grnd", "run.fire_ext_crwn", "run.fire_sfc_flx", "run.fire_heat_peak",
+    "run.fire_tg_ub", "run.fire_smk_scheme", "run.fire_smk_peak", "run.fire_smk_ext",
+    "run.fire_wind_height", "run.fire_fuel_read", "run.fire_fuel_cat", "run.fire_fmc_read",
+    "run.fire_print_msg", "run.fire_print_file", "run.fire_fuel_left_method", "run.fire_fuel_left_irl",
+    "run.fire_fuel_left_jrl", "run.fire_grows_only", "run.fire_upwinding", "run.fire_upwind_split",
+    "run.fire_viscosity", "run.fire_lfn_ext_up", "run.fire_topo_from_atm", "run.fire_advection",
+    "run.fire_test_steps", "run.fire_const_time", "run.fire_const_grnhfx", "run.fire_const_grnqfx",
+    "run.fire_atm_feedback", "run.fire_mountain_type", "run.fire_mountain_height", "run.fire_mountain_start_x",
+    "run.fire_mountain_start_y", "run.fire_mountain_end_x", "run.fire_mountain_end_y", "run.delt_perturbation",
+    "run.xrad_perturbation", "run.yrad_perturbation", "run.zrad_perturbation", "run.hght_perturbation",
+    "run.stretch_grd", "run.stretch_hyp", "run.z_grd_scale", "run.sfc_full_init",
+    "run.sfc_lu_index", "run.sfc_tsk", "run.sfc_tmn", "run.fire_read_lu",
+    "run.fire_read_tsk", "run.fire_read_tmn", "run.fire_read_atm_ht", "run.fire_read_fire_ht",
+    "run.fire_read_atm_grad", "run.fire_read_fire_grad", "run.sfc_vegfra", "run.sfc_canwat",
+    "run.sfc_ivgtyp", "run.sfc_isltyp", "run.fire_lsm_reinit", "run.fire_lsm_reinit_iter",
+    "run.fire_upwinding_reinit", "run.fire_is_real_perim", "run.fire_lsm_band_ngp", "run.fire_lsm_zcoupling",
+    "run.fire_lsm_zcoupling_ref", "run.fire_tracer_smoke", "run.fire_viscosity_bg", "run.fire_viscosity_band",
+    "run.fire_viscosity_ngp", "run.fire_slope_factor", "run.fs_array_maxsize", "run.fs_firebrand_gen_lim",
+    "run.fs_firebrand_gen_dt", "run.fs_firebrand_gen_levels", "run.fs_firebrand_gen_maxhgt", "run.fs_firebrand_gen_levrand",
+    "run.fs_firebrand_gen_levrand_seed", "run.fs_firebrand_gen_mom3d_dt", "run.fs_firebrand_gen_prop_diam", "run.fs_firebrand_gen_prop_effd",
+    "run.fs_firebrand_gen_prop_temp", "run.fs_firebrand_gen_prop_tvel", "run.fs_firebrand_dens", "run.fs_firebrand_dens_char",
+    "run.fs_firebrand_max_life_dt", "run.fs_firebrand_land_hgt", "run.fuel_crosswalk", "run.trackember",
+    "run.sr_x", "run.sr_y", "run.fire_static", "run.fire_fuel_namelist",
+    "run.fire_smoke",
+})
+
+# The earlier inactive fire configuration serialized an unused moisture
+# filename. Only its empty value is equivalent to the current absent key.
+RETIRED_INACTIVE_IDENTITY_FIELDS = {"run.fire_moisture_namelist": ""}
+
+PREPARATION_INERT_RUN_FIELDS = SFIRE_PREPARATION_INERT_RUN_FIELDS | frozenset({
     # Stability policy is read only when the forecast advances: epssm by
     # core/acoustic.py and forecast-door acoustic_adaptation.py, and the
     # sixth-order selectors by core/dycore.py. initialize_real constructs
@@ -735,12 +805,32 @@ PREPARATION_INERT_RUN_FIELDS = frozenset({
     # clock reads it, once per root step of the forecast, and the forecast
     # doors set it after the cache is read.
     "run.min_time_step_sound",
+    # Acoustic off-centering is used by the forecast dycore only. Refusing
+    # it here prevented a prepared steep-terrain nest from adopting the
+    # measured stable value without rebuilding identical initial arrays.
+    # It remains in experiment and restart identity because it changes
+    # the forecast trajectory.
+    "run.epssm",
     # Only the forecast clock reads this; prepared arrays do not change.
     "run.adaptive_nest_lattice",
     # WRF's slope_rad / topo_shading / shadlen: read only by the forecast's
     # radiation and surface calls (gpuwm.core.topo_radiation), from the
     # prepared terrain; no prepared array depends on them.
     "run.slope_rad", "run.topo_shading", "run.shadlen",
+    # THE CHEM OPERATOR'S SWITCHES (smoke / GOCART-lite / CAMS program,
+    # gpuwm/config.py after adaptive_nest_lattice).  Each is read by the
+    # forecast's chem step or chem transport and by nothing that builds a
+    # prepared array: which species a prepared state carries is decided by
+    # run.chem_sets (tolerant table above) and the chem table's own
+    # identity (prepared_domain_config_identity), never by these.
+    "run.chem_adv_opt", "run.chem_mix2_off", "run.chem_mix6_off",
+    "run.chemdt", "run.kemit", "run.biomass_burn_opt",
+    "run.plumerisefire_frq", "run.dust_opt", "run.seas_opt",
+    "run.dmsemis_opt", "run.wetscav_onoff", "run.chem_conv_tr",
+    "run.vertmix_onoff", "run.aer_ra_feedback", "run.aer_op_opt",
+    "run.dust_alpha", "run.dust_gamma", "run.dust_smtune", "run.dust_ustune",
+    "run.mynn_chem_vertmx", "run.fire_emission_mode",
+    "run.plume_fire_properties", "run.aerosol_mp_coupling",
     # THE SASE CLOSURE'S SELECTORS, out of the tolerant table above for
     # the same reason as the adaptive targets: they have to be forgiven at
     # any value.  No WRF namelist spells them, so an HRRR hierarchy
@@ -802,6 +892,20 @@ PREPARATION_INERT_RUN_FIELDS = frozenset({
     # Prescribed smoke acts only in radiation after prepared-state restore.
     # Its full member identity remains in forecast and restart identities.
     "run.rrtmg_smoke_manifest",
+    # WRF's moisture pressure correction (calc_cq; no WRF namelist key).
+    # Only the forecast's acoustic and big-step drivers read it
+    # (gpuwm/core/acoustic.py prepare_moist_cq and the ensemble batch
+    # twins); initialize_real builds the hydrostatic state and the
+    # boundary tables without an acoustic step.  The standing check
+    # holds: nothing under gpuwm/ingest names it, and the prepare-side
+    # mentions are the HRRR hierarchy's per-domain override list and the
+    # nest-transition contract, which read the configuration, not a
+    # prepared array.  An HRRR hierarchy prepares from WRF namelists,
+    # which state the importer's True, so a verification counterfactual
+    # moist_cq = false was refused on that route for a value no prepared
+    # array depends on.  It stays in the experiment fingerprint and the
+    # restart identity.
+    "run.moist_cq",
 })
 
 
@@ -854,6 +958,10 @@ def effective_prepared_domain_config(document):
         section, _, key = path.partition(".")
         if section == "run" and key:
             run.pop(key, None)
+    for path, inactive in RETIRED_INACTIVE_IDENTITY_FIELDS.items():
+        _, _, key = path.partition(".")
+        if key in run and run[key] == inactive:
+            run.pop(key)
     if run.get("radt", 0.0) > 0.0:
         run["radt_minutes"] = run["radt"]
     if "radt" in run and "radt_minutes" in run:
@@ -985,6 +1093,8 @@ def compare_prepared_domain_config(cached, live, *, not_in_use=None
                     differing.append(path)
                 continue
             if key not in live_node:
+                if path in RETIRED_INACTIVE_IDENTITY_FIELDS and cached_node[key] == RETIRED_INACTIVE_IDENTITY_FIELDS[path]:
+                    continue
                 differing.append(path)
                 continue
             old, new = cached_node[key], live_node[key]
@@ -1836,9 +1946,9 @@ class PreparedCacheStream:
         route, whose head record is then what it always was.
         """
         from gpuwm.state_serialization_contract import (
-            STATE_SERIALIZED_ATTRS, _lateral_fingerprint_header,
+            _lateral_fingerprint_header,
             _update_lateral_fingerprint, _update_setup_core,
-            lateral_boundary_prefix_identity,
+            lateral_boundary_prefix_identity, serialized_state_attrs,
         )
 
         if self._metadata is not None:
@@ -1847,7 +1957,7 @@ class PreparedCacheStream:
         writer = self._writer
         with writer.immutable_batch():
             state_names = []
-            for name in STATE_SERIALIZED_ATTRS:
+            for name in serialized_state_attrs(initial_result.state):
                 value = getattr(initial_result.state, name, None)
                 if value is not None:
                     writer.add(f"state/{name}", value)
@@ -1953,6 +2063,15 @@ class PreparedCacheStream:
             getattr(initial_result, "aerosol_initialization", {}) or {})
         if aerosol_initialization:
             cache_metadata["aerosol_initialization"] = aerosol_initialization
+        # The start state's W, by the same emptiness contract: the row is
+        # written only when the source's vertical velocity was carried
+        # (policy "carried-from-source"), so a zero-W cache canonicalizes
+        # to the bytes it did before and its stored header digest stands.
+        vertical_velocity_initialization = _json_copy(
+            getattr(initial_result, "vertical_velocity_initialization", {}) or {})
+        if vertical_velocity_initialization.get("policy") == "carried-from-source":
+            cache_metadata["vertical_velocity_initialization"] = (
+                vertical_velocity_initialization)
         # The water surface's receipt, and the skin temperatures taken from
         # the other surface because the source held none of the target's
         # own, ride the bundle only when there is something to say, by the
@@ -2841,7 +2960,7 @@ def restore_prepared_cache(path, *, expected_identity, cfg, static,
         attach_lateral_boundaries, record_built_end_frame,
     )
     from gpuwm.state_serialization_contract import (
-        STATE_SERIALIZED_ATTRS, lateral_boundary_prefix_identity,
+        lateral_boundary_prefix_identity, serialized_state_attrs,
         setup_core_fingerprint, setup_fingerprint,
     )
 
@@ -2899,7 +3018,7 @@ def restore_prepared_cache(path, *, expected_identity, cfg, static,
         static["F"], static["E"], sina=static["SINALPHA"],
         cosa=static["COSALPHA"])
     expected_state_names = [
-        name for name in STATE_SERIALIZED_ATTRS
+        name for name in serialized_state_attrs(state)
         if getattr(state, name, None) is not None]
     stored_state_names = reconcile_cached_state_inventory(
         metadata["state_names"], expected_state_names)

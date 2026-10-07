@@ -142,6 +142,29 @@ def test_configuration_inventory_does_not_construct_bank_backings(fixture, monke
     assert result.eligible, result.ordinary_reason
 
 
+@pytest.mark.parametrize("chem_sets", ["smoke", "gocart_primary,smoke", "cams_aq"])
+@pytest.mark.parametrize("active_grid", [1, 2])
+def test_active_chemistry_keeps_original_owners_before_component_inventory(
+        fixture, monkeypatch, chem_sets, active_grid):
+    inputs, args = fixture
+    original = inputs[10].experiment
+    domains = tuple(replace(domain, run=replace(domain.run, chem_sets=chem_sets))
+                    if domain.grid_id == active_grid else domain for domain in original.domains)
+    for member in inputs.values():
+        member.experiment = SimpleNamespace(**{**vars(original), "domains": domains})
+    configs = [vars(domain.run).copy() for domain in domains]
+    def forbidden(*unused, **kwargs):
+        pytest.fail("active chemistry queried component metadata or native banks")
+    monkeypatch.setattr(inventory, "prepared_component_allocation_metadata", forbidden)
+    monkeypatch.setattr(inventory, "_plans", forbidden)
+    args = {key: value for key, value in args.items() if key != "domain_metadata"}
+    decision = plan_prepared_component_reservation(inputs, **args)
+    assert not decision.eligible and decision.reservation is None
+    assert f"domain {active_grid}: active chemistry" in decision.ordinary_reason
+    assert "species arrays, source-hour caches and mass ledger" in decision.ordinary_reason
+    assert [vars(domain.run) for domain in domains] == configs
+
+
 def test_missing_coefficient_backing_refuses_incomplete_cold_plan(fixture):
     inputs, args = fixture
     metadata = {key: replace(value, coefficient_uploads=value.coefficient_uploads[:-1])

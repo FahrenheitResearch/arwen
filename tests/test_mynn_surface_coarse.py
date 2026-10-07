@@ -12,7 +12,7 @@ Fortran harnesses -- pin only VSGD == 0.  The live half of the branch was
 never compared against WRF at all, and every 12 km parent domain runs it on
 every column of every timestep.
 
-``gpuwm/data/mynn/oracle/surface-layer-coarse.csv`` closes that: the same
+``tests/data/oracles/mynn/surface-layer-coarse.csv`` closes that: the same
 unmodified SFCLAY1D_mynn, the same ten columns as the widened fixture, swept
 across DX = 3000 / 5000 / 5001 / 12000 / 27000 m over the widened fixture's
 three stages -- (itimestep, isfflx) = (1, 1), (2, 1) and (1, 0)
@@ -46,7 +46,7 @@ from gpuwm.core.fp32_ulp import fp32_ulp_distance
 from gpuwm.core.mynn_surface import mynn_surface_layer_default
 
 
-ORACLE_DIR = Path(__file__).parents[1] / "gpuwm" / "data" / "mynn" / "oracle"
+ORACLE_DIR = Path(__file__).parents[1] / "tests" / "data" / "oracles" / "mynn"
 COARSE_ORACLE = ORACLE_DIR / "surface-layer-coarse.csv"
 WIDE_ORACLE = ORACLE_DIR / "surface-layer-wide.csv"
 HARNESS = (
@@ -788,6 +788,16 @@ GPU_ULP_BY_TOOLCHAIN = {
 #: integrate/2.8 9dbb4a2db.
 GPU_ULP_BY_TOOLCHAIN[("120", (12, 9))] = (
     GPU_ULP_BY_TOOLCHAIN[("120", (13, 4))])
+#: sm_89 reads the sm_120 row.  Since the cross-architecture rounding pins
+#: (xnode-identity, ecbd106a9 and the A146 __fdiv_rn spellings) the RTX 4090
+#: returns the RTX 5090's words for every output these gates compare:
+#: 16,518 words, zero differing, NVRTC 13.4, 2026-10-05.  The default row,
+#: recorded before those pins, no longer describes it: it failed 31 gates
+#: on the RTX 4090 with no kernel change.  MEASURED on node-1's RTX 4090
+#: under NVRTC 12.9, 13.3 and 13.4: every gate passes on the sm_120 row.
+GPU_ULP_BY_TOOLCHAIN[("89", (12, 9))] = GPU_ULP_BY_TOOLCHAIN[("120", (13, 4))]
+GPU_ULP_BY_TOOLCHAIN[("89", (13, 3))] = GPU_ULP_BY_TOOLCHAIN[("120", (13, 4))]
+GPU_ULP_BY_TOOLCHAIN[("89", (13, 4))] = GPU_ULP_BY_TOOLCHAIN[("120", (13, 4))]
 
 
 def _inputs(fields):

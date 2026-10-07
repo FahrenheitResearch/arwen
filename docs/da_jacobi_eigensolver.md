@@ -128,15 +128,29 @@ run until no pair in a whole sweep clears the threshold.
 | `<= 32` | 32 | up to 8 | `__syncwarp()` |
 | `33..48` | 128 | 1 | `__syncthreads()` |
 | `49..64` | 256 | 1 | `__syncthreads()` |
+| `65..128` (global work) | 256 | 1 | `__syncthreads()` |
+| `129..256` (global work) | 512 | 1 | `__syncthreads()` |
 
 One warp per matrix for small `k` means the barrier is a warp barrier and a
 warp that converges early cannot strand a sibling.  The wider tiers put one
 matrix on the whole block, so every thread runs the same number of sweeps and
 the block barrier is equally safe.
 
-`MAX_K = 64` is a shared-memory ceiling, not an algorithmic one: two `k x k`
-float64 working copies is `16 k^2` bytes, 64 KiB at `k = 64`, which is one
-block per multiprocessor even with the opt-in limit raised.
+`SHARED_MAX_K = 64` is a shared-memory ceiling, not an algorithmic one: two
+`k x k` float64 working copies is `16 k^2` bytes, 64 KiB at `k = 64`, which is
+one block per multiprocessor even with the opt-in limit raised.
+
+Above it the same kernel is compiled with `JACOBI_GLOBAL_WORK`: the two
+working copies live in a global scratch slab the launcher owns (at most
+`GLOBAL_SCRATCH_BYTES` = 32 MiB so the slab stays in L2, at least 64 matrices
+per launch, the batch launched in slices that fit), and
+only the `O(M)` rotation, diagonal, sign and permutation scratch stays in
+shared.  The arithmetic, pair ordering, threshold, sort network and canonical
+sign are the same source lines, so the answer is still fixed by the input
+alone, run to run and card to card.  Before this tier an ensemble above 64
+members fell back to cuSOLVER, which is not bit-reproducible across cards.
+`MAX_K = 256` is the largest size the battery measures converging inside the
+sweep cap.
 
 ## Canonical form, and what it does not fix
 
@@ -418,7 +432,7 @@ Everything is fail-closed, matching the rest of `gpuwm.da.letkf`:
 
 | condition | behaviour |
 |---|---|
-| `k` outside `[2, 64]`, or a dtype other than float32/float64 | `JacobiEighError` naming the range; `"auto"` falls back to the library instead |
+| `k` outside `[2, 256]`, or a dtype other than float32/float64 | `JacobiEighError` naming the range; `"auto"` falls back to the library instead |
 | non-finite entry on input | `JacobiEighError` naming how many matrices; nothing returned |
 | still rotating at the 40-sweep cap | `JacobiEighError`; a partially diagonalised matrix is not an answer |
 | `eigensolver="jacobi"` on numpy | `LetkfError` saying the kernel is CUDA |

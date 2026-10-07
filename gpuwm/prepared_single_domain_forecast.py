@@ -226,6 +226,29 @@ _MAPPED_PACKAGED_PROFILE = composed_packaged_profiles()
 _MAPPED_SOURCES = frozenset({"mapped", *_MAPPED_PACKAGED_PROFILE})
 SUPPORTED_SOURCES = frozenset({"gfs", "era5", "hrrr"} | _MAPPED_SOURCES)
 
+#: The physics-profile name that means "no named profile: bind the
+#: experiment config's own physics selection" -- the ``profile_binding``
+#: value the authority and physics receipts already write for that case.
+#: A caller that must carry the binding as a string (a controller whose
+#: argument record is replayed by its workers, and whose ensemble identity
+#: names the profile) passes this name and :func:`preflight_prepared_forecast`
+#: binds it as ``None``.  Breakage this prevents: the packed DA controller
+#: mapped the name to ``None`` for its own preflight, so its workers read
+#: ``null`` from the shared argument record and rebuilt the ensemble
+#: identity with profile ``"None"`` while the controller's said
+#: ``"experiment-config"``; every member leg was refused ("worker ensemble
+#: identity differs from the public prepared binding", box S 2026-10-06
+#: 18:51Z) and the cycle never ran a forecast.
+EXPERIMENT_CONFIG_PROFILE = "experiment-config"
+
+
+def physics_profile_binding(physics_profile):
+    """``None`` for :data:`EXPERIMENT_CONFIG_PROFILE` (bind the experiment
+    config's own physics), the name itself for a named profile."""
+    if physics_profile is None or physics_profile == EXPERIMENT_CONFIG_PROFILE:
+        return None
+    return physics_profile
+
 #: The HRRR bundle this runner reads is the one
 #: ``tools/prepare_hrrr_wrf.py`` publishes, and it is NOT the portable
 #: single-domain layout the other sources share.  Its artifacts keep the
@@ -1368,7 +1391,9 @@ def runner_capabilities() -> dict[str, object]:
             "run_seconds": {
                 "finite_positive_required": True,
                 "whole_hour_required": True,
-                "must_equal_hash_bound_experiment": True,
+                "must_equal_hash_bound_experiment": False,
+                "requested_length_executed": True,
+                "override_mechanism": RUN_LENGTH_OVERRIDE_MECHANISM,
             },
             "source_forcing_cadence_hours": {
                 "gfs": [1, 3],
@@ -1655,12 +1680,32 @@ def _validate_hash_bound_history_cadence(
     domain = exp.root
     experiment_cadence = float(domain.history_interval_s)
     run_copy_cadence = float(domain.run.output_interval_s)
-    if requested != experiment_cadence or requested != run_copy_cadence:
-        # The hash-bound experiment value is what the run uses either
-        # way; a stale flag is named and overridden, never a refusal.
-        warn(f"--history-interval-seconds {requested:g} differs from "
-             f"the hash-bound experiment history_interval_s "
-             f"({experiment_cadence:g} s); the experiment value is "
+    if requested != experiment_cadence:
+        # THE BREAKAGE THIS REFUSAL PREVENTS (open-defects ledger A15,
+        # 2026-10-05): this check used to warn and run the experiment's
+        # cadence anyway.  A 1 km dataset run that asked for 10-minute
+        # history with --history-interval-seconds 600 on an hourly
+        # experiment would have written hourly frames, five of every six
+        # frames it asked for missing, with one warning line in a long log
+        # as the only trace.  The hash-bound experiment cadence is the only
+        # one this run can write (it is part of the prepared identity), so
+        # an explicit flag that disagrees is refused before any step.  An
+        # omitted flag defaults to the experiment's cadence and never
+        # reaches this branch.
+        raise ValueError(
+            f"--history-interval-seconds {requested:g} asks for a history "
+            f"frame every {requested:g} s, but the hash-bound experiment "
+            f"declares history_interval_s = {experiment_cadence:g} s on "
+            f"d{int(domain.grid_id):02d}, and that is the only cadence this "
+            "prepared run can write; running on would silently deliver "
+            "the experiment's frames instead of the ones asked for.  Omit "
+            "the flag to run the experiment's cadence, or set "
+            f"history_interval_s = {requested:g} in the experiment TOML "
+            "and prepare again")
+    if run_copy_cadence != experiment_cadence:
+        warn(f"the experiment's derived output_interval_s "
+             f"({run_copy_cadence:g} s) differs from its history_interval_s "
+             f"({experiment_cadence:g} s); history_interval_s is "
              "authoritative and is used")
     exact_steps = Fraction(experiment_cadence) / exp.dt_exact(domain.grid_id)
     adaptive = bool(getattr(domain.run, "use_adaptive_time_step", False))
@@ -2251,7 +2296,7 @@ def _render_materialized_experiment(
                 "schema": "gpuwm-prepared-physics-suite-v1",
                 "source": source,
                 "profile": None,
-                "profile_binding": "experiment-config",
+                "profile_binding": EXPERIMENT_CONFIG_PROFILE,
                 "verification": single_domain_verification_status(
                     base_exp.root.run),
             },
@@ -2502,6 +2547,19 @@ def _resolved_wrf_direct_contract_sha256(mp_physics: int) -> str:
 
     return _contract_payload_sha256(
         _physics_contract_bundle(_load_contract(), int(mp_physics)))
+
+
+def _chem_ledger_receipt(state):
+    """One domain's chem mass ledger for the receipt; None when chem is off.
+
+    Read only when the state carries chem, so a chem-off run imports
+    nothing more than it did.
+    """
+    if getattr(state, "chem", None) is None:
+        return None
+    from gpuwm.core.chem_driver import chem_ledger_receipt
+
+    return _strict_json(chem_ledger_receipt(state))
 
 
 def _strict_json(value):
@@ -4224,10 +4282,13 @@ def _validate_physics(
              "separately)")
     if float(exp.run_seconds) != float(run_seconds) \
             or float(cfg.run_seconds) != float(run_seconds):
-        warn(f"--run-seconds {run_seconds:g} differs from the "
-             f"hash-bound experiment run_seconds "
-             f"({float(exp.run_seconds):g} s); the experiment value is "
-             "authoritative and is used")
+        # The executed experiment carries the requested length
+        # (_apply_run_length runs before this on every route); a
+        # mismatch here is a caller that skipped it, not a user error.
+        raise ValueError(
+            f"run-seconds {run_seconds:g} differs from the executed "
+            f"experiment run_seconds ({float(exp.run_seconds):g} s); "
+            "apply the run length to the experiment before validating it")
     cadence_receipt = _validate_hash_bound_history_cadence(
         exp, history_interval_seconds)
     if (dc.grid_id != 1 or dc.parent_id != 0 or cfg.grid_id != 1
@@ -4288,7 +4349,7 @@ def _validate_physics(
             "schema": "gpuwm-prepared-physics-suite-v1",
             "source": validation_source,
             "profile": None,
-            "profile_binding": "experiment-config",
+            "profile_binding": EXPERIMENT_CONFIG_PROFILE,
             "readiness": "IMPLEMENTED_SUITE_NOT_WRF_VERIFIED",
             "warning": verification["sentence"],
             "warning_only": True,
@@ -4499,6 +4560,9 @@ def _execution_plan_receipt(
             "mechanism": "explicit-hash-bound-history-output-schedule-v1",
             "model_state_or_physics_changed": False,
         })
+    if float(source_exp.run_seconds) != float(executed_exp.run_seconds):
+        overrides.append(_run_length_override(
+            float(source_exp.run_seconds), float(executed_exp.run_seconds)))
     return {
         "schema": "gpuwm-prepared-d01-execution-plan-v1",
         "profile": profile,
@@ -4514,6 +4578,65 @@ def _execution_plan_receipt(
         "physics_overrides": [],
         "execution_overrides": overrides,
     }
+
+
+#: The execution plan's spelling of an executed length that differs from
+#: the hash-bound experiment's: the prepared state is untouched, and the
+#: model integrates exactly the first ``executed_seconds`` of the run the
+#: preparation was built for.
+RUN_LENGTH_OVERRIDE_MECHANISM = "requested-run-length-within-prepared-forcing-v1"
+
+
+def _run_length_override(source_seconds: float, executed_seconds: float) -> dict[str, object]:
+    return {
+        "kind": "run-length",
+        "source_experiment_seconds": float(source_seconds),
+        "executed_seconds": float(executed_seconds),
+        "mechanism": RUN_LENGTH_OVERRIDE_MECHANISM,
+        "prepared_state_changed": False,
+        "model_state_or_physics_changed": False,
+    }
+
+
+def _apply_run_length(exp, run_seconds: float):
+    """The experiment this run integrates: the hash-bound one, ``run_seconds`` long.
+
+    ``--run-seconds`` used to be read, compared with the hash-bound
+    experiment's ``run_seconds``, and then DROPPED with a warning that
+    "the experiment value is authoritative": a door asked for 4200 s of
+    a 12 h preparation integrated the whole 12 h (13 minutes of two
+    rented cards for a byte comparison that two minutes settle, box S,
+    2026-10-06).  Nothing the preparation binds depends on the length:
+    a prepared cache is an initial state plus the boundary tables for
+    the times it decoded, which is why ``run.run_seconds`` sits in
+    :data:`gpuwm.ingest.prepared_cache.NON_TRAJECTORY_IDENTITY_FIELDS`
+    and never moves the cache identity.  The one thing a length CAN
+    break is running past the prepared boundary forcing, and that is
+    the coverage gate below (``forcing_hours[-1] * 3600 < run_seconds``),
+    which names the last prepared lead.
+
+    So the requested length is the executed length, on every route:
+    both timing authorities (``ExperimentConfig.run_seconds`` and the
+    derived ``RunConfig.run_seconds`` copy, asserted equal at load) are
+    replaced together, every downstream reader -- the tick clock, the
+    history schedule, the boundary interval plan, the seam waits, the
+    report -- sees one value, and the execution plan records the
+    override beside the output-cadence one.  Equal lengths return the
+    experiment unchanged.
+    """
+
+    requested = float(run_seconds)
+    if not math.isfinite(requested) or requested <= 0.0:
+        raise ValueError("run-seconds must be a positive duration")
+    if float(exp.run_seconds) == requested \
+            and float(exp.root.run.run_seconds) == requested:
+        return exp, None
+    from gpuwm.config import validate_run_config
+    executed_run = validate_run_config(
+        replace(exp.root.run, run_seconds=requested))
+    domain = replace(exp.root, run=executed_run)
+    executed = replace(exp, run_seconds=requested, domains=(domain,))
+    return executed, _run_length_override(float(exp.run_seconds), requested)
 
 
 def _apply_runtime_run_overrides(exp, overrides):
@@ -4885,9 +5008,16 @@ def _validate_packaged_mapped_evidence(
                 spacings_seconds=_mapped_boundary_spacings(
                     proof, manifest, member_manifest=member_manifest))
             if refusal is not None:
-                raise ValueError(
+                # The one difference with a named breakage of its own: a
+                # preparation from before the profile's mapping declared
+                # the hydrometeors its publisher writes.
+                raise ValueError(_stale_profile_mapping_refusal(
+                    source=source, profile_id=profile_id,
+                    mapping_bytes=mapping_bytes,
+                    composition_sha256=_sha256(composition_path),
+                    prepared_root=prepared_root) or (
                     f"mapped preparation does not use the packaged {source} "
-                    f"authorities ({profile_id}): {refusal}")
+                    f"authorities ({profile_id}): {refusal}"))
             expected_authority_sha256["mapping"] = bound_mapping_sha256
     if (_sha256(mapping_path) != expected_authority_sha256["mapping"]
             or _sha256(composition_path)
@@ -4903,6 +5033,17 @@ def _validate_packaged_mapped_evidence(
             manifest.get(f"{role}_sha256") != expected_authority_sha256[role]
             for role in ("mapping", "composition")):
         raise ValueError("mapped manifest authority identity differs")
+    if not profile_id:
+        # A packaged profile's stale preparation handed in as a caller's
+        # own mapping (the stage door names a root whose mapping no
+        # longer matches any pin ``mapped``) is still that profile's.
+        stale = _stale_profile_mapping_refusal(
+            source=source, profile_id=None,
+            mapping_bytes=mapping_path.read_bytes(),
+            composition_sha256=_sha256(composition_path),
+            prepared_root=prepared_root)
+        if stale is not None:
+            raise ValueError(stale)
 
     composition_document = _load_json_object(
         composition_path, "mapped composition authority")
@@ -5787,12 +5928,18 @@ def _validate_cache_metadata(
         boundary_interval_seconds: int, proof, layout: str,
         posted_placeholder: str | None = None,
         physical_catalog: Mapping[str, object] | None = None,
+        boundary_publication=(), prepared_root: Path | None = None,
 ) -> None:
     """The cache's metadata against the source, the proof and the experiment.
 
     ``posted_placeholder``: an as-posted mapped head's plan placeholder,
     which its metadata binds where the composition receipt's digest goes
     until the seal writes the receipt.
+
+    ``boundary_publication``: the hydrometeor masses the cache's source
+    publishes on every frame (:func:`_boundary_publication`); a cache
+    whose boundary lacks any a fresh preparation would carry is refused
+    (:func:`_refuse_stale_boundary`).
     """
     metadata = reader.header.get("metadata")
     if not isinstance(metadata, dict):
@@ -5927,43 +6074,120 @@ def _validate_cache_metadata(
                 f"{' or '.join(str(f) for f in admitted_fields)}, with the "
                 "analysed hydrometeors its source publishes and the numbers "
                 "seeded from them; re-prepare with this configuration")
-    _announce_vapour_only_boundaries(metadata, intervals)
+    _refuse_stale_boundary(
+        cfg, metadata, published=boundary_publication, source=source,
+        prepared_root=prepared_root)
 
 
-def _announce_vapour_only_boundaries(metadata, intervals) -> None:
-    """Name a cache whose boundary predates the hydrometeor boundary.
+def _boundary_publication(source: str, mapped_paths) -> tuple[str, ...]:
+    """The hydrometeor masses a prepared root's source publishes on every frame.
+
+    A mapped preparation answers with the mapping document it copied
+    into its evidence, which the evidence check has already held to the
+    packaged pin (or, for a caller's own mapping, to its manifest): that
+    document's declared hydrometeors are what a fresh preparation from
+    it decodes.  A native source answers with its registry row.
+    """
+    from gpuwm.boundary_fields import (mapping_boundary_species,
+                                       source_boundary_species)
+
+    mapping_path = (mapped_paths or {}).get("mapped_mapping")
+    if source in _MAPPED_SOURCES and mapping_path is not None:
+        return mapping_boundary_species(
+            _load_json_object(Path(mapping_path), "mapped mapping evidence"))
+    return source_boundary_species(source)
+
+
+def _reprepare_action(source: str, prepared_root: Path | None) -> str:
+    """How a door that refuses a stale prepared root says to replace it."""
+    root = "this root" if prepared_root is None else str(prepared_root)
+    return (f"run `gpuwm prep --source {source}` again on the inputs, "
+            f"experiment config and namelist.wps {root} was prepared from "
+            "(its proof and source evidence name them), into a new "
+            "--output-root, and run from that root")
+
+
+def _refuse_stale_boundary(cfg, metadata, *, published, source: str,
+                           prepared_root: Path | None) -> None:
+    """Refuse a cache whose boundary lets its analysed hydrometeors drain.
 
     A cache sealed before the root's specified boundary carried the
-    analysed hydrometeors (gpuwm.boundary_fields) still RUNS, on its
-    water-vapour-only boundary: refusing it would strand every prepared
-    cache a pipeline holds from 2.8.0 on an upgrade, including its
-    many GFS and ERA5 caches whose boundaries did not change.  It runs
-    with this one line, because run silently it looks fixed and still
-    drains the analysed cloud and snow out of its edges.  Read off the
-    cache's own receipts: its start state installed nonzero analysed
-    hydrometeors, its boundary tables carry none, and its hydrometeor
-    receipt predates ``lateral_boundary_species``.
+    analysed hydrometeors its source publishes (gpuwm.boundary_fields)
+    used to run on a water-vapour-only boundary with a warning.  Run, it
+    drains the analysed cloud and snow out of its edges, and a warning
+    left it looking fixed, so it is refused and named instead.  Read off
+    the cache's own header: its start state holds a mass nonzero
+    (``hydrometeor_initialization``), its source publishes it, its scheme
+    carries it, and its sealed interval tables do not.  A cache whose
+    source publishes none, or whose start state holds none of what its
+    boundary lacks, is what a fresh preparation writes for it and is
+    admitted unchanged: the GFS and ERA5 caches whose boundaries did not
+    change are not touched.
     """
-    from gpuwm.boundary_fields import BOUNDARY_HYDROMETEOR_MASSES
+    from gpuwm.boundary_fields import (analysed_start_species,
+                                       sealed_boundary_species,
+                                       stale_boundary_refusal,
+                                       stale_boundary_species)
 
-    receipt = metadata.get("hydrometeor_initialization")
-    if not isinstance(receipt, dict) or "lateral_boundary_species" in receipt:
-        return
-    first = intervals[0] if intervals and isinstance(intervals[0], dict) else {}
-    if set(first.get("fields") or ()) & set(BOUNDARY_HYDROMETEOR_MASSES):
-        return
-    installed = receipt.get("initialized_state_species")
-    analysed = sorted(
-        name for name, fingerprint in (
-            installed.items() if isinstance(installed, dict) else ())
-        if isinstance(fingerprint, dict)
-        and int(fingerprint.get("nonzero_count") or 0) > 0)
-    if analysed:
-        warn(
-            "this prepared cache was sealed before lateral boundaries "
-            "carried hydrometeors: its boundary carries water vapour only, "
-            f"so the analysed {', '.join(analysed)} drain out of its edges; "
-            "prepare it again to carry them")
+    lbc = (metadata or {}).get("lbc") if isinstance(metadata, Mapping) else None
+    intervals = lbc.get("intervals") if isinstance(lbc, Mapping) else None
+    lacking = stale_boundary_species(
+        cfg, published, sealed_boundary_species(intervals),
+        analysed=analysed_start_species(metadata))
+    if lacking:
+        raise ValueError(stale_boundary_refusal(
+            subject=("this prepared cache" if prepared_root is None
+                     else f"the prepared cache under {prepared_root}"),
+            source=source, lacking=lacking,
+            action=_reprepare_action(source, prepared_root)))
+
+
+def _stale_profile_mapping_refusal(
+        *, source: str, profile_id: str | None, mapping_bytes: bytes,
+        composition_sha256: str, prepared_root: Path) -> str | None:
+    """A packaged profile's preparation from before its mapping declared masses.
+
+    A preparation copies the mapping it ran into its evidence.  When a
+    packaged profile's mapping later declares the hydrometeors its
+    publisher writes, the earlier preparation's boundary carries none of
+    them, and its bound mapping no longer matches the pin.  Named as
+    that profile's (``profile_id``), or, when the door was handed it as
+    a caller's own ``mapped`` preparation, as the profile whose pinned
+    composition it binds and whose mapping name it carries, so a stale
+    root cannot run silently under the caller-mapping route either.
+    ``None`` when the bound mapping lacks none of the profile's masses.
+    """
+    from gpuwm.boundary_fields import (mapping_boundary_species,
+                                       stale_boundary_refusal)
+    from gpuwm.source_adapters import packaged_profile_sources
+    from gpuwm.source_authorities import (packaged_authorities,
+                                          packaged_authority_sha256)
+
+    try:
+        bound = json.loads(mapping_bytes)
+    except (UnicodeError, ValueError):
+        return None
+    if not isinstance(bound, dict):
+        return None
+    candidates = ([(source, profile_id)] if profile_id else [
+        (name, profile) for name, profile in packaged_profile_sources().items()
+        if packaged_authority_sha256(profile)["composition"]
+        == composition_sha256])
+    carried = set(mapping_boundary_species(bound))
+    for name, profile in candidates:
+        packaged = json.loads(
+            packaged_authorities(profile)["mapping"].read_bytes())
+        if not profile_id and packaged.get("name") != bound.get("name"):
+            continue
+        lacking = tuple(mass for mass in mapping_boundary_species(packaged)
+                        if mass not in carried)
+        if lacking:
+            return stale_boundary_refusal(
+                subject=(f"the prepared root {prepared_root} ({profile}, "
+                         "prepared from an earlier copy of its mapping)"),
+                source=name, lacking=lacking,
+                action=_reprepare_action(name, prepared_root))
+    return None
 
 
 def _validate_hierarchy_d01_artifacts(
@@ -6241,17 +6465,27 @@ def _dropped_preparation_inert_run_fields(
     target be run under another.
 
     Same tables as the tree route's walk
-    (``ingest.prepared_cache.PREPARATION_INERT_RUN_FIELDS`` and the
-    output-only ``INERT_DIAGNOSTIC_IDENTITY_FIELDS``), so a field
-    registered in either is covered on both routes by that one entry
-    rather than a second hand-typed list here.
+    (``ingest.prepared_cache.PREPARATION_INERT_RUN_FIELDS``, the
+    output-only ``INERT_DIAGNOSTIC_IDENTITY_FIELDS`` and the run-window
+    ``NON_TRAJECTORY_IDENTITY_FIELDS``), so a field registered in any of
+    them is covered on both routes by that one entry rather than a second
+    hand-typed list here.  The third table was missing from this door:
+    ``effective_prepared_domain_config`` (the tree route) dropped
+    ``run.run_seconds`` under the ruling that a prepared cache is an
+    initial state plus the boundary tables for the times it decoded, but
+    this comparison still named it, so a run shorter than the prepared
+    length was refused as "prepared cache identity differs" the moment
+    the executed length stopped being silently replaced by the prepared
+    one.
     """
     from gpuwm.ingest.prepared_cache import (
-        INERT_DIAGNOSTIC_IDENTITY_FIELDS, PREPARATION_INERT_RUN_FIELDS)
+        INERT_DIAGNOSTIC_IDENTITY_FIELDS, NON_TRAJECTORY_IDENTITY_FIELDS,
+        PREPARATION_INERT_RUN_FIELDS)
 
     names = sorted(path[len("run."):]
                    for path in (PREPARATION_INERT_RUN_FIELDS
-                                | INERT_DIAGNOSTIC_IDENTITY_FIELDS)
+                                | INERT_DIAGNOSTIC_IDENTITY_FIELDS
+                                | NON_TRAJECTORY_IDENTITY_FIELDS)
                    if path.startswith("run."))
     if not names:
         return observed, []
@@ -6551,7 +6785,7 @@ def preflight_prepared_forecast(
         run_seconds: float, history_interval_seconds: float,
         domain_bundle: Path | None = None,
         tiles=None, devices: int | None = None, devices_options=None,
-        simulated_radar=None,
+        simulated_radar=None, radar_heating=None,
         runtime_run_overrides: Mapping[str, object] | None = None,
 ) -> PreparedForecastInputs:
     """Validate every portable preparation authority without importing CuPy.
@@ -6589,6 +6823,11 @@ def preflight_prepared_forecast(
 
     if source not in SUPPORTED_SOURCES:
         raise ValueError(f"unsupported prepared forecast source {source!r}")
+    # EXPERIMENT_CONFIG_PROFILE is the string form of "no named profile";
+    # a caller that carries the binding as a string (the packed DA
+    # controller and its workers share one argument record and one
+    # ensemble identity) passes it through unchanged and it binds here.
+    physics_profile = physics_profile_binding(physics_profile)
     if runtime_run_overrides is not None:
         if not isinstance(runtime_run_overrides, Mapping):
             raise TypeError("runtime_run_overrides must be a mapping of RunConfig fields")
@@ -6605,7 +6844,8 @@ def preflight_prepared_forecast(
         devices_options=devices_options,
         **({} if runtime_run_overrides is None else
            {"runtime_run_overrides": runtime_run_overrides}),
-        **({} if simulated_radar is None else {"simulated_radar": simulated_radar})))
+        **({} if simulated_radar is None else {"simulated_radar": simulated_radar}),
+        **({} if radar_heating is None else {"radar_heating": radar_heating})))
     head = None
     #: An as-posted head's block (``basis.as_posted``): the head binds the
     #: input plan, and the manifest does not exist until its seal.
@@ -6735,6 +6975,9 @@ def preflight_prepared_forecast(
         source_exp, domains=(source_exp.root,))
     prepared_run = exp.root.run
     exp, runtime_overrides = _apply_runtime_run_overrides(exp, runtime_run_overrides)
+    # The requested length is the executed length; a longer one than the
+    # prepared forcing reaches refuses at the coverage gate below.
+    exp, _run_length = _apply_run_length(exp, run_seconds)
     physics_receipt = _validate_physics(
         exp, physics_profile, run_seconds, history_interval_seconds,
         source=source, expert_acknowledgements=expert_acknowledgements)
@@ -6806,8 +7049,19 @@ def preflight_prepared_forecast(
              "outside the set this runner has demonstrated "
              "(1 h/3 h for GFS); continuing with it as prepared")
     boundary_interval_seconds = cadence_hours * 3600
-    if (proof.get("boundary_interval_seconds") != boundary_interval_seconds
-            or forcing_hours[-1] * 3600 < run_seconds):
+    if forcing_hours[-1] * 3600 < run_seconds:
+        # The breakage this prevents: the solver stepping past the last
+        # prepared lateral-boundary tendency.  The requested length is
+        # the executed length (_apply_run_length), so this is the one
+        # gate on it, and it names the lead the preparation stops at.
+        raise ValueError(
+            f"--run-seconds {run_seconds:g} asks for {run_seconds / 3600:g} h "
+            f"but the prepared boundary forcing ends at lead "
+            f"{forcing_hours[-1]} h ({forcing_hours[-1] * 3600:g} s); the "
+            "forecast would step past its last prepared boundary "
+            "tendency.  Prepare the longer window, or run at most "
+            f"--run-seconds {forcing_hours[-1] * 3600:g}")
+    if proof.get("boundary_interval_seconds") != boundary_interval_seconds:
         raise ValueError("prepared forcing cadence/coverage differs from the run")
     expected_times = [
         (exp.start_time + timedelta(hours=hour)).isoformat()
@@ -7078,6 +7332,8 @@ def preflight_prepared_forecast(
         reader, source=source, exp=exp, forcing_hours=forcing_hours,
         boundary_interval_seconds=boundary_interval_seconds, proof=proof,
         layout=layout.kind, physical_catalog=physical_catalog,
+        boundary_publication=_boundary_publication(source, mapped_paths),
+        prepared_root=prepared_root,
         posted_placeholder=(source_manifest_sha256
                             if as_posted is not None
                             and source in _MAPPED_SOURCES else None))
@@ -7324,6 +7580,13 @@ def preflight_prepared_forecast(
         exp = replace(exp, devices=override_device_count(exp.devices, devices))
     from gpuwm.simulated_radar_config import apply_execution_options
     exp = apply_execution_options(exp, simulated_radar)
+    from gpuwm.da import forecast_heating
+    exp = forecast_heating.apply_execution_options(exp, radar_heating)
+    if forecast_heating.enabled(exp):
+        # This door runs the root alone; a heated root under a tree would
+        # leave its children unheated and their feedback over heated cells.
+        forecast_heating.refuse_tree(
+            len(source_exp.domains), "prepared single-domain forecast")
     if exp.simulated_radar.enabled:
         # Before the model is built or a card allocated, not at the first
         # history: a missing or stale rw_simradar, or a scan the host
@@ -7487,6 +7750,53 @@ def _peak_rss_bytes() -> int:
     return int(usage.ru_maxrss * scale)
 
 
+class _CheckpointPublisher:
+    """Makes snapshotted checkpoints durable on one thread of its own.
+
+    THE BREAKAGE THIS REMOVES, measured on the 1 km CONUS run of
+    2026-10-04 (2000 x 1500 x 50, 8 x RTX 5090, hourly restarts): every
+    hourly checkpoint stopped the model for 31 to 37 s, about 18% of its
+    195 s per forecast hour -- about 12 s waiting for that hour's history
+    frame to become durable, then 18 to 21 s of ``np.savez`` and ``fsync``
+    of a 25 GB archive.  Neither needs the model to stand still.  The
+    snapshot is still taken between two steps (``write_tree_restart(...,
+    defer_publish=True)``); waiting for the history frames queued before
+    it, writing it, and the bookkeeping after it happen here.
+
+    One checkpoint in flight at most: :meth:`submit` first waits for the
+    previous one.  A failed write is raised on the stepping thread at the
+    next checkpoint or at :meth:`wait`, which the runner calls before it
+    reports success, so a run never claims a checkpoint it does not have.
+    """
+
+    def __init__(self):
+        self._thread = None
+        self._failure = None
+
+    def submit(self, job) -> None:
+        self.wait()
+
+        def run():
+            try:
+                job()
+            except BaseException as exc:  # noqa: BLE001 - re-raised by wait()
+                self._failure = exc
+
+        self._thread = threading.Thread(
+            target=run, name="gpuwm-checkpoint-writer", daemon=True)
+        self._thread.start()
+
+    def wait(self) -> None:
+        thread, self._thread = self._thread, None
+        if thread is not None:
+            thread.join()
+        failure, self._failure = self._failure, None
+        if failure is not None:
+            raise RuntimeError(
+                "the checkpoint writer failed: "
+                f"{type(failure).__name__}: {failure}") from failure
+
+
 class _LandingObservers:
     """Fan the wrfout landing hook out to more than one consumer.
 
@@ -7505,11 +7815,20 @@ class _LandingObservers:
     is the same contract the writer keeps for a single one.
     """
 
-    def __init__(self, *sinks):
+    def __init__(self, *sinks, on_submit=None):
         self._sinks = tuple(sink for sink in sinks if sink is not None)
+        self._on_submit = on_submit
 
     def __bool__(self) -> bool:
         return bool(self._sinks)
+
+    def frame_submitted(self, **event) -> None:
+        """The per-step log's latency anchor (StepLog.frame_submitted)."""
+        if self._on_submit is not None:
+            try:
+                self._on_submit(**event)
+            except Exception:  # noqa: BLE001 - telemetry never fails a run
+                pass
 
     def output_committed(self, **event) -> None:
         for sink in self._sinks:
@@ -7942,9 +8261,64 @@ def _stream_reserved_experiment(exp, machine, stream_head, *, device=0, identity
             for domain in exp.domains))
 
 
+def _devices_lake_mask(cfg, *, geography=None, inventory=None, landuse=None):
+    """An upper bound on where this run's ``lakemask`` can be 1, or None.
+
+    The [devices] admission prices each rank's sparse CLM lake arrays at the
+    lake-eligible columns of its window
+    (:func:`gpuwm.core.devices_memory.rank_lake_column_bounds`, open-defects
+    ledger A13).  After the store loader the store carries the run's own
+    ``driver/fields/lakemask`` and that is exact.  Before it, the union of
+    the two ways a column becomes a lake bounds it from above: the land
+    cover's lake category (``ISLAKE`` of ``landuse``, which
+    ``gpuwm.core.landuse`` records as LAKEMASK), plus any LAKEMASK record;
+    and lakeini's flag-0 branch, water or sea-ice columns (all LANDMASK 0
+    / XLAND 2) at or above ``lake_min_elev``.  Without terrain every water
+    column counts; without the lake category, every water column counts.
+    None, and the every-column price, when no land mask is readable.
+    """
+    import numpy as np
+    if int(getattr(cfg, "sf_lake_physics", 0) or 0) != 1:
+        return None
+    shape = (int(cfg.ny), int(cfg.nx))
+
+    def plane(source, *names):
+        for name in names:
+            value = (source or {}).get(name) if hasattr(source, "get") else None
+            if value is None:
+                continue
+            value = np.asarray(value)
+            if value.ndim == 3 and value.shape[0] == 1:
+                value = value[0]
+            if value.shape == shape:
+                return value
+        return None
+
+    exact = plane(inventory, *[key for key in (inventory or {})
+                               if str(key).endswith("fields/lakemask")])
+    if exact is not None:
+        return exact == 1
+    landmask = plane(geography, "LANDMASK", "landmask")
+    xland = plane(geography, "XLAND", "xland")
+    if landmask is None and xland is None:
+        return None
+    water = (landmask == 0) if landmask is not None else (xland > 1.5)
+    terrain = plane(geography, "HGT_M", "HGT", "ht")
+    lu_index = plane(geography, "LU_INDEX", "lu_index")
+    islake = (landuse or {}).get("ISLAKE") if hasattr(landuse, "get") else None
+    if terrain is None or lu_index is None or islake is None:
+        bound = water
+    else:
+        bound = ((water & (terrain >= np.float32(cfg.lake_min_elev)))
+                 | (np.rint(lu_index) == int(islake)))
+    lakes = plane(geography, "LAKEMASK", "lakemask")
+    return bound if lakes is None else (bound | (lakes == 1))
+
+
 def _admit_devices_forecast(exp, cfg, *, geography, forcing_intervals,
                             inventory=None, source=None, template=None,
-                            boundaries=None, stream_head=None):
+                            boundaries=None, stream_head=None, landuse=None,
+                            static=None):
     from gpuwm.core.adaptive_clock import maximum_map_factor
     from gpuwm.core.devices import validate_device_count, DevicesRefused
     from gpuwm.core.preflight import estimate_devices, host_available_bytes
@@ -7981,13 +8355,32 @@ def _admit_devices_forecast(exp, cfg, *, geography, forcing_intervals,
     # Leave a chunked producer's next batch free on its own card before the
     # rank widths are fitted, so the fitted widths respect that reserve.
     budgets = _devices_stream_budgets(budgets, stream_head, identities=identities)
+    # [radar_heating] keeps each rank's slab slots and builds every slot on
+    # the first card: priced from the same rank plan the run will build, and
+    # taken out of each card's budget before the gate, as the cycle's
+    # admission prices its forcing slots (gpuwm.da.cycle_admission).
+    from gpuwm.da.forecast_heating import enabled as _heating_enabled
+    if _heating_enabled(exp):
+        from gpuwm.da.forecast_heating import ranked_reservation
+        reserve = ranked_reservation(
+            exp.radar_heating, cfg, exp.devices,
+            max_map_factor=maximum_map_factor(geography=geography))
+        for dev in budgets:
+            budget_terms[dev]["radar_heating_reserve_bytes"] = int(reserve.get(dev, 0))
+        budgets = {dev: max(0, int(free) - int(reserve.get(dev, 0)))
+                   for dev, free in budgets.items()}
     def price():
         return estimate_devices(
             replace(exp, domains=(replace(exp.root, run=cfg),)),
             max_map_factor=maximum_map_factor(geography=geography),
             forcing_intervals=forcing_intervals, inventory=inventory,
             geography=geography, source=source, profiles=profiles, budgets=budgets,
-            streaming_boundaries=stream_head is not None)
+            streaming_boundaries=stream_head is not None,
+            # The loader's geography carries setup arrays, not the land
+            # cover; the lake bound reads the prepared statics either way.
+            lake_mask=_devices_lake_mask(
+                cfg, geography=geography if static is None else static,
+                inventory=inventory, landuse=landuse))
     estimate = price()
     if template is not None:
         # The second admission runs after the store loader. Its retained
@@ -8794,6 +9187,9 @@ def _stop_at_seam(error, *, model, node, exp, schedule, restart_handler,
                 "model_elapsed_seconds") or 0.0) > 0.0:
             try:
                 restart_handler(model, ticks)
+                wait = getattr(restart_handler, "wait_durable", None)
+                if wait is not None:
+                    wait()
                 checkpoint = checkpoints[-1]
             except Exception as failure:  # noqa: BLE001 - keep the refusal
                 print("prepared forecast: the checkpoint at the seam could "
@@ -8941,6 +9337,16 @@ def run_prepared_forecast(
     outdir = Path(output_directory).resolve()
     progress_path = outdir / "progress.json"
     exp = inputs.experiment
+    # [radar_heating]: every window is held to the run's grid identity and
+    # its own end time HERE, on the host, before a card is allocated or the
+    # domain is built.  Read at the attach instead, a wrong or missing
+    # window cost the whole multi-card start-up before the refusal.  A
+    # resume decides at the attach whether it needs the windows at all.
+    radar_heating_checked = None
+    if restart is None:
+        from gpuwm.da.forecast_heating import prevalidate
+        radar_heating_checked = prevalidate(
+            exp, prepared_root=inputs.prepared_root)
     from gpuwm import runtime
     runtime._preparation_progress(observer, "restore-prepared-domain")
     from gpuwm.case_data import trace_gas_overrides_from_config
@@ -9040,7 +9446,8 @@ def run_prepared_forecast(
         devices_admission = _admit_devices_forecast(
             exp, cfg, geography=inputs.static,
             forcing_intervals=_retained_interval_count(inputs.cache_reader),
-            source=priced_boundary, stream_head=getattr(inputs, "stream_head", None))
+            source=priced_boundary, stream_head=getattr(inputs, "stream_head", None),
+            landuse=getattr(inputs, "landuse_identity", None))
         resident_estimate = stream_decision = None
         init_road, init_receipt = _devices_init_road(exp)
     else:
@@ -9549,7 +9956,8 @@ def run_prepared_forecast(
         # name -- which is exactly the instant a "this frame is safe to
         # read" marker is allowed to be published.
         step_log.output_committed if step_log.enabled else None,
-        None if first_products is None else first_products.frame_committed)
+        None if first_products is None else first_products.frame_committed,
+        on_submit=step_log.frame_submitted if step_log.enabled else None)
     if landing:
         writers.attach_progress_callback(landing)
     # Each history write between two steps beats on the run's heartbeat;
@@ -9583,7 +9991,9 @@ def run_prepared_forecast(
             forcing_intervals=_retained_interval_count(inputs.cache_reader),
             inventory=bundle.store, source=priced_boundary, template=bundle.template,
             boundaries=bundle.boundaries,
-            stream_head=getattr(inputs, "stream_head", None))
+            stream_head=getattr(inputs, "stream_head", None),
+            landuse=getattr(inputs, "landuse_identity", None),
+            static=inputs.static)
         steppers = _devices_stepper(bundle, node, exp, streaming_decisions,
                                    admission=devices_admission)
     else:
@@ -9663,14 +10073,30 @@ def run_prepared_forecast(
                 raise FloatingPointError(
                     f"prepared forecast restored health failed: {initial_health}")
 
+    # RADAR LATENT HEATING ([radar_heating], gpuwm.da.forecast_heating).
+    # Attached here, after the restore and before integration: every slot is
+    # built against the state the run starts from, the windows were held to
+    # the run's grid identity first, and a resume inside the forced period
+    # is refused.  Off, this is one attribute test and nothing else.
+    radar_heating_hook = None
+    if not already_complete:
+        from gpuwm.da.forecast_heating import attach_forecast_heating
+        radar_heating_hook = attach_forecast_heating(
+            model, node, exp, prepared_root=inputs.prepared_root,
+            steppers=steppers, restored_seconds=restored_seconds,
+            checked=radar_heating_checked)
+
     checkpoints = []
     checkpoint_ticks = {}
+    checkpoint_publisher = _CheckpointPublisher()
 
     def restart_handler(tree, ticks):
         from gpuwm.io.restart import write_tree_restart
+        # At most one checkpoint in flight; a failed one fails the run here.
+        checkpoint_publisher.wait()
         valid = exp.start_time + timedelta(seconds=ticks / tree.schedule.clock.tick_den)
         started = time.perf_counter()
-        # Written between two model steps, at the stop tick too: its own
+        # Snapshotted between two model steps, at the stop tick too: its own
         # record, sized from the state it writes, or the supervisor times it
         # as a step (see runtime._writing_progress).
         with runtime._writing_progress(
@@ -9679,13 +10105,40 @@ def run_prepared_forecast(
             # This door publishes no declared experiment, so it names the
             # model-chosen epssm itself: a child downscaled from the
             # checkpoint inherits that label (A181).
-            tree._last_checkpoint = write_tree_restart(
-                outdir, tree, valid, auto_epssm=exp.auto_epssm)
-        checkpoints.append(str(Path(tree._last_checkpoint).resolve()))
-        checkpoint_ticks[int(ticks)] = checkpoints[-1]
-        step_log.restart_written(
-            domain=exp.root.grid_id, valid_time=valid,
-            path=tree._last_checkpoint, wall_seconds=time.perf_counter() - started)
+            pending = write_tree_restart(
+                outdir, tree, valid, auto_epssm=exp.auto_epssm,
+                defer_publish=True)
+        # Taken now, on this thread: the frames up to this valid time.
+        history_durable = writers.durability_barrier()
+
+        def publish():
+            # A checkpoint is published only after every history frame up
+            # to its valid time is durable, so a resume never starts past a
+            # frame that is missing.
+            if history_durable is None:
+                writers.drain()
+            else:
+                history_durable()
+            path = pending.publish()
+            checkpoints.append(str(Path(path).resolve()))
+            checkpoint_ticks[int(ticks)] = checkpoints[-1]
+            step_log.restart_written(
+                domain=exp.root.grid_id, valid_time=valid, path=path,
+                wall_seconds=time.perf_counter() - started)
+
+        if pending.deferrable and history_durable is not None:
+            checkpoint_publisher.submit(publish)
+            return
+        try:
+            publish()
+        except BaseException:
+            pending.abandon()
+            raise
+
+    # The executor's restart hook drains the history writers before calling
+    # a handler; this one orders the checkpoint after the history itself.
+    restart_handler.orders_history_itself = True
+    restart_handler.wait_durable = checkpoint_publisher.wait
 
     # Armed immediately before integration and disarmed by the first
     # completed step: the compile this names is paid inside step 1, and
@@ -9724,6 +10177,9 @@ def run_prepared_forecast(
                     # so a silenced run pays nothing per step.
                     step_observer=committed_step_observer,
                     experiment=exp)
+            # The last checkpoint is durable, or its failure is raised,
+            # before anything below reports the run.
+            checkpoint_publisher.wait()
             runtime._finalizing_progress(observer, "synchronize-device")
             cp.cuda.Stream.null.synchronize()
             timing["forecast_execution_with_async_io"] = (
@@ -9736,6 +10192,14 @@ def run_prepared_forecast(
             time.perf_counter() - forecast_started)
     except BaseException as error:
         _mark_failure_clock(error, node.clock)
+        try:
+            # A checkpoint already snapshotted still lands, so the failure
+            # report and a relaunch can use it.
+            checkpoint_publisher.wait()
+        except BaseException as late:  # noqa: BLE001 - keep the first failure
+            print("prepared forecast: the last checkpoint could not be "
+                  f"written ({type(late).__name__}: {late})",
+                  file=sys.stderr, flush=True)
         from gpuwm.ingest.boundary_stream import SourceBehind
         stopped = None
         if isinstance(error, SourceBehind):
@@ -9763,6 +10227,8 @@ def run_prepared_forecast(
         stall_watch.disarm()
         memory_watch.stop()
         model._io_manager = None
+        if radar_heating_hook is not None:
+            radar_heating_hook.detach()
     # After the drain: every frame this run will ever commit is durable
     # and has its marker, so the run_end record is true when it is read.
     step_log.close(status="SUCCESS")
@@ -10007,6 +10473,12 @@ def run_prepared_forecast(
             "limits": {"max_cfl": 10.0, "max_w_ms": 150.0},
         },
         "final_state_digest": final_digest,
+        # The chem mass ledger (gpuwm/core/chem_driver.py), present only on
+        # a chem run so every other receipt keeps its bytes.  A store-direct
+        # domain carries no chem: streaming refuses a chem configuration.
+        **({} if (chem_ledger := (_chem_ledger_receipt(node.state)
+                                  if bundle is None else None)) is None
+           else {"chem_ledger": chem_ledger}),
         "physics": {
             **dict(inputs.physics_receipt),
             "resolved_lw_sw": list(radiation_scheme_ids(cfg)),
@@ -10144,6 +10616,14 @@ def run_prepared_forecast(
     # before this mode existed, key for key, so that every stored receipt
     # and every hash taken over one stays valid.  Same emptiness contract as
     # streaming.identity_payload_entry.
+    # [radar_heating]: present only when configured, on the same emptiness
+    # contract as report["tiles"].  Every window's lead_class is in it
+    # (forecast, oracle, or observed for Level II), so a run heated from a
+    # nowcast issued late or from MRMS frames after the start is labelled
+    # oracle in its own record.
+    if radar_heating_hook is not None:
+        report["radar_heating"] = radar_heating_hook.receipt()
+        radar_heating_hook.require_applied()
     if getattr(getattr(exp, "devices", None), "enabled", False):
         report["devices"] = _devices_receipt(
             exp, steppers[int(node.cfg.grid_id)],
@@ -10431,8 +10911,12 @@ def build_parser() -> argparse.ArgumentParser:
               "array delivers the same consent"))
     parser.add_argument(
         "--run-seconds", type=_positive_finite_seconds, default=None,
-        help=("forecast length; must equal the hash-bound experiment's "
-              "run_seconds, and defaults to it when omitted"))
+        help=("forecast length the model integrates; defaults to the "
+              "hash-bound experiment's run_seconds when omitted.  A "
+              "shorter length runs the first part of the prepared "
+              "forecast from the same prepared state; a length past the "
+              "prepared boundary forcing refuses naming the last "
+              "prepared lead"))
     parser.add_argument(
         "--history-interval-seconds", type=_positive_finite_seconds,
         default=None,
@@ -10517,6 +11001,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_progress_arguments(parser)
     from gpuwm.simulated_radar_config import add_execution_argument
     add_execution_argument(parser)
+    from gpuwm.da.forecast_heating import add_execution_argument as add_heating_argument
+    add_heating_argument(parser)
     return parser
 
 
@@ -10917,6 +11403,8 @@ def main(argv=None, *, observer=None) -> int:
                                                       source="--devices-table"))
         from gpuwm.simulated_radar_config import execution_argument
         simulated_radar = execution_argument(getattr(args, "simulated_radar_table", None))
+        from gpuwm.da.forecast_heating import execution_argument as heating_argument
+        radar_heating = heating_argument(getattr(args, "radar_heating_table", None))
     except (ValueError, TypeError) as error:
         print(f"prepared_single_domain_forecast: --tiles refused: {error}",
               file=sys.stderr)
@@ -10930,6 +11418,28 @@ def main(argv=None, *, observer=None) -> int:
                 *((Path(args.restart).parent,) if args.restart is not None else ())))
     except (ValueError, FileExistsError) as error:
         print(f"prepared_single_domain_forecast: --outdir refused: {error}",
+              file=sys.stderr)
+        return 2
+    # [radar_heating] in the --experiment-config is an execution control:
+    # it is cut out, the rest is bound to the preparation byte for byte as
+    # before (written beside the given config, so its relative paths keep
+    # resolving), and the table rides beside it exactly as
+    # --radar-heating-table does.  A preparation made from the config WITH
+    # the table keeps it whole.  Both at once is ambiguous.
+    try:
+        from gpuwm.da.forecast_heating import detach_table_from_config
+        bound_config, table_heating = detach_table_from_config(
+            args.experiment_config, prepared_root=args.prepared_root)
+        if table_heating is not None:
+            if radar_heating is not None:
+                raise ValueError(
+                    "[radar_heating] is in --experiment-config and in "
+                    "--radar-heating-table; give it once, or the run would "
+                    "heat by whichever was read last")
+            radar_heating = table_heating
+            args.experiment_config = bound_config
+    except ValueError as error:
+        print(f"prepared_single_domain_forecast: [radar_heating] refused: {error}",
               file=sys.stderr)
         return 2
     from gpuwm.runtime import _preparation_progress
@@ -10973,7 +11483,8 @@ def main(argv=None, *, observer=None) -> int:
             history_interval_seconds=args.history_interval_seconds,
             domain_bundle=args.domain_bundle,
             tiles=tiles, devices=args.devices, devices_options=devices_options,
-            **({} if simulated_radar is None else {"simulated_radar": simulated_radar}))
+            **({} if simulated_radar is None else {"simulated_radar": simulated_radar}),
+            **({} if radar_heating is None else {"radar_heating": radar_heating}))
         preflight_seconds = time.perf_counter() - preflight_started
         verification = dict(inputs.physics_receipt).get("verification")
         if (isinstance(verification, dict)

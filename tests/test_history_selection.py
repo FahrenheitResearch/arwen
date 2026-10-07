@@ -138,6 +138,28 @@ def test_history_vars_keeps_the_named_fields_plus_the_structural_ones():
             "XTIME", "ITIMESTEP", "T"} <= set(kept)
 
 
+def test_a_kept_wind_keeps_its_rotation():
+    """U10/V10 on a projected grid are grid-relative; SINALPHA/COSALPHA turn
+    them earth-relative.  An include list naming the winds and not the
+    rotation wrote a tape the station scoreboard could not score for wind
+    (it refuses a projected wind with no orientation), so the rotation now
+    rides along with any kept wind, and dropping it alone is refused."""
+    produced = ("T", "U", "V", "U10", "V10", "T2", "SINALPHA", "COSALPHA",
+                "XLAT", "XLONG")
+    kept = hs.HistorySelection.from_mapping(
+        {"history_vars": ["T2", "U10", "V10"]}).select(produced)
+    assert {"U10", "V10", "SINALPHA", "COSALPHA"} <= set(kept)
+    assert "U" not in kept
+    no_wind = hs.HistorySelection.from_mapping(
+        {"history_vars": ["T2"]}).select(produced)
+    assert "SINALPHA" not in no_wind and "COSALPHA" not in no_wind
+    with pytest.raises(ValueError, match="no reader can turn that wind"):
+        hs.HistorySelection.from_mapping({"history_drop": ["SINALPHA"]})
+    allowed = hs.HistorySelection.from_mapping(
+        {"history_drop": ["SINALPHA", "COSALPHA", "U10", "V10", "U", "V"]})
+    assert "COSALPHA" not in allowed.select(produced)
+
+
 def test_select_preserves_the_produced_order():
     """Variable-creation order is the file's name-heap order.
 

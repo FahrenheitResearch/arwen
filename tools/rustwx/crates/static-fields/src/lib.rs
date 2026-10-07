@@ -27,6 +27,7 @@
 pub mod capi;
 pub mod corridor;
 pub mod error;
+pub mod extra;
 pub mod fields;
 pub mod geog;
 pub mod highres;
@@ -35,6 +36,9 @@ pub mod npz;
 pub mod projection;
 pub mod raster;
 pub mod sampler;
+pub mod sfire;
+pub mod sfire_debug;
+pub mod sfire_ideal;
 pub mod smooth;
 #[cfg(test)]
 pub(crate) mod testsupport;

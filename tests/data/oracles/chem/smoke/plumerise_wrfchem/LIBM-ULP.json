@@ -1,0 +1,15 @@
+{
+  "ulp": {
+    "expf": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 1811110
+    },
+    "powf": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 11726064
+    }
+  },
+  "failures": []
+}

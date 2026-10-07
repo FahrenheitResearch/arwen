@@ -18,6 +18,9 @@ that can supply the thing it is refusing about.
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import shutil
+import subprocess
 import sys
 
 import pytest
@@ -341,3 +344,47 @@ def test_an_instrument_door_forwards_its_arguments_untouched():
         ["obs", "mrms", "fetch", "--window", "2026-01-01T00Z", "--out", "x"])
     assert namespace.argv == [
         "fetch", "--window", "2026-01-01T00Z", "--out", "x"]
+
+
+def test_airnow_public_switches_reach_the_resolved_native_binary(tmp_path):
+    """The product CLI and resolver expose the same actual native grammar."""
+    binary = frontdoor.AIRNOW.require()
+    matches, evidence = frontdoor.AIRNOW.probe(binary)
+    assert matches, evidence
+    for switch in ("--abi", "--help"):
+        native = subprocess.run([str(binary), switch], cwd=tmp_path,
+                                capture_output=True, text=True, check=False)
+        public = subprocess.run([sys.executable, "-P", "-m", "gpuwm.cli",
+                                 "obs", "airnow", switch], cwd=tmp_path,
+                                capture_output=True, text=True, check=False)
+        assert native.returncode == public.returncode == 0, public.stderr
+        assert public.stdout == native.stdout
+    assert "gpuwm-obs.airnow-table.v1" in frontdoor.AIRNOW.abi_marker
+
+
+def test_airnow_public_table_retains_actual_native_fixture_bytes(tmp_path):
+    """A reachable door decodes all native fixture rows without rewriting them."""
+    binary = frontdoor.AIRNOW.require()
+    fixture = REPO_ROOT / "tools/rustwx/crates/rw-obs/tests/data/airnow"
+    source = tmp_path / "archive"
+    day = source / "2025/20250730"
+    day.mkdir(parents=True)
+    shutil.copyfile(fixture / "sites.dat", day / "Monitoring_Site_Locations_V2.dat")
+    shutil.copyfile(fixture / "hourly.dat", day / "HourlyData_2025073021.dat")
+    arguments = ["table", "--dir", str(source), "--start", "2025-07-30T21:00:00Z",
+                 "--end", "2025-07-30T21:00:00Z", "--time-basis", "utc"]
+    direct, public = tmp_path / "direct.csv", tmp_path / "public.csv"
+    native = subprocess.run([str(binary), *arguments, "--out", str(direct)],
+                            cwd=tmp_path, capture_output=True, text=True, check=False)
+    routed = subprocess.run([sys.executable, "-P", "-m", "gpuwm.cli", "obs", "airnow",
+                             *arguments, "--out", str(public)], cwd=tmp_path,
+                            capture_output=True, text=True, check=False)
+    assert native.returncode == routed.returncode == 0, routed.stderr
+    actual = json.loads(routed.stdout)
+    expected = json.loads(native.stdout)
+    assert actual["schema"] == "gpuwm-obs.airnow-table.v1"
+    assert actual["table_schema"] == "gpuwm-obs.table.v2"
+    assert actual["rows"] == 8 and len(actual["rows_by_variable"]) == 6
+    assert actual["time_basis"] == "utc"
+    assert actual["sha256"] == expected["sha256"]
+    assert public.read_bytes() == direct.read_bytes()

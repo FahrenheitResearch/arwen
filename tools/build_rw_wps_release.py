@@ -83,6 +83,9 @@ _TOP_LEVEL_EXCLUDES = {
     # three, and this builder's unresolved-import scan refused the whole
     # staging.  A preprocessing wheel runs no forecast to warm.
     "warm_kernels.py",
+    # Both commands execute coupled fire forecasts and require the omitted
+    # physics/dycore runners. Fire-static preparation stays in gpuwm.static.
+    "fire_ideal.py", "sfire_debug.py",
     # The live renderer that draws each frame as a forecast writes it.  Its
     # importers are go_cli.py, first_products.py and runplan.py, all
     # excluded above, and it reaches for gpuwm.first_products, gpuwm.render,
@@ -341,6 +344,51 @@ _CORE_MODULES = {
     # both staged here.
     "urban_tables.py",
     "microphysics_transition.py",
+    # The chem species arena (gpuwm/core/chem_state.py) and the process
+    # interface it sizes process arrays from (chem_context.py).  DomainState
+    # (staged) allocates the chem_<row> fields when a run names chem sets,
+    # and a prepared chem state (smoke initial conditions) is built on the
+    # host by this package.  Both are CuPy-free: the array module is passed
+    # in, and a process module is imported only when a chem run names it.
+    "chem_state.py",
+    "chem_context.py",
+    # The chem processes' preparation-time arrays (dust statics sampled from
+    # the WPS geography, the sulfur chemistry's lat/lon): the staged real
+    # preparation routes (mapped_direct, era5_direct, gfs_direct) write them
+    # into a chem state before it is sealed.  Self-contained: numpy, the chem
+    # table, chem_context/chem_state above and gpuwm.static (staged whole);
+    # no process module and no kernel.
+    "chem_statics.py",
+    # The process modules in this build, because attach_chem_state (and the
+    # device inventory pricing it) reads a named process's ALLOCATES when a
+    # prepared chem state names one: without them a preparation of any
+    # chem set with a process raised ModuleNotFoundError.  CuPy-free at
+    # import by the process interface's contract; the card path of step()
+    # is function-local and never reached by a preparation.
+    "chem_vertmx.py",
+    # The smoke set's processes (lane/aq-smoke), for the same reason: a
+    # preparation of the smoke set reads their ALLOCATES.  chem_plumerise
+    # imports its parameter and cadence module at module scope.
+    "chem_fire.py",
+    "chem_plumerise.py",
+    "chem_plumerise_cache.py",
+    "chem_wetdep.py",
+    # The GOCART process modules (lane/aq-gocart), for the same reason:
+    # a prepared GOCART state names them and attach_chem_state reads their
+    # ALLOCATES.  CuPy-free at import; each launcher and step() imports the
+    # card path inside the function, and chem_column holds their shared
+    # array checks.
+    "chem_ageing.py",
+    "chem_column.py",
+    "chem_drydep_aerosol.py",
+    "chem_drydep_gas.py",
+    "chem_dust.py",
+    "chem_inventory.py",
+    "chem_mp_coupling.py",
+    "chem_optics.py",
+    "chem_seasalt.py",
+    "chem_settling.py",
+    "chem_sulfur.py",
     # The Milbrandt-Yau constant table, reached by microphysics_transition
     # above when a mixed nest edge enters mp=9 and the kernel needs the
     # scheme's own ck vector.  Pure numpy, no kernels and no scheme: the
@@ -480,6 +528,9 @@ _CORE_MODULES = {
     "p3_tables.py",
     "sase_limits.py",
     "state.py",
+    # Shared clock bindings contain only scalar bookkeeping; state.py uses
+    # them when publishing a domain clock, including prepared host state.
+    "sfire_clock.py",
     "thompson_contract.py",
     # The mp=28 real-data cold start closes cloud droplet, rain and ice
     # number over the analyzed mass through the scheme's own entry block
@@ -533,12 +584,15 @@ _INGEST_EXCLUDES = {"preflight.py", "nest_spawn_init.py",
 #: the radar front door `gpuwm doctor` checks for is unaffected.
 # GOES window acquisition publishes cycle/ensemble manifests. The lower-level
 # observation decoders remain available to standalone preprocessing.
+# ``aq_airnow.py`` is the air-quality station source of the same scoring
+# seam: it builds the scorer's StationObsSet through gpuwm.obs.sources, so it
+# stays behind with it (its Rust decoder rw_airnow is a verification tool).
 #: `precipitation.py` subclasses `gpuwm.obs.sources._GriddedSource` at module
 #: scope, so it crosses the same verification boundary `sources.py` does and
 #: stays behind with it.  It is the scorer's precipitation timeline, and its
 #: only importer is the observation battery's scoring tool, which this wheel
 #: does not stage.
-_OBS_EXCLUDES = {"sources.py", "goes_window.py", "precipitation.py"}
+_OBS_EXCLUDES = {"sources.py", "goes_window.py", "precipitation.py", "aq_airnow.py"}
 #: The PREPARATION SIDE of ``gpuwm/ensemble``, an allowlist like
 #: ``_IO_MODULES`` and for the same reason: the package is mostly member
 #: orchestration and the batched forecast, which this wheel exists not to
@@ -646,7 +700,7 @@ _ENSEMBLE_MODULES = {
 #: (``gpuwm.io.nc_writer_bridge``) is function-local and staged.
 _IO_MODULES = {"__init__.py", "classic_product.py", "classic_tape.py",
                "history_selection.py", "nc_writer_bridge.py",
-               "wrf_output_schema.py"}
+               "wrf_output_schema.py", "sfire_schema.py"}
 _ROOT_DATA = {
     "native_wrf_support_v1.json",
     "physics_params_registry_v1.json",
@@ -683,6 +737,27 @@ _FORBIDDEN_STAGED_FILES = {
 }
 
 _OPTIONAL_STAGED_IMPORTS = {
+    ("gpuwm/core/chem_ageing.py", "gpuwm.core.kernels"):
+        "CUDA launch only; preparation reads process allocation rows "
+        "without compiling or stepping a chemistry kernel",
+    ("gpuwm/core/chem_drydep_aerosol.py", "gpuwm.core.kernels"):
+        "CUDA launch only; preparation reads process allocation rows "
+        "without compiling or stepping a chemistry kernel",
+    ("gpuwm/core/chem_dust.py", "gpuwm.core.kernels"):
+        "CUDA launch only; preparation reads process allocation rows "
+        "without compiling or stepping a chemistry kernel",
+    ("gpuwm/core/chem_optics.py", "gpuwm.core.kernels"):
+        "CUDA launch only; preparation reads process allocation rows "
+        "without compiling or stepping a chemistry kernel",
+    ("gpuwm/core/chem_seasalt.py", "gpuwm.core.kernels"):
+        "CUDA launch only; preparation reads process allocation rows "
+        "without compiling or stepping a chemistry kernel",
+    ("gpuwm/core/chem_settling.py", "gpuwm.core.kernels"):
+        "CUDA launch only; preparation reads process allocation rows "
+        "without compiling or stepping a chemistry kernel",
+    ("gpuwm/core/chem_sulfur.py", "gpuwm.core.kernels"):
+        "CUDA launch only; preparation reads process allocation rows "
+        "without compiling or stepping a chemistry kernel",
     ("gpuwm/core/adaptive_clock.py", "gpuwm.core.physics"):
         "the physics cadence helpers inside _refresh_physics_cadence, "
         "called by the executing adaptive driver. The function returns "
@@ -747,6 +822,15 @@ _OPTIONAL_STAGED_IMPORTS = {
         "the [static] parser runs only when load_config admits child_static, "
         "which only the excluded offline child route requests; ordinary "
         "RunConfig loading refuses [static] before reaching this import",
+    ("gpuwm/core/chem_plumerise_cache.py", "gpuwm.certify.kernel_manifest"):
+        "the kernel manifest record written beside the plume unit's card "
+        "compile, which only a running forecast's plume process performs; "
+        "a preparation reads the smoke processes' ALLOCATES and never "
+        "compiles",
+    ("gpuwm/core/chem_vertmx.py", "gpuwm.core.kernels"):
+        "the card launch of the vertmx process's step(), which only a "
+        "running forecast's chem operator calls; a preparation allocates "
+        "the process's arrays and never steps it",
     ("gpuwm/core/streaming.py", "gpuwm.core.preflight"):
         "forecast tree admission and execution estimates; standalone preparation "
         "only reads StreamingOptions and does not call these planners",
@@ -957,6 +1041,18 @@ _OPTIONAL_STAGED_IMPORTS = {
         "the reflectivity stash the streamed history writer consumes, "
         "imported inside the publish path. Same reason as gpuwm.core.dycore "
         "directly above: no config-loading path reaches it",
+    ("gpuwm/core/streaming.py", "gpuwm.core.chem_history"):
+        "completed forecast chemistry history, imported by the live tile "
+        "history hook; standalone preparation reads StreamingOptions and "
+        "does not publish a running tile's history",
+    ("gpuwm/core/streaming.py", "gpuwm.sfire_debug"):
+        "fire-only diagnostic forecast sweeps, imported only when the "
+        "live streamed runner executes fire_test_steps; preparation "
+        "validates tile options without stepping a fire domain",
+    ("gpuwm/ingest/wrfinput.py", "gpuwm.core.chem_sfire"):
+        "native smoke conversion in initialize_wrfinput's forecast state "
+        "constructor; preparation reads raw fire-static and smoke fields "
+        "without constructing the coupled CUDA forecast",
     ("gpuwm/core/streaming.py", "gpuwm.core.nest_stream"):
         "the NEST streamed transport, imported inside three functions that "
         "each require a forecast: prepared_domain_builder.build wires the "
@@ -1277,6 +1373,7 @@ geog = ["rasterio>=1.3", "pyproj>=3.6"]
 
 [project.scripts]
 rw-wps = "gpuwm.source_cli:main"
+gpuwm-sfire-static = "gpuwm.static.sfire:main"
 gpuwm-wrf-init = "gpuwm.source_cli:main"
 gpuwm-wrf-runtime-check = "gpuwm.native_wrf_distribution:main"
 gpuwm-mapped-inspect = "gpuwm.mapped_source:main"
@@ -1295,6 +1392,14 @@ gpuwm = [
   "core/kernels/*.cuh",
   "data/noah_tables/*.TBL",
   "data/noah_tables/*.md",
+  "data/chem/*.json",
+  "data/chem/*.md",
+  "data/chem/species/*.json",
+  "data/chem/sets/*.json",
+  "data/chem/sources/*.json",
+  "data/chem/diagnostics/*.json",
+  "data/chem/wesely/*.json",
+  "data/chem/wesely/*.md",
   "data/thompson/fork-build/*.F90",
 ]
 tools = ["*.sh"]
@@ -1432,6 +1537,18 @@ def _stage_rw_wps_python_project(destination: Path) -> dict[str, object]:
                 source,
                 package / "data" / "noah_tables" / source.name,
             )
+    # The chem table (gpuwm.chem_table, staged with the top-level modules):
+    # its schema, rows, sets, sources and diagnostics, which a chem
+    # preparation loads by name.  Not the oracle fixtures, which only the
+    # engine's tests read.
+    chem_root = REPO / "gpuwm" / "data" / "chem"
+    for pattern in ("*.json", "*.md", "species/*.json", "sets/*.json",
+                    "sources/*.json", "diagnostics/*.json",
+                    "wesely/*.json", "wesely/*.md"):
+        for source in sorted(chem_root.glob(pattern)):
+            if source.is_file():
+                _copy_source(source, package / "data" / "chem"
+                             / source.relative_to(chem_root))
     # Fork tables are generated from pinned public inputs at actual first use.
     # Ship only the small original CPU harness, never the 345 MB coefficient set.
     for source in sorted((REPO / "gpuwm" / "data" / "thompson" / "fork-build").glob("*.F90")):

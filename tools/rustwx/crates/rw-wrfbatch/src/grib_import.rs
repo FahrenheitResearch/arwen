@@ -1495,10 +1495,13 @@ mod tests {
     }
 
     fn temp_file(name: &str, bytes: &[u8]) -> PathBuf {
+        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "bowecho-grib1-{name}-{}-{}",
+            "bowecho-grib1-{name}-{}-{}-{}",
             std::process::id(),
-            now_unix()
+            now_unix(),
+            NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ));
         std::fs::write(&path, bytes).expect("write temp grib");
         path

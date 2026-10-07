@@ -111,7 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     sup = p.add_argument_group("superob")
     sup.add_argument("--max-range-km", type=float, default=None)
     sup.add_argument("--max-elevation-deg", type=float, default=20.0)
-    sup.add_argument("--z-reduce", default="max", choices=("max", "mean"))
+    sup.add_argument("--z-reduce", default="mean", choices=("max", "mean"))
     sup.add_argument("--overwrite", action="store_true")
     return p
 

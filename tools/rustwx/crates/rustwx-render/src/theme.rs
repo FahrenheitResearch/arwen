@@ -1670,3 +1670,37 @@ mod tests {
         assert_eq!(plain.substitute_dark_ink(Rgba::BLACK), Rgba::BLACK);
     }
 }
+
+/// Concentration colour scales, not computed AQI. EPA Table 5 uses daily
+/// PM2.5 and 8-hour ozone averages; these products show instantaneous fields.
+/// https://document.airnow.gov/technical-assistance-document-for-the-reporting-of-daily-air-quailty.pdf
+/// (May 2026, Table 5; PM2.5 breakpoints revised in 2024).
+/// Ozone ends its 8-hour scale at 200 ppb. No 1-hour band is mixed into it.
+pub fn air_quality_scale(ozone: bool) -> DiscreteColorScale {
+    DiscreteColorScale {
+        levels: if ozone { vec![0.0, 54.0, 70.0, 85.0, 105.0, 200.0] }
+                else { vec![0.0, 9.0, 35.4, 55.4, 125.4, 225.4, 325.4] },
+        colors: { let mut colors = vec![Color::rgba(0, 228, 0, 255), Color::rgba(255, 255, 0, 255),
+                     Color::rgba(255, 126, 0, 255), Color::rgba(255, 0, 0, 255),
+                     Color::rgba(143, 63, 151, 255), Color::rgba(126, 0, 35, 255)];
+                  if ozone { colors.pop(); }
+                  colors },
+        extend: crate::request::ExtendMode::Max,
+        mask_below: None,
+    }
+}
+
+/// AOD rungs separate clear air, haze and thick plumes; the extension retains
+/// values above 2. Dust uses a broad mass ladder for weak through dense plumes.
+/// Both use the renderer's existing sequential teal ramp.
+pub fn aerosol_sequential_scale(aod: bool) -> DiscreteColorScale {
+    DiscreteColorScale {
+        levels: if aod { vec![0.0, 0.1, 0.2, 0.5, 1.0, 2.0] }
+                else { vec![0.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0] },
+        colors: vec![Color::rgba(235, 247, 247, 255), Color::rgba(195, 226, 225, 255),
+                     Color::rgba(125, 202, 202, 255), Color::rgba(70, 159, 160, 255),
+                     Color::rgba(0, 95, 96, 255), Color::rgba(0, 58, 60, 255)],
+        extend: crate::request::ExtendMode::Max,
+        mask_below: None,
+    }
+}

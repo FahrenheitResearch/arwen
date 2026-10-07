@@ -1,0 +1,18 @@
+input f4 2 59 2
+alt f4 1 59
+z_at_w f4 1 60
+z f4 1 59
+dz8w f4 1 59
+exch_h f4 1 59
+dt f4 0
+vd f4 1 2
+anth f4 1 5
+fire f4 0
+urban i4 0
+indices i4 1 4
+accum_in f4 1 2
+output f4 2 59 2
+mixed f4 1 59
+ekmfull f4 1 60
+ddmassn f4 1 2
+accum f4 1 2

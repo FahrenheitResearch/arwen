@@ -869,6 +869,29 @@ GF_SCHEME_GENERATION_NOTICE = (
     "generation substitution is never silent.")
 
 
+#: Recorded on every MYNN import whose &physics omits bl_mynn_mixscalars.
+#: The omitted key takes the Registry default of the MYNN generation the
+#: solver ports, and that default moved between WRF lines: the V3.9 line
+#: (HRRR; gsd_41) has no such key, v4.6.1 (wrf_461) reads 0
+#: (Registry.EM_COMMON:2479), v4.7.x reads 1 (Registry.EM_COMMON:2482)
+#: under the MYNN-EDMF submodule gpuwm does not carry.  A v4.7-era MYNN
+#: namelist is byte-indistinguishable from a v4.6.1 one at this key, so
+#: the importer cannot detect which default was meant; it records this
+#: notice instead, so the divergence is never silent.
+MYNN_MIXSCALARS_DEFAULT_NOTICE = (
+    "bl_mynn_mixscalars omitted: imported as 0, the WRF v4.6.1 Registry "
+    "default (Registry.EM_COMMON:2479) of the MYNN generation gpuwm ports; "
+    "the V3.9 line HRRR runs has no such key and mixes its aerosols "
+    "through scalar_pblmix = 1.  WRF v4.7.x defaults the key to 1 "
+    "(Registry.EM_COMMON:2482) under the MYNN-EDMF submodule gpuwm does "
+    "not carry; a namelist written for that line that relies on the "
+    "default must say bl_mynn_mixscalars = 1 to mix the qn family "
+    "(nc/ni/nwfa/nifa under mp_physics = 28; WRF's no-op under a "
+    "microphysics with no number species; refused by name under a "
+    "scheme WRF mixes in part, such as Thompson's qni, until the port "
+    "carries per-species solves).")
+
+
 #: The namelist groups the importer reads, by file.  Any other group is
 #: refused by name.  Exported by gpuwm.namelist_contract.
 WPS_AUXILIARY_SECTIONS = {
@@ -881,9 +904,20 @@ WPS_AUXILIARY_SECTIONS = {
 }
 WPS_SECTIONS = ("share", "geogrid", "ungrib", "metgrid",
                 *WPS_AUXILIARY_SECTIONS)
+#: namelist.input groups that steer machinery WOOF does not run.  Each is
+#: read whole: inert when its selector leaves that machinery off (or, for
+#: &logging, always: it routes MPI-rank log text), and a DECLARED
+#: DIVERGENCE the terminal prints when the selector is on, because the
+#: rest of the forecast is still the one requested.  Selector key and the
+#: value that means "off", per group.
+INPUT_MACHINERY_SECTIONS: dict[str, tuple[str | None, object]] = {
+    "dfi_control": ("dfi_opt", 0),
+    "chem": ("chem_opt", 0),
+    "logging": (None, None),
+}
 INPUT_SECTIONS = ("time_control", "domains", "physics", "fdda", "dynamics",
                   "bdy_control", "grib2", "namelist_quilt", "noah_mp",
-                  "stoch")
+                  "stoch", "fire", *INPUT_MACHINERY_SECTIONS)
 #: Groups whose every key is recorded and dropped: ungrib/metgrid staging
 #: is replaced by gpuwm's own ingest; FDDA (once no nudging selector is on),
 #: GRIB2 and quilt-server keys have no gpuwm counterpart.
@@ -955,6 +989,346 @@ TIME_CONTROL_IGNORED_KEYS: dict[str, str] = {
     "write_restart_at_0h": "ignored WRF initial restart-output switch; "
                            "gpuwm's checkpoint route manages its own output",
 }
+
+
+_MACHINERY_OFF_REASON = {
+    "dfi_control": "digital-filter initialization is off (dfi_opt = 0); "
+                   "its filter controls are inert",
+    "chem": "WRF-Chem is off (chem_opt = 0); its chemistry controls are "
+            "inert",
+    "logging": "WRF MPI-rank log routing; WOOF writes its own run log",
+}
+
+
+def _is_off(values, off) -> bool:
+    return all(value == off for value in values)
+
+
+def _consume_machinery_sections(inp: dict, drop, substitutions) -> None:
+    """Read &dfi_control, &chem and &logging whole (see
+    :data:`INPUT_MACHINERY_SECTIONS`).
+
+    Only the domains the run integrates are judged: a per-domain selector
+    left on for an undeclared nest (the operational file's chem_opt = 18, 0
+    under max_dom = 1 is the d01 value only) is read at those columns.
+    """
+    max_dom = (inp.get("domains", {}).get("max_dom") or [1])[0]
+    max_dom = max_dom if isinstance(max_dom, int) and max_dom > 0 else 1
+    for section_name, (selector, off) in INPUT_MACHINERY_SECTIONS.items():
+        entries = inp.get(section_name)
+        if entries is None:
+            continue
+        values = list(entries.get(selector) or [off]) if selector else [off]
+        if selector == "chem_opt":
+            values = values[:max_dom]
+        if _is_off(values, off):
+            for key, key_values in entries.items():
+                drop(section_name, key, key_values,
+                     _MACHINERY_OFF_REASON[section_name])
+            continue
+        if section_name == "dfi_control":
+            substitutions.append(Substitution(
+                key="dfi_opt", wrf_value=values[0],
+                wrf_name="digital-filter initialization",
+                gpuwm_key="dfi_opt", gpuwm_value=0,
+                gpuwm_name="forecast from the unfiltered analysis",
+                reason="WOOF has no digital-filter initialization: the "
+                       "forecast starts from the prepared analysis as it "
+                       "is, so the fast gravity-wave and surface-pressure "
+                       "noise a filter would remove is present in the "
+                       "first hour; later hours are the requested "
+                       "configuration"))
+        else:
+            feedback = [
+                key for key in ("aer_ra_feedback", "simple_dir_fdb",
+                                "simple_ind_fdb", "aer_op_opt")
+                if not _is_off(list(entries.get(key) or [0])[:max_dom], 0)]
+            radiative = (
+                f"; the requested radiative feedback ({', '.join(feedback)}) "
+                "from those aerosols is absent too, so shortwave reaching "
+                "the surface is not reduced under smoke or dust"
+                if feedback else
+                "; no radiative feedback is requested, so the meteorology "
+                "is unaffected")
+            substitutions.append(Substitution(
+                key="chem_opt", wrf_value=values[0],
+                wrf_name=f"WRF-Chem package chem_opt = {values[0]}",
+                gpuwm_key="chem_opt", gpuwm_value=0,
+                gpuwm_name="no chemistry",
+                reason="WOOF runs no WRF-Chem: the requested chemical or "
+                       "aerosol tracers (emission, plume rise, transport, "
+                       "deposition) are not computed and not written"
+                       + radiative))
+        for key, key_values in entries.items():
+            if key != selector:
+                drop(section_name, key, key_values,
+                     f"companion control of {selector} = {values[0]}, "
+                     "which WOOF does not run (declared divergence above)")
+
+
+def _dfi_requested(inp: dict) -> bool:
+    values = inp.get("dfi_control", {}).get("dfi_opt") or [0]
+    return values[0] != 0
+
+
+def _chem_requested(inp: dict, max_dom: int) -> bool:
+    values = inp.get("chem", {}).get("chem_opt") or [0]
+    return not _is_off(values[:max_dom], 0)
+
+
+def _drop_dfi_companion(section, key: str, inp: dict, drop) -> None:
+    drop(section.name, key, section.take(key),
+         "companion of digital-filter initialization, which WOOF does not "
+         "run (declared divergence: dfi_opt)" if _dfi_requested(inp) else
+         "digital-filter initialization is off (dfi_opt = 0); this DFI-pass "
+         "control is inert")
+
+
+#: real.exe vertical-interpolation controls, with the value WOOF's own
+#: initialization always uses (gpuwm/ingest/real.py, the WRF v4.6.1
+#: module_initialize_real.F operator) and what that value means.  A
+#: supplied match is recorded as fixed; any other value is a declared
+#: divergence of the INITIAL STATE only (how the analysis is placed on
+#: the model levels), never of the model that integrates it.
+REAL_INIT_VERTICAL_CONTROLS: dict[str, tuple[object, str]] = {
+    "interp_type": (2, "vertical interpolation in log pressure"),
+    "lagrange_order": (2, "quadratic Lagrange vertical interpolation"),
+    "force_sfc_in_vinterp": (1, "the surface value used for the lowest "
+                                "model level"),
+    "zap_close_levels": (500.0, "source levels within 500 Pa of the "
+                                "surface removed"),
+    "lowest_lev_from_sfc": (False, "the lowest level interpolated, not "
+                                   "copied from the surface"),
+    "adjust_heights": (False, "pressure-level heights used as analysed"),
+}
+
+
+def _consume_unrun_domain_controls(dm, inp: dict, drop, fix,
+                                   substitutions) -> None:
+    """&domains controls of initialization passes WOOF does differently."""
+    for key, (used, meaning) in REAL_INIT_VERTICAL_CONTROLS.items():
+        values = dm.take(key)
+        if values is None:
+            continue
+        supplied = values[0]
+        same = (float(supplied) == float(used)
+                if isinstance(used, float) else supplied == used)
+        if same:
+            fix("domains", key, values, used,
+                f"WOOF's initialization uses {meaning} (gpuwm/ingest/real.py)")
+            continue
+        substitutions.append(Substitution(
+            key=key, wrf_value=supplied, wrf_name=f"real.exe {key} = "
+                                                  f"{supplied}",
+            gpuwm_key=key, gpuwm_value=used, gpuwm_name=meaning,
+            reason="initial state only: WOOF's initialization always uses "
+                   f"{meaning}, so the analysis is placed on the model "
+                   "levels slightly differently between source levels; the "
+                   "integrating model is the one requested"))
+    rebalance = dm.take("rebalance")
+    if rebalance is not None:
+        if rebalance[0] == 0:
+            fix("domains", "rebalance", rebalance, 0,
+                "WOOF has no separate start-time rebalance pass")
+        else:
+            substitutions.append(Substitution(
+                key="rebalance", wrf_value=rebalance[0],
+                wrf_name="start-time hydrostatic rebalance of the input",
+                gpuwm_key="rebalance", gpuwm_value=0,
+                gpuwm_name="initial state balanced by WOOF's initialization",
+                reason="WOOF computes its initial pressure and geopotential "
+                       "hydrostatically from the analysed temperature and "
+                       "moisture inside its own initialization, so there "
+                       "is no separate rebalance pass to switch on"))
+    _drop_dfi_companion(dm, "time_step_dfi", inp, drop)
+
+
+def _consume_unrun_physics_controls(ph, inp: dict, max_dom: int, cu: list,
+                                    drop, substitutions) -> None:
+    """&physics controls of packages WOOF does not run.
+
+    Each is inert when its package is off; a requested package that only
+    writes extra output, or adds a process WOOF does not have, is a
+    declared divergence the terminal prints.
+    """
+    def column(key):
+        values = ph.take(key)
+        return values, (None if values is None else values[:max_dom])
+
+    drop("physics", "co2tf", ph.take("co2tf"),
+         "GFDL radiation's CO2 flag; read only under ra_*_physics = 99, "
+         "which WOOF does not offer")
+    grell = {3, 5, 93}
+    for key in ("maxiens", "maxens", "maxens2", "maxens3", "ensdim"):
+        if not grell.intersection(cu[:max_dom]) and key in ph.entries:
+            drop("physics", key, ph.take(key),
+                 "Grell ensemble dimension; inert with no Grell-family "
+                 "cumulus on any domain")
+    for key, package, effect in (
+            ("hailcast_opt", "WRF-HAILCAST hail-size diagnostic",
+             "its hail-size output fields are not written; it feeds "
+             "nothing back, so the forecast is unchanged"),
+            ("mp_tend_radar", "radar-derived latent-heating tendency",
+             "no radar reflectivity heating is applied during the "
+             "forecast, so convection the request would force from "
+             "observed reflectivity develops from the analysis alone"),
+            ("ra_sw_eclipse", "solar-eclipse shortwave obscuration",
+             "incoming shortwave is not dimmed by an eclipse; this "
+             "differs only while an eclipse shadow crosses the domain")):
+        values, active = column(key)
+        if values is None:
+            continue
+        if _is_off(active, 0):
+            drop("physics", key, values, f"{package} is off; inert")
+            if key == "hailcast_opt":
+                drop("physics", "haildt", ph.take("haildt"),
+                     "HAILCAST sampling interval; HAILCAST is off")
+            continue
+        substitutions.append(Substitution(
+            key=key, wrf_value=active[0], wrf_name=package,
+            gpuwm_key=key, gpuwm_value=0, gpuwm_name=f"no {package}",
+            reason=f"WOOF does not run the {package}: {effect}"))
+        drop("physics", key, values, "declared divergence above")
+        if key == "hailcast_opt":
+            drop("physics", "haildt", ph.take("haildt"),
+                 "HAILCAST sampling interval; declared divergence above")
+    for key in ("prec_acc_dt", "prec_acc_dt1"):
+        values, active = column(key)
+        if values is None:
+            continue
+        if all(float(value) <= 0.0 for value in active):
+            drop("physics", key, values,
+                 "no interval precipitation bucket is requested")
+            continue
+        substitutions.append(Substitution(
+            key=key, wrf_value=active[0],
+            wrf_name=f"interval precipitation bucket every {active[0]:g} min",
+            gpuwm_key=key, gpuwm_value=0,
+            gpuwm_name="WOOF's own accumulated precipitation products",
+            reason="output only: the PREC_ACC interval-bucket fields are not "
+                   "written; WOOF's accumulated precipitation is, and the "
+                   "forecast is unchanged"))
+        drop("physics", key, values, "declared output difference above")
+    values, active = column("seaice_threshold")
+    if values is not None:
+        if all(float(value) <= 100.0 for value in active):
+            drop("physics", "seaice_threshold", values,
+                 "100 K or colder: no open-water point is that cold, so the "
+                 "threshold never converts water to ice")
+        else:
+            substitutions.append(Substitution(
+                key="seaice_threshold", wrf_value=active[0],
+                wrf_name=f"open water below {active[0]:g} K treated as ice",
+                gpuwm_key="seaice_threshold", gpuwm_value=None,
+                gpuwm_name="sea ice from the analysed ice fraction",
+                reason="WOOF takes sea ice from the analysed ice fraction "
+                       "only; water colder than the threshold is not "
+                       "converted to ice, which matters only where the "
+                       "analysis and the skin temperature disagree"))
+            drop("physics", "seaice_threshold", values,
+                 "declared divergence above")
+    tracer_opt = inp.get("dynamics", {}).get("tracer_opt") or [0]
+    if _is_off(tracer_opt[:max_dom], 0):
+        drop("physics", "tracer_pblmix", ph.take("tracer_pblmix"),
+             "PBL mixing switch of the tracer array; companion of the "
+             "chem_opt declared divergence"
+             if _chem_requested(inp, max_dom) else
+             "no passive-tracer array exists (tracer_opt = 0, no "
+             "chemistry), so there is nothing for the PBL to mix")
+
+
+def _consume_unrun_dynamics_controls(dyn, inp: dict, max_dom: int,
+                                     km_opt_col: list, drop, fix) -> None:
+    """&dynamics array switches for arrays WOOF does or does not carry."""
+    chem = _chem_requested(inp, max_dom)
+    for key in ("chem_adv_opt", "chem_mix6_off"):
+        drop("dynamics", key, dyn.take(key),
+             "transport/filter switch of the chemistry array; companion of "
+             "the chem_opt declared divergence" if chem else
+             "transport/filter switch of the chemistry array, which does "
+             "not exist with chemistry off")
+    tracer_opt = dyn.entries.get("tracer_opt") or [0]
+    if _is_off(tracer_opt[:max_dom], 0):
+        drop("dynamics", "tracer_opt", dyn.take("tracer_opt"),
+             "no passive-tracer package is requested")
+        drop("dynamics", "tracer_mix6_off", dyn.take("tracer_mix6_off"),
+             "filter switch of the passive-tracer array, which does not "
+             "exist with tracer_opt = 0")
+    tke = dyn.entries.get("tke_mix6_off")
+    if tke is not None:
+        if all(value != 2 for value in km_opt_col[:max_dom]):
+            drop("dynamics", "tke_mix6_off", dyn.take("tke_mix6_off"),
+                 "filter switch of the prognostic TKE array, which exists "
+                 "only under km_opt = 2")
+        elif all(value is False for value in tke[:max_dom]):
+            fix("dynamics", "tke_mix6_off", dyn.take("tke_mix6_off"), False,
+                "the sixth-order filter acts on TKE under km_opt = 2 "
+                "(gpuwm/core/dycore.py diff6 rows)")
+    scalar = dyn.entries.get("scalar_mix6_off")
+    if scalar is not None and all(value is False for value in scalar[:max_dom]):
+        fix("dynamics", "scalar_mix6_off", dyn.take("scalar_mix6_off"),
+            False, "the sixth-order filter acts on the scalar array "
+                   "(gpuwm/core/dycore.py diff6 rows)")
+    for key in ("km_opt_dfi", "moist_adv_dfi_opt"):
+        _drop_dfi_companion(dyn, key, inp, drop)
+
+
+def _translate_operational_fork_time_controls(tc, run_seconds: float, drop,
+                                              substitutions) -> None:
+    """&time_control keys of the operational WRF 3.9 fork and WRF's
+    ``cycling``: output-cadence and cycle-state controls, never refused.
+    """
+    for key in ("diag_int", "wind_int"):
+        drop("time_control", key, tc.take(key),
+             "averaging window of the operational fork's diagnostic output "
+             "(gsd_diagnostics/output_diagnostics), which WOOF does not "
+             "write; output only, no forecast-state effect")
+    interval2 = tc.take("history_interval2")
+    change = tc.take("history_interval_change")
+    if interval2 is not None or change is not None:
+        run_minutes = run_seconds / 60.0
+        change_min = float(change[0]) if change else 0.0
+        if interval2 is None or (change is not None
+                                 and change_min >= run_minutes):
+            reason = (f"the fork's history-cadence switch at {change_min:g} "
+                      f"min lies at or after the run end ({run_minutes:g} "
+                      "min), so it never acts" if interval2 is not None else
+                      "history_interval_change without history_interval2 "
+                      "selects no second cadence")
+            drop("time_control", "history_interval2", interval2, reason)
+            drop("time_control", "history_interval_change", change, reason)
+        else:
+            substitutions.append(Substitution(
+                key="history_interval2", wrf_value=interval2[0],
+                wrf_name=f"history every {interval2[0]} min after "
+                         f"{change_min:g} min (operational fork)",
+                gpuwm_key="history_interval_s", gpuwm_value=None,
+                gpuwm_name="history_interval for the whole run",
+                reason="WOOF keeps one history cadence per domain, so "
+                       f"history after {change_min:g} min is still written "
+                       "every history_interval; output only, the forecast "
+                       "is unchanged"))
+            drop("time_control", "history_interval2", interval2,
+                 "declared output difference above")
+            drop("time_control", "history_interval_change", change,
+                 "declared output difference above")
+    cycling = tc.take("cycling")
+    if cycling is not None:
+        if cycling[0] is True:
+            substitutions.append(Substitution(
+                key="cycling", wrf_value=True,
+                wrf_name="cycled start (carried MYNN TKE and lake state "
+                         "from the input file)",
+                gpuwm_key="cycling", gpuwm_value=False,
+                gpuwm_name="fresh start",
+                reason="WOOF starts every forecast fresh from its prepared "
+                       "analysis: boundary-layer TKE and lake state are "
+                       "initialized by the schemes, not carried from a "
+                       "previous cycle's file, so the first hours of "
+                       "boundary-layer mixing spin up as in a cold start"))
+        drop("time_control", "cycling", cycling,
+             "fresh start" if cycling[0] is not True else
+             "declared divergence above")
 
 
 def ignored_time_control_reason(key: str) -> str | None:
@@ -1550,6 +1924,43 @@ def _fmt(value) -> str:
     return '"' + str(value) + '"'
 
 
+def _fire_columns(fire, domains, count):
+    """Translate Registry fire columns without broadcasting omitted tails."""
+    from gpuwm.sfire_config import FireRunFields, FIRE_CONFIG_FIELDS, FIRE_DOMAIN_FIELDS
+    defaults = FireRunFields()
+    extensions = {"sr_x", "sr_y", "fire_static", "fire_fuel_namelist", "fire_smoke"}
+    result = {}
+    for name in FIRE_CONFIG_FIELDS:
+        if name in extensions:
+            continue
+        raw = fire.take(name)
+        if raw is None:
+            continue
+        default = getattr(defaults, name)
+        for value in raw:
+            valid = (isinstance(value, bool) if isinstance(default, bool) else
+                     isinstance(value, int) and not isinstance(value, bool) if isinstance(default, int) else
+                     isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value))
+            if value is not None and not valid:
+                raise _err("fire", name, raw, f"must use the Registry {type(default).__name__} type")
+        supplied = [default if value is None else value for value in raw]
+        if name in FIRE_DOMAIN_FIELDS:
+            result[name] = supplied[:count] + [default] * max(0, count - len(supplied))
+        else:
+            if len(supplied) != 1:
+                raise _err("fire", name, raw, "is a scalar shared by all domains in WRF")
+            result[name] = supplied * count
+    for name in ("sr_x", "sr_y"):
+        raw = domains.take(name)
+        if raw is None:
+            continue
+        if any(value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0) for value in raw):
+            raise _err("domains", name, raw, "must contain nonnegative integer refinement ratios")
+        result[name] = [0 if value is None else value for value in raw[:count]] + [0] * max(0, count - len(raw))
+    fire.finish()
+    return result
+
+
 # ---------------------------------------------------------------------------
 # &geogrid geog_data_res: which static datasets a namelist asks for
 # ---------------------------------------------------------------------------
@@ -2060,6 +2471,27 @@ def _format_refusals(problems: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _refuse_latlon_grid(wps: dict) -> None:
+    """Refuse a lat-lon namelist.wps by name, before anything else.
+
+    A lat-lon grid (WPS 'lat-lon', WRF 6) is geometry every later check
+    is computed from, so it is refused first and alone: checked further,
+    its degree spacing and absent true latitudes surfaced as a missing
+    ``truelat1`` or a dx/dy "mismatch", refusals that send the reader to
+    fix the wrong thing.
+    """
+    from gpuwm.static.projection import (implemented_projections,
+                                         is_latlon_map_proj, latlon_blocker,
+                                         latlon_refusal)
+
+    value = wps.get("geogrid", {}).get("map_proj", ["lambert"])[0]
+    if (isinstance(value, str) and is_latlon_map_proj(value)
+            and value.strip().lower().replace("_", "-")
+            not in implemented_projections()):
+        raise _err("geogrid", "map_proj", value,
+                   f"{latlon_refusal()}; {latlon_blocker()}.")
+
+
 def import_parsed_namelists(wps: dict, inp: dict, *, wps_path, input_path,
                             **options) -> tuple[str, SubstitutionReport]:
     """:func:`import_namelists` on parsed documents, every refusal at once.
@@ -2090,6 +2522,7 @@ def import_parsed_namelists(wps: dict, inp: dict, *, wps_path, input_path,
 
     from gpuwm.explain import muted_warnings
 
+    _refuse_latlon_grid(wps)
     work_wps, work_inp = deepcopy(wps), deepcopy(inp)
     # 083ac7cd0, lane/sw-excess, made explicit source snapshots authoritative.
     # Retain that behavior while preserving 7ba801346, lane/286-fork-thompson:
@@ -2407,6 +2840,7 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                 drop(section_name, key, values,
                      "FDDA/GRIB2/quilt-server machinery has no gpuwm "
                      "counterpart")
+    _consume_machinery_sections(inp, drop, substitutions)
 
     known_wps = set(WPS_SECTIONS)
     unknown = sorted(set(wps) - known_wps)
@@ -2498,12 +2932,25 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
     gsd_diagnostics = tc.take("gsd_diagnostics")
     if gsd_diagnostics is not None:
         if any(value != 0 for value in gsd_diagnostics):
-            raise _err("time_control", "gsd_diagnostics", gsd_diagnostics,
-                       "the operational model's additional diagnostics are "
-                       "not implemented; importing an enabled request would "
-                       "omit the requested output fields")
-        drop("time_control", "gsd_diagnostics", gsd_diagnostics,
-             "operational model diagnostics are disabled; no output is requested")
+            # Output only: the fork computes these fields from the state
+            # after each step and feeds nothing back, so the trajectory is
+            # the one requested; only the extra fields are missing.
+            substitutions.append(Substitution(
+                key="gsd_diagnostics", wrf_value=gsd_diagnostics[0],
+                wrf_name="operational fork extra diagnostic output",
+                gpuwm_key="gsd_diagnostics", gpuwm_value=0,
+                gpuwm_name="WOOF's own history product set",
+                reason="the operational fork's additional diagnostic "
+                       "output fields are not written; they are computed "
+                       "from the model state and feed nothing back, so the "
+                       "forecast itself is unchanged"))
+            drop("time_control", "gsd_diagnostics", gsd_diagnostics,
+                 "operational model diagnostics are requested; declared "
+                 "output difference above")
+        else:
+            drop("time_control", "gsd_diagnostics", gsd_diagnostics,
+                 "operational model diagnostics are disabled; no output is requested")
+    fire = _Section("fire", inp.get("fire", {}), str(input_path))
 
     # ---- &noah_mp: option-identity validation --------------------------
     # Every Noah-MP option is identity-pinned (gpuwm/config.py
@@ -2563,6 +3010,7 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         raise ValueError(
             f"max_dom mismatch: {wps_path} says {wps_max_dom}, "
             f"{input_path} says {max_dom}.")
+    fire_columns = _fire_columns(fire, dm, max_dom)
 
     # ---- &time_control: start/run length --------------------------------
     def _dt_columns(prefix: str) -> list[datetime]:
@@ -2909,6 +3357,8 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
          tc.take("adjust_output_times"),
          "inert on the exact rational clock (alarms land "
          "exactly on the history cadence)")
+    _translate_operational_fork_time_controls(
+        tc, run_seconds, drop, substitutions)
     for key in sorted(tc.entries):
         reason = ignored_time_control_reason(key)
         if reason is not None:
@@ -2994,12 +3444,24 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
             f"got {wps_root}.")
 
     # WPS lists d01's parent as itself (parent_id = 1); namelist.input
-    # uses 0 for the head grid -- compare children only.
+    # uses 0 for the head grid -- compare children only.  The head grid's
+    # i/j_parent_start place nothing either: they locate a nest's corner
+    # in its parent, WPS writes 1 and namelist.input templates carry 1 or
+    # 0 (the operational 3 km file has 0), so the root values are
+    # recorded, not compared.
+    for key, wps_col, inp_col in (("i_parent_start", geo_i, i_start),
+                                  ("j_parent_start", geo_j, j_start)):
+        if inp_col[0] != wps_col[0]:
+            drop("domains", f"{key} (root)", [inp_col[0]],
+                 "the head grid has no parent, so its parent-start "
+                 "coordinate places nothing; WPS's value "
+                 f"{wps_col[0]} stands")
+            inp_col[0] = wps_col[0]
     for key, wps_col, inp_col in (
             ("parent_id", geo_parent_id[1:], parent_id[1:]),
             ("parent_grid_ratio", geo_ratio[1:], ratio[1:]),
-            ("i_parent_start", geo_i, i_start),
-            ("j_parent_start", geo_j, j_start),
+            ("i_parent_start", geo_i[1:], i_start[1:]),
+            ("j_parent_start", geo_j[1:], j_start[1:]),
             ("e_we", geo_e_we, e_we), ("e_sn", geo_e_sn, e_sn)):
         if wps_col != inp_col:
             raise ValueError(
@@ -3290,20 +3752,17 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                     "a dataset ArWen has never decoded, and reinterpreting "
                     "it silently would interpolate the wrong column")
 
+    _consume_unrun_domain_controls(dm, inp, drop, fix, substitutions)
     dm.finish()
 
     # ---- &geogrid projection ---------------------------------------------
     map_proj = str(geo.scalar("map_proj", "lambert")).lower()
     if map_proj not in ("lambert", "mercator", "polar"):
+        from gpuwm.static.projection import (is_latlon_map_proj,
+                                             latlon_blocker, latlon_refusal)
         blocker = (
-            " Regular/rotated latitude-longitude needs angular dx/dy "
-            "rather than metre spacing and WRF's global/pole polar filter; "
-            "rotated grids also need pole_lat/pole_lon state and the "
-            "map_proj == 6 curvature branch."
-            if map_proj.replace("_", "-") in {
-                "lat-lon", "latlon", "regular-ll", "rotated-lat-lon",
-                "rotated-ll",
-            } else "")
+            f" {latlon_refusal()}; {latlon_blocker()}."
+            if is_latlon_map_proj(map_proj) else "")
         raise _err("geogrid", "map_proj", map_proj,
                    "implemented projections: 'lambert', 'mercator', "
                    f"'polar'.{blocker}")
@@ -3950,6 +4409,17 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
                  "thompsonaero package "
                  "(Registry/Registry.EM_COMMON:3036, mp_physics = 28)")
             continue
+        if _aero_key == "grav_settling" and all(
+                value == 0 for value in _values[:max_dom]):
+            # 0 is the value WRF itself runs under mp=28 (it forces it
+            # there) and the only behaviour ArWen has: Thompson's own
+            # settling, no separate fog-settling pass.  Nothing is
+            # overwritten, so there is no breakage to refuse.
+            fix("physics", _aero_key, _values, 0,
+                "no separate fog-settling pass, which is what WRF runs "
+                "under mp_physics = 28 (share/module_check_a_mundo.F:"
+                "2459-2474); the scheme's own settling applies")
+            continue
         raise _err("physics", _aero_key, _values, _why + ".")
     # ---- the WIF key triple, &physics half -------------------------------
     # use_aero_icbc is what real.exe reads to DERIVE aer_init_opt=1
@@ -4000,10 +4470,24 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
     # written below, so the run-door clause can be appended to it once
     # &bdy_control has been parsed (the clause is about ``specified``).
     _mp28_fallback_row: int | None = None
+    # The analyzed request beside a COMPLETE WIF triple (use_aero_icbc
+    # with wif_input_opt = 1) keeps the triple in the TOML: the HRRR
+    # route's renderer writes exactly this for a configuration stating
+    # aer_init_opt = wif_input_opt = 1 with use_rap_aero_icbc (the shipped
+    # configs/recipes/hrrr_v4_gsd41.toml and hrrr_configuration_cut.toml),
+    # and reading it back as (0, 0, 'analysis') refused that round trip.
+    # Both spellings run the analyzed source: use_rap_aero_icbc decides it
+    # before the pair or mp28_aerosol_source is consulted
+    # (gpuwm/ingest/real.py _resolved_mp28_aerosol_source).  A namelist
+    # with only one half of the triple, the operational hrrr_wrf.nl among
+    # them, imports exactly as before.
+    analyzed_with_wif_triple = (analyzed_aerosol_imported and _aero_icbc
+                                and _wif_selected)
     if analyzed_aerosol_imported:
         defaults_applied.append(AppliedDefault(
             key="mp28 aerosol initial state", value="analyzed aerosol IC/BC",
-            reason="use_rap_aero_icbc selects QNWFA/QNIFA from the driving analysis on every initial and boundary frame; missing fields refuse instead of substituting climatology"))
+            reason="use_rap_aero_icbc selects QNWFA/QNIFA from the driving analysis on every initial and boundary frame; missing fields refuse instead of substituting climatology"
+                   + ("; the namelist's complete WIF triple (use_aero_icbc with wif_input_opt = 1) is carried as aer_init_opt = wif_input_opt = 1, which the analyzed request overrides" if analyzed_with_wif_triple else "")))
     elif mp_physics == 28 and (_aero_icbc or _wif_selected):
         if not (_aero_icbc and _wif_selected):
             raise _err(
@@ -4091,6 +4575,8 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
     bl_wrf, bl_mapped = _mapped("bl_pbl_physics", _BL_MAP, per_domain=True)
     bl_pbl_col = [entry[0] for entry in bl_mapped]
     bl_pbl_physics, wrf_name, gp_name = bl_mapped[0]
+    if bl_mynn_mixscalars is None and any(value == 5 for value in bl_pbl_col):
+        notices.append(MYNN_MIXSCALARS_DEFAULT_NOTICE)
     if bl_pbl_physics != bl_wrf[0]:
         substitutions.append(Substitution(
             key="bl_pbl_physics", wrf_value=bl_wrf[0], wrf_name=wrf_name,
@@ -4344,7 +4830,7 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
     # The recipe's prescribed-monthly request is for the land schemes that
     # read the monthly fields (physics_source_defaults.land_scoped_defaults).
     from gpuwm.physics_source_defaults import land_scoped_defaults
-    source_defaults = land_scoped_defaults(source_defaults, sfsfc)
+    source_defaults = land_scoped_defaults(source_defaults, sfsfc, mp_physics)
     if sfsfc not in _SFSFC_ALLOWED:
         raise _err("physics", "sf_surface_physics", sfsfc,
                    f"no gpuwm mapping (implemented: "
@@ -4758,6 +5244,8 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         if any(column):
             terrain_drag_columns["topo_wind"] = column
     gwd_physics_raw = ph.take("gwd_opt")
+    _consume_unrun_physics_controls(ph, inp, max_dom, cu, drop,
+                                    substitutions)
     ph.finish()
 
     # ---- switches WRF's namelist cannot state -----------------------------
@@ -5272,6 +5760,18 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
     # pinned terrain clock, because the clock is the namelist's own and
     # the engine's measured maps were never taken on an operational grid.
     # Other imports retain their established adaptive emission.
+    #
+    # A pair whose own gpuwm selector comment states terrain_clock was
+    # written by gpuwm from a configuration (the HRRR route's renderer
+    # carries terrain_clock on every emission), so its adaptive keys are
+    # that configuration's clock, not a WRF namelist to be read the way
+    # WRF runs it: the configuration's use_adaptive_time_step and bounds
+    # come back as written.  Collapsing them refused the route's round
+    # trip of an adaptive tree pinned at equal bounds
+    # (configs/recipes/hrrr_v4_gsd41.toml, 20/20/20 s), and the prepared
+    # cache binds use_adaptive_time_step, so a tree prepared from the pair
+    # would have been refused by the forecast reading the configuration.
+    clock_stated_by_gpuwm = "terrain_clock" in carried_selectors
     terrain_clock = None
     fixed_through_adaptive = (_fixed_step_through_adaptive_clock(
         use_adaptive_time_step,
@@ -5281,7 +5781,8 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         projection=projection, map_proj=map_proj, dx=root_dx, dy=root_dy,
         e_we=int(e_we[0]), e_sn=int(e_sn[0]), max_dom=int(max_dom))
         if (named_source_defaults.get("terrain_clock") == "pinned"
-            and source_defaults.get("terrain_clock") == "pinned") else None)
+            and source_defaults.get("terrain_clock") == "pinned"
+            and not clock_stated_by_gpuwm) else None)
     if fixed_through_adaptive is not None:
         step, derived, largest_map_factor = fixed_through_adaptive
         namelist_step = Fraction(time_step) + Fraction(fract_num, fract_den)
@@ -5402,6 +5903,24 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
             "h_sca_adv_order feeds only the geopotential advection "
             "(rhs_ph) -- a non-default value here would not mean what it "
             "means in WRF.")
+    # The base helper drops tracer_opt (and its filter switch) only when no
+    # domain asks for a tracer package; SFIRE's option 3 is left for the
+    # fire tracer row below.
+    _consume_unrun_dynamics_controls(dyn, inp, max_dom, km_opt_col, drop, fix)
+    tracer_values = dyn.take("tracer_opt")
+    if tracer_values is not None:
+        if any(isinstance(value, bool) or not isinstance(value, int) or value not in (0, 3)
+               for value in tracer_values if value is not None):
+            raise _err("dynamics", "tracer_opt", tracer_values,
+                       "SFIRE bulk import implements 0 and native fire tracer option 3")
+        tracer_column = [0 if value is None else value for value in tracer_values[:max_dom]]
+        tracer_column += [0] * (max_dom - len(tracer_column))
+        if any(value == 3 for value in tracer_column):
+            # Carry the same row across the nesting tree; only attached
+            # ifire=2 domains emit. Parent carriers have zero source.
+            fire_columns["fire_smoke"] = [True] * max_dom
+        fix("dynamics", "tracer_opt", tracer_values, tracer_column[0],
+            "native bulk SFIRE tracer, converted from g/kg air to ug/kg dry air")
     dyn.finish()
 
     # ---- &bdy_control -----------------------------------------------------
@@ -5564,7 +6083,7 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         f"h_sca_adv_order = {h_sca_adv_order}",
         f"smdiv = {_fmt(smdiv)}",
         f"top_lid = {_fmt(top_lid)}",
-        f"moist = {_fmt(moist_column[0])}",
+        f"moist = {_fmt(moist_column[0] or any(value == 2 for value in fire_columns.get('ifire', ())))}",
         # WRF has no moist_cq namelist key: it derives calc_cq from the
         # moist species that exist, including passive vapor at mp=0.
         # physics_compat supplies the same enabled policy as the shipped
@@ -5608,7 +6127,11 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
             "aer_init_opt = 1",
             f"wif_input_opt = {WIF_INPUT_OPT_CLIMATOLOGY}",
         ]
-    if analyzed_aerosol_imported:
+    if analyzed_with_wif_triple:
+        lines += ["aer_init_opt = 1",
+                  f"wif_input_opt = {WIF_INPUT_OPT_CLIMATOLOGY}",
+                  "use_rap_aero_icbc = true"]
+    elif analyzed_aerosol_imported:
         lines += ["use_rap_aero_icbc = true", "mp28_aerosol_source = \"analysis\""]
     if mp_physics == 28 and operational_thompson_defaults:
         lines += [
@@ -5772,6 +6295,8 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         ("v_sca_adv_order", v_sca_adv_order_col, str),
         ("v_mom_adv_order", v_mom_adv_order_col, str),
     )
+    for _fire_key, _fire_column in fire_columns.items():
+        lines.append(f"{_fire_key} = {_fmt(_fire_column[0])}")
     for n in range(max_dom):
         is_root = parent_id[n] == 0
         lines += [
@@ -5793,6 +6318,9 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
         for key, column in stochastic_flags.items():
             if column[n] != column[0]:
                 lines.append(f"{key} = {column[n]}")
+        for _fire_key, _fire_column in fire_columns.items():
+            if _fire_column[n] != _fire_column[0]:
+                lines.append(f"{_fire_key} = {_fmt(_fire_column[n])}")
         if not terrain_smoothing.is_default:
             lines.append(static_inline(terrain_smoothing))
         if is_root:
@@ -5986,7 +6514,7 @@ def _translate_namelists(wps: dict, inp: dict, *, wps_path: Path,
     handled = ({(d.section, d.key) for d in dropped}
                | {(f.section, f.key) for f in fixed})
     translated: list[TranslatedKey] = []
-    for section_obj in (share, geo, tc, dm, ph, dyn, bdy, noahmp, stoch):
+    for section_obj in (share, geo, tc, dm, ph, dyn, bdy, noahmp, stoch, fire):
         for key in section_obj.consumed:
             if (section_obj.name, key) not in handled:
                 translated.append(TranslatedKey(section=section_obj.name,

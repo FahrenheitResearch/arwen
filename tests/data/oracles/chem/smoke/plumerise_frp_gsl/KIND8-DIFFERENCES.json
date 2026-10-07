@@ -1,0 +1,71 @@
+{
+  "stats": {
+    "k_min": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 132,
+      "max_absolute": 0.0
+    },
+    "k_max": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 132,
+      "max_absolute": 0.0
+    },
+    "ztopmax": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 1056,
+      "max_absolute": 0.0
+    },
+    "ebu": {
+      "max_ulp": 2,
+      "n_nonzero": 106,
+      "n": 21384,
+      "max_absolute": 1.1920928955078125e-07
+    },
+    "w": {
+      "max_ulp": 1805636118,
+      "n_nonzero": 5977,
+      "n": 26400,
+      "max_absolute": 0.12485361099243164
+    },
+    "t": {
+      "max_ulp": 9069,
+      "n_nonzero": 18272,
+      "n": 26400,
+      "max_absolute": 0.1383819580078125
+    },
+    "qv": {
+      "max_ulp": 3435078,
+      "n_nonzero": 6592,
+      "n": 26400,
+      "max_absolute": 3.491947427392006e-05
+    },
+    "qc": {
+      "max_ulp": 894098357,
+      "n_nonzero": 3264,
+      "n": 26400,
+      "max_absolute": 4.1260384023189545e-05
+    },
+    "qh": {
+      "max_ulp": 769912544,
+      "n_nonzero": 2959,
+      "n": 26400,
+      "max_absolute": 2.4619977921247482e-05
+    },
+    "qi": {
+      "max_ulp": 2674598,
+      "n_nonzero": 2122,
+      "n": 26400,
+      "max_absolute": 2.8557959012687206e-05
+    },
+    "radius": {
+      "max_ulp": 15042,
+      "n_nonzero": 17118,
+      "n": 26400,
+      "max_absolute": 3.67236328125
+    }
+  },
+  "differences": []
+}

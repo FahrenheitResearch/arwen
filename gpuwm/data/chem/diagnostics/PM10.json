@@ -1,0 +1,152 @@
+{
+  "schema": "gpuwm.chem.diagnostic.v1",
+  "output_name": "PM10",
+  "units": "ug m-3",
+  "description": "PM10 table diagnostic",
+  "kind": "term_sum_3d",
+  "terms": [
+    {
+      "species": [
+        "p25"
+      ],
+      "ops": [],
+      "from": "WRF chem/module_gocart_aerosols.F:132-138"
+    },
+    {
+      "species": [
+        "bc1"
+      ],
+      "ops": [],
+      "from": "WRF chem/module_gocart_aerosols.F:132-138"
+    },
+    {
+      "species": [
+        "bc2"
+      ],
+      "ops": [],
+      "from": "WRF chem/module_gocart_aerosols.F:132-138"
+    },
+    {
+      "species": [
+        "oc1"
+      ],
+      "ops": [],
+      "from": "WRF chem/module_gocart_aerosols.F:132-138"
+    },
+    {
+      "species": [
+        "oc2"
+      ],
+      "ops": [],
+      "from": "WRF chem/module_gocart_aerosols.F:132-138"
+    },
+    {
+      "species": [
+        "dust_1"
+      ],
+      "ops": [],
+      "from": "WRF chem/module_gocart_aerosols.F:132-138"
+    },
+    {
+      "species": [
+        "dust_2"
+      ],
+      "ops": [],
+      "from": "WRF chem/module_gocart_aerosols.F:132-138"
+    },
+    {
+      "species": [
+        "dust_3"
+      ],
+      "ops": [],
+      "from": "WRF chem/module_gocart_aerosols.F:132-138"
+    },
+    {
+      "species": [
+        "seas_1"
+      ],
+      "ops": [],
+      "from": "WRF chem/module_gocart_aerosols.F:132-138"
+    },
+    {
+      "species": [
+        "seas_2"
+      ],
+      "ops": [],
+      "from": "WRF chem/module_gocart_aerosols.F:132-138"
+    },
+    {
+      "species": [
+        "seas_3"
+      ],
+      "ops": [],
+      "from": "WRF chem/module_gocart_aerosols.F:132-138"
+    },
+    {
+      "species": [
+        "sulf"
+      ],
+      "ops": [
+        [
+          "mul",
+          96.0576
+        ],
+        [
+          "div",
+          28.966
+        ],
+        [
+          "mul",
+          1000.0
+        ],
+        [
+          "mul",
+          1.375
+        ]
+      ],
+      "from": "WRF chem/module_gocart_aerosols.F:112,120; share/module_model_constants.F:34; chem/module_data_gocartchem.F:18"
+    },
+    {
+      "species": [
+        "dust_4"
+      ],
+      "ops": [
+        [
+          "mul",
+          0.737
+        ]
+      ],
+      "from": "WRF chem/module_gocart_aerosols.F:141"
+    },
+    {
+      "species": [
+        "p10"
+      ],
+      "ops": [],
+      "from": "WRF chem/module_gocart_aerosols.F:142"
+    },
+    {
+      "species": [
+        "oc1",
+        "oc2"
+      ],
+      "ops": [
+        [
+          "mul",
+          0.7999999523162842
+        ]
+      ],
+      "from": "WRF chem/module_gocart_aerosols.F:121,143; chem/module_data_gocartchem.F:20: float32(1.8)-float32(1)=0.7999999523162841796875 (0x3f4ccccc)"
+    },
+    {
+      "species": [
+        "smoke"
+      ],
+      "ops": [],
+      "from": "ArWen: the smoke row (fire PM2.5, the HRRR-Smoke tracer) joins the PM sums last, so a run with smoke and GOCART reports one PM2.5; WRF-Chem's sum_pm_gocart has no tracer terms, and with smoke absent or zero every WRF word is unchanged"
+    }
+  ],
+  "divide_by_alt": true,
+  "column_scale": 1,
+  "provenance": "WRF v4.7.1 sum_pm_gocart and DESIGN section 8; the smoke term is ArWen's (declared in its term)"
+}

@@ -1,0 +1,13 @@
+frp_inst f4 0
+uspdavg2d f4 0
+hpbl2d f4 0
+kpbl i4 0
+wind_eff_opt i4 0
+plume_k_min i4 0
+plume_k_max i4 0
+ebu_in f4 0
+z_at_w f4 1 121
+k_min i4 0
+k_max i4 0
+flam_frac f4 0
+ebu f4 1 120

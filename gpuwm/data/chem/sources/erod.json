@@ -1,0 +1,37 @@
+{
+  "schema": "gpuwm.chem.source.v1",
+  "name": "erod",
+  "kind": "static",
+  "route": null,
+  "credential": null,
+  "format": "wps_geog",
+  "grid": {
+    "kind": "wps_geog",
+    "dataset": "erod",
+    "geog_consumer": "chem-dust"
+  },
+  "variables": {
+    "EROD": {
+      "selector": {
+        "interp_options": [
+          "average_4pt"
+        ],
+        "fill_missing": 0.0,
+        "planes": 3,
+        "water_mask": "landuse",
+        "z_dim_name": "dust_erosion_dimension"
+      },
+      "units": "1",
+      "description": "fraction of erodible surface per class (sand, silt, clay)"
+    }
+  },
+  "time": {
+    "cadence_s": 31536000,
+    "latency_s": 0,
+    "persistence": "static"
+  },
+  "remap": "geogrid",
+  "licence": "Public domain (UCAR/NCAR WPS geographical input data, distributed with WRF)",
+  "attribution": "WPS geographical static data, NCAR/UCAR (www2.mmm.ucar.edu/wrf/src/wps_files/erod.tar.bz2)",
+  "provenance": "Sampled onto the model grid by the Rust static-fields crate's generic extra-field entry point with WPS geogrid/GEOGRID.TBL.ARW_CHEM, commit 5feccecd63384381b6942371c7a837f66e4ccb84 (sha256 d49c4f277679d73a92e634c3369e9196f788ffeb21dde07c2371ab6ddcfed305)'s own interpolation list, fill and water mask ('landuse' is the run's own land-use dataset, so the mask is the native build's); GEOGRID.TBL.ARW_CHEM:489-498; WRF Registry/Registry.EM_COMMON:146 (EROD, 3 classes), read by chem/module_gocart_dust.F:88-90 and chem/module_gocart_dust_afwa.F. The archive is pinned by size and sha256 in gpuwm/geog_assets.py (door chem-dust)."
+}

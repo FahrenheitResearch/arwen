@@ -68,6 +68,7 @@ import numpy as np
 
 from gpuwm.native_wrf_contract import (
     NATIVE_LANDUSE_IDENTITY,
+    NATIVE_CHEM_STATIC_PLANES,
     NATIVE_STATIC_REQUIRED,
     _NATIVE_STATIC_CATEGORY_COUNT,
     _NATIVE_STATIC_MONTHLY,
@@ -528,6 +529,14 @@ CORRIDOR_BYTES_PER_CELL = (CORRIDOR_PLANES_PER_CELL
                            * int(np.dtype(np.float64).itemsize))
 
 
+def _has_dust_statics(run) -> bool:
+    """Resolve the optional static inventory from the active process table."""
+    if not getattr(run, "chem_sets", ()):
+        return False
+    from gpuwm.chem_table import load
+    return bool(load(run).rows_for("emission.dust"))
+
+
 def corridor_cost(child_dc, parent_run, frame_kwargs=None,
                   window=None) -> dict[str, int]:
     """What one child's corridor will cost, WITHOUT building it.
@@ -558,6 +567,8 @@ def corridor_cost(child_dc, parent_run, frame_kwargs=None,
     lake_depth = (int(getattr(child_dc.run, "sf_lake_physics", 0)) == 1
                   and int(getattr(child_dc.run, "use_lakedepth", 1)) == 1)
     planes = CORRIDOR_PLANES_PER_CELL + int(lake_depth)
+    if _has_dust_statics(child_dc.run):
+        planes += sum(NATIVE_CHEM_STATIC_PLANES.values())
     bytes_per_cell = planes * int(np.dtype(np.float64).itemsize)
     return {
         "grid_id": int(geometry["grid_id"]),
@@ -706,7 +717,13 @@ def _validate_corridor_fields(fields: Mapping[str, np.ndarray],
     ny = int(geometry["corridor_ny"])
     nx = int(geometry["corridor_nx"])
     names = set(fields)
-    optional = {"LAKE_DEPTH", "LAKEMASK"}
+    chem_names = set(NATIVE_CHEM_STATIC_PLANES)
+    optional = {"LAKE_DEPTH", "LAKEMASK"} | chem_names
+    present_chem = names & chem_names
+    if present_chem and present_chem != chem_names:
+        raise CorridorRefusal(
+            "statics corridor chemistry fields are incomplete: missing "
+            f"{sorted(chem_names - present_chem)}")
     if (not set(NATIVE_STATIC_REQUIRED) <= names
             or names - set(NATIVE_STATIC_REQUIRED) - optional):
         raise CorridorRefusal(
@@ -720,6 +737,8 @@ def _validate_corridor_fields(fields: Mapping[str, np.ndarray],
             expected = (_NATIVE_STATIC_CATEGORY_COUNT[name], ny, nx)
         elif name in _NATIVE_STATIC_MONTHLY:
             expected = (12, ny, nx)
+        elif name == "EROD":
+            expected = (3, ny, nx)
         else:
             expected = (ny, nx)
         if value.shape != expected:
@@ -783,6 +802,13 @@ def build_child_statics_corridor(*, child_dc, parent_run, reference_grid,
         fields, highres_receipt = apply_highres_statics(
             fields, grid, config=static_highres, domain_id=child_dc.grid_id,
             case_date=child_dc.start_time.date(), landuse_attrs=landuse)
+    if _has_dust_statics(child_dc.run):
+        from gpuwm.chem_table import catalog
+        from gpuwm.core.chem_statics import static_specs
+        from gpuwm.static.extra_fields import build_extra_fields
+        fields = dict(fields)
+        fields.update(build_extra_fields(
+            grid, selection.root, static_specs(catalog(), selection)))
     _validate_corridor_fields(fields, geometry)
     entry = {
         "schema": STATICS_CORRIDOR_SCHEMA,

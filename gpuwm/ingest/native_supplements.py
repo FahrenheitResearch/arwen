@@ -55,6 +55,59 @@ def gate_soil_surface_fields(gate):
     return fields
 
 
+#: The optional hybrid-level fields a native bridge may publish, with the
+#: unit its gate must declare for each (tools/grib1_bridge
+#: hrrr_grib2_bridge.rs OPTIONAL_HYBRID_SPECS).
+OPTIONAL_HYBRID_FIELDS = {"QNWFA": "kg-1", "QNIFA": "kg-1"}
+
+
+def gate_optional_hybrid_fields(gate):
+    """The optional hybrid-level payloads the native decoder declared.
+
+    The analyzed aerosol number pair, read whole or not at all; a gate
+    that names anything else, half the pair or another unit is refused.
+    """
+    fields = tuple(gate.get("optional_hybrid_fields", "").split(","))
+    if fields == ("",):
+        return ()
+    units = ",".join(f"{name}={OPTIONAL_HYBRID_FIELDS.get(name)}" for name in fields)
+    if (fields != tuple(OPTIONAL_HYBRID_FIELDS)
+            or gate.get("optional_hybrid_units") != units):
+        raise ValueError(
+            "native optional hybrid fields must be the QNWFA,QNIFA pair in kg-1")
+    return fields
+
+
+def gate_withheld_optional_hybrid_fields(gate):
+    """The optional hybrid fields the source published but the decoder withheld.
+
+    ``{name: reason}`` for the analyzed aerosol pair when a GRIB2 bitmap
+    masks points of one of its records (tools/grib1_bridge
+    hrrr_grib2_bridge.rs ``masked_optional_pair``): no fill policy for
+    masked points exists, so the pair is not read and the gate says why.
+    Empty when nothing was withheld.  A gate that both declares and
+    withholds the pair, names anything but the whole pair, or gives no
+    reason is refused: a receipt that cannot say what was read would let
+    a run requesting the analyzed pair be refused, or admitted, for the
+    wrong reason.
+    """
+    names = tuple(gate.get("optional_hybrid_withheld", "").split(","))
+    reason = gate.get("optional_hybrid_withheld_reason", "")
+    if names == ("",):
+        if reason:
+            raise ValueError(
+                "native gate gives a withholding reason but withholds no field")
+        return {}
+    if names != tuple(OPTIONAL_HYBRID_FIELDS) or not reason.strip():
+        raise ValueError(
+            "native withheld optional hybrid fields must be the QNWFA,QNIFA "
+            "pair with its reason")
+    if gate.get("optional_hybrid_fields"):
+        raise ValueError(
+            "native gate both declares and withholds the QNWFA,QNIFA pair")
+    return {name: reason for name in names}
+
+
 def verify_supplement_receipt(receipt):
     """Recheck external donor bytes before sealing their decoded publication."""
     import hashlib

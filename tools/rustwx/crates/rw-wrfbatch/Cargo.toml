@@ -45,6 +45,15 @@ path = "src/bin/compare.rs"
 name = "rw_verify"
 path = "src/bin/verify.rs"
 
+# A 2D reflectivity NetCDF file (a nowcast runner's output) written out as
+# the `gpuwm-obs.nowcast-frames.v1` contract, which is the only form the
+# `frames:` panel above and the heating adapter read.  Not a flag on
+# `rw_compare`: a conversion that writes a root for every later reader is
+# not a render.
+[[bin]]
+name = "rw_nowcast_frames"
+path = "src/bin/nowcast_frames.rs"
+
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 grib-core = { path = "../../../grib1_bridge/vendor/grib-core", default-features = false }
@@ -91,4 +100,5 @@ wx-radar = { path = "../../vendor/wx-radar" }
 # record file.
 [dev-dependencies]
 netcdf-writer = { path = "../netcdf-writer" }
+static-fields = { path = "../static-fields" }
 rw-store = { path = "../rw-store" }

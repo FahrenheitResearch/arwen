@@ -21,7 +21,7 @@ Three things this file has to establish, in this order:
    failure mode a wrong axis order produces), and the same roll carried
    through the kernel to the outputs.
 
-The column values come from ``gpuwm/data/noahmp/oracle/noahmp-water.csv`` by
+The column values come from ``tests/data/oracles/noahmp/noahmp-water.csv`` by
 way of :mod:`tests.test_noahmp_water`, so nothing here invents physics.  The
 36 fixture cases are heterogeneous in exactly the ways that matter to a
 packing gate -- ISNOW at 0, -1, -2 and -3, soil moisture from 0.008 to 0.20,

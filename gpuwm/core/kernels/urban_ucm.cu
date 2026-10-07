@@ -3,6 +3,12 @@
 // Single-layer urban canopy model, sf_urban_physics = 1, transcribed from
 // WRF v4.7.1 phys/module_sf_urban.F (sha256 623868c7...8e8c, pinned in
 // tools/urban_wrf471_oracle/ via the design stage's SOURCES.sha256):
+// The same urban routine and reached helpers occur in WRF v4.6.1
+// (sha256 433cc81d...e55e). Its only executable differences are the three
+// IMP_SCHEME=2 water-retention updates, which omit the vapor-flux-to-water-
+// depth conversion RHOO/1000. The later correction is retained here.
+// IMP_SCHEME=1, the shipped table default, is unchanged between references.
+// The compiled CPU twin includes this file: urban_ucm_host.cpp.
 //
 //   ucm_urban        subroutine urban            305-1692
 //   u_mos            mos                         1698-1781  (CH_SCHEME 1)

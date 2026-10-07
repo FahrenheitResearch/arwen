@@ -711,3 +711,35 @@ def read_summary(root: Path) -> dict | None:
     if value.get("schema") != SUMMARY_SCHEMA:
         raise ValueError("Unsupported render summary schema")
     return value
+
+
+def preserve_inactive_fire_skip(source_root: Path, root: Path, returncode) -> bool:
+    """Keep a successful inactive-domain receipt without claiming a picture.
+
+    An empty render without this exact native verdict remains incomplete.
+    Full invocation records are checked, so bounded summary previews cannot
+    hide a missing active field or a different product's unavailable input.
+    """
+    from gpuwm.render import inactive_domain_skips
+    from gpuwm.render_layout import fs_path
+
+    if returncode != 0:
+        return False
+    source_root = Path(fs_path(source_root, descend=True)).resolve()
+    try:
+        documents = _documents(source_root)
+    except (OSError, ValueError, TypeError):
+        return False
+    if not documents:
+        return False
+    for document, _path, _payload in documents:
+        skipped = document.get("skipped", ())
+        if document.get("rendered") or document.get("failures") or not skipped:
+            return False
+        if not all(isinstance(row, dict) and isinstance(row.get("reason"), str)
+                   and isinstance(row.get("family"), str) for row in skipped):
+            return False
+        if not inactive_domain_skips([(row["family"], row["reason"]) for row in skipped]):
+            return False
+    relocate_invocations(source_root, root, [])
+    return True

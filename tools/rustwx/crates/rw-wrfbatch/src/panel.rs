@@ -21,11 +21,13 @@
 use std::path::{Path, PathBuf};
 
 use rustwx_core::{Field2D, GridProjection, GridShape, LatLonGrid, ProductKey};
-use rustwx_products::direct::{build_projected_map_with_projection, direct_map_frame_aspect_ratio};
+use rustwx_products::direct::{build_full_domain_projected_map_with_projection,
+    full_domain_panel_resolved_projection, direct_map_frame_aspect_ratio};
 use rustwx_products::plot_design::StaticPlotDesign;
 use rustwx_render::{
     ColorScale, ContourLayer, LegendControls, MapRenderRequest, PngCompressionMode,
-    PngWriteOptions, ProductVisualMode, ProjectedDomain, RenderDensity,
+    PngWriteOptions, PolygonRole, ProductVisualMode, ProjectedDomain, ProjectedPolygonFill,
+    RenderDensity,
     save_png_profile_with_options,
 };
 
@@ -66,6 +68,37 @@ pub struct PanelRequest<'a> {
 
 /// Render, and return the path written.
 pub fn render_panel(request: PanelRequest<'_>) -> Result<PathBuf, String> {
+    render_panel_with(request, None, None).map(|(path, _)| path)
+}
+
+/// [`render_panel`], with the cells `unobserved` marks (row-major on the
+/// request's grid) filled flat light grey UNDER the data raster, so an
+/// observed panel shows where nothing was observed instead of leaving it
+/// blank like an observed "nothing" (see [`crate::coverage`]).  `None` is
+/// exactly [`render_panel`].
+pub fn render_panel_with_unobserved(
+    request: PanelRequest<'_>,
+    unobserved: Option<&[bool]>,
+) -> Result<PathBuf, String> {
+    render_panel_with(request, unobserved, None).map(|(path, _)| path)
+}
+
+/// A geographic context raster shares the numeric field's exact fine grid.
+/// The numeric values and legend remain available to the normal render path.
+/// Returns the panel's map transform with the path, so the caller folds it
+/// into its own georeference record; no per-picture sidecar is written (one
+/// was, and every panel of every other door left a stray `.georef.json`).
+pub fn render_panel_with_rgba(request:PanelRequest<'_>,rgba:Option<Vec<rustwx_render::Color>>)
+    -> Result<(PathBuf,Option<rustwx_render::PanelGeoReference>),String> {
+    render_panel_with(request, None, rgba)
+}
+
+/// The one panel body behind the three entries above.
+fn render_panel_with(
+    request: PanelRequest<'_>,
+    unobserved: Option<&[bool]>,
+    rgba: Option<Vec<rustwx_render::Color>>,
+) -> Result<(PathBuf, Option<rustwx_render::PanelGeoReference>), String> {
     let points = request.ny * request.nx;
     if request.lat_deg.len() != points || request.lon_deg.len() != points {
         return Err(format!(
@@ -106,7 +139,9 @@ pub fn render_panel(request: PanelRequest<'_>) -> Result<PathBuf, String> {
         request.height,
         request.projection,
     );
-    let projected = build_projected_map_with_projection(
+    let resolved = full_domain_panel_resolved_projection(request.lat_deg,request.lon_deg,
+        request.projection,domain.bounds,target_ratio).map_err(|err|err.to_string())?;
+    let projected = build_full_domain_projected_map_with_projection(
         request.lat_deg,
         request.lon_deg,
         request.projection,
@@ -132,10 +167,15 @@ pub fn render_panel(request: PanelRequest<'_>) -> Result<PathBuf, String> {
     .map_err(|err| format!("{}: build field: {err}", request.product_slug))?;
 
     let mut map_request = MapRenderRequest::from_core_field(field, request.scale);
+    if let Some(pixels)=rgba {
+        map_request.rgba_grid=Some(rustwx_render::RgbaGridField::new(map_request.field.grid.clone(),pixels)
+            .map_err(|err|format!("{}: context raster: {err}",request.product_slug))?);
+    }
     StaticPlotDesign::new(domain.bounds, ProductVisualMode::FilledMeteorology)
         .apply_to_request(&mut map_request);
     map_request.width = request.width;
     map_request.height = request.height;
+    map_request.chrome_scale = rustwx_products::shared_context::static_chrome_scale();
     map_request.title = Some(request.title);
     map_request.cbar_tick_step = request.cbar_tick_step;
     map_request.render_density = request.render_density;
@@ -147,6 +187,29 @@ pub fn render_panel(request: PanelRequest<'_>) -> Result<PathBuf, String> {
     // place and the left subtitle keeps the whole row.
     map_request.subtitle_right = (!request.subtitle_right.trim().is_empty())
         .then_some(request.subtitle_right);
+    if let Some(mask) = unobserved {
+        if mask.len() != points {
+            return Err(format!(
+                "{}: the coverage mask carries {} cell(s) on a {points}-point grid",
+                request.product_slug,
+                mask.len()
+            ));
+        }
+        let rings = crate::coverage::fill_rings(
+            mask,
+            request.nx,
+            request.ny,
+            &projected.projected_x,
+            &projected.projected_y,
+        );
+        if !rings.is_empty() {
+            map_request.projected_data_polygons.push(ProjectedPolygonFill {
+                rings,
+                color: crate::coverage::NO_COVERAGE_FILL,
+                role: PolygonRole::Generic,
+            });
+        }
+    }
     map_request.projected_domain = Some(ProjectedDomain {
         x: projected.projected_x,
         y: projected.projected_y,
@@ -155,6 +218,8 @@ pub fn render_panel(request: PanelRequest<'_>) -> Result<PathBuf, String> {
     map_request.projected_lines = projected.lines;
     map_request.projected_polygons = projected.polygons;
     map_request.inverse_raster_projection = projected.inverse_raster_projection;
+    map_request.resolved_projection = Some(resolved);
+    map_request.geographic_bounds = Some(domain.bounds);
     map_request.contours = request.contours;
     map_request.colorbar = request.colorbar;
 
@@ -176,7 +241,7 @@ pub fn render_panel(request: PanelRequest<'_>) -> Result<PathBuf, String> {
         std::fs::create_dir_all(parent)
             .map_err(|err| format!("create {}: {err}", parent.display()))?;
     }
-    save_png_profile_with_options(
+    let timing=save_png_profile_with_options(
         &map_request,
         &request.out_path,
         &PngWriteOptions {
@@ -184,7 +249,7 @@ pub fn render_panel(request: PanelRequest<'_>) -> Result<PathBuf, String> {
         },
     )
     .map_err(|err| format!("{}: write PNG: {err}", request.product_slug))?;
-    Ok(request.out_path)
+    Ok((request.out_path, timing.georeference))
 }
 
 /// `<out_dir>/<domain>/<product>/<valid-day>/<stem>.png`.

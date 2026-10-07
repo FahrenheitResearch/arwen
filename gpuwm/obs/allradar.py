@@ -484,7 +484,7 @@ class AllRadarIngest:
 def ingest_domain(binary, coverages: Sequence[SiteCoverage], *, grid,
                   work_dir: Path, valid_time: datetime, params,
                   workers: int = 16, compute_workers: int | None = None,
-                  z_reduce: str = "max",
+                  z_reduce: str = "mean",
                   progress: Callable[[SiteOutcome], None] | None = None,
                   **site_kw) -> AllRadarIngest:
     """Ingest every site concurrently and merge what came back.

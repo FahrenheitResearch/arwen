@@ -1139,7 +1139,9 @@ pub(crate) fn saved_job_status(directory:&Path)->Result<Value,String>{
 mod downscale_requests {
     use super::*;
     fn scratch(label: &str) -> PathBuf {
-        let path = env::temp_dir().join(format!("arwen-downscale-{label}-{}-{}", std::process::id(), now_ms()));
+        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let path = env::temp_dir().join(format!("arwen-downscale-{label}-{}-{}-{}", std::process::id(), now_ms(), NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
         fs::create_dir_all(&path).unwrap();
         path.canonicalize().unwrap()
     }
@@ -1313,8 +1315,10 @@ mod request_queue_regressions {
     }
 
     fn directory(label: &str) -> PathBuf {
+        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        let root = env::temp_dir().join(format!("arwen-request-queue-{label}-{}-{stamp}", std::process::id()));
+        let root = env::temp_dir().join(format!("arwen-request-queue-{label}-{}-{stamp}-{}", std::process::id(), NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
         fs::create_dir_all(root.join("responses")).unwrap();
         fs::create_dir_all(root.join("claimed")).unwrap();
         root

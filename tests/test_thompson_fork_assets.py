@@ -33,6 +33,8 @@ def transfers(tmp_path, monkeypatch):
     def unavailable(*args):
         raise FileNotFoundError("test prerequisite is unavailable")
     monkeypatch.setattr(fork, "_build_source", unavailable)
+    # The published release route is off unless a test serves it.
+    monkeypatch.setenv(fork.FORK_RELEASE_BASE_ENV, "")
     fork._VERIFIED_ROOTS.clear()
     return source, tmp_path / "cache", payloads
 
@@ -207,3 +209,211 @@ def test_standalone_staging_ships_the_exact_small_generation_harness(tmp_path, m
         assert relative in report["files"]
         assert hashlib.sha256((stage / relative).read_bytes()).hexdigest() == digest
     assert not any(name.endswith(("freezeH2O.dat", "qr_acr_qg.dat", "qr_acr_qs.dat")) for name in report["files"])
+
+
+def _published_server(directory, prefix):
+    """A real HTTP server publishing ``directory``'s files under ``prefix``."""
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def translate_path(self, path):
+            name = path.lstrip("/")
+            if not name.startswith(prefix):
+                return str(directory / "absent")
+            return str(directory / name[len(prefix):])
+
+        def log_message(self, *args):
+            pass
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, f"http://127.0.0.1:{server.server_address[1]}"
+
+
+def test_published_release_reaches_a_machine_without_fortran(transfers, monkeypatch):
+    """No named source, no mirror, no compiler: the pinned set arrives from
+    the published release under its prefixed names, verified, and the
+    source build is never attempted."""
+    source, root, payloads = transfers
+    server, url = _published_server(source, fork.FORK_PUBLISHED_PREFIX)
+    try:
+        monkeypatch.setenv(fork.FORK_RELEASE_BASE_ENV, url)
+        monkeypatch.setattr(fork, "_build_source",
+                            lambda *a: pytest.fail("build attempted"))
+        assert fork.ensure_thompson_fork_tables(root) == root
+    finally:
+        server.shutdown()
+    assert {name: (root / name).read_bytes() for name in payloads} == payloads
+    receipt = json.loads((root / "fork-table-acquisition.json").read_text())
+    assert receipt["acquired_from"] == url
+    assert {a["published_as"] for a in receipt["assets"]} == {
+        fork.FORK_PUBLISHED_PREFIX + name for name in payloads}
+
+
+def test_an_unpublished_release_falls_back_to_the_source_build(transfers, monkeypatch):
+    source, root, payloads = transfers
+    empty = root.parent / "empty"
+    empty.mkdir()
+    server, url = _published_server(empty, fork.FORK_PUBLISHED_PREFIX)
+    calls = []
+
+    def build(work, log):
+        calls.append(work)
+        work.mkdir(parents=True)
+        (work / "source-build-receipt.json").write_text('{"test": "fallback"}')
+        return source
+    try:
+        monkeypatch.setenv(fork.FORK_RELEASE_BASE_ENV, url)
+        monkeypatch.setattr(fork, "_build_source", build)
+        assert fork.ensure_thompson_fork_tables(root) == root
+    finally:
+        server.shutdown()
+    assert len(calls) == 1
+    assert {name: (root / name).read_bytes() for name in payloads} == payloads
+
+
+def test_wrong_published_bytes_never_land(transfers, monkeypatch):
+    source, root, payloads = transfers
+    wrong = root.parent / "wrong"
+    wrong.mkdir()
+    for name, data in payloads.items():
+        (wrong / name).write_bytes(data[:-1] + b"X")
+    server, url = _published_server(wrong, fork.FORK_PUBLISHED_PREFIX)
+    try:
+        monkeypatch.setenv(fork.FORK_RELEASE_BASE_ENV, url)
+        with pytest.raises(FileNotFoundError, match="published release"):
+            fork.ensure_thompson_fork_tables(root)
+    finally:
+        server.shutdown()
+    assert not list(root.glob("*.dat"))
+
+
+@pytest.mark.parametrize("version,tags", [
+    ("2.8.9", ("v2.8.9", "v2.8.7")),
+    ("2.8.7", ("v2.8.7",)),
+    ("2.8.6", ("v2.8.7",)),
+    ("2.9.0.dev3", ("v2.8.7",)),
+])
+def test_the_default_published_bases_are_this_release_then_the_first_carrier(monkeypatch, version, tags):
+    """The cut uploads the set to every release from 2.8.7 on
+    (tools/release/cut/fork_tables.py), so a wheel asks its own release
+    first.  The breakage: the set pointed at the classic table release
+    (v1.0.0), which never carried it, so every wheel fell through to a
+    local Fortran build."""
+    import gpuwm
+    from gpuwm.table_assets import RELEASE_ASSET_BASE_URL
+    monkeypatch.delenv(fork.FORK_RELEASE_BASE_ENV, raising=False)
+    monkeypatch.setattr(gpuwm, "__version__", version)
+    root = RELEASE_ASSET_BASE_URL.rsplit("/", 1)[0]
+    assert root == "https://github.com/FahrenheitResearch/arwen/releases/download"
+    assert fork._published_bases() == tuple(f"{root}/{tag}" for tag in tags)
+
+
+def test_the_release_base_override_names_one_host_or_turns_the_route_off(monkeypatch):
+    monkeypatch.setenv(fork.FORK_RELEASE_BASE_ENV, "http://mirror.example/fork/")
+    assert fork._published_bases() == ("http://mirror.example/fork",)
+    monkeypatch.setenv(fork.FORK_RELEASE_BASE_ENV, " ")
+    assert fork._published_bases() == ()
+
+
+def test_an_unpublished_own_release_falls_through_to_the_first_carrier(transfers, monkeypatch):
+    """A checkout ahead of the last release (its own tag not published yet)
+    still downloads the pinned set instead of building it."""
+    source, root, payloads = transfers
+    empty = root.parent / "empty"
+    empty.mkdir()
+    absent, absent_url = _published_server(empty, fork.FORK_PUBLISHED_PREFIX)
+    carrier, carrier_url = _published_server(source, fork.FORK_PUBLISHED_PREFIX)
+    try:
+        monkeypatch.setattr(fork, "_published_bases", lambda: (absent_url, carrier_url))
+        monkeypatch.setattr(fork, "_build_source", lambda *a: pytest.fail("build attempted"))
+        assert fork.ensure_thompson_fork_tables(root) == root
+    finally:
+        absent.shutdown()
+        carrier.shutdown()
+    assert {name: (root / name).read_bytes() for name in payloads} == payloads
+    assert json.loads((root / "fork-table-acquisition.json").read_text())["acquired_from"] == carrier_url
+
+
+def test_fetch_tables_stages_the_set_where_the_loader_reads_it(transfers, monkeypatch, capsys):
+    """`gpuwm fetch-tables --thompson-fork` with no root downloads into the
+    loader's default root, and the loader then resolves that copy with no
+    network and no environment variable."""
+    from gpuwm import physics_compat
+    source, _root, payloads = transfers
+    home = _root.parent / "home"
+    monkeypatch.delenv(physics_compat.THOMPSON_FORK_TABLE_ROOT_ENV, raising=False)
+    monkeypatch.setattr(physics_compat, "user_thompson_table_root",
+                        lambda: home / ".gpuwm" / "tables" / "thompson")
+    server, url = _published_server(source, fork.FORK_PUBLISHED_PREFIX)
+    try:
+        monkeypatch.setenv(fork.FORK_RELEASE_BASE_ENV, url)
+        monkeypatch.setattr(table_assets, "stage_classic_tables", lambda *a: pytest.fail("classic touched"))
+        args = argparse.Namespace(thompson_fork=True, thompson_fork_only=True,
+                                  from_dir=None, thompson_fork_root=None)
+        assert table_assets.fetch_tables_main(args) == 0
+    finally:
+        server.shutdown()
+    staged = home / ".gpuwm" / "tables" / "thompson-wrf39-noaa"
+    assert Path(physics_compat.thompson_fork_table_root()) == staged
+    assert {name: (staged / name).read_bytes() for name in payloads} == payloads
+    assert "verified" in capsys.readouterr().out
+    fork._VERIFIED_ROOTS.clear()
+    monkeypatch.setenv(fork.FORK_RELEASE_BASE_ENV, "http://127.0.0.1:1")
+    monkeypatch.setattr(fork, "fetch_asset_from_url", lambda *a, **k: pytest.fail("network touched"))
+    from gpuwm.core.microphysics_aerosol import _wrf39_table_root
+    assert Path(_wrf39_table_root()) == staged
+
+
+def test_a_byte_different_staged_table_is_a_named_refusal(transfers, monkeypatch, capsys):
+    """The CLI and the runtime both refuse a staged file with other bytes,
+    and neither overwrites it."""
+    source, root, payloads = transfers
+    assert fork.ensure_thompson_fork_tables(root, source_dir=source) == root
+    bad = root / next(iter(payloads))
+    bad.write_bytes(b"y" * bad.stat().st_size)
+    fork._VERIFIED_ROOTS.clear()
+    assert fork.stage_thompson_fork_tables(source_dir=source, root=root) == 2
+    out = capsys.readouterr().out
+    assert "REFUSED" in out and "different bytes" in out and bad.name in out
+    monkeypatch.setenv("GPUWM_THOMPSON_FORK_TABLE_ROOT", str(root))
+    from gpuwm.core.microphysics_aerosol import _wrf39_table_root
+    with pytest.raises(table_assets.TableAssetError, match="without overwrite"):
+        _wrf39_table_root()
+    assert bad.read_bytes() == b"y" * bad.stat().st_size
+
+
+def test_plain_fetch_tables_acquires_no_fork_tables(monkeypatch):
+    """A run or a setup that does not select the fork generation acquires
+    no dependency on its tables: the default command never enters the fork
+    leg."""
+    monkeypatch.setattr(fork, "stage_thompson_fork_tables", lambda *a, **k: pytest.fail("fork leg entered"))
+    monkeypatch.setattr(fork, "ensure_thompson_fork_tables", lambda *a, **k: pytest.fail("fork acquired"))
+    monkeypatch.setattr(table_assets, "stage_classic_tables", lambda args: 0)
+    assert table_assets.fetch_tables_main(argparse.Namespace(from_dir=None)) == 0
+
+
+def test_only_the_fork_generation_reaches_the_fork_tables():
+    """The runtime acquires the fork set from one place, and only under the
+    fork generation: `_wrf39_table_root()` is called inside `if wrf39:` and
+    nowhere else, and `ensure_thompson_fork_tables` has no other caller."""
+    import ast
+    repo = Path(__file__).resolve().parents[1]
+    callers = {}
+    for path in (repo / "gpuwm").rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        names = [name for name in ("ensure_thompson_fork_tables", "_wrf39_table_root") if name in text]
+        if not names:
+            continue
+        for node in ast.walk(ast.parse(text)):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id in names):
+                callers.setdefault(node.func.id, []).append(path.relative_to(repo).as_posix())
+    assert sorted(callers["ensure_thompson_fork_tables"]) == [
+        "gpuwm/core/microphysics_aerosol.py", "gpuwm/thompson_fork_assets.py"]
+    assert callers["_wrf39_table_root"] == ["gpuwm/core/microphysics_aerosol.py"]
+    tree = ast.parse((repo / "gpuwm/core/microphysics_aerosol.py").read_text(encoding="utf-8"))
+    guarded = [node for node in ast.walk(tree)
+               if isinstance(node, ast.If) and isinstance(node.test, ast.Name) and node.test.id == "wrf39"
+               and any(isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
+                       and inner.func.id == "_wrf39_table_root"
+                       for statement in node.body for inner in ast.walk(statement))]
+    assert len(guarded) == 1

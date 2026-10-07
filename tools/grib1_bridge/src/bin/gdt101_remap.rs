@@ -304,8 +304,10 @@ mod integration_tests {
     struct Fixture(std::path::PathBuf);
     impl Fixture {
         fn new(bytes: &[u8]) -> Self {
+            // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+            static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let tick = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-            let path = std::env::temp_dir().join(format!("gdt101-record-{}-{tick}.grib2", std::process::id()));
+            let path = std::env::temp_dir().join(format!("gdt101-record-{}-{tick}-{}.grib2", std::process::id(), NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
             let mut file = OpenOptions::new().create_new(true).write(true).open(&path).unwrap();
             file.write_all(bytes).unwrap();
             Self(path)
@@ -314,9 +316,11 @@ mod integration_tests {
     impl Drop for Fixture { fn drop(&mut self) { let _ = fs::remove_file(&self.0); } }
 
     fn scratch(name: &str) -> std::path::PathBuf {
+        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let tick = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
             .unwrap().as_nanos();
-        std::env::temp_dir().join(format!("gdt101-{name}-{}-{tick}", std::process::id()))
+        std::env::temp_dir().join(format!("gdt101-{name}-{}-{tick}-{}", std::process::id(), NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed)))
     }
     /// The three plan records are addressed by the selectors the CALLER
     /// declares. These code numbers are not the ones the shipped document

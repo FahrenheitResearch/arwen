@@ -481,3 +481,23 @@ sonde_level,2026-09-01T00:00:00Z,2026-09-02T21:36:00Z,,16d059c6d0e2"
         assert!((p - 89_870.0).abs() < 60.0, "{p}");
     }
 }
+
+/// AirNow verification policy, not calibrated instrument accuracy. Wide gross
+/// ceilings retain severe smoke and dust (including 1500 ug m-3 dust); fixed
+/// errors cover hourly site representativeness pending case calibration.
+/// Units, bounds and errors are mirrored in gpuwm.obs.aq_table.VARIABLE_TABLE.
+pub const AIRNOW_VARIABLES: [(&str, &str, &str, f64, f64, f64); 6] = [
+    // Smoke ceiling 5000 retains extreme events; 5 is a provisional hourly error.
+    ("PM2.5", "pm25_mass_concentration", "UG/M3", 0.0, 5000.0, 5.0),
+    // Dust ceiling 10000 exceeds observed 1500; 10 allows coarse-particle variability.
+    ("PM10", "pm10_mass_concentration", "UG/M3", 0.0, 10000.0, 10.0),
+    // Ozone ceiling 1000 screens corrupt transmissions; 5 covers site variability.
+    ("OZONE", "ozone_mole_fraction", "PPB", 0.0, 1000.0, 5.0),
+    // NO2 ceiling 2000 retains near-source plumes; 5 is provisional site error.
+    ("NO2", "no2_mole_fraction", "PPB", 0.0, 2000.0, 5.0),
+    // CO ceiling 100 ppm retains combustion plumes; 0.2 is provisional site error.
+    ("CO", "co_mole_fraction", "PPM", 0.0, 100.0, 0.2),
+    // SO2 ceiling 2000 retains industrial plumes; 5 is provisional site error.
+    ("SO2", "so2_mole_fraction", "PPB", 0.0, 2000.0, 5.0),
+];
+pub const MEAS_AIRNOW_HOURLY: &str = "airnow_hourly_concentration";

@@ -1,0 +1,43 @@
+{
+  "wetdep bounds": {
+    "exit_code": 1,
+    "failed": [
+      "FAILED tests/test_chem_wetdep_ls_wrf471_parity.py::test_cpu_parity[nz49] - As...",
+      "FAILED tests/test_chem_wetdep_ls_wrf471_parity.py::test_cpu_parity[nz59] - As..."
+    ]
+  },
+  "fire clamp": {
+    "exit_code": 1,
+    "failed": [
+      "FAILED tests/test_chem_fire_emissions.py::test_injection_cpu[1] - AssertionEr...",
+      "FAILED tests/test_chem_fire_emissions.py::test_injection_cpu[2] - AssertionEr..."
+    ]
+  },
+  "PBL average divisor": {
+    "exit_code": 1,
+    "failed": [
+      "FAILED tests/test_chem_fire_emissions.py::test_prep_cpu[1] - AssertionError: ...",
+      "FAILED tests/test_chem_fire_emissions.py::test_prep_cpu[2] - AssertionError: ...",
+      "FAILED tests/test_chem_fire_emissions.py::test_prep_cpu[3] - AssertionError: ...",
+      "FAILED tests/test_chem_fire_emissions.py::test_prep_cpu[4] - AssertionError: ..."
+    ]
+  },
+  "classification strict edge": {
+    "exit_code": 1,
+    "failed": [
+      "FAILED tests/test_chem_fire_emissions.py::test_classification_oracle - Assert..."
+    ]
+  },
+  "scaled cache floor": {
+    "exit_code": 1,
+    "failed": [
+      "FAILED tests/test_chem_fire_emissions.py::test_injection_cpu[2] - AssertionEr..."
+    ]
+  },
+  "source mass conversion": {
+    "exit_code": 1,
+    "failed": [
+      "FAILED tests/test_chem_fire_emissions.py::test_source_mass_identity - Asserti..."
+    ]
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "schema": "gpuwm.chem.set.v1",
+  "name": "gocart_simple",
+  "description": "WRF-Chem's GOCART_SIMPLE package, all 19 species (registry.chem:4022).",
+  "wrf_chem_opt": 300,
+  "wrf_tracer_opt": null,
+  "provenance": "registry.chem:4022 package gocart_simple chem_opt==300"
+}

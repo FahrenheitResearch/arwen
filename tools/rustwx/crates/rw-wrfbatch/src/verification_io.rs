@@ -917,7 +917,7 @@ pub fn load_arm(spec: &ArmSpec) -> Result<ArmData, String> {
             coords.insert("XLONG".into(), read("XLONG")?);
             result.grid = Some(grid_from_arrays(&coords)?);
             result.grid.as_mut().unwrap().projection =
-                wrf.as_ref().and_then(crate::wrf_process::wrf_projection);
+                crate::wrf_process::netcdf_projection(&file);
             result.provenance["metadata"]["projection"] =
                 serde_json::to_value(result.grid.as_ref().unwrap().projection.as_ref())
                     .map_err(|e| e.to_string())?;
@@ -1552,11 +1552,22 @@ mod tests {
         writer.finish().unwrap();
         let spec:ArmSpec=serde_json::from_value(serde_json::json!({"label":"A","kind":"netcdf","path":path,"fields":{"temperature_2m":"T2","dewpoint_2m":"Td2"}})).unwrap();
         let arm = load_arm(&spec).unwrap();
+        // The fixture is a surface-only frame: it carries no 3-D T.  Read
+        // through the netCDF reader load_arm uses; whether the WRF reader
+        // also refuses such a file depends on its backend, which is not what
+        // this test is about (it failed on that alone at e6240d626).
+        assert!(netcrust::open(&spec.path).unwrap()
+                    .read_array_f64_first_record_or_all("T").is_err(),
+                "the native verification frame remains a surface-only file without T");
         assert_eq!(arm_spacing(&arm), Some((1., 1.)));
         assert!(matches!(
             arm.grid.as_ref().unwrap().projection,
             Some(GridProjection::LambertConformal { .. })
         ));
+        assert_eq!(arm.fields["temperature_2m"].iter().map(|v|v.to_bits()).collect::<Vec<_>>(),
+                   vec![300.0_f64.to_bits();4]);
+        assert_eq!(arm.fields["dewpoint_2m"].iter().map(|v|v.to_bits()).collect::<Vec<_>>(),
+                   vec![290.0_f64.to_bits();4]);
         validate_arm_time(&spec, &arm, "2030-01-01T01:00:00").unwrap();
         assert!(validate_arm_time(&spec, &arm, "2030-01-01T02:00:00").is_err());
         std::fs::remove_file(path).unwrap();

@@ -129,3 +129,36 @@ def test_lazy_factory_retains_next_interval_geometry_validation(monkeypatch):
                                if key != 'mu'}))
     with pytest.raises(ValueError, match='missing.*mu'):
         tile.lateral_boundaries.interval_at(3600.)
+
+
+def test_prepared_buffer_skips_the_land_surface_cold_start(monkeypatch):
+    """A buffer whose carriers are gathered from the store asks
+    ``initialize_physics`` for no LSM cold start.
+
+    On RUC that cold start is a host column loop over the whole rank; the
+    2-card HRRR profile (lane/pi-startup-idle) spent 84-92 s of idle cards
+    in it, rank after rank, before step 1, every launch.
+    """
+    from gpuwm.io import restart
+    from tilestream import harness
+
+    seen = {}
+
+    def make_state(cfg, seed, **kwargs):
+        seen.update(kwargs)
+        pool = {}
+        return SimpleNamespace(_scratch=pool, _host_setup_state=True,
+                               scratch=lambda shape, slot: pool.setdefault(
+                                   slot, np.zeros(shape, dtype=np.float32))), None
+
+    monkeypatch.setattr(streaming, 'domain_vertical_coord', lambda *args: object())
+    monkeypatch.setattr(streaming, '_impose_domain_setup', lambda *args: 0)
+    monkeypatch.setattr(streaming, 'prime_lazy_carriers', lambda *args: ())
+    monkeypatch.setattr(restart, 'lifecycle_window_slots', lambda state: ())
+    monkeypatch.setattr(harness, 'neutral_geography', lambda cfg: SimpleNamespace())
+    monkeypatch.setattr(harness, 'make_physics_state', make_state)
+    factory = streaming.prepared_tile_state_factory(SimpleNamespace(physics=None),
+                                                    object(), tables0=None)
+    factory(object())
+    assert seen.get('lsm_cold_start') is False
+    assert seen.get('poison') == 'constant'

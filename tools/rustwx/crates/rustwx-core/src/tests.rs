@@ -270,6 +270,27 @@ fn field_selector_builds_keys_and_units() {
 }
 
 #[test]
+fn zero_altitude_accumulation_units_preserve_surface_and_probability_contracts() {
+    let altitude = FieldSelector::altitude_msl(CanonicalField::TotalPrecipitation, 0);
+    assert_eq!(altitude.native_units(), "mm");
+    assert_eq!(altitude.with_percentile(50).native_units(), "mm");
+    for selector in [
+        altitude,
+        FieldSelector::surface(CanonicalField::TotalPrecipitation),
+    ] {
+        assert_eq!(selector.with_probability(
+            ProbabilitySelection::above_milli(5_000)).native_units(), "%");
+    }
+    for selector in [
+        FieldSelector::surface(CanonicalField::TotalPrecipitation),
+        FieldSelector::altitude_msl(CanonicalField::TotalPrecipitation, 1),
+        FieldSelector::height_agl(CanonicalField::TotalPrecipitation, 0),
+    ] {
+        assert_eq!(selector.native_units(), "kg/m^2");
+    }
+}
+
+#[test]
 fn model_timestep_builds_requests_and_descriptors() {
     let timestep = ModelTimestep::with_source(
         ModelId::RrfsA,

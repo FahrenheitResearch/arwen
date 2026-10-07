@@ -71,6 +71,7 @@ which is why ``record`` is not public API and the sites reach it through
 from __future__ import annotations
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Callable
 
 
@@ -78,7 +79,22 @@ from typing import Callable
 #: read-immediately behaviour.  Module-level because the reporting sites are
 #: four levels down inside three schemes and threading a parameter through
 #: every one of them would be a larger and more fragile change than this.
-_ACTIVE: "HealthLedger | None" = None
+#:
+#: A context variable, not a plain global.  Breakage it prevents: concurrent
+#: ensemble members (gpuwm.ensemble.execution runs each on its own thread)
+#: each wrap their domain step in :func:`deferring` with their OWN step
+#: ledger (gpuwm.core.model, since ac988f1fd).  With one process-wide slot,
+#: member A's scheme sites recorded into member B's ledger while the steps
+#: overlapped, so a sick member's refusal was raised by another member's
+#: drain or lost, and the out-of-order exits restored a stale ledger for good:
+#: every later run in the process then deferred its health reads into a ledger
+#: nobody drains, and an immediate refusal became no refusal at all (the 2.8.7
+#: GPU shard failures in test_mynn_validation_batching, test_mynn_pbl_gpu,
+#: test_gf_engine_smoke and test_graphcap, after
+#: test_ensemble_runtime_forecast_gpu's four-member run).  A context variable
+#: gives every thread, and every ``copy_context()`` member scope, its own slot.
+_ACTIVE: "ContextVar[HealthLedger | None]" = ContextVar(
+    "gpuwm_health_ledger", default=None)
 
 
 class HealthLedger:
@@ -157,7 +173,7 @@ class HealthLedger:
 
 
 def active() -> "HealthLedger | None":
-    return _ACTIVE
+    return _ACTIVE.get()
 
 
 @contextmanager
@@ -167,13 +183,11 @@ def deferring(ledger: "HealthLedger | None"):
     ``None`` restores the historical immediate reads, which is what makes
     this safe to wrap around anything.
     """
-    global _ACTIVE
-    previous = _ACTIVE
-    _ACTIVE = ledger
+    token = _ACTIVE.set(ledger)
     try:
         yield ledger
     finally:
-        _ACTIVE = previous
+        _ACTIVE.reset(token)
 
 
 def read_status(status, *, site: str, describe: Callable[[int], None] | None) -> int:
@@ -185,7 +199,7 @@ def read_status(status, *, site: str, describe: Callable[[int], None] | None) ->
     fault seen", which is what every caller does nothing about, and the fault
     -- if there is one -- is reported by the drain instead.
     """
-    ledger = _ACTIVE
+    ledger = _ACTIVE.get()
     if ledger is None or describe is None:
         return int(status[0].item())
     ledger.record(site, status, describe)
@@ -234,7 +248,7 @@ def check_finite(array, *, site: str, message: str) -> bool:
     # ``cupy.isfinite`` there raises ``TypeError: Unsupported type
     # numpy.ndarray``.  Found by their own suite, which is what it is for.
     xp = _array_module(cp, array)
-    ledger = _ACTIVE
+    ledger = _ACTIVE.get()
     if ledger is None or xp is not cp:
         return bool(xp.isfinite(array).all())
     status = cp.logical_not(cp.isfinite(array).all()).astype(

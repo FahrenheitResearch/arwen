@@ -1,5 +1,51 @@
 # gpuwm native GRIB bridges
 
+## Generic selector stacks
+
+`gpuwm_grib2_stack(input_path, spec_json_path, output_dir)` is exported by
+`gpuwm_preprocess_cpu`, the CPU library that already ships with the engine.
+Its three arguments are NUL-terminated UTF-8 paths. The SPEC consumes schema
+`gpuwm-grib2-stack-v1`. Selectors contain raw parameter identifiers, optional
+constituent and aerosol identifiers, level type and optional level lists.
+Null identifiers impose no constraint; null levels select every level present.
+Explicit level lists require each level at every selected time. Keys must be
+unique ASCII letters, digits, underscores or hyphens.
+
+The library visits each envelope once. It decodes selected data in f64 and rounds
+once to little-endian f32, retaining bitmap NaNs and stored scan order. Stacks
+have C-order shape `(nlevel, ny, nx)` with ascending levels. Only rectangular
+grid template 3.0 is accepted. Empty selectors, missing requested levels,
+duplicate time/level records, mixed PDTs, grids or coefficients within a key,
+existing output directories and valid-time filename collisions refuse before
+output creation. Inventory, dump and stack metadata report ground/water-surface
+levels as zero, matching ecCodes even when the encoded scale/value are missing;
+the decoder retains its stored descriptors. Calendar-relative forecast units refuse. Statistical products
+use the encoded interval end as valid time. Nonzero return codes report the
+refusal through `gpuwm_bridge_last_error`; panics are caught at the C boundary.
+
+Names are `<key>__YYYY-MM-DDTHHMMSSZ.f32le`, using portable basic ISO time.
+`stack.json` lists output hashes, levels, PDT, actual selector identifiers,
+reference time, forecast step/unit, valid time and encoded grid metadata.
+Its `coordinate_values` map stores coefficients once per key.
+`gpuwm.grib2_stack.stack_grib2(input_file, select, output_dir)` calls
+`CpuPreprocessBackend.grib2_stack` through the already loaded CPU library.
+It retains the SPEC beside the output for review, verifies hashes and sizes,
+and returns frozen `StackedField` objects with lazy read-only `.array` mappings
+and float64 axes. A missing `gpuwm_grib2_stack` symbol raises a rebuild remedy;
+there is no fallback or additional executable to package. ABI remains 1.
+Field values are never transformed in Python. Consumers must inspect scan mode
+when the stored order differs from geographic row-major order.
+
+## Generic pressure and linear combination operators
+
+`src/chem_remap.rs` exports exactly `gpuwm_hybrid_full_pressure_f32` and
+`gpuwm_weighted_combination_f32` through ABI 1. Both validate inputs before
+writing, compute in f64 and round once to f32. Their serial arithmetic order is
+independent of worker count. Model level k lies between half levels k-1 and k.
+Linear combinations support a humidity divisor with finite humidity in [0,1)
+and propagate field NaNs. The ctypes methods require the symbols by name and
+have no Python field arithmetic fallback. No registry dependency was added.
+
 One Rust crate (`grib1_bridge`, library name `gpuwm_preprocess_cpu`) holding
 every CPU-side GRIB decode boundary gpuwm uses.  `gpuwm.ingest.grib`,
 `gpuwm.ingest.hrrr`, and `gpuwm.gfs_direct` consume the raw little-endian
@@ -58,7 +104,8 @@ spatial validation still belongs to normal input preflight.
 The same crate builds `gpuwm_preprocess_cpu` (`libgpuwm_preprocess_cpu.so`,
 `gpuwm_preprocess_cpu.dll`), which `gpuwm.ingest.cpu_backend` loads through
 ctypes.  Besides the horizontal, vertical and WRF-real transforms of the CPU
-preprocessing backend, it carries `gpuwm_wps_masked_chain_f64` and
+preprocessing backend, it carries `gpuwm_wps_masked_chain_f64`, its
+inland-water reach form `gpuwm_wps_masked_chain_reach_f64` and
 `gpuwm_wps_land_unit_scan_f64` (`src/wps_masked.rs`): WPS metgrid's masked
 chain for soil moisture and temperature, snow, skin temperature and sea ice,
 in float64, parallel across target cells with a result that does not depend

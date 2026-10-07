@@ -92,4 +92,12 @@ def nest_field_kinds(cfg: RunConfig) -> tuple[str, ...]:
             # scheme no qs and no qg (the docstring carries the
             # consequence of widening that tuple).
             kinds += ["qi", "ni", "nr", "qir", "qib"]
+    # Chem species (gpuwm/core/chem_state.py), named by the chem table: WRF
+    # declares every chem species with the nest interpolation and feedback
+    # flags (registry.chem ``i0{12}rhusdf=(bdy_interp:dt)``) and forces a
+    # nest's chem with relax plus spec (solve_em.F:2509-2545), the generic
+    # scalar coupling of the moments above.  Empty while chem is off.
+    if getattr(cfg, "chem_sets", ()):
+        from gpuwm.chem_table import load as load_chem_table
+        kinds += [row.state_attr for row in load_chem_table(cfg).transported]
     return tuple(kinds)

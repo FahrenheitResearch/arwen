@@ -110,8 +110,17 @@ def test_recipe_defaults_do_not_turn_a_filename_into_a_content_signature():
     for source in ("hrrr", "hrrr-prs", "hrrr-native"):
         defaults = recipe_physics_defaults(source)
         assert defaults["ruc_irrigation"] == defaults["ruc_snow"] == "wrf_45"
-    for source in ("gfs", "era5", "rap", "rrfs"):
+    for source in ("gfs", "era5", "rrfs"):
         assert recipe_physics_defaults(source) == {}
+    # RAP was in this empty set until e19441c1e gave it the operational
+    # fork's request row (RAP runs the same WRF 3.9 fork as HRRR).  That row
+    # carries the scheme generations only: no RUC form read from HRRR's own
+    # namelist reaches a RAP recipe.
+    rap = recipe_physics_defaults("rap")
+    assert rap == {"mynn_sfclay_variant": "gsl_wrf39",
+                   "thompson_version": "wrf_39_noaa",
+                   "thompson_fork_snow_fall": "wrf_39_noaa"}
+    assert not any(key.startswith("ruc_") for key in rap)
 
 
 @pytest.mark.parametrize("source", ["hrrr", "hrrr-prs", "hrrr-native"])

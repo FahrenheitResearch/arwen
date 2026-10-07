@@ -336,7 +336,7 @@ def _wps_search_candidates(valid_bytes, ny, nx, start):
     return np.asarray([found, *rest], dtype=np.int64)
 
 
-def _wps_search(field, valid, yy, xx, todo):
+def _wps_search(field, valid, yy, xx, todo, reach=None):
     """Metgrid ``search_extrap`` over the active cells; NaN falls through.
 
     Per-cell FIFO/queue-limited semantics (see :func:`_wps_search_single`);
@@ -353,12 +353,22 @@ def _wps_search(field, valid, yy, xx, todo):
     a coarse source holds as sea walked the same ocean to the same land.
     Measured on a real island tile (GDAS 0.25 degree over a 230 x 230 1 km
     grid), the root forcing stage went past 30 minutes that way.
+
+    ``reach`` is ``(limited, cells)``: a target flagged in ``limited``
+    whose nearest candidate lies farther than ``cells`` source cells
+    (squared distance past ``cells * cells``) gets NaN, the inland-water
+    reach of ``gpuwm_wps_masked_chain_reach_f64``.
     """
     out = np.full(yy.shape, np.nan, dtype=np.float64)
+    limited_t = None
+    if reach is not None:
+        reach2 = float(reach[1]) * float(reach[1])
     if not np.any(todo) or not np.any(valid):
         return out
     ny, nx = field.shape
     rows_t, columns_t = np.nonzero(todo)
+    if reach is not None:
+        limited_t = np.asarray(reach[0], dtype=bool)[rows_t, columns_t]
     target_y = np.asarray(yy, dtype=np.float64)[rows_t, columns_t]
     target_x = np.asarray(xx, dtype=np.float64)[rows_t, columns_t]
     # Fortran NINT for non-negative arguments; a start off the source grid
@@ -371,6 +381,8 @@ def _wps_search(field, valid, yy, xx, todo):
         return out
     rows_t = rows_t[inside]
     columns_t = columns_t[inside]
+    if limited_t is not None:
+        limited_t = limited_t[inside]
     target_y = target_y[inside]
     target_x = target_x[inside]
     starts = (start_y[inside].astype(np.int64) * nx
@@ -396,9 +408,14 @@ def _wps_search(field, valid, yy, xx, todo):
             part = members[lo:lo + block]
             dx = cand_x - target_x[part, None]
             dy = cand_y - target_y[part, None]
-            nearest = np.argmin(dx * dx + dy * dy, axis=1)
-            out[rows_t[part], columns_t[part]] = flat_field[
-                candidates[nearest]]
+            distance = dx * dx + dy * dy
+            nearest = np.argmin(distance, axis=1)
+            values = flat_field[candidates[nearest]]
+            if limited_t is not None:
+                far = limited_t[part] & (
+                    distance[np.arange(part.size), nearest] > reach2)
+                values = np.where(far, np.nan, values)
+            out[rows_t[part], columns_t[part]] = values
     return out
 
 
@@ -453,7 +470,7 @@ def _unusable_source_within_reach(unusable, yy, xx, targets):
 def wps_masked_field_interpolate(field, latitude, longitude, target_lat,
                                  target_lon, *, source_valid, target_active,
                                  chain, fill_value, physical_range=None,
-                                 tally=None):
+                                 tally=None, reach=None):
     """WPS metgrid masked-field interpolation chain on the host in float64.
 
     Transcribes metgrid's ``interp_sequence`` fall-through semantics
@@ -579,7 +596,7 @@ def wps_masked_field_interpolate(field, latitude, longitude, target_lat,
         elif op == "wt_average_16pt":
             got = _wps_wt_average(safe, usable, yy, xx, todo, sixteen=True)
         elif op == "search":
-            got = _wps_search(safe, usable, yy, xx, todo)
+            got = _wps_search(safe, usable, yy, xx, todo, reach=reach)
         else:
             raise ValueError(f"unknown WPS interpolation operator {op!r}")
         produced = todo & np.isfinite(got)
@@ -679,7 +696,7 @@ def _land_pass_with_fractional_second_chance(
 def _skin_temperature_on_both_surfaces(
         slab, latitude, longitude, target_lat, target_lon, *,
         land_donors, partial_land_donors, target_land, fill_value,
-        physical_range=None, tally=None):
+        physical_range=None, tally=None, reach=None):
     """METGRID.TBL ``masked=both`` skin temperature, with no 0 K on a surface.
 
     Land targets take the land pass (with its second chance) and water
@@ -704,7 +721,16 @@ def _skin_temperature_on_both_surfaces(
     either surface.
 
     Returns ``(values, recovered)`` as the land pass does.
+
+    ``reach`` is ``(limited, cells)``, the inland-water reach of the water
+    pass's search: a flagged water target the search would answer only
+    from source water farther than ``cells`` source cells keeps NaN (not
+    the other surface's skin, not the fill), counted as ``beyond_reach``.
+    An infinite or non-positive reach is no reach, as in the native entry.
     """
+    asked = reach is not None
+    if asked and not (np.isfinite(reach[1]) and reach[1] > 0.0):
+        reach = None
     target_land = np.asarray(target_land, dtype=bool)
     land_donors = np.asarray(land_donors, dtype=bool)
     counts: dict[str, int] = {}
@@ -719,11 +745,15 @@ def _skin_temperature_on_both_surfaces(
         slab, latitude, longitude, target_lat, target_lon,
         source_valid=~land_donors, target_active=~target_land,
         chain=_WPS_FULL_CHAIN, fill_value=np.nan,
-        physical_range=physical_range)
+        physical_range=physical_range, reach=reach)
     combined = np.where(target_land, land_part, water_part)
+    unresolved = np.zeros(target_land.shape, dtype=bool)
+    if reach is not None:
+        unresolved = (~target_land & np.asarray(reach[0], dtype=bool)
+                      & ~np.isfinite(combined))
     other_surface = 0
-    for starved, donors in ((~target_land & ~np.isfinite(combined),
-                             land_donors),
+    for starved, donors in ((~target_land & ~np.isfinite(combined)
+                             & ~unresolved, land_donors),
                             (target_land & ~np.isfinite(combined),
                              ~land_donors)):
         if not np.any(starved):
@@ -739,10 +769,13 @@ def _skin_temperature_on_both_surfaces(
     counts["fill"] = int(np.count_nonzero(
         target_land & ~np.isfinite(combined)))
     counts["other_surface"] = other_surface
+    if asked:
+        counts["beyond_reach"] = int(np.count_nonzero(unresolved))
     if tally is not None:
         for key, value in counts.items():
             tally[key] = tally.get(key, 0) + value
-    return np.where(np.isfinite(combined), combined, fill_value), recovered
+    values = np.where(np.isfinite(combined), combined, fill_value)
+    return np.where(unresolved, np.nan, values), recovered
 
 
 def _refuse_land_field_not_in_its_unit(

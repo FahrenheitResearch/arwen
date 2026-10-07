@@ -417,6 +417,8 @@ def test_number_moment_wrfinput_contract_writes_arbitrary_vertical_shape(
 
 
 def _export_a_real_prepared_cache(tmp_path, mp_physics, numbers=None,
+                                  *, boundary_scalars=None,
+                                  replace_start=None, intervals=1,
                                   **run_overrides):
     """A real CPU cold start through the prepared cache and the export.
 
@@ -425,6 +427,14 @@ def _export_a_real_prepared_cache(tmp_path, mp_physics, numbers=None,
     exporter.  Returns ``(output, cfg, seeded)``: the export folder, the
     configuration the cache records, and the state's own values of the
     ``numbers`` named (WRF name to state name), read before the export.
+
+    ``boundary_scalars`` is the scalar inventory the boundary is built
+    with (an aerosol-forced mp=28 run adds nwfa and nifa to qv, as its
+    initialization does when the aerosols come from input), and
+    ``replace_start`` edits the start state in place AFTER the boundary
+    was built from it, which is what a separate initial analysis
+    (``--initial-inputs``) does to a prepared cache.  ``intervals`` is
+    the number of hourly boundary intervals.
     """
     import dataclasses
 
@@ -461,10 +471,16 @@ def _export_a_real_prepared_cache(tmp_path, mp_physics, numbers=None,
         static["MAPFAC_M"], static["MAPFAC_U"], static["MAPFAC_V"],
         static["F"], static["E"],
         sina=static["SINALPHA"], cosa=static["COSALPHA"])
+    if boundary_scalars is not None:
+        state._external_scalar_boundary_fields = tuple(boundary_scalars)
     boundaries = build_state_lateral_boundaries(
-        [state, state], (valid_time, valid_time + timedelta(hours=1)),
+        [state] * (intervals + 1),
+        tuple(valid_time + timedelta(hours=hour)
+              for hour in range(intervals + 1)),
         spec_bdy_width=5, spec_zone=1, relax_zone=4)
     attach_lateral_boundaries(state, boundaries)
+    if replace_start is not None:
+        replace_start(state)
 
     static_path = tmp_path / "native-static.npz"
     np.savez(static_path, **static)
@@ -498,7 +514,7 @@ def _export_a_real_prepared_cache(tmp_path, mp_physics, numbers=None,
     write_prepared_cache(
         cache_path,
         identity={"domain_config": {"run": dataclasses.asdict(cfg)},
-                  "forcing_hours": [0, 1],
+                  "forcing_hours": list(range(intervals + 1)),
                   "static_cache_sha256": _sha256(static_path)},
         initial_result=result, met=met, surface=surface,
         boundaries=boundaries,
@@ -694,6 +710,140 @@ def test_dry_export_roundtrips_through_the_real_wrf_input_reader(tmp_path):
                            run_seconds=3600, forcing_interval_seconds=3600,
                            cfg=cfg)
     assert len(boundary.intervals) == 1
+
+
+def _replace_the_start(state):
+    """A separate initial analysis: every boundary field of the start state
+    differs from the atmosphere the boundary head was built from, as the
+    mapped route's ``--initial-inputs`` leaves a prepared cache."""
+    state.u[...] += np.float32(1.5)
+    state.v[...] -= np.float32(0.75)
+    state.thp[...] += np.float32(0.4)
+    state.php[...] += np.float32(30.0)
+    state.mup[...] += np.float32(40.0)
+    state.qv[...] *= np.float32(1.03)
+    state.nwfa[...] *= np.float32(1.2)
+    state.nifa[...] *= np.float32(0.8)
+
+
+def _door_read(output, cfg):
+    from gpuwm.ingest.wrfinput import read_wrfinput, read_wrfbdy
+
+    dims = dict(west_east=cfg.nx, west_east_stag=cfg.nx + 1,
+                south_north=cfg.ny, south_north_stag=cfg.ny + 1,
+                bottom_top=cfg.nz, bottom_top_stag=cfg.nz + 1,
+                soil_layers_stag=4)
+    restored = read_wrfinput(output / "wrfinput_d01", cfg=cfg,
+                             expected_dimensions=dims, require_complete=False)
+    boundary = read_wrfbdy(output / "wrfbdy_d01", restored=restored,
+                           run_seconds=7200, forcing_interval_seconds=3600,
+                           cfg=cfg)
+    return restored, boundary
+
+
+def _aerosol_forced_export(tmp_path):
+    """mp=28 whose boundary forces the aerosol numbers, start replaced after
+    the boundary was built, two hourly intervals; the door reads it under
+    ``use_aero_icbc = .true.`` (aer_init_opt = 1), so QNWFA/QNIFA are
+    checked too."""
+    import dataclasses
+
+    output, cfg, _ = _export_a_real_prepared_cache(
+        tmp_path, 28, boundary_scalars=("qv", "nwfa", "nifa"),
+        replace_start=_replace_the_start, intervals=2)
+    return output, dataclasses.replace(cfg, aer_init_opt=1)
+
+
+def test_a_replaced_start_state_exports_a_pair_the_wrf_door_accepts(tmp_path):
+    """--stock-wrf-export, then the WRF-input door, on WOOF's own files.
+
+    The mapped route builds its boundary head from the boundary source and
+    then replaces the start state with the separate initial analysis.  The
+    export copied that head into wrfbdy record 0, so the first record
+    described another atmosphere than wrfinput_d01, and the door refused
+    WOOF's own pair ("wrfbdy U west does not match initial wrfinput_d01:
+    100,250 of 100,250 points differ" on a 400 x 400 RAP crop).  Its
+    aerosol tables were zeros beside a nonzero QNWFA, the second refusal
+    behind the first.  real.exe's first record is always the coupling of
+    its own wrfinput; WRFDA's da_update_bc is WRF's rule for a replaced
+    start: the first record becomes the new start's coupling and its
+    tendency keeps the interval's end.  The door accepts the pair, restores
+    exactly the prepared start state, and its forcing reaches the prepared
+    boundary at the end of the first interval and from then on.
+    """
+    from gpuwm.ingest.lateral_bc import evaluate_boundary_side
+
+    output, cfg = _aerosol_forced_export(tmp_path)
+    restored, boundary = _door_read(output, cfg)
+    assert len(boundary.intervals) == 2
+    assert {"u", "v", "theta", "phi", "mu", "qv", "nwfa", "nifa"} <= set(
+        boundary.intervals[0].fields)
+
+    cache = PreparedCache(tmp_path / "prepared-cache")
+    # The door restores the prepared START state, bit for bit.
+    for wrf_name, key in (("U", "state/u"), ("V", "state/v"),
+                          ("PH", "state/php"), ("MU", "state/mup"),
+                          ("QVAPOR", "state/qv"), ("QNWFA", "state/nwfa"),
+                          ("QNIFA", "state/nifa")):
+        np.testing.assert_array_equal(
+            np.asarray(restored.raw[wrf_name], np.float32).view(np.uint32),
+            np.asarray(cache.array(key), np.float32).view(np.uint32),
+            err_msg=wrf_name)
+    theta = (np.asarray(cache.array("base/thb"), np.float32)
+             + np.asarray(cache.array("state/thp"), np.float32)
+             - np.float32(300.0))
+    np.testing.assert_array_equal(
+        np.asarray(restored.raw["T"], np.float32).view(np.uint32),
+        theta.view(np.uint32))
+
+    # The first interval ends on the prepared boundary, and the second
+    # starts there: the replaced start changes the first record only.
+    for name in ("u", "v", "theta", "phi", "mu", "qv", "nwfa", "nifa"):
+        for side in ("west", "east", "south", "north"):
+            prefix = f"lbc/0/{name}/{side}"
+            prepared_end = (
+                np.asarray(cache.array(f"{prefix}/value"), np.float64)
+                + 3600.0 * np.asarray(cache.array(f"{prefix}/tendency"),
+                                      np.float64))
+            door_end, _ = evaluate_boundary_side(
+                getattr(boundary.intervals[0].fields[name], side), 3600.0)
+            second, _ = evaluate_boundary_side(
+                getattr(boundary.intervals[1].fields[name], side), 0.0)
+            prepared_second = np.asarray(
+                cache.array(f"lbc/1/{name}/{side}/value"), np.float64)
+            scale = np.abs(prepared_end).max() + 1e-30
+            assert np.abs(door_end - prepared_end).max() <= 1e-5 * scale, (
+                name, side)
+            assert np.abs(second - prepared_second).max() <= 1e-5 * scale, (
+                name, side)
+    with netCDF4.Dataset(output / "wrfbdy_d01") as dataset:
+        for suffix, side in (("XS", "west"), ("YE", "north")):
+            for wrf_name, name in (("U", "u"), ("QNWFA", "nwfa")):
+                for kind, part in (("B", "value"), ("BT", "tendency")):
+                    written = np.asarray(
+                        dataset[f"{wrf_name}_{kind}{suffix}"][1], np.float32)
+                    np.testing.assert_array_equal(
+                        written, np.asarray(
+                            _lbc_to_wrf(cache, 1, name, side, part),
+                            np.float32))
+
+
+def test_the_door_still_refuses_a_first_record_that_is_not_its_wrfinput(
+        tmp_path):
+    """The check stays: the prepared head under the replaced start is what
+    the export used to write, and it is a different atmosphere."""
+    from gpuwm.ingest.wrfinput import read_wrfinput, read_wrfbdy
+
+    output, cfg = _aerosol_forced_export(tmp_path)
+    cache = PreparedCache(tmp_path / "prepared-cache")
+    with netCDF4.Dataset(output / "wrfbdy_d01", "a") as dataset:
+        for suffix, side in (("XS", "west"), ("XE", "east"),
+                             ("YS", "south"), ("YE", "north")):
+            dataset[f"U_B{suffix}"][0] = _lbc_to_wrf(
+                cache, 0, "u", side, "value")
+    with pytest.raises(ValueError, match="wrfbdy U west does not match "
+                       "initial wrfinput_d01"):
+        _door_read(output, cfg)
 
 
 def test_global_updates_keep_stock_wrf_v4_gate_and_geometry():

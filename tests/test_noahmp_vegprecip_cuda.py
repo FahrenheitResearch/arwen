@@ -24,7 +24,7 @@ from gpuwm.core.kernels import load_module  # noqa: E402
 
 _DATA = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "gpuwm", "data", "noahmp", "oracle",
+    "tests", "data", "oracles", "noahmp",
 )
 PHEN_CSV = os.path.join(_DATA, "noahmp-vegprecip-phenology.csv")
 PRCP_CSV = os.path.join(_DATA, "noahmp-vegprecip-precip_heat.csv")

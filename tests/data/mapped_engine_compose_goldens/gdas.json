@@ -95,6 +95,40 @@
           "staggering": "none",
           "units": "K"
         },
+        "cloud_ice_mixing_ratio": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "109b107e8dcd0b0c8c4814e4f0a0cbbc4dd637215254a5ef2cc4016e15799d5e",
+          "shape": [
+            33,
+            721,
+            1440
+          ],
+          "staggering": "none",
+          "units": "kg kg-1"
+        },
+        "cloud_water_mixing_ratio": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "5a7f307cc045508c4e72548b3659544d55537b275f212e94fb7f52b350ddd1d1",
+          "shape": [
+            33,
+            721,
+            1440
+          ],
+          "staggering": "none",
+          "units": "kg kg-1"
+        },
         "eastward_wind": {
           "axes": [
             "vertical",
@@ -144,6 +178,23 @@
           "staggering": "none",
           "units": "m"
         },
+        "graupel_or_hail_mixing_ratio": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "d2b7a552384988d5e2f46ad14f4434650fafe1eb5ec63e06e09c6312752cf5ae",
+          "shape": [
+            33,
+            721,
+            1440
+          ],
+          "staggering": "none",
+          "units": "kg kg-1"
+        },
         "land_fraction": {
           "axes": [
             "y",
@@ -191,6 +242,23 @@
           "staggering": "none",
           "units": "m s-1"
         },
+        "rain_water_mixing_ratio": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "e763334ae05f9fbf4cb62848f131cb2f6915b03d8e6c59e8e349c77879528c16",
+          "shape": [
+            33,
+            721,
+            1440
+          ],
+          "staggering": "none",
+          "units": "kg kg-1"
+        },
         "skin_temperature": {
           "axes": [
             "y",
@@ -205,6 +273,23 @@
           ],
           "staggering": "none",
           "units": "K"
+        },
+        "snow_mixing_ratio": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "eabe887609bed80dd04f67af724126d7666c0f8431b3e4ff27b5d8dba16e2b54",
+          "shape": [
+            33,
+            721,
+            1440
+          ],
+          "staggering": "none",
+          "units": "kg kg-1"
         },
         "soil_temperature": {
           "axes": [
@@ -323,7 +408,7 @@
         "sha256": "71b86113b1a966c6fc5962ec9be7ee8c26cf759621bf1f424f5b0c79a7f8d5ea"
       },
       "member": null,
-      "portable_header_sha256": "2778b1860d4982c57c0353f0671d6c239364411cd01ada51770db211ccb94e59",
+      "portable_header_sha256": "ee84ccebf91b864ef310f84cb3db775822dd6bb88149c2c980f50f2d9f3e89bf",
       "source_cycle": "2026-08-17T06:00:00",
       "valid_time": "2026-08-17T06:00:00",
       "vertical": {
@@ -384,6 +469,40 @@
           "staggering": "none",
           "units": "K"
         },
+        "cloud_ice_mixing_ratio": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "85fe439d5cf624209b07c280043f0d3bf1282953cd2ba71a8c59576a8fbfe746",
+          "shape": [
+            33,
+            721,
+            1440
+          ],
+          "staggering": "none",
+          "units": "kg kg-1"
+        },
+        "cloud_water_mixing_ratio": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "7bd96594da96ed2f2fe7fe9c1d792f3625959039cf2cf76acd3a8c5377d5388c",
+          "shape": [
+            33,
+            721,
+            1440
+          ],
+          "staggering": "none",
+          "units": "kg kg-1"
+        },
         "eastward_wind": {
           "axes": [
             "vertical",
@@ -433,6 +552,23 @@
           "staggering": "none",
           "units": "m"
         },
+        "graupel_or_hail_mixing_ratio": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "01251cbfee2e51f6f3999cf9e6f90a85edb86513f14f9e18102038c4b72fc7de",
+          "shape": [
+            33,
+            721,
+            1440
+          ],
+          "staggering": "none",
+          "units": "kg kg-1"
+        },
         "land_fraction": {
           "axes": [
             "y",
@@ -480,6 +616,23 @@
           "staggering": "none",
           "units": "m s-1"
         },
+        "rain_water_mixing_ratio": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "1e9fd4c955f5bd4d4318ae82926a90385c20e8bd8c0f9bf8af0241ceb1701c72",
+          "shape": [
+            33,
+            721,
+            1440
+          ],
+          "staggering": "none",
+          "units": "kg kg-1"
+        },
         "skin_temperature": {
           "axes": [
             "y",
@@ -494,6 +647,23 @@
           ],
           "staggering": "none",
           "units": "K"
+        },
+        "snow_mixing_ratio": {
+          "axes": [
+            "vertical",
+            "y",
+            "x"
+          ],
+          "location": "mass",
+          "missing_count": 0,
+          "sha256": "bf9eaa3fd9d1b9f8b80a37e335a0fcededc0d69117a11c0b5bc0647aa4eab013",
+          "shape": [
+            33,
+            721,
+            1440
+          ],
+          "staggering": "none",
+          "units": "kg kg-1"
         },
         "soil_temperature": {
           "axes": [
@@ -612,7 +782,7 @@
         "sha256": "71b86113b1a966c6fc5962ec9be7ee8c26cf759621bf1f424f5b0c79a7f8d5ea"
       },
       "member": null,
-      "portable_header_sha256": "713ec578379babdfd472eb1728c483dd88c0681f22c7c812b8f40d7f320d1bef",
+      "portable_header_sha256": "229436cf0e94d1695b6821b8b34cc4bb16e4d88a1d460b7973e1d62705f82468",
       "source_cycle": "2026-08-17T06:00:00",
       "valid_time": "2026-08-17T07:00:00",
       "vertical": {
@@ -626,7 +796,7 @@
   "header_rule": "gpuwm-portable-frame-header-v1",
   "mapping": {
     "name": "rw-wps-gdas-pgrb2-0p25-grib2.mapping.json",
-    "sha256": "eee8342a5a9a57f17d267dd48ad5edbb1a72f6d34c8803bd2ba1010668e0268d"
+    "sha256": "8df20187d7d953dce19875f0aaad215fbaa926134ee50610396864290a07b88e"
   },
   "measured_on": {
     "machine": "AMD64",

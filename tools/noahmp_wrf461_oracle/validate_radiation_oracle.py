@@ -62,7 +62,7 @@ sys.path.insert(0, str(REPO))
 from gpuwm.core import noahmp_libm  # noqa: E402
 from gpuwm.core import noahmp_radiation as rad  # noqa: E402
 
-ORACLE = REPO / "gpuwm" / "data" / "noahmp" / "oracle"
+ORACLE = REPO / "tests" / "data" / "oracles" / "noahmp"
 PROBE_SRC = Path(__file__).resolve().parent / "libm_probe_radiation.c"
 
 EXPECTED_ROWS = {

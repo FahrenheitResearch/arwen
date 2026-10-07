@@ -605,6 +605,47 @@ class RucRuntimeParameters:
         return identity
 
 
+#: ``ruclsminit`` results by input content, for this process.
+_COLD_STARTS: dict = {}
+#: ``id(bundle) -> (bundle, digest)``; the bundle is held so its id is not reused.
+_BUNDLE_DIGESTS: dict = {}
+
+
+def _cold_start_once(inputs, params):
+    """:func:`ruc_initialize_cold_start` of ``inputs``, computed once per
+    process for the same input bytes, land-use dataset and parameter bundle.
+
+    Breakage it removes: a DA card server wires every member leg from the
+    same prepared cache, and each wire re-ran the scalar ``ruclsminit``
+    transcription over the whole slab -- several seconds of one host core
+    per member leg (7.4 s under the profiler on box L, 2026-10-06) with the
+    card idle.  The function is pure (it copies its inputs), so the stored
+    result is the recomputed one byte for byte.
+    """
+    import hashlib
+
+    entry = _BUNDLE_DIGESTS.get(id(params.bundle))
+    if entry is None or entry[0] is not params.bundle:
+        entry = (params.bundle, hashlib.sha256(
+            repr(params.bundle).encode("utf-8")).hexdigest())
+        _BUNDLE_DIGESTS.clear()
+        _BUNDLE_DIGESTS[id(params.bundle)] = entry
+    digest = hashlib.sha256()
+    for array in inputs:
+        array = np.ascontiguousarray(array)
+        digest.update(f"{array.dtype.str}{array.shape}".encode("ascii"))
+        digest.update(array.tobytes())
+    key = (digest.hexdigest(), str(params.dataset_identifier), entry[1])
+    cold = _COLD_STARTS.get(key)
+    if cold is None:
+        cold = ruc_initialize_cold_start(
+            *inputs, mminlu=params.dataset_identifier,
+            parameters=params.bundle)
+        _COLD_STARTS.clear()
+        _COLD_STARTS[key] = cold
+    return cold
+
+
 def ruc_cold_start(fields, *, params: RucRuntimeParameters) -> None:
     """``ruclsminit`` over the whole slab, on the host.
 
@@ -637,10 +678,9 @@ def ruc_cold_start(fields, *, params: RucRuntimeParameters) -> None:
             f"RUC cold start got a {resolved}-level soil column but the "
             f"runtime parameters resolved {params.num_soil_layers} levels; "
             "the slab and the geometry must be the same run")
-    cold = ruc_initialize_cold_start(
-        slab["tslb"], slab["smois"], slab["isltyp"], slab["ivgtyp"],
-        slab["xice"], mminlu=params.dataset_identifier,
-        parameters=params.bundle)
+    cold = _cold_start_once(
+        tuple(slab[name] for name in ("tslb", "smois", "isltyp", "ivgtyp",
+                                      "xice")), params)
     fields["sh2o"][...] = cp.asarray(np.ascontiguousarray(cold.sh2o))
     fields["smfr3d"][...] = cp.asarray(np.ascontiguousarray(cold.smfr3d))
     fields["mavail"][...] = cp.asarray(np.ascontiguousarray(cold.mavail))

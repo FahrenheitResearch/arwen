@@ -1,0 +1,16 @@
+# gfortran: GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+# glibc:    ldd (Ubuntu GLIBC 2.43-2ubuntu2.4) 2.43
+# kind_phys: 4
+# -O0 libm symbols per object (THE REFERENCE):
+## gsl_run_add_emiss_burn.txt
+## gsl_run_fire_rules.txt
+## gsl_run_smoke_prep.txt
+U powf
+## module_add_emiss_burn.txt
+U expf
+U logf
+U powf
+## rrfs_smoke_config.txt
+# positive control (plain expf loop at -Ofast):
+U expf
+U _ZGVbN4v_expf

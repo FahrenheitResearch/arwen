@@ -47,6 +47,7 @@ STATIC_PYTHON_ENV: Final[str] = "GPUWM_STATIC_PYTHON"
 #: answers the version probe but predates portable sampling cannot
 #: rebuild a prepared moving footprint with identical terrain and climatologies.
 ABI_MARKER: Final[bytes] = b"gpuwm_static_sampling_portable_v1"
+EXTRA_ABI_MARKER: Final[bytes] = b"gpuwm_static_extra_continuous_v1"
 
 #: Stagger codes (`types::Stagger` in the crate).
 STAGGER_MASS: Final[int] = 0
@@ -511,6 +512,43 @@ def build_orographic(grid_handle: int, request: dict,
                  ctypes.c_uint32(halo_code), ctypes.byref(handle)),
            "build_orographic")
     return int(handle.value)
+
+def require_extra_fields(library=None):
+    """Bind the optional contract without changing native library loading."""
+    library = load() if library is None else library
+    try:
+        marker = getattr(library, EXTRA_ABI_MARKER.decode("ascii"))
+        function = library.gpuwm_static_build_extra_fields
+    except AttributeError as error:
+        raise StaticBridgeError(
+            "this Rust library cannot build extra static fields; rebuild "
+            "static-fields and set GPUWM_STATIC_BRIDGE to that library. "
+            + _checkout_build_command()) from error
+    marker.argtypes = []
+    marker.restype = ctypes.c_uint32
+    if marker() != 1:
+        raise StaticBridgeError("unsupported extra static fields contract; rebuild static-fields")
+    function.argtypes = [ctypes.c_uint64, ctypes.POINTER(ctypes.c_uint8),
+                         ctypes.c_size_t, ctypes.c_uint32,
+                         ctypes.POINTER(ctypes.c_uint64)]
+    function.restype = ctypes.c_int32
+    return library
+
+
+def build_extra_fields(grid_handle: int, specs: list[dict],
+                       halo: int | None = None) -> dict[str, np.ndarray]:
+    """Build only the supplied rows, returning native float64 arrays."""
+    library = require_extra_fields()
+    buffer, length = _utf8(json.dumps(specs, allow_nan=False))
+    handle = ctypes.c_uint64(0)
+    _check(library, library.gpuwm_static_build_extra_fields(
+        ctypes.c_uint64(grid_handle), buffer, length,
+        ctypes.c_uint32(0xFFFFFFFF if halo is None else int(halo)),
+        ctypes.byref(handle)), "build_extra_fields")
+    try:
+        return fieldset_to_dict(handle.value)
+    finally:
+        fieldset_free(handle.value)
 
 
 def fieldset_to_dict(handle: int) -> dict[str, np.ndarray]:

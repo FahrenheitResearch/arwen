@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 from pathlib import Path
+import warnings
 
 import numpy as np
 import pytest
@@ -3267,3 +3268,58 @@ def test_lsmruc_udrunoff_accumulator_is_measured_as_unbound():
         and int(field["ktau"][0, case]) > 1
         for case in range(len(groups))
     )
+
+
+def test_cold_start_array_path_matches_the_scalar_transcription_bit_for_bit():
+    """The forecast's whole-array ``ruclsminit`` against the column loop.
+
+    Land, frozen land, water (ISLTYP 14) and sea-ice columns, every soil
+    and vegetation category, temperatures either side of freezing: the two
+    must agree in every float32 word, or the array path is not the
+    transcription made fast but a different scheme.
+    """
+    from gpuwm.core.ruc import (_cold_start_columns,
+                                _cold_start_columns_reference,
+                                load_ruc_parameters)
+
+    rng = np.random.default_rng(20261006)
+    ncol, nzs = 3000, 9
+    temperature = rng.uniform(250.0, 300.0, (nzs, ncol)).astype(np.float32)
+    # Columns that straddle freezing within the profile, and words right
+    # at the freezing point, where LOG's sign decides the branch.
+    temperature[:, :200] = np.linspace(
+        272.0, 275.0, nzs, dtype=np.float32)[:, None]
+    temperature[0, :50] = np.float32(273.15)
+    temperature[1, :50] = np.nextafter(np.float32(273.15), np.float32(0.0))
+    temperature[2, :50] = np.nextafter(np.float32(273.15), np.float32(400.0))
+    water = rng.uniform(0.0, 0.6, (nzs, ncol)).astype(np.float32)
+    water[:, 300:320] = np.float32(0.0)
+    soil = rng.integers(1, 20, ncol).astype(np.int32)
+    soil[400:450] = 14
+    vegetation = rng.integers(1, 22, ncol).astype(np.int32)
+    ice = np.zeros(ncol, dtype=np.float32)
+    ice[500:560] = rng.uniform(0.01, 1.0, 60).astype(np.float32)
+    ice[520:530] = np.float32(1.0)
+    soil[540:550] = 14
+    bundle = load_ruc_parameters()
+    kwargs = dict(bundle=bundle,
+                  vegetation=bundle.vegetation_for("MODIFIED_IGBP_MODIS_NOAH"))
+    with warnings.catch_warnings():
+        # A frozen water column (ISLTYP 14, SATPSI 0) must not reach the
+        # freezing curve: the reference never divides there, and a
+        # divide-by-zero RuntimeWarning at every winter launch is not
+        # "the same bits".
+        warnings.simplefilter("error", RuntimeWarning)
+        fast = _cold_start_columns(temperature, water, soil, vegetation, ice,
+                                   **kwargs)
+    slow = _cold_start_columns_reference(temperature, water, soil,
+                                         vegetation, ice, **kwargs)
+    for name, actual, expected in zip(("sh2o", "smfr3d", "mavail", "znt"),
+                                      fast, slow):
+        assert actual.dtype == np.float32 and actual.shape == expected.shape
+        np.testing.assert_array_equal(actual.view(np.uint32),
+                                      expected.view(np.uint32), err_msg=name)
+    # Both branches were exercised, in both paths.
+    assert np.any(fast[1] > np.float32(0.0))
+    assert np.any((fast[1] == np.float32(0.0)) & (ice == 0)[None, :]
+                  & (soil != 14)[None, :])

@@ -1,6 +1,6 @@
 """The UW PBL's fixtures of record, and the CPU reference graded on them.
 
-The fixtures (``gpuwm/data/uwpbl/oracle/cases-g35|g44|g61|extra35``, see
+The fixtures (``tests/data/oracles/uwpbl/cases-g35|g44|g61|extra35``, see
 PROVENANCE.md there) are WRF v4.7.1's own words: the byte-unmodified
 CAMUWPBL sources at gfortran 15.2.0 -O0 on glibc 2.43, six regime families
 on 35/44/61 levels (dt 150/60/20 s, four consecutive steps) plus 48
@@ -30,7 +30,7 @@ from gpuwm.verify.uwpbl_oracle import (FULL_OUTPUTS, MASS_OUTPUTS,
 
 ROOT = Path(__file__).resolve().parents[1]
 ORACLE = Path(os.environ.get("UWPBL_ORACLE_DIR")
-              or ROOT / "gpuwm/data/uwpbl/oracle")
+              or ROOT / "tests/data/oracles/uwpbl")
 GRIDS = ("g35", "g44", "g61", "extra35")
 
 #: sha256 of the fixtures of record (tools/uwpbl_wrf471_oracle/build.sh,
@@ -56,7 +56,7 @@ def _fixture(grid):
 
 
 def test_the_fixtures_are_the_recorded_words():
-    if ORACLE != ROOT / "gpuwm/data/uwpbl/oracle":
+    if ORACLE != ROOT / "tests/data/oracles/uwpbl":
         pytest.skip("pins apply to the packaged fixtures")
     for name, digest in FIXTURE_SHA256.items():
         data = (ORACLE / name).read_bytes()

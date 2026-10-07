@@ -881,8 +881,14 @@ for _group in (SCHEME_OUTPUT_FIELDS, PRECIPITATION_OUTPUT_FIELDS):
 #: members, plus two ``misc`` 2-D surface fields), not scheme diagnostics,
 #: so only the second question includes them.
 HISTORY_FIELDS_BY_NETCDF_NAME: dict[str, WrfOutputField] = {}
+from gpuwm.io.sfire_schema import SFIRE_REGISTRY_FIELDS
+SFIRE_OUTPUT_FIELDS = {
+    name: WrfOutputField(name, NETCDF_DTYPE_BY_REGISTRY_TYPE[row[0]], row[1],
+                         row[2], row[3], row[4], wrf_history=row[5])
+    for name, row in SFIRE_REGISTRY_FIELDS.items()
+}
 for _group in (OUTPUT_FIELDS_BY_NETCDF_NAME, THOMPSON_AEROSOL_OUTPUT_FIELDS,
-               SURFACE_IDENTITY_OUTPUT_FIELDS):
+               SURFACE_IDENTITY_OUTPUT_FIELDS, SFIRE_OUTPUT_FIELDS):
     for _key, _field in _group.items():
         _clash = HISTORY_FIELDS_BY_NETCDF_NAME.get(_field.netcdf_name)
         if _clash is not None and _clash != _field:
@@ -914,6 +920,23 @@ def netcdf_names(keys) -> tuple[str, ...]:
 #: (tests/test_native_wrf_distribution.py) went red on it.  A metadata
 #: table is data; the module that carries it must not drag a writer
 #: behind it.
+#: Extra attributes on the history CLDFRA variable.  The field is the
+#: cloud fraction the model's radiation radiated through, computed on
+#: radiation's cadence (radt), which is coarser than the history cadence:
+#: a frame between radiation calls carries the most recent call's field,
+#: and the initial frame, written before the first radiation call,
+#: carries zeros (as WRF's own t=0 wrfout does).  A reader that needs the
+#: fraction AT the initial time diagnoses it instead.
+RADIATION_CLDFRA_ATTRIBUTES: dict[str, str] = {
+    "source": ("radiation cloud fraction, 0 to 1: icloud=1 cal_cldfra1, "
+               "with the MYNN subgrid cloud merged where icloud_bl=1"),
+    "sampling": ("held between radiation calls: each frame carries the "
+                 "field from the most recent radiation call at or before "
+                 "its valid time (radiation runs every radt minutes)"),
+    "initial_frame": ("zero before the first radiation call; the "
+                      "initial-time frame is written before it"),
+}
+
 REGISTRY_VAR_META: dict[str, tuple[str, str]] = {
     "U": ("x-wind component", "m s-1"),
     "V": ("y-wind component", "m s-1"),
@@ -979,6 +1002,8 @@ REGISTRY_VAR_META: dict[str, tuple[str, str]] = {
     "TSLB": ("SOIL TEMPERATURE", "K"),
     "SMOIS": ("SOIL MOISTURE", "m3 m-3"),
     "SH2O": ("SOIL LIQUID WATER", "m3 m-3"),
+    # WRF v4.7.1 Registry.EM_COMMON CANWAT has the history flag h.
+    "CANWAT": ("CANOPY WATER", "kg m-2"),
     "SWDOWN": ("DOWNWARD SHORT WAVE FLUX AT GROUND SURFACE", "W m-2"),
     "GLW": ("DOWNWARD LONG WAVE FLUX AT GROUND SURFACE", "W m-2"),
     # Registry.EM_COMMON:1839, transcribed verbatim beside its two
@@ -986,6 +1011,10 @@ REGISTRY_VAR_META: dict[str, tuple[str, str]] = {
     # the dimension table and the FieldType default already describe it
     # correctly and it needs no row of its own.
     "OLR": ("TOA OUTGOING LONG WAVE", "W m-2"),
+    # Registry.EM_COMMON:1699 (``ikj``, ``irh``), verbatim: mass grid, no
+    # stagger, real, unitless.  Written where a radiation scheme that
+    # computes a cloud fraction runs; see RADIATION_CLDFRA_ATTRIBUTES.
+    "CLDFRA": ("CLOUD FRACTION", ""),
     # Registry.EM_COMMON:1715, written where slope_rad = 1 runs.
     "SWNORM": ("NORMAL SHORT WAVE FLUX AT GROUND SURFACE (SLOPE-DEPENDENT)",
                "W m-2"),
@@ -999,6 +1028,19 @@ REGISTRY_VAR_META: dict[str, tuple[str, str]] = {
     "HFX": ("UPWARD HEAT FLUX AT THE SURFACE", "W m-2"),
     "QFX": ("UPWARD MOISTURE FLUX AT THE SURFACE", "kg m-2 s-1"),
     "LH": ("LATENT HEAT FLUX AT THE SURFACE", "W m-2"),
+    "ALBEDO": ("ALBEDO", ""),
+    "EMISS": ("SURFACE EMISSIVITY", ""),
+    "GSW": ("NET SHORT WAVE FLUX AT GROUND SURFACE", "W m-2"),
+    "FRC_URB2D": ("URBAN FRACTION", "dimensionless"),
+    "SH_URB": ("SENSIBLE HEAT FLUX FROM URBAN SFC", "W m{-2}"),
+    "LH_URB": ("LATENT HEAT FLUX FROM URBAN SFC", "W m{-2}"),
+    "G_URB": ("GROUND HEAT FLUX INTO URBAN", "W m{-2}"),
+    "RN_URB": ("NET RADIATION ON URBAN SFC", "W m{-2}"),
+    "TS_URB": ("SKIN TEMPERATURE", "K"),
+    "TR_URB": ("ROOF SURFACE TEMPERATURE", "K"),
+    "TB_URB": ("WALL SURFACE TEMPERATURE", "K"),
+    "TG_URB": ("ROAD SURFACE TEMPERATURE", "K"),
+    "TC_URB": ("CANOPY AIR TEMPERATURE", "K"),
     "TKE_SASE": ("SASE prognostic subgrid turbulence kinetic energy",
                  "m2 s-2"),
     "TKE_SHINHONG": ("Shin-Hong published subgrid turbulence kinetic "
@@ -1076,6 +1118,7 @@ __all__ = [
     "OUTPUT_FIELDS_BY_NETCDF_NAME",
     "PHYSICS_SELECTOR_GLOBALS",
     "PRECIPITATION_OUTPUT_FIELDS",
+    "RADIATION_CLDFRA_ATTRIBUTES",
     "REGISTRY_VAR_META",
     "RUC_OUTPUT_FIELDS",
     "SCHEME_OUTPUT_FIELDS",

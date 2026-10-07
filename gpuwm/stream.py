@@ -144,6 +144,20 @@ class StreamPlan:
     authority_manifest: Path | None = None
 
 
+def _declared_runtime_surface(plan) -> str | None:
+    """The ``[fetch] runtime_surface`` the stream's experiment declares."""
+    import tomllib
+    config = getattr(plan, "experiment_config", None)
+    if config is None:
+        return None
+    try:
+        raw = tomllib.loads(Path(config).read_text(encoding="utf-8-sig"))
+    except (OSError, TypeError, ValueError):
+        return None
+    fetch = raw.get("fetch")
+    return fetch.get("runtime_surface") if isinstance(fetch, dict) else None
+
+
 def _strict_table(raw, name: str, keys: frozenset[str], *, required=True):
     value = raw.get(name)
     if value is None and not required:
@@ -1251,7 +1265,8 @@ class ProductionBackend:
             wait=True, wait_timeout_s=plan.wait_timeout_seconds,
             probe=self.probe, sleeper=self.sleeper, clock=self.monotonic,
             engine=engine, engine_bin=engine_bin, mode=HRRR_DEFAULT_MODE,
-            cache_dir=plan.cache_dir)
+            cache_dir=plan.cache_dir,
+            runtime_surface=_declared_runtime_surface(plan))
 
     def bind_plan_authorities(self, plan: StreamPlan) -> None:
         """Route every child import through the pinned registry bytes."""

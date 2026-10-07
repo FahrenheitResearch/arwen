@@ -1303,6 +1303,16 @@ chunk per file, and the one codec the datasets use is the Blosc frame,
 which numcodecs decodes under zarr-python 2.18 and 3 (the proof opened
 every export with both).
 
+## Native GRIB2 export, clean room (2026-10-05, engine 2.8.7)
+
+`rw_grib2export` is the binary of the `rw-grib2export` crate (Apache-2.0).
+Every product is computed by `rw-post`, the clean-room post-processor, from
+one shared column state on a GPU when one has room and on the CPU
+otherwise; the two paths write byte-identical files.  Packing uses the
+vendored `wx-core` writer below.  History discovery (folders, gzip, ZIP)
+and the STORED ZIP64 archive writer are `rw-mlexport`'s.  No UPP or HRRR
+post code is compiled into it.
+
 ## wx-core GRIB2 writer templates (2026-10-02)
 
 The vendored `wx-core` GRIB2 writer adds templates 3.10 and 3.20,

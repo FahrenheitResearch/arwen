@@ -1,0 +1,19 @@
+{
+  "schema": "gpuwm.chem.diagnostic.v1",
+  "output_name": "SFIRE_SMOKE_COLUMN",
+  "units": "mg m-2",
+  "description": "Column bulk SFIRE smoke mass, not PM2.5",
+  "kind": "column_integral",
+  "terms": [
+    {
+      "species": [
+        "fire_smoke"
+      ],
+      "ops": [],
+      "from": "SFIRE bulk source and AQ generic diagnostic program"
+    }
+  ],
+  "divide_by_alt": false,
+  "column_scale": 0.001,
+  "provenance": "Bulk WRF-SFIRE smoke only; no size fraction, optics, AQI or PM2.5 skill interpretation."
+}

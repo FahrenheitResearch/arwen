@@ -62,6 +62,7 @@ def _driver_fields():
         "vegfra": np.full((_NY, _NX), 62.5, np.float32),
         "xice": np.zeros((_NY, _NX), np.float32),
         "tsk": np.full((_NY, _NX), 290.0, np.float32),
+        "canwat": np.full((_NY, _NX), 0.125, np.float32),
     }
 
 
@@ -91,6 +92,12 @@ def test_land_surface_run_publishes_the_five_identity_rows():
             f"the driver carries it as fields[{driver_key!r}]")
         np.testing.assert_array_equal(
             np.asarray(history[netcdf_name]), fields[driver_key])
+
+
+def test_native_canopy_water_history_keeps_the_live_mass_carrier():
+    state = _state(land_surface=True)
+    assert _live_state_history_fields(state)["CANWAT"] is state.physics.fields["canwat"]
+    assert "CANWAT" not in _live_state_history_fields(_state(land_surface=False))
 
 
 def test_a_run_without_a_land_surface_scheme_publishes_none_of_them():

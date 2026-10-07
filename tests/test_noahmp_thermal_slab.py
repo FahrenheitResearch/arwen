@@ -85,7 +85,7 @@ from gpuwm.core.noahmp_thermal_gpu import (NLAY, NSNOW, NSOIL,
                                            pack_tsnosoi_calls)
 
 REPO = Path(__file__).resolve().parents[1]
-ORACLE = REPO / "gpuwm" / "data" / "noahmp" / "oracle"
+ORACLE = REPO / "tests" / "data" / "oracles" / "noahmp"
 
 #: >= 32 as the gate requires; 96 also puts a second, partly-filled 64-thread
 #: block on the grid, so a packer that only ever sees one block is not what is

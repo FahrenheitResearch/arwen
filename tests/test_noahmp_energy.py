@@ -1,6 +1,6 @@
 """max_ulp 0 gate for the Noah-MP ENERGY assembly against the WRF v4.6.1 oracle.
 
-``gpuwm/data/noahmp/oracle/noahmp-energy.csv`` was produced by
+``tests/data/oracles/noahmp/noahmp-energy.csv`` was produced by
 ``tools/noahmp_wrf461_oracle/build_energy.sh`` from the pinned WRF tree with
 nothing but a ``private::`` -> ``public::`` accessibility lift, at ``-O0``.
 Every value is stored as its IEEE-754 binary32 bit pattern, so equality here is
@@ -38,7 +38,7 @@ from gpuwm.core.noahmp_energy import (
 )
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-FIXTURE = ROOT / "gpuwm" / "data" / "noahmp" / "oracle" / "noahmp-energy.csv"
+FIXTURE = ROOT / "tests" / "data" / "oracles" / "noahmp" / "noahmp-energy.csv"
 
 #: The fixture this gate is pinned to.  A regenerated CSV must land here.
 FIXTURE_SHA256 = "c99cf60c5e58c07f3292c49d14ed950a6f11dcd66ed511f5e8ed22a4a6bc189c"
@@ -285,7 +285,7 @@ def test_undefined_slots_get_the_defined_zero(case):
     """WRF leaves these unassigned; the port must produce exactly 0.0.
 
     The fixture never pins the residue -- see
-    ``gpuwm/data/noahmp/oracle/PROVENANCE-energy.md`` -- so this is the only
+    ``tests/data/oracles/noahmp/PROVENANCE-energy.md`` -- so this is the only
     statement of what the port is allowed to do there.
     """
     st = _run(case)
@@ -579,7 +579,7 @@ def test_gate_fails_if_tanh_comes_from_an_fp64_shim():
 # --------------------------------------------------------------------------
 # the port against the whole-column fixture
 # --------------------------------------------------------------------------
-SFLX = ROOT / "gpuwm" / "data" / "noahmp" / "oracle" / "noahmp-sflx.csv"
+SFLX = ROOT / "tests" / "data" / "oracles" / "noahmp" / "noahmp-sflx.csv"
 
 #: ENERGY writes these and WATER then writes them again, so NOAHMP_SFLX's
 #: output is not ENERGY's.  Everything else must agree bit for bit.

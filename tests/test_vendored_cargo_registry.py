@@ -330,3 +330,33 @@ def test_no_shipped_build_path_bypasses_the_vendored_registry() -> None:
         "these build sites reach a vendored cargo workspace through "
         f"--manifest-path and cannot build air-gapped: {offenders}; use "
         "`cd <crate> && cargo build --release --locked --offline`")
+
+
+def test_zarr_notice_inventory_orders_versions_without_losing_lock_authority(tmp_path, monkeypatch):
+    from tools import update_zarr_license_notice as notice
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    versions = ("0.9.4", "0.10.1")
+    blocks = []
+    for index, version in enumerate(versions):
+        checksum = ("a" if index == 0 else "b") * 64
+        package = workspace / "vendor/crates-io" / f"example-{version}"
+        package.mkdir(parents=True)
+        (package / "Cargo.toml").write_text(
+            f'[package]\nname = "example"\nversion = "{version}"\nlicense = "MIT"\n',
+            encoding="utf-8")
+        (package / ".cargo-checksum.json").write_text(
+            json.dumps({"package": checksum, "files": {}}), encoding="utf-8")
+        blocks.append(f'[[package]]\nname = "example"\nversion = "{version}"\n'
+                      f'source = "registry+https://example.invalid"\nchecksum = "{checksum}"\n')
+    monkeypatch.setattr(notice, "WORKSPACE", workspace)
+    lock = workspace / "Cargo.lock"
+    lock.write_text("\n".join(blocks), encoding="utf-8")
+    first = notice.inventory()
+    lock.write_text("\n".join(reversed(blocks)), encoding="utf-8")
+    second = notice.inventory()
+    assert first["packages"] == second["packages"]
+    assert [item["version"] for item in first["packages"]] == ["0.10.1", "0.9.4"]
+    assert {item["package_sha256"] for item in first["packages"]} == {"a" * 64, "b" * 64}
+    assert first["lock_sha256"] != second["lock_sha256"]

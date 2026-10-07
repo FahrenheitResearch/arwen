@@ -759,8 +759,11 @@ extern "C" __global__ void ensemble_headline_diagnostics(
     if (has_humidity) {
         // The surface equations are the production Rust import's f64 DAG.
         // CUDA log/exp are library calls, not transcribed libm source.
+        // Q2 is a mixing ratio: e = w p / (0.622 + w). The specific-humidity
+        // form (0.622 + 0.378 w) read Td2 0.1-0.25 K moist
+        // (lane/dewpoint-mixing-ratio).
         double moisture = (double)q[cell], pressure = (double)p[cell];
-        double vapor = __ddiv_rn(__dmul_rn(moisture, pressure), __dadd_rn(0.622, __dmul_rn(0.378, moisture)));
+        double vapor = __ddiv_rn(__dmul_rn(moisture, pressure), __dadd_rn(0.622, moisture));
         float missing = __int_as_float(0x7fc00000);
         if (!isfinite(q[cell]) || !isfinite(p[cell]) || q[cell] <= 0.0f || p[cell] <= 0.0f)
             dewpoint[cell] = missing;

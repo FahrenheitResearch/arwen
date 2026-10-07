@@ -338,14 +338,14 @@ def _timeout(seconds):
 
 def fetch_stations(request, bbox, folder, *, timeout, refresh=False) -> Path:
     from gpuwm.obs.frontdoor import ASOS
-    from gpuwm.obs.surface_networks import networks_for_bbox
+    from gpuwm.obs.surface_networks import networks_for_domain
 
     folder.mkdir(parents=True, exist_ok=True)
     table = Path(request.get("station_table_path") or folder / "stations.json")
     if not table.is_file():
         if bbox is None:
             raise ValueError("station verification needs a native grid bbox or a frozen station table")
-        arguments = ["--networks", ",".join(networks_for_bbox(*bbox)),
+        arguments = ["--networks", ",".join(networks_for_domain(*bbox)),
                      "--bbox", ",".join(map(str, bbox)), "--out", str(table)]
         _door(ASOS, "stations", arguments, "gpuwm-obs.asos-stations.v1", timeout=timeout)
     when = _time(request["valid_time"])

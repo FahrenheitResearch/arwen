@@ -93,7 +93,8 @@ STAGE_LAUNCHERS = (
      "launch_aerosol_saturation_adjust"),
     ("rain_evaporation", "gpuwm.core.thompson_aerosol_sat",
      "launch_aerosol_rain_evaporation"),
-    ("sedimentation", "gpuwm.core.thompson", "launch_rain_sedimentation"),
+    ("sedimentation", "gpuwm.core.thompson_aerosol_sed",
+     "launch_aa_rain_sedimentation_accumulate"),
     ("cleanup", "gpuwm.core.thompson_aerosol_sed",
      "launch_aa_final_phase_cleanup"),
     ("finalize", "gpuwm.core.thompson_aerosol_state",
@@ -325,9 +326,10 @@ def _cols(a):
 
 def _snapshot(state, dt=None, species=SPECIES):
     """The port's working state.  Until the terminal apply the port holds
-    the nc/nwfa/nifa tendencies in per-kilogram accumulators and leaves the
-    state arrays at their entry values, so a mid-call snapshot reports
-    ``X + Xten*dt`` for those three, in float32 the way WRF forms it."""
+    the qc/nc/nwfa/nifa tendencies (and, on the v4.6.1 generation, the
+    qr/nr/qi/ni ones) in per-kilogram accumulators and leaves the state
+    arrays at their entry values, so a mid-call snapshot reports
+    ``X + Xten*dt`` for those, in float32 the way WRF forms it."""
     snap = {s: _cols(getattr(state, s)) for s in species}
     if dt is not None:
         # Mid-call the port carries WRF's RUNNING vapour qv1d + DT*qvten,
@@ -338,8 +340,9 @@ def _snapshot(state, dt=None, species=SPECIES):
     snap["T"] = _cols(state._scratch["mp_thompson_temperature"])
     if "mp_thompson_graupel_number_shadow" in state._scratch:
         snap["ng"] = _cols(state._scratch["mp_thompson_graupel_number_shadow"])
-    for acc, var in (("ncten", "nc"), ("nwfaten", "nwfa"),
-                     ("nifaten", "nifa")):
+    for acc, var in (("qcten", "qc"), ("ncten", "nc"), ("nwfaten", "nwfa"),
+                     ("nifaten", "nifa"), ("qrten", "qr"), ("nrten", "nr"),
+                     ("qiten", "qi"), ("niten", "ni")):
         slot = f"mp_thompson_aero_{acc}"
         if slot in state._scratch:
             snap[acc] = _cols(state._scratch[slot])

@@ -57,6 +57,9 @@ pub enum LegendMode {
     /// style's densification, and each band is labelled with the code it
     /// stands for rather than with its edges.
     Categories,
+    /// Unequal concentration intervals keep one listed colour per interval.
+    /// Numeric boundary ticks remain visible, unlike category-code legends.
+    Thresholds,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -288,8 +291,10 @@ impl LeveledColormap {
         mask_below: Option<f64>,
         options: ColormapBuildOptions,
     ) -> Self {
-        if options.legend.mode == LegendMode::Categories {
-            return Self::categories(palette, levels, extend, mask_below);
+        if matches!(options.legend.mode, LegendMode::Categories | LegendMode::Thresholds) {
+            let mut cmap = Self::categories(palette, levels, extend, mask_below);
+            cmap.categories = options.legend.mode == LegendMode::Categories;
+            return cmap;
         }
         let dense_levels = densify_levels_with_density(levels, options.render_density.fill);
         let legend_levels = densify_levels_with_density(levels, options.legend.density);

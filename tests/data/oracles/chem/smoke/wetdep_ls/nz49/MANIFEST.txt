@@ -1,0 +1,17 @@
+initial f4 4 12 49 1 19
+qc f4 3 12 49 1
+rho f4 3 12 49 1
+dz f4 3 12 49 1
+w f4 3 12 49 1
+rain f4 2 12 1
+dt f4 0
+step1 f4 4 12 49 1 19
+removed1 f4 3 12 1 19
+step2 f4 4 12 49 1 19
+removed2 f4 3 12 1 19
+step3 f4 4 12 49 1 19
+removed3 f4 3 12 1 19
+step4 f4 4 12 49 1 19
+removed4 f4 3 12 1 19
+step5 f4 4 12 49 1 19
+removed5 f4 3 12 1 19

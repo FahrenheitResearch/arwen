@@ -133,6 +133,8 @@ def plan_suite(cfg, *, members=1, registry=None):
         raise ValueError("members must be a positive integer")
     components = selected_capabilities(cfg, registry=registry)
     reasons = []
+    if _value(cfg, "chem_sets", ""):
+        reasons.append("active chemistry keeps the original member species arrays, source-hour caches and mass ledger; the native packed graph lacks chemistry producers and typed state ownership")
     for row in components:
         if not row.implemented:
             reasons.append(f"{row.component} selection has no qualified packed registry row")

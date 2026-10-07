@@ -57,7 +57,14 @@ def test_compact_transform_preserves_every_positive_neighbor(relaxation, static)
     assert old_diag.active_points == new_diag.active_points
     assert old_diag.max_local_obs == new_diag.max_local_obs
     assert old_diag.stencil_slots == new_diag.stencil_slots
-    assert new_diag.geometry_reuses > new_diag.geometry_evaluations
+    # The default host-staged route finds neighbours with the once-built
+    # index (gpuwm.da.neighbor_index), not the per-chunk geometry walk.
+    assert new_diag.neighbor_search == "index"
+    assert new_diag.neighbor_index["neighbours"] > 0
+    forward_diag = LetkfDiagnostics()
+    solver(prior, obs, grid, replace(cfg, neighbor_search="forward"),
+           forward_diag, solve_namespace=np)
+    assert forward_diag.geometry_reuses > forward_diag.geometry_evaluations
     assert new_diag.host_staging
     assert new_diag.staging_peak_bytes > 0
 

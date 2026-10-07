@@ -192,23 +192,22 @@ bytes are outside the numerical oracle.
   `-ftz=true` to whatever the caller passed, at
   `cupy.cuda.compiler` line 585 (`options += ('-ftz=true',)`), after the
   caller's options, and NVRTC honours the last occurrence.
-  The inventory records 9 distinct caller-supplied option tuples across the 71
+  The inventory records 8 distinct caller-supplied option tuples across the 86
   compile sites in the shipped package, each listed here with a site that
   supplies it:
   - no caller options -- `gpuwm/core/attribute_tracking.py:99`
-    (xp.ElementwiseKernel), and 37 other site(s)
-  - `-std=c++17` -- `gpuwm/core/kernels/__init__.py:226` (cp.RawModule), and
-    10 other site(s)
+    (xp.ElementwiseKernel), and 51 other site(s)
+  - `-std=c++17` -- `gpuwm/core/kernels/__init__.py:243` (cp.RawModule), and
+    12 other site(s)
   - `--std=c++17` -- `gpuwm/ensemble/batch_perturbation.py:51`
     (xp.RawModule), and 8 other site(s)
-  - `-std=c++17` `--ftz=false` -- `gpuwm/core/rrtmg_legacy.py:942`
-    (_cc.compile_using_nvrtc), and 4 other site(s)
+  - `-std=c++17` `--ftz=false` -- `gpuwm/core/chem_plumerise_cache.py:36`
+    (compiler.compile_using_nvrtc), and 5 other site(s)
   - `-fmad=false` -- `gpuwm/core/dycore.py:300` (cp.ElementwiseKernel), and
     2 other site(s)
-  - `-std=c++17` `--ftz=true` -- `gpuwm/core/mynn_pbl_gpu.py:364`
-    (cp.RawKernel), and 1 other site(s)
-  - `--ftz=true` -- `gpuwm/core/morrison.py:39` (cp.ElementwiseKernel)
-  - `-std=c++17` `--fmad=false` -- `gpuwm/core/kernels/__init__.py:192`
+  - `--fmad=false` `-std=c++14` -- `gpuwm/da/letkf_device.py:363`
+    (cp.RawModule)
+  - `-std=c++17` `--fmad=false` -- `gpuwm/core/kernels/__init__.py:209`
     (cp.RawModule)
   - `-std=c++17` `-fmad=false` -- `gpuwm/core/nest_interp.py:261`
     (cp.RawModule)
@@ -259,6 +258,93 @@ bytes are outside the numerical oracle.
   rain-sedimentation kernel; fallout velocities still use the updated
   environmental density.  This is a numerical-ordering seam, not an external
   WRF runtime dependency.
+
+## Operational WRF 3.9 fork Thompson tables (release assets, 2.8.7)
+
+`thompson_version = "wrf_39_noaa"` reads its own four lookup tables
+(`gpuwm/core/thompson_contract.py`, `FORK_TABLE_ASSETS`, table set
+`wrf-3.9-noaa-fork-thompson-gfortran15-v1`).  From 2.8.7 every release
+carries them as assets named `thompson-wrf39-noaa-<table>`
+(`tools/release/cut/fork_tables.py`), and `gpuwm.thompson_fork_assets`
+downloads them from the engine's own release, then from v2.8.7, verifying
+each file's size and SHA-256 against those pins before installing it into
+`~/.gpuwm/tables/thompson-wrf39-noaa` (or `GPUWM_THOMPSON_FORK_TABLE_ROOT`).
+
+- **Source**: the HRRR (NOAA GSL) fork of WRF's `module_mp_thompson.F`,
+  NOAA-EMC/HRRR tag `v4.1.21` (commit
+  `a131d6c7f6ebf57ae3c43f198229ad6afdf4d886`),
+  `sorc/hrrr_wrfarw.fd/WRFV3.9/phys/module_mp_thompson.F` sha256
+  `4d60011188443eb432294f7693beb64bdbc8f812541a15c7800013060c877283` and
+  `module_mp_radar.F` sha256
+  `08329c87604b234efab53f7986163a4f6050f58823da9099cb464163c1920f08`, with
+  the v4.6.1 `CCN_ACTIVATE.BIN` (sha256
+  `f2b8d3916560f9046f89f8ac5f32c5292a1800498fd75301e422f147c82a3dbd`).
+- **Licence**: the fork's `WRFV3.9/README` (blob
+  `cd40a3a3b28a15d5bb52f1d9b6f2bb25505a55d0` at that tag) opens with the
+  WRF Public Domain Notice, word for word the text of
+  `licenses/LICENSE-WRF-public-domain.txt`; neither source file has a
+  copyright line, a licence clause or a use restriction, and the HRRR
+  repository has no licence file of its own that says otherwise.  The
+  tables ship under the WRF notice (NOTICE).
+- **Generator**: the fork's own `thompson_init`, compiled unmodified, called
+  by `tools/thompson_fork_oracle/generate_tables.F90` (sha256
+  `65a0925b31003ae24135e1a0c69c48ccc08e03b0195c6a3c3282c3a5d0c03f77`) and
+  built by `tools/thompson_fork_oracle/build.sh` (sha256
+  `e454ac55c752c0f927fa457319a2364d1568bed8af9bff98650da696020558e3`) with
+  `stub_wrf.F90` (sha256
+  `e377d142027d294cb5d259f02c2c04ef68d698ff98816ba04de263af003396ba`);
+  harness commit `43d87c73cf72554044108c74bb647d79a415916f`.  GNU Fortran
+  15.2.0 (Ubuntu 15.2.0-16ubuntu1), glibc 2.43-2ubuntu2.4, Linux x86_64,
+  `-O2 -fno-tree-vectorize`, no libmvec symbols (the build refuses a
+  binary that links libmvec, which changes the table bits).
+- **Tables** (bytes, sha256):
+  `qr_acr_qg.dat` 51,518,256
+  `8b9b5039ec560748c6261cc9ecbc4366332473a9a1d0666ee5a7f04686abf402`;
+  `qr_acr_qs.dat` 33,118,944
+  `39b4fd363d440a867cc8c37a22ebf2651c8ffcf54f8c05ab7a6f5e753e630ac0`;
+  `freezeH2O.dat` 254,944,848
+  `28c12192251969cd79a02e08e3174f26113de51490689f728cfc44af9cf76b2c`;
+  `thompson_aux_tables.dat` 6,164,536
+  `13d304911e5322fb5bcc2a0639effc20ad5381c59f076ced2386b56f2fb441ae`.
+- **Reproduction**: node-2's receipt
+  (`tools/thompson_fork_oracle/PROVENANCE-node2.txt`) recorded these four
+  digests; on 2026-10-06 two independent `build.sh` runs on node-4 (same
+  compiler and libc, kernel 7.0.0-31) from a fresh download of the two
+  fork sources produced byte-identical tables with the same four digests.
+  The generator binaries' own digests differ from node-2's receipt; the
+  tables do not.  `gpuwm.thompson_fork_build` repeats this
+  build from the same pinned sources when no release answers, and its
+  output must equal the same pins or it is refused.
+
+## Operational HRRR v4 CONUS static file (release asset, 2.8.7)
+
+The static-source row `hrrr-conus-v4`
+(`gpuwm/data/static_sources/static-sources.v1.toml`), which the HRRR
+adapters select by default, pins NCO's operational HRRR v4 CONUS geogrid
+output.  NCO serves it from a versioned folder that moves with every HRRR
+code bump (the v4.1.19 path already returns 404), so 2.8.7 publishes the
+same file, unmodified, as the release asset
+`hrrr-conus-v4-hrrr_geo_em.d01.nc` (`tools/release/cut/static_mirror.py`),
+and the row names
+https://github.com/FahrenheitResearch/arwen/releases/download/v2.8.7/hrrr-conus-v4-hrrr_geo_em.d01.nc
+as its mirror.  The fetch tries NCO first, then the mirror, and installs
+bytes from either only when they match the row's size and SHA-256.  Only
+the 2.8.7 release carries the file; later releases point at it there.
+
+- **Source**: NOAA/NCEP NCO production tree,
+  https://www.nco.ncep.noaa.gov/pmb/codes/nwprod/hrrr.v4.1.21/fix/conus/hrrr_geo_em.d01.nc
+  (served with `Last-Modified: Tue, 15 Jul 2025 17:56:18 GMT`).
+- **Licence**: operational HRRR v4 static data made by NOAA/NCEP and NOAA
+  GSL, a work of the United States Government and in the public domain
+  (NOTICE).  Redistributed unmodified.
+- **File**: `hrrr_geo_em.d01.nc`, 1,112,724,420 bytes, sha256
+  `a785b53fdb8493e376b88ece6e166ddd8046588dd1c0062181141bf2b012f6e2`.
+- **How it was made**: as the row's `provenance` key records it: GEOGRID
+  V3.9.1 output with HRRR's own land use, soil, vegetation and terrain
+  choices and GSL's drag fields grafted in.
+- **Acquisition for the 2.8.7 cut**: downloaded on 2026-10-07 from the NCO
+  URL above on a Linux node, its size and SHA-256 checked against the pin
+  before the cut staged it.
 
 ## Deliberate runtime deviations from WRF v4.6.1
 
@@ -1056,96 +1142,54 @@ oversight, and each says what would close it.
   column fixtures -- the 19 the port spec names plus three `wp08-*` columns
   from the same oracle build -- driven end to end through the shipped adapter
   and compared on 23 quantities each at a flat 2.0e-6 relative / 2.0e-4 dB
-  gate.  **18 of 22 clear every quantity with nothing held out** (16 of the 19
-  `aero-*`, plus `wp08-freeze` and `wp08-melt`).
+  gate.  **22 of 22 clear every quantity with nothing held out** (all 19
+  `aero-*`, plus `wp08-freeze`, `wp08-melt` and `wp08-nusweep`), and the
+  gated count is the same 22 of 22: no allowance remains.  An RTX 4090 and an
+  RTX 5090 read the whole table identically.
 
-  ONE fixture, `aero-reduces-to-classic`, clears only under two named
-  allowances, taking the gated count to 19 of 22: `nr` 5.700e-06 at 0-based
-  level 5 under a 1.0e-5 bound, and 0-based level 6 held to 32 ULP of the
-  entry value instead of a relative bound (measured 14.9 ULP for `qr`, 4.05
-  for `nr`).  NOTHING WAS EVER WIDENED and one allowance has been RETIRED.
-  The relative bound went 2.5e-03 -> 1.0e-04 -> 1.0e-05 with its `qr` entry
-  DELETED; the dB bound went 1.0e-02 -> 1.0e-03 and is now gone entirely,
-  because the residual it existed for measures 3.242e-05 dB, inside the flat
-  2.0e-4 dB gate.  Two mechanisms did that, both found and closed rather than
-  tolerated: `module_mp_thompson.F:3490` overwrites `rho(k)` inside the
-  condensation loop while `:3384-3388` had already frozen the rain moments
-  from the pre-condensation density, and the adapter was not passing that
-  entry density through (pre-fix `qr` 1.915e-03 / `nr` 1.922e-03 at level 5);
-  and WRF builds the rain mass and number sedimentation consumes at
-  `:3237-3238` from the `:3193` tau+1 density for every level with rain and
-  rebuilds them at `:3568`/`:3570` from the post-condensation density only
-  inside the `:3501-3502` gate, where ArWen wrote the post-condensation one
-  unconditionally (that took `qr` 7.813e-05 -> 1.788e-07 and `nr` 4.832e-05 ->
-  5.700e-06).  The remaining allowance replaced a bare SKIP of level 6, which
-  is strictly more than the skip asserted.
+  WHAT CLOSED THE LAST FOUR (the 2.8.6 accumulator rework).  WRF's
+  `mp_thompson` never writes a hydrometeor during the call: every process
+  adds to a running tendency (`qcten`, `qrten`, `nrten`, `qiten`, `niten`),
+  every stage reads `X1d + Xten*DT`, and the terminal apply
+  (`module_mp_thompson.F:3972-4053`) rounds each species once, with the size
+  bounds after the `:3943-3966` phase cleanup.  The port applied each stage
+  to the state in turn, so a species was rounded once per stage, and the
+  rain and ice fallout it shared with mp=8 folded the terminal size bounds in
+  before the freeze.  mp=28 now carries the five tendencies, runs the
+  `:3033-3055` / `:3070-3091` balances in tendency form, has its own
+  tendency-form rain and ice fallout, applies once in a terminal kernel, and
+  takes the cold network's rain-conservation ratio as REAL as `:1615`
+  declares it.  The fork generation keeps its in-place rain and ice and the
+  frozen mp=8 kernel file is unchanged.  Measured: `aero-cloud-freeze-nc` `qc`
+  4.926e-06 -> bit-exact; `aero-cold-overlap` `qc` / `nc` / `effc` at level 4
+  (1.000e+00 / 1.000e+00 / 8.102e-01, one float32 ULP of cloud flipping
+  `:4007`) and `nr` 1.261e-04 / `qr` 4.443e-05 at level 6 -> bit-exact;
+  `wp08-nusweep` `qr` 4.642e-06 -> 5.532e-07; `wp08-freeze` `nr` level 0
+  4.006e-07 -> bit-exact; `aero-reduces-to-classic` level 6 bit-exact in `qr`
+  and `nr`, which retired the last allowance.
 
-  THE ATTRIBUTION OF WHAT SURVIVES CHANGED, AND THE OLD ONE IS NOW FALSE.
-  This register used to record the residual as pre-existing and not introduced
-  by the aerosol port, because the frozen mp=8 pipeline reproduced WRF's `qr`
-  bitwise at levels 2-3 on the identical entry column.  That was true and is
-  not any more, because mp=28 got BETTER: it is now bit-exact against WRF at
-  `qr` levels 1, 2 and 4 and at `nr` level 1, where mp=8 is 7.61e-05,
-  4.00e-05, 6.27e-05 and 4.63e-05 away, and over levels 0-7 it is at least as
-  near WRF as mp=8 at every level and strictly nearer at seven of eight.  The
-  surviving `nr` 5.700e-06 is therefore NOT inherited and is not claimed to
-  be; it sits at level 5 alone, the one level where the step removes 49.75% of
-  the rain number without emptying it, and it is 27.5 ULP of the entry value
-  where every other unexcluded level is 0-3 ULP.  It changed again on
-  2026-09-23: the classic rain evaporation now writes the `L_qr` hand-off too
-  and the mp=8 adapter launches the same fallout forms, so mp=28 and mp=8 are
-  bitwise identical in `qr` and `nr` at levels 0-5 and differ only at the
-  near-cancellation level 6, both under one ULP of the entry value from WRF
-  there (measured 2026-09-24 on an RTX 5070 Ti and an RTX 4090 alike).
+  THE ALLOWANCES, ALL RETIRED, NONE EVER WIDENED.  The relative bound on
+  `aero-reduces-to-classic` went 2.5e-03 -> 1.0e-04 -> 1.0e-05 with its `qr`
+  entry deleted, and was retired at the 1.4.1 merge (level 5 `nr` 5.700e-06
+  -> 4.146e-07); the dB bound went 1.0e-02 -> 1.0e-03 and was retired when
+  the residual fell to 3.242e-05 dB; the near-cancellation bound, which
+  replaced a bare SKIP of level 6 with 32 ULP of the entry value, was retired
+  by the 2.8.6 accumulator rework.  The mechanisms closed on the way were
+  found rather than tolerated: `module_mp_thompson.F:3490` overwrites
+  `rho(k)` inside the condensation loop while `:3384-3388` had already frozen
+  the rain moments from the pre-condensation density (pre-fix `qr` 1.915e-03
+  / `nr` 1.922e-03 at level 5); WRF builds the rain mass and number
+  sedimentation consumes at `:3237-3238` from the `:3193` tau+1 density for
+  every level with rain and rebuilds them at `:3568`/`:3570` only inside the
+  `:3501-3502` gate (`qr` 7.813e-05 -> 1.788e-07, `nr` 4.832e-05 ->
+  5.700e-06); and WRF's terminal apply is `q1d(k) = q1d(k) + qten(k)*DT`
+  with no FMA in the `gfortran -O2` oracle, which nvrtc used to contract.
 
-  THREE MISS, published field by field:
-  `aero-cold-overlap` (`qc` 1.000e+00, `nc` 1.000e+00, `effc` 8.102e-01,
-  `nr` 1.261e-04, `qr` 4.443e-05),
-  `aero-cloud-freeze-nc` (`qc` 4.926e-06) and
-  `wp08-nusweep` (`qr` 4.642e-06).  `wp08-freeze` (`nr` 2.724e-06) left
-  the list on 2026-09-23 when the rain fallout was handed WRF's `L_qr`
-  (level 0 now 4.006e-07, 5 ULP, on the RTX 4090 and RTX 5090 alike;
-  8.012e-08, 1 ULP, on the host build of the kernels).  NO SURFACE ACCUMULATION MISSES ON ANY
-  FIXTURE any more: `RAINNC`, `RAINNCV` and `SR` are bitwise identical to WRF
-  on all 22 columns and `SNOWNC`/`SNOWNCV` and `GRAUPELNC`/`GRAUPELNCV` peak
-  at 6.285e-08 and 7.062e-08.  Earlier revisions of this register carried
-  `rainnc`/`rainncv`/`sr` rows on two fixtures and noted they were one number
-  seen three ways (`module_mp_thompson.F:1298`, `:1299`, `:1308`); the note
-  was right and the rows are gone.
-
-  WHAT MOVED IN THIS REVISION, INCLUDING WHAT GOT WORSE.  The sedimentation
-  density fix above closed `aero-drop-evap` and `aero-ice-demott-idxin`
-  outright (both now clear the flat gate on all 23 quantities) and took
-  `aero-cloud-freeze-nc` from six rows to one.  Separately, WRF's terminal
-  apply at `:3973-4023` is `q1d(k) = q1d(k) + qten(k)*DT` and the `gfortran
-  -O2` baseline-x86-64 oracle has no FMA instruction, so `qten*DT` is rounded
-  to REAL(4) first; nvrtc contracted it in the cold and warm source networks
-  and now does not.  That made `aero-nc-cap`'s `qc`/`nc` and
-  `aero-ice-demott-idxin`'s surface accumulators BITWISE exact -- and it COST
-  one cell, recorded rather than absorbed: `aero-cold-overlap`'s `qr` at level
-  6 GREW, 3.667e-05 -> 4.443e-05 (1.477 -> 1.789 ULP of the entry value).
-  Reverting that one line restores the old number and simultaneously loses
-  four of the improvements above, two of which are exact, so the pin is kept
-  and the growth is published.
-
-  `aero-cold-overlap`'s full-scale rows are a ONE-ULP disagreement reported by
-  a relative metric, and they are recorded rather than allowanced.  Measured
-  at 0-based level 4: the level enters with `qc` = 2.3252160e-04 kg/kg and
-  `nc` = 9.1306704e+07 per kg; WRF ends the step with `qc` =
-  1.4551915228366852e-11 kg/kg -- exactly 2^-36, exactly 1.000 float32 ULP of
-  the entry value -- and `nc` = 1.8333361 per kg, while gpuwm ends at exactly
-  0.0 (`nc`: 0.229 ULP).  `effc` follows: with no cloud water gpuwm takes the
-  2.49 um floor while WRF's remainder gives 1.31176e-05 m.  One mechanism,
-  three views.  Its OTHER residual is separate and real, at level 6, where the
-  rain number falls 255.407 -> 0.0739 per kg (0.611 ULP for `nr`, 1.789 for
-  `qr`).  `aero-cloud-freeze-nc`'s single surviving row is the SECOND float32
-  rounding of `qc` inside one step: WRF rounds once at `:3975` from a `qcten`
-  carrying the source network and the condensation together, while ArWen
-  applies the source network to `qc` and then applies the condensation to the
-  already-rounded value.  Named, measured, and not closed -- the accumulator
-  would need a scratch slot in `gpuwm/core/preflight.py` and a resequencing of
-  `thompson_aerosol_sed.cu`'s cloud sedimentation, neither of which was this
-  package's to edit.
+  NO SURFACE ACCUMULATION MISSES ON ANY FIXTURE: `RAINNC`, `RAINNCV` and `SR`
+  are bitwise identical to WRF on all 22 columns.  Earlier revisions of this
+  register carried `rainnc`/`rainncv`/`sr` rows on two fixtures and noted
+  they were one number seen three ways (`module_mp_thompson.F:1298`,
+  `:1299`, `:1308`); the note was right and the rows are gone.
 
   Three preregistered matched gpuwm/WRF mp=28 comparisons have run on an
   idealized, single-domain, doubly periodic case. Their declared outcomes

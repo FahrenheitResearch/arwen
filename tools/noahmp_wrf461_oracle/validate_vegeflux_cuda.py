@@ -28,7 +28,7 @@ sys.path.insert(0, str(REPO))
 
 import numpy as np  # noqa: E402
 
-FIXTURE = REPO / "gpuwm" / "data" / "noahmp" / "oracle" / "noahmp-vegeflux.csv"
+FIXTURE = REPO / "tests" / "data" / "oracles" / "noahmp" / "noahmp-vegeflux.csv"
 KERNEL = REPO / "gpuwm" / "core" / "kernels" / "noahmp_vegeflux.cu"
 
 NSNOW, NSOIL = 3, 4

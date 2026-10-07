@@ -2164,6 +2164,12 @@ tests/test_free_threading.py
 # Prevents threads floating across sockets, the mixed peer-copy collapse
 # (245 ms against 15 ms per exchange) and a silent locked-interpreter run.
 tests/test_rank_placements.py
+# Hourly checkpoints snapshot between steps and publish on a thread of their
+# own, only after the frames up to their valid time are durable, byte for
+# byte the synchronous archive; frame latency is timed from the frame.
+# Prevents the 31-37 s hourly stall of the 1 km CONUS run and a checkpoint
+# landing ahead of a missing frame.
+tests/test_background_checkpoint.py
 
 # Prevents a native mass-level top being confused with its model-top interface,
 # pressure rounding refusing the source's own eta ladder, aerosol numbers
@@ -2343,6 +2349,52 @@ tests/test_ensemble_member_inputs.py
 tests/test_namelist_stochastic.py
 tests/test_ruc_soilprop.py
 
+# Optional smoke and composition programs.
+# Device-only chem nest lifecycle and fork integration suites live on the
+# per-cut GPU shard; listing either here would contribute zero CPU rows.
+tests/test_chem_table.py
+tests/test_chem_config.py
+tests/test_chem_front_door.py
+tests/test_chem_restart_roundtrip.py
+tests/test_chem_product_inventory.py
+tests/test_chem_outputs.py
+tests/test_chem_sum_pm_wrf471_parity.py
+tests/test_chem_bdy_wrf471_parity.py
+tests/test_chem_prep_wrf471_parity.py
+tests/test_chem_vertmx_wrf471_parity.py
+tests/test_chem_advect_mono_wrf471_parity.py
+tests/test_obs_regrid_cell_sum.py
+tests/test_chem_rave_ingest.py
+tests/test_chem_hrrr_smoke_ic.py
+tests/test_chem_fire_emissions.py
+tests/test_chem_plumerise_frp_parity.py
+tests/test_chem_plumerise_wrf471_parity.py
+tests/test_chem_plumerise_process.py
+tests/test_chem_wetdep_ls_wrf471_parity.py
+tests/test_chem_mp_coupling.py
+tests/test_chem_dust_wrf471_parity.py
+tests/test_chem_afwa_wrf471_parity.py
+tests/test_chem_seasalt_wrf471_parity.py
+tests/test_chem_rrtmgp_aerosol_parity.py
+tests/test_chem_sulfur_wrf471_parity.py
+tests/test_chem_ageing_wrf471_parity.py
+tests/test_chem_dust_statics.py
+tests/test_chem_gocart_cadence.py
+tests/test_chem_statics.py
+tests/test_chem_cams_fetch.py
+tests/test_chem_cams_credentials.py
+tests/test_chem_cams_ingest.py
+tests/test_grib2_stack.py
+tests/test_chem_remap_operators.py
+tests/test_chem_cams_boundary.py
+tests/test_chem_wesely_wrf471_parity.py
+tests/test_chem_airnow.py
+tests/test_chem_goes_aod.py
+
+tests/test_chem_current_engine.py
+tests/test_chem_sulfur_inputs.py
+tests/test_chem_history_layout.py
+tests/test_chem_emitted_config_bytes.py
 # Registered parameter binding, source isolation and default identity.
 tests/test_physics_params.py
 tests/test_physics_params_kernel_isolation.py
@@ -2351,6 +2403,27 @@ tests/test_physics_params_gpu.py
 tests/test_physics_params_checkpoint_echo.py
 tests/test_physics_params_preparation_identity.py
 tests/test_physics_params_python_api.py
+
+# Native Noah cold initialization and observation score ports must execute
+# their retained bitwise authorities, shape/category refusals and ABI probes.
+tests/test_noah_init_rust.py
+tests/test_obs_score_rust_parity.py
+# Native section themes must preserve generic pixels and resolve version labels.
+tests/test_renderer_theme_sections.py
+# Prepare must retain opted-in simulated radar in public experiment documents.
+tests/test_prepare_simulated_radar.py
+# Verification arrival/recovery and CF archive doors retain their CPU controls.
+tests/test_verification_visuals.py
+tests/test_cf_archive_fetch.py
+
+# RUC selector defaults, configuration doors, identity and host oracle controls.
+# Native GRIB2 doors and background export (2.8.7 clean-room exporter):
+# WOOF catalog and GPU-default requests at every door, the held-out
+# UPP-derived binary refused by its marker, queue deduplication, subprocess
+# lifetime, export failures and CLI/run-plan reachability. Prevents a valid
+# history export from silently using a stale binary, dropping a frame or
+# publishing an incomplete archive.
+tests/test_grib2_live.py
 
 # WRF radiation-driver options as operational HRRR runs them (lane
 # 286-aer-swint): swint_opt = 1 (the surface shortwave between radiation
@@ -2408,6 +2481,10 @@ tests/test_ruc_public_identity.py
 tests/test_ruc_qvg_cold_start.py
 tests/test_ruc_selector_comment.py
 tests/test_ruc_snow.py
+# Source-only manifest and lock checks for the shared HDF5 reader.
+tests/test_hdf5_reader_convergence.py
+# Actual Rust decode cache admission, selectors, raw content and atomic staging.
+tests/test_chem_source_cache_identity.py
 tests/test_thompson_mynn_ruc_profiles.py
 tests/test_mynn_dmp_sibling.py
 
@@ -2431,3 +2508,143 @@ tests/test_nest_step_growth_advisory.py
 # Smagorinsky kernel.  Fourteen CPU cases with both compilers stubbed; a cut
 # that does not run them would not see the dispatch choose the wrong arm.
 tests/test_smag2d_index32_dispatch.py
+tests/test_sfire.py
+tests/test_sfire_clock.py
+tests/test_sfire_committed_snapshot.py
+tests/test_sfire_coordinate_authority.py
+tests/test_sfire_core.py
+tests/test_sfire_debug_runtime.py
+tests/test_sfire_fuel_table.py
+tests/test_sfire_inactive_restart_identity.py
+tests/test_sfire_ideal_door.py
+tests/test_sfire_ideal_inputs.py
+tests/test_sfire_namelist.py
+tests/test_sfire_native_input.py
+tests/test_sfire_negative_burn_gpu.py
+tests/test_sfire_restart_io.py
+tests/test_sfire_smoke.py
+tests/test_sfire_smoke_tile_contract.py
+tests/test_sfire_source_cache.py
+tests/test_sfire_tile_geometry.py
+tests/test_sfire_wrfinput.py
+tests/test_sfire_wrfout_io.py
+# Urban city defaults: original WRF v4.6.1 fixture words and the compiled
+# shared-source SLUCM host twin prevent a changed canopy transcription.
+tests/test_urban_ucm_wrf461_parity.py
+# The native SLUCM host twin must preserve every variant's carried state.
+tests/test_urban_ucm_host.py
+# Mixed urban cover must reach the prepared static carrier as built area.
+tests/test_highres_urban_fraction.py
+
+# City soil choices retain their categorical source through preparation.
+tests/test_bnu_soil_geog.py
+# Surface energy output preserves default documents and prices its fields.
+tests/test_urban_history_energy.py
+
+# lane/dewpoint-mixing-ratio 70838be40: WRF Q2 is a mixing ratio.  The ensemble
+# headline kernel read it with the specific-humidity vapour-pressure form, and
+# every ensemble dewpoint2/humidity2 product read 0.1-0.25 K moist; four CPU
+# cases pin the kernel source and real HRRR SPFH/PRES/DPT rows.
+tests/test_headline_dewpoint_mixing_ratio.py
+
+# lane/fork-tables-lock: fork Thompson (wrf_39_noaa) took the cross-process
+# fetch-tables lock on every model step, and DA members sharing one TMPDIR
+# queued on it with their GPUs near 0%.  Five CPU cases pin one lock per
+# process (six concurrent processes, 200 steps each) and the re-verification
+# of a changed or wrong table file.
+tests/test_thompson_fork_tables_lock.py
+
+# lane/wrfinput-door-roundtrip 66ee6ba93: WOOF's own stock-WRF export was
+# refused by WOOF's WRF-input door ("wrfbdy U west does not match initial
+# wrfinput_d01: 100250 of 100250 points differ") because the first wrfbdy
+# record was the boundary source's atmosphere under --initial-inputs, and its
+# aerosol tables were zeros.  test_wrf_direct.py carries the round trip (real
+# CPU cold start, export, door, state compared bit for bit) and the exporter's
+# contract; test_wrfinput_theta_records.py pins the door's first-record check
+# against a committed WRF 4.6.1 real.exe strip.
+tests/test_wrf_direct.py
+tests/test_wrfinput_theta_records.py
+
+# lane/fix-dispersion-point-crop 38373a50a: the DA velocity-dispersion withheld
+# re-solve attached a window to conventional point batches holding whole-grid
+# indices, and the device LETKF refused every cycle with surface or conventional
+# point obs plus a gated zone; the gate tests cover the re-indexed crop.
+tests/test_velocity_dispersion_gate.py
+
+# lane/initial-boundary-head ba7b39372: a run started from a separate analysis
+# (--initial-inputs) begins its first boundary interval from its own start
+# state, WRF's da_update_bc rule; the first record had carried the boundary
+# source's state.  The rewritten direct-mapping test pins the new head.
+tests/test_mapped_direct.py
+
+# lane/prepare-only-nested: `gpuwm go --prepare-only` on the two-domain Toronto
+# 750 m city template (hrrr-prs) ran the whole 12 h forecast on box B (2.8.6:
+# 27 history writes, 441 s) because the HRRR route reached the run-plan launch,
+# which has no prepare-only option; on 2.8.7 the [case_data], --wps-namelist and
+# --prepared-root branches still did, and --dry-run and --run-stamp were dropped.
+# The nested file drives the real door and native HRRR chain with every forecast
+# entry point armed; the single-domain file is the route fix's own (745189e71).
+tests/test_go_prepare_only.py
+tests/test_go_prepare_only_nested.py
+
+# lane/asos-networks-from-domain: with no networks named, the recent DA case
+# author and its observation step defaulted to a fixed Southeast ASOS list, so
+# an Iowa case fetched zero stations and Ohio/Southeast cases scored on partial
+# sets; the radar roster had the same Gulf-coast default.  These cells pin the
+# domain-box default, the by-name refusal over open ocean, the explicit-list
+# override and the absence of any hard-coded state list in engine code.
+tests/test_surface_networks_domain_default.py
+
+# lane/latlon-named-refusal-287: a lat-lon grid (WPS map_proj 'lat-lon', WRF
+# MAP_PROJ 6) is refused by name on the namelist support report, the
+# import-namelist door and the --wrfinput / --met-em doors; it had met a
+# missing-truelat1 or dx "mismatch" refusal, a degrees-as-metres hierarchy
+# row, or an uncaught NotImplementedError.
+tests/test_latlon_named_refusal.py
+
+# lane/hrrr-recipe-doors e3128b9e9: `gpuwm go` on every shipped configs/recipes
+# HRRR recipe stopped before any stage (no WPS twin beside it), and a recipe
+# naming [static] source = "hrrr-conus-v4" stopped at static preparation until
+# fetch-geog --static-source had been run by hand.  The route renders the
+# namelist from the recipe's grid and stages the static file itself; the cells
+# sweep every shipped config without a twin and pin both stagings.
+tests/test_recipe_route_inputs.py
+
+# lane/supervisor-dies-with-parent 3ee8d8abd: a stopped `gpuwm go` left its forecast
+# supervisor alive under init holding 64 GB of a card for 43 min with no owner;
+# every go stage, render process and run worker now dies with its parent.  The
+# three kill cases fail with the fix removed (Linux; the file skips elsewhere).
+tests/test_parent_death.py
+
+# lane/wheel-287: since 356c94560 rw_ensbatch --abi prints a second line,
+# GPUWM_BRIDGE_SOURCE_REV=<rev>, and the lane probe compared the whole answer,
+# so this checkout's own build was refused as "a build from another checkout"
+# and `gpuwm enprod --engine rust` refused to draw.  The marker cells drive the
+# real binaries; the stamp cells pin that a foreign revision is still refused.
+tests/test_rustwx_lanes.py
+
+# lane/gfix-wif-latlon-287: a plain HRRR regional run on the HRRR cone
+# ([static] source = "hrrr-conus-v4", mp_physics 28 with aer_init_opt =
+# wif_input_opt = 1) passed prepare on 2.8.6 and stopped at forecast start:
+# the boundary workers ran real-init with no mass-point coordinates, so the
+# WIF climatology refused ("could not derive the model mass-point
+# latitudes/longitudes").  The cells build such a root from a synthetic
+# static, run the strip loop through the real real-init and WIF step, and
+# pin that the refusal still stands for a carrier with no coordinates.
+tests/test_hrrr_static_source_boundary_wif.py
+
+# lane/gfix-bitmap-287: since 608b9ac47 the HRRR native bridge read the analyzed
+# aerosol pair whenever a file published it, and NCEP publishes PMTF hybrid
+# level 1 with a GRIB2 bitmap on some cycles, so a plain `gpuwm go` of an HRRR
+# domain stopped at prepare ("selected initialization field unexpectedly
+# carries a bitmap").  The cells pin the gate's withheld receipt, its path to
+# the snapshot, the named refusal for mp28_aerosol_source = "analysis", and
+# that the decoder is asked for the pair only by a configuration that uses it
+# (an as-posted default-profile run stopped at the first later lead NCEP masked).
+tests/test_hrrr_masked_aerosol_pair.py
+
+# lane/gfix-bitmap-287: the met_em route called initialize_real without the
+# mass-point lat/lon it had just checked, so an mp=28 WIF-climatology run whose
+# met_em lacks QNWFA/QNIFA refused "could not derive the model mass-point
+# latitudes/longitudes" while holding them.
+tests/test_metem_wif_grid.py

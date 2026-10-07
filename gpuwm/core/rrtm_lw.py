@@ -784,6 +784,8 @@ class RRTMLongwaveRadiation:
     _auto_chunk: dict = field(default_factory=dict, init=False, repr=False)
 
     publishes_olr = True
+    #: The driver CLDFRA RRTMLWRAD radiated through (zeros under icloud=0).
+    publishes_cldfra = True
     #: The GLW buffer is produced by this scheme, not carried in.
     glw_provenance = "scheme"
 
@@ -871,6 +873,16 @@ class RRTMLongwaveRadiation:
 
     def longwave(self, *, atmosphere, fields, state, cfg):
         """Run RRTM LW and return ``(rthratenlw, glw, olr)`` on device."""
+        return self.longwave_with_cloud_fraction(
+            atmosphere=atmosphere, fields=fields, state=state, cfg=cfg)[:3]
+
+    def longwave_with_cloud_fraction(self, *, atmosphere, fields, state, cfg):
+        """:meth:`longwave` plus the driver CLDFRA it radiated through.
+
+        Returns ``(rthratenlw, glw, olr, cldfra)``; ``cldfra`` is the
+        (nz, ny, nx) bottom-up icloud=1 fraction after the MYNN merge
+        (zeros under icloud=0, where RRTMLWRAD's cloud block never runs).
+        """
         import cupy as cp
         from gpuwm.core import constants as c
         from gpuwm.core.mynn_radiation import (merge_mynn_bl_clouds,
@@ -1002,13 +1014,15 @@ class RRTMLongwaveRadiation:
             tten.reshape(ny, nx, nz).transpose(2, 0, 1))
         rthratenlw = heating / atmosphere["exner"]
         self.update_count += 1
-        return rthratenlw, glw.reshape(ny, nx), olr.reshape(ny, nx)
+        cloud = cp.ascontiguousarray(
+            cldfra[:, ::-1].reshape(ny, nx, nz).transpose(2, 0, 1))
+        return rthratenlw, glw.reshape(ny, nx), olr.reshape(ny, nx), cloud
 
     def __call__(self, *, atmosphere, fields, state, cfg):
         import cupy as cp
         from gpuwm.core.physics import RadiationResult
 
-        rthratenlw, glw, olr = self.longwave(
+        rthratenlw, glw, olr, cldfra = self.longwave_with_cloud_fraction(
             atmosphere=atmosphere, fields=fields, state=state, cfg=cfg)
         return RadiationResult(
             rthratenlw=rthratenlw,
@@ -1017,7 +1031,7 @@ class RRTMLongwaveRadiation:
             glw=glw,
             gsw=cp.zeros(glw.shape, dtype=cp.float32),
             coszen=cp.zeros(glw.shape, dtype=cp.float32),
-            olr=olr)
+            olr=olr, cldfra=cldfra)
 
     @property
     def restart_identity(self) -> dict[str, object]:
@@ -1065,6 +1079,7 @@ class RRTMDudhiaRadiation:
     trace_gas_overrides: dict[str, float] | None = None
 
     publishes_olr = True
+    publishes_cldfra = True
     glw_provenance = "scheme"
 
     def __post_init__(self) -> None:
@@ -1099,8 +1114,9 @@ class RRTMDudhiaRadiation:
     def __call__(self, *, atmosphere, fields, state, cfg):
         from gpuwm.core.physics import RadiationResult
 
-        rthratenlw, glw, olr = self.longwave_adapter.longwave(
-            atmosphere=atmosphere, fields=fields, state=state, cfg=cfg)
+        rthratenlw, glw, olr, cldfra = (
+            self.longwave_adapter.longwave_with_cloud_fraction(
+                atmosphere=atmosphere, fields=fields, state=state, cfg=cfg))
         shortwave = self.shortwave_adapter(
             atmosphere=atmosphere, fields=fields, state=state, cfg=cfg)
         return RadiationResult(
@@ -1110,7 +1126,7 @@ class RRTMDudhiaRadiation:
             glw=glw,
             gsw=shortwave.gsw,
             coszen=shortwave.coszen,
-            olr=olr)
+            olr=olr, cldfra=cldfra)
 
     @property
     def restart_identity(self) -> dict[str, object]:

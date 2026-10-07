@@ -898,6 +898,7 @@ def test_prepared_tree_route_wires_the_corridor_runner(tmp_path):
     exp = SimpleNamespace(
         relocation=manual, domains=scaffold.domains, vertical=object(),
         start_time=None)
+    exp.domain = {int(dc.grid_id): dc for dc in exp.domains}.__getitem__
     grid = LambertGrid(
         ref_lat=35.0, ref_lon=-97.0, truelat1=30.0, truelat2=60.0,
         stand_lon=-97.0, dx=1000.0, dy=1000.0, e_we=13, e_sn=13)

@@ -229,6 +229,11 @@ class ShortFrameRefused(ValueError):
 #: Frame fields this module derives on the host, with the rule named.  Every
 #: other unmatched field is reported UNAVAILABLE rather than guessed at.
 _DERIVED_RULES = {
+    "FS_GEN_IDMAX": "firebrand control ID",
+    "FS_LAST_GEN_DT": "firebrand clock last_gen_dt",
+    "FS_COUNT_RESET": "firebrand clock count_reset",
+    "FMOIST_LASTTIME": "fire clock moisture_lasttime",
+    "FMOIST_NEXTTIME": "fire clock moisture_nexttime",
     "T": "(thb + thp) - 300",
     "P": "p - pb",
     "PB": "broadcast(pb)",
@@ -332,9 +337,26 @@ def _frame_plan_on_device(state, *, include_diagnostic_pressure,
     origin: dict[str, str] = {}
     shape: dict[str, tuple[int, ...]] = {}
     dtype: dict[str, Any] = {}
+    from gpuwm.io.sfire_schema import (SFIRE_GRID_FIELD_MAP, SFIRE_COARSE_FIELD_NAMES,
+                                       SFIRE_MOISTURE_FIELD_MAP, SFIRE_PARTICLE_FIELDS,
+                                       SFIRE_SPOTTING_COARSE_FIELDS)
+    fire_origins = {name: f"fire/grid.{key}" for name, key in SFIRE_GRID_FIELD_MAP.items()}
+    fire_origins.update(LFN_HIST="fire/grid.lfn_hist")
+    fire_origins.update(LFN_TIME="fire/lfn_time")
+    fire_origins.update({name: f"fire/{name.lower()}" for name in
+                         (*SFIRE_COARSE_FIELD_NAMES, "FZ0", "FXLAT", "FXLONG")})
+    fire_origins.update({name: f"fire/grid.moisture.{key}" for name, key in SFIRE_MOISTURE_FIELD_MAP.items()})
+    fire_origins.update({name: f"fire/spotting.{name.lower()}" for name in
+                         (*SFIRE_SPOTTING_COARSE_FIELDS, *SFIRE_PARTICLE_FIELDS, "FS_FIRE_ROSDT")})
+    if getattr(getattr(getattr(state, "physics", None), "fire", None), "spotting", None) is None:
+        fire_origins.update({name: f"fire/{name.lower()}" for name in SFIRE_SPOTTING_COARSE_FIELDS})
+    chem_fields = getattr(getattr(state, 'chem', None), 'streamed_history', {})
     for name, value in fields.items():
         shape[name] = tuple(int(s) for s in np.shape(value))
         dtype[name] = np.dtype(getattr(value, "dtype", np.float32))
+        if name in fire_origins:
+            source[name], origin[name] = SOURCE_CARRIER, fire_origins[name]
+            continue
         key = carriers.get(id(value))
         if key is not None:
             source[name], origin[name] = SOURCE_CARRIER, key
@@ -342,6 +364,10 @@ def _frame_plan_on_device(state, *, include_diagnostic_pressure,
         attr = setup.get(id(value))
         if attr is not None:
             source[name], origin[name] = SOURCE_SETUP, attr
+            continue
+        chem_key = 'diag/chem/' + name
+        if name in chem_fields and chem_key in extra:
+            source[name], origin[name] = SOURCE_CARRIER, chem_key
             continue
         if name in _DERIVED_RULES:
             source[name], origin[name] = SOURCE_DERIVED, _DERIVED_RULES[name]
@@ -483,7 +509,12 @@ def domain_frame_plan(plan: FramePlan, store, cfg, *,
     template_hw = (int(template_shape[-2]), int(template_shape[-1]))
     domain_hw = (int(cfg.ny), int(cfg.nx))
     shape: dict[str, tuple[int, ...]] = {}
+    from gpuwm.io.sfire_schema import sfire_history_shapes
+    fire_shapes = sfire_history_shapes(cfg)
     for name in plan.order:
+        if name in fire_shapes:
+            shape[name] = fire_shapes[name]
+            continue
         held = (arrays.get(plan.origin[name])
                 if plan.source[name] == SOURCE_CARRIER else None)
         if held is not None:
@@ -609,6 +640,10 @@ def diagnostic_members(obj) -> dict:
     if isinstance(obj, Mapping):
         return {}
     members: dict = {}
+    if getattr(obj, 'chem', None) is not None:
+        from gpuwm.core.chem_history import streaming_fields
+        members.update({'diag/chem/' + name: value
+                        for name, value in streaming_fields(obj).items()})
     driver = getattr(obj, "physics", None)
     for attr in physinv.OUTPUT_ONLY_DRIVER_ATTRS:
         held = getattr(driver, attr, None)
@@ -731,10 +766,11 @@ class StoreFrame:
     """
 
     def __init__(self, plan: FramePlan, store, setup, cfg, *,
-                 overlap: bool = False, require_complete: bool = True):
+                 overlap: bool = False, require_complete: bool = True, scalars=None):
         self.plan = plan
         self.cfg = cfg
         self.overlap = bool(overlap)
+        self.scalars = scalars
         inner = getattr(store, "arrays", None)
         self._store = inner if isinstance(inner, dict) else store
         self.nz, self.ny, self.nx = int(cfg.nz), int(cfg.ny), int(cfg.nx)
@@ -793,7 +829,8 @@ class StoreFrame:
     #: drift: a road that copies only a frame's members to the host
     #: (``tilestream.ranks.RankedRun.download``) copies exactly these.
     _DERIVED_INPUTS = {"T": ("state/thp",), "P": ("state/p",),
-                       "PSFC": ("state/php", "state/p")}
+                       "PSFC": ("state/php", "state/p"),
+                       "FS_GEN_IDMAX": ("fire/spotting.control",)}
 
     def store_keys(self) -> tuple[str, ...]:
         """Every store member :meth:`fields` reads, in frame order."""
@@ -815,6 +852,11 @@ class StoreFrame:
 
     def _carrier(self, name):
         array = self._store[self.plan.origin[name]]
+        from gpuwm.io.sfire_schema import SFIRE_FINE_FIELDS, SFIRE_SPOTTING_COARSE_FIELDS
+        if name in SFIRE_FINE_FIELDS and name != "FS_FIRE_ROSDT":
+            array = array[1:-1, 1:-1]
+        if name in SFIRE_SPOTTING_COARSE_FIELDS and self.plan.origin[name].startswith("fire/spotting."):
+            array = array[4:-4, 4:-4]
         if not self.overlap:
             return array
         dst = self._snapshot[name]
@@ -842,6 +884,26 @@ class StoreFrame:
             elif kind == SOURCE_ZERO:
                 out[name] = self._dst[name]
             elif kind == SOURCE_DERIVED:
+                if name in ("FS_GEN_IDMAX", "FS_LAST_GEN_DT", "FS_COUNT_RESET"):
+                    if name == "FS_GEN_IDMAX":
+                        value = store["fire/spotting.control"][0]
+                    else:
+                        values = self.scalars() if callable(self.scalars) else self.scalars
+                        if values is None:
+                            raise ValueError("streamed firebrand history requires live domain clocks")
+                        metadata = values["fire_header"]["fire"]["spotting"]
+                        value = metadata["last_gen_dt" if name == "FS_LAST_GEN_DT" else "count_reset"]
+                    self._dst[name][...] = value
+                    out[name] = self._dst[name]
+                    continue
+                if name in ("FMOIST_LASTTIME", "FMOIST_NEXTTIME"):
+                    values = self.scalars() if callable(self.scalars) else self.scalars
+                    if values is None or "fire_clocks" not in values:
+                        raise ValueError("streamed fuel moisture history requires live fire clocks")
+                    key = "moisture_lasttime" if name == "FMOIST_LASTTIME" else "moisture_nexttime"
+                    self._dst[name][...] = np.float32(values["fire_clocks"][key])
+                    out[name] = self._dst[name]
+                    continue
                 if name in ("PB", "PHB", "P_TOP"):
                     out[name] = self._statics[name]
                 elif name == "T":

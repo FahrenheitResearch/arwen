@@ -1,0 +1,50 @@
+{
+  "dataset": "IGBP-MODIS",
+  "longitude_period": 360,
+  "emission_min": 0.001,
+  "emission_min_provenance": "rrfs_smoke_wrapper.F90:250",
+  "provenance": "ccpp-physics 3e6660c6 physics/smoke_dust/rrfs_smoke_wrapper.F90:375-401",
+  "groups": [
+    {"name": "lu_nofire", "categories": [11, 15, 17, 20]},
+    {"name": "lu_qfire", "parent": "lu_nofire", "categories": [12, 13, 14, 16]},
+    {"name": "lu_sfire", "parent": "lu_qfire", "categories": [8, 9, 10]}
+  ],
+  "rules": [
+    {"group": "lu_nofire", "gt": 0.95, "type": 0},
+    {"group": "lu_qfire", "gt": 0.9, "type": 1},
+    {"longitude_gt": 260, "latitude_gt": 25, "latitude_lt": 41, "type": 2},
+    {"group": "lu_sfire", "gt": 0.8, "type": 3},
+    {"type": 4}
+  ],
+  "curves": [
+    {"type": 0, "kind": "carry"},
+    {"type": 1, "kind": "lognormal", "C": 0.2, "sigma": 2.2, "average": 0.0, "denominator": 9.680000305175781},
+    {"type": 2, "kind": "lognormal", "C": 1.1, "sigma": 0.8, "average": 0.5, "denominator": 1.28000009059906},
+    {"type": 3, "kind": "hwp"},
+    {"type": 4, "kind": "hwp"}
+  ],
+  "night_decay": [
+    {"age_gt": 12, "cap": 0.75},
+    {"age_gt": 24, "cap": 0.5},
+    {"age_gt": 48, "cap": 0.25}
+  ],
+  "curve_provenance": "module_add_emiss_burn.F90:67-130; folded REAL(4) denominators",
+  "peak_bands": [
+    {"longitude_lt": 230, "hour": 0},
+    {"longitude_lt": 245, "hour": 23},
+    {"longitude_lt": 260, "hour": 22},
+    {"longitude_lt": 275, "hour": 21},
+    {"longitude_lt": 290, "hour": 20},
+    {"hour": 19}
+  ],
+  "peak_provenance": "rrfs_smoke_wrapper.F90:1048-1060; unused by active add_emis_burn arithmetic; the peak hour of the trailing_24h_dcycle diurnal curve (gpuwm.core.chem_fire.diurnal_factor)",
+  "trailing_diurnal": {
+    "bx_s": 64948.6368,
+    "cx_s": 7865.7696,
+    "rinti": 2.1813936e-8,
+    "ax": 2000.6038,
+    "base": 100.0,
+    "slope": 5.6712963e-4
+  },
+  "trailing_diurnal_provenance": "WRF v4.7.1 chem/module_add_emiss_burn.F:53-57,73-74 (Freitas et al. 2011 biomass-burning diurnal cycle): r_q = rinti*(ax*exp(-(t-bx)^2/(2 cx^2)) + 100 - 5.6712963e-4 t), daily integral one; bx = 18.041288 h, cx = 2.184936 h. Used by fire_emission_mode trailing_24h_dcycle with its clock shifted to the peak_bands hour, the HRRR-Smoke method of a previous-24 h fire mean with diurnally varying emissions (Dowell et al. 2022, Wea. Forecasting 37, section 3g)."
+}

@@ -67,7 +67,8 @@ retains the missing dry-mass factor in WRF's pinned source.
 The previous branch `a4177ebbf342252405df3f6ed8309704daee94fc` produced the
 historical diff_opt=2 reference and legacy checkpoints, retained unchanged.
 The merged metric baseline separately accounts for the authorized diffusion,
-advection and large-step oracle corrections through source-isolated captures.
+advection, large-step and open-boundary geopotential oracle corrections
+through source-isolated captures.
 The acoustic correction is measured as inert on this corpus. Eight production
 cases run three complete RK3 steps and compare
 every retained state and mixing array, 101,808 words in 160 arrays.
@@ -83,13 +84,15 @@ For metric attribution, export `gpuwm/core/dycore.py` and the `smag2d`,
 files from `a4177ebbf342252405df3f6ed8309704daee94fc` into a control directory
 by basename. The source-isolated captures restore successive default-on
 oracle groups while leaving the merged configuration and synthetic inputs
-unchanged. Restoring all groups must return every historical metric and
-legacy continuation word exactly. No numerical tolerance is used:
+unchanged. Level 1 restores the geopotential launchers that did not route
+open, unforced boundaries through `slow_geopotential_open`, WRF's outer-row
+`rhs_ph` upwinding. Restoring all groups must return every historical
+metric and legacy continuation word exactly. No numerical tolerance is used:
 
 ```sh
 python -m tools.wrf_diffopt1_oracle.merged_metric_capture FIXTURE_DIRECTORY \
   CAPTURE_DIRECTORY/control-0
-for level in 1 2 3 4; do
+for level in 1 2 3 4 5; do
   python -m tools.wrf_diffopt1_oracle.merged_metric_capture FIXTURE_DIRECTORY \
     CAPTURE_DIRECTORY/control-$level --control-level "$level" \
     --control-source CONTROL_DIRECTORY
@@ -97,6 +100,16 @@ done
 python -m tools.wrf_diffopt1_oracle.merged_metric_attribution FIXTURE_DIRECTORY \
   CAPTURE_DIRECTORY OUTPUT_DIRECTORY --merged-commit MERGED_REFERENCE_COMMIT
 ```
+
+Levels 2 to 5 no longer run on the current engine: its `launch_wrf_smag2d_hd`
+calls `wrf_smag_w_stress` and `wrf_smag_hd_w_stress`, which the
+`a4177ebbf` `smag2d.cu` does not define. They are captured with this same
+tool from a checkout of the previous merged reference
+`928e60e7c889f257c3d4ddea7817a47070df123b`, where level 1 is inert (its
+geopotential launchers equal `a4177ebbf`'s). The chain is exact: level 1 on
+the current engine reproduces that checkout's level 0 in all 123,372 words,
+and level 5 reproduces every historical word. Each control's receipt names
+the sources it ran.
 
 The compact summary and exact merged archives are regression fixtures. The
 separately emitted `diff2-merged-attribution-words.json` is the complete

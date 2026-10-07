@@ -3,6 +3,23 @@ use super::*;
 use crate::shared_context::TitleProvenance;
 use rustwx_core::{GridProjection, GridShape, LatLonGrid, SelectedField2D};
 
+#[test]
+fn chem_reference_display_conversions_are_exact_float32_multiplications() {
+    for (slug, input, factor) in [("smoke_near_surface", 2.5e-8_f32, 1.0e9_f32),
+                                  ("smoke_column", 4.0e-5_f32, 1.0e6_f32),
+                                  ("aod_550", 0.5_f32, 1.0_f32),
+                                  ("ozone_near_surface", 70.0_f32, 1.0_f32)] {
+        let recipe = rustwx_models::plot_recipe(slug).unwrap();
+        let (conversion, _) = super::rendering::direct_fill_unit_conversion(
+            recipe, recipe.filled.selector.unwrap());
+        let actual = conversion.apply(input);
+        let expected = input * factor;
+        let ulp = actual.to_bits().abs_diff(expected.to_bits());
+        println!("ULP display-reference {slug} max={ulp}");
+        assert_eq!(ulp, 0, "{slug}");
+    }
+}
+
 fn sample_grid() -> LatLonGrid {
     LatLonGrid::new(
         GridShape::new(2, 2).unwrap(),

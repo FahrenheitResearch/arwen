@@ -1,0 +1,163 @@
+{
+  "schema": "gpuwm.chem.species.v1",
+  "owner": "aq-cams",
+  "description": "Gases carried from the CAMS global composition forecast as initial and boundary values, transported, vertically mixed and dry-deposited (Wesely), with no chemistry solver: ozone, NO2, CO and SO2.",
+  "rows": [
+    {
+      "name": "o3",
+      "output_name": "o3",
+      "long_name": "O3 mixing ratio",
+      "units": "ppmv",
+      "phase": "gas",
+      "family": "ozone",
+      "sets": [
+        "cams_aq"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 1e-12,
+      "molar_mass_g_mol": 47.997,
+      "processes": [
+        "drydep.wesely",
+        "mixing.vertmx"
+      ],
+      "emissions": [],
+      "boundary": [
+        {
+          "source": "cams-global",
+          "fields": [
+            "ozone"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ppmv_dry",
+          "provenance": "CAMS mass mixing ratio per moist air is taken to dry air as q/(1-q_v) with the same frame's CAMS specific humidity, then to ppmv as q_dry * mwdry / M_i * 1e6 with mwdry = 28.966 g/mol (share/module_model_constants.F:34) and M_i this row's molar_mass_g_mol."
+        }
+      ],
+      "drydep": {
+        "scheme": "wesely",
+        "wesely": {
+          "hstar": 0.0113,
+          "dhr": 2300.0,
+          "f0": 1.0,
+          "dratio": 1.4243965,
+          "scpr23": 1.1456436,
+          "arm": "ozone",
+          "from": "hstar chem/module_dep_simple.F:2176, dhr :2453, f0 :2671, dvj 0.175 :2880, dratio and scpr23 :3478-3489; ozone resistance arm rc :1044-1057 (Registry dname o3, registry.chem:1584)"
+        }
+      },
+      "settling": null,
+      "wetdep_ls_alpha": 0.0,
+      "aging": null,
+      "optics": null,
+      "mp_coupling": null,
+      "exclusive_group": null,
+      "provenance": "Registry: state o3 (Registry/registry.chem, dname 'o3', ppmv). floor = WRF epsilc 1.E-16 (chem/module_data_radm2.F:5). default_inflow is WRF-Chem's inflow value for a species the GOCART boundary rule has no explicit case for (chem/module_input_chem_data.F:1295, bdy_chem_value_gocart); it is only ever used when no boundary source is available, and without the CAMS source these rows are refused, so in practice the inflow is CAMS's own value. molar_mass_g_mol from the IUPAC 2013 conventional atomic weights (C 12.011, N 14.007, O 15.999, S 32.06); WRF-Chem carries no common gas molar-mass table for these species. wetdep_ls_alpha 0: large-scale wet scavenging skips gases (chem/module_wetdep_ls.F:39-46). Wesely numbers from dep_init's general (non-MOZART, non-CBM4/CB05) branch, the one a GOCART chem_opt takes. dratio and scpr23 are the float32 values dep_init DERIVES from dvj (the diffusivity corrected to 20 C, then 0.242/dvj and ((0.15/dvj)/0.72)**(2/3), chem/module_dep_simple.F:3478-3489); the column oracle dumps them from the Fortran and tests/test_chem_wesely_wrf471_parity.py asserts these row values equal that dump bit for bit. Carried from CAMS; no photochemistry acts on it (DESIGN 7.4)."
+    },
+    {
+      "name": "no2",
+      "output_name": "no2",
+      "long_name": "NO2 mixing ratio",
+      "units": "ppmv",
+      "phase": "gas",
+      "family": "nox",
+      "sets": [
+        "cams_aq"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 1e-12,
+      "molar_mass_g_mol": 46.005,
+      "processes": [
+        "drydep.wesely",
+        "mixing.vertmx"
+      ],
+      "emissions": [],
+      "boundary": [
+        {
+          "source": "cams-global",
+          "fields": [
+            "nitrogen_dioxide"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ppmv_dry",
+          "provenance": "CAMS mass mixing ratio per moist air is taken to dry air as q/(1-q_v) with the same frame's CAMS specific humidity, then to ppmv as q_dry * mwdry / M_i * 1e6 with mwdry = 28.966 g/mol (share/module_model_constants.F:34) and M_i this row's molar_mass_g_mol."
+        }
+      ],
+      "drydep": {
+        "scheme": "wesely",
+        "wesely": {
+          "hstar": 0.0064,
+          "dhr": 2500.0,
+          "f0": 0.1,
+          "dratio": 1.6957102,
+          "scpr23": 1.2868562,
+          "arm": "general",
+          "from": "hstar chem/module_dep_simple.F:2184, dhr :2460, f0 :2668, dvj 0.147 :2886, dratio and scpr23 :3478-3489 (Registry dname no2, registry.chem:1582)"
+        }
+      },
+      "settling": null,
+      "wetdep_ls_alpha": 0.0,
+      "aging": null,
+      "optics": null,
+      "mp_coupling": null,
+      "exclusive_group": null,
+      "provenance": "Registry: state no2 (Registry/registry.chem, dname 'no2', ppmv). floor = WRF epsilc 1.E-16 (chem/module_data_radm2.F:5). default_inflow is WRF-Chem's inflow value for a species the GOCART boundary rule has no explicit case for (chem/module_input_chem_data.F:1295, bdy_chem_value_gocart); it is only ever used when no boundary source is available, and without the CAMS source these rows are refused, so in practice the inflow is CAMS's own value. molar_mass_g_mol from the IUPAC 2013 conventional atomic weights (C 12.011, N 14.007, O 15.999, S 32.06); WRF-Chem carries no common gas molar-mass table for these species. wetdep_ls_alpha 0: large-scale wet scavenging skips gases (chem/module_wetdep_ls.F:39-46). Wesely numbers from dep_init's general (non-MOZART, non-CBM4/CB05) branch, the one a GOCART chem_opt takes. dratio and scpr23 are the float32 values dep_init DERIVES from dvj (the diffusivity corrected to 20 C, then 0.242/dvj and ((0.15/dvj)/0.72)**(2/3), chem/module_dep_simple.F:3478-3489); the column oracle dumps them from the Fortran and tests/test_chem_wesely_wrf471_parity.py asserts these row values equal that dump bit for bit. Carried from CAMS with no chemistry: its daytime chemical lifetime is hours, so the field is only trustworthy for the first hours of a forecast (DESIGN 7.4)."
+    },
+    {
+      "name": "co",
+      "output_name": "co",
+      "long_name": "CO mixing ratio",
+      "units": "ppmv",
+      "phase": "gas",
+      "family": "co",
+      "sets": [
+        "cams_aq"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 1e-12,
+      "molar_mass_g_mol": 28.01,
+      "processes": [
+        "drydep.wesely",
+        "mixing.vertmx"
+      ],
+      "emissions": [],
+      "boundary": [
+        {
+          "source": "cams-global",
+          "fields": [
+            "carbon_monoxide"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_kg_moist_to_ppmv_dry",
+          "provenance": "CAMS mass mixing ratio per moist air is taken to dry air as q/(1-q_v) with the same frame's CAMS specific humidity, then to ppmv as q_dry * mwdry / M_i * 1e6 with mwdry = 28.966 g/mol (share/module_model_constants.F:34) and M_i this row's molar_mass_g_mol."
+        }
+      ],
+      "drydep": {
+        "scheme": "wesely",
+        "wesely": {
+          "hstar": 0.0082,
+          "dhr": 0.0,
+          "f0": 0.0,
+          "dratio": 1.3188857,
+          "scpr23": 1.088346,
+          "arm": "general",
+          "from": "hstar chem/module_dep_simple.F:2177, dhr :2467, f0 :2678, dvj 0.189 :2894, dratio and scpr23 :3478-3489 (Registry dname co, registry.chem:1602)"
+        }
+      },
+      "settling": null,
+      "wetdep_ls_alpha": 0.0,
+      "aging": null,
+      "optics": null,
+      "mp_coupling": null,
+      "exclusive_group": null,
+      "provenance": "Registry: state co (Registry/registry.chem, dname 'co', ppmv). floor = WRF epsilc 1.E-16 (chem/module_data_radm2.F:5). default_inflow is WRF-Chem's inflow value for a species the GOCART boundary rule has no explicit case for (chem/module_input_chem_data.F:1295, bdy_chem_value_gocart); it is only ever used when no boundary source is available, and without the CAMS source these rows are refused, so in practice the inflow is CAMS's own value. molar_mass_g_mol from the IUPAC 2013 conventional atomic weights (C 12.011, N 14.007, O 15.999, S 32.06); WRF-Chem carries no common gas molar-mass table for these species. wetdep_ls_alpha 0: large-scale wet scavenging skips gases (chem/module_wetdep_ls.F:39-46). Wesely numbers from dep_init's general (non-MOZART, non-CBM4/CB05) branch, the one a GOCART chem_opt takes. dratio and scpr23 are the float32 values dep_init DERIVES from dvj (the diffusivity corrected to 20 C, then 0.242/dvj and ((0.15/dvj)/0.72)**(2/3), chem/module_dep_simple.F:3478-3489); the column oracle dumps them from the Fortran and tests/test_chem_wesely_wrf471_parity.py asserts these row values equal that dump bit for bit. Carried from CAMS; its deposition velocity is small, as in WRF-Chem."
+    }
+  ]
+}

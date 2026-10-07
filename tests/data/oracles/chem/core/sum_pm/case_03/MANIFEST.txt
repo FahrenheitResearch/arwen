@@ -1,0 +1,5 @@
+chem f4 4 3 4 2 20
+alt f4 3 3 4 2
+PM2_5_DRY f4 3 3 4 2
+PM10 f4 3 3 4 2
+PM2_5_DRY_EC f4 3 3 4 2

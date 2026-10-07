@@ -1,0 +1,39 @@
+ julday int32
+ nrow int32
+ map_kind int32
+ ri float32          25           5
+ rlu float32          25           5
+ rac float32          25           5
+ rgss float32          25           5
+ rgso float32          25           5
+ rcls float32          25           5
+ rclo float32          25           5
+ kpart float32          25
+ ixxxlu int32          25
+ luse2usgs int32          25
+ iswater_temp int32
+ isice_temp int32
+ hstar float32           6
+ dhr float32           6
+ f0 float32           6
+ dratio float32           6
+ scpr23 float32           6
+ t_phy_k1 float32          24          18
+ p_phy_k1 float32          24          18
+ p8w_k1 float32          24          18
+ qv_k1 float32          24          18
+ qc_k1 float32          24          18
+ qr_k1 float32          24          18
+ dz1 float32          24          18
+ tsk float32          24          18
+ gsw float32          24          18
+ vegfra float32          24          18
+ ust float32          24          18
+ rmol float32          24          18
+ znt float32          24          18
+ raincv float32          24          18
+ ivgtyp int32          24          18
+ chem_k1 float32          24          18           6
+ ddvel float32          24          18           6
+ aer_res_def float32          24          18
+ aer_res_zcen float32          24          18

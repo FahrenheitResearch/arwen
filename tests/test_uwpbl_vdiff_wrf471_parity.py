@@ -36,7 +36,7 @@ def records():
     directory = os.environ.get('UWPBL_ORACLE_DIR')
     if not directory:
         pytest.skip('UWPBL_ORACLE_DIR is unset')
-    alias_stem=ROOT/'gpuwm/data/uwpbl/oracle/vdiff_alias'
+    alias_stem=ROOT/'tests/data/oracles/uwpbl/vdiff_alias'
     alias=load(alias_stem) if alias_stem.with_suffix('.bin').exists() else None
     for grid in ['g35','g44','g61']:
         stem = Path(directory)/f'cases-{grid}-spy'

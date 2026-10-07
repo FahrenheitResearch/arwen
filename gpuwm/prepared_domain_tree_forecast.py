@@ -222,6 +222,19 @@ def _canonical(value) -> str:
     )
 
 
+def _chem_ledger_receipt(state):
+    """One domain's chem mass ledger for the receipt; None when chem is off.
+
+    Read only when the state carries chem, so a chem-off run imports
+    nothing more than it did.
+    """
+    if getattr(state, "chem", None) is None:
+        return None
+    from gpuwm.core.chem_driver import chem_ledger_receipt
+
+    return _strict_json(chem_ledger_receipt(state))
+
+
 def _strict_json(value):
     if isinstance(value, Mapping):
         return {str(key): _strict_json(item) for key, item in value.items()}
@@ -2175,6 +2188,15 @@ def preflight_prepared_tree(
             domain.parent_id != 0 and lbc is not None
         ):
             raise ValueError(f"{label} external/nested LBC ownership differs")
+        if domain.parent_id == 0:
+            # The root's specified boundary: refused when it predates the
+            # hydrometeors its source publishes, as the single-domain door
+            # refuses it (prepared_single._refuse_stale_boundary).
+            prepared_single._refuse_stale_boundary(
+                domain.run, reader.header.get("metadata"),
+                published=prepared_single._boundary_publication(
+                    prepared_source, mapped_paths),
+                source=prepared_source, prepared_root=prepared_root)
         verify_native_static_receipt(
             geometry_path, static_path, grid, domain.run,
             relocating=(domain.grid_id in relocating_ids
@@ -4462,6 +4484,13 @@ def run_prepared_tree(
             "history": history,
         },
         "final_state_digest": final_digests,
+        # The chem mass ledger per chem domain (gpuwm/core/chem_driver.py),
+        # present only on a chem run so every other receipt keeps its bytes.
+        **({} if not (chem_ledgers := {
+            f"d{grid_id:02d}": ledger
+            for grid_id, node in nodes.items()
+            if (ledger := _chem_ledger_receipt(node.state)) is not None})
+           else {"chem_ledger": chem_ledgers}),
         "microphysics_transitions": {
             "path": str(transition_path.resolve()),
             "sha256": transition_sha,

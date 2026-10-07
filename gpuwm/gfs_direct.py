@@ -2762,6 +2762,11 @@ def prepare_gfs_wrf(
             initial_met, initial_result = build_forcing_time(0)
             forcing.add_state(initial_result.state, index=0)
             boundaries = None
+        # The chem processes' preparation-time arrays (dust statics, sulfur
+        # lat/lon), before the head is published; nothing on a chem-off
+        # state (gpuwm/core/chem_statics.py).
+        from gpuwm.core.chem_statics import attach_chem_statics
+        attach_chem_statics(initial_result.state, grid, geog_root, None)
         lake_skin, lakes_on_source_skin = lake_skin_with_source_skin_fallback(
             interpolate_lake_skin_temperature(
                 snapshots[0], grid, lake_mask,

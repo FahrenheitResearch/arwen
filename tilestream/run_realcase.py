@@ -141,8 +141,8 @@ def stage_gate(args) -> None:
 
     halo = realcase.halo_for(cfg) if args.halo is None else int(args.halo)
     specs, halo = realcase.plan(cfg, args.tile, args.tile, halo)
-    print(f"    halo {halo} = radius {halo - realcase.boundary_width(cfg)} + "
-          f"boundary width {realcase.boundary_width(cfg)};  {len(specs)} "
+    print(f"    halo {halo} = radius {halo - realcase.seam_fiction_width(cfg)} + "
+          f"seam fiction {realcase.seam_fiction_width(cfg)};  {len(specs)} "
           f"tiles of {specs[0].cny}x{specs[0].cnx} (non-periodic plan)")
 
     store = {}

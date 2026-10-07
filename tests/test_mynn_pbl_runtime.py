@@ -267,7 +267,7 @@ def test_where_the_edmf_mass_flux_stops_activating(stretch, expect_plumes):
     decide whether the move was toward WRF or away from it.
 
     Whether unmodified WRF behaves the same way is **not established here**.
-    The pinned ``gpuwm/data/mynn/oracle/dmp-mf.csv`` has a thinnest first
+    The pinned ``tests/data/oracles/mynn/dmp-mf.csv`` has a thinnest first
     layer of 20 m across all twelve columns, so the fixture never reached
     this regime and cannot answer it.
 

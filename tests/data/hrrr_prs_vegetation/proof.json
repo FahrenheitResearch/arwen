@@ -1,0 +1,1323 @@
+{
+  "boundary_interval_seconds": 3600,
+  "boundary_stream": {
+    "head_sha256": "766deae0b9cc49521574f45e08949ebb8db3d46ce331ea1513f6a231a9cd2204"
+  },
+  "execution_inputs": {
+    "decoders": {
+      "gpuwm_mapped_engine": {
+        "bytes": 5706984,
+        "path": "bridges/gpuwm_mapped_engine",
+        "sha256": "6a1ed079c2157ef2330fe4eff214648ac97cf0b1292165c056a4d6dae9204b0c"
+      }
+    },
+    "experiment_config": {
+      "bytes": 4351,
+      "path": "case/configs/off-base.toml",
+      "sha256": "ad53ac90074833371cb1d3a2d5a1886007d269b4f9bac797f1f51795fe988c8d"
+    },
+    "geog_datasets": {
+      "albedo": "case/geog/albedo_modis",
+      "greenfrac": "case/geog/greenfrac_fpar_modis",
+      "lai": "case/geog/lai_modis_10m",
+      "landuse": "case/geog/modis_landuse_20class_30s_with_lakes",
+      "snow_albedo": "case/geog/maxsnowalb_modis",
+      "soil_bottom": "case/geog/soiltype_bot_30s",
+      "soil_temperature": "case/geog/soiltemp_1deg",
+      "soil_top": "case/geog/soiltype_top_30s",
+      "terrain": "case/geog/topo_gmted2010_30s"
+    },
+    "geog_resolution_tokens": [
+      "default"
+    ],
+    "geog_root": "case/geog",
+    "geog_source_binding": "resolved_dataset_paths_plus_native_static_output_sha256",
+    "root_static_provider": "native-wps-geog",
+    "root_static_receipt": {
+      "static_source": {
+        "d01": {
+          "fields": [
+            "all"
+          ],
+          "id": "hrrr-conus-v4",
+          "sha256": "a785b53fdb8493e376b88ece6e166ddd8046588dd1c0062181141bf2b012f6e2"
+        }
+      }
+    },
+    "wps_namelist": {
+      "bytes": 425,
+      "path": "case/configs/off-base.namelist.wps",
+      "sha256": "e8afccf4365434ed9a451b45252f9d813e54452eef1b29bcf9558178fd40cfe7"
+    }
+  },
+  "export": {
+    "boundary_interval_seconds": 3600,
+    "boundary_record_count": 2,
+    "boundary_times": [
+      "2025-01-08_06:00:00",
+      "2025-01-08_07:00:00"
+    ],
+    "dimensions": {
+      "nx": 86,
+      "ny": 80,
+      "nz": 49
+    },
+    "files": {
+      "wrfbdy_d01": {
+        "bytes": 17098588,
+        "sha256": "37bd74cf4c6ad1de9210a3db5b87679de0f95232df81a36be1e8261a5307bf60"
+      },
+      "wrfinput_d01": {
+        "bytes": 33604764,
+        "sha256": "cb2d81eabac2866d48e0ea22575cf2b1865dc09aec6dc0be29d4f770884f3e14"
+      }
+    },
+    "forcing_hours": [
+      0,
+      1,
+      2
+    ],
+    "limitations": [
+      "single specified projected domain only (lambert stock-WRF-gated; mercator/polar exports oracle-gated, not yet stock-WRF-gated)",
+      "hash-bound experiment-config suite initialized state contract",
+      "T_INIT is bound to final dry theta and is diagnostic-only",
+      "hydrometeor/W/HT_SHAD/PC external LBC arrays are zero",
+      "forcing must be uniformly spaced and begin at f00"
+    ],
+    "next_boundary_time": "2025-01-08_07:00:00",
+    "next_boundary_times": [
+      "2025-01-08_07:00:00",
+      "2025-01-08_08:00:00"
+    ],
+    "physics": {
+      "acknowledgement_provenance": {},
+      "acknowledgements": [],
+      "domains": {
+        "1": {
+          "components": {
+            "cumulus": "off",
+            "land_surface": "noah",
+            "microphysics": "thompson-mp8",
+            "pbl": "mynn",
+            "radiation": "rte-rrtmgp",
+            "surface_layer": "mynn",
+            "turbulence": "smagorinsky-2d",
+            "urban": "none"
+          },
+          "governance": {
+            "acknowledged": true,
+            "required_acknowledgement": null,
+            "state": "registry-reachable"
+          },
+          "registry_blocker": null,
+          "selectors": {
+            "bl_pbl_physics": 5,
+            "cu_physics": 0,
+            "km_opt": 4,
+            "mp_physics": 8,
+            "ra_lw_physics": 4,
+            "ra_sw_physics": 4,
+            "sf_sfclay_physics": 5,
+            "sf_surface_physics": 2,
+            "sf_urban_physics": 0
+          }
+        }
+      },
+      "profile": null,
+      "registry_physics": {
+        "parts": {
+          "components.cumulus": "b4070e4f04588e7f9c2e132fd6b75d27c3174df7592a1912078764228ae9d416",
+          "components.cumulus.options.off": "9b7d63fd13b0a533b55c00c7d027203a9b15ef2b4e416512726bfbca5e0c63ea",
+          "components.land_surface": "e93d4e33439691d81a6360adc82586828ea2aca96ed70c84b301cfb678faf545",
+          "components.land_surface.options.noah": "0e3689e2270988422106c9fc57941b1df429107ef5d6ced62388b29c99472c0f",
+          "components.microphysics": "bca190d9697c3ba8e3483d0a075e703c985bc85bac940e160bec356c5eec0653",
+          "components.microphysics.options.thompson-mp8": "bd3217d646848af504dc03bcb81b6dd8ea4938143a06d35006e798d9afcf460d",
+          "components.pbl": "f6dbf2261b0595c1642f91832f0020e034e585d528b10b8aadac90a829afec24",
+          "components.pbl.options.mynn": "f2e007319132eb7f3e7d8b564b03430dcfa5c41c05c8c91904be3406599774bf",
+          "components.radiation": "b95f2c5a29e3dc7c653c21aa9f8018b8a84db6bbe8478aa23bff6df53430fb11",
+          "components.radiation.options.rte-rrtmgp": "7e301ab73fcff1154e5be33f7c9afe1b8e52fc313465673f8d509350c4e1c51f",
+          "components.surface_layer": "e31e96442180769748e76f91d595cc3e30c78ae9f79b5905c1e0b2bca97b7a26",
+          "components.surface_layer.options.mynn": "865a332199388a3a559a4c1ffb33077a2b0b359d0f4d94cf607d92626820c1fa",
+          "components.turbulence": "70b88533b6e5e3171804916bab11731120b3be84abb3c62ea68e05bb4a0bea3f",
+          "components.turbulence.options.smagorinsky-2d": "8f7e4ecdda9c471b95e676cf30a113fff3680446029a6f06063512f8e8a20938",
+          "components.urban": "4f899b0e19bf63191617f39dc770c9e1ab37a3a8fe04625a2dd7c076e1881c5a",
+          "components.urban.options.none": "bbf71cc2df5291b0e9ca6248c2e47e983f31555ea89972f2a3e7f7e570c0a51d",
+          "document": "9fab170b274b83718b3c46a8b55cc268592621d4ab83bc61692ce947fbe98994",
+          "parameters.aer_init_opt": "9ea0f08531f4cc7f36077de9545d3f6e0bf15ca237d08916012744a8fb2261ce",
+          "parameters.base_temp": "36ef57c5dce879880211847b6f0cc162781b31461814277507eb40b1b4cf7a29",
+          "parameters.bl_mynn_closure": "e26208b1d2d4c7075e66d6bf89aed7a5793ab6d38260bf9c9b32c6669c476a82",
+          "parameters.bl_mynn_cloudmix": "c423a2a6a21444c32b6748f2dfba6a6456c45adb30d484577380922109a2462c",
+          "parameters.bl_mynn_cloudpdf": "54a81978945bf0e4efe41d42e39c84a867be294b519dff9de7185436b6faa1eb",
+          "parameters.bl_mynn_edmf": "c423a2a6a21444c32b6748f2dfba6a6456c45adb30d484577380922109a2462c",
+          "parameters.bl_mynn_edmf_mom": "c423a2a6a21444c32b6748f2dfba6a6456c45adb30d484577380922109a2462c",
+          "parameters.bl_mynn_edmf_tke": "a983c04f8431f92713b1be7fe9d01878aeaf4a35d1e683b51d8c69dc996a72b9",
+          "parameters.bl_mynn_mixlength": "c10fe71647917be95c8fdeeab6e01794dfdbe20a8d7abe918958ee314e67714e",
+          "parameters.bl_mynn_mixqt": "a983c04f8431f92713b1be7fe9d01878aeaf4a35d1e683b51d8c69dc996a72b9",
+          "parameters.bl_mynn_mixscalars": "a983c04f8431f92713b1be7fe9d01878aeaf4a35d1e683b51d8c69dc996a72b9",
+          "parameters.bl_mynn_output": "a983c04f8431f92713b1be7fe9d01878aeaf4a35d1e683b51d8c69dc996a72b9",
+          "parameters.bl_mynn_tkeadvect": "dc98a133f5e5e55f9c09ab312b3e7fe825aa91ee06e74611014667fa25884c23",
+          "parameters.bldt": "b40dbe39ef01cf9c7da38b951941e0732d18c61ddaef0c1512441426c036f6f9",
+          "parameters.blend_width": "27c55a06c64edfe76ab1260b0e8e3a57ccb2b55b29e3f4438bceceb32e8a150b",
+          "parameters.c_s": "ccf205296a8577a4a21baaa2e06126aff4f83756d7e52038b14d1e2b058fd2c1",
+          "parameters.clos_choice": "a2963f60d067399c8b4e7b1d8f8f5f035ebefd1d44bea0dc69704318e6efe77e",
+          "parameters.co2_vmr": "12c23ebacef79e322705d0309c9a0e6fc797d5456decbb13237b952ed706202c",
+          "parameters.cudt_minutes": "f4a34a37af6bb39cb5b84a9be6d751b3646d80d4b5f7333d58103b96d1df7343",
+          "parameters.damp_opt": "8048e4cdd16ba680b7aa89b2dec6ff405b0c649fb4c3f7a1db2b0b466e316d52",
+          "parameters.dampcoef": "1a004edcb3e54789ddef1d9c132fec76ae444106f8df709cc314fbd1cec25987",
+          "parameters.diff_6th_factor": "58dd71e3abf253d70f69eadd20d6762304bd0c0b967ea27a42fdb470548a30a7",
+          "parameters.diff_6th_opt": "da06b3967f33575a98d470d00434c2c318507706495a2b1ec5bad17ad4535efe",
+          "parameters.diff_6th_slopeopt": "50a62ec0f6c5a92cd45685d10a1ad42b73eb4d07b2931672e04e88972f0aa5c1",
+          "parameters.diff_6th_thresh": "befc975958974fecf8c8b01068d9a1086f31837a07bbcbb09ca1888303780116",
+          "parameters.diff_opt": "d056ee355eff3b1212fe582877f67415ebec9fc6546ed5e48915af7f1c5e292b",
+          "parameters.dveg": "b3de3b242acb4852ca64e987a7685a764a42523afc37095f04696db3151d7d07",
+          "parameters.emdiv": "b40dbe39ef01cf9c7da38b951941e0732d18c61ddaef0c1512441426c036f6f9",
+          "parameters.epssm": "048c43be5efab23b5a43786e60102713a54d820743be7e6d393441049248cc7e",
+          "parameters.etac": "7c0bcf1e899ae7b427eafffd015ceba83fce827e85577ea3e56ff21be21cf59a",
+          "parameters.feedback": "a983c04f8431f92713b1be7fe9d01878aeaf4a35d1e683b51d8c69dc996a72b9",
+          "parameters.flag_sm_adj": "eb90c8d7711f21a7043ee6da72ace101a6ad7b00d846d91a1751f788dcb94b9b",
+          "parameters.fractional_seaice": "ed6e9672c1282631f24cec6cdb03a87afeeaf88df40ea2fe20812774cdc86504",
+          "parameters.gwd_opt": "0241252dfacfa2330d91d081f3339672b2cb7ae930637218f5a9318ab6e03d4b",
+          "parameters.h_sca_adv_order": "0362607886e6602dbf7cb955896debcfe191afc37c00dd34166edf6a54adf9da",
+          "parameters.hybrid_opt": "9ea0f08531f4cc7f36077de9545d3f6e0bf15ca237d08916012744a8fb2261ce",
+          "parameters.hypsometric_opt": "a44b2e38e45f6a158cee0bde37c82658e990429c5665e66a9499a0aea6656990",
+          "parameters.icloud": "c423a2a6a21444c32b6748f2dfba6a6456c45adb30d484577380922109a2462c",
+          "parameters.icloud_bl": "c423a2a6a21444c32b6748f2dfba6a6456c45adb30d484577380922109a2462c",
+          "parameters.isfflx": "c6569b9e91ac5dab6dcd9a92c1ea46b32134da6e0388c3935b120622e920f7a5",
+          "parameters.isftcflx": "9ea0f08531f4cc7f36077de9545d3f6e0bf15ca237d08916012744a8fb2261ce",
+          "parameters.ishallow": "50a62ec0f6c5a92cd45685d10a1ad42b73eb4d07b2931672e04e88972f0aa5c1",
+          "parameters.iz0tlnd": "9ea0f08531f4cc7f36077de9545d3f6e0bf15ca237d08916012744a8fb2261ce",
+          "parameters.khdif": "b40dbe39ef01cf9c7da38b951941e0732d18c61ddaef0c1512441426c036f6f9",
+          "parameters.kvdif": "b40dbe39ef01cf9c7da38b951941e0732d18c61ddaef0c1512441426c036f6f9",
+          "parameters.lake_min_elev": "974974d1ed5a57ab1ad7b0bcb8eba497fae9534d30d097df2f240d3f30f812fb",
+          "parameters.lakedepth_default": "d098f3e17c0721202b59dac4457578fba913d81586ff6b3c1de1d21945c18311",
+          "parameters.map_proj": "ddb8df05496a189e37e77ce3d1d104f2806f684a3386c754684952fe6d006c05",
+          "parameters.mix_full_fields": "d7309b150b6330965b92bc4187567282f119c14610b85d60421d963fe43bb000",
+          "parameters.moist": "d911471ce55cfc305d431785b07d2689fbd1e3fac3cd29e0d67ecc5fe8860b3c",
+          "parameters.moist_adv_opt": "c6569b9e91ac5dab6dcd9a92c1ea46b32134da6e0388c3935b120622e920f7a5",
+          "parameters.moist_cq": "a95ee3f50be554fade961d3a50b83519755280d64b401daf0ee6d70658ae9cd2",
+          "parameters.moist_mix6_off": "d911471ce55cfc305d431785b07d2689fbd1e3fac3cd29e0d67ecc5fe8860b3c",
+          "parameters.morr_rimed_ice": "c423a2a6a21444c32b6748f2dfba6a6456c45adb30d484577380922109a2462c",
+          "parameters.mosaic_cat": "5bcc0cb7df42c4e2fe29d7de5cfe9eb4baf9e9f2f6819ccee8eb1ca44e599b2d",
+          "parameters.mosaic_urban_canopy": "beb435305f025e18190b020e5d37e5fbccf0441efe50e95a107e78c89bc0ac52",
+          "parameters.mp28_aerosol_source": "5fc2c4639f6a4b6b7f70c0c3c963b7b7a6ee8ede7b993a4b3739711678363de4",
+          "parameters.mp_tend_lim": "aad0bda6ab88d45522baf52e7ad212a38f71280ed44cff781f847ce172c60b36",
+          "parameters.mynn_sfclay_variant": "2c7005aaae4ab7a16a9a285a6a9175d0579bcd7b5650c8b63e361fb80a49c4ae",
+          "parameters.nest_microphysics_transition": "ce3957753f62a743b80b2e7f66fb110b4d1abf089def3c42b0101cc8660621ed",
+          "parameters.no_mp_heating": "a983c04f8431f92713b1be7fe9d01878aeaf4a35d1e683b51d8c69dc996a72b9",
+          "parameters.noahmp_acc_dt": "66a7d550e8baedd5bd6058c49f3bec7398b40e948495987852406c8c4d7ef8f2",
+          "parameters.noahmp_output": "469aeffd200da179c48dda4627afec891dc8b2281ce58624006b595e95015bdd",
+          "parameters.nssl_2moment_on": "81c443cd8b9d84af42c14fae7f9b5c813850523eddecc4d29d3e19551e8fef77",
+          "parameters.nssl_ccn_on": "12e2628e3f79f81136df73461b15e80875129bbefdd7af801fab17c863035411",
+          "parameters.nssl_density_on": "dea1d9c3a01f932497e71f17f1b9cf62ff66d95b744a263127e3d7edd61987c9",
+          "parameters.nssl_hail_on": "12e2628e3f79f81136df73461b15e80875129bbefdd7af801fab17c863035411",
+          "parameters.num_soil_layers": "1cb8c9b3e88d5001f52d97d44c001154f2be832301b0a7d9cadc3e42a0660d07",
+          "parameters.o3input": "ec165016db4aa1abfbdd587f66a7d3aad3b757517e9367fd4868ed21a69fefcc",
+          "parameters.open_x": "dc98a133f5e5e55f9c09ab312b3e7fe825aa91ee06e74611014667fa25884c23",
+          "parameters.open_y": "dc98a133f5e5e55f9c09ab312b3e7fe825aa91ee06e74611014667fa25884c23",
+          "parameters.opt_alb": "6dc2eb2699e0b63876200f409d4fb70b578f3cf43c009a6e5e832423e23efa2e",
+          "parameters.opt_btr": "469aeffd200da179c48dda4627afec891dc8b2281ce58624006b595e95015bdd",
+          "parameters.opt_crop": "9cf322c196fc2e27de3ffbe5a14df7b7d246b1aa857d67e2054b09abc4445a99",
+          "parameters.opt_crs": "469aeffd200da179c48dda4627afec891dc8b2281ce58624006b595e95015bdd",
+          "parameters.opt_frz": "469aeffd200da179c48dda4627afec891dc8b2281ce58624006b595e95015bdd",
+          "parameters.opt_gla": "469aeffd200da179c48dda4627afec891dc8b2281ce58624006b595e95015bdd",
+          "parameters.opt_inf": "469aeffd200da179c48dda4627afec891dc8b2281ce58624006b595e95015bdd",
+          "parameters.opt_infdv": "9cf322c196fc2e27de3ffbe5a14df7b7d246b1aa857d67e2054b09abc4445a99",
+          "parameters.opt_irr": "9cf322c196fc2e27de3ffbe5a14df7b7d246b1aa857d67e2054b09abc4445a99",
+          "parameters.opt_irrm": "9cf322c196fc2e27de3ffbe5a14df7b7d246b1aa857d67e2054b09abc4445a99",
+          "parameters.opt_pedo": "469aeffd200da179c48dda4627afec891dc8b2281ce58624006b595e95015bdd",
+          "parameters.opt_rad": "71e1238426a4db8bcad0745c583c35803916e0ae400b0fb9afc7f72274524e49",
+          "parameters.opt_rsf": "469aeffd200da179c48dda4627afec891dc8b2281ce58624006b595e95015bdd",
+          "parameters.opt_run": "71e1238426a4db8bcad0745c583c35803916e0ae400b0fb9afc7f72274524e49",
+          "parameters.opt_sfc": "469aeffd200da179c48dda4627afec891dc8b2281ce58624006b595e95015bdd",
+          "parameters.opt_snf": "469aeffd200da179c48dda4627afec891dc8b2281ce58624006b595e95015bdd",
+          "parameters.opt_soil": "469aeffd200da179c48dda4627afec891dc8b2281ce58624006b595e95015bdd",
+          "parameters.opt_stc": "469aeffd200da179c48dda4627afec891dc8b2281ce58624006b595e95015bdd",
+          "parameters.opt_tbot": "6dc2eb2699e0b63876200f409d4fb70b578f3cf43c009a6e5e832423e23efa2e",
+          "parameters.opt_tdrn": "9cf322c196fc2e27de3ffbe5a14df7b7d246b1aa857d67e2054b09abc4445a99",
+          "parameters.opt_thcnd": "a44b2e38e45f6a158cee0bde37c82658e990429c5665e66a9499a0aea6656990",
+          "parameters.p_top": "12c23ebacef79e322705d0309c9a0e6fc797d5456decbb13237b952ed706202c",
+          "parameters.ra_physics": "7300aa47bd77133b68e5eb0b166817c3aaa931724fcd804a5e936d5df1ac407f",
+          "parameters.ra_rrtmg_variant": "1c2b3472b55b6f2a986f3c068ce9ce03edd37aa0e52b655e68d41dd8832b0f48",
+          "parameters.radt": "b40dbe39ef01cf9c7da38b951941e0732d18c61ddaef0c1512441426c036f6f9",
+          "parameters.radt_minutes": "3d8642460960432b9d32d1a9f8f927b7d6088a28090a2ecef5321c08b7494479",
+          "parameters.rdlai2d": "dc98a133f5e5e55f9c09ab312b3e7fe825aa91ee06e74611014667fa25884c23",
+          "parameters.rdmaxalb": "e7fc61679cfae15c25c6df7b811c5b4a593a0a81ac0c91f5e801988482e30634",
+          "parameters.relax_zone": "57247149e335f84aa3d0c20d7bdb9e0bc1036c74e0de810be792ff56ee5bf11b",
+          "parameters.scalar_pblmix": "52e9ed2782dd7ae772d7e761741078c5ff8206c829ce52fb628d95ceb2401e40",
+          "parameters.seaice_albedo_default": "58436422163acb3565afbcdcaaf2e9a58867f9c97ecc6e0fece5fc658a3d8440",
+          "parameters.sf_lake_physics": "6bd1f3e573347ad84510c5cdbd29b8e4163b8f158fbbae8a94d99200c4fdd20c",
+          "parameters.sf_surface_mosaic": "a983c04f8431f92713b1be7fe9d01878aeaf4a35d1e683b51d8c69dc996a72b9",
+          "parameters.slope_rad": "50a62ec0f6c5a92cd45685d10a1ad42b73eb4d07b2931672e04e88972f0aa5c1",
+          "parameters.smdiv": "befc975958974fecf8c8b01068d9a1086f31837a07bbcbb09ca1888303780116",
+          "parameters.smooth_option": "9ea0f08531f4cc7f36077de9545d3f6e0bf15ca237d08916012744a8fb2261ce",
+          "parameters.soiltstep": "66a7d550e8baedd5bd6058c49f3bec7398b40e948495987852406c8c4d7ef8f2",
+          "parameters.spec_bdy_width": "fa89c4b7395eaa07c53adebfeb2b7196f9a8be890ca2264ee493bbc2f48f5321",
+          "parameters.spec_exp": "b40dbe39ef01cf9c7da38b951941e0732d18c61ddaef0c1512441426c036f6f9",
+          "parameters.spec_zone": "adfa7cc7e13c1e3d1d213088aa850826f75ff8ee8e708e2a6c5557f6b9519e88",
+          "parameters.specified": "dc98a133f5e5e55f9c09ab312b3e7fe825aa91ee06e74611014667fa25884c23",
+          "parameters.spp_conv": "4afee4711f2456713b3d55362c58033dc3006ac63ddd38ed92627ca504cffd6d",
+          "parameters.spp_lsm": "eb90c8d7711f21a7043ee6da72ace101a6ad7b00d846d91a1751f788dcb94b9b",
+          "parameters.spp_pbl": "4afee4711f2456713b3d55362c58033dc3006ac63ddd38ed92627ca504cffd6d",
+          "parameters.swrad_scat": "9e7aaf7fc3980a59b5935ced197b32721dd69d38f43685254f6026bafa78ddea",
+          "parameters.terrain_opt": "a983c04f8431f92713b1be7fe9d01878aeaf4a35d1e683b51d8c69dc996a72b9",
+          "parameters.time_step_sound": "57247149e335f84aa3d0c20d7bdb9e0bc1036c74e0de810be792ff56ee5bf11b",
+          "parameters.top_lid": "e7fc61679cfae15c25c6df7b811c5b4a593a0a81ac0c91f5e801988482e30634",
+          "parameters.topo_shading": "50a62ec0f6c5a92cd45685d10a1ad42b73eb4d07b2931672e04e88972f0aa5c1",
+          "parameters.topo_wind": "da06b3967f33575a98d470d00434c2c318507706495a2b1ec5bad17ad4535efe",
+          "parameters.use_lakedepth": "06b1f722e34580d4da221fa2d57c38ef6c5c4c257004b5c5b96e159996646ff9",
+          "parameters.use_mp_re": "c6569b9e91ac5dab6dcd9a92c1ea46b32134da6e0388c3935b120622e920f7a5",
+          "parameters.use_rap_aero_icbc": "2bba74ff5767f1d80dfb9ca751f7a5ee252baf03eef41b41997dd38309dc3283",
+          "parameters.usemonalb": "dc98a133f5e5e55f9c09ab312b3e7fe825aa91ee06e74611014667fa25884c23",
+          "parameters.w_damping": "a983c04f8431f92713b1be7fe9d01878aeaf4a35d1e683b51d8c69dc996a72b9",
+          "parameters.wif_input_opt": "a983c04f8431f92713b1be7fe9d01878aeaf4a35d1e683b51d8c69dc996a72b9",
+          "parameters.wrf_rrtmg_compatibility": "f8fc0c8539618781bc0719e1473c8543cea1f9e730d43931850c2f193ae5f009",
+          "parameters.wsm6_hail_opt": "a983c04f8431f92713b1be7fe9d01878aeaf4a35d1e683b51d8c69dc996a72b9",
+          "parameters.ysu_topdown_pblmix": "c423a2a6a21444c32b6748f2dfba6a6456c45adb30d484577380922109a2462c",
+          "parameters.zadvect_implicit": "a983c04f8431f92713b1be7fe9d01878aeaf4a35d1e683b51d8c69dc996a72b9",
+          "parameters.zadvect_implicit_variant": "4f1fa0dfadede586f3a991e26882611ebe1614f947b0d989831635ce1886537d",
+          "parameters.zdamp": "609a8d41df8f56bb69c8bc564f7746e12be9d2f5a6e0a7130f085620b0e0c88e",
+          "transitions": "ac7d6b7f8560f428d71cf870b1cd3e69f920ff4b77a44af0fad1df410287a3bd"
+        },
+        "schema": "gpuwm-physics-registry-parts-v3"
+      },
+      "registry_sha256": "bd48fb10ad68db3ddb24c2997be2da67442f08e2b018332bf8424081a7859c1c",
+      "schema": "gpuwm-front-door-physics-selection-multi-domain-v1"
+    },
+    "schema": "gpuwm-native-direct-wrf-export-v3",
+    "source": {
+      "contract_sha256": "3dc8f753e09932971f253f29bce61e254235edd55342c2e89e74ce026ae9bd02",
+      "geometry_receipt_sha256": "79eee0fe736aaa3cd267f5bd74dbf6863c7d4867f723bb1f409744e248338378",
+      "prepared_content_sha256": "ad34102786cba319e62c5e21f2cb59119b135942b6ddf1140d3318208ce17d2d",
+      "prepared_header_sha256": "49d6d8167ecd4cf60000b9c6f153b31fc03d49a0944af00cc4ea91fc5527f772",
+      "resolved_physics_contract_sha256": "70eee2d1a8fac0fe2aff135e54f14f08c5e4b79e63814af410b343aba6464f5a",
+      "static_cache_sha256": "4cd205e63a76be97c6f10dca933cc1dc78708e8b6eb80df297868bbc3cf2b7f6"
+    },
+    "status": "READY",
+    "valid_time": "2025-01-08_06:00:00"
+  },
+  "forcing_hours": [
+    0,
+    1,
+    2
+  ],
+  "forcing_stage_timings": [
+    {
+      "column_stages_seconds": {
+        "base_state_and_moist_rebalance": 0.14723678911104798,
+        "base_state_upload": 0.004548087017610669,
+        "cold_start_moment_closure": 0.047195661813020706,
+        "domain_state_allocation": 0.01504153199493885,
+        "fp32_geopotential_split_and_upload": 0.09427162702195346,
+        "hydrometeor_vertical_interpolation": 0.2422632488887757,
+        "mass_theta_upload": 0.0014719399623572826,
+        "remaining_state_upload_and_geopotential_readback": 0.000723876990377903,
+        "source_moisture_and_dry_mass": 0.07457673898898065,
+        "surface_and_aerosol_initialization": 0.014456915203481913,
+        "thermodynamic_vertical_interpolation": 0.03308058017864823,
+        "total_seconds": 0.7111535149160773,
+        "validate_and_materialize_host_fields": 0.0009317449294030666,
+        "wind_interpolation_and_alpha": 0.03460569283924997
+      },
+      "forcing_index": 0,
+      "horizontal_seconds": 0.3851886421907693,
+      "total_seconds": 2.4131869638804346,
+      "valid_time": "2025-01-08 06:00:00"
+    },
+    {
+      "column_stages_seconds": {
+        "base_state_and_moist_rebalance": 0.11756583396345377,
+        "base_state_upload": 0.0031015740241855383,
+        "cold_start_moment_closure": 0.007225556997582316,
+        "domain_state_allocation": 0.008848359808325768,
+        "fp32_geopotential_split_and_upload": 0.10120214009657502,
+        "hydrometeor_vertical_interpolation": 0.02161334198899567,
+        "mass_theta_upload": 0.0006379929836839437,
+        "remaining_state_upload_and_geopotential_readback": 0.00033031986095011234,
+        "source_moisture_and_dry_mass": 0.07576628401875496,
+        "surface_and_aerosol_initialization": 0.0016982820816338062,
+        "thermodynamic_vertical_interpolation": 0.0382102990988642,
+        "total_seconds": 0.4091486169490963,
+        "validate_and_materialize_host_fields": 0.0008212008979171515,
+        "wind_interpolation_and_alpha": 0.0316736560780555
+      },
+      "forcing_index": 1,
+      "horizontal_seconds": 0.2539399659726769,
+      "total_seconds": 1.0309788170270622,
+      "valid_time": "2025-01-08 07:00:00"
+    },
+    {
+      "column_stages_seconds": {
+        "base_state_and_moist_rebalance": 0.0912762749940157,
+        "base_state_upload": 0.002602553926408291,
+        "cold_start_moment_closure": 0.006446100072935224,
+        "domain_state_allocation": 0.007860117126256227,
+        "fp32_geopotential_split_and_upload": 0.08272144384682178,
+        "hydrometeor_vertical_interpolation": 0.013161320006474853,
+        "mass_theta_upload": 0.0007117690984159708,
+        "remaining_state_upload_and_geopotential_readback": 0.0005173247773200274,
+        "source_moisture_and_dry_mass": 0.0672186070587486,
+        "surface_and_aerosol_initialization": 0.0013275491073727608,
+        "thermodynamic_vertical_interpolation": 0.038655750919133425,
+        "total_seconds": 0.3397754749748856,
+        "validate_and_materialize_host_fields": 0.001116852043196559,
+        "wind_interpolation_and_alpha": 0.025199393974617124
+      },
+      "forcing_index": 2,
+      "horizontal_seconds": 0.26870100595988333,
+      "total_seconds": 0.975787142990157,
+      "valid_time": "2025-01-08 08:00:00"
+    }
+  ],
+  "forcing_times": [
+    "2025-01-08T06:00:00",
+    "2025-01-08T07:00:00",
+    "2025-01-08T08:00:00"
+  ],
+  "geometry": {
+    "cache": {
+      "bytes": 7002172,
+      "path": "native-static.npz",
+      "sha256": "4cd205e63a76be97c6f10dca933cc1dc78708e8b6eb80df297868bbc3cf2b7f6"
+    },
+    "geometry": {
+      "center_lat": 34.08,
+      "center_lon": -118.4,
+      "definition": {
+        "dx": 3000.0,
+        "dy": 3000.0,
+        "e_sn": 81,
+        "e_we": 87,
+        "known_x": 43.5,
+        "known_y": 40.5,
+        "map_proj": "lambert",
+        "moad_cen_lat": 34.08,
+        "moad_cen_lon": -118.4,
+        "ref_lat": 34.08,
+        "ref_lon": -118.4,
+        "stand_lon": -97.5,
+        "truelat1": 38.5,
+        "truelat2": 38.5
+      },
+      "dx_m": 3000.0,
+      "dy_m": 3000.0,
+      "known_x": 43.5,
+      "known_y": 40.5,
+      "lat_range": [
+        32.7833671746891,
+        35.36878077445602
+      ],
+      "lon_range": [
+        -120.05067810793096,
+        -116.78266897388065
+      ],
+      "map_proj": "lambert",
+      "mass_shape": [
+        80,
+        86
+      ],
+      "moad_cen_lat": 34.08,
+      "moad_cen_lon": -118.4,
+      "nz": 49,
+      "ref_lat": 34.08,
+      "ref_lon": -118.4,
+      "stand_lon": -97.5,
+      "truelat1": 38.5,
+      "truelat2": 38.5
+    },
+    "schema": "gpuwm-native-static-direct-v1",
+    "static_sampling_contract": "wps-sampling-portable-v1",
+    "status": "PASS"
+  },
+  "moisture_floors": {
+    "fired": false,
+    "floors": {
+      "prognostic_moisture_floor": {
+        "fired": false
+      },
+      "surface_moisture_floor": {
+        "fired": false
+      }
+    },
+    "recorded": true,
+    "schema": "gpuwm-initialization-moisture-floors-v1"
+  },
+  "preparation_parallelism": {
+    "affinity_cpus": 24,
+    "available_cpus": 24,
+    "cgroup_cpus": null,
+    "effective_workers": 8,
+    "inherited_library_limits": {
+      "MKL_NUM_THREADS": "8",
+      "NUMEXPR_NUM_THREADS": "8",
+      "OMP_NUM_THREADS": "8",
+      "OPENBLAS_NUM_THREADS": "8",
+      "RAYON_NUM_THREADS": "8"
+    },
+    "loaded_numeric_pools": "not inspected: threadpoolctl unavailable",
+    "loaded_numeric_pools_before": "not inspected: threadpoolctl unavailable",
+    "memory_worker_limit": 2559,
+    "native_pool_effective_workers": null,
+    "numeric_pool_control": "unavailable",
+    "policy": "explicit-preparation-workers-override-library-defaults",
+    "requested_workers": 8,
+    "worker_scratch_bytes": 33554432
+  },
+  "prepared_cache": {
+    "array_count": 272,
+    "content_sha256": "ad34102786cba319e62c5e21f2cb59119b135942b6ddf1140d3318208ce17d2d",
+    "path": "prepared-cache",
+    "payload_bytes": 70820312,
+    "schema": "gpuwm-prepared-real-cache-v1",
+    "status": "BUILT"
+  },
+  "preprocessing": {
+    "backend": "cpu",
+    "bridge": {
+      "abi_version": 1,
+      "name": "libgpuwm_preprocess_cpu.so",
+      "required_abi_version": 1,
+      "sha256": "0efca3e159c59bedf5557cef0fea06826cf6e9887a042713a742ae34fc3718b7"
+    },
+    "contracts": {
+      "surface_pressure_mapping": {
+        "output_dtype": "float32",
+        "policy": "canonical-f32-coordinate-f64-bilinear-single-round-v1"
+      },
+      "vertical_stencil": {
+        "policy": "wrf-v4.6.1-strict-fp32-zap-close-levels-v1",
+        "predicate": "separation < zap_close_levels",
+        "top_endpoint_policy": "native-pressure-top-colocation-four-fp32-epsilon-v1",
+        "top_endpoint_relative_roundoff": 4.76837158203125e-07,
+        "zap_close_levels_pa": 500.0
+      }
+    },
+    "host_cpu_count": 24,
+    "implementation": "rust-parallel-fp32-v1",
+    "implementation_tree": {
+      "files": {
+        "gpuwm/core/host_libm.py": {
+          "bytes": 7289,
+          "sha256": "a1bd118c95aea370fdf6b7cf775fcf528d3b1a66937612c2ffb1ee7ddc953447"
+        },
+        "gpuwm/core/noahmp_libm.py": {
+          "bytes": 56003,
+          "sha256": "20562a36da4cddca84018b978ce1302697400eab5d7897b45911b02667fb28e8"
+        },
+        "gpuwm/core/state.py": {
+          "bytes": 66677,
+          "sha256": "204cc15c3a956e505e019f725c96ce90ed040d381afd9b1ed2d86fc86e251066"
+        },
+        "gpuwm/core/thompson_entry.py": {
+          "bytes": 35352,
+          "sha256": "20b9d3192bdb39617180911bc5d1cbe063add5a9de39f2ec4b84b1b22d519f6a"
+        },
+        "gpuwm/ingest/atmospheric_window.py": {
+          "bytes": 10794,
+          "sha256": "080484aa78b9422347e28877fadd182dd26e8c61a8bfe77cda7f95f5c07476ef"
+        },
+        "gpuwm/ingest/cold_start_cpu.py": {
+          "bytes": 12543,
+          "sha256": "8f4e671731e08d9d4faef026fa37a1c9dd254e3b37793fef6c87b4a3f73f2cff"
+        },
+        "gpuwm/ingest/cpu_backend.py": {
+          "bytes": 84535,
+          "sha256": "ecc71057dbc4dc100c7f52e531cfd5424d487f7f1ddfae43f4e1bb399b0ca9e7"
+        },
+        "gpuwm/ingest/horiz.py": {
+          "bytes": 118568,
+          "sha256": "1a7d5c23b882f43d7e0fa3b887ecc65f7d52ac82043bb54a91e6967049d0ade3"
+        },
+        "gpuwm/ingest/host_arrays.py": {
+          "bytes": 8869,
+          "sha256": "a79c11541f4f2e728ed525c24a01b0d154f82c17384eef15bf44c8e4f1881921"
+        },
+        "gpuwm/ingest/interpolation_support.py": {
+          "bytes": 2555,
+          "sha256": "9be833136d3dc4fea8f40f4358fc7dd90225ffa0ca9936ae8bb09ba41fea9d87"
+        },
+        "gpuwm/ingest/lake_temperature.py": {
+          "bytes": 8908,
+          "sha256": "250a97b710e696c650f817be01cad3459495cc1ab20e7e509580c223f6c4a177"
+        },
+        "gpuwm/ingest/preparation_fingerprints.py": {
+          "bytes": 4057,
+          "sha256": "e10f85420f6bfa032ac82ea85120ccea2ca383e344dc266ddb8d588826ad9a5f"
+        },
+        "gpuwm/ingest/preprocess_backend.py": {
+          "bytes": 71412,
+          "sha256": "4bacb96f2eb39ce9fb90800dceedc37aa8b164b81489491e90252afc8b7b0444"
+        },
+        "gpuwm/ingest/real.py": {
+          "bytes": 279440,
+          "sha256": "25ce9f2a9ca024387591d9863e98cc16c1fadbd968e19b98efe13f8afb8dbdee"
+        },
+        "gpuwm/ingest/vert.py": {
+          "bytes": 20089,
+          "sha256": "78d2a54aab88af49f31d393d95bafec991df885394de03ff8b4052492b7ddeb1"
+        },
+        "gpuwm/ingest/water_temperature.py": {
+          "bytes": 42305,
+          "sha256": "d7d3c29d09dea0103149999dbc96225abbcce6a19bebd551477d5f6a5f308f19"
+        }
+      },
+      "schema": "gpuwm-preprocess-source-tree-v1",
+      "sha256": "70212e0782018dd0b77223c73b81dbc05a066097f074b74ba4acbe8f569e34c0"
+    },
+    "masked_surface_chain": {
+      "bridge": {
+        "abi_version": 1,
+        "name": "libgpuwm_preprocess_cpu.so",
+        "sha256": "0efca3e159c59bedf5557cef0fea06826cf6e9887a042713a742ae34fc3718b7"
+      },
+      "entry": "gpuwm_wps_masked_chain_f64",
+      "implementation": "rust-wps-masked-chain-f64-v2",
+      "stencil_entry": "gpuwm_masked_bilinear_stencil_f64",
+      "stencil_implementation": "rust-masked-bilinear-stencil-f64-v1",
+      "workers": 8
+    },
+    "parallelism": {
+      "affinity_cpus": 24,
+      "available_cpus": 24,
+      "cgroup_cpus": null,
+      "effective_workers": 8,
+      "inherited_library_limits": {
+        "MKL_NUM_THREADS": "8",
+        "NUMEXPR_NUM_THREADS": "8",
+        "OMP_NUM_THREADS": "8",
+        "OPENBLAS_NUM_THREADS": "8",
+        "RAYON_NUM_THREADS": "8"
+      },
+      "memory_worker_limit": 2557,
+      "native_pool_effective_workers": 8,
+      "policy": "explicit-preparation-workers-override-library-defaults",
+      "requested_workers": 8,
+      "worker_scratch_bytes": 33554432
+    },
+    "schema": "gpuwm-preprocess-implementation-v2",
+    "selection": {
+      "backend": "cpu",
+      "reason": "named by the caller",
+      "requested": "cpu"
+    },
+    "vertical_interpolation": [
+      {
+        "backend": "cpu",
+        "column_levels": 40,
+        "kernel_level_tier": null,
+        "reason": "the CPU preprocessing backend was selected",
+        "source_levels": 39
+      }
+    ],
+    "workers": 8
+  },
+  "proof_content_sha256": "dd29c87bb78ab2196244a7e8b271b7a4f3c1a596ba581cd47109c1e0e9024f10",
+  "schema": "gpuwm-mapped-direct-wrf-proof-v1",
+  "soil_texture_downscale": {
+    "advisory": false,
+    "advisory_ratio": 5.0,
+    "applied": true,
+    "deep_soil_temperature": {
+      "applied": true,
+      "boundary_depth_m": 3.0,
+      "cells": 4422,
+      "deep_anomaly_std_k": 0.17693040260027107,
+      "downscale_enabled": true,
+      "fields": {
+        "TSLB_L1": {
+          "max_abs_change_k": 0.02574062080579059,
+          "rms_change_k": 0.0029488408401209558,
+          "weight": 0.016666666666666666
+        },
+        "TSLB_L2": {
+          "max_abs_change_k": 0.12870310402895294,
+          "rms_change_k": 0.01474420420060478,
+          "weight": 0.08333333333333333
+        },
+        "TSLB_L3": {
+          "max_abs_change_k": 0.3603686912810682,
+          "rms_change_k": 0.04128377176169338,
+          "weight": 0.2333333333333333
+        },
+        "TSLB_L4": {
+          "max_abs_change_k": 0.7722186241737177,
+          "rms_change_k": 0.08846522520362868,
+          "weight": 0.5
+        }
+      },
+      "wrf_reference": {
+        "gpuwm_behaviour": "WRF's own linear-in-depth blend toward TMN is applied to the part of TMN the source mesh cannot represent, leaving the source-cell mean of every layer exactly unchanged",
+        "reproduce_wrf": "[ingest] soil_texture_downscale = false",
+        "wrf_behaviour": "init_soil_2_real (share/module_soil_pre.F:1591-1608) anchors the soil column on TMN at 3 m for level-form sources, but a layer-form source whose layers already match Noah's is copied straight through and never sees the target grid's deep-soil climatology"
+      }
+    },
+    "downscale_enabled": true,
+    "downscaled_cells": 4422,
+    "fields": {
+      "SMOIS_L1": {
+        "max_abs_change": 0.003097264638390357,
+        "mean_abs_change": 0.00016227317459830573,
+        "sratio_clipped_dry": 5,
+        "sratio_clipped_saturated": 0,
+        "sratio_mean": 0.16430910294699724
+      },
+      "SMOIS_L2": {
+        "max_abs_change": 0.003097264638390357,
+        "mean_abs_change": 0.0001628192000806283,
+        "sratio_clipped_dry": 2,
+        "sratio_clipped_saturated": 0,
+        "sratio_mean": 0.16000585775557316
+      },
+      "SMOIS_L3": {
+        "max_abs_change": 0.003097264638390357,
+        "mean_abs_change": 0.00016031112039724608,
+        "sratio_clipped_dry": 5,
+        "sratio_clipped_saturated": 0,
+        "sratio_mean": 0.2124052868157552
+      },
+      "SMOIS_L4": {
+        "max_abs_change": 0.003038737291273491,
+        "mean_abs_change": 0.00015456327681072558,
+        "sratio_clipped_dry": 0,
+        "sratio_clipped_saturated": 0,
+        "sratio_mean": 0.31486076594517903
+      }
+    },
+    "land_cells": 4422,
+    "land_without_texture": 0,
+    "resolution_ratio": 0.8522238571731959,
+    "soil_water_change_pct": 0.000987334643368171,
+    "soil_water_kg_m2": {
+      "after": 310.1846677527211,
+      "before": 310.18160522227544
+    },
+    "source_cell_in_target_cells": {
+      "x": 0.8522238571731959,
+      "y": 1.0291338792542135
+    },
+    "source_spacing_deg": {
+      "lat": 0.026979630379063806,
+      "lon": 0.02697963037906381
+    },
+    "sratio_clipped_dry": 12,
+    "sratio_clipped_saturated": 0,
+    "sratio_samples": 17688,
+    "target_spacing_deg": {
+      "lat": 0.026215860660048662,
+      "lon": 0.031657914938634235
+    },
+    "wrf_reference": {
+      "gpuwm_behaviour": "soil moisture crosses the resolution change as Noah's own degree-of-saturation SRATIO = (SMC-SMCDRY)/(SMCMAX-SMCDRY) (phys/module_sf_noahlsm.F:1214) and is reconstituted against the target grid's 30 arc-second texture",
+      "reproduce_wrf": "[ingest] soil_texture_downscale = false",
+      "wrf_behaviour": "real.exe consumes metgrid's interpolated SM layers unchanged; no stage consults the target grid's own soil texture, so SMOIS carries the forcing mesh permanently (dyn_em/module_initialize_real.F, share/module_soil_pre.F)"
+    }
+  },
+  "source_composition": {
+    "alignment": {
+      "coordinate_match": "exact_equivalent_contiguous_subset",
+      "field": "terrain_height",
+      "invariant_across_all_supplement_times": true,
+      "latitude_index_direction": 1,
+      "latitude_index_range": [
+        0,
+        1058
+      ],
+      "latitude_sha256": "9d1d5795052a01ccc98eac48a6d72da857fb07e68d71956a747dfab5a267c930",
+      "longitude_equivalence": "modulo_360_exact",
+      "longitude_index_direction": 1,
+      "longitude_index_range": [
+        0,
+        1798
+      ],
+      "longitude_sha256": "37068653cbee282ba7499d6573283cff703ca0d4db03c176682406dba4643f2b",
+      "matched_primary_valid_times": [
+        "2025-01-08T06:00:00",
+        "2025-01-08T07:00:00",
+        "2025-01-08T08:00:00"
+      ],
+      "primary_shape": [
+        1059,
+        1799
+      ],
+      "schema": "gpuwm-mapped-exact-subset-binding-v1",
+      "status": "PASS",
+      "supplement_shape": [
+        1059,
+        1799
+      ],
+      "supplement_valid_times": [
+        "2025-01-08T06:00:00",
+        "2025-01-08T07:00:00",
+        "2025-01-08T08:00:00"
+      ],
+      "terrain_full_sha256": "e4df37d95567b4e61e060a6dda8f2dbe63ef4c35d7e0cbb01d26985e3ca6d610",
+      "terrain_subset_sha256": "e4df37d95567b4e61e060a6dda8f2dbe63ef4c35d7e0cbb01d26985e3ca6d610"
+    },
+    "composition": {
+      "path": "source/gpuwm/authorities/rw-wps-hrrr-prs-grib2.composition.json",
+      "sha256": "7e1739721286ed0c2bf0c44ef480bc80cf3a6c0f5fb032e46ae5c2a423544eb4"
+    },
+    "contributing_sources": [
+      {
+        "alignment": {
+          "binding": "vegetation_surface",
+          "broadcast_primary_valid_times": [
+            "2025-01-08T07:00:00",
+            "2025-01-08T08:00:00"
+          ],
+          "coordinate_match": "exact_equivalent_contiguous_subset",
+          "donor_member": null,
+          "donor_shape": [
+            1059,
+            1799
+          ],
+          "donor_source_cycles": [
+            "2025-01-08T06:00:00"
+          ],
+          "donor_valid_times": [
+            "2025-01-08T06:00:00"
+          ],
+          "field_subset_sha256": {
+            "vegetation_fraction": "e524f6c24ca6c2d3c0ab84269b66f762c43e1034064149f5fbe17d03f4b68c8e"
+          },
+          "fields": [
+            "vegetation_fraction"
+          ],
+          "grid_alignment": "exact_coordinate_subset",
+          "latitude_index_range": [
+            0,
+            1058
+          ],
+          "longitude_equivalence": "modulo_360_exact",
+          "longitude_index_range": [
+            0,
+            1798
+          ],
+          "matched_primary_valid_times": [
+            "2025-01-08T06:00:00"
+          ],
+          "primary_shape": [
+            1059,
+            1799
+          ],
+          "schema": "gpuwm-cross-source-binding-v1",
+          "source_id": "noaa-hrrr-conus-surface-vegetation-grib2",
+          "status": "PASS",
+          "time_alignment": "source_cycle_analysis_broadcast"
+        },
+        "binding": "vegetation_surface",
+        "data": [
+          {
+            "path": "case/raw/hrrr.t06z.wrfsfcf00.grib2",
+            "sha256": "086b6c16bcbedbfc138c3ffcddd98a0fecfc8f5a864dffb80a0704dd1a831499"
+          }
+        ],
+        "fields": [
+          "vegetation_fraction"
+        ],
+        "mapping": {
+          "path": "source/gpuwm/authorities/rw-wps-hrrr-surface-vegetation-grib2.mapping.json",
+          "sha256": "adefc1d166ab4932616d91e206542e527b9c38e9a7e4e72ba8e04a9404049f8a"
+        },
+        "provenance": {
+          "path": "source/gpuwm/authorities/rw-wps-hrrr-surface-vegetation-grib2.provenance.json",
+          "sha256": "af36e1c31cc24813294a9af015b894529f5b9f3beb6103b3ae593b677763f566"
+        },
+        "source_id": "noaa-hrrr-conus-surface-vegetation-grib2"
+      }
+    ],
+    "decoders": {
+      "gpuwm_mapped_engine": {
+        "path": "bridges/gpuwm_mapped_engine",
+        "sha256": "6a1ed079c2157ef2330fe4eff214648ac97cf0b1292165c056a4d6dae9204b0c"
+      }
+    },
+    "frame_count": 3,
+    "frames": [
+      {
+        "field_count": 25,
+        "header_sha256": "31e8d9dd32e5362961664aafcec13e0ebd9f0002d50c055ad7f29cf06a25aa95",
+        "terrain_sha256": "e4df37d95567b4e61e060a6dda8f2dbe63ef4c35d7e0cbb01d26985e3ca6d610"
+      },
+      {
+        "field_count": 25,
+        "header_sha256": "06a4ba805cb846af84460fdd18b074b8fb90395e8e579030360baaef76c5a490",
+        "terrain_sha256": "e4df37d95567b4e61e060a6dda8f2dbe63ef4c35d7e0cbb01d26985e3ca6d610"
+      },
+      {
+        "field_count": 25,
+        "header_sha256": "419e46ef89097f33889ccf8bfbd0c23428fba17ead9ee54b70931bbc42fe2163",
+        "terrain_sha256": "e4df37d95567b4e61e060a6dda8f2dbe63ef4c35d7e0cbb01d26985e3ca6d610"
+      }
+    ],
+    "input_manifest": {
+      "path": "case/manifests/off-base-inputs.json",
+      "sha256": "506e088fae4dc8ea854a11daf946a28a0b125d21ab917a3d5dc3bde2a5f8ecc5"
+    },
+    "mapping": {
+      "path": "source/gpuwm/authorities/rw-wps-hrrr-prs-grib2.mapping.json",
+      "sha256": "770b747a0a8eb62b281fe51a5853a4fa82a43512079615a60f1c385f9713ee0c"
+    },
+    "receipt_content_sha256": "3de502af87b15a9709378ef057402bc38668e6e1ddca68650f778f84355badec",
+    "schema": "gpuwm-mapped-composition-receipt-v1",
+    "soil_layers": {
+      "depth_units": "m",
+      "missing": {
+        "land": "reject",
+        "ocean": {
+          "moisture": 1.0,
+          "stage": "after_horizontal_interpolation",
+          "temperature": "skin_temperature"
+        }
+      },
+      "moisture_field": "volumetric_soil_moisture",
+      "remap": {
+        "kind": "linear_node_samples",
+        "source_value_location": "level_node",
+        "target_value_location": "layer_midpoint"
+      },
+      "source_nodes": [
+        {
+          "depth": 0.0,
+          "selectors": {
+            "soil_temperature": {
+              "category": 0,
+              "center": 7,
+              "discipline": 2,
+              "format": "grib2",
+              "level_type": 106,
+              "level_value": 0.0,
+              "local_table_version": 1,
+              "master_table_version": 2,
+              "parameter": 2,
+              "second_level_type": 106,
+              "second_level_value": 0.0,
+              "subcenter": 0
+            },
+            "volumetric_soil_moisture": {
+              "category": 0,
+              "center": 7,
+              "discipline": 2,
+              "format": "grib2",
+              "level_type": 106,
+              "level_value": 0.0,
+              "local_table_version": 1,
+              "master_table_version": 2,
+              "parameter": 192,
+              "second_level_type": 106,
+              "second_level_value": 0.0,
+              "subcenter": 0
+            }
+          }
+        },
+        {
+          "depth": 0.01,
+          "selectors": {
+            "soil_temperature": {
+              "category": 0,
+              "center": 7,
+              "discipline": 2,
+              "format": "grib2",
+              "level_type": 106,
+              "level_value": 0.01,
+              "local_table_version": 1,
+              "master_table_version": 2,
+              "parameter": 2,
+              "second_level_type": 106,
+              "second_level_value": 0.01,
+              "subcenter": 0
+            },
+            "volumetric_soil_moisture": {
+              "category": 0,
+              "center": 7,
+              "discipline": 2,
+              "format": "grib2",
+              "level_type": 106,
+              "level_value": 0.01,
+              "local_table_version": 1,
+              "master_table_version": 2,
+              "parameter": 192,
+              "second_level_type": 106,
+              "second_level_value": 0.01,
+              "subcenter": 0
+            }
+          }
+        },
+        {
+          "depth": 0.04,
+          "selectors": {
+            "soil_temperature": {
+              "category": 0,
+              "center": 7,
+              "discipline": 2,
+              "format": "grib2",
+              "level_type": 106,
+              "level_value": 0.04,
+              "local_table_version": 1,
+              "master_table_version": 2,
+              "parameter": 2,
+              "second_level_type": 106,
+              "second_level_value": 0.04,
+              "subcenter": 0
+            },
+            "volumetric_soil_moisture": {
+              "category": 0,
+              "center": 7,
+              "discipline": 2,
+              "format": "grib2",
+              "level_type": 106,
+              "level_value": 0.04,
+              "local_table_version": 1,
+              "master_table_version": 2,
+              "parameter": 192,
+              "second_level_type": 106,
+              "second_level_value": 0.04,
+              "subcenter": 0
+            }
+          }
+        },
+        {
+          "depth": 0.1,
+          "selectors": {
+            "soil_temperature": {
+              "category": 0,
+              "center": 7,
+              "discipline": 2,
+              "format": "grib2",
+              "level_type": 106,
+              "level_value": 0.1,
+              "local_table_version": 1,
+              "master_table_version": 2,
+              "parameter": 2,
+              "second_level_type": 106,
+              "second_level_value": 0.1,
+              "subcenter": 0
+            },
+            "volumetric_soil_moisture": {
+              "category": 0,
+              "center": 7,
+              "discipline": 2,
+              "format": "grib2",
+              "level_type": 106,
+              "level_value": 0.1,
+              "local_table_version": 1,
+              "master_table_version": 2,
+              "parameter": 192,
+              "second_level_type": 106,
+              "second_level_value": 0.1,
+              "subcenter": 0
+            }
+          }
+        },
+        {
+          "depth": 0.3,
+          "selectors": {
+            "soil_temperature": {
+              "category": 0,
+              "center": 7,
+              "discipline": 2,
+              "format": "grib2",
+              "level_type": 106,
+              "level_value": 0.3,
+              "local_table_version": 1,
+              "master_table_version": 2,
+              "parameter": 2,
+              "second_level_type": 106,
+              "second_level_value": 0.3,
+              "subcenter": 0
+            },
+            "volumetric_soil_moisture": {
+              "category": 0,
+              "center": 7,
+              "discipline": 2,
+              "format": "grib2",
+              "level_type": 106,
+              "level_value": 0.3,
+              "local_table_version": 1,
+              "master_table_version": 2,
+              "parameter": 192,
+              "second_level_type": 106,
+              "second_level_value": 0.3,
+              "subcenter": 0
+            }
+          }
+        },
+        {
+          "depth": 0.6,
+          "selectors": {
+            "soil_temperature": {
+              "category": 0,
+              "center": 7,
+              "discipline": 2,
+              "format": "grib2",
+              "level_type": 106,
+              "level_value": 0.6,
+              "local_table_version": 1,
+              "master_table_version": 2,
+              "parameter": 2,
+              "second_level_type": 106,
+              "second_level_value": 0.6,
+              "subcenter": 0
+            },
+            "volumetric_soil_moisture": {
+              "category": 0,
+              "center": 7,
+              "discipline": 2,
+              "format": "grib2",
+              "level_type": 106,
+              "level_value": 0.6,
+              "local_table_version": 1,
+              "master_table_version": 2,
+              "parameter": 192,
+              "second_level_type": 106,
+              "second_level_value": 0.6,
+              "subcenter": 0
+            }
+          }
+        },
+        {
+          "depth": 1.0,
+          "selectors": {
+            "soil_temperature": {
+              "category": 0,
+              "center": 7,
+              "discipline": 2,
+              "format": "grib2",
+              "level_type": 106,
+              "level_value": 1.0,
+              "local_table_version": 1,
+              "master_table_version": 2,
+              "parameter": 2,
+              "second_level_type": 106,
+              "second_level_value": 1.0,
+              "subcenter": 0
+            },
+            "volumetric_soil_moisture": {
+              "category": 0,
+              "center": 7,
+              "discipline": 2,
+              "format": "grib2",
+              "level_type": 106,
+              "level_value": 1.0,
+              "local_table_version": 1,
+              "master_table_version": 2,
+              "parameter": 192,
+              "second_level_type": 106,
+              "second_level_value": 1.0,
+              "subcenter": 0
+            }
+          }
+        },
+        {
+          "depth": 1.6,
+          "selectors": {
+            "soil_temperature": {
+              "category": 0,
+              "center": 7,
+              "discipline": 2,
+              "format": "grib2",
+              "level_type": 106,
+              "level_value": 1.6,
+              "local_table_version": 1,
+              "master_table_version": 2,
+              "parameter": 2,
+              "second_level_type": 106,
+              "second_level_value": 1.6,
+              "subcenter": 0
+            },
+            "volumetric_soil_moisture": {
+              "category": 0,
+              "center": 7,
+              "discipline": 2,
+              "format": "grib2",
+              "level_type": 106,
+              "level_value": 1.6,
+              "local_table_version": 1,
+              "master_table_version": 2,
+              "parameter": 192,
+              "second_level_type": 106,
+              "second_level_value": 1.6,
+              "subcenter": 0
+            }
+          }
+        },
+        {
+          "depth": 3.0,
+          "selectors": {
+            "soil_temperature": {
+              "category": 0,
+              "center": 7,
+              "discipline": 2,
+              "format": "grib2",
+              "level_type": 106,
+              "level_value": 3.0,
+              "local_table_version": 1,
+              "master_table_version": 2,
+              "parameter": 2,
+              "second_level_type": 106,
+              "second_level_value": 3.0,
+              "subcenter": 0
+            },
+            "volumetric_soil_moisture": {
+              "category": 0,
+              "center": 7,
+              "discipline": 2,
+              "format": "grib2",
+              "level_type": 106,
+              "level_value": 3.0,
+              "local_table_version": 1,
+              "master_table_version": 2,
+              "parameter": 192,
+              "second_level_type": 106,
+              "second_level_value": 3.0,
+              "subcenter": 0
+            }
+          }
+        }
+      ],
+      "target_layers": [
+        {
+          "bottom": 0.1,
+          "top": 0.0
+        },
+        {
+          "bottom": 0.4,
+          "top": 0.1
+        },
+        {
+          "bottom": 1.0,
+          "top": 0.4
+        },
+        {
+          "bottom": 2.0,
+          "top": 1.0
+        }
+      ],
+      "temperature_field": "soil_temperature"
+    },
+    "status": "CANONICAL_FRAMES_COMPLETE_NOT_STOCK_WRF_CERTIFIED",
+    "terrain_products": [
+      {
+        "path": "case/raw/hrrr.t06z.wrfprsf00.grib2",
+        "sha256": "5bb7baf109258ca74f5b010313c6bf8a8641444a0c1f744c055ec659dac50dc7"
+      },
+      {
+        "path": "case/raw/hrrr.t06z.wrfprsf01.grib2",
+        "sha256": "977a15ca91ab95d811b1c607db61c18a1b34e4d7368c33e981c3b58191695bed"
+      },
+      {
+        "path": "case/raw/hrrr.t06z.wrfprsf02.grib2",
+        "sha256": "358a431c6091f6dbb18577871a7f73c6cd8ba93b1b5bd51b5c5e3527487dc334"
+      }
+    ],
+    "terrain_provenance": {
+      "provenance_path": "source/gpuwm/authorities/rw-wps-hrrr-prs-grib2.provenance.json",
+      "provenance_sha256": "c7f2ea4142fe09c687f2b1ac0f4d4c462cb55398bfe5149fe9008d9d03ff2cc0"
+    },
+    "valid_times": [
+      "2025-01-08T06:00:00",
+      "2025-01-08T07:00:00",
+      "2025-01-08T08:00:00"
+    ]
+  },
+  "static": {
+    "bytes": 7002172,
+    "fields": [
+      "ALBEDO12M",
+      "CONLS",
+      "CONSS",
+      "COSALPHA",
+      "E",
+      "F",
+      "GREENFRAC",
+      "HGT_M",
+      "LAI12M",
+      "LAKE_DEPTH",
+      "LANDMASK",
+      "LANDUSEF",
+      "LU_INDEX",
+      "MAPFAC_M",
+      "MAPFAC_U",
+      "MAPFAC_V",
+      "OA1LS",
+      "OA1SS",
+      "OA2LS",
+      "OA2SS",
+      "OA3LS",
+      "OA3SS",
+      "OA4LS",
+      "OA4SS",
+      "OL1LS",
+      "OL1SS",
+      "OL2LS",
+      "OL2SS",
+      "OL3LS",
+      "OL3SS",
+      "OL4LS",
+      "OL4SS",
+      "SCB_DOM",
+      "SCT_DOM",
+      "SINALPHA",
+      "SLOPECAT",
+      "SNOALB",
+      "SOILCBOT",
+      "SOILCTOP",
+      "SOILTEMP",
+      "TMN",
+      "VARLS",
+      "VARSS",
+      "VAR_SSO"
+    ],
+    "path": "native-static.npz",
+    "sha256": "4cd205e63a76be97c6f10dca933cc1dc78708e8b6eb80df297868bbc3cf2b7f6"
+  },
+  "status": "READY_NOT_YET_STOCK_WRF_GATED",
+  "stock_wrf_export": "optional",
+  "timing_seconds": {
+    "decode_and_compose": 30.489923497196287,
+    "direct_wrf_export": 0.18083557090722024,
+    "initialize_all_times": 4.542574245017022,
+    "static": 2.6775054121389985,
+    "total": 38.30372776114382,
+    "write_prepared_cache": 0.10264407121576369
+  },
+  "vertical_coordinate": {
+    "derivation": {
+      "configured_etac": 0.2,
+      "configured_floor_pa": 46407.92599918899,
+      "configured_floor_terrain_m": 6082.26134456414,
+      "etac": 0.2,
+      "governing_column": {
+        "field": "d01 static terrain",
+        "index": [
+          42,
+          67
+        ],
+        "surface_pressure_pa": 74043.70550113737,
+        "terrain_height_m": 2483.574620617137
+      },
+      "hybrid_opt": 2,
+      "p_top_pa": 10000.0,
+      "reference": "WRF v4.6.1 dyn_em/nest_init_utils.F:1158-1182; doc/README.hybrid_vert_coord:65-74",
+      "schema": "gpuwm-vertical-coordinate-adaptation-v2",
+      "status": "AS_CONFIGURED",
+      "surveyed_terrain": [
+        {
+          "cells": 6880,
+          "field": "d01 static terrain",
+          "max_terrain_m": 2483.574620617137
+        }
+      ],
+      "thinnest_layer": {
+        "configured_fraction": 0.5156691547621421,
+        "fraction": 0.5156691547621421,
+        "index": 20,
+        "margin_met": true,
+        "min_layer_fraction": 0.15
+      }
+    },
+    "etac": 0.2,
+    "hybrid_opt": 2,
+    "mass_levels": 49,
+    "p_top_pa": 10000.0
+  }
+}

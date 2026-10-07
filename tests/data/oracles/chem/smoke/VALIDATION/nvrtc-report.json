@@ -1,0 +1,42 @@
+{
+  "chem_fire.cu/compute_89": {
+    "status": 0,
+    "log": "",
+    "nvrtc_version": "13.4",
+    "source_sha256": "592d0adf9901cc125d3d5d879bd258e21fb110cffae90f2c17813370e113e1e3",
+    "options": [
+      "--std=c++17",
+      "--gpu-architecture=compute_89"
+    ]
+  },
+  "chem_fire.cu/compute_120": {
+    "status": 0,
+    "log": "",
+    "nvrtc_version": "13.4",
+    "source_sha256": "592d0adf9901cc125d3d5d879bd258e21fb110cffae90f2c17813370e113e1e3",
+    "options": [
+      "--std=c++17",
+      "--gpu-architecture=compute_120"
+    ]
+  },
+  "chem_wetdep_ls.cu/compute_89": {
+    "status": 0,
+    "log": "",
+    "nvrtc_version": "13.4",
+    "source_sha256": "88b1224557dfa3c379c4f9f341a55f03592357999cb3750c32120574af11e845",
+    "options": [
+      "--std=c++17",
+      "--gpu-architecture=compute_89"
+    ]
+  },
+  "chem_wetdep_ls.cu/compute_120": {
+    "status": 0,
+    "log": "",
+    "nvrtc_version": "13.4",
+    "source_sha256": "88b1224557dfa3c379c4f9f341a55f03592357999cb3750c32120574af11e845",
+    "options": [
+      "--std=c++17",
+      "--gpu-architecture=compute_120"
+    ]
+  }
+}

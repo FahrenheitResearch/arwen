@@ -623,9 +623,10 @@ class Dataset:
                     raise ValueError("exact and sampled windows cannot be combined")
                 command += ["--sample-window={i0:.17g}:{ni},{j0:.17g}:{nj}".format(**sample_window),
                             f"--sample-method={sample_window['method']}"]
-            command += [os.fspath(self.path), os.fspath(out), name]
+            names = [name] if isinstance(name, str) else list(name)
+            command += [os.fspath(self.path), os.fspath(out), *names]
             _run(command,
-                 what=f"NetCDF decode failed for {name} in {self.path}",
+                 what=f"NetCDF decode failed for {', '.join(names)} in {self.path}",
                  file=self.path)
             document = json.loads((out / "metadata.json").read_text("utf-8"))
             if document.get("schema") != DUMP_SCHEMA:
@@ -633,51 +634,97 @@ class Dataset:
                     f"{NETCDF_NAME} answered dump schema "
                     f"{document.get('schema')!r}, expected {DUMP_SCHEMA!r}")
             records = document.get("variables") or []
-            if len(records) != 1:
+            if len(records) != len(names):
                 raise NetcdfDecodeError(
                     f"{NETCDF_NAME} dumped {len(records)} variables for "
-                    f"{name}; expected exactly one")
-            record = records[0]
-            if water_layer_thickness is not None:
-                conversion = record.get("water_layer_conversion")
-                if (not isinstance(conversion, dict)
-                        or conversion.get("thickness_variable") != water_layer_thickness
-                        or conversion.get("target_units") != "m3 m-3"):
-                    raise NetcdfDecodeError(
-                        f"{NETCDF_NAME} did not acknowledge layer water conversion; rebuild the reader")
-                if conversion_receipt is not None:
-                    conversion_receipt.update(conversion)
-            if unit_transform is not None and record.get("unit_transform") != list(unit_transform):
-                raise NetcdfDecodeError(
-                    f"{NETCDF_NAME} did not acknowledge the requested unit transform; rebuild the reader")
-            if window is not None and record.get("window") != list(window):
-                raise NetcdfDecodeError(
-                    f"{NETCDF_NAME} did not acknowledge the requested window; rebuild the reader")
-            if sample_window is not None and record.get("sample_window") != sample_window:
-                raise NetcdfDecodeError(
-                    f"{NETCDF_NAME} did not acknowledge the requested sampled window; rebuild the reader")
-            dtype = record.get("dtype", "<f8")
-            expected_dtype = "|S1" if self.variables[name].is_character else "<f8"
-            if dtype != expected_dtype:
-                raise NetcdfDecodeError(
-                    f"{name}: decoded dtype {dtype!r}, expected {expected_dtype!r}")
-            values = np.fromfile(out / str(record["filename"]), dtype=dtype)
-            shape = tuple(int(s) for s in record["shape"])
-            expected = int(np.prod(shape)) if shape else 1
-            if values.size != expected:
-                raise NetcdfDecodeError(
-                    f"{name}: decoded {values.size} values but shape {shape} "
-                    f"needs {expected}")
-            values = values.reshape(shape)
-            if not raw:
-                values = _mask_default_fill(
-                    self.variables[name], values, record.get("cf") or {},
+                    f"{names}; expected exactly {len(names)}")
+            if isinstance(name, str):
+                return self._decoded_record(
+                    out, name, records[0], raw=raw,
                     unit_transform=unit_transform,
-                    layer_water=water_layer_thickness is not None)
-            times = tuple(
-                _parse_instant(text, name) for text in (record.get("times") or ())
-            )
+                    water_layer_thickness=water_layer_thickness,
+                    conversion_receipt=conversion_receipt, window=window,
+                    sample_window=sample_window)
+            by_name = {str(record.get("name")): record for record in records}
+            if set(by_name) != set(names):
+                raise NetcdfDecodeError(
+                    f"{NETCDF_NAME} dumped {sorted(by_name)} for {sorted(names)}")
+            return {one: self._decoded_record(
+                        out, one, by_name[one], raw=raw,
+                        unit_transform=unit_transform,
+                        water_layer_thickness=water_layer_thickness,
+                        conversion_receipt=conversion_receipt, window=window,
+                        sample_window=sample_window)
+                    for one in names}
+
+    def _decoded_record(self, out: Path, name: str, record, *, raw: bool,
+                        unit_transform, water_layer_thickness,
+                        conversion_receipt, window, sample_window):
+        """``(values, times)`` of one dumped record, every check applied."""
+
+        if water_layer_thickness is not None:
+            conversion = record.get("water_layer_conversion")
+            if (not isinstance(conversion, dict)
+                    or conversion.get("thickness_variable") != water_layer_thickness
+                    or conversion.get("target_units") != "m3 m-3"):
+                raise NetcdfDecodeError(
+                    f"{NETCDF_NAME} did not acknowledge layer water conversion; rebuild the reader")
+            if conversion_receipt is not None:
+                conversion_receipt.update(conversion)
+        if unit_transform is not None and record.get("unit_transform") != list(unit_transform):
+            raise NetcdfDecodeError(
+                f"{NETCDF_NAME} did not acknowledge the requested unit transform; rebuild the reader")
+        if window is not None and record.get("window") != list(window):
+            raise NetcdfDecodeError(
+                f"{NETCDF_NAME} did not acknowledge the requested window; rebuild the reader")
+        if sample_window is not None and record.get("sample_window") != sample_window:
+            raise NetcdfDecodeError(
+                f"{NETCDF_NAME} did not acknowledge the requested sampled window; rebuild the reader")
+        dtype = record.get("dtype", "<f8")
+        expected_dtype = "|S1" if self.variables[name].is_character else "<f8"
+        if dtype != expected_dtype:
+            raise NetcdfDecodeError(
+                f"{name}: decoded dtype {dtype!r}, expected {expected_dtype!r}")
+        values = np.fromfile(out / str(record["filename"]), dtype=dtype)
+        shape = tuple(int(s) for s in record["shape"])
+        expected = int(np.prod(shape)) if shape else 1
+        if values.size != expected:
+            raise NetcdfDecodeError(
+                f"{name}: decoded {values.size} values but shape {shape} "
+                f"needs {expected}")
+        values = values.reshape(shape)
+        if not raw:
+            values = _mask_default_fill(
+                self.variables[name], values, record.get("cf") or {},
+                unit_transform=unit_transform,
+                layer_water=water_layer_thickness is not None)
+        times = tuple(
+            _parse_instant(text, name) for text in (record.get("times") or ())
+        )
         return values, times
+
+    def prefetch(self, names) -> int:
+        """Decode several variables in one ``rw_netcdf`` run and cache them.
+
+        Each variable is decoded under its own current mask/scale policy,
+        exactly as its first ``variable[...]`` would decode it; variables
+        sharing a policy share one run.  The bridge starts a process per
+        run, so a reader that is about to read a whole file pays one start
+        instead of one per variable.  Returns the number of runs made.
+        """
+
+        groups: dict[tuple[bool, bool], list[str]] = {}
+        for name in names:
+            variable = self.variables[name]
+            if variable._values is not None:
+                continue
+            groups.setdefault((variable._raw, variable._scale), []).append(name)
+        for (raw, scale), group in groups.items():
+            decoded = self._decode(group, raw=raw, scale=scale)
+            for name in group:
+                variable = self.variables[name]
+                variable._values, variable._times = decoded[name]
+        return len(groups)
 
 
 #: The NetCDF library's default fill per stored type (netcdf.h NC_FILL_*),

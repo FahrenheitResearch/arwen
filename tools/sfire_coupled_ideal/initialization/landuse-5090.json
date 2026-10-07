@@ -1,0 +1,2119 @@
+{
+  "summary": {
+    "cases": 34,
+    "words": 21420,
+    "different_words": 0,
+    "max_ulp": 0
+  },
+  "device": "NVIDIA GeForce RTX 5090",
+  "cases": {
+    "landuse/case_10_reuse_0": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_10_reuse_1": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_11_reuse_0": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_11_reuse_1": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_12_reuse_0": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_12_reuse_1": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_13_reuse_0": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_13_reuse_1": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_14_reuse_0": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_14_reuse_1": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_15_reuse_0": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_15_reuse_1": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_16_reuse_0": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_16_reuse_1": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_17_reuse_0": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_17_reuse_1": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_1_reuse_0": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_1_reuse_1": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_2_reuse_0": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_2_reuse_1": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_3_reuse_0": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_3_reuse_1": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_4_reuse_0": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_4_reuse_1": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_5_reuse_0": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_5_reuse_1": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_6_reuse_0": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_6_reuse_1": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_7_reuse_0": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_7_reuse_1": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_8_reuse_0": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_8_reuse_1": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_9_reuse_0": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    },
+    "landuse/case_9_reuse_1": {
+      "albedo": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "albbck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "mavail": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "emiss": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "embck": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "znt": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "z0": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "thc": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xland": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      },
+      "xicem": {
+        "words": 63,
+        "different_words": 0,
+        "max_ulp": 0,
+        "nonfinite_differences": 0
+      }
+    }
+  }
+}

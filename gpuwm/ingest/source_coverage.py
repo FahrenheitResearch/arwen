@@ -70,56 +70,86 @@ def lattice_identity(y_index, x_index, *, nx: int, ny: int,
     ``y_index``/``x_index`` are a target staggering's zero-based
     fractional source indices, as the declared projection maps them; the
     source grid has ``ny x nx`` mass points.  The target is the source
-    grid's own mass points (shape ``(ny, nx)``), its u faces (``(ny, nx +
-    1)``, face ``i`` at ``i - 1/2``) or its v faces (``(ny + 1, nx)``),
-    with every point within :data:`LATTICE_IDENTITY_ANCHOR_CELLS` of
-    either the exact lattice or that lattice scaled by the declared
-    source sphere's radius divided by the WPS radius (``sphere_scale``).
-    This allows rounded source anchors and the two declared sphere
-    conventions, without accepting an arbitrary spacing change, shift
-    or local distortion.  Every point must also lie strictly within
-    :data:`LATTICE_IDENTITY_LIMIT_CELLS` of its own cell.  The exact indices
-    are returned, the outermost faces (half a cell past the grid's edge)
-    clamped onto the edge cell, so mass points copy their own cell and an
-    interior face reads its two neighbours.  ``None`` for every other
-    target, which keeps the projected indices it came with.
+    grid's own mass points, its u faces (face ``i`` at ``i - 1/2``) or its
+    v faces -- the whole grid, or an index-aligned window of it (a crop of
+    ``ny_t x nx_t`` mass points whose first point is source cell ``(j0,
+    i0)``) -- with every point within
+    :data:`LATTICE_IDENTITY_ANCHOR_CELLS` of either the exact lattice or
+    that lattice scaled by the declared source sphere's radius divided by
+    the WPS radius (``sphere_scale``).  This allows rounded source anchors
+    and the two declared sphere conventions, without accepting an
+    arbitrary spacing change, shift or local distortion.  Every point must
+    also lie strictly within :data:`LATTICE_IDENTITY_LIMIT_CELLS` of its
+    own cell.  The exact indices are returned, the outermost faces (half a
+    cell past the grid's edge) clamped onto the edge cell, so mass points
+    copy their own cell and an interior face reads its two neighbours.
+    ``None`` for every other target, which keeps the projected indices it
+    came with.
 
     Breakage it removes: the native grid as a target was refused by every
     coverage guard, because its outermost faces and cell corners sit half
     a cell past the source's outermost points, and the advice was a one-
     row trim that moved the boundary relaxation zone one row inward of
     the grid's own.
+
+    Breakage the window form removes (hour-1 spin-up, 2026-10-06): a crop
+    of the HRRR lattice -- including the 1797 x 1057 HRRR door itself,
+    which is one cell inside the 1799 x 1059 source -- failed this test on
+    shape alone and fell through to bilinear interpolation at the
+    GRIB-sphere drift (0.15 to 0.35 of a cell), which smeared every start
+    field: graupel peaks 8% lower at the median, 25 to 32% more nonzero
+    cloud-ice and graupel cells than the analysis had.  An index-aligned
+    window copies cell for cell exactly as the whole grid does.
     """
 
     y_index = np.asarray(y_index, dtype=np.float64)
     x_index = np.asarray(x_index, dtype=np.float64)
     shape = tuple(y_index.shape)
     nx, ny = int(nx), int(ny)
-    offsets = {(ny, nx): (0.0, 0.0), (ny, nx + 1): (0.0, -0.5),
-               (ny + 1, nx): (-0.5, 0.0)}.get(shape)
-    if offsets is None or tuple(x_index.shape) != shape:
+    if (len(shape) != 2 or tuple(x_index.shape) != shape
+            or shape[0] < 1 or shape[1] < 1
+            or shape[0] > ny + 1 or shape[1] > nx + 1):
         return None
     if not (np.isfinite(y_index).all() and np.isfinite(x_index).all()):
         return None
-    offset_y, offset_x = offsets
-    rows, cols = np.indices(shape, dtype=np.float64)
-    lattice_y = rows + offset_y
-    lattice_x = cols + offset_x
     if not np.isfinite(sphere_scale) or sphere_scale <= 0.0:
         return None
-    matched = any(
-        max(float(np.abs(y_index - lattice_y * scale).max()),
-            float(np.abs(x_index - lattice_x * scale).max()))
-        <= LATTICE_IDENTITY_ANCHOR_CELLS
-        for scale in (1.0, float(sphere_scale)))
-    if not matched:
-        return None
-    drift = max(float(np.abs(y_index - lattice_y).max()),
-                float(np.abs(x_index - lattice_x).max()))
-    if not drift < LATTICE_IDENTITY_LIMIT_CELLS:
-        return None
-    return (np.clip(lattice_y, 0.0, float(ny - 1)),
-            np.clip(lattice_x, 0.0, float(nx - 1)))
+    rows, cols = np.indices(shape, dtype=np.float64)
+    # The staggering is read from the target's own indices: a mass window
+    # sits on whole cells, a u-face window half a cell west, a v-face
+    # window half a cell south.  The anchor (j0, i0) is the source cell
+    # under the window's first point; the whole grid is the window at
+    # (0, 0), for which this reduces term for term to the earlier test.
+    for offset_y, offset_x in ((0.0, 0.0), (0.0, -0.5), (-0.5, 0.0)):
+        # The window may reach one point past the grid only along a
+        # staggered axis, where that point is the outermost face half a
+        # cell past the edge (clamped onto the edge cell below).  A mass
+        # window must sit wholly on the grid's own cells: a window whose
+        # last row or column is a full cell past the edge is not the
+        # grid, and returning it here would copy the edge cell into the
+        # overhang and silence the coverage refusal that names the gap.
+        max_rows = ny + (1 if offset_y else 0)
+        max_cols = nx + (1 if offset_x else 0)
+        for scale in (1.0, float(sphere_scale)):
+            j0 = float(np.rint(y_index[0, 0] / scale - offset_y))
+            i0 = float(np.rint(x_index[0, 0] / scale - offset_x))
+            if j0 < 0.0 or i0 < 0.0 or j0 + shape[0] > max_rows \
+                    or i0 + shape[1] > max_cols:
+                continue
+            lattice_y = rows + offset_y + j0
+            lattice_x = cols + offset_x + i0
+            residual = max(
+                float(np.abs(y_index - lattice_y * scale).max()),
+                float(np.abs(x_index - lattice_x * scale).max()))
+            if residual > LATTICE_IDENTITY_ANCHOR_CELLS:
+                continue
+            drift = max(float(np.abs(y_index - lattice_y).max()),
+                        float(np.abs(x_index - lattice_x).max()))
+            if not drift < LATTICE_IDENTITY_LIMIT_CELLS:
+                return None
+            return (np.clip(lattice_y, 0.0, float(ny - 1)),
+                    np.clip(lattice_x, 0.0, float(nx - 1)))
+    return None
 
 
 #: What to DO about it.  Both branches are named because the message

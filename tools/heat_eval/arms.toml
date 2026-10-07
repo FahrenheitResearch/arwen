@@ -1,0 +1,122 @@
+# Arms of the nowcast radar-heating evaluation, as overlays on each case's
+# arm A configuration.  An arm may change the start time, the run length
+# and the [radar_heating] table, and nothing else: make_arm_configs.py
+# refuses an arm row with any other key, and refuses a written config that
+# differs from arm A anywhere else.  An arm that differs in a second knob
+# makes its comparison with A meaningless.
+#
+# start_offset_minutes  start relative to the case's t0 (18Z)
+# run_hours             length in the full plan; core_run_hours in the core plan
+# plan                  core (both plans) or full (full plan only)
+# lead_class            what its heating windows may be:
+#                         none      no heating
+#                         observed  every window ends at or before t0
+#                         forecast  every window is labelled forecast by its
+#                                   adapter (a causal nowcast)
+#                         oracle    windows may hold observations after t0;
+#                                   such a run only ever fills an oracle column
+# column                the sheet column and the decision role
+# windows               the window set under <case>/windows/ the heating reads
+# cards / min_cards     what the run asks the GPU mutex for (gate G1 may raise it)
+# roles                 the case roles the arm runs on (default: every role)
+#
+# Arm D is HRRR's own forecast: a reference column, not a run.
+
+schema = "gpuwm.heat-eval-arms.v1"
+oracle_columns = ["E", "E3D"]
+forecast_columns = ["A", "B", "C", "C60"]
+reference_columns = ["MRMS", "HRRR"]
+
+[[arm]]
+id = "A"
+label = "A: no heating"
+column = "A"
+plan = "core"
+start_offset_minutes = 0
+run_hours = 18
+core_run_hours = 18
+lead_class = "none"
+cards = 2
+min_cards = 2
+
+[[arm]]
+id = "B"
+label = "B: observed radar heating 17Z to 18Z"
+column = "B"
+plan = "core"
+start_offset_minutes = -60
+run_hours = 19
+core_run_hours = 7
+lead_class = "observed"
+cards = 2
+min_cards = 2
+[arm.heating]
+windows = "levelii-b"
+window_minutes = 15
+active_minutes = 60
+
+[[arm]]
+id = "C"
+label = "C: StormScope nowcast heating 0 to 2 h"
+column = "C"
+plan = "core"
+start_offset_minutes = 0
+run_hours = 18
+core_run_hours = 18
+lead_class = "forecast"
+cards = 2
+min_cards = 2
+[arm.heating]
+windows = "stormscope"
+window_minutes = 10
+active_minutes = 120
+
+[[arm]]
+id = "E"
+label = "E: oracle, real MRMS through C's path"
+column = "E"
+plan = "core"
+start_offset_minutes = 0
+run_hours = 18
+core_run_hours = 18
+lead_class = "oracle"
+cards = 2
+min_cards = 2
+[arm.heating]
+windows = "mrms2d"
+window_minutes = 10
+active_minutes = 120
+
+[[arm]]
+id = "C60"
+label = "C60: first nowcast hour only"
+column = "C60"
+plan = "full"
+roles = ["decision"]
+start_offset_minutes = 0
+run_hours = 6
+core_run_hours = 6
+lead_class = "forecast"
+cards = 2
+min_cards = 2
+[arm.heating]
+windows = "stormscope"
+window_minutes = 10
+active_minutes = 60
+
+[[arm]]
+id = "E3D"
+label = "E3D: oracle, real Level II 3D windows"
+column = "E3D"
+plan = "full"
+roles = ["decision"]
+start_offset_minutes = 0
+run_hours = 6
+core_run_hours = 6
+lead_class = "oracle"
+cards = 2
+min_cards = 2
+[arm.heating]
+windows = "levelii-fwd"
+window_minutes = 15
+active_minutes = 120

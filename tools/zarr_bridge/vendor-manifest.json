@@ -187,15 +187,15 @@
     },
     {
       "name": "core-foundation",
-      "version": "0.9.4",
-      "package_sha256": "91e195e091a93c46f7102ec7818a2aa394e1e1771c3ab4825963fa03e45afb8f",
+      "version": "0.10.1",
+      "package_sha256": "b2a6cd9ae233e7f62ba4e9353e81a88df7fc8a5987b8d445b4d90c879bd156f6",
       "license": "MIT OR Apache-2.0",
       "license_file": null
     },
     {
       "name": "core-foundation",
-      "version": "0.10.1",
-      "package_sha256": "b2a6cd9ae233e7f62ba4e9353e81a88df7fc8a5987b8d445b4d90c879bd156f6",
+      "version": "0.9.4",
+      "package_sha256": "91e195e091a93c46f7102ec7818a2aa394e1e1771c3ab4825963fa03e45afb8f",
       "license": "MIT OR Apache-2.0",
       "license_file": null
     },

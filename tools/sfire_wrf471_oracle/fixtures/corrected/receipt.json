@@ -1,0 +1,138 @@
+{
+  "source": "WRF v4.7.1",
+  "commit": "f52c197ed39d12e087d02c50f412d90d418f6186",
+  "tar_sha256": "0826f8878aa787e016586b6e3b43896c8467570b7cca47741b5e16d2f4def0ae",
+  "compiler": "GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+  "libc": "ldd (Ubuntu GLIBC 2.43-2ubuntu2.4) 2.43",
+  "flags": "-O0 -cpp -ffp-contract=off -fcheck=all -fbacktrace -ffree-form -ffree-line-length-none -fallow-argument-mismatch -Dwrfmodel -DEM_CORE=1 -DNMM_CORE=0 -DRWORDSIZE=4 -DIWORDSIZE=4 -DDWORDSIZE=8 -DLWORDSIZE=4",
+  "source_sha256sums": "5b80377fecdc18a5f0ad38d3b6c15cfc86ad5d76701adbbbb08a08698d0f7062  share/module_model_constants.F\n2ed7dc6e90e0fe442ffee84512b4998d31c8ec3400d3a7ab6078404065f784a6  frame/module_wrf_error.F\nab9499f12b305257fd62a0c76f299ee308b7fabc98c6fae073ba25f132ec8d27  phys/module_fr_fire_util.F\n8185c11a706983db747c7e5059227d05e02185fa58f030126f3d07723acbab14  phys/module_fr_fire_phys.F\n7679945766e20219934daacfa4b174ffea9cabdd442ccd347ccde5a3afda7bd2  phys/module_fr_fire_core.F\nf2e3932e088076508a8c7284dc5395770b93b8eb5ba5cccbb1a56775dddd184b  phys/module_fr_fire_model.F\n61583834842f4d382c7da3738b8a044f83b224f1d75cd0c6dfe1f2072e2fa272  phys/module_fr_fire_atm.F\n7662f29bb003697d08ccee585e272a3ed7362edc73bcef5ea8dc95d100d9e578  phys/module_fr_fire_driver.F\nde3e958071ada8522711ea2ca326a3d3dbf58f1f7a0df675485fff4745cbffb0  phys/module_fr_fire_driver_wrf.F\n72ffb0f34a3cf8f148d537fb026fc3a99055970de9a34735222fdbf954fcf333  phys/fr_fire_params_decl.h\n59538a2313cadbe5ccc92ac916d1b7373f0b4ab9902cc44336b2ff31ea42f661  phys/fr_fire_params_args.h\na4d146b593db3bb7a444721669b2653f4bab1f5666b0a0ca8c201165e2b00e9b  Registry/registry.fire\n2ad6471a8c2e8eb67e3e0ea01e0483f36a9f9915a5c87be7fd8cc98278f941fc  test/em_fire/namelist.fire\n4ef67526cc11082151d5fc974d6dee90e6bc407ad8a38b5ec819cd83e86b36aa  test/em_fire/namelist.fire.sb40\naa24f26ab69a1eacb2189597d7a4b984314741e714c0388d1c433e65a3c7a6bd  test/em_fire/namelist.fire_fmc\naef625d2812966c29a24d5495abcf3ef1dcd8f349604085600101d75dea63042  test/em_fire/namelist.fire_fmc.sb40\n",
+  "oracle_sha256sums": "1653e767df483cf937d11afb8f2e7ee785d5d833ae9469a40901919ed4938de7  oracle_io.F90\n3408e66b151aa110b01d6e391d6f723839f83f15eb38af1cbd2852178f93de5d  run_atm.F90\n789e9213c77105f0c3ffeb5f77a866f7e8a04e01dbfad56e86648a19a798dcec  run_controls.F90\nf79d3905d9b46022c564d800a47b15888c7c5583b577c1dbdf8e140fc27d836b  run_core.F90\n9e7b3a70c702c231b162ad9a22330ab5a98d2bc13c5a4ba03a9c52b3b25eb389  run_corrected_tg.F90\n70691162db568351888615bd575800a3ee8dc860b859eab4962f174e79371858  run_ignition.F90\nffcd9e79a1b10462f9f1ac472d65014b28a6b34bfe3a13f315ff9989f3f123b3  run_math.F90\nb52558f3d16e6dd00f7297a3e72d372c460cde9bfdbcbb80b949a385d97d4448  run_model.F90\n891d4ce5815c5ef455e733702bcc89df8d19978762459e0b5779681e2f1a69cf  run_moisture_interp.F90\nc34d663638b6c1ec6043011ec01bd9f404b21f7ca1d376801a61f4006869fbec  run_physics.F90\ne6a49bc2582a60537f170cae432a1fee4d22e9f58874de5d2063ba32e7b2ae11  stub_wrf.F90\nb19448802b8451fec82e3436c8d1d4936cfff2d636205ae329b9a69771dfedf6  build.sh\nfe1d3bdc1104b03d41c05a5a22f3b9e55ccce9a82c484f3c8b7cff6d34ed9bbe  namelist.fire\n",
+  "reference_kind": "explicitly corrected TG source",
+  "layout": "2D (j,i); 3D (k,j,i); little-endian f4/i4; scalar rank zero",
+  "cases": {
+    "corrected_tg": {
+      "sha256": "a2e5126dc507dcd113051224dd062225c38e9c2fc6621a5f948898644f86d9ac",
+      "native_stream_sha256": {
+        "z_at_w": "2ad7a9c5bfc204bcf3bb3ab5f4ff5a21cf84b61c5c36cd8722cfa06f95e8ea91",
+        "dz8w": "a3607bc6cae66b752110b03faff4caac0fad1edff09457d0af134ba0fdc95b14",
+        "rho": "eef0942c24cf3d627a0444c2d1758c5f154cf7bff6e6b5f759a5717cef393b97",
+        "terrain": "9ff802612fa8e290c221ca6098fa0598328264a8d8c6228af4a07fa033a829f6",
+        "mu": "145aa879851f4d8b86011ff9f6f73f1f18436c8be6e6c5d98e74c7ed86e6faa1",
+        "grnhfx": "d66b661c29ef3718d2e470790cbdf8e90d6c2b18108e09d8f69bd3e802bf103f",
+        "grnqfx": "8e7f0671ae9d1d535a62523b8e633e70d04be5bf05852aef76c8eb49408be092",
+        "canhfx": "416f27e6753c502e8992878589134378a59b0abdee0b3aeb6acec0eb264fbc86",
+        "canqfx": "f771ee7662fd1b0858c32e8adb49eca4f47b7606f5f6ca5e239bb80dc5861695",
+        "c1h": "5f5533c6044671b68b3b0aec30b2d0e3dd8d7ccdcb09dee8486f3fb3bea37363",
+        "c2h": "02f1e90a5ccb0f1073a9d5af31acd9751d900bf7e52316f0eccbb00771ee8cec",
+        "prop_heat_out": "39380d793106a16ab58b78c7b7a8be558ad3be4f4067d03137fe84bede1e90c4",
+        "rthfrten_out": "a27aa0406226723546a64238c162bd47feb71fc9eaa114bb723642aee7a902e7",
+        "rqvfrten_out": "37a75481cda9e2165ea33252435fbad3ae4e147556ddc55417e5148615c38d5e"
+      },
+      "arrays": {
+        "z_at_w": {
+          "shape": [
+            8,
+            5,
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "dz8w": {
+          "shape": [
+            8,
+            5,
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "rho": {
+          "shape": [
+            8,
+            5,
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "terrain": {
+          "shape": [
+            5,
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "mu": {
+          "shape": [
+            5,
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "grnhfx": {
+          "shape": [
+            5,
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "grnqfx": {
+          "shape": [
+            5,
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "canhfx": {
+          "shape": [
+            5,
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "canqfx": {
+          "shape": [
+            5,
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "c1h": {
+          "shape": [
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "c2h": {
+          "shape": [
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "prop_heat_out": {
+          "shape": [
+            8,
+            5,
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "rthfrten_out": {
+          "shape": [
+            8,
+            5,
+            6
+          ],
+          "dtype": "<f4"
+        },
+        "rqvfrten_out": {
+          "shape": [
+            8,
+            5,
+            6
+          ],
+          "dtype": "<f4"
+        }
+      }
+    }
+  },
+  "corrected_atm_sha256": "a96c567aad73e4fcc76c2a7ce097b9615f388edb2c0031c766b5863f071d9e8a"
+}

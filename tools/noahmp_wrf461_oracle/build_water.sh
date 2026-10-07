@@ -23,7 +23,7 @@
 # frozen-fraction loop (7333-7337) into glibc's libmvec `_ZGVbN4v_expf` instead
 # of scalar `expf`.  libmvec's 4-wide expf carries a 4-ULP accuracy contract
 # rather than glibc's scalar implementation, so no port that calls expf can
-# reproduce it.  See gpuwm/data/noahmp/oracle/PROVENANCE-soilwater.md.
+# reproduce it.  See tests/data/oracles/noahmp/PROVENANCE-soilwater.md.
 #
 # Stage 5 below runs `nm -u` on the compiled module and FAILS if any libmvec
 # symbol is present.  That is not decoration: it is the check that would have

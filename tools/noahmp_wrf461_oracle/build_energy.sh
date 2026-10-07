@@ -8,7 +8,7 @@
 #   <workdir>   scratch directory (created if absent)
 #   [optlevel]  "noopt" (default) builds everything at -O0.  This is the level
 #               the ENERGY fixture is pinned at, for the reason recorded in
-#               gpuwm/data/noahmp/oracle/PROVENANCE-soilwater.md: at WRF's own
+#               tests/data/oracles/noahmp/PROVENANCE-soilwater.md: at WRF's own
 #               FCOPTIM gfortran vectorises SOILWATER's frozen-fraction loop
 #               onto glibc libmvec's _ZGVbN4v_expf, a different function from
 #               scalar expf that no scalar port can reproduce.  ENERGY does not
@@ -158,7 +158,7 @@ fi
 echo "=== fixture rows: $(( $(wc -l < noahmp-energy.csv) - 1 )) ==="
 
 python3 "$HERE/validate_energy_oracle.py" noahmp-energy.csv \
-        --sflx "$REPO/gpuwm/data/noahmp/oracle/noahmp-sflx.csv"
+        --sflx "$REPO/tests/data/oracles/noahmp/noahmp-sflx.csv"
 
 sha256sum "$WRF_TREE/phys/module_sf_noahmplsm.F" \
           "$WRF_TREE/phys/module_sf_noahmpdrv.F" \

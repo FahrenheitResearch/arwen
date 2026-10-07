@@ -1071,6 +1071,15 @@ extern "C" __global__ void thompson_aa_warm_source_network(
     const double* __restrict__ tcr_gacr,
     const double* __restrict__ tnr_racg,
     const double* __restrict__ tnr_gacr,
+    // WRF's qcten, exactly as in thompson_aa_cold_network: null applies the
+    // cloud sink to qc in place, non-null adds it to the accumulator and
+    // leaves qc the read-only entry cloud.
+    float* __restrict__ qcten,
+    // WRF's qrten / nrten: both null keeps the in-place rain apply and its
+    // in-place size bound; both given adds the sources and runs the
+    // :3070-3091 balance in tendency form (see thompson_aa_cold_network).
+    float* __restrict__ qrten,
+    float* __restrict__ nrten,
     float dt, int size)
 {
     // WRF's cold source kernel already owns every sub-freezing level.  This
@@ -1638,12 +1647,26 @@ extern "C" __global__ void thompson_aa_warm_source_network(
     const float qg_entry_wrf = qg[idx] > THOMPSON_AA_R1 ? qg[idx] : 0.0f;
     const float ng_entry_wrf = qg[idx] > THOMPSON_AA_R1
         ? graupel_number_per_kg[idx] : 0.0f;
-    qc[idx] = fmaxf(0.0f, thompson_aa_sub(qc[idx],
-        thompson_aa_mul((float)(cloud_sink * (double)orho), dt)));
-    qr[idx] = fmaxf(0.0f, thompson_aa_add(qr[idx],
-        thompson_aa_mul((float)(rain_rate * (double)orho), dt)));
-    nr[idx] = fmaxf(0.0f, thompson_aa_add(nr[idx],
-        thompson_aa_mul((float)(rain_number_rate * (double)orho), dt)));
+    if (qcten != nullptr) {
+        // :2987, rounded once to REAL as WRF's REAL + DOUBLE sum is.
+        qcten[idx] = (float)((double)qcten[idx]
+                             - cloud_sink * (double)orho);
+    } else {
+        qc[idx] = fmaxf(0.0f, thompson_aa_sub(qc[idx],
+            thompson_aa_mul((float)(cloud_sink * (double)orho), dt)));
+    }
+    const bool accumulate_rain = nrten != nullptr;
+    if (accumulate_rain) {
+        // :3058-3067.  REAL + DOUBLE*orho, rounded once.
+        qrten[idx] = (float)((double)qrten[idx] + rain_rate * (double)orho);
+        nrten[idx] = (float)((double)nrten[idx]
+                             + rain_number_rate * (double)orho);
+    } else {
+        qr[idx] = fmaxf(0.0f, thompson_aa_add(qr[idx],
+            thompson_aa_mul((float)(rain_rate * (double)orho), dt)));
+        nr[idx] = fmaxf(0.0f, thompson_aa_add(nr[idx],
+            thompson_aa_mul((float)(rain_number_rate * (double)orho), dt)));
+    }
     qs[idx] = fmaxf(0.0f, thompson_aa_add(qs[idx],
         thompson_aa_mul((float)(snow_rate * (double)orho), dt)));
     qg[idx] = fmaxf(0.0f, thompson_aa_add(qg[idx],
@@ -1663,12 +1686,24 @@ extern "C" __global__ void thompson_aa_warm_source_network(
     // vapour once, at the terminal apply (:3974); see the cold network.
     qv[idx] = thompson_aa_sub(qv[idx],
         thompson_aa_mul((float)(vapor_rate * (double)orho), dt));
-    thompson_aa_bound_rain_number(qr[idx] * rho, rho, &nr[idx]);
+    if (accumulate_rain) {
+        // :3070-3091 in WRF's tendency form.
+        float rain_mass_tendency = qrten[idx];
+        float rain_number_tendency = nrten[idx];
+        thompson_aa_rain_balance_tendency(qr[idx], nr[idx],
+            &rain_mass_tendency, &rain_number_tendency, rho, orho,
+            inverse_dt, dt);
+        qrten[idx] = rain_mass_tendency;
+        nrten[idx] = rain_number_tendency;
+    } else {
+        thompson_aa_bound_rain_number(qr[idx] * rho, rho, &nr[idx]);
+    }
     // :3067-3091.  Where the post-source rain concentration is at or below R1
     // WRF discards the call's rain sources and removes the entry rain:
     // qrten = -qr1d*odts, nrten = -nr1d*odts.  The number bound above zeroes
     // only the number; the mass has to go too.
-    if (!(thompson_aa_mul(qr[idx], rho) > THOMPSON_AA_R1)) {
+    if (!accumulate_rain
+            && !(thompson_aa_mul(qr[idx], rho) > THOMPSON_AA_R1)) {
         qr[idx] = thompson_aa_add(qr_entry_wrf, thompson_aa_mul(
             thompson_aa_mul(-qr_entry_wrf, inverse_dt), dt));
         nr[idx] = thompson_aa_add(nr_entry_wrf, thompson_aa_mul(

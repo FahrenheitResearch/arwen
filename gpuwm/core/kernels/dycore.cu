@@ -637,7 +637,6 @@ real supplied_fcy_value(int row, int i, int k, int ny, int nx,
     return value;
 }
 
-#if GPUWM_WRF_EXACT_C_BIGSTEP
 static __device__ __forceinline__
 real wrf_phi_field_difference(const real* __restrict__ field, int axis,
                               int i, int j, int k, int offset,
@@ -652,7 +651,6 @@ real wrf_phi_field_difference(const real* __restrict__ field, int axis,
     size_t cm = axis ? (size_t)j * nx + pm : (size_t)pm * nx + i;
     return rn_sub(field[(size_t)k * st + cp], field[(size_t)k * st + cm]);
 }
-#endif
 
 static __device__ __forceinline__
 real x_difference(int i, int offset, int j, int k, size_t st, int nx,
@@ -767,6 +765,108 @@ void slow_geopotential_vertical(real* __restrict__ rph_t,
 #endif
     if (has_msf) gw = rn_div(gw, msft[c]);
     rph_t[ix] = rn_add(tendency, gw);
+}
+
+// Native rhs_ph on open boundaries. Interior differences retain the
+// separate PH/PHB operation order; outer upwinding uses PH alone.
+// WRF v4.7.1 evaluates the west top row at kz=kde. No initializer assigns
+// FNM/FNP at kde (they loop k=2..kde-1) and the U level there is never
+// written, so at run time all three hold their zero allocation value: the
+// donor speed is zero and the term subtracts a signed zero, as WRF does.
+extern "C" __global__
+void slow_geopotential_open(real* rph_t,const real* ww,const real* w,
+    const real* u,const real* v,const real* php,const real* phb,
+    const real* mup,const real* mub,const real* rdnw,const real* fnm,const real* fnp,
+    const real* c1f,const real* c2f,real cfn,real cfn1,
+    const real* msft,const real* msfu,const real* msfv,
+    const real* mux,const real* muy,real quarter_rdx,real quarter_rdy,
+    int mapped,int open_x,int open_y,int supplied,int add_vertical,int order,int base3d,
+    int nz,int ny,int nx)
+{
+    size_t tid=(size_t)blockIdx.x*blockDim.x+threadIdx.x,st=(size_t)ny*nx;
+    if(tid>=(size_t)nz*st)return;
+    int k=int(tid/st)+1;size_t c=tid-(size_t)(k-1)*st,ix=(size_t)k*st+c;
+    int j=int(c/nx),i=int(c-(size_t)j*nx),top=k==nz;
+    real tendency=(top&&add_vertical)?0.0f:rph_t[ix];
+    real mass=rn_add(rn_mul(c1f[k],mut_value(mub,mup,c)),c2f[k]);
+    if(add_vertical) {
+        if(!top) {
+            real dl=rn_sub(rn_add(rn_sub(php[ix],php[ix-st]),base_value(phb,k,c,st,base3d)),base_value(phb,k-1,c,st,base3d));
+            real dh=rn_sub(rn_add(rn_sub(php[ix+st],php[ix]),base_value(phb,k+1,c,st,base3d)),base_value(phb,k,c,st,base3d));
+            real lo=rn_mul(rn_mul(rn_mul(0.5f,rn_add(ww[ix],ww[ix-st])),rdnw[k-1]),dl);
+            real hi=rn_mul(rn_mul(rn_mul(0.5f,rn_add(ww[ix+st],ww[ix])),rdnw[k]),dh);
+            tendency=rn_sub(tendency,rn_add(rn_mul(fnm[k],hi),rn_mul(fnp[k],lo)));
+        }
+        real gw=rn_mul(rn_mul(mass,G),w[ix]);
+        tendency=rn_add(tendency,mapped?rn_div(gw,msft[c]):gw);
+    }
+    for(int axis=0;axis<2;++axis) {
+        int pos=axis?i:j,length=axis?nx:ny,boundary=axis?open_x:open_y;
+        if(boundary&&(pos==0||pos==length-1))continue;
+        int stencil=(order==2||(boundary&&(pos==1||pos==length-2)))?2:
+                    ((boundary&&(pos==2||pos==length-3))?4:6);
+        real rd=axis?quarter_rdx:quarter_rdy;
+        if(top)rd=rn_mul(2.0f,rd);
+        real coefficient=mapped?rn_div(rd,msft[c]):rd;
+        real f0,f1;
+        if(axis) {
+            f0=supplied?supplied_fcx_value(i,j,k,ny,nx,u,mux,c1f,c2f,msfu,mapped,top,cfn,cfn1):fcx_value(i,j,k,st,ny,nx,u,mup,mub,c1f,c2f,msfu,mapped,top,cfn,cfn1);
+            f1=supplied?supplied_fcx_value(i+1,j,k,ny,nx,u,mux,c1f,c2f,msfu,mapped,top,cfn,cfn1):fcx_value(i+1,j,k,st,ny,nx,u,mup,mub,c1f,c2f,msfu,mapped,top,cfn,cfn1);
+        } else {
+            f0=supplied?supplied_fcy_value(j,i,k,ny,nx,v,muy,c1f,c2f,msfv,mapped,top,cfn,cfn1):fcy_value(j,i,k,st,ny,nx,v,mup,mub,c1f,c2f,msfv,mapped,top,cfn,cfn1);
+            f1=supplied?supplied_fcy_value(j+1,i,k,ny,nx,v,muy,c1f,c2f,msfv,mapped,top,cfn,cfn1):fcy_value(j+1,i,k,st,ny,nx,v,mup,mub,c1f,c2f,msfv,mapped,top,cfn,cfn1);
+        }
+        real contribution;
+        if(stencil==2) {
+            int pm=(pos-1+length)%length,pp=(pos+1)%length;
+            size_t cm=axis?(size_t)j*nx+pm:(size_t)pm*nx+i;
+            size_t cp=axis?(size_t)j*nx+pp:(size_t)pp*nx+i;
+            real dl=rn_sub(rn_add(rn_sub(base_value(phb,k,c,st,base3d),base_value(phb,k,cm,st,base3d)),php[ix]),php[(size_t)k*st+cm]);
+            real dh=rn_sub(rn_add(rn_sub(base_value(phb,k,cp,st,base3d),base_value(phb,k,c,st,base3d)),php[(size_t)k*st+cp]),php[ix]);
+            contribution=rn_mul(coefficient,rn_add(rn_mul(f1,dh),rn_mul(f0,dl)));
+        } else {
+            real p1=wrf_phi_field_difference(php,axis,i,j,k,1,ny,nx,st,0);
+            real p2=wrf_phi_field_difference(php,axis,i,j,k,2,ny,nx,st,0);
+            real b1=wrf_phi_field_difference(phb,axis,i,j,k,1,ny,nx,st,!base3d);
+            real b2=wrf_phi_field_difference(phb,axis,i,j,k,2,ny,nx,st,!base3d),raw,reciprocal;
+            if(stencil==4) {
+                raw=rn_sub(rn_add(rn_sub(rn_mul(8.0f,p1),p2),rn_mul(8.0f,b1)),b2);
+                reciprocal=__fdiv_rn(1.0f,12.0f);
+            } else {
+                real p3=wrf_phi_field_difference(php,axis,i,j,k,3,ny,nx,st,0);
+                real b3=wrf_phi_field_difference(phb,axis,i,j,k,3,ny,nx,st,!base3d);
+                raw=rn_add(rn_sub(rn_mul(45.0f,p1),rn_mul(9.0f,p2)),p3);
+                raw=rn_add(rn_sub(rn_add(raw,rn_mul(45.0f,b1)),rn_mul(9.0f,b2)),b3);
+                reciprocal=__fdiv_rn(1.0f,60.0f);
+            }
+            contribution=rn_mul(coefficient,rn_mul(rn_mul(rn_add(f1,f0),reciprocal),raw));
+        }
+        tendency=rn_sub(tendency,contribution);
+    }
+    // The native routine applies outer y, then outer x after interior terms.
+    for(int axis=0;axis<2;++axis) {
+        int pos=axis?i:j,length=axis?nx:ny,boundary=axis?open_x:open_y;
+        if(!boundary||(pos!=0&&pos!=length-1))continue;
+        int west_top=axis&&pos==0&&top;
+        int kz=west_top?k:min(k,nz-1);
+        real wl,wh,hm=west_top?0.0f:fnm[kz],hp=west_top?0.0f:fnp[kz];
+        if(axis) {
+            size_t face=(size_t)j*(nx+1)+i,plane=(size_t)ny*(nx+1);
+            wh=west_top?0.0f:rn_add(u[(size_t)kz*plane+face+1],u[(size_t)kz*plane+face]);
+            wl=rn_add(u[(size_t)(kz-1)*plane+face+1],u[(size_t)(kz-1)*plane+face]);
+        } else {
+            size_t face=(size_t)j*nx+i,plane=(size_t)(ny+1)*nx;
+            wh=rn_add(v[(size_t)kz*plane+face+nx],v[(size_t)kz*plane+face]);
+            wl=rn_add(v[(size_t)(kz-1)*plane+face+nx],v[(size_t)(kz-1)*plane+face]);
+        }
+        real speed=rn_mul(0.5f,rn_add(rn_mul(hm,wh),rn_mul(hp,wl)));
+        speed=pos==0?fminf(speed,0.0f):fmaxf(speed,0.0f);
+        size_t ci=axis?(pos==0?c+1:c-1):(pos==0?c+nx:c-nx);
+        real diff=pos==0?rn_sub(php[(size_t)k*st+ci],php[ix]):rn_sub(php[ix],php[(size_t)k*st+ci]);
+        real rd=rn_mul(4.0f,axis?quarter_rdx:quarter_rdy);
+        tendency=rn_sub(tendency,rn_mul(rn_mul(rd,mass),rn_mul(speed,diff)));
+    }
+    rph_t[ix]=tendency;
 }
 
 extern "C" __global__

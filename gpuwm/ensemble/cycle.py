@@ -70,10 +70,14 @@ describing one cycle.
 clip them: a Gaussian filter on a bounded, zero-inflated variable will
 propose negative mixing ratios, and clip/transform/reject are not
 equivalent choices.  This driver is the caller, so this driver chooses --
-``positivity="clip"`` by default, with the counts and the mass the clip
-*added* recorded per member in the assimilation receipt.  Set
-``positivity="none"`` to state the choice the other way; see
-:mod:`gpuwm.da.positivity` for why anamorphosis is not on offer here.
+``positivity="mean-preserving"`` by default, over the WHOLE ensemble at
+once: the undershooting members end at zero and the members' non-negative
+analyses are scaled so the ensemble keeps the filter's mean, with the
+counts, the mass added and the mass redistributed recorded per member in
+the assimilation receipt.  The clip it replaced raised every negative
+member to zero and lowered none, adding mass at every analysis.  ``clip``,
+``reject`` and ``none`` remain selectable; see :mod:`gpuwm.da.positivity`
+for why anamorphosis is not on offer here.
 """
 
 from __future__ import annotations
@@ -133,7 +137,7 @@ def run_cycles(cfg: EnsembleConfig, ens_root: str | Path, *,
                                     Mapping[int, Mapping[str, object]]]
                | None = None,
                runner: Callable = default_member_runner,
-               positivity: str = "clip",
+               positivity: str = "mean-preserving",
                restart_from_analysis: bool = True,
                assimilation_method: Mapping[str, object] | None = None,
                moment_policy: str = "full-moment",
@@ -833,7 +837,7 @@ def _verify_legacy_completed(leg, states, receipt, context):
 
 
 def _assimilate_cycle(assimilate, cycle_index, member_states, *,
-                      leg_root, positivity="clip", on_event=None,
+                      leg_root, positivity="mean-preserving", on_event=None,
                       declared_method=None, attempt=1,
                       moment_policy="full-moment", moment_repair=True,
                       mp_physics=None, run_binding=None, context_owner=None) -> dict:
@@ -895,6 +899,16 @@ def _assimilate_cycle(assimilate, cycle_index, member_states, *,
     staged: list[tuple[int, Path, Path]] = []
     receipts = []
     positivity_receipts = []
+    ensemble_bounded = None
+    if positivity == "mean-preserving" and len(increments_by_member) >= 2:
+        # The mean the rule keeps is the ensemble's, so the rule needs the
+        # whole ensemble at once; member by member it would be the clip.
+        ensemble_bounded = _enforce_positivity_ensemble(
+            {int(index): _member_background_checkpoint(
+                Path(member_states[int(index)]["member_dir"]))
+             for index in increments_by_member},
+            {int(index): increments
+             for index, increments in increments_by_member.items()})
     try:
         for index, increments in sorted(increments_by_member.items()):
             info = member_states[int(index)]
@@ -902,8 +916,11 @@ def _assimilate_cycle(assimilate, cycle_index, member_states, *,
                 Path(info["member_dir"]))
             analysis = Path(info["member_dir"]) / ANALYSIS_NAME
 
-            increments, positivity_receipt = _enforce_positivity(
-                background, increments, policy=positivity)
+            if ensemble_bounded is not None:
+                increments, positivity_receipt = ensemble_bounded[int(index)]
+            else:
+                increments, positivity_receipt = _enforce_positivity(
+                    background, increments, policy=positivity)
             positivity_receipt["member"] = int(index)
             positivity_receipts.append(positivity_receipt)
 
@@ -955,6 +972,9 @@ def _assimilate_cycle(assimilate, cycle_index, member_states, *,
         "mass_added_by_clip_total": sum(
             float(entry.get("mass_added_by_clip", 0.0))
             for entry in positivity_receipts),
+        "mass_added_total": sum(
+            float(entry.get("mass_added", 0.0))
+            for entry in positivity_receipts),
         "receipts": receipts,
     }
 
@@ -1004,6 +1024,113 @@ def _enforce_positivity(background: Path, increments, *, policy):
     if policy != "none":
         verify_non_negative(prior, adjusted)
     return adjusted, receipt
+
+
+def _enforce_positivity_ensemble(backgrounds, increments_by_member):
+    """The ``mean-preserving`` policy over every member at once.
+
+    ``backgrounds`` maps member index to its background checkpoint and
+    ``increments_by_member`` to its increment mapping.  Each constrained
+    field every member's increment carries is stacked on a leading member
+    axis and bounded in one call, so the mean the rule keeps is the
+    ensemble's.  A constrained field only some members carry is bounded
+    member by member (the clip), and the receipt says so.  Returns
+    ``{index: (increments, receipt)}``.
+    """
+    import numpy as np
+
+    from gpuwm.da.positivity import (apply_positivity, constrained_fields,
+                                     verify_non_negative)
+
+    order = sorted(increments_by_member)
+    per_member = {index: dict(increments_by_member[index]) for index in order}
+    shared = None
+    for index in order:
+        names = set(constrained_fields(tuple(per_member[index])))
+        shared = names if shared is None else (shared & names)
+    shared = tuple(sorted(shared or ()))
+    priors: dict[int, dict] = {index: {} for index in order}
+    for index in order:
+        wanted = constrained_fields(tuple(per_member[index]))
+        if not wanted:
+            continue
+        with np.load(backgrounds[index], allow_pickle=False) as data:
+            for name in wanted:
+                key = f"state/{name}"
+                if key not in data.files:
+                    raise ValueError(
+                        f"the analysis proposes an increment to {name!r}, "
+                        "which the background checkpoint "
+                        f"{backgrounds[index].name} does not carry; "
+                        "positivity cannot be enforced against a "
+                        "background that is not there")
+                priors[index][name] = data[key]
+    receipts: dict[int, dict] = {}
+    if shared:
+        stacked_prior = {name: np.stack([priors[i][name] for i in order])
+                         for name in shared}
+        stacked_increment = {
+            name: np.stack([np.asarray(per_member[i][name]) for i in order])
+            for name in shared}
+        bounded, ensemble_receipt = apply_positivity(
+            stacked_prior, stacked_increment, policy="mean-preserving")
+        verify_non_negative(stacked_prior, bounded)
+        for slot, index in enumerate(order):
+            for name in shared:
+                per_member[index][name] = bounded[name][slot]
+        for index in order:
+            receipts[index] = {
+                key: value for key, value in ensemble_receipt.items()
+                if key != "per_field"}
+            receipts[index]["scope"] = "ensemble"
+            receipts[index]["per_field_ensemble"] = ensemble_receipt[
+                "per_field"]
+    for index in order:
+        rest = tuple(name for name in constrained_fields(
+            tuple(per_member[index])) if name not in shared)
+        if not rest:
+            if index not in receipts:
+                receipts[index] = {
+                    "schema": "gpuwm-da.positivity.v1",
+                    "policy": "mean-preserving",
+                    "constrained_fields": [], "negative_points": 0,
+                    "mass_added": 0.0, "mass_added_by_clip": 0.0,
+                    "note": ("no field in this increment set is bounded "
+                             "below; positivity had nothing to enforce")}
+            continue
+        prior = {name: priors[index][name] for name in rest}
+        adjusted, member_receipt = apply_positivity(
+            prior, {name: per_member[index][name] for name in rest},
+            policy="mean-preserving")
+        verify_non_negative(prior, adjusted)
+        per_member[index].update(adjusted)
+        if index in receipts:
+            receipts[index]["member_only_fields"] = member_receipt
+        else:
+            receipts[index] = dict(member_receipt, scope="member")
+    # Each member's share of the ensemble figures: the receipt totals are
+    # summed over members by the decision record, so the ensemble's own
+    # counts are divided once rather than counted once per member.
+    members = len(order)
+    for index in order:
+        receipt = receipts[index]
+        if receipt.get("scope") == "ensemble":
+            for key in ("negative_points", "mass_added",
+                        "mass_redistributed"):
+                if key in receipt:
+                    receipt[f"ensemble_{key}"] = receipt[key]
+            receipt["negative_points"] = 0
+            receipt["mass_added"] = 0.0
+            if index == order[0]:
+                receipt["negative_points"] = int(
+                    receipt["ensemble_negative_points"])
+                receipt["mass_added"] = float(receipt["ensemble_mass_added"])
+            receipt["members"] = members
+            extra = receipt.get("member_only_fields")
+            if extra:
+                receipt["negative_points"] += int(extra["negative_points"])
+                receipt["mass_added"] += float(extra.get("mass_added", 0.0))
+    return {index: (per_member[index], receipts[index]) for index in order}
 
 
 def _member_background_checkpoint(member_dir: Path) -> Path:

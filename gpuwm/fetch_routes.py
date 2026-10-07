@@ -1081,6 +1081,11 @@ def all_fetchable_sources() -> tuple[str, ...]:
     return tuple(sorted(set(LEGACY_ROUTE_SOURCES) | set(_ROUTES) | set(sources())))
 
 
+def table_route_sources() -> frozenset[str]:
+    """The source ids that are rows of the route table (no aliases)."""
+    return frozenset(_ROUTES)
+
+
 def _canonical(source: str) -> str:
     """The registry id for a name or alias, or the name unchanged."""
 

@@ -108,7 +108,8 @@ def test_optional_aerosol_probe_outputs_are_not_forecast_residents():
     assert all("mp_thompson_aero_" + name not in registry for name in absent)
     assert all("mp_thompson_aero_" + name in registry for name in (
         "ncten", "nwfaten", "nifaten", "entry_density", "tau1_density",
-        "nwfa_work_m3", "qc_entry", "ni_entry", "condensation_rate"))
+        "nwfa_work_m3", "qcten", "qrten", "nrten", "qiten", "niten",
+        "condensation_rate"))
 
 
 def test_itemized_card_budget_refuses_one_byte_short():

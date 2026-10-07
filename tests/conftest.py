@@ -917,6 +917,27 @@ def _run_disk_pinned_to_ample_free_space(monkeypatch):
     monkeypatch.setattr(disk_budget, "free_bytes", lambda path: 10 ** 15)
 
 
+@pytest.fixture(autouse=True)
+def _chain_static_staging_kept_off_the_network(monkeypatch):
+    """Keep the chains' static-file staging from downloading in this suite.
+
+    Since 2.8.7 each native chain stages the published static files its
+    configuration reads (``stage_required_static_sources``) before its
+    forcing fetch.  The chain tests here drive HRRR-cone configurations
+    against a fake GEOG root with every stage stubbed, so unpinned they
+    started the real 1.11 GB hrrr-conus-v4 download from NCO inside
+    tests/test_preparation_assets_wif.py (measured 2026-10-06).  The pin
+    stages nothing; no stubbed stage reads the file.  The staging itself is
+    tested in tests/test_recipe_route_inputs.py, which imports the real
+    function at module load and puts it back where it drives a chain.
+    """
+
+    from gpuwm.static import external_source
+
+    monkeypatch.setattr(external_source, "stage_required_static_sources",
+                        lambda *args, **kwargs: [])
+
+
 @pytest.fixture
 def pinned_thompson_tables(monkeypatch):
     """Resolve the mp8 tables to the checkout's pinned set when it has one.

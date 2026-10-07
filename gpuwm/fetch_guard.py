@@ -650,23 +650,30 @@ class LocalWriteFailed(Exception):
         self.error = error
 
 
-def receive(response, dest: Path, mode: str, *, block_bytes: int) -> None:
+def receive(response, dest: Path, mode: str, *, block_bytes: int,
+            on_bytes=None) -> None:
     """Stream an HTTP ``response`` into ``dest``; a failed write is local.
 
     Only the writes are wrapped.  Reads stay outside, so a reset
     connection or a timeout still reaches the caller as the network.
+    ``on_bytes`` is called with the byte count written so far after each
+    block, for a caller that reports progress.
     """
 
     try:
         sink = dest.open(mode)
     except OSError as error:
         raise LocalWriteFailed(dest, error) from error
+    written = 0
     try:
         while block := response.read(block_bytes):
             try:
                 sink.write(block)
             except OSError as error:
                 raise LocalWriteFailed(dest, error) from error
+            if on_bytes is not None:
+                written += len(block)
+                on_bytes(written)
     finally:
         try:
             sink.close()

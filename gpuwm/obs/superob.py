@@ -1032,6 +1032,23 @@ _WINDOW_MARGIN_CELLS = 2
 def horizontal_window(grid: TargetGrid, site, params: SuperobParams):
     """The inclusive ``(j0, j1, i0, i1)`` box of cells this radar can reach.
 
+    Computed by the Rust superob (``rw-superob``) by default; the numpy
+    body below is the parity reference, run when ``GPUWM_SUPEROB_PYTHON=1``
+    says so.  See :func:`_horizontal_window_reference` for the rule.
+    """
+
+    from gpuwm.obs import superob_bridge                  # noqa: PLC0415
+
+    lib = superob_bridge.route()
+    if lib is None:
+        return _horizontal_window_reference(grid, site, params)
+    return superob_bridge.horizontal_window(lib, grid, site, params)
+
+
+def _horizontal_window_reference(grid: TargetGrid, site,
+                                 params: SuperobParams):
+    """The inclusive ``(j0, j1, i0, i1)`` box of cells this radar can reach.
+
     Measured against the grid's own mass-point coordinates rather than
     derived from the projection, so it holds for any georeference the
     superob stage accepts -- including one whose cell size varies across
@@ -1064,45 +1081,12 @@ def horizontal_window(grid: TargetGrid, site, params: SuperobParams):
     return (int(rows[0]), int(rows[-1]), int(cols[0]), int(cols[-1]))
 
 
-def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
-                   params: SuperobParams | None = None,
-                   clear_air_from_censor: bool = False,
-                   velocity_reference=None) -> RadarContribution:
-    """Grid one radar volume onto ``grid``.
+def _superob_prelude(volume, params, clear_air_from_censor,
+                     velocity_reference):
+    """What both routes check and derive before gridding a volume.
 
-    Accumulators only — the dBZ/velocity/error reduction happens once, in
-    :func:`merge_contributions`, so a multi-radar product and a single-radar
-    product go through exactly the same arithmetic.
-
-    ``clear_air_from_censor`` selects the censored regime described in the
-    module docstring.  It is off by default and the default path is
-    unchanged, arithmetic included.  Asking for it against a pack that has
-    no censor planes is a hard error rather than a silent downgrade: the
-    caller asked for a coverage this volume cannot supply, and quietly
-    returning the thin product under the wrong ``clear_air_source`` is the
-    one outcome that would mislead the DA side.
-
-    It is a keyword rather than a :class:`SuperobParams` field on purpose.
-    ``SuperobParams.to_payload`` is serialized verbatim into every
-    observation file's ``superob_params`` attribute, so a new field there
-    would change the bytes of files that are otherwise identical -- and the
-    regime is already recorded, exactly once and where a consumer looks for
-    it, as ``clear_air_source``.
-
-    ``velocity_reference`` is an optional
-    :class:`gpuwm.obs.dealias.WindProfile` -- the model background wind --
-    used only when ``params.dealias`` is set, and used only to *supplement*
-    the volume's own VAD: it seeds the harmonic fit and fills the range
-    bands the fit could not qualify.  It is never allowed to override a
-    band the volume itself resolved, because the volume measured the wind
-    and the background guessed it.
-
-    It belongs to the ``vad-region`` engine alone.  The region-global
-    engine has no environmental reference in it, so supplying one beside
-    that engine is refused rather than ignored: a caller who handed a
-    background wind to a solver that never read it would get a run whose
-    provenance says a treatment was applied and whose velocities were
-    produced without it.
+    Returns ``(params, censor_counts, velocity_reference)``: the validated
+    parameters, the armed census (or None), and the VAD engine's anchor.
     """
 
     params = (params or SuperobParams()).validate()
@@ -1173,6 +1157,63 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
                  if VELOCITY in sweep.moments
                  and sweep.elevation_angle_deg <= params.max_elevation_deg),
                 dealias_params)
+    return params, censor_counts, velocity_reference
+
+
+def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
+                   params: SuperobParams | None = None,
+                   clear_air_from_censor: bool = False,
+                   velocity_reference=None) -> RadarContribution:
+    """Grid one radar volume onto ``grid``.
+
+    Accumulators only — the dBZ/velocity/error reduction happens once, in
+    :func:`merge_contributions`, so a multi-radar product and a single-radar
+    product go through exactly the same arithmetic.
+
+    ``clear_air_from_censor`` selects the censored regime described in the
+    module docstring.  It is off by default and the default path is
+    unchanged, arithmetic included.  Asking for it against a pack that has
+    no censor planes is a hard error rather than a silent downgrade: the
+    caller asked for a coverage this volume cannot supply, and quietly
+    returning the thin product under the wrong ``clear_air_source`` is the
+    one outcome that would mislead the DA side.
+
+    It is a keyword rather than a :class:`SuperobParams` field on purpose.
+    ``SuperobParams.to_payload`` is serialized verbatim into every
+    observation file's ``superob_params`` attribute, so a new field there
+    would change the bytes of files that are otherwise identical -- and the
+    regime is already recorded, exactly once and where a consumer looks for
+    it, as ``clear_air_source``.
+
+    ``velocity_reference`` is an optional
+    :class:`gpuwm.obs.dealias.WindProfile` -- the model background wind --
+    used only when ``params.dealias`` is set, and used only to *supplement*
+    the volume's own VAD: it seeds the harmonic fit and fills the range
+    bands the fit could not qualify.  It is never allowed to override a
+    band the volume itself resolved, because the volume measured the wind
+    and the background guessed it.
+
+    It belongs to the ``vad-region`` engine alone.  The region-global
+    engine has no environmental reference in it, so supplying one beside
+    that engine is refused rather than ignored: a caller who handed a
+    background wind to a solver that never read it would get a run whose
+    provenance says a treatment was applied and whose velocities were
+    produced without it.
+    """
+
+    from gpuwm.obs import superob_bridge                  # noqa: PLC0415
+
+    # Refuses here, before any work, when the Rust library is missing and
+    # nobody opted into the numpy reference.
+    lib = superob_bridge.route()
+    params, censor_counts, velocity_reference = _superob_prelude(
+        volume, params, clear_air_from_censor, velocity_reference)
+    dealias_params = params.dealias
+    if lib is not None:
+        return _superob_volume_rust(
+            lib, volume, grid, params=params, censor_counts=censor_counts,
+            clear_air_from_censor=clear_air_from_censor,
+            velocity_reference=velocity_reference)
     counts = SuperobCounts()
 
     # A radar is a local instrument on a domain that need not be.  Its
@@ -1729,6 +1770,129 @@ def superob_volume(volume: RadarVolume, grid: TargetGrid, *,
         }))
 
 
+def _superob_volume_rust(lib, volume: RadarVolume, grid: TargetGrid, *,
+                         params: SuperobParams, censor_counts,
+                         clear_air_from_censor: bool,
+                         velocity_reference) -> RadarContribution:
+    """:func:`superob_volume` through the Rust library (the default).
+
+    The orchestration stays here: the dealiaser is driven sweep by sweep as
+    the reference drives it (its region-global engine itself runs inside
+    the same library), the reach window comes from
+    :func:`horizontal_window`, and the account the library returns is
+    assembled into the same provenance records.  Every gate-level
+    operation -- geometry, placement, CC QC, census, the alias masks and
+    the accumulators -- runs in ``rw-superob``.
+    """
+
+    from gpuwm.obs import superob_bridge                  # noqa: PLC0415
+
+    dealias_params = params.dealias
+    site = volume.site
+    dealiased: dict[int, tuple] = {}
+    dealias_records: list[dict] = []
+    dealias_totals = _DealiasTotals()
+    if dealias_params is not None:
+        # Whole sweeps, before any blocking or range masking, in sweep
+        # order: exactly where the reference unfolds them.
+        for position, sweep in enumerate(volume.sweeps):
+            if sweep.elevation_angle_deg > params.max_elevation_deg:
+                continue
+            if VELOCITY not in sweep.moments:
+                continue
+            nyquist = _believable_nyquist(sweep.nyquist_velocity_ms, params)
+            unfolded = _dealias_velocity_sweep(
+                sweep, nyquist, dealias_params, site, velocity_reference,
+                params)
+            dealias_records.append(unfolded["record"])
+            dealias_totals.add(unfolded["result"].stats)
+            dealiased[position] = (unfolded["velocity"], unfolded["resolved"])
+
+    window = horizontal_window(grid, site, params)
+    odim = (censor_counts is not None
+            and censor_counts.reflectivity_nodata is not None)
+    with perf_timing.stage("obs.superob.rust", sweeps=len(volume.sweeps)):
+        answer, acc = superob_bridge.superob_volume(
+            lib, volume, grid, params, window=window,
+            clear_air_from_censor=clear_air_from_censor, odim_census=odim,
+            dealiased=dealiased)
+
+    counts = SuperobCounts(**answer["counts"])
+    if censor_counts is not None:
+        counts.censor = CensorCounts(**answer["censor"])
+    if counts.sweeps_used and not counts.gates_considered:
+        skipped = answer.get("skipped_products") or []
+        detail = (f"; the pack's moments are named {sorted(skipped)!r} and "
+                  f"this stage reads {[REFLECTIVITY, VELOCITY]!r}"
+                  if skipped else "")
+        raise ValueError(
+            f"{volume.pack_path.name}: {counts.sweeps_used} sweeps were read "
+            f"and not one gate was considered{detail}. An observation file "
+            "built from this would be empty, well-formed and silent about "
+            "it, so it is refused here instead")
+    dealias_totals.gates_refused_at_grid += int(answer["gates_refused_at_grid"])
+
+    fold_suspicion: list[dict] = []
+    cc_sweep_records: list[dict] = []
+    for record in answer["sweeps"]:
+        sweep = volume.sweeps[int(record["position"])]
+        nyquist = _believable_nyquist(sweep.nyquist_velocity_ms, params)
+        fold = record.get("fold")
+        if fold is not None:
+            fold_suspicion.append({
+                "sweep_index": int(sweep.sweep_index),
+                "elevation_angle_deg": float(sweep.elevation_angle_deg),
+                "nyquist_ms": None if nyquist is None else float(nyquist),
+                "nyquist_radials_disagree": bool(
+                    sweep.nyquist_radials_disagree),
+                "radial_count": int(sweep.radial_count),
+                "gate_pairs_tested": int(fold["gate_pairs_tested"]),
+                "fold_boundaries": int(fold["fold_boundaries"]),
+                "radials_fold_suspect": int(fold["radials_fold_suspect"]),
+                "gates_rejected_shear": int(fold["gates_rejected_shear"]),
+            })
+        if "cc" in record:
+            cc_sweep_records.append({
+                "sweep_index": int(sweep.sweep_index),
+                "elevation_angle_deg": float(sweep.elevation_angle_deg),
+                **record["cc"]})
+
+    j0, _, i0, _ = window
+    return RadarContribution(
+        site_id=site.id, lat_deg=site.lat_deg, lon_deg=site.lon_deg,
+        alt_m=site.alt_m, valid_time=volume.valid_time,
+        z_linear_sum=acc["z_linear_sum"], z_count=acc["z_count"],
+        z0_count=acc["z0_count"], z_max_dbz=acc["z_max_dbz"],
+        z_sumsq_dbz=acc["z_sumsq_dbz"], z_sum_dbz=acc["z_sum_dbz"],
+        vr_sum=acc["vr_sum"], vr_sumsq=acc["vr_sumsq"],
+        vr_count=acc["vr_count"], vr_min=acc["vr_min"], vr_max=acc["vr_max"],
+        beam_east=acc["beam_east"], beam_north=acc["beam_north"],
+        beam_up=acc["beam_up"], nyquist_min=acc["nyquist_min"],
+        vr_rejected=acc["vr_rejected"],
+        counts=counts, provenance=volume.provenance(),
+        clear_air_source=_clear_air_source(volume, clear_air_from_censor),
+        fold_suspicion=fold_suspicion, j0=int(j0), i0=int(i0),
+        start_time=volume.start_time, end_time=volume.end_time,
+        cc_qc=({} if params.cc_qc is None else {
+            "params": params.cc_qc.to_payload(),
+            "sweeps": cc_sweep_records,
+        }),
+        dealias=({} if dealias_params is None else {
+            "params": dealias_params.to_payload(),
+            "totals": dealias_totals.to_payload(),
+            "sweeps": dealias_records,
+        }))
+
+
+def _clear_air_source(volume, clear_air_from_censor: bool) -> str:
+    """Which regime's zeroes these are, decided by the pack's vocabulary."""
+    if not clear_air_from_censor:
+        return CLEAR_AIR_SOURCE
+    if volume.pack_schema == SWEEPS_SCHEMA_ODIM:
+        return CLEAR_AIR_SOURCE_ODIM
+    return CLEAR_AIR_SOURCE_CENSOR
+
+
 @dataclass
 class GriddedObservations:
     """The reduced fields, one step short of NetCDF."""
@@ -1810,6 +1974,10 @@ class GriddedObservations:
     #: Empty means whole-domain planes: the v1 layout, still valid, still
     #: what a hand-built object gets.
     radar_windows: list = field(default_factory=list)
+    #: Which in-cell reduction ``z_obs`` carries (``"mean"`` or ``"max"``),
+    #: or None on a hand-built set that never said.  The writer records it
+    #: in the file's ``superob_params`` so ``z_obs`` is never ambiguous.
+    z_reduce: str | None = None
 
     @property
     def windowed(self) -> bool:
@@ -1842,12 +2010,24 @@ class GriddedObservations:
 
 def merge_contributions(contributions, grid: TargetGrid, *,
                         params: SuperobParams | None = None,
-                        z_reduce: str = "max") -> GriddedObservations:
+                        z_reduce: str = "mean") -> GriddedObservations:
     """Reduce one or more radars' accumulators into the output fields.
 
     Reflectivity merges across radars (the maximum of the maxima, the
     count-weighted mean of the linear sums); radial velocity does not, and
     keeps a leading ``radar`` axis.
+
+    ``z_reduce`` picks what ``z_obs`` carries; ``z_max`` and ``z_mean`` are
+    always written beside it.  The default is the in-cell mean in linear Z,
+    because the maximum biases the observations high and wide: measured on
+    2026-10-05 it sat 6.6 dB above the mean and put 8.1 times MRMS's 35 dBZ
+    area into the observations (gpuwm.da.radar_classes), and the DA reads
+    the mean by default.
+
+    The reduction runs in the Rust library by default (``rw-superob``);
+    the numpy body is the parity reference (``GPUWM_SUPEROB_PYTHON=1``).
+    Contributions are reduced in the order given, in both, so a merged
+    cell is the same sum of the same addends on every run.
     """
 
     params = (params or SuperobParams()).validate()
@@ -1881,6 +2061,65 @@ def merge_contributions(contributions, grid: TargetGrid, *,
             "merged count would describe no coverage in particular. Rebuild "
             "every volume in the set the same way")
     clear_air_source = sources.pop()
+
+    windows = [c.window for c in contributions]
+    from gpuwm.obs import superob_bridge                  # noqa: PLC0415
+
+    lib = superob_bridge.route()
+    if lib is None:
+        out = _merge_arrays_reference(contributions, grid, params, z_reduce,
+                                      shape)
+    else:
+        with perf_timing.stage("obs.superob.merge_rust",
+                               radars=len(contributions)):
+            out = superob_bridge.merge(lib, contributions, grid, params,
+                                       z_reduce=z_reduce, windows=windows)
+
+    radars = [{
+        "id": contribution.site_id,
+        "lat_deg": float(contribution.lat_deg),
+        "lon_deg": float(contribution.lon_deg),
+        "alt_m": float(contribution.alt_m),
+        "valid_time": contribution.valid_time,
+        # ``getattr`` for the reason the dealias account below uses it: a
+        # contribution assembled by hand is not forced to invent instants
+        # it never read, and None is "not stated", never the header start.
+        "start_time": getattr(contribution, "start_time", None),
+        "end_time": getattr(contribution, "end_time", None),
+        "availability_time": getattr(contribution, "availability_time",
+                                     None),
+    } for contribution in contributions]
+
+    return GriddedObservations(
+        z_obs=out["z_obs"], z_mask=out["z_mask"], z_err=out["z_err"],
+        z_max=out["z_max"], z_mean=out["z_mean"], z_count=out["z_count"],
+        z0_mask=out["z0_mask"], z0_count=out["z0_count"],
+        z0_err=out["z0_err"],
+        clear_air_source=clear_air_source,
+        vr_obs=out["vr_obs"], vr_mask=out["vr_mask"], vr_err=out["vr_err"],
+        vr_count=out["vr_count"], vr_rejected=out["vr_rejected"],
+        vr_beam_east=out["vr_beam_east"], vr_beam_north=out["vr_beam_north"],
+        vr_beam_up=out["vr_beam_up"],
+        vr_beam_coherence=out["vr_beam_coherence"],
+        z_reduce=z_reduce,
+        radars=radars,
+        counts=[c.counts.to_payload() for c in contributions],
+        provenance=[c.provenance for c in contributions],
+        fold_suspicion=[list(c.fold_suspicion) for c in contributions],
+        dealias=[dict(c.dealias) for c in contributions
+                 if getattr(c, "dealias", None)],
+        # ``getattr`` for the same reason the line above uses it: a caller
+        # assembling contributions by hand -- a test, a downstream lane --
+        # is not forced to invent an account it never measured.  The list
+        # stays per-radar aligned, so an entry is empty exactly when that
+        # radar's mask did not run.
+        cc_qc=[dict(getattr(c, "cc_qc", None) or {})
+               for c in contributions],
+        radar_windows=[list(w) for w in windows])
+
+
+def _merge_arrays_reference(contributions, grid, params, z_reduce, shape):
+    """The numpy reduction behind :func:`merge_contributions` (reference)."""
 
     # Compose the windows rather than adding full-domain arrays.  Outside
     # its own window a radar contributed the identity of every reduction
@@ -2066,41 +2305,12 @@ def merge_contributions(contributions, grid: TargetGrid, *,
                 beam[axis][slot] = np.where(incoherent, 0.0,
                                              beam[axis][slot])
 
-    radars = [{
-        "id": contribution.site_id,
-        "lat_deg": float(contribution.lat_deg),
-        "lon_deg": float(contribution.lon_deg),
-        "alt_m": float(contribution.alt_m),
-        "valid_time": contribution.valid_time,
-        # ``getattr`` for the reason the dealias account below uses it: a
-        # contribution assembled by hand is not forced to invent instants
-        # it never read, and None is "not stated", never the header start.
-        "start_time": getattr(contribution, "start_time", None),
-        "end_time": getattr(contribution, "end_time", None),
-        "availability_time": getattr(contribution, "availability_time",
-                                     None),
-    } for contribution in contributions]
-
-    return GriddedObservations(
-        z_obs=z_obs, z_mask=z_mask, z_err=z_err, z_max=z_max, z_mean=z_mean,
-        z_count=z_count.astype(np.int32),
-        z0_mask=z0_mask, z0_count=z0_count.astype(np.int32), z0_err=z0_err,
-        clear_air_source=clear_air_source,
-        vr_obs=vr_obs, vr_mask=vr_mask, vr_err=vr_err, vr_count=vr_count,
-        vr_rejected=vr_rejected,
-        vr_beam_east=beam[0], vr_beam_north=beam[1], vr_beam_up=beam[2],
-        vr_beam_coherence=beam_coherence,
-        radars=radars,
-        counts=[c.counts.to_payload() for c in contributions],
-        provenance=[c.provenance for c in contributions],
-        fold_suspicion=[list(c.fold_suspicion) for c in contributions],
-        dealias=[dict(c.dealias) for c in contributions
-                 if getattr(c, "dealias", None)],
-        # ``getattr`` for the same reason the line above uses it: a caller
-        # assembling contributions by hand -- a test, a downstream lane --
-        # is not forced to invent an account it never measured.  The list
-        # stays per-radar aligned, so an entry is empty exactly when that
-        # radar's mask did not run.
-        cc_qc=[dict(getattr(c, "cc_qc", None) or {})
-               for c in contributions],
-        radar_windows=[list(w) for w in windows])
+    return {
+        "z_obs": z_obs, "z_mask": z_mask, "z_err": z_err, "z_max": z_max,
+        "z_mean": z_mean, "z_count": z_count.astype(np.int32),
+        "z0_mask": z0_mask, "z0_count": z0_count.astype(np.int32),
+        "z0_err": z0_err, "vr_obs": vr_obs, "vr_mask": vr_mask,
+        "vr_err": vr_err, "vr_count": vr_count, "vr_rejected": vr_rejected,
+        "vr_beam_east": beam[0], "vr_beam_north": beam[1],
+        "vr_beam_up": beam[2], "vr_beam_coherence": beam_coherence,
+    }

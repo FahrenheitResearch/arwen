@@ -1,0 +1,2768 @@
+{
+  "source": "WRF v4.7.1",
+  "commit": "f52c197ed39d12e087d02c50f412d90d418f6186",
+  "tar_sha256": "0826f8878aa787e016586b6e3b43896c8467570b7cca47741b5e16d2f4def0ae",
+  "compiler": "GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+  "libc": "ldd (Ubuntu GLIBC 2.43-2ubuntu2.4) 2.43",
+  "flags": "-O0 -cpp -ffp-contract=off -fcheck=all -fbacktrace -ffree-form -ffree-line-length-none",
+  "source_sha256sums": "e68e4b4ddbde6fdc117163e3b396cff3a11bfc7f2ac586de1525707ba82092e4  phys/module_firebrand_spotting.F\n916bb9cd7b4405a49a4d1bcd4ae0adf98c33e568d55edf7956d1fb2afd4b3a21  phys/module_firebrand_spotting_mpi.F\n",
+  "oracle_sha256sums": "9dce0eab2992e7d195dfa495f4ae175d851324c2fe0842e66c93fcd46d072b87  extract_spotting.py\n2a26be974615df28415a7b06f70b955815f196b62aaac1743ed4cd6867054368  run_spotting.F90\n916e038ef3976b280bf3e94221186a495ef3715512573bde883b61e0adafb1e0  build_spotting.sh\n",
+  "reference_kind": "byte-unmodified original WRF helpers plus labeled cubic-volume property control",
+  "layout": "2D (j,i); 3D (k,j,i); little-endian f4/i4; scalar rank zero",
+  "cases": {
+    "spotting/advection_1": {
+      "sha256": "3411ae40b6925e16688855141a407acdb774e98a4ab0f69c6b2255f9eab445c9",
+      "native_stream_sha256": {
+        "input": "953182f3d2401e4149f27830a4e8f5a842802d087e9c0bd332fbf5b702e11328",
+        "coordinates": "ac79dc5f92e6eccf85642c9b7f4166608aeee58f5f5b5b6bc336aba4d153db3a",
+        "life": "118046e001889757c058bbe1c1a40b84977ffa8c1f20c6cbd802fb97f4c93e5a",
+        "dt": "31b67dba7cfd6e2d7540f9c96d90a45b8f2d44956620723024d4e1beeacd4602",
+        "u": "627beded35808cc9df7a5a84f7bc37c3783df3d2af49b87cb27aff6281296644",
+        "v": "2ec35821de07f12b8bcd57ad76635f16b742e7ec417dc294b240c4ca3e9485cf",
+        "w": "0a7574b4b53f8cb98d106bc8c218fe71170b5b15cf47993aca4a892c0adb4317",
+        "pressure": "e61c84e93637f3ad7b1928e7e2a5899a417ef570f199c4f2f7c139074bcd8cda",
+        "theta": "ae10aa887cb91f11fba7ba07095ba1ca2c1ee64a04978403a02eb0a202ae7bbb",
+        "density": "d6f28d2c3f2324da37f699410bb157a0aee2bdfe5c358ada66f61e7dcb79b12f",
+        "height": "0a6e42e5b13815a23521d2d4789eb37453d1ee30f38c8b1db988d830df8fe866",
+        "metric_x": "92b51bc7f2824587c8201df508b329bce6e44e5e969214e3a54fbfeada86de81",
+        "metric_y": "92b51bc7f2824587c8201df508b329bce6e44e5e969214e3a54fbfeada86de81",
+        "output": "0f4383380fbac64388d0b831d469683f1917da0f74907b03a165e10752afadbd",
+        "x_out": "3fb60b17ff9f24a322f702d7b997a4c954967b3136ccee2cbefd44da49fbc123",
+        "y_out": "3c7ccab2585888a29992dc20fcf611c9a4e6b98b970fdc11fdf5435bc92ad80d",
+        "h_out": "6e61df6008e2dcb8f179d6a46e3730d039d39e065a2942a1c265bcafa154982a"
+      },
+      "arrays": {
+        "input": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "coordinates": {
+          "shape": [
+            3,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "life": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "dt": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "u": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "w": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "pressure": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "theta": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "density": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "height": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "metric_x": {
+          "shape": [
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "metric_y": {
+          "shape": [
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "output": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "x_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "y_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "h_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "spotting/advection_2": {
+      "sha256": "4beb826b85383b87e587239605f495f36fbe21e48cf71d72ae62b9c35664a527",
+      "native_stream_sha256": {
+        "input": "953182f3d2401e4149f27830a4e8f5a842802d087e9c0bd332fbf5b702e11328",
+        "coordinates": "ac79dc5f92e6eccf85642c9b7f4166608aeee58f5f5b5b6bc336aba4d153db3a",
+        "life": "118046e001889757c058bbe1c1a40b84977ffa8c1f20c6cbd802fb97f4c93e5a",
+        "dt": "e00e5eb9444182f352323374ef4e08ebcb784725fdd4fd612d7730540b3e0c8c",
+        "u": "627beded35808cc9df7a5a84f7bc37c3783df3d2af49b87cb27aff6281296644",
+        "v": "2ec35821de07f12b8bcd57ad76635f16b742e7ec417dc294b240c4ca3e9485cf",
+        "w": "0a7574b4b53f8cb98d106bc8c218fe71170b5b15cf47993aca4a892c0adb4317",
+        "pressure": "e61c84e93637f3ad7b1928e7e2a5899a417ef570f199c4f2f7c139074bcd8cda",
+        "theta": "ae10aa887cb91f11fba7ba07095ba1ca2c1ee64a04978403a02eb0a202ae7bbb",
+        "density": "d6f28d2c3f2324da37f699410bb157a0aee2bdfe5c358ada66f61e7dcb79b12f",
+        "height": "0a6e42e5b13815a23521d2d4789eb37453d1ee30f38c8b1db988d830df8fe866",
+        "metric_x": "92b51bc7f2824587c8201df508b329bce6e44e5e969214e3a54fbfeada86de81",
+        "metric_y": "92b51bc7f2824587c8201df508b329bce6e44e5e969214e3a54fbfeada86de81",
+        "output": "0fa7f17a80ff08b39402be321788b39a8302d36094f48a6e9501ed2e5aa096f8",
+        "x_out": "9583873dbe6a959d643acaddf4f0ee80d7d2a863ccf7e935ba2c9e03445b41f0",
+        "y_out": "a7c8f8ad3cb64050a320c82e6d31e5ea245e875747a1e1f0ab71c7e3a0dd65e2",
+        "h_out": "0d71acb1823baf0f74a7298910ed4e3db22fbabf066fc86e84c591155977390d"
+      },
+      "arrays": {
+        "input": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "coordinates": {
+          "shape": [
+            3,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "life": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "dt": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "u": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "w": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "pressure": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "theta": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "density": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "height": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "metric_x": {
+          "shape": [
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "metric_y": {
+          "shape": [
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "output": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "x_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "y_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "h_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "spotting/advection_3": {
+      "sha256": "b2260ceba33486949db27e54295ee0a4d89bf5fe04f8052423b77b752dce3864",
+      "native_stream_sha256": {
+        "input": "953182f3d2401e4149f27830a4e8f5a842802d087e9c0bd332fbf5b702e11328",
+        "coordinates": "ac79dc5f92e6eccf85642c9b7f4166608aeee58f5f5b5b6bc336aba4d153db3a",
+        "life": "118046e001889757c058bbe1c1a40b84977ffa8c1f20c6cbd802fb97f4c93e5a",
+        "dt": "d9fc8a51763953481a1808af3156bcb8144c2f925e96dec623c886f6d9d975b2",
+        "u": "627beded35808cc9df7a5a84f7bc37c3783df3d2af49b87cb27aff6281296644",
+        "v": "2ec35821de07f12b8bcd57ad76635f16b742e7ec417dc294b240c4ca3e9485cf",
+        "w": "0a7574b4b53f8cb98d106bc8c218fe71170b5b15cf47993aca4a892c0adb4317",
+        "pressure": "e61c84e93637f3ad7b1928e7e2a5899a417ef570f199c4f2f7c139074bcd8cda",
+        "theta": "ae10aa887cb91f11fba7ba07095ba1ca2c1ee64a04978403a02eb0a202ae7bbb",
+        "density": "d6f28d2c3f2324da37f699410bb157a0aee2bdfe5c358ada66f61e7dcb79b12f",
+        "height": "0a6e42e5b13815a23521d2d4789eb37453d1ee30f38c8b1db988d830df8fe866",
+        "metric_x": "92b51bc7f2824587c8201df508b329bce6e44e5e969214e3a54fbfeada86de81",
+        "metric_y": "92b51bc7f2824587c8201df508b329bce6e44e5e969214e3a54fbfeada86de81",
+        "output": "6d69ea37729560f4b058bd934137c27a92a992b0583bf798da1ca152ce76a231",
+        "x_out": "64c5b3ebd5242355ad048e8f79091fc536b0b34effeb01080bda84a6049ddfc2",
+        "y_out": "a4ca3bd36698d0ead76465f3400763a56bea310261180719e1aea32cdba1dbd3",
+        "h_out": "8d6eb6d717b7ed80497d7c839e50170bf7927b0a3200b65201f7db790b288046"
+      },
+      "arrays": {
+        "input": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "coordinates": {
+          "shape": [
+            3,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "life": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "dt": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "u": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "w": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "pressure": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "theta": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "density": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "height": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "metric_x": {
+          "shape": [
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "metric_y": {
+          "shape": [
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "output": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "x_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "y_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "h_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "spotting/burnout_1": {
+      "sha256": "2f63858e5b85952d36ddc0dc9dbdd2cdce0add095ed71456cede0586a46dd7d8",
+      "native_stream_sha256": {
+        "input": "953182f3d2401e4149f27830a4e8f5a842802d087e9c0bd332fbf5b702e11328",
+        "pressure": "c9ff61fa5e4c3be5a64523558dbc344e24c4365ed8ad299b4e7e3294768ad45c",
+        "density": "0287ac3348b79f8ab11440104cbd49ded962db47b01fa6c06292340a33f32b7f",
+        "temperature": "b15def0af5d2b1633dac4fee14a5dfa9dbbf5f7fae3fd64a3c49f8f9e4482c49",
+        "wind": "3c2049193e923699feb02c79544832644210d227730dfb0d17b7f11339655814",
+        "dt": "4efb856a85ce3cd60020d80d64475630ab731c6b6a31198ed4417c6dfd1829c2",
+        "output": "15c6331d732273fc2816b936f59e9aed43f9eeeb4efa29b77bff0caf825abbe0"
+      },
+      "arrays": {
+        "input": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "pressure": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "density": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "temperature": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "wind": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "dt": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "output": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "spotting/burnout_2": {
+      "sha256": "cfbd17e2a7ac718658b3ca3a135fffbd06feefb3e627c3a709ce95a012a641e0",
+      "native_stream_sha256": {
+        "input": "953182f3d2401e4149f27830a4e8f5a842802d087e9c0bd332fbf5b702e11328",
+        "pressure": "c9ff61fa5e4c3be5a64523558dbc344e24c4365ed8ad299b4e7e3294768ad45c",
+        "density": "0287ac3348b79f8ab11440104cbd49ded962db47b01fa6c06292340a33f32b7f",
+        "temperature": "b15def0af5d2b1633dac4fee14a5dfa9dbbf5f7fae3fd64a3c49f8f9e4482c49",
+        "wind": "3c2049193e923699feb02c79544832644210d227730dfb0d17b7f11339655814",
+        "dt": "31b67dba7cfd6e2d7540f9c96d90a45b8f2d44956620723024d4e1beeacd4602",
+        "output": "579a16f2c55508c61f4929fe5c734bdbb931f84680329571a46f9ffc3673392f"
+      },
+      "arrays": {
+        "input": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "pressure": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "density": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "temperature": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "wind": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "dt": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "output": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "spotting/burnout_3": {
+      "sha256": "609d82c827253581df6d2a75776636bc0c8db0aa915fbd42d4ecb7eaa9bf1a2d",
+      "native_stream_sha256": {
+        "input": "953182f3d2401e4149f27830a4e8f5a842802d087e9c0bd332fbf5b702e11328",
+        "pressure": "c9ff61fa5e4c3be5a64523558dbc344e24c4365ed8ad299b4e7e3294768ad45c",
+        "density": "0287ac3348b79f8ab11440104cbd49ded962db47b01fa6c06292340a33f32b7f",
+        "temperature": "b15def0af5d2b1633dac4fee14a5dfa9dbbf5f7fae3fd64a3c49f8f9e4482c49",
+        "wind": "3c2049193e923699feb02c79544832644210d227730dfb0d17b7f11339655814",
+        "dt": "e00e5eb9444182f352323374ef4e08ebcb784725fdd4fd612d7730540b3e0c8c",
+        "output": "ac4a4f3351616eb6e793e8e3c1bd7915445579cae54dbb757cc71ed47ce06459"
+      },
+      "arrays": {
+        "input": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "pressure": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "density": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "temperature": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "wind": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "dt": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "output": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "spotting/burnout_4": {
+      "sha256": "ef8149b186c334f5594f9244f3d939bc8be6150ab43ec8923d08fad791ddac8f",
+      "native_stream_sha256": {
+        "input": "953182f3d2401e4149f27830a4e8f5a842802d087e9c0bd332fbf5b702e11328",
+        "pressure": "c9ff61fa5e4c3be5a64523558dbc344e24c4365ed8ad299b4e7e3294768ad45c",
+        "density": "0287ac3348b79f8ab11440104cbd49ded962db47b01fa6c06292340a33f32b7f",
+        "temperature": "b15def0af5d2b1633dac4fee14a5dfa9dbbf5f7fae3fd64a3c49f8f9e4482c49",
+        "wind": "3c2049193e923699feb02c79544832644210d227730dfb0d17b7f11339655814",
+        "dt": "814e223b91cb65a962256b15f351f22ac7bcbb3c2b82d2a4b3ecf174db8de764",
+        "output": "f8a4861914adc0d2e5f0854d8b8e902c9f64445d68a6f6166e5fe9544e8c703f"
+      },
+      "arrays": {
+        "input": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "pressure": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "density": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "temperature": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "wind": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "dt": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "output": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "spotting/generate_1": {
+      "sha256": "11cb09e613535a908abcf7b5d37531d424f3e46349f14d2866505edd11a34985",
+      "native_stream_sha256": {
+        "x_in": "07189cfa333e1a41c272824ec05c8d5ac322336326ab677db994a690f1bf5d3a",
+        "y_in": "77822b1cb2c55358a163577ef01adb94bd457379360b3e51f9bc9a7bb80d0a3b",
+        "h_in": "cc0bbaa7863898ed6d6799fb89d2dda6d6674ae022a9f158e81763466edff538",
+        "id_in": "09234861dc2cfb78377f6a5f0bb0638f043f57b13c48c88c49714391cc1ac738",
+        "source_in": "545b7991007374fd395872f7313b9e8fdc275804eb0893f50265b1f9ef85b886",
+        "life_in": "1fd02c17bd887071e2885b129a5e091c2cd3275c9a4c8589980f32bdef2578fb",
+        "prop_in": "569aea88c5d565a6b57cc40861052ccdd210e78ea0633e57cd68c63c14c6bf5b",
+        "release_x": "6bfcaacd68edd1539c1d08a1fbad7146bbc501b7609f6f81e998851038bcabcf",
+        "release_y": "ad6a74630f9ac6f3c54d8935c58498958b8bb58f13ec739dd13d1e93edeb2be5",
+        "release_h": "e5edc1362fb49c271d4bad1a5e9f1aa60b3701b60c46d21500acee14791a27b5",
+        "release_prop": "f07eb60773ea71c6b04b85a684a316bf22682b1b311c1edc4f94005f7fa6001c",
+        "idmax_in": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "imported": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "release_life": "d338c7cfbd24e8741dd131258566a2a6062f965c156f701c380ee71b840de304",
+        "release_source": "6c93b5c61d3cf7a12bb4c2c4d01a01c4b63eff96bbde209894d20a72476be72f",
+        "x_out": "446deec4564e8657c69e126c0e07e6bbba7cd4d9b478ea3f4919e060e21762b1",
+        "y_out": "d32e4f3e999730f74f15585ed70aa78b4972c04603557d4158c9923a8f313cf2",
+        "h_out": "d1b5ffdd07d96621af41b8a35e4f78d809f922f69513e27660a82678baa938e8",
+        "id_out": "24e26c9c3d2741d4aa7dab778445f0baee204829dc54f09661f8cdd6454a7d0a",
+        "source_out": "0949d9d218c5c8a0f64e4787e92c4f9d753089128a66c1ef084f3bb4f083e34d",
+        "life_out": "1fd02c17bd887071e2885b129a5e091c2cd3275c9a4c8589980f32bdef2578fb",
+        "prop_out": "484520a055d57e98ec731886d5ba0253b07f706b8c5933064977b92a9d5c6d4a",
+        "release_x_out": "374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb",
+        "release_y_out": "374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb",
+        "release_h_out": "374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb",
+        "control_out": "81c9c45c64599849d273c46694c6a4c37466d5632b4bcea09aaf02e9ae48ad9d"
+      },
+      "arrays": {
+        "x_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "y_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "h_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "id_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "source_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "life_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "prop_in": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "release_x": {
+          "shape": [
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "release_y": {
+          "shape": [
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "release_h": {
+          "shape": [
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "release_prop": {
+          "shape": [
+            5,
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "idmax_in": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "imported": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "release_life": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "release_source": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "x_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "y_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "h_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "id_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "source_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "life_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "prop_out": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "release_x_out": {
+          "shape": [
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "release_y_out": {
+          "shape": [
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "release_h_out": {
+          "shape": [
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "control_out": {
+          "shape": [
+            3
+          ],
+          "dtype": "<i4"
+        }
+      }
+    },
+    "spotting/generate_2": {
+      "sha256": "572517f30d17edaac7bcc8b5b3e4fb83808933f14d5d21b67ef35789c7f2f563",
+      "native_stream_sha256": {
+        "x_in": "07189cfa333e1a41c272824ec05c8d5ac322336326ab677db994a690f1bf5d3a",
+        "y_in": "77822b1cb2c55358a163577ef01adb94bd457379360b3e51f9bc9a7bb80d0a3b",
+        "h_in": "cc0bbaa7863898ed6d6799fb89d2dda6d6674ae022a9f158e81763466edff538",
+        "id_in": "09234861dc2cfb78377f6a5f0bb0638f043f57b13c48c88c49714391cc1ac738",
+        "source_in": "545b7991007374fd395872f7313b9e8fdc275804eb0893f50265b1f9ef85b886",
+        "life_in": "1fd02c17bd887071e2885b129a5e091c2cd3275c9a4c8589980f32bdef2578fb",
+        "prop_in": "569aea88c5d565a6b57cc40861052ccdd210e78ea0633e57cd68c63c14c6bf5b",
+        "release_x": "154eacb863a08909c73fa10685fa4f2c6a5a014a60a17579077182391ce11b74",
+        "release_y": "fdd7588b555d91b5c2c42cf261c0c54ec8a4a0c44259b99916c0e2899c9800a3",
+        "release_h": "77ffb912a94d57b0a41a43a2796da6c8f5f5dcf2c3152a7687a42a67b5626821",
+        "release_prop": "837e628b9fb8382da078a729eac48a73823273bc7d64444e429f3c6ee323753e",
+        "idmax_in": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "imported": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "release_life": "994374d2f015a4225235a9c1f6cdc9b6f47c4dac3bb40354b8518072e8d71430",
+        "release_source": "05ce671c0df1886b9034f76120305ffa7da778b12ac9f842ceb34a540ad3b65b",
+        "x_out": "e597ded966ab75f19b9f9289cba1e140102da71590a8296feb660028ea3f60c9",
+        "y_out": "51dde69450c22cb46c7abc7cf109d63ffb7553b1c1f351128aa6138249102493",
+        "h_out": "c6bbbdfdafe3651c0ab87b5f0db6255d44594cee49f26c3c659b5dd3ba3c9db9",
+        "id_out": "a05859a1605838fa3c0c4a0e58d599be02e63e1244d4009ca6ec2c737b96ddfc",
+        "source_out": "a9aed5eb20370eaeb632fe2f86d9b393c94ffeeebb9e2a00760f48afe4127a50",
+        "life_out": "1fd02c17bd887071e2885b129a5e091c2cd3275c9a4c8589980f32bdef2578fb",
+        "prop_out": "e71f0992605d668c72db742ed25bdbf6a5e53e08ff189007abfee90dc28195ab",
+        "release_x_out": "17b0761f87b081d5cf10757ccc89f12be355c70e2e29df288b65b30710dcbcd1",
+        "release_y_out": "17b0761f87b081d5cf10757ccc89f12be355c70e2e29df288b65b30710dcbcd1",
+        "release_h_out": "17b0761f87b081d5cf10757ccc89f12be355c70e2e29df288b65b30710dcbcd1",
+        "control_out": "28be4f81fab59c57bdbfb73e7317f0b5bb020e100ae14ddafc961af382dccc7c"
+      },
+      "arrays": {
+        "x_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "y_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "h_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "id_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "source_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "life_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "prop_in": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "release_x": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "release_y": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "release_h": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "release_prop": {
+          "shape": [
+            5,
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "idmax_in": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "imported": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "release_life": {
+          "shape": [
+            12
+          ],
+          "dtype": "<i4"
+        },
+        "release_source": {
+          "shape": [
+            12
+          ],
+          "dtype": "<i4"
+        },
+        "x_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "y_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "h_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "id_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "source_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "life_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "prop_out": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "release_x_out": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "release_y_out": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "release_h_out": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "control_out": {
+          "shape": [
+            3
+          ],
+          "dtype": "<i4"
+        }
+      }
+    },
+    "spotting/generate_3": {
+      "sha256": "69d640f60390c27b073a146ace420c9ba325131bc7a1b64b8e1517ccdcbbbe97",
+      "native_stream_sha256": {
+        "x_in": "07189cfa333e1a41c272824ec05c8d5ac322336326ab677db994a690f1bf5d3a",
+        "y_in": "77822b1cb2c55358a163577ef01adb94bd457379360b3e51f9bc9a7bb80d0a3b",
+        "h_in": "cc0bbaa7863898ed6d6799fb89d2dda6d6674ae022a9f158e81763466edff538",
+        "id_in": "09234861dc2cfb78377f6a5f0bb0638f043f57b13c48c88c49714391cc1ac738",
+        "source_in": "545b7991007374fd395872f7313b9e8fdc275804eb0893f50265b1f9ef85b886",
+        "life_in": "1fd02c17bd887071e2885b129a5e091c2cd3275c9a4c8589980f32bdef2578fb",
+        "prop_in": "569aea88c5d565a6b57cc40861052ccdd210e78ea0633e57cd68c63c14c6bf5b",
+        "release_x": "41d973a341b37e50521e855bec7be0257169a91305ea48c0e64acead2fc6496c",
+        "release_y": "bafd0c3ba1af36c90a10dc8cf482d5022500c719c8eab64645b0fcedc5ec4cdc",
+        "release_h": "19524dc566da7bb224da0b21b896911c1d7975007731baa044f68c8f00d0d053",
+        "release_prop": "2a37b9f64bccd033f2c1e63b5d16f1b42e20dde6606dc868b28d8936bf14e2ed",
+        "idmax_in": "0f01f1d46990ac52b1affb377b24f3ebde820aa710a8966eb430df90c558f91a",
+        "imported": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "release_life": "55192e980aef155438175c0becf79f7d288f5d13a14f5fee01387f9cefd98449",
+        "release_source": "5ad245fd8bdf0436712e6f16e3eda9ded3438ccb23168e7a4fc48c36368d8aeb",
+        "x_out": "615699a8c529dd3bd18245aeaabba8e126337a88edf3dda32c9b28cc7b3eb407",
+        "y_out": "1b7f6f09a0beebf3c19e85de8c11f55f13a0487dac4c09bd97d95f4f8bbfd14f",
+        "h_out": "c499b949f3bd17d9d9fd34555103ed01cac414efa747f186c3ee946b3f934021",
+        "id_out": "0abbbcf0f0e8b2b62a1720e48b09ba3c317226a82913027bb1a71b7921476ece",
+        "source_out": "b76516ebba08eaf99ffbfe5a6867faa8b833af9bc53b2f3b2cf689f558cf7d4a",
+        "life_out": "1fd02c17bd887071e2885b129a5e091c2cd3275c9a4c8589980f32bdef2578fb",
+        "prop_out": "c4187ceca97a9b15f9d304fc2747d4dcb3ba479f7b4ffcbaaca2d8654f4423b6",
+        "release_x_out": "5b6fb58e61fa475939767d68a446f97f1bff02c0e5935a3ea8bb51e6515783d8",
+        "release_y_out": "5b6fb58e61fa475939767d68a446f97f1bff02c0e5935a3ea8bb51e6515783d8",
+        "release_h_out": "5b6fb58e61fa475939767d68a446f97f1bff02c0e5935a3ea8bb51e6515783d8",
+        "control_out": "68b2ae7aa52b0cbdcbcf4d61b4a768b20d1cc41e7f09146b68d6f3389451f1e1"
+      },
+      "arrays": {
+        "x_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "y_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "h_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "id_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "source_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "life_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "prop_in": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "release_x": {
+          "shape": [
+            20
+          ],
+          "dtype": "<f4"
+        },
+        "release_y": {
+          "shape": [
+            20
+          ],
+          "dtype": "<f4"
+        },
+        "release_h": {
+          "shape": [
+            20
+          ],
+          "dtype": "<f4"
+        },
+        "release_prop": {
+          "shape": [
+            5,
+            20
+          ],
+          "dtype": "<f4"
+        },
+        "idmax_in": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "imported": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "release_life": {
+          "shape": [
+            20
+          ],
+          "dtype": "<i4"
+        },
+        "release_source": {
+          "shape": [
+            20
+          ],
+          "dtype": "<i4"
+        },
+        "x_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "y_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "h_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "id_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "source_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "life_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "prop_out": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "release_x_out": {
+          "shape": [
+            20
+          ],
+          "dtype": "<f4"
+        },
+        "release_y_out": {
+          "shape": [
+            20
+          ],
+          "dtype": "<f4"
+        },
+        "release_h_out": {
+          "shape": [
+            20
+          ],
+          "dtype": "<f4"
+        },
+        "control_out": {
+          "shape": [
+            3
+          ],
+          "dtype": "<i4"
+        }
+      }
+    },
+    "spotting/generate_4": {
+      "sha256": "9a117afd7002698540575b15a0fbdf0bef4a76550e02ad7bbd836bfd108fea76",
+      "native_stream_sha256": {
+        "x_in": "07189cfa333e1a41c272824ec05c8d5ac322336326ab677db994a690f1bf5d3a",
+        "y_in": "77822b1cb2c55358a163577ef01adb94bd457379360b3e51f9bc9a7bb80d0a3b",
+        "h_in": "cc0bbaa7863898ed6d6799fb89d2dda6d6674ae022a9f158e81763466edff538",
+        "id_in": "09234861dc2cfb78377f6a5f0bb0638f043f57b13c48c88c49714391cc1ac738",
+        "source_in": "545b7991007374fd395872f7313b9e8fdc275804eb0893f50265b1f9ef85b886",
+        "life_in": "1fd02c17bd887071e2885b129a5e091c2cd3275c9a4c8589980f32bdef2578fb",
+        "prop_in": "569aea88c5d565a6b57cc40861052ccdd210e78ea0633e57cd68c63c14c6bf5b",
+        "release_x": "154eacb863a08909c73fa10685fa4f2c6a5a014a60a17579077182391ce11b74",
+        "release_y": "fdd7588b555d91b5c2c42cf261c0c54ec8a4a0c44259b99916c0e2899c9800a3",
+        "release_h": "2b213c40fa293c0647265bb79754c3a5a3e4fe027d99dab8028e68185ec71c0f",
+        "release_prop": "837e628b9fb8382da078a729eac48a73823273bc7d64444e429f3c6ee323753e",
+        "idmax_in": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "imported": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "release_life": "994374d2f015a4225235a9c1f6cdc9b6f47c4dac3bb40354b8518072e8d71430",
+        "release_source": "05ce671c0df1886b9034f76120305ffa7da778b12ac9f842ceb34a540ad3b65b",
+        "x_out": "e597ded966ab75f19b9f9289cba1e140102da71590a8296feb660028ea3f60c9",
+        "y_out": "51dde69450c22cb46c7abc7cf109d63ffb7553b1c1f351128aa6138249102493",
+        "h_out": "1fdfe63dfe53614c94dcf66d57c60bd043424be32b3f539701032718befc25dd",
+        "id_out": "a05859a1605838fa3c0c4a0e58d599be02e63e1244d4009ca6ec2c737b96ddfc",
+        "source_out": "a9aed5eb20370eaeb632fe2f86d9b393c94ffeeebb9e2a00760f48afe4127a50",
+        "life_out": "1fd02c17bd887071e2885b129a5e091c2cd3275c9a4c8589980f32bdef2578fb",
+        "prop_out": "e71f0992605d668c72db742ed25bdbf6a5e53e08ff189007abfee90dc28195ab",
+        "release_x_out": "17b0761f87b081d5cf10757ccc89f12be355c70e2e29df288b65b30710dcbcd1",
+        "release_y_out": "17b0761f87b081d5cf10757ccc89f12be355c70e2e29df288b65b30710dcbcd1",
+        "release_h_out": "17b0761f87b081d5cf10757ccc89f12be355c70e2e29df288b65b30710dcbcd1",
+        "control_out": "28be4f81fab59c57bdbfb73e7317f0b5bb020e100ae14ddafc961af382dccc7c"
+      },
+      "arrays": {
+        "x_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "y_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "h_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "id_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "source_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "life_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "prop_in": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "release_x": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "release_y": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "release_h": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "release_prop": {
+          "shape": [
+            5,
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "idmax_in": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "imported": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "release_life": {
+          "shape": [
+            12
+          ],
+          "dtype": "<i4"
+        },
+        "release_source": {
+          "shape": [
+            12
+          ],
+          "dtype": "<i4"
+        },
+        "x_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "y_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "h_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "id_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "source_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "life_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "prop_out": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "release_x_out": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "release_y_out": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "release_h_out": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "control_out": {
+          "shape": [
+            3
+          ],
+          "dtype": "<i4"
+        }
+      }
+    },
+    "spotting/generate_5": {
+      "sha256": "d31aec9b2bd866b22e6b97a756e0070411c9a5ea60390a4c8c189e4659149113",
+      "native_stream_sha256": {
+        "x_in": "f48e271e261e5bd67f48c26af33a051834e9788075a15a5b4a859484ed101b2e",
+        "y_in": "7ec595cb3558dc655ef6d01bd72d36b82905b385820f37ec7425c9f522fe616a",
+        "h_in": "222cfaa774dc5e9c3a038a2c5ec38293c1267e313dab7f0406ac37193792e33c",
+        "id_in": "14304cd0587015ef8ea38e558ae075675c0d1dabcc524edb08b12a8377500970",
+        "source_in": "ca2afa8a0cf0e0ea2be74b59292c7dfbd93ff7f98dbcf36f02cc4b438daf1b9c",
+        "life_in": "51c95ee30ba0151ef18868b162fa1f645ebc41e40774c1f67fc91219a09a4d87",
+        "prop_in": "2efbc92d79c903e18bdf814c242b17695af4bb1a63da753fcfe07d3d98eb3b00",
+        "release_x": "154eacb863a08909c73fa10685fa4f2c6a5a014a60a17579077182391ce11b74",
+        "release_y": "fdd7588b555d91b5c2c42cf261c0c54ec8a4a0c44259b99916c0e2899c9800a3",
+        "release_h": "77ffb912a94d57b0a41a43a2796da6c8f5f5dcf2c3152a7687a42a67b5626821",
+        "release_prop": "837e628b9fb8382da078a729eac48a73823273bc7d64444e429f3c6ee323753e",
+        "idmax_in": "4f5e1d312b4d1bb8ccaf069c18cddeca414ae78160fb3c793ffc730eef4e4f17",
+        "imported": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "release_life": "994374d2f015a4225235a9c1f6cdc9b6f47c4dac3bb40354b8518072e8d71430",
+        "release_source": "05ce671c0df1886b9034f76120305ffa7da778b12ac9f842ceb34a540ad3b65b",
+        "x_out": "f48e271e261e5bd67f48c26af33a051834e9788075a15a5b4a859484ed101b2e",
+        "y_out": "7ec595cb3558dc655ef6d01bd72d36b82905b385820f37ec7425c9f522fe616a",
+        "h_out": "222cfaa774dc5e9c3a038a2c5ec38293c1267e313dab7f0406ac37193792e33c",
+        "id_out": "14304cd0587015ef8ea38e558ae075675c0d1dabcc524edb08b12a8377500970",
+        "source_out": "ca2afa8a0cf0e0ea2be74b59292c7dfbd93ff7f98dbcf36f02cc4b438daf1b9c",
+        "life_out": "51c95ee30ba0151ef18868b162fa1f645ebc41e40774c1f67fc91219a09a4d87",
+        "prop_out": "2efbc92d79c903e18bdf814c242b17695af4bb1a63da753fcfe07d3d98eb3b00",
+        "release_x_out": "154eacb863a08909c73fa10685fa4f2c6a5a014a60a17579077182391ce11b74",
+        "release_y_out": "fdd7588b555d91b5c2c42cf261c0c54ec8a4a0c44259b99916c0e2899c9800a3",
+        "release_h_out": "77ffb912a94d57b0a41a43a2796da6c8f5f5dcf2c3152a7687a42a67b5626821",
+        "control_out": "45ce31e2e4cc720dc6b232da2bd74f6c783f78d2e0120d893b65bcf42982b52c"
+      },
+      "arrays": {
+        "x_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "y_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "h_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "id_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "source_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "life_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "prop_in": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "release_x": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "release_y": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "release_h": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "release_prop": {
+          "shape": [
+            5,
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "idmax_in": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "imported": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "release_life": {
+          "shape": [
+            12
+          ],
+          "dtype": "<i4"
+        },
+        "release_source": {
+          "shape": [
+            12
+          ],
+          "dtype": "<i4"
+        },
+        "x_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "y_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "h_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "id_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "source_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "life_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "prop_out": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "release_x_out": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "release_y_out": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "release_h_out": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "control_out": {
+          "shape": [
+            3
+          ],
+          "dtype": "<i4"
+        }
+      }
+    },
+    "spotting/generate_6": {
+      "sha256": "a4343bf10e57211c01c0d3b7bf4d85203581a7ce4e58200a64144adaaee300ce",
+      "native_stream_sha256": {
+        "x_in": "07189cfa333e1a41c272824ec05c8d5ac322336326ab677db994a690f1bf5d3a",
+        "y_in": "77822b1cb2c55358a163577ef01adb94bd457379360b3e51f9bc9a7bb80d0a3b",
+        "h_in": "cc0bbaa7863898ed6d6799fb89d2dda6d6674ae022a9f158e81763466edff538",
+        "id_in": "09234861dc2cfb78377f6a5f0bb0638f043f57b13c48c88c49714391cc1ac738",
+        "source_in": "545b7991007374fd395872f7313b9e8fdc275804eb0893f50265b1f9ef85b886",
+        "life_in": "1fd02c17bd887071e2885b129a5e091c2cd3275c9a4c8589980f32bdef2578fb",
+        "prop_in": "569aea88c5d565a6b57cc40861052ccdd210e78ea0633e57cd68c63c14c6bf5b",
+        "release_x": "6bfcaacd68edd1539c1d08a1fbad7146bbc501b7609f6f81e998851038bcabcf",
+        "release_y": "ad6a74630f9ac6f3c54d8935c58498958b8bb58f13ec739dd13d1e93edeb2be5",
+        "release_h": "e5edc1362fb49c271d4bad1a5e9f1aa60b3701b60c46d21500acee14791a27b5",
+        "release_prop": "f07eb60773ea71c6b04b85a684a316bf22682b1b311c1edc4f94005f7fa6001c",
+        "idmax_in": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "imported": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "release_life": "d338c7cfbd24e8741dd131258566a2a6062f965c156f701c380ee71b840de304",
+        "release_source": "6c93b5c61d3cf7a12bb4c2c4d01a01c4b63eff96bbde209894d20a72476be72f",
+        "x_out": "446deec4564e8657c69e126c0e07e6bbba7cd4d9b478ea3f4919e060e21762b1",
+        "y_out": "d32e4f3e999730f74f15585ed70aa78b4972c04603557d4158c9923a8f313cf2",
+        "h_out": "d1b5ffdd07d96621af41b8a35e4f78d809f922f69513e27660a82678baa938e8",
+        "id_out": "24e26c9c3d2741d4aa7dab778445f0baee204829dc54f09661f8cdd6454a7d0a",
+        "source_out": "449e5c78c7d93824886014c4fa1ffda47192f3ccdab068d62312e1d1179408ac",
+        "life_out": "58be4d82475f199cffcfd8d4fdeeb939ec90b83baa66f0f8a627cf5798a83885",
+        "prop_out": "484520a055d57e98ec731886d5ba0253b07f706b8c5933064977b92a9d5c6d4a",
+        "release_x_out": "374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb",
+        "release_y_out": "374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb",
+        "release_h_out": "374708fff7719dd5979ec875d56cd2286f6d3cf7ec317a3b25632aab28ec37bb",
+        "control_out": "81c9c45c64599849d273c46694c6a4c37466d5632b4bcea09aaf02e9ae48ad9d"
+      },
+      "arrays": {
+        "x_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "y_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "h_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "id_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "source_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "life_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "prop_in": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "release_x": {
+          "shape": [
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "release_y": {
+          "shape": [
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "release_h": {
+          "shape": [
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "release_prop": {
+          "shape": [
+            5,
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "idmax_in": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "imported": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "release_life": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "release_source": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "x_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "y_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "h_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "id_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "source_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "life_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<i4"
+        },
+        "prop_out": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "release_x_out": {
+          "shape": [
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "release_y_out": {
+          "shape": [
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "release_h_out": {
+          "shape": [
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "control_out": {
+          "shape": [
+            3
+          ],
+          "dtype": "<i4"
+        }
+      }
+    },
+    "spotting/interp_box": {
+      "sha256": "d51b34095aafff659edbc577d3f7e06fa536f9c7b745efb30219d19de15ace2c",
+      "native_stream_sha256": {
+        "coordinates": "7cd8c193ddd53c7360352c5d95f71b7fae1b52fcc5ac1cb008244b3ed6457c5e",
+        "corners": "0096072f3ac908370ea99c499fc04a0b58e1cfec2ced40c232cb74500ec6f7bd",
+        "output": "3b923f89ab37530f9f7c2aad7383157e688ebae714d80ccf7da8fb72aa480429"
+      },
+      "arrays": {
+        "coordinates": {
+          "shape": [
+            3,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "corners": {
+          "shape": [
+            8,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "output": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "spotting/property": {
+      "sha256": "7502818d13a010ef05bfa0e0137e1ccae8065d165b4f442c988327e7a4278eb8",
+      "native_stream_sha256": {
+        "inputs": "fdfbbd2e55e318968832f1ea43be843512914569b13df091288153e42c5004f9",
+        "prop": "953182f3d2401e4149f27830a4e8f5a842802d087e9c0bd332fbf5b702e11328"
+      },
+      "arrays": {
+        "inputs": {
+          "shape": [
+            4,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "prop": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "spotting/property_corrected": {
+      "sha256": "e82c93cec14e4879096d44505992271ed7463b75f2dacd2bf933a32617e56bca",
+      "native_stream_sha256": {
+        "inputs": "fdfbbd2e55e318968832f1ea43be843512914569b13df091288153e42c5004f9",
+        "prop": "498aa52eff4d66ff6697cdd20de930016cb70fb16519964bd37b7b08dbcca9e9"
+      },
+      "arrays": {
+        "inputs": {
+          "shape": [
+            4,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "prop": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        }
+      },
+      "reference_kind": "spherical initial mass corrected from D^2 to D^3"
+    },
+    "spotting/ranking": {
+      "sha256": "44b36e7d539d1f2d33e64e6e0bf429ee29e264ed5154b503f79cdaae1a83ae8a",
+      "native_stream_sha256": {
+        "values": "94ade367d7d8f76958ae12ed5bc9dfef83387be66da787473230de7964868ab6",
+        "order_0": "8990c76b26f9211c2d2739ccefc6e16bd15dcab46519fe0efa9546da18838bb4",
+        "order_6": "45a6d738a7607576d3fe0862200bc67b10c12d5ed74167b4d5d5a708974c0f32",
+        "order_12": "24ddee074937488453d4e5eaa6eda8be54259aeb2973fd50b344d7ae3ae22d7e",
+        "order_18": "701e6c2062bd6eeed974e1623a1d2254088fa9bc4e1bf763239fbc2012c393b4",
+        "order_24": "8c798e51029bfa66051bad3a46879aa9bbecce25f5c7ee77868eea9b80249e90"
+      },
+      "arrays": {
+        "values": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "order_0": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "order_6": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "order_12": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "order_18": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "order_24": {
+          "shape": [],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "spotting/release_1": {
+      "sha256": "3f80d830c4ec964e55872e5f5819159420f50cd31f4be111af6fb99cdbc4da1e",
+      "native_stream_sha256": {
+        "points": "fb5e512425fc9449316ec95969ebe71e2d576dbab833d61e2a5b9330fd70ee02",
+        "levels": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "seed": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "x_in": "6bfcaacd68edd1539c1d08a1fbad7146bbc501b7609f6f81e998851038bcabcf",
+        "y_in": "ad6a74630f9ac6f3c54d8935c58498958b8bb58f13ec739dd13d1e93edeb2be5",
+        "h_in": "e5edc1362fb49c271d4bad1a5e9f1aa60b3701b60c46d21500acee14791a27b5",
+        "prop_in": "f07eb60773ea71c6b04b85a684a316bf22682b1b311c1edc4f94005f7fa6001c",
+        "x_out": "6bfcaacd68edd1539c1d08a1fbad7146bbc501b7609f6f81e998851038bcabcf",
+        "y_out": "ad6a74630f9ac6f3c54d8935c58498958b8bb58f13ec739dd13d1e93edeb2be5",
+        "h_out": "e5edc1362fb49c271d4bad1a5e9f1aa60b3701b60c46d21500acee14791a27b5",
+        "prop_out": "f07eb60773ea71c6b04b85a684a316bf22682b1b311c1edc4f94005f7fa6001c"
+      },
+      "arrays": {
+        "points": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "levels": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "seed": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "x_in": {
+          "shape": [
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "y_in": {
+          "shape": [
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "h_in": {
+          "shape": [
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "prop_in": {
+          "shape": [
+            5,
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "x_out": {
+          "shape": [
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "y_out": {
+          "shape": [
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "h_out": {
+          "shape": [
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "prop_out": {
+          "shape": [
+            5,
+            4
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "spotting/release_2": {
+      "sha256": "1c683f9b265998bd089bf2a95df64e62f452ffa96128c6eaa24b5b360557fa24",
+      "native_stream_sha256": {
+        "points": "fb5e512425fc9449316ec95969ebe71e2d576dbab833d61e2a5b9330fd70ee02",
+        "levels": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "seed": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "x_in": "caa7617f58305d7eab072b75ae3ce223a9ea88898953ff375d1f085a55d8eda6",
+        "y_in": "7f39e8a6db18342a3880f0ab4c5c49011563c6ff597d160ba4ccb75fbd20f08b",
+        "h_in": "b83795083bf4b01580880dff8e6d688f10e5b384c7ad7d2db64d43fe9bdc6a89",
+        "prop_in": "94582bf7e0773f59db3cb0e248140aaee5ca7a735c975d97591b35d1fe72142f",
+        "x_out": "154eacb863a08909c73fa10685fa4f2c6a5a014a60a17579077182391ce11b74",
+        "y_out": "fdd7588b555d91b5c2c42cf261c0c54ec8a4a0c44259b99916c0e2899c9800a3",
+        "h_out": "77ffb912a94d57b0a41a43a2796da6c8f5f5dcf2c3152a7687a42a67b5626821",
+        "prop_out": "837e628b9fb8382da078a729eac48a73823273bc7d64444e429f3c6ee323753e"
+      },
+      "arrays": {
+        "points": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "levels": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "seed": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "x_in": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "y_in": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "h_in": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "prop_in": {
+          "shape": [
+            5,
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "x_out": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "y_out": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "h_out": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "prop_out": {
+          "shape": [
+            5,
+            12
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "spotting/release_3": {
+      "sha256": "fe2b237a165d3951db2b55ce0611beeb44afa0f18b2c93e3d1e298fb5a2c656f",
+      "native_stream_sha256": {
+        "points": "fb5e512425fc9449316ec95969ebe71e2d576dbab833d61e2a5b9330fd70ee02",
+        "levels": "2594b6a92ebfb1c3312deb7d01c015fb95e9fbe9bd7bc6b527af07813ec7b910",
+        "seed": "cb30e91817239109ffd0a5870046e128f04619da80c7624d921162fdfe514f76",
+        "x_in": "0f0cf3062ac24920a89b54d1bd0c7cbe570eb368c5fe67f19016d575de0f11f3",
+        "y_in": "69b4d40d7d5d6c0cbaafe3b395c3c9ebed359cfbc4b3a8e9f8c7df2c43bac6ca",
+        "h_in": "0dbf2cad7de436322b03830e0ac6e04900b87a79f738f74cf0c7650ff12fbdbc",
+        "prop_in": "04e4e1c361a830e2a533d3e33346866a74e71069790cfd49702e9a143af6c2d3",
+        "x_out": "41d973a341b37e50521e855bec7be0257169a91305ea48c0e64acead2fc6496c",
+        "y_out": "bafd0c3ba1af36c90a10dc8cf482d5022500c719c8eab64645b0fcedc5ec4cdc",
+        "h_out": "19524dc566da7bb224da0b21b896911c1d7975007731baa044f68c8f00d0d053",
+        "prop_out": "2a37b9f64bccd033f2c1e63b5d16f1b42e20dde6606dc868b28d8936bf14e2ed"
+      },
+      "arrays": {
+        "points": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "levels": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "seed": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "x_in": {
+          "shape": [
+            20
+          ],
+          "dtype": "<f4"
+        },
+        "y_in": {
+          "shape": [
+            20
+          ],
+          "dtype": "<f4"
+        },
+        "h_in": {
+          "shape": [
+            20
+          ],
+          "dtype": "<f4"
+        },
+        "prop_in": {
+          "shape": [
+            5,
+            20
+          ],
+          "dtype": "<f4"
+        },
+        "x_out": {
+          "shape": [
+            20
+          ],
+          "dtype": "<f4"
+        },
+        "y_out": {
+          "shape": [
+            20
+          ],
+          "dtype": "<f4"
+        },
+        "h_out": {
+          "shape": [
+            20
+          ],
+          "dtype": "<f4"
+        },
+        "prop_out": {
+          "shape": [
+            5,
+            20
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "spotting/release_4": {
+      "sha256": "496bf98b539dbd8d2fedff69a2fea8b506ddbb872e758f3dbd3c1e4131d9f994",
+      "native_stream_sha256": {
+        "points": "fb5e512425fc9449316ec95969ebe71e2d576dbab833d61e2a5b9330fd70ee02",
+        "levels": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "seed": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "x_in": "caa7617f58305d7eab072b75ae3ce223a9ea88898953ff375d1f085a55d8eda6",
+        "y_in": "7f39e8a6db18342a3880f0ab4c5c49011563c6ff597d160ba4ccb75fbd20f08b",
+        "h_in": "1e0157b60e753ff42cbc5b56fc8ee2d7d9bff583944053047b837779c63b3a90",
+        "prop_in": "94582bf7e0773f59db3cb0e248140aaee5ca7a735c975d97591b35d1fe72142f",
+        "x_out": "154eacb863a08909c73fa10685fa4f2c6a5a014a60a17579077182391ce11b74",
+        "y_out": "fdd7588b555d91b5c2c42cf261c0c54ec8a4a0c44259b99916c0e2899c9800a3",
+        "h_out": "2b213c40fa293c0647265bb79754c3a5a3e4fe027d99dab8028e68185ec71c0f",
+        "prop_out": "837e628b9fb8382da078a729eac48a73823273bc7d64444e429f3c6ee323753e"
+      },
+      "arrays": {
+        "points": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "levels": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "seed": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "x_in": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "y_in": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "h_in": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "prop_in": {
+          "shape": [
+            5,
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "x_out": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "y_out": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "h_out": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "prop_out": {
+          "shape": [
+            5,
+            12
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "spotting/release_5": {
+      "sha256": "1c683f9b265998bd089bf2a95df64e62f452ffa96128c6eaa24b5b360557fa24",
+      "native_stream_sha256": {
+        "points": "fb5e512425fc9449316ec95969ebe71e2d576dbab833d61e2a5b9330fd70ee02",
+        "levels": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "seed": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "x_in": "caa7617f58305d7eab072b75ae3ce223a9ea88898953ff375d1f085a55d8eda6",
+        "y_in": "7f39e8a6db18342a3880f0ab4c5c49011563c6ff597d160ba4ccb75fbd20f08b",
+        "h_in": "b83795083bf4b01580880dff8e6d688f10e5b384c7ad7d2db64d43fe9bdc6a89",
+        "prop_in": "94582bf7e0773f59db3cb0e248140aaee5ca7a735c975d97591b35d1fe72142f",
+        "x_out": "154eacb863a08909c73fa10685fa4f2c6a5a014a60a17579077182391ce11b74",
+        "y_out": "fdd7588b555d91b5c2c42cf261c0c54ec8a4a0c44259b99916c0e2899c9800a3",
+        "h_out": "77ffb912a94d57b0a41a43a2796da6c8f5f5dcf2c3152a7687a42a67b5626821",
+        "prop_out": "837e628b9fb8382da078a729eac48a73823273bc7d64444e429f3c6ee323753e"
+      },
+      "arrays": {
+        "points": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "levels": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "seed": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "x_in": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "y_in": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "h_in": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "prop_in": {
+          "shape": [
+            5,
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "x_out": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "y_out": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "h_out": {
+          "shape": [
+            12
+          ],
+          "dtype": "<f4"
+        },
+        "prop_out": {
+          "shape": [
+            5,
+            12
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "spotting/release_6": {
+      "sha256": "3f80d830c4ec964e55872e5f5819159420f50cd31f4be111af6fb99cdbc4da1e",
+      "native_stream_sha256": {
+        "points": "fb5e512425fc9449316ec95969ebe71e2d576dbab833d61e2a5b9330fd70ee02",
+        "levels": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "seed": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "x_in": "6bfcaacd68edd1539c1d08a1fbad7146bbc501b7609f6f81e998851038bcabcf",
+        "y_in": "ad6a74630f9ac6f3c54d8935c58498958b8bb58f13ec739dd13d1e93edeb2be5",
+        "h_in": "e5edc1362fb49c271d4bad1a5e9f1aa60b3701b60c46d21500acee14791a27b5",
+        "prop_in": "f07eb60773ea71c6b04b85a684a316bf22682b1b311c1edc4f94005f7fa6001c",
+        "x_out": "6bfcaacd68edd1539c1d08a1fbad7146bbc501b7609f6f81e998851038bcabcf",
+        "y_out": "ad6a74630f9ac6f3c54d8935c58498958b8bb58f13ec739dd13d1e93edeb2be5",
+        "h_out": "e5edc1362fb49c271d4bad1a5e9f1aa60b3701b60c46d21500acee14791a27b5",
+        "prop_out": "f07eb60773ea71c6b04b85a684a316bf22682b1b311c1edc4f94005f7fa6001c"
+      },
+      "arrays": {
+        "points": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "levels": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "seed": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "x_in": {
+          "shape": [
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "y_in": {
+          "shape": [
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "h_in": {
+          "shape": [
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "prop_in": {
+          "shape": [
+            5,
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "x_out": {
+          "shape": [
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "y_out": {
+          "shape": [
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "h_out": {
+          "shape": [
+            4
+          ],
+          "dtype": "<f4"
+        },
+        "prop_out": {
+          "shape": [
+            5,
+            4
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "spotting/sampling": {
+      "sha256": "632223b19c77c5fdd814b48a9def04ee1d67636a565c772ceef7d8300d99c0d9",
+      "native_stream_sha256": {
+        "coordinates": "ac79dc5f92e6eccf85642c9b7f4166608aeee58f5f5b5b6bc336aba4d153db3a",
+        "u": "627beded35808cc9df7a5a84f7bc37c3783df3d2af49b87cb27aff6281296644",
+        "v": "2ec35821de07f12b8bcd57ad76635f16b742e7ec417dc294b240c4ca3e9485cf",
+        "w": "0a7574b4b53f8cb98d106bc8c218fe71170b5b15cf47993aca4a892c0adb4317",
+        "pressure": "e61c84e93637f3ad7b1928e7e2a5899a417ef570f199c4f2f7c139074bcd8cda",
+        "theta": "ae10aa887cb91f11fba7ba07095ba1ca2c1ee64a04978403a02eb0a202ae7bbb",
+        "density": "d6f28d2c3f2324da37f699410bb157a0aee2bdfe5c358ada66f61e7dcb79b12f",
+        "height": "0a6e42e5b13815a23521d2d4789eb37453d1ee30f38c8b1db988d830df8fe866",
+        "output": "5b1395b422751e774134161b1a86858be869d8778e1358c50e5f5090fca207ae"
+      },
+      "arrays": {
+        "coordinates": {
+          "shape": [
+            3,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "u": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "w": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "pressure": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "theta": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "density": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "height": {
+          "shape": [
+            8,
+            15,
+            17
+          ],
+          "dtype": "<f4"
+        },
+        "output": {
+          "shape": [
+            7,
+            32
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "spotting/termvel_1": {
+      "sha256": "5724b1322e5a3d3336c9f3058bf7fc27d13edf91a1d69550fcf3044793668bee",
+      "native_stream_sha256": {
+        "input": "953182f3d2401e4149f27830a4e8f5a842802d087e9c0bd332fbf5b702e11328",
+        "pressure": "c9ff61fa5e4c3be5a64523558dbc344e24c4365ed8ad299b4e7e3294768ad45c",
+        "density": "0287ac3348b79f8ab11440104cbd49ded962db47b01fa6c06292340a33f32b7f",
+        "temperature": "b15def0af5d2b1633dac4fee14a5dfa9dbbf5f7fae3fd64a3c49f8f9e4482c49",
+        "wind": "3c2049193e923699feb02c79544832644210d227730dfb0d17b7f11339655814",
+        "dt": "4efb856a85ce3cd60020d80d64475630ab731c6b6a31198ed4417c6dfd1829c2",
+        "height_in": "a06f9aeb8ed45e1422a6c6cdaa3f4f1da473d59951c8f4933eede9449404617f",
+        "output": "355f03770ca5ea2f9cd77a518fa3f02b596f9735aa54db1eb76a3aeb4278f108",
+        "height_out": "b8eecbbca84e226c8772250cca493d9aa4c39b762ee38df9e15b013817d09dba"
+      },
+      "arrays": {
+        "input": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "pressure": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "density": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "temperature": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "wind": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "dt": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "height_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "output": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "height_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "spotting/termvel_2": {
+      "sha256": "7fe9e5bf24355962399447b3a234688b9e18d19117a7b5041593320c67394629",
+      "native_stream_sha256": {
+        "input": "953182f3d2401e4149f27830a4e8f5a842802d087e9c0bd332fbf5b702e11328",
+        "pressure": "c9ff61fa5e4c3be5a64523558dbc344e24c4365ed8ad299b4e7e3294768ad45c",
+        "density": "0287ac3348b79f8ab11440104cbd49ded962db47b01fa6c06292340a33f32b7f",
+        "temperature": "b15def0af5d2b1633dac4fee14a5dfa9dbbf5f7fae3fd64a3c49f8f9e4482c49",
+        "wind": "3c2049193e923699feb02c79544832644210d227730dfb0d17b7f11339655814",
+        "dt": "31b67dba7cfd6e2d7540f9c96d90a45b8f2d44956620723024d4e1beeacd4602",
+        "height_in": "b8eecbbca84e226c8772250cca493d9aa4c39b762ee38df9e15b013817d09dba",
+        "output": "355f03770ca5ea2f9cd77a518fa3f02b596f9735aa54db1eb76a3aeb4278f108",
+        "height_out": "53095e0a164b903ca80cdd632b6af9b18e5cd96eba0c410424b44cce12d465e6"
+      },
+      "arrays": {
+        "input": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "pressure": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "density": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "temperature": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "wind": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "dt": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "height_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "output": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "height_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "spotting/termvel_3": {
+      "sha256": "058394597495716d260096045ce4dfcf2a72b8f3256e2b8500aa75c618475f0f",
+      "native_stream_sha256": {
+        "input": "953182f3d2401e4149f27830a4e8f5a842802d087e9c0bd332fbf5b702e11328",
+        "pressure": "c9ff61fa5e4c3be5a64523558dbc344e24c4365ed8ad299b4e7e3294768ad45c",
+        "density": "0287ac3348b79f8ab11440104cbd49ded962db47b01fa6c06292340a33f32b7f",
+        "temperature": "b15def0af5d2b1633dac4fee14a5dfa9dbbf5f7fae3fd64a3c49f8f9e4482c49",
+        "wind": "3c2049193e923699feb02c79544832644210d227730dfb0d17b7f11339655814",
+        "dt": "e00e5eb9444182f352323374ef4e08ebcb784725fdd4fd612d7730540b3e0c8c",
+        "height_in": "53095e0a164b903ca80cdd632b6af9b18e5cd96eba0c410424b44cce12d465e6",
+        "output": "355f03770ca5ea2f9cd77a518fa3f02b596f9735aa54db1eb76a3aeb4278f108",
+        "height_out": "b69ec688ac991ee171f5eee4099dca21aad9d578b8eb8abb0a9a2cee3be91730"
+      },
+      "arrays": {
+        "input": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "pressure": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "density": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "temperature": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "wind": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "dt": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "height_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "output": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "height_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "spotting/termvel_4": {
+      "sha256": "b43965553f36f8d7a7257603409e5bbf71b8526faa87b84b33a8d06ffb58ff44",
+      "native_stream_sha256": {
+        "input": "953182f3d2401e4149f27830a4e8f5a842802d087e9c0bd332fbf5b702e11328",
+        "pressure": "c9ff61fa5e4c3be5a64523558dbc344e24c4365ed8ad299b4e7e3294768ad45c",
+        "density": "0287ac3348b79f8ab11440104cbd49ded962db47b01fa6c06292340a33f32b7f",
+        "temperature": "b15def0af5d2b1633dac4fee14a5dfa9dbbf5f7fae3fd64a3c49f8f9e4482c49",
+        "wind": "3c2049193e923699feb02c79544832644210d227730dfb0d17b7f11339655814",
+        "dt": "814e223b91cb65a962256b15f351f22ac7bcbb3c2b82d2a4b3ecf174db8de764",
+        "height_in": "b69ec688ac991ee171f5eee4099dca21aad9d578b8eb8abb0a9a2cee3be91730",
+        "output": "355f03770ca5ea2f9cd77a518fa3f02b596f9735aa54db1eb76a3aeb4278f108",
+        "height_out": "38723a2e5e8a17aa7950dc008209944e898f69a7bd10a23c839d341e935fd5ca"
+      },
+      "arrays": {
+        "input": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "pressure": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "density": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "temperature": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "wind": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "dt": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "height_in": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "output": {
+          "shape": [
+            5,
+            32
+          ],
+          "dtype": "<f4"
+        },
+        "height_out": {
+          "shape": [
+            32
+          ],
+          "dtype": "<f4"
+        }
+      }
+    }
+  },
+  "extraction": {
+    "source_sha256": "e68e4b4ddbde6fdc117163e3b396cff3a11bfc7f2ac586de1525707ba82092e4",
+    "constants_sha256": "13295e7f87ae1d1e75f97afcc347e9a8d2d70935d339785441314c9350bc912a",
+    "helper_group_sha256": [
+      "782be99939a8fec3e2736f2493cca726adabaf2ccb1dcb07500c59060796d000",
+      "71b4d7e997273e0a9d0352279d84e62afed0ae14491eb872301fd78d951e0dcc"
+    ],
+    "corrected_property_sha256": "22db9e322d9560ce8ab0fe46ab2228b37afab8fe6e79d4bdf39205c7ee40e56f",
+    "wrapper_sha256": "7551979a4ff76125cfd06aa800904f076377d37b8863dc25116778f6876b894d",
+    "extraction": "unmodified contiguous native helper bodies and module constants; empty unused domain service type"
+  }
+}

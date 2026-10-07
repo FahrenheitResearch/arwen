@@ -1704,7 +1704,8 @@ def _available_window_request(renderer: Path, path: Path, products: str,
     frames = [Path(item) for item in ((path,) if paths is None else paths)]
     subject = (str(frames[0]) if len(frames) == 1 else
                f"{frames[0]} to {frames[-1].name} ({len(frames)} frames)")
-    return available, storeless + [(slug, f"{subject}: {detail}")
+    codes = {row[0]: rustwx.catalog_code(row) for row in rows}
+    return available, storeless + [(slug, f"{detail}; {subject}" if codes.get(slug)=="inactive-fire-domain" else f"{subject}: {detail}")
                                    for slug, detail in excluded]
 
 
@@ -1916,6 +1917,19 @@ def _place_engine_output(png: Path, outdir: Path, domain: str,
     png = _rebrand_engine_output(png)
     if layout == render_layout.FLAT:
         return png
+    # Native panels can already be filed at their declared domain/product/day.
+    # Preserve that path instead of treating a valid native filename as flat.
+    try:
+        native_parts = png.relative_to(outdir).parts
+    except ValueError:
+        native_parts = ()
+    if len(native_parts) == 4:
+        native_domain, native_product, native_day, native_name = native_parts
+        native_stamp = re.fullmatch(r"([a-z][a-z0-9_]+)_([0-9]{8}T[0-9]{6})\.png", native_name)
+        if (re.fullmatch(r"d[0-9]+(?:-[0-9]+(?:\.[0-9]+)?[mk]+)?|native_grid", native_domain)
+                and native_stamp and native_product == native_stamp.group(1)
+                and native_day == native_stamp.group(2)[:8]):
+            return png
     parsed = render_layout.parse_engine_output(png.name, domain=domain)
     if parsed is None:
         # Not a name this engine's grammar produces -- so nothing here
@@ -2755,6 +2769,12 @@ def _skip_reason(detail: str, sources=()) -> str:
     return " ".join(text.split()).rstrip(".") or "no reason given"
 
 
+def inactive_domain_skips(skipped) -> bool:
+    """Only native catalog declarations of inactive fire domains succeed empty."""
+    return bool(skipped) and all(detail.startswith("inactive-fire-domain: IFIRE=0 ")
+                                for _product, detail in skipped)
+
+
 def skip_notice(skipped: list[tuple[str, str]],
                 wrote_any: bool = True, drawn=None,
                 sources=()) -> str | None:
@@ -2817,7 +2837,9 @@ def skip_notice(skipped: list[tuple[str, str]],
     for product, detail in skipped:
         first_reason.setdefault(product, _skip_reason(detail, sources))
     why = "; ".join(f"{name}: {first_reason[name]}" for name in names)
-    if wrote_any:
+    if inactive_domain_skips(skipped):
+        verdict = "The domains declare no active fire model; this is a successful skip"
+    elif wrote_any:
         verdict = ("That is not a failure and does not change the "
                    "exit code")
     else:
@@ -3533,6 +3555,14 @@ def render_main(args: argparse.Namespace) -> int:
                   f"the other requested products are still drawn. {reason}.",
                   file=sys.stderr)
     print(f"render: engine {engine} ({why})")
+    grib2_exe = None
+    if getattr(args, "grib2_out", None) is not None:
+        from gpuwm.grib2_live import find_exporter
+        try:
+            grib2_exe = find_exporter()
+        except (RuntimeError, FileNotFoundError) as error:
+            print(f"render: GRIB2 exporter: {error}", file=sys.stderr)
+            return 3
     # AFTER every refusal and after --list-products: this creates a
     # directory, and a command that draws nothing must leave none --
     # which is also why every exit path below runs _publish_run_dir.
@@ -3652,7 +3682,13 @@ def render_main(args: argparse.Namespace) -> int:
     # image.  The second is what keeps a skip from becoming a silent
     # success -- ask for one product, have its inputs be absent, and the
     # answer is still a nonzero exit, because nothing was drawn.
-    return 0 if written and not failures else 1
+    if grib2_exe is not None:
+        from gpuwm import grib2_export
+        from gpuwm.grib2_live import request_for
+        code = grib2_export.invoke(grib2_exe, request_for(args.wrfout, args.grib2_out))
+        if code:
+            return code
+    return 0 if not failures and (written or inactive_domain_skips(door_skips + skipped)) else 1
 
 
 def _section_size(value: str) -> tuple[int, int]:
@@ -3712,6 +3748,8 @@ def register_cli(subparsers) -> None:
     parser.add_argument(
         "wrfout", type=Path, nargs="*", metavar="WRFOUT",
         help="wrfout NetCDF file(s) written by gpuwm run")
+    parser.add_argument("--grib2-out", type=Path, metavar="DIR",
+                        help="also export every input frame as native surface and pressure-level GRIB2")
     parser.add_argument(
         "--engine", choices=("auto", "rust", "matplotlib"),
         default="auto",

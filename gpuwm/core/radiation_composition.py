@@ -58,6 +58,9 @@ class ComposedRadiation:
         self.longwave_adapter = longwave_adapter
         self.shortwave_adapter = shortwave_adapter
         self.publishes_olr = bool(getattr(longwave_adapter, "publishes_olr", False))
+        self.publishes_cldfra = any(
+            bool(getattr(item, "publishes_cldfra", False))
+            for item in (longwave_adapter, shortwave_adapter))
         self.glw_provenance = "scheme" if longwave_adapter is not None else "declared"
 
     @property
@@ -131,7 +134,14 @@ class ComposedRadiation:
             # compositions with independently selected spectra when on.
             swddir=(getattr(sw, "swddir", None) if sw is not None
                     and int(getattr(cfg, "swint_opt", 0)) == 1 else None),
-            swddif=getattr(sw, "swddif", None) if sw is not None else None)
+            swddif=getattr(sw, "swddif", None) if sw is not None else None,
+            # Both spectra build the same driver CLDFRA where both compute
+            # one; the longwave's is taken first, the shortwave's when the
+            # longwave half computes none.
+            cldfra=next((item.cldfra for item in (lw, sw)
+                         if item is not None
+                         and getattr(item, "cldfra", None) is not None),
+                        None))
 
     def restart_identity(self):
         from gpuwm.io.restart import _array_setup_identity

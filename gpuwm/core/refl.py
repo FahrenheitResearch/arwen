@@ -433,9 +433,99 @@ def launch_refl10cm_kessler(qv, qr, t, p, refl) -> None:
     kernel((blocks,), (_CELL_TPB,), (qv, qr, t, p, refl, np.int32(ncell)))
 
 
+#: Pointwise WSM6 reflectivity WITHOUT the melting-particle term: rain,
+#: dry snow and dry graupel/hail Rayleigh sums exactly as
+#: ``refl10cm_wsm6`` forms them (mp_wsm6.F90 ze_rain/ze_snow/ze_graupel,
+#: MPAS v8.4.1 physics_mmm/mp_wsm6.F90), evaluated in float64 like
+#: ``np_refl10cm_wsm6_column(..., melting=False)``.  Without the melting
+#: scan nothing couples levels, so it is one thread per cell and lives
+#: here rather than in the byte-frozen ``kernels/refl.cu``.
+_WSM6_DRY_SOURCE = r"""
+    const double pi = 3.1415926535897932384626434;
+    const double n0r = 8.0e6;
+    double temp = (double)t;
+    double qvc = fmax(1.0e-10, (double)qv);
+    double rho = 0.622 * (double)p / (287.0 * temp * (qvc + 0.622));
+    double fac = (0.176 / 0.93) * (6.0 / pi) * (6.0 / pi);
+    double ze_r = 1.0e-22, ze_s = 1.0e-22, ze_g = 1.0e-22;
+    if ((double)qr > 1.0e-9) {
+        double lam = pow(xam_r * 6.0 * n0r / ((double)qr * rho), 0.25);
+        ze_r = n0r * 720.0 * pow(1.0 / lam, 7.0);
+    }
+    if ((double)qs > 1.0e-9) {
+        double temp_c = fmin(-0.001, temp - 273.15);
+        double n0s = fmin(1.0e11, 2.0e6 * exp(-0.12 * temp_c));
+        double lam = pow(xam_s * 6.0 * n0s / ((double)qs * rho), 0.25);
+        ze_s = fac * (xam_s / 900.0) * (xam_s / 900.0)
+               * n0s * 720.0 * pow(1.0 / lam, 7.0);
+    }
+    if ((double)qg > 1.0e-9) {
+        double lam = pow(xam_g * 6.0 * n0g / ((double)qg * rho), 0.25);
+        ze_g = fac * (xam_g / 900.0) * (xam_g / 900.0)
+               * n0g * 720.0 * pow(1.0 / lam, 7.0);
+    }
+    dbz = (float)fmax(-35.0, 10.0 * log10((ze_r + ze_s + ze_g) * 1.0e18));
+"""
+
+
+#: The module whose column state is the MPAS (hex) physics seam's.  Named,
+#: not imported: the seam module is byte-pinned by hex's engine manifest,
+#: so the MPAS-side default lives here and the seam file stays unchanged.
+MPAS_SEAM_STATE_MODULE = "gpuwm.core.mpas_column_batch"
+
+
+def refl_melting_for(state) -> bool:
+    """Whether ``state``'s REFL_10CM (WSM6 or Thompson) keeps the melting term.
+
+    1. An explicit ``state.refl10cm_from_melting`` of True or False wins
+       (A/B arms, and hex's analysis-frame view, which copies the seam's
+       answer).  ``None`` or a missing attribute is not explicit: a
+       permissive view whose ``__getattr__`` answers ``None`` for unknown
+       names must not change a diagnostic silently.
+    2. Otherwise the MPAS column seam's state (class defined in
+       :data:`MPAS_SEAM_STATE_MODULE`) defaults to OFF, which is NOAA's own
+       MPAS default (``config_tempo_refl10cm_from_melting`` false,
+       physics/Registry_tempo.xml; the RRFS workflow never sets it).
+       Measured on hex conus3km 2026-10-03 12Z f01: WSM6's term added a
+       median +9 dB at the composite maximum and tripled 35 dBZ coverage
+       against MRMS.
+    3. Every other state (ARW ``DomainState``, tiles, DA views) keeps
+       WRF's ``refl10cm_wsm6`` verbatim.
+    """
+    explicit = getattr(state, "refl10cm_from_melting", None)
+    if explicit is True or explicit is False:
+        return explicit
+    return type(state).__module__ != MPAS_SEAM_STATE_MODULE
+
+
+#: The original name, kept because hex imports it.
+wsm6_refl_melting_for = refl_melting_for
+
+@lru_cache(maxsize=1)
+def _wsm6_dry_kernel():
+    import cupy as cp
+
+    return cp.ElementwiseKernel(
+        "float32 qv, float32 qr, float32 qs, float32 qg, float32 t, "
+        "float32 p, float64 xam_r, float64 xam_s, float64 xam_g, "
+        "float64 n0g",
+        "float32 dbz", _WSM6_DRY_SOURCE, "refl10cm_wsm6_dry")
+
+
 def launch_refl10cm_wsm6(qv, qr, qs, qg, t, p, refl, *,
-                          hail_opt: int = 0) -> None:
-    """One CUDA thread per column: WRF ``refl10cm_wsm6`` into dBZ."""
+                          hail_opt: int = 0, melting: bool = True) -> None:
+    """WRF ``refl10cm_wsm6`` into dBZ.
+
+    ``melting=True`` (the WRF/MPAS-A routine verbatim, one CUDA thread per
+    column) adds the Blahak melting-particle term below the melting level.
+    ``melting=False`` omits that term: rain plus dry snow and dry
+    graupel/hail only, which is what NOAA's own MPAS microphysics reports
+    by default (TEMPO ``config_tempo_refl10cm_from_melting = false``,
+    physics/Registry_tempo.xml).  Measured on hex conus3km 2026-10-03 12Z
+    f01: with WSM6's fixed minimum snow intercept at 0 C the term adds a
+    median +9 dB (p90 +12 dB) at the composite maximum, tripling 35 dBZ
+    coverage against MRMS.
+    """
     shape = refl.shape
     if len(shape) != 3:
         raise ValueError(f"refl fields must be 3-D, got {shape}")
@@ -446,6 +536,12 @@ def launch_refl10cm_wsm6(qv, qr, qs, qg, t, p, refl, *,
                    "t": t, "p": p, "refl": refl}, shape)
     rc = radar_init_wsm6(hail_opt)
     rimed = wsm6_rimed(hail_opt)
+    if not melting:
+        _wsm6_dry_kernel()(qv, qr, qs, qg, t, p,
+                           np.float64(rc.xam_r), np.float64(rc.xam_s),
+                           np.float64(rc.xam_g), np.float64(rimed.n0g),
+                           refl)
+        return
     blocks = (ny * nx + _COLUMN_TPB - 1) // _COLUMN_TPB
     _column_kernel("refl10cm_wsm6_column", nz)(
         (blocks,), (_COLUMN_TPB,),
@@ -501,13 +597,81 @@ def launch_refl10cm_wdm6(qv, qr, nr, qs, qg, t, p, refl, *,
          np.int32(nz), np.int32(ny), np.int32(nx)))
 
 
+#: Pointwise classic Thompson REFL_10CM WITHOUT the melting-snow term:
+#: rain from its own number moment, Field et al. snow moments and the
+#: classic 400 kg m-3 graupel from the call's number shadow, formed exactly
+#: as ``refl10cm_thompson_column`` in the byte-frozen ``kernels/refl.cu``
+#: forms them (float arithmetic where it is float, double where double).
+#: The frozen kernel's melting block is the only thing left out.
+_THOMPSON_DRY_SOURCE = r"""
+    const float tpi = 3.1415926536f;
+    const float am_r = tpi * 1000.0f / 6.0f;
+    const float am_s = 0.069f;
+    const float am_g = tpi * 400.0f / 6.0f;
+    const float qvk = fmaxf(1.0e-10f, qv);
+    const float rho = 0.622f * p / (287.04f * t * (qvk + 0.622f));
+    float zer = 1.0e-22f, zes = 1.0e-22f, zeg = 1.0e-22f;
+    if (qr > 1.0e-12f) {
+        const float rr = qr * rho;
+        const float nr_vol = fmaxf(1.0e-6f, nr * rho);
+        const double lamr = pow((double)(am_r * 6.0f * nr_vol / rr), 1.0 / 3.0);
+        const double n0r = (double)nr_vol * lamr;
+        zer = (float)(n0r * 720.0 * pow(1.0 / lamr, 7.0));
+    }
+    if (qs > 1.0e-6f) {
+        const float rs = qs * rho;
+        const float tc = fminf(-0.1f, t - 273.15f);
+        const float smo2 = __fdiv_rn(rs, am_s);
+        const float mo = 4.0f, tc2 = tc * tc, m2 = mo * mo;
+        const float loga = 5.065339f - 0.062659f * tc - 3.032362f * mo
+            + 0.029469f * tc * mo - 0.000285f * tc2 + 0.31255f * m2
+            + 0.000204f * tc2 * mo + 0.003199f * tc * m2 + 0.0f * tc2 * tc
+            - 0.015952f * m2 * mo;
+        const float b = 0.476221f - 0.015896f * tc + 0.165977f * mo
+            + 0.007468f * tc * mo - 0.000141f * tc2 + 0.060366f * m2
+            + 0.000079f * tc2 * mo + 0.000594f * tc * m2 + 0.0f * tc2 * tc
+            - 0.003577f * m2 * mo;
+        const float smoz = powf(10.0f, loga) * powf(smo2, b);
+        zes = (0.176f / 0.93f) * (6.0f / tpi) * (6.0f / tpi)
+            * (am_s / 900.0f) * (am_s / 900.0f) * smoz;
+    }
+    if (qg > 1.0e-6f) {
+        const float rg = qg * rho;
+        const float ng_vol = fmaxf(1.0e-6f, ng * rho);
+        const double lamg = pow((double)(am_g * 6.0f * ng_vol / rg), 1.0 / 3.0);
+        const double n0g = (double)ng_vol * lamg;
+        zeg = (float)((0.176 / 0.93) * (6.0 / (double)tpi) * (6.0 / (double)tpi)
+            * ((double)am_g / 900.0) * ((double)am_g / 900.0) * n0g * 720.0
+            * pow(1.0 / lamg, 7.0));
+    }
+    const float zsum = zer + zes + zeg;
+    dbz = fmaxf(-35.0f, (float)(10.0 * log10((double)zsum * 1.0e18)));
+"""
+
+
+@lru_cache(maxsize=1)
+def _thompson_dry_kernel():
+    import cupy as cp
+
+    return cp.ElementwiseKernel(
+        "float32 qv, float32 qr, float32 nr, float32 qs, float32 qg, "
+        "float32 ng, float32 t, float32 p",
+        "float32 dbz", _THOMPSON_DRY_SOURCE, "refl10cm_thompson_dry")
+
+
 def launch_refl10cm_thompson(
-        qv, qr, nr, qs, qg, graupel_number_shadow, t, p, refl) -> None:
-    """One CUDA thread per column: classic Thompson ``calc_refl10cm``.
+        qv, qr, nr, qs, qg, graupel_number_shadow, t, p, refl, *,
+        melting: bool = True) -> None:
+    """Classic Thompson ``calc_refl10cm`` into dBZ.
 
     ``graupel_number_shadow`` is WRF classic mp=8's private, per-call ng1d
     moment after sources and number fallout.  It is consumed only here and is
     deliberately absent from the transported/restart state.
+
+    ``melting=True`` is WRF's routine verbatim (one CUDA thread per column).
+    ``melting=False`` omits the Blahak melting-snow term, which NOAA's MPAS
+    TEMPO ships off by default (``config_tempo_refl10cm_from_melting``):
+    rain, dry Field snow and dry graupel only, pointwise.
     """
     shape = refl.shape
     if len(shape) != 3:
@@ -520,6 +684,10 @@ def launch_refl10cm_thompson(
         "graupel_number_shadow": graupel_number_shadow,
         "t": t, "p": p, "refl": refl,
     }, shape)
+    if not melting:
+        _thompson_dry_kernel()(qv, qr, nr, qs, qg, graupel_number_shadow,
+                               t, p, refl)
+        return
     rc = radar_init()
     blocks = (ny * nx + _COLUMN_TPB - 1) // _COLUMN_TPB
     _column_kernel("refl10cm_thompson_column", nz)(
@@ -801,7 +969,8 @@ def compute_refl_10cm(
                 "here.")
         launch_refl10cm_thompson(
             state.qv, state.qr, state.nr, state.qs, state.qg,
-            thompson_graupel_number, t, p, refl)
+            thompson_graupel_number, t, p, refl,
+            melting=refl_melting_for(state))
     elif cfg.mp_physics == 16:
         missing = _missing_refl_inputs(state, 16)
         if missing:
@@ -815,8 +984,14 @@ def compute_refl_10cm(
         if missing:
             raise ValueError("mp_physics=6 reflectivity lacks WSM6 fields: "
                              + ", ".join(missing))
-        launch_refl10cm_wsm6(state.qv, state.qr, state.qs, state.qg,
-                             t, p, refl, hail_opt=cfg.wsm6_hail_opt)
+        # The melting-particle term is a property of the state's owner,
+        # not of RunConfig: an ARW DomainState keeps WRF's routine
+        # verbatim, while the MPAS column seam's state takes the MPAS-side
+        # default, off.  See wsm6_refl_melting_for.
+        launch_refl10cm_wsm6(
+            state.qv, state.qr, state.qs, state.qg, t, p, refl,
+            hail_opt=cfg.wsm6_hail_opt,
+            melting=refl_melting_for(state))
     else:
         launch_refl10cm_kessler(state.qv, state.qr, t, p, refl)
     return refl

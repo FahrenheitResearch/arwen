@@ -527,9 +527,20 @@ def required_hrrr_source_window(
     fallback_i_max = int(np.floor(mass_x.max() + radius))
     fallback_j_min = int(np.ceil(mass_y.min() - radius))
     fallback_j_max = int(np.floor(mass_y.max() + radius))
-    if (parabolic_i_min < 0 or parabolic_j_min < 0
-            or parabolic_i_max >= HRRR_SOURCE_NX
-            or parabolic_j_max >= HRRR_SOURCE_NY):
+    # What HRRR must hold: every target's bilinear cell.  The parabolic
+    # halo past HRRR's own edge is not demanded: there WPS metgrid's
+    # sixteen-point stencil leaves the source and falls through to
+    # four-point bilinear, which the projected operators do
+    # (gpuwm.ingest.hrrr._parabolic_stencil_leaves_window).  Demanding
+    # it refused a domain one row inside the HRRR grid
+    # (configs/recipes/hrrr_v4_gsd41.toml) whose atmosphere HRRR covers.
+    bilinear_i_min = min(int(np.floor(x).min()) for x, _ in coordinates)
+    bilinear_i_max = max(int(np.floor(x).max()) + 1 for x, _ in coordinates)
+    bilinear_j_min = min(int(np.floor(y).min()) for _, y in coordinates)
+    bilinear_j_max = max(int(np.floor(y).max()) + 1 for _, y in coordinates)
+    if (bilinear_i_min < 0 or bilinear_j_min < 0
+            or bilinear_i_max >= HRRR_SOURCE_NX
+            or bilinear_j_max >= HRRR_SOURCE_NY):
         # Same breakage, same class as the mapped route's window refusal:
         # a source grid that does not reach the domain.  A door that owns
         # one owns both, so the certified native route and a table-added
@@ -537,8 +548,8 @@ def required_hrrr_source_window(
         raise SourceCoverageRefusal(
             "target domain plus required interpolation halo leaves HRRR "
             "coverage: required zero-based inclusive window "
-            f"i={parabolic_i_min}..{parabolic_i_max}, "
-            f"j={parabolic_j_min}..{parabolic_j_max}; native limits "
+            f"i={bilinear_i_min}..{bilinear_i_max}, "
+            f"j={bilinear_j_min}..{bilinear_j_max}; native limits "
             f"are i=0..{HRRR_SOURCE_NX - 1}, j=0..{HRRR_SOURCE_NY - 1}")
     # The donor search's box stops at HRRR's own edge.  Demanding source
     # cells past it refused domains whose atmosphere HRRR covers, only

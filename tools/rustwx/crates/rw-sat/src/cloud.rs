@@ -51,6 +51,8 @@ use crate::s3::Sector;
 /// The L2 cloud-suite products this module knows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloudProduct {
+    /// ABI-L2-AODC/F: aerosol optical depth at 550 nm (unitless).
+    AerosolOpticalDepth,
     /// ABI-L2-ACHA: cloud-top height (`HT`, m).
     CloudTopHeight,
     /// ABI-L2-ACM: clear-sky mask (`BCM`, 0 = clear, 1 = cloudy).
@@ -114,6 +116,7 @@ impl CloudProduct {
     pub fn parse(value: &str) -> Option<Self> {
         let normalized = value.trim().to_ascii_lowercase().replace(['-', ' '], "_");
         match normalized.as_str() {
+            "aod" | "aerosol_optical_depth" => Some(Self::AerosolOpticalDepth),
             "acha" | "cloud_top_height" | "height" => Some(Self::CloudTopHeight),
             "acm" | "clear_sky_mask" | "cloud_mask" => Some(Self::ClearSkyMask),
             "actp" | "cloud_top_phase" | "phase" => Some(Self::CloudTopPhase),
@@ -127,6 +130,7 @@ impl CloudProduct {
     /// The product family token inside S3 prefixes and filenames.
     pub fn family(self) -> &'static str {
         match self {
+            Self::AerosolOpticalDepth => "AOD",
             Self::CloudTopHeight => "ACHA",
             Self::ClearSkyMask => "ACM",
             Self::CloudTopPhase => "ACTP",
@@ -139,6 +143,7 @@ impl CloudProduct {
     /// Store-safe lowercase slug.
     pub fn slug(self) -> &'static str {
         match self {
+            Self::AerosolOpticalDepth => "aod",
             Self::CloudTopHeight => "acha",
             Self::ClearSkyMask => "acm",
             Self::CloudTopPhase => "actp",
@@ -152,6 +157,7 @@ impl CloudProduct {
     /// (verified against real GOES-19 files, 2026-08-05).
     pub fn primary_variable(self) -> &'static str {
         match self {
+            Self::AerosolOpticalDepth => "AOD",
             Self::CloudTopHeight => "HT",
             Self::ClearSkyMask => "BCM",
             Self::CloudTopPhase => "Phase",
@@ -175,7 +181,7 @@ impl CloudProduct {
             Sector::Conus => "C",
             Sector::FullDisk => "F",
             Sector::Meso1 | Sector::Meso2 => {
-                if matches!(self, Self::OpticalDepth | Self::CloudTopPressure) {
+                if matches!(self, Self::OpticalDepth | Self::CloudTopPressure | Self::AerosolOpticalDepth) {
                     return None;
                 }
                 if sector == Sector::Meso1 { "M1" } else { "M2" }

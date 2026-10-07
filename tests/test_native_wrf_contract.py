@@ -640,6 +640,30 @@ def test_native_static_contract_is_exact_modis_noah_and_preserves_geometry():
     }
 
 
+def test_native_static_cache_retains_complete_chemistry_statics(tmp_path):
+    grid = _grid()
+    fields = _complete_native_static(grid)
+    fields.update(EROD=np.full((3, 3, 4), 0.25),
+                  CLAYFRAC=np.full((3, 4), 0.125),
+                  SANDFRAC=np.full((3, 4), 0.375))
+    path = tmp_path / "chem-statics.npz"
+    write_native_static_cache(path, fields)
+    loaded = load_native_static_cache(path, grid, 3, 4)
+    for name in ("EROD", "CLAYFRAC", "SANDFRAC"):
+        assert loaded[name].tobytes() == fields[name].tobytes(), name
+
+
+@pytest.mark.parametrize("missing", ["EROD", "CLAYFRAC", "SANDFRAC"])
+def test_native_static_cache_refuses_partial_chemistry_statics(missing):
+    grid = _grid()
+    fields = _complete_native_static(grid)
+    fields.update(EROD=np.zeros((3, 3, 4)),
+                  CLAYFRAC=np.zeros((3, 4)), SANDFRAC=np.zeros((3, 4)))
+    del fields[missing]
+    with pytest.raises(ValueError, match="chemistry fields are incomplete"):
+        validate_native_static_fields(fields, grid, 3, 4)
+
+
 @pytest.mark.parametrize(
     "field,replacement,error",
     [

@@ -206,3 +206,33 @@ def test_ordered_refusals_leave_inputs_unchanged(monkeypatch, failure):
     assert str(fused_error.value) == str(reference_error.value)
     for name, array in values.items():
         assert np.array_equal(cp.asnumpy(array).view(np.uint32), before[name]), name
+
+
+def test_completed_uploads_are_retired_and_in_flight_ones_kept(monkeypatch):
+    """The pinned pointer uploads of earlier calls do not accumulate.
+
+    The pending list once kept ``not eventQuery(...)`` entries; eventQuery is
+    0 for a COMPLETED event, so every finished upload stayed for the life of
+    the run (a 6 h Boston run scanned a list growing by one or two entries per
+    call, 1.5 to 10.1 ms per step) and the in-flight ones were dropped.  After
+    a synchronise every earlier upload is complete, so one more call must
+    leave only its own entries.
+    """
+    from gpuwm.core import ruc_gpu
+
+    values, keywords = _capture(monkeypatch, 'mixed', 9)
+    run = cp.arange(values['snhei'].size, dtype=cp.int64)
+    for _ in range(12):
+        ruc_sfctmp_full_width_fused(
+            {name: value.copy() for name, value in values.items()},
+            run=run, **keywords)
+    cp.cuda.get_current_stream().synchronize()
+    ruc_sfctmp_full_width_fused(
+        {name: value.copy() for name, value in values.items()},
+        run=run, **keywords)
+    key = (int(cp.cuda.runtime.getDevice()), cp.cuda.get_current_stream().ptr)
+    pending = ruc_gpu._SFCTMP_UPLOADS[key]
+    assert 1 <= len(pending) <= 2, len(pending)
+    # Nothing older than this call survives the retirement.
+    cp.cuda.get_current_stream().synchronize()
+    assert all(entry[0].done for entry in pending)

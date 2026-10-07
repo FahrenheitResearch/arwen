@@ -59,8 +59,9 @@ ACCURACY: demo-grade nowcast output; free-forecast panels are stamped
 "PAST LAST OBS" until an observed counterpart exists, then "SCORED".
 That means a comparison exists, not that the forecast is correct. The
 observation-comparison numbers (>=35 dBZ column counts in the echo mask, and
-FSS(30 dBZ, 27 km) via :func:`gpuwm.verify.field_metrics.fss_distance`)
-are labeled demo-grade on the figure.
+FSS(30 dBZ, 27 km) over the columns a radar measured, via
+:func:`tools.da_sweep_score.scored_fss`) are labeled demo-grade on the
+figure.
 
 No radar-site names in this file, its defaults, or its identifiers; the
 site id is read from the observation files' own metadata.
@@ -882,16 +883,20 @@ class Gallery:
                      "counts across the applied cycles.", "numbers")
 
     def verify_numbers(self, leg: int) -> dict:
-        from gpuwm.verify.field_metrics import fss_distance
         # Imported inside the method, not at module scope: this module is
         # the CONSTANTS SOURCE that tools.da_sweep_score reads back, and a
         # module-level import in both directions is a cycle waiting for
-        # somebody to change one line.
-        from tools.da_sweep_score import structure_block
+        # somebody to change one line.  The scoring itself is the sweep
+        # scorer's, so the gallery and the scorer of record cannot drift:
+        # FSS over the columns a radar measured (COVERAGE_RULE), with the
+        # unmasked numbers kept beside it under their own names.
+        from tools.da_sweep_score import (coverage_record, observed_coverage,
+                                          scored_fss, structure_block, _fss)
         np = self.np
         ds = self.verify[leg]
         z = np.asarray(ds["z_obs"][:], float)
         zm = np.asarray(ds["z_mask"][:]).astype(bool)
+        coverage, coverage_source = observed_coverage(ds)
         echo2d = zm.any(axis=0)
         obs_comp = np.where(zm, z, -np.inf).max(axis=0)
         obs_comp = np.where(np.isfinite(obs_comp), obs_comp,
@@ -901,6 +906,12 @@ class Gallery:
         fcst = np.mean(list(members.values()), axis=0)
         ctrl = self.load_comp(leg, "control")
         hw = max(1, round(FSS_BOX_KM / 2.0 / self.dx_km))
+
+        def score(field):
+            return scored_fss(field, obs_comp, threshold=FSS_THRESHOLD_DBZ,
+                              half_width=hw, coverage=coverage)
+
+        per_member = [score(field) for field in members.values()]
         return {
             "leg": leg,
             "valid": self.leg_valid(leg).strftime(
@@ -912,12 +923,17 @@ class Gallery:
                 (fcst >= COLUMN_THRESHOLD_DBZ)[echo2d].sum()),
             "control_cols_gt35_in_echo": int(
                 (ctrl >= COLUMN_THRESHOLD_DBZ)[echo2d].sum()),
-            "fss30_fcst": round(1.0 - fss_distance(
-                fcst, obs_comp, threshold=FSS_THRESHOLD_DBZ,
-                half_width=hw), 4),
-            "fss30_control": round(1.0 - fss_distance(
-                ctrl, obs_comp, threshold=FSS_THRESHOLD_DBZ,
-                half_width=hw), 4),
+            "fss30_fcst": score(fcst),
+            "fss30_control": score(ctrl),
+            "fss30_per_member_mean": round(float(np.mean(per_member)), 4),
+            "fss30_per_member": per_member,
+            "fss30_fcst_unmasked": _fss(fcst, obs_comp,
+                                        threshold=FSS_THRESHOLD_DBZ,
+                                        half_width=hw),
+            "fss30_control_unmasked": _fss(ctrl, obs_comp,
+                                           threshold=FSS_THRESHOLD_DBZ,
+                                           half_width=hw),
+            "coverage": coverage_record(coverage, coverage_source),
             "fss_half_width_cells": hw,
             # FSS says whether the area landed in about the right place.
             # It cannot say whether the field looks like weather, and a
@@ -1084,7 +1100,8 @@ class Gallery:
                 f"{r['fcst_cols_gt35_in_echo']} | ctrl "
                 f"{r['control_cols_gt35_in_echo']}\n"
                 f"FSS({FSS_THRESHOLD_DBZ:g} dBZ, {FSS_BOX_KM:g} km) "
-                f"— fcst {r['fss30_fcst']:.3f} | ctrl "
+                f": members {r['fss30_per_member_mean']:.3f} | mean field "
+                f"{r['fss30_fcst']:.3f} | ctrl "
                 f"{r['fss30_control']:.3f}",
                 transform=axes[1][c].transAxes, ha="center",
                 va="bottom", fontsize=7.4, color="0.15",
@@ -1133,10 +1150,12 @@ class Gallery:
         ax = fig.add_axes([0.04, 0.10, 0.92, table_h])
         ax.axis("off")
         cols = ["valid", "obs cols ≥35", "fcst cols ≥35",
-                "ctrl cols ≥35", "FSS fcst", "FSS ctrl"]
+                "ctrl cols ≥35", "FSS members", "FSS mean field",
+                "FSS ctrl"]
         cells = [[r["valid"][11:16] + "Z", r["obs_cols_gt35"],
                   r["fcst_cols_gt35_in_echo"],
                   r["control_cols_gt35_in_echo"],
+                  f"{r['fss30_per_member_mean']:.3f}",
                   f"{r['fss30_fcst']:.3f}",
                   f"{r['fss30_control']:.3f}"] for r in rows]
         tbl = ax.table(cellText=cells, colLabels=cols,
@@ -1251,17 +1270,23 @@ class Gallery:
             json.dumps(self.manifest, indent=1), encoding="utf-8")
         if rows:
             from tools.da_sweep_score import (
+                COVERAGE_RULE, COVERAGE_WHY,
                 ENSEMBLE_MEAN_STRUCTURE_WARNING, STRUCTURE_CITATIONS,
                 structure_means)
             (self.out / "_verification.json").write_text(json.dumps({
-                "schema": "gpuwm-da.nowcast-gallery-verification.v2",
+                "schema": "gpuwm-da.nowcast-gallery-verification.v3",
                 "definitions": {
                     "cols_gt35": "tools/da_cycle_prepared.py "
                                  "z_obs_space definitions, identical",
-                    "fss": "gpuwm.verify.field_metrics.fss_distance; "
-                           f"FSS = 1 - distance, threshold "
-                           f"{FSS_THRESHOLD_DBZ:g} dBZ, "
-                           f"{FSS_BOX_KM:g} km box",
+                    "fss": "tools.da_sweep_score.scored_fss; "
+                           f"threshold {FSS_THRESHOLD_DBZ:g} dBZ, "
+                           f"{FSS_BOX_KM:g} km box, over the observed "
+                           "columns; fss30_per_member_mean is the "
+                           "headline, fss30_fcst scores the ensemble-mean "
+                           "field; *_unmasked keep the earlier "
+                           "whole-grid numbers",
+                    "validity_mask": {"rule": COVERAGE_RULE,
+                                      "why": COVERAGE_WHY},
                     "missing_obs_fill_dbz": MISSING_OBS_FILL_DBZ,
                     "structure": "tools.da_sweep_score: object statistics "
                                  "at 35 dBZ, radial power spectrum and "

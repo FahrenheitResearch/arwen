@@ -1887,6 +1887,12 @@ class StreamedDomain:
                  scalars=None, host_store=None, stability=None,
                  geography=None, boundaries=None, template=None,
                  inventory_fn=None):
+        if getattr(getattr(run, "cfg", None), "chem_sets", ""):
+            from tilestream.sfire_smoke import accepts
+            if not accepts(run.cfg):
+                raise StreamingRefused(
+                    "tiled chemistry requires whole-domain accounting for its post-step "
+                    "operators; only the source-only bulk SFIRE profile has that owner")
         self._run = run
         self.decision = decision
         self._state = state
@@ -2087,14 +2093,35 @@ class StreamedDomain:
             from gpuwm.ensemble.stochastic_streaming import attach_stochastic_sweep_lease
             attach_stochastic_sweep_lease(self._run, stochastic)
 
+        if int(getattr(cfg, 'ifire', 0)) == 2 and int(getattr(cfg, 'fire_test_steps', 0)) > 0:
+            from gpuwm.sfire_debug import run_streamed_test_steps
+            run_streamed_test_steps(self, state, cfg)
+        smoke_ledger = getattr(self, '_smoke_ledger', None)
+        if smoke_ledger is not None:
+            self._run.drain()
+            smoke_ledger.begin(self.store)
         with self.allocation_scope():
             self._run.sweep(
                 1, step_kwargs=step_kwargs, report=self.report, live_config=cfg,
                 physics_control=PhysicsStepControl.from_driver(
                     getattr(state, "physics", None)))
+        if smoke_ledger is not None:
+            self._run.drain()
+            smoke_ledger.end(self.store)
+        spotting_owner = getattr(self, "_spotting_owner", None)
+        if spotting_owner is not None:
+            self._run.drain()
+            spotting_owner.advance(dt=float(cfg.dt),
+                history_alarm=bool(step_kwargs.get("fire_history_due", False)))
+            self._run.reseed_clock(self.scalars)
         self.steps += 1
         if due:
             self._stash_domain_refl(state)
+        if int(getattr(cfg, 'ifire', 0)) == 2 and (
+                int(getattr(cfg, 'fire_print_msg', 0)) > 0 or
+                int(getattr(cfg, 'fire_print_file', 0)) > 0):
+            from gpuwm.sfire_debug import report_streamed
+            report_streamed(self, cfg)
 
     def history_fields(self) -> dict:
         """One wrfout history frame, assembled off the store, host arrays.
@@ -2176,7 +2203,7 @@ class StreamedDomain:
                     "slab the store was built through.")
             self._frame = _output.StoreFrame(plan, planning,
                                              self.output_setup(),
-                                             self._run.cfg)
+                                             self._run.cfg, scalars=lambda: self.scalars)
         if self._ranked_road():
             return self._ranked_frame()
         # The frame's non-derived rows are zero-copy VIEWS of the pinned
@@ -2613,6 +2640,33 @@ class StreamedDomain:
             # bandwidth.
             check_pinned=bool(self.host_store))
 
+    def prepare_restart(self, path, cfg, *, run_trackers=None,
+                        tree_header=None, extra_scratch_slots=()):
+        """Snapshot :meth:`write_restart` now and publish it later.
+
+        Returns ``(publish, deferrable)``.  ``publish()`` writes the file and
+        returns what :meth:`write_restart` returns.  Its payload is the
+        store's own arrays, so it may run after the model steps on only
+        where no sweep writes the store: ``deferrable`` is True on the
+        ranked road alone (its slabs are the domain and the store is a
+        mirror that only the next drain or frame download writes, both of
+        which call the store guards first).  On every other streamed road a
+        sweep writes the store, so the caller must publish before stepping.
+        """
+        from tilestream import restart_stream
+
+        snapshot = getattr(self._run, "checkpoint_store", None)
+        store = snapshot() if callable(snapshot) else self.store
+        publish = restart_stream.prepare_streamed_restart(
+            path, store, cfg, scalars=self.scalars,
+            setup=self.restart_setup(), template_state=self.template_state,
+            run_trackers=run_trackers, tree_header=tree_header,
+            extra_scratch_slots=extra_scratch_slots,
+            stochastic_binding=StreamedDomain._ensemble_stochastic_binding(self),
+            check_pinned=bool(self.host_store))
+        return publish, (bool(getattr(self, "ranked", False))
+                         and hasattr(self._run, "add_store_guard"))
+
     def restore_restart(self, path, cfg):
         """Restore a restart file INTO the store, in place, and reseed the clock.
 
@@ -2649,8 +2703,14 @@ class StreamedDomain:
 
     def apply_restart(self, validated):
         info = validated.apply()
+        spotting_owner = getattr(self, "_spotting_owner", None)
+        if spotting_owner is not None:
+            spotting_owner.synchronize()
         if self.scalars is not None:
             self._run.reseed_clock(self.scalars)
+        if getattr(self, '_smoke_ledger', None) is not None:
+            from tilestream.sfire_smoke import refresh_history
+            refresh_history(self)
         return info
 
     def canonical_digest(self, clock, *, scope: str = "trajectory",
@@ -2764,6 +2824,8 @@ class StreamedDomain:
                 "this streamed domain carries no scalars, so it has no clock "
                 "to impose -- attach(scalars=None) is the gate's CARRY "
                 "NOTHING control and must not be driven by the model loop")
+        from gpuwm.core.sfire_clock import bind_streamed_clock
+        bind_streamed_clock(self.scalars,self.store,seconds)
         self.scalars["elapsed_seconds"] = float(seconds)
         if getattr(self, "ranked", False):
             self._run.impose_domain_clock(seconds)
@@ -4297,6 +4359,9 @@ def refl_handoff_hook():
     def hook(tile_state, tspec, itile, stream):
         if refl_10cm_is_stashed(tile_state):
             consume_refl_10cm(tile_state)
+        if getattr(tile_state, 'chem', None) is not None:
+            from gpuwm.core.chem_history import streaming_fields
+            streaming_fields(tile_state)
 
     return hook
 
@@ -4526,6 +4591,27 @@ def attach(state, cfg, decision: StreamingDecision, *, tile_state_factory,
     # because feat-route-wire found [tiles] write_mode was planned for
     # and then ignored here in favour of a hard-coded "ring".
     px, py = _periodic_axes(cfg)
+    from tilestream.global_inventory import global_keys
+    smoke_ledger = None
+    if getattr(cfg, 'chem_sets', ''):
+        from tilestream.sfire_smoke import accepts, configure_tile, GlobalSmokeLedger
+        if not accepts(cfg):
+            raise StreamingRefused(
+                "tiled chemistry requires whole-domain accounting for its post-step "
+                "operators; only the source-only bulk SFIRE profile has that owner")
+        original_factory = tile_state_factory
+        def smoke_tile_factory(tile_cfg):
+            result = original_factory(tile_cfg)
+            configure_tile(result)
+            return result
+        tile_state_factory = smoke_tile_factory
+        smoke_ledger = GlobalSmokeLedger(cfg, geography or {}, state if state is not None else template)
+    spotting_owner = None
+    if int(getattr(cfg,"ifire",0)) == 2 and int(getattr(cfg,"fs_firebrand_gen_lim",0)) > 0:
+        from tilestream.sfire_spotting import StreamedSpottingOwner
+        spotting_owner = StreamedSpottingOwner(state,cfg,store,scalars,
+            geography=geography,template=template)
+        spotting_owner.bind(tuple(s for s in (state,template) if s is not None))
     run = _driver.TiledRun(
         store, cfg, int(decision.tile_nx), int(decision.tile_ny),
         int(decision.halo), int(decision.nbuffers),
@@ -4541,7 +4627,7 @@ def attach(state, cfg, decision: StreamingDecision, *, tile_state_factory,
         # at ATTACH time a question -- will refl_10cm_due ever be True? --
         # that only the model's history cadence can answer, and getting it
         # wrong stops the forecast at the first history frame.
-        post_step_hook=refl_handoff_hook())
+        post_step_hook=refl_handoff_hook(),global_keys=global_keys(store))
     # A store-built root has no resident mirror. Bind its declared clock
     # before even the t=0 history/restart setup is captured, not only when the
     # first tile steps. The same hook verifies this identity on every bind.
@@ -4576,7 +4662,7 @@ def attach(state, cfg, decision: StreamingDecision, *, tile_state_factory,
             boundary_width=int(getattr(cfg, "spec_bdy_width", 0)) or None,
             window=stability_window)
         run.observer = stability.observe
-    return StreamedDomain(run, decision, state=state, scalars=scalars,
+    streamed = StreamedDomain(run, decision, state=state, scalars=scalars,
                           host_store=(decision.store == "host"),
                           stability=stability,
                           # Carried, not just used: geography and the LBC
@@ -4597,6 +4683,12 @@ def attach(state, cfg, decision: StreamingDecision, *, tile_state_factory,
                           # see that method for the carrier a narrower
                           # harvest silently left at t=0.
                           inventory_fn=inventory_fn)
+    if spotting_owner is not None:
+        streamed._spotting_owner=spotting_owner
+        spotting_owner.bind(run.tiles)
+    if smoke_ledger is not None:
+        streamed._smoke_ledger = smoke_ledger
+    return streamed
 
 
 def _is_periodic(cfg) -> bool:
@@ -5188,7 +5280,22 @@ def prepared_tile_state_factory(state, cfg, *, tables0=None, seed: int = 4242,
 
         geo = _harness.neutral_geography(tile_cfg)
         extra = _surface_tile_initialization_inputs(driver, tile_cfg)
+        # No land-surface cold start over the poison: every carrier it
+        # would write is gathered from the store before the buffer serves
+        # a tile.  Measured on the 2-card HRRR crop (499x567, box S, 2026-
+        # 10-06): the ranked road spent its whole 18 s between the second
+        # admission pass and "[devices] ON" in ruclsminit's host column
+        # loop, one rank after the other; on the full HRRR lattice that is
+        # the 84-92 s gap of the lane/pi-startup-idle profile.
+        extra["lsm_cold_start"] = False
+        # The same argument for the seeded fields: constant poison, not
+        # 16.5 s of host random numbers per HRRR rank (harness.
+        # make_physics_state, ``poison``), since the gather overwrites them.
+        extra["poison"] = "constant"
         if driver is not None:
+            if getattr(driver, "fire", None) is not None:
+                from tilestream.sfire import tile_static
+                extra["fire_static_data"] = tile_static(driver.fire, tile_cfg)
             lat = np.asarray(geo.lat, dtype=np.float64)
             lon = np.asarray(geo.lon, dtype=np.float64)
             # A FRESH twin per buffer for each -- never the domain's own
@@ -5545,13 +5652,17 @@ def ranked_halo(cfg, *, max_map_factor=1.0) -> int:
     from dataclasses import replace
     from gpuwm.core.adaptive_clock import acoustic_step_ceiling
     from tilestream.harness import halo_radius
-    from tilestream.realcase import boundary_width
+    from tilestream.realcase import seam_fiction_width
     padded = replace(cfg, time_step_sound=acoustic_step_ceiling(cfg, max_map_factor))
-    # A nest's boundary application writes the same perimeter frame as a
-    # specified domain's (from its parent's rolling tables), so it pays the
-    # same frame width on a seam.
+    # A nest's boundary application writes the same specified zone as a
+    # specified domain's (from its parent's rolling tables, zeros on a
+    # seam), so it pays the same seam fiction.  The relaxation band is
+    # masked per side on every slab (LateralBoundaries.seam_sides), so the
+    # frame width is not paid: tilestream.realcase.seam_fiction_width.
     forced = bool(cfg.specified) or bool(getattr(cfg, "nested", False))
-    return int(halo_radius(padded)) + (boundary_width(cfg) if forced else 0)
+    from tilestream.sfire import dependency_halo
+    return max(int(halo_radius(padded)) + (seam_fiction_width(cfg) if forced else 0),
+               dependency_halo(cfg))
 
 
 def ranked_specs(cfg, options, *, halo):
@@ -5614,13 +5725,33 @@ def ranked_domain_builder(bundle, *, clock=DERIVE_CLOCK, options, seam="zeros",
                 raise StreamingRefused("ranked_domain_builder needs clock= with tabulated "
                     "forcing; no resident domain exists to derive the clock and forcing "
                     "would otherwise run ONE TIMESTEP LATE")
+        from tilestream.global_inventory import global_keys
+        spotting_owner = None
+        if int(getattr(cfg, "ifire", 0)) == 2 and int(getattr(cfg, "fs_firebrand_gen_lim", 0)) > 0:
+            from tilestream.sfire_spotting import StreamedSpottingOwner
+            spotting_owner = StreamedSpottingOwner(state, cfg, bundle.store, bundle.scalars,
+                geography=bundle.geography, template=bundle.template)
+            spotting_owner.bind(tuple(value for value in (state, bundle.template) if value is not None))
+        smoke_ledger = None
+        from tilestream.sfire_smoke import accepts, GlobalSmokeLedger
+        if getattr(cfg, "chem_sets", "") and accepts(cfg):
+            smoke_ledger = GlobalSmokeLedger(cfg, bundle.geography,
+                state if state is not None else bundle.template)
+        owned_global_keys = global_keys(bundle.store)
         run = RankedRun(bundle.store, cfg, options=options, scalars=bundle.scalars,
             geography=bundle.geography, template=bundle.template,
             boundaries=bundle.boundaries, clock=None if clock is DERIVE_CLOCK else clock,
             seam=seam, check_geography=check_geography, step_mode=step_mode,
             nest_hook=nest_hook, snapshot_limits=snapshot_limits,
-            mynn_column_chunks=mynn_column_chunks)
+            mynn_column_chunks=mynn_column_chunks,
+            global_keys=owned_global_keys)
         try:
+            if smoke_ledger is not None:
+                from tilestream.sfire_smoke import configure_tile
+                for tile in run.tiles:
+                    configure_tile(tile)
+            if spotting_owner is not None:
+                spotting_owner.bind(run.tiles)
             stability = StreamedStability(run, cfg,
                 boundary_width=int(getattr(cfg, "spec_bdy_width", 0) or 0) or None)
             run.observer = stability.observe
@@ -5630,6 +5761,10 @@ def ranked_domain_builder(bundle, *, clock=DERIVE_CLOCK, options, seam="zeros",
                 inventory_fn=streamed_store_inventory())
             streamed.ranked = True
             streamed.devices_report = run.devices_report
+            if spotting_owner is not None:
+                streamed._spotting_owner = spotting_owner
+            if smoke_ledger is not None:
+                streamed._smoke_ledger = smoke_ledger
             return streamed
         except BaseException:
             run.close()

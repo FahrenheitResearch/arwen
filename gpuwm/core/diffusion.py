@@ -102,7 +102,9 @@ def add_diffusion_tendencies(state: DomainState, cfg: RunConfig) -> None:
     tendencies (hybrid coupling ``c1h*mu + c2h`` on half levels /
     ``c1f*mu + c2f`` on w levels).  No-op unless ``cfg.khdif > 0 or
     cfg.kvdif > 0``."""
-    if cfg.khdif <= 0.0 and cfg.kvdif <= 0.0:
+    # WRF selects these namelist values only for the constant-K scheme.
+    # Positive dormant values must not add a second closure under km_opt2..4.
+    if cfg.km_opt != 1 or (cfg.khdif <= 0.0 and cfg.kvdif <= 0.0):
         return
     if state.phb.ndim != 1:
         raise NotImplementedError(

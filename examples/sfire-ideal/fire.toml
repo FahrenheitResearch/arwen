@@ -1,0 +1,43 @@
+[grid]
+nx = 12
+ny = 10
+nz = 6
+dx = 50.0
+dy = 50.0
+ztop = 2000.0
+map_proj = 0
+
+[dynamics]
+dt = 0.5
+moist = true
+open_x = true
+open_y = true
+h_sca_adv_order = 5
+hybrid_opt = 0
+time_step_sound = 8
+
+[run]
+run_seconds = 8.0
+output_interval_s = 2.0
+restart_interval_s = 4.0
+
+[fire]
+ifire = 2
+sr_x = 2
+sr_y = 2
+fire_fuel_read = 0
+fire_fuel_cat = 3
+fire_fmc_read = 1
+fire_smoke = true
+fire_boundary_guard = 2
+fire_num_ignitions = 1
+fire_ignition_start_x1 = 300.0
+fire_ignition_end_x1 = 300.0
+fire_ignition_start_y1 = 250.0
+fire_ignition_end_y1 = 250.0
+fire_ignition_radius1 = 30.0
+fire_ignition_start_time1 = 0.0
+fire_ignition_end_time1 = 0.0
+fire_ignition_ros1 = 100.0
+stretch_grd = true
+z_grd_scale = 0.4

@@ -738,3 +738,58 @@ def test_a_native_single_domain_perturbation_is_refused_before_the_decode(tmp_pa
         resolve_root_experiment(target=target, vertical=exp.vertical,
             namelist_input=tmp_path / "namelist.input", start_time=exp.start_time,
             run_seconds=exp.run_seconds, experiment_config=config)
+
+
+@pytest.mark.parametrize("source", ["hrrr", "rap-native"])
+def test_the_root_preparation_fills_the_source_generations_before_splitting_fetch(
+        tmp_path, source):
+    """A bare operational-fork configuration prepares with the fork pair.
+
+    The root preparation splits ``[fetch]`` off before it loads, so the
+    load-time fill (gpuwm.physics_source_defaults.GENERATION_SELECTORS)
+    never saw the source: a configuration naming an hrrr or rap source
+    under mp_physics = 28 with no generation key written resolved, and
+    recorded in its physics receipt, WRF v4.6.1's surface layer and
+    Thompson with the blend snow fall, while ``gpuwm sim`` integrated the
+    fork pair from the same file.  The fill now runs before the split.
+    """
+    exp, target, config, namelist, wps = _case(tmp_path, {"mp_physics": 28})
+    assert exp.root.run.thompson_version == "wrf_461"
+    assert exp.root.run.thompson_fork_snow_fall == "blend"
+    # (The fixture authors its surface layer through the hrrr recipe, so
+    # only the two Thompson keys are bare here; the fill writes all three.)
+    config.write_text(config.read_text(encoding="utf-8")
+                      + f'\n[fetch]\nsource = "{source}"\n', encoding="utf-8")
+    actual, _ = resolve_root_experiment(target=target, vertical=exp.vertical,
+        namelist_input=namelist, start_time=exp.start_time, run_seconds=exp.run_seconds,
+        experiment_config=config, wps_namelist=wps)
+    assert actual.root.run.mp_physics == 28
+    assert actual.root.run.thompson_version == "wrf_39_noaa"
+    assert actual.root.run.thompson_fork_snow_fall == "wrf_39_noaa"
+    assert actual.root.run.mynn_sfclay_variant == "gsl_wrf39"
+    receipt = benchmark._configured_physics_receipt(actual.root.run)
+    assert receipt["resolved"]["thompson_version"] == "wrf_39_noaa"
+    assert receipt["resolved"]["thompson_fork_snow_fall"] == "wrf_39_noaa"
+    assert receipt["resolved"]["mynn_sfclay_variant"] == "gsl_wrf39"
+
+
+def test_the_root_preparation_keeps_a_written_generation_and_the_generic_default(tmp_path):
+    """A written ``thompson_version = "wrf_461"`` under a fork source is
+    kept (and the fork snow fall is then not filled, since gpuwm.config
+    refuses it under wrf_461); a configuration with no [fetch] source
+    resolves the generic defaults as before."""
+    exp, target, config, namelist, wps = _case(
+        tmp_path, {"mp_physics": 28, "thompson_version": "wrf_461"})
+    config.write_text(config.read_text(encoding="utf-8")
+                      + '\n[fetch]\nsource = "hrrr"\n', encoding="utf-8")
+    actual, _ = resolve_root_experiment(target=target, vertical=exp.vertical,
+        namelist_input=namelist, start_time=exp.start_time, run_seconds=exp.run_seconds,
+        experiment_config=config, wps_namelist=wps)
+    assert actual.root.run.thompson_version == "wrf_461"
+    assert actual.root.run.thompson_fork_snow_fall == "blend"
+    assert actual.root.run.mynn_sfclay_variant == "gsl_wrf39"
+    exp, target, config, namelist, wps = _case(tmp_path, {"mp_physics": 28})
+    actual, _ = resolve_root_experiment(target=target, vertical=exp.vertical,
+        namelist_input=namelist, start_time=exp.start_time, run_seconds=exp.run_seconds,
+        experiment_config=config, wps_namelist=wps)
+    assert asdict(actual.root.run) == asdict(exp.root.run)

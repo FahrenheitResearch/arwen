@@ -423,16 +423,21 @@ def test_the_moved_directories_left_the_gpuwm_wheel_entirely(
 
     gpuwm_shipped = _files_setuptools_would_ship(monkeypatch)
     companion_shipped = _companion_shipped(monkeypatch)
+    def under(name: str, root: str) -> bool:
+        # An entry is a directory or, since 2.8.7, a single file whose
+        # directory keeps other members in the gpuwm wheel; the resolver's
+        # own prefix rule (data_assets._is_companion) covers both.
+        return name == root or name.startswith(root + "/")
+
     for tree in data_assets.COMPANION_TREES:
         stale = sorted(name for name in gpuwm_shipped
-                       if name.startswith(f"gpuwm/data/{tree}/"))
+                       if under(name, f"gpuwm/data/{tree}"))
         assert not stale, (
             f"the gpuwm wheel still ships {len(stale)} file(s) under "
             f"gpuwm/data/{tree}/, which gpuwm.data_assets says the "
             f"gpuwm-data companion owns:\n  " + "\n  ".join(stale))
         carried = [name for name in companion_shipped
-                   if name.startswith(
-                       f"gpuwm-data/gpuwm_data/data/{tree}/")]
+                   if under(name, f"gpuwm-data/gpuwm_data/data/{tree}")]
         assert carried, (
             f"gpuwm.data_assets.COMPANION_TREES names {tree!r} but the "
             "companion wheel would carry no file under it, so every "

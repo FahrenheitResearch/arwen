@@ -30,8 +30,21 @@ const INVENTORY_HEADER: &str = concat!(
     // none.  Hybrid model-level records publish their half-level A (Pa)
     // then B coefficients here; without this column a hybrid vertical
     // coordinate is declared but no coefficient ever reaches a consumer.
-    "pv"
+    "pv\tconstituent_type\taerosol_type\taerosol_size\toptical_wavelength"
 );
+
+fn interval(value: Option<(u8, Option<f64>, Option<f64>)>) -> String {
+    value.map_or_else(
+        || "-".into(),
+        |(kind, a, b)| {
+            format!(
+                "{kind},{},{}",
+                a.map_or_else(|| "-".into(), |v| v.to_string()),
+                b.map_or_else(|| "-".into(), |v| v.to_string())
+            )
+        },
+    )
+}
 
 fn read_u64_be(bytes: &[u8]) -> u64 {
     u64::from_be_bytes(bytes.try_into().expect("validated eight-byte slice"))
@@ -227,7 +240,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             message.product.forecast_time,
             message.product.template,
             message.product.level_type,
-            message.product.level_value,
+            gpuwm_preprocess_cpu::grib2_stack::first_surface_level(&message.product),
             message.product.second_level_type,
             message.product.second_level_value,
             message
@@ -271,7 +284,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .product
                 .derived_forecast_type
                 .map_or_else(|| "-".to_owned(), |value| value.to_string()),
-            pv,
+            format!("{}\t{}\t{}\t{}\t{}", pv,
+                message.product.constituent_type.map_or_else(|| "-".into(), |v| v.to_string()),
+                message.product.aerosol_type.map_or_else(|| "-".into(), |v| v.to_string()),
+                interval(message.product.aerosol_size), interval(message.product.optical_wavelength)),
         );
     }
     Ok(())
@@ -341,6 +357,28 @@ mod tests {
         *mutated.last_mut().unwrap() = b'8';
         assert!(extract_field_envelope(&mutated, 1).unwrap_err().to_string()
             .contains("missing 7777 terminator"));
+    }
+
+    #[test]
+    fn chemical_columns_are_appended_without_moving_the_existing_contract() {
+        let columns: Vec<_> = INVENTORY_HEADER.split('\t').collect();
+        assert_eq!(
+            &columns[columns.len() - 5..],
+            &[
+                "pv",
+                "constituent_type",
+                "aerosol_type",
+                "aerosol_size",
+                "optical_wavelength"
+            ]
+        );
+        assert_eq!(columns[13], "level_type");
+        assert_eq!(columns[43], "ensemble_type");
+        assert_eq!(super::interval(None), "-");
+        assert_eq!(
+            super::interval(Some((2, Some(0.000001), None))),
+            "2,0.000001,-"
+        );
     }
 
     #[test]

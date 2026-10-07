@@ -1998,19 +1998,27 @@ def test_the_effective_radius_reimplementations_are_gone_and_stayed_gone():
                         "thompson_aa_cloud_dist(") == 1
 
 
-#: How many PLAIN ``powf(`` calls each aerosol translation unit still has.
+#: PLAIN ``powf(`` calls in the measured WRF v4.6.1 arms.
 #: Every one of them was MEASURED, and every one of them is inert; the counts
 #: are pinned so a NEW plain ``powf`` cannot arrive un-measured.
-#: b0556bd76, lane/286-fork-thompson, added the fork ice-number bound and
-#: graupel sublimation coefficient. The site-bound Fortran/CUDA receipt below
-#: records 17,893 ice operands, including 4,018 saved real-column operands,
-#: and zero complete output changes under plain-to-CR power substitution.
+#: Fork-only powers are excluded from this classic inventory. Their separate
+#: source-bound Fortran/CUDA receipt below records 17,893 ice operands,
+#: including 4,018 saved real-column operands, and zero complete output
+#: changes under plain-to-CR power substitution.
 _PLAIN_POWF_INVENTORY = {
-    "thompson_aerosol_common.cuh": 7,
-    "thompson_aerosol_cold.cu": 18,
+    "thompson_aerosol_common.cuh": 6,
+    "thompson_aerosol_cold.cu": 17,
     "thompson_aerosol_warm.cu": 9,
     "thompson_aerosol_state.cu": 0,
 }
+
+
+def _classic_powf_source(name, text):
+    from test_thompson_wrf39 import _strip_fork_arms
+
+    if name.endswith(".cuh"):
+        text = text.split("// THE OPERATIONAL WRF 3.9 FORK'S VARIANTS", 1)[0]
+    return _strip_fork_arms(text)
 
 
 def test_every_surviving_plain_powf_was_measured_and_is_inert():
@@ -2055,10 +2063,11 @@ def test_every_surviving_plain_powf_was_measured_and_is_inert():
     counted = {}
     for name in _PLAIN_POWF_INVENTORY:
         path = _HEADER if name.endswith(".cuh") else _KERNELS / name
-        counted[name] = len(pattern.findall(path.read_text(encoding="utf-8")))
+        counted[name] = len(pattern.findall(_classic_powf_source(
+            name, path.read_text(encoding="utf-8"))))
     assert counted == _PLAIN_POWF_INVENTORY, (
-        "the plain-powf inventory changed.  Every plain powf in an mp=28 "
-        "translation unit must be measured against the Fortran oracle before "
+        "the classic-arm plain-powf inventory changed. Every classic plain "
+        "powf must be measured against its Fortran oracle before "
         "it lands; update the counts only with the measurement.\n"
         f"got {counted}\nwant {_PLAIN_POWF_INVENTORY}")
     # The original six sites are the two decade functions (two calls each)
@@ -2101,6 +2110,9 @@ def test_every_surviving_plain_powf_was_measured_and_is_inert():
     assert scalar["complete_coefficient_changes_under_cr"] == 0
     assert scalar["plain_coefficient_differences_vs_fortran"] == 0
     assert scalar["cr_coefficient_differences_vs_fortran"] == 0
+    # The CPU entry point invokes this guard despite the module's GPU marker.
+    # Its receipt checks must also account for exactly the two fork-only sites.
+    test_fork_plain_powf_sites_have_their_own_explicit_source_inventory()
 
     def body_of(name):
         for kind in ("float", "int", "void", "bool", "double"):
@@ -2123,6 +2135,27 @@ def test_every_surviving_plain_powf_was_measured_and_is_inert():
         assert body is not None, name
         assert not pattern.search(body), (
             f"{name} must use thompson_aa_powf_cr; a plain powf is back")
+
+
+def test_fork_plain_powf_sites_have_their_own_explicit_source_inventory():
+    """Fork operators have their own authority and cannot inherit inertness."""
+    pattern = re.compile(r"(?<![_A-Za-z0-9])powf\(")
+    header = _HEADER.read_text(encoding="utf-8")
+    cold = (_KERNELS / "thompson_aerosol_cold.cu").read_text(encoding="utf-8")
+    # Each raw-source increment is accounted for by one specific fork site.
+    assert len(pattern.findall(header)) == _PLAIN_POWF_INVENTORY[_HEADER.name] + 1
+    assert len(pattern.findall(cold)) == _PLAIN_POWF_INVENTORY["thompson_aerosol_cold.cu"] + 1
+    marker = "__device__ __forceinline__ void thompson_aa_wrf39_bound_ice_number("
+    start = header.index(marker)
+    helper = header[start:header.index("\n}\n", start) + 3]
+    assert len(pattern.findall(helper)) == 1
+    assert "am_i * 6.0f * ice_number / ice_mass, 0.33333334326744080f" in helper
+    assert "THOMPSON_AA_WRF39_NI_MAX" in helper
+    constant = "powf(0.632f, 0.33333334326744080f)"
+    assert cold.count(constant) == 1
+    assert constant not in _classic_powf_source("thompson_aerosol_cold.cu", cold)
+    assert "thompson_aa_wrf39_bound_ice_number" not in _classic_powf_source(
+        "thompson_aerosol_cold.cu", cold)
 
 
 def test_nt_c_is_not_reachable_from_device_code():

@@ -454,8 +454,11 @@ def test_a_stale_canonical_part_never_blocks_the_next_run(tmp_path,
     monkeypatch.setattr(hrrr_transport, "_parse_index",
                         lambda body, size: (hrrr_transport.IndexRow(
                             1, 0, "PRES", "1 hybrid level", "1:0:x"),))
-    monkeypatch.setattr(hrrr_transport, "_atmosphere_selection",
-                        lambda rows, expected_count=None: (0,))
+    def selection(rows, expected_count=None, extras=()):
+        assert len(rows) == 1 and expected_count is None and extras == ()
+        return (0,)
+
+    monkeypatch.setattr(hrrr_transport, "_atmosphere_selection", selection)
     monkeypatch.setattr(hrrr_transport, "_coalesce",
                         lambda rows, selected, size: (
                             hrrr_transport.ByteRange(*ranges[0], "x", "x"),))

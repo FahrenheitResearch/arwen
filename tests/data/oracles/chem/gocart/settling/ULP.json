@@ -1,0 +1,794 @@
+{
+  "arm300_mode0_dt1_step1": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm300_mode0_dt1_step2": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm300_mode0_dt1_step3": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm300_mode0_dt2_step1": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm300_mode0_dt2_step2": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm300_mode0_dt2_step3": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm300_mode0_dt3_step1": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm300_mode0_dt3_step2": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm300_mode0_dt3_step3": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm300_mode1_dt1_step1": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm300_mode1_dt1_step2": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm300_mode1_dt1_step3": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm300_mode1_dt2_step1": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm300_mode1_dt2_step2": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm300_mode1_dt2_step3": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm300_mode1_dt3_step1": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm300_mode1_dt3_step2": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm300_mode1_dt3_step3": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm401_mode0_dt1_step1": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm401_mode0_dt1_step2": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm401_mode0_dt1_step3": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm401_mode0_dt2_step1": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm401_mode0_dt2_step2": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm401_mode0_dt2_step3": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm401_mode0_dt3_step1": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm401_mode0_dt3_step2": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm401_mode0_dt3_step3": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm401_mode1_dt1_step1": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm401_mode1_dt1_step2": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm401_mode1_dt1_step3": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm401_mode1_dt2_step1": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm401_mode1_dt2_step2": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm401_mode1_dt2_step3": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm401_mode1_dt3_step1": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm401_mode1_dt3_step2": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  },
+  "arm401_mode1_dt3_step3": {
+    "chem_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 2592
+    },
+    "accum_out": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "velocity": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 30
+    },
+    "nsteps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 54
+    }
+  }
+}

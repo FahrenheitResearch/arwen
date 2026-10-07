@@ -15,6 +15,7 @@ from typing import Mapping, Sequence
 
 from gpuwm import netcdf_bridge
 import numpy as np
+from gpuwm.ingest.wrfinput_sfire import SFIRE_INPUT_DIMENSIONS, fire_input_extents
 
 # Every science-field entry below has one explicit gpuwm consumer.  The
 # importer is intentionally closed-world: variables outside these inventories
@@ -223,7 +224,8 @@ MYNN_QKE_INPUT_FIELDS = frozenset(PHYSICS_FIELD_ALIASES["qke"])
 OPTIONAL_WRFINPUT = (
     "H_DIABATIC", "RAINNC", "RAINC", "QNCLOUD", "SST", "CANWAT", "LAKEMASK",
     "QNWFA2D", "QNIFA2D",
-    "MAPFAC_MX", "MAPFAC_MY",
+    "MAPFAC_MX", "MAPFAC_MY", "MAPFAC_UX", "MAPFAC_UY", "MAPFAC_VX", "MAPFAC_VY",
+    "fire_smoke",
 )
 
 # These are the only non-science variable records allowed through the reader.
@@ -251,12 +253,14 @@ _WRFINPUT_GEOMETRY_DIMENSIONS = frozenset({
 # resulting shape, so a truncated variable cannot borrow an unrelated
 # dimension of the same length.
 WRFINPUT_DIMENSIONS: dict[str, tuple[str, ...]] = {
+    **SFIRE_INPUT_DIMENSIONS,
     **{name: _MASS_3D_DIMS for name in (
         "T", "T_INIT", "P", "PB", "AL", "ALB", "QVAPOR", "QCLOUD",
         "QRAIN", "QICE", "QSNOW", "QGRAUP", "QNRAIN", "QNICE",
         "QNSNOW", "QNGRAUPEL", "QNCLOUD", "QHAIL", "QNDROP",
         "QNHAIL", "QNCCN", "QVGRAUPEL", "QVHAIL", "H_DIABATIC",
         "QIR", "QIB", "QNWFA", "QNIFA", "QNBCA", "qke", "QKE", "qke_adv",
+        "fire_smoke",
     )},
     "U": _U_3D_DIMS, "V": _V_3D_DIMS, "W": _W_3D_DIMS,
     "PH": _W_3D_DIMS, "PHB": _W_3D_DIMS,
@@ -272,6 +276,8 @@ WRFINPUT_DIMENSIONS: dict[str, tuple[str, ...]] = {
         "ACRUNOFF", "RHOSNF", "SNOWFALLAC", "SOILT1",
     )},
     "MAPFAC_U": _U_2D_DIMS, "MAPFAC_V": _V_2D_DIMS,
+    "MAPFAC_UX": _U_2D_DIMS, "MAPFAC_UY": _U_2D_DIMS,
+    "MAPFAC_VX": _V_2D_DIMS, "MAPFAC_VY": _V_2D_DIMS,
     "XLAT_U": _U_2D_DIMS, "XLONG_U": _U_2D_DIMS,
     "XLAT_V": _V_2D_DIMS, "XLONG_V": _V_2D_DIMS,
     **{name: _SOIL_DIMS for name in ("TSLB", "SMOIS", "SH2O")},
@@ -290,6 +296,7 @@ WRFINPUT_DIMENSIONS: dict[str, tuple[str, ...]] = {
 
 def _mapped_wrfinput_names() -> set[str]:
     names = set(REQUIRED_WRFINPUT) | set(OPTIONAL_WRFINPUT)
+    names.update(SFIRE_INPUT_DIMENSIONS)
     names.update(alias for aliases in ALIASES.values() for alias in aliases)
     names.update(ALL_MOISTURE_WRFINPUT)
     names.update(
@@ -343,8 +350,7 @@ IGNORED_WRFINPUT = frozenset({
     "LAT_UR_D", "LAT_UR_T", "LAT_UR_U", "LAT_UR_V", "LON_LL_D", "LON_LL_T",
     "LON_LL_U", "LON_LL_V", "LON_LR_D", "LON_LR_T", "LON_LR_U", "LON_LR_V",
     "LON_UL_D", "LON_UL_T", "LON_UL_U", "LON_UL_V", "LON_UR_D", "LON_UR_T",
-    "LON_UR_U", "LON_UR_V", "MAPFAC_UX",
-    "MAPFAC_UY", "MAPFAC_VX", "MAPFAC_VY", "MF_VX_INV", "O3_GFS_DU", "P00",
+    "LON_UR_U", "LON_UR_V", "MF_VX_INV", "O3_GFS_DU", "P00",
     "PC", "PCB", "P_HYD", "P_STRAT", "QV_BASE", "RDX", "RDY", "RESM",
     "SAVE_TOPO_FROM_REAL", "SHDAVG", "SMCREL", "SNOWC", "SOILCBOT",
     "SOILCTOP", "SR", "STEP_NUMBER", "T00", "THIS_IS_AN_IDEAL_RUN",
@@ -944,6 +950,16 @@ def _validate_wrfinput_geometry(name: str, variable,
     actual_dimensions = tuple(variable.dimensions)
     if actual_dimensions[:1] == ("Time",):
         actual_dimensions = actual_dimensions[1:]
+    if name == "FMEP":
+        from gpuwm.ingest.wrfinput_sfire import FMEP_DIMENSION_ALIAS
+        actual_dimensions = tuple("fuel_moisture_extended_parameters"
+                                  if dim == FMEP_DIMENSION_ALIAS else dim
+                                  for dim in actual_dimensions)
+    if name == "FMC_GC":
+        from gpuwm.ingest.wrfinput_sfire import FMC_GC_DIMENSION_ALIAS
+        actual_dimensions = tuple("fuel_moisture_classes"
+                                  if dim == FMC_GC_DIMENSION_ALIAS else dim
+                                  for dim in actual_dimensions)
     try:
         expected_shape = tuple(
             expected_extents[dim] for dim in expected_dimensions)
@@ -978,6 +994,7 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
     """
     path = Path(path)
     expected_extents = _explicit_wrfinput_dimensions(expected_dimensions)
+    expected_extents = {**expected_extents, **fire_input_extents(cfg, expected_extents)}
     required_moisture, allowed_moisture = active_moisture_inventory(cfg)
     # Foreign input: WRF real.exe's own wrfinput, decoded field by
     # field through the Rust bridge. Times is validated by file identity.
@@ -1003,6 +1020,9 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
             set(dataset.variables) - ALLOWED_WRFINPUT - IGNORED_WRFINPUT
             - ANALYSIS_PASSTHROUGH_WRFINPUT.keys()
             - surface_dispositions.keys())
+        if "fire_smoke" in dataset.variables and not bool(getattr(cfg, "fire_smoke", False)):
+            raise ValueError("native fire_smoke input requires the active endogenous bulk smoke profile; "
+                             "enable fire_smoke to preserve its g_smoke/kg_air volume")
         if unknown:
             # Reached only when the scheme attributes said the package is
             # supported and the file still carries names this door has no
@@ -1036,6 +1056,17 @@ def read_wrfinput(path: str | Path, *, require_complete: bool = True,
                 name, variable, expected_extents, value)
             raw[name] = value
         require_zero_base_state_profiles(dataset, path, cfg)
+    if int(getattr(cfg, "ifire", 0)) == 2:
+        # LFN_TIME is declared as input but is never read by WRF's SFIRE
+        # driver/model. Keep its native bytes and disclose that disposition.
+        if "LFN_TIME" in raw:
+            recorded_surface_dispositions["LFN_TIME"] = (
+                "Registry input retained; WRF v4.7.1 SFIRE does not read it; "
+                "ignition timing comes from &fire ignition_start_time")
+    factor_resolution = resolve_map_factors(raw)
+    if factor_resolution:
+        import json
+        attrs["ARWEN_MAP_FACTOR_RESOLUTION"] = json.dumps(factor_resolution, sort_keys=True)
     soil_recovery = {}
     if "SMOIS" not in soil_conversions:
         from gpuwm.ingest.wrf_soil_recovery import recover_supplied_soil
@@ -1100,6 +1131,32 @@ def missing_required_wrfinput(raw: Mapping[str, np.ndarray], cfg) -> list[str]:
         name for name, alternatives in ALIASES.items()
         if not any(alias in raw for alias in alternatives)))
     return missing
+def resolve_map_factors(raw):
+    """Select positive native directional aliases when legacy factors are zero.
+
+    The compact ARW state has one isotropic factor per grid location. Equal
+    X/Y factors are exact aliases; unequal factors need separate operators.
+    No map-factor field arithmetic or inferred geometry is performed here.
+    """
+    import hashlib
+    receipt = {}
+    for point in ("M", "U", "V"):
+        name = f"MAPFAC_{point}"
+        legacy = raw.get(name)
+        if legacy is None or bool(np.all(np.isfinite(legacy) & (legacy > 0))):
+            continue
+        x, y = raw.get(name + "X"), raw.get(name + "Y")
+        if x is None or y is None:
+            raise ValueError(f"{name} is nonpositive and has no supplied directional factors; grid metric divisions would be invalid")
+        if x.shape != legacy.shape or y.shape != legacy.shape or not bool(np.all(np.isfinite(x) & (x > 0))):
+            raise ValueError(f"{name} directional factor shape or values cannot define positive native grid metrics")
+        if not np.array_equal(x, y):
+            raise ValueError(f"{name} directional X/Y factors differ; collapsing anisotropic metrics would change flux divergence")
+        receipt[name] = dict(source=name + "X", equivalent=name + "Y",
+            original_sha256=hashlib.sha256(legacy.tobytes()).hexdigest(),
+            selected_sha256=hashlib.sha256(x.tobytes()).hexdigest())
+        raw[name] = x
+    return receipt
 
 
 def _validate_supplied_physics_fields(raw, cfg, attributes):
@@ -1305,6 +1362,9 @@ def restore_domain_state(restored: RestoredDomain, cfg, *, scratch_arena=None,
         if source is not None and target is not None:
             target[...] = source
 
+    if "fire_smoke" in raw:
+        from gpuwm.core.chem_sfire import import_native
+        import_native(state, raw["fire_smoke"])
     return state
 
 
@@ -1343,6 +1403,7 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
         tslb[:, water] = np.broadcast_to(
             np.asarray(raw["TSK"])[water], tslb[:, water].shape)
     raw = {**raw, "TSLB": tslb}  # alias loop below re-reads raw (immutable)
+    from gpuwm.ingest.wrfinput_sfire import fire_static_fields
     driver = initialize_physics(
         state, cfg, landmask=raw["LANDMASK"], tsk=raw["TSK"],
         landuse=landuse, xland=raw.get("XLAND"),
@@ -1364,6 +1425,8 @@ def initialize_wrfinput_physics(state, restored, cfg, *, radiation=None,
         radiation_longitude=radiation_longitude,
         **wrfinput_ruc_mosaic_inputs(restored, cfg),
         **wrfinput_lake_physics_inputs(restored, cfg),
+        **({"fire_static_data": fire_static_fields(restored, cfg)}
+           if int(getattr(cfg, "ifire", 0)) == 2 else {}),
         # The file's own urban fraction reaches urban_var_init, which keeps
         # a value in (0, 1] and takes the table's otherwise
         # (module_sf_urban.F:2767-2777).  Passed only to an urban run.
@@ -1515,7 +1578,14 @@ def _wrf_and_gpuwm_mass_weights(restored: RestoredDomain,
     two expression trees distinct makes read-time normalization deterministic
     instead of relying on algebraic equivalence across FP32 roundoff.
     """
-    raw = restored.raw
+    return _mass_weights_from_raw(restored.raw, mu)
+
+
+def _mass_weights_from_raw(raw: Mapping[str, np.ndarray], mu: np.ndarray
+                           ) -> tuple[dict[str, np.ndarray],
+                                      dict[str, np.ndarray]]:
+    """:func:`_wrf_and_gpuwm_mass_weights` on the initial file's variables
+    themselves, for a writer that holds them before any file exists."""
     required = {
         "MUB", "C1H", "C2H", "C1F", "C2F",
         "MAPFAC_M", "MAPFAC_U", "MAPFAC_V",
@@ -1652,19 +1722,64 @@ def _boundary_mass_weight(weights, name):
     return weights["qv" if name in COUPLED_SCALAR_STATE_FIELDS else name]
 
 
+def wrf_initial_boundary_head(raw, layouts=None, *, moist_theta: bool,
+                              weights=None) -> dict[str, np.ndarray]:
+    """The first wrfbdy record real.exe writes for one initial state.
+
+    Every boundary field of ``raw`` (wrfinput variables, by WRF name)
+    coupled as ``couple()`` couples it before ``stuff_bdy`` packs the
+    first record (WRF v4.6.1 main/real_em.F:866-899): U by the staggered
+    mass over MAPFAC_U, V likewise, T, QVAPOR and the declared scalars by
+    the half-level mass, PH by the full-level mass, MU copied.  FP32, in
+    WRF's own expression order, on the whole domain; the caller takes the
+    side strips.  Under ``moist_theta`` T is first rebuilt as real.exe's
+    moist theta from the file's dry T and QVAPOR.
+
+    The door's consistency check reads its expectation from here, and the
+    stock-WRF exporter writes its first record from here, so the pair the
+    exporter publishes and the pair the door accepts are one definition.
+    """
+    layouts = _WRFBDY_FIELDS if layouts is None else layouts
+    if weights is None:
+        weights, _ = _mass_weights_from_raw(
+            raw, np.asarray(raw["MU"], dtype=np.float32))
+    head = {}
+    for key, (name, *_dimensions) in layouts.items():
+        field = np.asarray(raw[name], dtype=np.float32)
+        if key == "theta" and moist_theta:
+            field = _moist_theta_from_dry(field, raw["QVAPOR"])
+        if key == "mu":
+            head[key] = field[None]
+            continue
+        field = np.asarray(field * _boundary_mass_weight(weights, key),
+                           dtype=np.float32)
+        if key in ("u", "v"):
+            field = np.asarray(
+                field / np.asarray(raw["MAPFAC_" + name],
+                                   dtype=np.float32)[None],
+                dtype=np.float32)
+        head[key] = field
+    return head
+
+
 def _check_initial_boundary_pair(restored, tables, width, *, layouts=None):
     """Compare the first boundary values with the file that initializes them.
 
     Reconstruct WRF's own FP32 couple operation, before normalization into
     ArWen's coupling order. Never replace MU and then use the replacement as
     proof that an unrelated boundary file belongs to this initial condition.
+    The breakage this prevents: a wrfbdy from another real.exe run (another
+    start, analysis or namelist) silently forcing this initial state, its
+    first record a different atmosphere than the one the run starts from.
     """
     layouts = _WRFBDY_FIELDS if layouts is None else layouts
     raw = restored.raw
     wrf, _ = _wrf_and_gpuwm_mass_weights(restored, np.asarray(raw["MU"], dtype=np.float32))
     moist_theta = int(restored.global_attributes["USE_THETA_M"]) == 1
+    head = wrf_initial_boundary_head(raw, layouts, moist_theta=moist_theta,
+                                     weights=wrf)
     for key, (name, *_dimensions) in layouts.items():
-        field = np.asarray(raw[name], dtype=np.float32)
+        field = head[key]
         # How far two builds' reconstructions of a field can differ before
         # coupling, per element of one side's strip (a function of the
         # side, so it is computed on the width-``width`` strips the check
@@ -1678,23 +1793,21 @@ def _check_initial_boundary_pair(restored, tables, width, *, layouts=None):
             # conversion) and couples its runtime theta into T_B*
             # (real_em.F:872): moist theta when use_theta_m=1
             # (module_initialize_real.F:4923-4932, this file's own
-            # QVAPOR).  Reconstruct the writer's representation from T
-            # and QVAPOR, and keep the other one to say what the boundary
-            # holds instead when the two files disagree.
-            dry, moist = field, _moist_theta_from_dry(field, raw["QVAPOR"])
+            # QVAPOR).  The writer's representation is the head above;
+            # keep the other one to say what the boundary holds instead
+            # when the two files disagree.
+            dry = np.asarray(raw[name], dtype=np.float32)
+            moist = _moist_theta_from_dry(dry, raw["QVAPOR"])
             def moist_bound(side, dry=dry, qv=raw["QVAPOR"]):
                 return _moist_theta_build_bound(
                     _boundary_strip(dry, side, width),
                     _boundary_strip(np.asarray(qv, np.float32), side, width))
             if moist_theta:
-                field, field_bound, other = moist, moist_bound, dry
+                field_bound, other = moist_bound, dry
             else:
-                field, other, other_bound = dry, moist, moist_bound
-        if key == "mu":
-            field = field[None]
-        else:
+                other, other_bound = moist, moist_bound
+        if key != "mu":
             weight = _boundary_mass_weight(wrf, key)
-            field = np.asarray(field * weight, dtype=np.float32)
             if other is not None:
                 other = np.asarray(other * weight, dtype=np.float32)
             # couple() multiplies the reconstruction by the dry column mass,
@@ -1703,8 +1816,6 @@ def _check_initial_boundary_pair(restored, tables, width, *, layouts=None):
                 field_bound = _coupled_bound(field_bound, weight, width)
             if other_bound is not None:
                 other_bound = _coupled_bound(other_bound, weight, width)
-            if key in ("u", "v"):
-                field = np.asarray(field / np.asarray(raw["MAPFAC_" + name], dtype=np.float32)[None], dtype=np.float32)
         for side, (actual, _tendency) in tables[key].items():
             expected = _boundary_strip(field, side, width)
             actual = np.asarray(actual, dtype=np.float32)

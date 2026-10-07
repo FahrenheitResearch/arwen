@@ -257,7 +257,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     # soil column in one file per valid time.
     "rap-native-grib2-v1": _profile(
         "rw-wps-rap-native-grib2", source_format="grib2",
-        mapping="6a94ace93fff992657cf70122dd4934762df50b9a1babae03d7b575b28f6621f",
+        mapping="dac1731f40e9a2334dc48d690419880f0ea01434a6a8f15a955cb1de8b197b27",
         composition="5e1191db5f310fef5e6f27af7a8268662785b0e10a1bee844d825931be0e7cc5",
         provenance="89ba6be652b95b99da759d1ae88d09235335f45b41117f767f48fcb228ac3c1c",
         data_role="rap_native_in_band_surface",
@@ -267,7 +267,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     # nine-node soil column come from the same cycle's wrfprs analysis.
     "hrrr-native-grib2-v1": _profile(
         "rw-wps-hrrr-native-grib2", source_format="grib2",
-        mapping="648778426cbaf852b95ae8945f8152c2915bc5bdf15ba28d05c9af925420e05f",
+        mapping="aed7c836ca72dc951b827aab06f04803d3ff3f16cf576c20feca9f94bd269833",
         composition="503852a8bfe955be9a844bc63de6d11bc6896a3817c15689bc30a5dc97ef427b",
         provenance="99c6f704b6c783bbd70672bcf2ecc23752a82a6d902a03f05b16c774d3ca4c77",
         data_role="soil_surface_data",
@@ -388,7 +388,7 @@ _PACKAGED_PROFILES = MappingProxyType({
     "gdas-pgrb2-0p25-grib2-v1": _profile(
         "rw-wps-gdas-pgrb2-0p25-grib2",
         source_format="grib2",
-        mapping="eee8342a5a9a57f17d267dd48ad5edbb1a72f6d34c8803bd2ba1010668e0268d",
+        mapping="8df20187d7d953dce19875f0aaad215fbaa926134ee50610396864290a07b88e",
         composition="7d57188638a53ecf8771ce4779c7923015cee519b63318f6dcd0982798abf75d",
         provenance="13105c86f74d247d8795c075458ccc87bea1de5f663d53b805a1765aaa07c5a6",
         data_role="gdas_pgrb2_in_band_surface",

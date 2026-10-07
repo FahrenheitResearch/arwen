@@ -2373,6 +2373,19 @@ def test_a_named_profile_still_binds_switch_for_switch():
             exp.run_seconds, 3600, source="gfs")
 
 
+def test_a_disagreeing_history_interval_flag_is_refused_not_ignored():
+    """Open-defects ledger A15: --history-interval-seconds that disagrees
+    with the hash-bound experiment used to warn and then write the
+    experiment's cadence; it is refused now, naming the flag.  The
+    run-length half of A15 is retired by lane/fp-door-run-length-fetch:
+    a requested --run-seconds is applied to the experiment and executed
+    (tests/test_prepared_run_length.py), so it is no longer refused."""
+    exp = load_experiment(ROOT / "configs" / "gfs_wrf_direct_proof.toml")
+    with pytest.raises(ValueError, match="--history-interval-seconds 600"):
+        runner._validate_physics(exp, None, exp.run_seconds, 600.0,
+                                 source="gfs")
+
+
 def test_the_product_default_suite_is_admitted_without_a_profile(
         tmp_path, monkeypatch):
     """POSITIVE CONTROL for the 2026-07-31 owner ruling.
@@ -4251,15 +4264,24 @@ def test_hash_bound_history_cadence_uses_floor_schedule_for_any_due_output(
     assert receipt["run_end_frame_scheduled"] is last_equals_run_end
 
 
-def test_hash_bound_history_cadence_warns_on_cli_mismatch(capsys):
-    """Warn-not-block: the hash-bound experiment cadence is what the
-    run uses; a stale flag is named, not fatal.  The non-whole-step
-    cadence stays a refusal (KEEP-HARD: the schedule cannot exist)."""
+def test_hash_bound_history_cadence_refuses_a_disagreeing_cli_cadence(capsys):
+    """Open-defects ledger A15: a flag that disagrees with the hash-bound
+    cadence used to be warned about and ignored, so a run asking for
+    10-minute frames on an hourly experiment wrote hourly frames.  It is
+    refused now, naming both cadences; the matching value still runs.
+    The non-whole-step cadence stays a refusal (the schedule cannot
+    exist)."""
     base = load_experiment(ROOT / "configs" / "gfs_wrf_direct_proof.toml")
     subhourly = _retime_single_domain(base, cadence_seconds=900.0)
-    receipt = runner._validate_hash_bound_history_cadence(subhourly, 1800.0)
-    err = capsys.readouterr().err
-    assert "warning:" in err and "authoritative" in err
+    with pytest.raises(ValueError, match=r"--history-interval-seconds 1800 "
+                       r"asks for a history frame every 1800 s.*"
+                       r"history_interval_s = 900 s"):
+        runner._validate_hash_bound_history_cadence(subhourly, 1800.0)
+    hourly = _retime_single_domain(base, cadence_seconds=3600.0)
+    with pytest.raises(ValueError, match="silently deliver"):
+        runner._validate_hash_bound_history_cadence(hourly, 600.0)
+    receipt = runner._validate_hash_bound_history_cadence(subhourly, 900.0)
+    assert capsys.readouterr().err == ""
     assert receipt["experiment_seconds"] == 900.0
 
     nonstep = _retime_single_domain(base, cadence_seconds=71.0)

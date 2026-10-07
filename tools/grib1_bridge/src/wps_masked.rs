@@ -224,6 +224,10 @@ struct Call<'a> {
     xx: &'a [f64],
     chain: &'a [u8],
     range: Option<(f64, f64)>,
+    /// The search's reach for the targets flagged true, as a squared
+    /// distance in source cells (`dx * dx + dy * dy`, the search's own
+    /// metric).  None searches the whole array, as metgrid does.
+    reach: Option<(&'a [bool], f64)>,
 }
 
 impl Call<'_> {
@@ -542,7 +546,7 @@ fn walk(c: &Call, ix: i64, jy: i64, scratch: &mut SearchScratch) -> Option<Box<[
 /// ([`walk`], taken once per start cell), then a first-minimum over the
 /// walk's cells of `dx * dx + dy * dy`, so the first found wins a tie and
 /// never-enqueued points never win.
-fn search(c: &Call, yy: f64, xx: f64, scratch: &mut SearchScratch) -> f64 {
+fn search(c: &Call, t: usize, yy: f64, xx: f64, scratch: &mut SearchScratch) -> f64 {
     let nx = c.nx as i64;
     let ny = c.ny as i64;
     let ix = (xx + 0.5).floor() as i64;
@@ -577,6 +581,15 @@ fn search(c: &Call, yy: f64, xx: f64, scratch: &mut SearchScratch) -> f64 {
         if d2 < best_d2 {
             best_d2 = d2;
             best = flat;
+        }
+    }
+    if let Some((limited, reach2)) = c.reach {
+        // Inland water takes no source water point beyond the reach: the
+        // nearest one there is another basin's (a coastal point 4.5 to 6 km
+        // from a river basin), so the target is left for the caller's
+        // fallback instead.
+        if limited[t] && best_d2 > reach2 {
+            return f64::NAN;
         }
     }
     c.pro.safe[best as usize]
@@ -653,7 +666,7 @@ fn chain_target(
             OP_SEARCH => {
                 let value = if c.pro.any_usable {
                     let work = scratch.get_or_insert_with(|| SearchScratch::new(c.ny * c.nx));
-                    search(c, yy, xx, work)
+                    search(c, t, yy, xx, work)
                 } else {
                     f64::NAN
                 };
@@ -698,6 +711,7 @@ fn run_call(
     range: Option<(f64, f64)>,
     fill: f64,
     workers: usize,
+    reach: Option<(&[bool], f64)>,
 ) -> Result<(Vec<f64>, [u64; 6]), ChainError> {
     let pro = prologue(field, donors, range, ny, nx, workers);
     let ntarget = yy.len();
@@ -740,6 +754,7 @@ fn run_call(
         xx,
         chain,
         range,
+        reach,
     };
     let mut stats = Stats::new(chain.len());
     if any_active && ntarget > 0 {
@@ -852,14 +867,14 @@ fn land_pass(
     workers: usize,
 ) -> Result<(Vec<f64>, [u64; 6], u64), ChainError> {
     let (mut values, mut passes) =
-        run_call(field, ny, nx, land, yy, xx, active, chain, range, f64::NAN, workers)?;
+        run_call(field, ny, nx, land, yy, xx, active, chain, range, f64::NAN, workers, None)?;
     let mut recovered = 0u64;
     if !land.iter().any(|&v| v) && active.iter().any(|&v| v) && partial.iter().any(|&v| v) {
         let starved: Vec<bool> = (0..values.len())
             .map(|t| active[t] && !values[t].is_finite())
             .collect();
         let (second, counts) =
-            run_call(field, ny, nx, partial, yy, xx, &starved, chain, range, f64::NAN, workers)?;
+            run_call(field, ny, nx, partial, yy, xx, &starved, chain, range, f64::NAN, workers, None)?;
         add_counts(&mut passes, &counts);
         for t in 0..values.len() {
             if starved[t] && second[t].is_finite() {
@@ -896,11 +911,14 @@ fn run_layer(
     range: Option<(f64, f64)>,
     fill: f64,
     workers: usize,
+    reach: Option<(&[bool], f64)>,
+    beyond: &mut u64,
 ) -> LayerResult {
     let mut counts = [0u64; COUNT_SLOTS];
+    *beyond = 0;
     match mode {
         MODE_PLAIN => {
-            let (values, six) = run_call(field, ny, nx, donors, yy, xx, target, chain, range, fill, workers)?;
+            let (values, six) = run_call(field, ny, nx, donors, yy, xx, target, chain, range, fill, workers, None)?;
             counts[..6].copy_from_slice(&six);
             Ok((values, counts))
         }
@@ -918,13 +936,24 @@ fn run_layer(
             let water: Vec<bool> = donors.iter().map(|&v| !v).collect();
             let water_targets: Vec<bool> = target.iter().map(|&v| !v).collect();
             let (water_part, _) =
-                run_call(field, ny, nx, &water, yy, xx, &water_targets, chain, range, f64::NAN, workers)?;
+                run_call(field, ny, nx, &water, yy, xx, &water_targets, chain, range, f64::NAN, workers, reach)?;
             let mut combined: Vec<f64> = (0..target.len())
                 .map(|t| if target[t] { land_part[t] } else { water_part[t] })
                 .collect();
+            // Inland water the reach left unanswered keeps no value: neither
+            // the other surface's skin nor the fill, so the caller supplies
+            // its fallback (WRF's use_tavg_for_tsk daily-mean 2 m air
+            // temperature).
+            let unresolved: Vec<bool> = (0..target.len())
+                .map(|t| match reach {
+                    Some((limited, _)) => !target[t] && limited[t] && !combined[t].is_finite(),
+                    None => false,
+                })
+                .collect();
+            *beyond = unresolved.iter().filter(|&&v| v).count() as u64;
             // Both starved sets come from `combined` before either is filled.
             let starved_water: Vec<bool> = (0..target.len())
-                .map(|t| !target[t] && !combined[t].is_finite())
+                .map(|t| !target[t] && !combined[t].is_finite() && !unresolved[t])
                 .collect();
             let starved_land: Vec<bool> = (0..target.len())
                 .map(|t| target[t] && !combined[t].is_finite())
@@ -935,7 +964,7 @@ fn run_layer(
                     continue;
                 }
                 let (answer, _) =
-                    run_call(field, ny, nx, surface, yy, xx, starved, chain, range, f64::NAN, workers)?;
+                    run_call(field, ny, nx, surface, yy, xx, starved, chain, range, f64::NAN, workers, None)?;
                 for t in 0..combined.len() {
                     if starved[t] && answer[t].is_finite() {
                         combined[t] = answer[t];
@@ -949,7 +978,13 @@ fn run_layer(
                 .count() as u64;
             counts[COUNT_OTHER_SURFACE] = other_surface;
             counts[COUNT_RECOVERED] = recovered;
-            Ok((finish(combined, fill), counts))
+            let mut values = finish(combined, fill);
+            for (value, &open) in values.iter_mut().zip(unresolved.iter()) {
+                if open {
+                    *value = f64::NAN;
+                }
+            }
+            Ok((values, counts))
         }
     }
 }
@@ -996,6 +1031,56 @@ pub unsafe extern "C" fn gpuwm_wps_masked_chain_f64(
     high: f64,
     output: *mut f64,
     counts: *mut u64,
+    unknown_op: *mut u64,
+    nlayer: usize,
+    ny: usize,
+    nx: usize,
+    ntarget: usize,
+    workers: usize,
+) -> i32 {
+    gpuwm_wps_masked_chain_reach_f64(
+        source, donors, partial_donors, target_y, target_x, target_mask, chain, nchain, mode,
+        fill_value, has_range, low, high, std::ptr::null(), f64::INFINITY, output, counts,
+        std::ptr::null_mut(), unknown_op, nlayer, ny, nx, ntarget, workers,
+    )
+}
+
+/// [`gpuwm_wps_masked_chain_f64`] with the inland-water source reach.
+///
+/// In mode 2 the water pass's search refuses, for every target flagged in
+/// `reach_targets` (one byte per target; null applies no reach), any
+/// source water farther than `reach_cells` source cells.  Such a water
+/// target is left unresolved: its output is NaN (not the fill, and not the
+/// other surface's skin), and `beyond_reach` (one slot per layer; may be
+/// null) counts them.  The caller supplies the fallback.  An infinite or
+/// non-positive reach, a null mask or a mode other than 2 is the original
+/// call, value for value.
+///
+/// # Safety
+///
+/// As [`gpuwm_wps_masked_chain_f64`]; `reach_targets` addresses `ntarget`
+/// bytes when not null and `beyond_reach` `nlayer` slots when not null.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn gpuwm_wps_masked_chain_reach_f64(
+    source: *const f64,
+    donors: *const u8,
+    partial_donors: *const u8,
+    target_y: *const f64,
+    target_x: *const f64,
+    target_mask: *const u8,
+    chain: *const u8,
+    nchain: usize,
+    mode: i32,
+    fill_value: f64,
+    has_range: i32,
+    low: f64,
+    high: f64,
+    reach_targets: *const u8,
+    reach_cells: f64,
+    output: *mut f64,
+    counts: *mut u64,
+    beyond_reach: *mut u64,
     unknown_op: *mut u64,
     nlayer: usize,
     ny: usize,
@@ -1063,9 +1148,18 @@ pub unsafe extern "C" fn gpuwm_wps_masked_chain_f64(
         } else {
             &[][..]
         };
+        let limited = if mode == MODE_SKIN && !reach_targets.is_null() && ntarget > 0
+            && reach_cells.is_finite() && reach_cells > 0.0
+        {
+            Some(mask(reach_targets, ntarget))
+        } else {
+            None
+        };
+        let reach = limited.as_deref().map(|flags| (flags, reach_cells * reach_cells));
         let fields = std::slice::from_raw_parts(source, nlayer * cells);
         let out = std::slice::from_raw_parts_mut(output, nlayer * ntarget);
         let tallies = std::slice::from_raw_parts_mut(counts, nlayer * COUNT_SLOTS);
+        let mut beyond = 0u64;
         for layer in 0..nlayer {
             let field = &fields[layer * cells..(layer + 1) * cells];
             match run_layer(
@@ -1082,8 +1176,13 @@ pub unsafe extern "C" fn gpuwm_wps_masked_chain_f64(
                 range,
                 fill_value,
                 workers,
+                reach,
+                &mut beyond,
             ) {
                 Ok((values, slots)) => {
+                    if !beyond_reach.is_null() {
+                        *beyond_reach.add(layer) = beyond;
+                    }
                     out[layer * ntarget..(layer + 1) * ntarget].copy_from_slice(&values);
                     tallies[layer * COUNT_SLOTS..(layer + 1) * COUNT_SLOTS].copy_from_slice(&slots);
                 }
@@ -1274,6 +1373,55 @@ mod tests {
             )
         };
         (code, output, counts, unknown)
+    }
+
+    /// A 1 x 12 source: water (donor false) only at the far right cell,
+    /// land elsewhere; one water target at x = 1.  Its nearest source water
+    /// is 10 cells away.
+    fn reach_case(reach: f64, limited: u8) -> (i32, Vec<f64>, Vec<u64>, u64) {
+        let nx = 12usize;
+        let field: Vec<f64> = (0..nx).map(|i| 280.0 + i as f64).collect();
+        let mut donors = vec![1u8; nx];
+        donors[nx - 1] = 0;
+        let partial = vec![0u8; nx];
+        let yy = [0.0f64];
+        let xx = [1.0f64];
+        let target = [0u8];
+        let flags = [limited];
+        let chain = [OP_FOUR_PT, OP_SEARCH];
+        let mut output = vec![0.0f64; 1];
+        let mut counts = vec![0u64; COUNT_SLOTS];
+        let mut beyond = 0u64;
+        let mut unknown = u64::MAX;
+        let code = unsafe {
+            gpuwm_wps_masked_chain_reach_f64(
+                field.as_ptr(), donors.as_ptr(), partial.as_ptr(), yy.as_ptr(), xx.as_ptr(),
+                target.as_ptr(), chain.as_ptr(), chain.len(), MODE_SKIN, 0.0, 0, 0.0, 1.0,
+                flags.as_ptr(), reach, output.as_mut_ptr(), counts.as_mut_ptr(), &mut beyond,
+                &mut unknown, 1, 1, nx, 1, 1,
+            )
+        };
+        (code, output, counts, beyond)
+    }
+
+    #[test]
+    fn inland_water_beyond_the_reach_is_left_unresolved() {
+        // Within reach (12 cells > 10): the far water point, as metgrid.
+        let (code, near, _, beyond) = reach_case(12.0, 1);
+        assert_eq!(code, OK);
+        assert_eq!((near[0], beyond), (291.0, 0));
+        // Beyond reach (3 cells): NaN, counted, and NOT the land skin.
+        let (code, far, counts, beyond) = reach_case(3.0, 1);
+        assert_eq!(code, OK);
+        assert!(far[0].is_nan());
+        assert_eq!(beyond, 1);
+        assert_eq!(counts[COUNT_OTHER_SURFACE], 0);
+        // A target not flagged inland ignores the reach.
+        let (_, open, _, beyond) = reach_case(3.0, 0);
+        assert_eq!((open[0], beyond), (291.0, 0));
+        // No reach (infinite) is the original entry, value for value.
+        let (_, unlimited, _, _) = reach_case(f64::INFINITY, 1);
+        assert_eq!(unlimited[0], 291.0);
     }
 
     #[test]

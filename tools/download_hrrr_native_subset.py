@@ -32,6 +32,17 @@ HYBRID_FIELDS = (
     "PRES", "CLMR", "CIMIXR", "RWMR", "SNMR", "GRLE",
     "HGT", "TMP", "SPFH", "UGRD", "VGRD",
 )
+#: The analyzed water- and ice-friendly aerosol number concentrations,
+#: as the public index spells them: NOAA's operational hrrr_vtable binds
+#: QNWFA and QNIFA to the local codes 0/13/193 and 0/13/192, which
+#: indexes label PMTF and PMTC (gpuwm/authorities/
+#: rw-wps-hrrr-native-grib2.provenance.json).  Selected only when the
+#: configuration's preparation reads them (an mp=28 domain asking for
+#: the analyzed aerosol, gpuwm.preparation_assets.analyzed_aerosol_domains):
+#: the native bridge reads the pair whole when a file carries it
+#: (OPTIONAL_HYBRID_SPECS in hrrr_grib2_bridge.rs), and a subset without
+#: it refused that preparation "missing QNIFA, QNWFA".
+ANALYZED_AEROSOL_FIELDS = ("PMTF", "PMTC")
 SURFACE_FIELDS = (
     ("PRES", "surface"),
     ("HGT", "surface"),
@@ -94,6 +105,34 @@ class IndexInventoryError(ValueError):
 #: Single source for the completeness bar: the index selection below and
 #: ``gpuwm.fetch``'s existing-file re-verification both use these counts.
 ATMOSPHERE_RECORD_COUNT = 50 * len(HYBRID_FIELDS) + len(SURFACE_FIELDS)
+
+
+def atmosphere_hybrid_fields(*, analyzed_aerosol: bool = False,
+                             extras=()) -> tuple[str, ...]:
+    """The hybrid fields a preparation reads, the aerosol pair when asked.
+
+    ``extras`` are the native extra records a caller requested
+    (gpuwm.ingest.native_extras).  Two of them, PMTF and PMTC, are the
+    analyzed aerosol pair's own records, and the native bridge reads that
+    pair whole or refuses the file (OPTIONAL_HYBRID_SPECS), so asking for
+    either one selects the whole pair, each record once.
+    """
+
+    from gpuwm.ingest.native_extras import requested_extra_fields
+    extras = requested_extra_fields(extras)
+    pair = analyzed_aerosol or any(
+        name in ANALYZED_AEROSOL_FIELDS for name in extras)
+    fields = HYBRID_FIELDS + (ANALYZED_AEROSOL_FIELDS if pair else ())
+    return fields + tuple(name for name in extras if name not in fields)
+
+
+def atmosphere_record_count(*, analyzed_aerosol: bool = False,
+                            extras=()) -> int:
+    """The atmosphere subset's record count for that preparation."""
+
+    return (50 * len(atmosphere_hybrid_fields(
+                analyzed_aerosol=analyzed_aerosol, extras=extras))
+            + len(SURFACE_FIELDS))
 #: One published soil subset carries TSOIL + SOILW at the nine RUC level
 #: depths of the wrfprs file (18).
 SOIL_RECORD_COUNT = 2 * len(SOIL_DEPTHS)
@@ -109,7 +148,7 @@ ACCUMULATION_EXCLUSION = "acc fcst"
 SOIL_LEVELS = tuple(f"{depth}-{depth} m below ground" for depth in SOIL_DEPTHS)
 
 
-def atmosphere_selectors() -> tuple[str, ...]:
+def atmosphere_selectors(extras=(), *, analyzed_aerosol: bool = False) -> tuple[str, ...]:
     """The exact ``VAR:LEVEL`` selectors of the atmosphere subset.
 
     Same tables the index selection above walks, spelled as the
@@ -120,7 +159,9 @@ def atmosphere_selectors() -> tuple[str, ...]:
 
     return tuple(
         [f"{'|'.join(field_spellings(name))}:{level} hybrid level"
-         for name in HYBRID_FIELDS for level in range(1, 51)]
+         for name in atmosphere_hybrid_fields(
+             analyzed_aerosol=analyzed_aerosol, extras=extras)
+         for level in range(1, 51)]
         + [f"{'|'.join(field_spellings(variable))}:{level}"
            for variable, level in SURFACE_FIELDS])
 
@@ -161,6 +202,8 @@ class ProductRequest:
     index_path: Path
     destination: Path
     kind: str
+    #: The atmosphere product also selects the analyzed aerosol pair.
+    analyzed_aerosol: bool = False
 
 
 def _sha256(path: Path) -> str:
@@ -243,7 +286,8 @@ def _parse_index(payload: bytes, object_bytes: int) -> tuple[IndexRow, ...]:
 
 def _atmosphere_selection(
     rows: tuple[IndexRow, ...],
-    *, expected_count: int | None = ATMOSPHERE_RECORD_COUNT,
+    *, expected_count: int | None = -1, analyzed_aerosol: bool = False,
+    extras=(),
 ) -> tuple[int, ...]:
     """Indices of the atmosphere records, refusing an inexact inventory.
 
@@ -255,10 +299,21 @@ def _atmosphere_selection(
     optional: a missing level is incompleteness, not a change.
     """
 
+    hybrid = atmosphere_hybrid_fields(analyzed_aerosol=analyzed_aerosol,
+                                      extras=extras)
+    if expected_count == -1:
+        expected_count = atmosphere_record_count(
+            analyzed_aerosol=analyzed_aerosol, extras=extras)
+    elif expected_count == ATMOSPHERE_RECORD_COUNT:
+        # A caller holding the plain census asks for it plus the records
+        # its extras add (the AQ request form).
+        expected_count += 50 * (len(hybrid) - len(atmosphere_hybrid_fields(
+            analyzed_aerosol=analyzed_aerosol)))
     selected = []
-    levels = {name: set() for name in HYBRID_FIELDS}
+    duplicates = []
+    levels = {name: set() for name in hybrid}
     #: index short name -> canonical role, expanded through FIELD_ALIASES
-    roles = {spelling: role for role in HYBRID_FIELDS
+    roles = {spelling: role for role in hybrid
              for spelling in field_spellings(role)}
     surfaces = {key: 0 for key in SURFACE_FIELDS}
     for index, row in enumerate(rows):
@@ -266,6 +321,8 @@ def _atmosphere_selection(
         role = roles.get(row.variable)
         if role is not None and match is not None:
             level = int(match.group(1))
+            if level in levels[role]:
+                duplicates.append((role, level))
             levels[role].add(level)
             selected.append(index)
             continue
@@ -279,10 +336,10 @@ def _atmosphere_selection(
     bad_surfaces = {str(key): count for key, count in surfaces.items() if count != 1}
     drifted = (expected_count is not None
                and len(selected) != expected_count)
-    if bad_levels or bad_surfaces or drifted:
+    if bad_levels or bad_surfaces or drifted or duplicates:
         raise IndexInventoryError(
             "HRRR atmosphere index lacks the exact native bridge inventory: "
-            f"levels={bad_levels}, surfaces={bad_surfaces}, "
+            f"levels={bad_levels}, surfaces={bad_surfaces}, duplicates={duplicates} (prevents duplicate source levels), "
             f"count={len(selected)} (expected {expected_count})"
             + ("; if the provider has announced this inventory change, "
                "re-run gpuwm fetch with --accept-inventory-change"
@@ -413,7 +470,8 @@ def _download_range(
 def _download_subset(
     *, url: str, index_url: str, index_path: Path, destination: Path,
     kind: str, workers: int, retries: int,
-    expected_count: int | None = -1,
+    expected_count: int | None = -1, analyzed_aerosol: bool = False,
+    extras=(),
 ) -> dict[str, object]:
     if destination.exists():
         raise FileExistsError(f"refusing to replace existing subset: {destination}")
@@ -424,10 +482,14 @@ def _download_subset(
     _publish_exact(index_path, index_payload)
     rows = _parse_index(index_payload, object_bytes)
     if expected_count == -1:
-        expected_count = (ATMOSPHERE_RECORD_COUNT if kind == "atmosphere"
-                          else SOIL_RECORD_COUNT)
+        expected_count = (
+            atmosphere_record_count(analyzed_aerosol=analyzed_aerosol)
+            if kind == "atmosphere" else SOIL_RECORD_COUNT)
     selected = (
-        _atmosphere_selection(rows, expected_count=expected_count)
+        _atmosphere_selection(
+            rows, expected_count=expected_count,
+            **({"analyzed_aerosol": True} if analyzed_aerosol else {}),
+            extras=extras)
         if kind == "atmosphere"
         else _soil_selection(rows, expected_count=expected_count)
     )
@@ -515,7 +577,7 @@ def _download_subset(
 
 def _download_product(
     request: ProductRequest, *, workers: int, retries: int,
-    expected_count: int | None = -1,
+    expected_count: int | None = -1, extras=(),
 ) -> dict[str, object]:
     return _download_subset(
         url=request.url,
@@ -526,11 +588,14 @@ def _download_product(
         workers=workers,
         retries=retries,
         expected_count=expected_count,
+        analyzed_aerosol=request.analyzed_aerosol,
+        extras=extras,
     )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--extras", default="", help="comma-separated optional hybrid fields")
     parser.add_argument("--cycle", required=True)
     parser.add_argument("--forecast-hours", default="0,1")
     parser.add_argument("--output-root", type=Path, required=True)
@@ -538,6 +603,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--file-workers", type=int, default=1)
     parser.add_argument("--retries", type=int, default=5)
     parser.add_argument("--base-url", default=BASE_URL)
+    parser.add_argument(
+        "--analyzed-aerosol", action="store_true",
+        help="also select the analyzed aerosol number pair (PMTF/PMTC = "
+             "QNWFA/QNIFA) the preparation reads for analyzed mp=28 aerosol")
     args = parser.parse_args(argv)
     cycle = _cycle(args.cycle)
     hours = _hours(args.forecast_hours, cycle=cycle)
@@ -575,6 +644,7 @@ def main(argv: list[str] | None = None) -> int:
             index_path=output / f"{atmosphere_name}.idx",
             destination=output / atmosphere_name,
             kind="atmosphere",
+            analyzed_aerosol=args.analyzed_aerosol,
         ))
         requests.append(ProductRequest(
             url=f"{prefix}/{pressure_name}",
@@ -583,8 +653,13 @@ def main(argv: list[str] | None = None) -> int:
             destination=output / soil_name,
             kind="soil",
         ))
+    download_options = {}
+    if args.extras:
+        from gpuwm.ingest.native_extras import requested_extra_fields
+        download_options["extras"] = requested_extra_fields(args.extras.split(","))
     download = partial(
-        _download_product, workers=args.workers, retries=args.retries)
+        _download_product, workers=args.workers, retries=args.retries,
+        **download_options)
     with ThreadPoolExecutor(max_workers=args.file_workers) as pool:
         # Executor.map preserves request order, so the receipt is deterministic
         # even when products complete out of order.

@@ -39,6 +39,22 @@ COUPLED_SCALAR_STATE_FIELDS = frozenset({
     "qh", "qndrop", "qnr",
     "qni", "qns", "qng", "qnh", "qnn", "qvolg", "qvolh"})
 
+
+
+def _is_chem_field(name: str) -> bool:
+    """A chem species field (``chem_<row>``, gpuwm/core/chem_state.py).
+
+    The coupled-scalar doors admit it BESIDE
+    :data:`COUPLED_SCALAR_STATE_FIELDS` rather than through it: the chem
+    rows are named by the chem table, and every one is a dry-mass mixing
+    ratio taking the generic coupling code 7 with half-level mu weighting,
+    exactly like the moments in the set.
+    """
+    from gpuwm.state_serialization_contract import CHEM_STATE_PREFIX
+
+    return name.startswith(CHEM_STATE_PREFIX)
+
+
 _THREADS = 256
 _THETA_OFFSET_K = np.float32(300.0)
 
@@ -431,6 +447,11 @@ class _DeviceLateralBoundaries:
     #: the owning state by ``_active_device_interval`` before the nested
     #: interval is served.
     nested_reload: object | None = None
+    #: What the packed chem boundary rows (``lbc_chem_*`` slots, see
+    #: :func:`chem_boundary_rows`) were cut from: the served interval and
+    #: the reload count.  A re-attach builds a new record, so a new forcing
+    #: can never be served from the old packing.
+    chem_packed_key: tuple | None = None
 
 
 def _seconds(times: Sequence[datetime | float]) -> np.ndarray:
@@ -863,15 +884,80 @@ def _active_device_interval(state, cfg):
             reload_tables(state)
         return (resident.intervals[0], resident.clock.dtbc_launch_fp32,
                 resident.clock.dt_fp32, 0.0)   # LIVE
+    interval, dtbc = _served_external_interval(state, resident)
+    device, offset = _evaluate_device_interval(
+        state, _resident_interval(state, interval), dtbc)
+    return (device, offset, lateral_boundary_clock_dt(cfg), cfg.spec_exp)
+
+
+def _served_external_interval(state, resident):
+    """The host interval a specified root is served now, and its ``dtbc``."""
     boundaries = state.lateral_boundaries
     elapsed = (state.elapsed_seconds if resident.clock is None
                else resident.clock.elapsed_seconds)
     interval = boundaries.interval_at(elapsed)
     dtbc = (state.elapsed_seconds - interval.start_seconds
             if resident.clock is None else resident.clock.dtbc_launch_fp32)
-    device, offset = _evaluate_device_interval(
-        state, _resident_interval(state, interval), dtbc)
-    return (device, offset, lateral_boundary_clock_dt(cfg), cfg.spec_exp)
+    return interval, dtbc
+
+
+#: The packed outer boundary rows of the chem rows, in the argument order of
+#: :func:`gpuwm.core.chem_bdy.apply_chem_flow_boundaries`.
+CHEM_BOUNDARY_SLOTS = ("lbc_chem_bxs", "lbc_chem_btxs", "lbc_chem_bxe",
+                       "lbc_chem_btxe", "lbc_chem_bys", "lbc_chem_btys",
+                       "lbc_chem_bye", "lbc_chem_btye")
+
+
+def chem_boundary_rows(state, cfg, names):
+    """WRF-Chem's ``chem_b``/``chem_bt`` for a specified root's chem rows.
+
+    ``names`` are the transported rows' state names in launch order.
+    Returns ``(has_bc, tables, dtbc)`` -- one 0/1 per name (1 where this
+    domain's sealed forcing carries that row), the eight packed
+    ``(rows, nz, ny|nx)`` tables in :data:`CHEM_BOUNDARY_SLOTS` order, and
+    the served interval's ``dtbc`` -- or ``None`` when the forcing carries
+    no chem row (or the domain has no external forcing).
+
+    WRF reads only the OUTERMOST boundary row (``chem_bxs(j,k,1)``,
+    module_input_chem_data.F:1531-2031); the sealed tables are stored
+    outermost first on every side, so row 0 of each side is that row.  The
+    RAW linear tables are read, never a time-law evaluated copy: WRF forms
+    ``chem_b + chem_bt*(dt_rk + dtbc)`` in one expression.  The packing is
+    redone only when the served interval (or a streamed reload) changes.
+    """
+    resident = getattr(state, "_lateral_boundary_device", None)
+    if (not cfg.specified or resident is None or resident.rolling
+            or state.lateral_boundaries is None):
+        return None
+    interval, dtbc = _served_external_interval(state, resident)
+    device = _resident_interval(state, interval)
+    has = [1 if name in device.fields else 0 for name in names]
+    if not any(has):
+        return None
+    probe = device.fields[names[has.index(1)]]
+    nz, ny, _width = probe.west.value.shape
+    nx = probe.south.value.shape[-1]
+    rows = len(names)
+    tables = tuple(_lbc_scratch(state, (rows, nz, ny if n < 4 else nx), slot)
+                   for n, slot in enumerate(CHEM_BOUNDARY_SLOTS))
+    key = (id(interval), id(device), resident.external_reload_count, tuple(names))
+    if resident.chem_packed_key != key:
+        for table in tables:
+            table[...] = 0
+        for index, name in enumerate(names):
+            if not has[index]:
+                continue
+            field = device.fields[name]
+            for n, (side, part) in enumerate(
+                    (("west", "value"), ("west", "tendency"),
+                     ("east", "value"), ("east", "tendency"),
+                     ("south", "value"), ("south", "tendency"),
+                     ("north", "value"), ("north", "tendency"))):
+                source = getattr(getattr(field, side), part)
+                tables[n][index] = (source[:, :, 0] if n < 4
+                                    else source[:, 0, :])
+        resident.chem_packed_key = key
+    return has, tables, dtbc
 
 
 def _resident_weights(state, width, spec_zone, relax_zone, dt, spec_exp, *,
@@ -947,7 +1033,7 @@ def apply_specified_relaxation(field, tendency, boundary: FieldBoundary, *,
         # every non-qv scalar already uses.
         supported = ({"u", "v", "w", "theta", "phi", "mu"}
                      | COUPLED_SCALAR_STATE_FIELDS)
-        if field_name not in supported:
+        if field_name not in supported and not _is_chem_field(field_name):
             raise ValueError(f"unsupported state LBC field {field_name!r}")
         if field_name == "mu":
             shape = (1, *state.mup.shape)
@@ -1129,6 +1215,14 @@ def _coupled_device_fields(state):
             if name == "qv":  # dry legacy/direct snapshot callers
                 continue
             raise ValueError(f"analysis boundary field {name} has no state array")
+        if _is_chem_field(name):
+            # WRF-Chem's chem boundary arrays hold the species' own mixing
+            # ratio, not a mass-coupled one: flow_dep_bdy_chem takes
+            # max(epsilc, chem_b + chem_bt*dt) straight into chem
+            # (bdy_chem_value_gcm, chem/module_input_chem_data.F:2331-2357),
+            # and nothing relaxes or specifies a chem row on the root.
+            result[name] = getattr(state, name)
+            continue
         result[name] = chm * getattr(state, name)
     return result
 
@@ -1159,8 +1253,9 @@ def couple_nest_field(state, field_name: str, *, out, window=None, frame_width=N
         raise ValueError(
             f"nest coupled output for {field_name} has shape {out.shape}, "
             f"expected {expected}")
-    if field_name not in ({"u", "v", "w", "t", "ph", "mu"}
-                          | COUPLED_SCALAR_STATE_FIELDS):
+    if (field_name not in ({"u", "v", "w", "t", "ph", "mu"}
+                           | COUPLED_SCALAR_STATE_FIELDS)
+            and not _is_chem_field(field_name)):
         raise ValueError(f"unsupported nest coupling field {field_name!r}")
     kind = {"u": 0, "v": 1, "t": 2, "ph": 3, "mu": 4,
             "qv": 5, "w": 6}.get(field_name, 7)
@@ -1232,8 +1327,9 @@ def uncouple_feedback_field(state, field_name: str, coupled, reg, *,
         raise ValueError(
             f"coupled feedback field {field_name} has shape "
             f"{tuple(coupled.shape)}, expected {tuple(target.shape)}")
-    if field_name not in ({"u", "v", "w", "t", "ph"}
-                          | COUPLED_SCALAR_STATE_FIELDS):
+    if (field_name not in ({"u", "v", "w", "t", "ph"}
+                           | COUPLED_SCALAR_STATE_FIELDS)
+            and not _is_chem_field(field_name)):
         raise ValueError(f"unsupported feedback field {field_name!r}")
     kind = {"u": 0, "v": 1, "t": 2, "ph": 3,
             "qv": 5, "w": 6}.get(field_name, 7)
@@ -1464,6 +1560,8 @@ class StateBoundaryFrames:
         #: accumulator uses; see :meth:`_position`.
         self._indexed: bool | None = None
         self._released: set[int] = set()
+        #: Intervals already built, whose start frame can no longer change.
+        self._built: set[int] = set()
 
     def __len__(self) -> int:
         return len(self._frames)
@@ -1591,6 +1689,53 @@ class StateBoundaryFrames:
             for side in ("west", "east", "south", "north")
         })
 
+    def replace_start_state(self, state, *, index: int = 0) -> None:
+        """Make frame ``index`` the coupling of the state the run starts from.
+
+        A preparation whose start state comes from a separate analysis
+        (``--initial-inputs``) first adds the boundary source's own state at
+        the start time, then replaces the start state.  Left as it was, the
+        first interval began from the boundary source's atmosphere: at step
+        0 the specified zone snapped to it and the relaxation zone pulled
+        toward it, a different atmosphere from the one the run starts from
+        (an HRRR start under RAP boundaries).  WRF's rule after an analysis
+        replaces the start is WRFDA's da_update_bc, which operational HRRR
+        runs after GSI: the first boundary record becomes the analysis's
+        own coupling and its tendency runs from there to the next record.
+        Replacing the frame before interval ``index`` is built gives
+        exactly that, through the same producer and the same tendency
+        expression as every other interval.
+
+        The frame keeps the boundary's field inventory: the start state is
+        coupled for the fields the boundary forces, whatever its own
+        initialization would have forced.
+        """
+        index = int(index)
+        if index not in self._frames:
+            raise ValueError(
+                f"forcing-time frame {index} is not held, so the start "
+                "state cannot replace it")
+        if index in self._built or (index - 1) in self._built:
+            raise ValueError(
+                f"boundary interval {index} already read forcing-time frame "
+                f"{index}; the start state must replace it before")
+        scalars = tuple(sorted(
+            self._inventory - {"u", "v", "theta", "phi", "mu"}))
+        held = getattr(state, "_external_scalar_boundary_fields", ("qv",))
+        state._external_scalar_boundary_fields = scalars
+        try:
+            snapshot = _coupled_device_fields(state)
+        finally:
+            state._external_scalar_boundary_fields = held
+        if frozenset(snapshot) != self._inventory:
+            raise ValueError(
+                "the start state cannot be coupled for the boundary's field "
+                f"inventory {sorted(self._inventory)}")
+        self._frames[index] = MappingProxyType({
+            side: extract_lateral_side(snapshot, side, self.spec_bdy_width)
+            for side in ("west", "east", "south", "north")
+        })
+
     def build(self, times: Sequence[datetime | float]) -> LateralBoundaries:
         """Assemble the intervals from the accumulated perimeter frames."""
         if len(self._frames) != len(times) or len(self._frames) < 2:
@@ -1643,6 +1788,7 @@ class StateBoundaryFrames:
             self._frames[index], self._frames[index + 1],
             start_seconds=float(seconds[index]),
             end_seconds=float(seconds[index + 1]))
+        self._built.add(index)
         if index == len(seconds) - 2:
             self._setup.close()
         return result
@@ -2418,6 +2564,7 @@ __all__ = ["BoundaryInterval", "FieldBoundary", "LateralBoundaries",
            "StateBoundaryFrames", "build_lateral_boundaries",
            "build_state_lateral_boundaries",
            "build_lateral_interval_from_sides", "extract_lateral_side",
+           "CHEM_BOUNDARY_SLOTS", "chem_boundary_rows",
            "couple_nest_field", "domain_boundary_snapshot",
            "lateral_boundary_clock_dt", "lateral_boundary_reload_count",
            "lateral_boundary_resident_bytes", "record_built_end_frame",

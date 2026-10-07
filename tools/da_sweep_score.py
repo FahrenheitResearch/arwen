@@ -58,6 +58,25 @@ composite at the published box and reports the spread, so the mean's
 number is never read without the distribution it came from.  The two
 answer different questions and neither replaces the other.
 
+**Three more, fixed rather than reported.**
+
+*Unobserved columns are not observed no-echo.*  Every FSS here is scored
+over the columns a radar measured (:data:`COVERAGE_RULE`): the
+neighborhood fractions count observed cells only, through the Rust masked
+FSS of :mod:`gpuwm.verify.obs.fss`.  Before this, the third of the KDMX
+domain no beam reached was filled with ``MISSING_OBS_FILL_DBZ`` and scored
+as confident no-echo, free agreement for any quiet forecast.  The unmasked
+numbers stay in the receipt as ``*_unmasked`` so the published gallery
+values remain checkable; a file with no clear-air census cannot be masked
+and its frames say ``UNMASKED``.
+
+*The headline is the member score.*  ``headline.primary`` is the
+per-member mean; the ensemble-mean field's number sits beside it under
+its own name.
+
+*30 dBZ is a common event.*  :data:`EXTRA_THRESHOLDS_DBZ` (40 dBZ) is
+scored beside it for members, mean field and control.
+
 Structure, beside skill
 -----------------------
 
@@ -223,6 +242,130 @@ def half_width_cells(dx_km: float, const: dict) -> int:
 def _fss(field, truth, *, threshold, half_width) -> float:
     return round(1.0 - fss_distance(field, truth, threshold=threshold,
                                     half_width=half_width), 4)
+
+
+# --------------------------------------------------------------------------
+# the validity mask: score only where a radar measured something
+# --------------------------------------------------------------------------
+
+#: How the observed coverage is read from a ``gpuwm-obs.radar-grid`` file.
+#: A column is observed when, at some level, a radar measured echo there
+#: (``z_mask``) or measured gates below the echo floor there (``z0_count``,
+#: the clear-air gate census of :mod:`gpuwm.obs.superob`).  Everything else
+#: is outside the network's view: no beam reached it, so nothing about it
+#: was observed, and it may not be scored as observed no-echo.
+COVERAGE_RULE = (
+    "a column is observed where some level carries measured echo (z_mask) "
+    "or measured below-floor gates (z0_count > 0, else z0_mask); columns "
+    "with neither are outside radar coverage and are excluded from both "
+    "neighborhood fractions (gpuwm.verify.obs.fss.masked_fss, the Rust "
+    "obs-score kernel, zero boundary)")
+
+#: The breakage the mask prevents, stated once for every receipt.  Before
+#: the mask, the 34.4 percent of the KDMX verification domain the radar did
+#: not see was filled with MISSING_OBS_FILL_DBZ and scored as confidently
+#: observed no-echo (docs/da-vs-wofs.md, the verification table): a forecast
+#: that is also quiet there collects agreement for free, and FSS rewards
+#: exactly that quiet area.
+COVERAGE_WHY = (
+    "unobserved columns used to be filled with MISSING_OBS_FILL_DBZ and "
+    "counted as observed no-echo, which raises FSS for any forecast that is "
+    "also quiet where no radar looked")
+
+#: Thresholds scored beside the published 30 dBZ.  30 dBZ is a common
+#: event (about a fifth of the KDMX columns exceed it), so a headline at 30
+#: alone flatters; 40 dBZ is where convective placement is tested.
+EXTRA_THRESHOLDS_DBZ = (40.0,)
+
+
+def observed_coverage(dataset) -> tuple[np.ndarray | None, str]:
+    """``(coverage2d, source)`` for one open radar-grid dataset.
+
+    ``coverage2d`` is ``None`` only when the file carries no clear-air
+    census at all (``z0_count`` and ``z0_mask`` both absent).  Such a file
+    cannot say where the radar looked and found nothing, and a mask built
+    from echo alone would exclude every correctly observed clear column, a
+    bias in the other direction; the caller then scores unmasked and the
+    receipt says so.
+    """
+
+    zmask = np.asarray(dataset["z_mask"][:]).astype(bool)
+    variables = getattr(dataset, "variables", {})
+    if "z0_count" in variables:
+        clear = np.asarray(dataset["z0_count"][:]) > 0
+        source = "z_mask | z0_count>0"
+    elif "z0_mask" in variables:
+        clear = np.asarray(dataset["z0_mask"][:]).astype(bool)
+        source = "z_mask | z0_mask"
+    else:
+        return None, ("unavailable: the file carries no clear-air census "
+                      "(z0_count, z0_mask), so unobserved and observed-clear "
+                      "columns cannot be told apart; scored unmasked")
+    covered = zmask | clear
+    if covered.ndim == 3:
+        covered = covered.any(axis=0)
+    return covered, source
+
+
+def load_observation(obs_path: Path, const: dict) -> dict:
+    """The observed composite, its echo columns and its coverage.
+
+    One reader for every scorer in this family, so the validity mask
+    cannot be applied by one and forgotten by another.
+    """
+
+    import netCDF4
+
+    with netCDF4.Dataset(str(obs_path)) as ds:
+        z = np.asarray(ds["z_obs"][:], float)
+        zmask = np.asarray(ds["z_mask"][:]).astype(bool)
+        obs_valid = ds.getncattr("valid_time")
+        coverage, source = observed_coverage(ds)
+    composite = np.where(zmask, z, -np.inf).max(axis=0)
+    composite = np.where(np.isfinite(composite), composite,
+                         const["MISSING_OBS_FILL_DBZ"])
+    if coverage is not None and coverage.shape != composite.shape:
+        raise SystemExit(
+            f"{obs_path}: coverage {coverage.shape} and composite "
+            f"{composite.shape} disagree; the file is malformed")
+    if coverage is not None and not coverage.any():
+        raise SystemExit(
+            f"{obs_path}: no column of this frame was observed by any radar; "
+            "there is nothing to score it against")
+    return {"z": z, "zmask": zmask, "composite": composite,
+            "echo2d": zmask.any(axis=0), "valid_time": obs_valid,
+            "coverage": coverage, "coverage_source": source}
+
+
+def coverage_record(coverage: np.ndarray | None, source: str) -> dict:
+    """What the receipt says about the mask a frame was scored under."""
+
+    if coverage is None:
+        return {"masked": False, "source": source, "fraction": None,
+                "observed_cells": None, "total_cells": None}
+    return {"masked": True, "source": source,
+            "fraction": round(float(coverage.mean()), 4),
+            "observed_cells": int(coverage.sum()),
+            "total_cells": int(coverage.size)}
+
+
+def scored_fss(field, truth, *, threshold, half_width, coverage) -> float:
+    """FSS over the observed columns; the unmasked score without a mask.
+
+    The masked arm is :func:`gpuwm.verify.obs.fss.masked_fss` (Rust
+    ``obs-score``): the neighborhood fraction is the event fraction among
+    the OBSERVED cells of each box, cells whose box holds no observed cell
+    drop out, and outside the array is not observed (zero boundary).
+    """
+
+    if coverage is None:
+        return _fss(field, truth, threshold=threshold, half_width=half_width)
+    from gpuwm.verify.obs.fss import ZERO_BOUNDARY, masked_fss
+    result = masked_fss(np.asarray(field, float), np.asarray(truth, float),
+                        valid=np.asarray(coverage, bool),
+                        threshold=float(threshold),
+                        half_width=int(half_width), boundary=ZERO_BOUNDARY)
+    return round(float(result.fss), 4)
 
 
 # --------------------------------------------------------------------------
@@ -664,17 +807,12 @@ def score_leg(*, composites: Path, obs_path: Path, leg: int, dx_km: float,
     high neighborhood score does not already answer.
     """
 
-    import netCDF4
-
-    with netCDF4.Dataset(str(obs_path)) as ds:
-        z = np.asarray(ds["z_obs"][:], float)
-        zmask = np.asarray(ds["z_mask"][:]).astype(bool)
-        obs_valid = ds.getncattr("valid_time")
-
-    echo2d = zmask.any(axis=0)
-    obs_comp = np.where(zmask, z, -np.inf).max(axis=0)
-    obs_comp = np.where(np.isfinite(obs_comp), obs_comp,
-                        const["MISSING_OBS_FILL_DBZ"])
+    observation = load_observation(obs_path, const)
+    z, zmask = observation["z"], observation["zmask"]
+    obs_valid = observation["valid_time"]
+    echo2d = observation["echo2d"]
+    obs_comp = observation["composite"]
+    coverage = observation["coverage"]
 
     names = member_names(composites, leg)
     if not names:
@@ -708,6 +846,10 @@ def score_leg(*, composites: Path, obs_path: Path, leg: int, dx_km: float,
     for box_km in sorted(float(k) for k in wanted):
         by_half_width.setdefault(_half_width_for_box(box_km, dx_km),
                                  []).append(round(box_km, 3))
+    def score(field, *, hw=half_width, at=threshold):
+        return scored_fss(field, obs_comp, threshold=at, half_width=hw,
+                          coverage=coverage)
+
     curve = []
     for hw in sorted(by_half_width):
         requested = by_half_width[hw]
@@ -718,15 +860,24 @@ def score_leg(*, composites: Path, obs_path: Path, leg: int, dx_km: float,
             # What was actually scored: the accurate label, which is not
             # always what was asked for.
             "box_km_across": round((2 * hw + 1) * dx_km, 3),
-            "fss30_fcst": _fss(fcst, obs_comp, threshold=threshold,
-                               half_width=hw),
-            "fss30_control": _fss(ctrl, obs_comp, threshold=threshold,
-                                  half_width=hw),
+            "fss30_fcst": score(fcst, hw=hw),
+            "fss30_control": score(ctrl, hw=hw),
         })
 
     # -- the ensemble mean is a field no member produced; score them too --
-    per_member = [_fss(member, obs_comp, threshold=threshold,
-                       half_width=half_width) for member in members]
+    per_member = [score(member) for member in members]
+
+    # -- the headline also at a threshold that is not a common event ------
+    by_threshold = {}
+    for extra in EXTRA_THRESHOLDS_DBZ:
+        member_scores = [score(member, at=extra) for member in members]
+        by_threshold[f"{extra:g}"] = {
+            "threshold_dbz": extra,
+            "per_member_mean": round(float(np.mean(member_scores)), 4),
+            "per_member": member_scores,
+            "ensemble_mean_field": score(fcst, at=extra),
+            "control": score(ctrl, at=extra),
+        }
 
     row = {
         "leg": leg,
@@ -735,16 +886,23 @@ def score_leg(*, composites: Path, obs_path: Path, leg: int, dx_km: float,
         "obs_cols_gt35": int(((z * zmask).max(axis=0) >= column).sum()),
         "fcst_cols_gt35_in_echo": int((fcst >= column)[echo2d].sum()),
         "control_cols_gt35_in_echo": int((ctrl >= column)[echo2d].sum()),
-        "fss30_fcst": _fss(fcst, obs_comp, threshold=threshold,
-                           half_width=half_width),
-        "fss30_control": _fss(ctrl, obs_comp, threshold=threshold,
-                              half_width=half_width),
+        # Over the observed columns only (COVERAGE_RULE); the unmasked
+        # numbers the published gallery carries are kept below, labelled.
+        "fss30_fcst": score(fcst),
+        "fss30_control": score(ctrl),
+        "fss30_fcst_unmasked": _fss(fcst, obs_comp, threshold=threshold,
+                                    half_width=half_width),
+        "fss30_control_unmasked": _fss(ctrl, obs_comp, threshold=threshold,
+                                       half_width=half_width),
+        "coverage": coverage_record(coverage,
+                                    observation["coverage_source"]),
         "fss_half_width_cells": half_width,
         "fss_box_cells_across": 2 * half_width + 1,
         "fss_box_km_across": round((2 * half_width + 1) * dx_km, 3),
         "per_member": {
             "scored_field": ("each member's own column-max reflectivity, "
-                             "at the published box"),
+                             "at the published box, over the observed "
+                             "columns"),
             "member_names": list(names),
             "fss30": per_member,
             "mean": round(float(np.mean(per_member)), 4),
@@ -757,6 +915,7 @@ def score_leg(*, composites: Path, obs_path: Path, leg: int, dx_km: float,
                      "therefore scores higher; the gap between "
                      "per_member.mean and fss30_fcst is that smoothing"),
         },
+        "by_threshold": by_threshold,
         "neighborhood_curve": curve,
     }
     if structure:
@@ -841,8 +1000,40 @@ def main(argv: list[str] | None = None) -> int:
 
     per_member_means = [f["per_member"]["mean"] for f in frames]
 
+    def frame_mean(pick):
+        return round(float(np.mean([pick(f) for f in frames])), 4)
+
+    fractions = [f["coverage"]["fraction"] for f in frames
+                 if f["coverage"]["masked"]]
+    headline = {
+        # The member score is the headline: each member is a forecast the
+        # model can produce.  The ensemble-mean field is reported beside it
+        # and labelled, because averaging smooths the field before the
+        # metric's own boxcar does and scores higher than any member.
+        "primary": "fss30_per_member_mean",
+        "fss30_per_member_mean": round(float(np.mean(per_member_means)), 4),
+        "fss30_ensemble_mean_field": frame_mean(lambda f: f["fss30_fcst"]),
+        "fss30_control": frame_mean(lambda f: f["fss30_control"]),
+        "by_threshold": {
+            key: {
+                "threshold_dbz": frames[0]["by_threshold"][key][
+                    "threshold_dbz"],
+                "per_member_mean": frame_mean(
+                    lambda f, k=key: f["by_threshold"][k]["per_member_mean"]),
+                "ensemble_mean_field": frame_mean(
+                    lambda f, k=key: f["by_threshold"][k][
+                        "ensemble_mean_field"]),
+                "control": frame_mean(
+                    lambda f, k=key: f["by_threshold"][k]["control"]),
+            } for key in frames[0]["by_threshold"]},
+        "validity_mask": ("on" if len(fractions) == len(frames)
+                          else "partial" if fractions else "unavailable"),
+        "coverage_fraction_mean": (round(float(np.mean(fractions)), 4)
+                                   if fractions else None),
+    }
+
     payload = {
-        "schema": "gpuwm-da.sweep-score.v2",
+        "schema": "gpuwm-da.sweep-score.v3",
         "label": args.label,
         "dx_km": args.dx_km,
         "constants_source": source,
@@ -875,6 +1066,12 @@ def main(argv: list[str] | None = None) -> int:
                                        for f in frames])), 4),
         },
         "neighborhood_curve_mean": curve_mean,
+        "headline": headline,
+        "validity_mask": {"rule": COVERAGE_RULE, "why": COVERAGE_WHY},
+        "fss30_fcst_unmasked_mean": frame_mean(
+            lambda f: f["fss30_fcst_unmasked"]),
+        "fss30_control_unmasked_mean": frame_mean(
+            lambda f: f["fss30_control_unmasked"]),
     }
     if not args.no_structure:
         payload["structure_means"] = structure_means(frames)
@@ -883,11 +1080,14 @@ def main(argv: list[str] | None = None) -> int:
     args.out.write_text(json.dumps(payload, indent=1), encoding="utf-8")
     for frame in frames:
         member = frame["per_member"]
+        cover = frame["coverage"]
         line = (f"leg {frame['leg']:2d}  obs {frame['obs_valid_time']}  "
-                f"FSS30 mean-field {frame['fss30_fcst']:.4f}  "
-                f"per-member {member['mean']:.4f} "
+                f"FSS30 per-member {member['mean']:.4f} "
                 f"[{member['min']:.4f}-{member['max']:.4f}]  "
-                f"ctrl {frame['fss30_control']:.4f}")
+                f"mean-field {frame['fss30_fcst']:.4f}  "
+                f"ctrl {frame['fss30_control']:.4f}  "
+                + (f"coverage {cover['fraction']:.3f}" if cover["masked"]
+                   else "UNMASKED"))
         if "structure" in frame:
             block = frame["structure"]
             line += (f"  objects obs {block['observed']['objects']['count']}"
@@ -896,10 +1096,17 @@ def main(argv: list[str] | None = None) -> int:
                      f"{block['member_spread']['objects.count']['min']:.0f}-"
                      f"{block['member_spread']['objects.count']['max']:.0f}")
         print(line)
-    print(f"mean FSS30 mean-field {payload['fss30_fcst_mean']:.4f}  "
-          f"per-member {payload['fss30_per_member_mean']:.4f}  "
+    print(f"mean FSS30 per-member {payload['fss30_per_member_mean']:.4f}  "
+          f"mean-field {payload['fss30_fcst_mean']:.4f}  "
           f"ctrl {payload['fss30_control_mean']:.4f}  "
-          f"[constants from {source}]")
+          f"validity mask {headline['validity_mask']}"
+          + (f" (coverage {headline['coverage_fraction_mean']:.3f})"
+             if headline["coverage_fraction_mean"] is not None else "")
+          + f"  [constants from {source}]")
+    for key, block in headline["by_threshold"].items():
+        print(f"mean FSS{key} per-member {block['per_member_mean']:.4f}  "
+              f"mean-field {block['ensemble_mean_field']:.4f}  "
+              f"ctrl {block['control']:.4f}")
     if len(curve_mean) > 1:
         print("FSS vs neighborhood (square side, km):")
         for row in curve_mean:

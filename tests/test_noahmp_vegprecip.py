@@ -4,7 +4,7 @@ The bar is bitwise identity with the unmodified WRF v4.6.1 module -- max_ulp 0
 *and* an identical 32-bit pattern, which is strictly stronger because the ULP
 map deliberately treats -0.0 and +0.0 as one point.
 
-The fixtures under ``gpuwm/data/noahmp/oracle/`` were produced by
+The fixtures under ``tests/data/oracles/noahmp/`` were produced by
 ``tools/noahmp_wrf461_oracle/build_vegprecip.sh`` from
 
     tree   the pinned stock-WRF v4.6.1 gate checkout
@@ -30,7 +30,7 @@ from gpuwm.core.fp32_ulp import bitwise_identical, max_ulp
 
 _DATA = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "gpuwm", "data", "noahmp", "oracle",
+    "tests", "data", "oracles", "noahmp",
 )
 PHEN_CSV = os.path.join(_DATA, "noahmp-vegprecip-phenology.csv")
 PRCP_CSV = os.path.join(_DATA, "noahmp-vegprecip-precip_heat.csv")

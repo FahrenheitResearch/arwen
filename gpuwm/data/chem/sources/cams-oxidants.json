@@ -1,0 +1,292 @@
+{
+  "schema": "gpuwm.chem.source.v1",
+  "name": "cams-oxidants",
+  "kind": "oxidant",
+  "description": "Daily-mean OH, H2O2 and NO3 from the same CAMS forecast, prescribed (not transported) as GOCART's background oxidants backg_oh, backg_h2o2 and backg_no3.",
+  "route": null,
+  "credential": "copernicus-ads",
+  "format": "grib2",
+  "grid": {
+    "kind": "regular_latlon",
+    "spacing_deg": 0.4,
+    "global": true
+  },
+  "vertical": {
+    "kind": "hybrid_sigma_pressure",
+    "levels": {
+      "first": 1,
+      "last": 137
+    },
+    "coefficients": "section4_coordinate_values",
+    "full_level_rule": "mean_of_half_levels",
+    "surface_pressure_variable": "surface_pressure",
+    "humidity_variable": "specific_humidity",
+    "horizontal_remap": "bilinear",
+    "vertical_remap": "wrf_real_vert_interp",
+    "vertical_axis": "log_pressure",
+    "vertical_target": "total_hydrostatic_pressure",
+    "extrapolation": "constant",
+    "remap_note": "the target is the frame's final total hydrostatic half-level pressure (WRF's p+pb), the target WRF-Chem's boundary preprocessor mozbc interpolates onto; the source pressure is total too, full levels from the records' own L137 coefficients and the frame's surface pressure"
+  },
+  "acquisition": {
+    "kind": "cads",
+    "api_url": "https://ads.atmosphere.copernicus.eu/api",
+    "site": "https://ads.atmosphere.copernicus.eu",
+    "dataset": "cams-global-atmospheric-composition-forecasts",
+    "dataset_page": "https://ads.atmosphere.copernicus.eu/datasets/cams-global-atmospheric-composition-forecasts",
+    "cycle_hours": [
+      0,
+      12
+    ],
+    "cadence_s": 10800,
+    "horizon_h": 120,
+    "latency_s": 36000,
+    "latency_note": "planning allowance for the 00Z and 12Z runs to be posted, not a measured guarantee",
+    "margin_cells": 2,
+    "keys": {
+      "variable": "variable",
+      "date": "date",
+      "cycle": "time",
+      "lead": "leadtime_hour",
+      "area": "area",
+      "area_order": [
+        "north",
+        "west",
+        "south",
+        "east"
+      ]
+    },
+    "requests": {
+      "model_level": {
+        "fixed": {
+          "type": [
+            "forecast"
+          ],
+          "data_format": "grib"
+        },
+        "levels_key": "model_level",
+        "levels": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31,
+          32,
+          33,
+          34,
+          35,
+          36,
+          37,
+          38,
+          39,
+          40,
+          41,
+          42,
+          43,
+          44,
+          45,
+          46,
+          47,
+          48,
+          49,
+          50,
+          51,
+          52,
+          53,
+          54,
+          55,
+          56,
+          57,
+          58,
+          59,
+          60,
+          61,
+          62,
+          63,
+          64,
+          65,
+          66,
+          67,
+          68,
+          69,
+          70,
+          71,
+          72,
+          73,
+          74,
+          75,
+          76,
+          77,
+          78,
+          79,
+          80,
+          81,
+          82,
+          83,
+          84,
+          85,
+          86,
+          87,
+          88,
+          89,
+          90,
+          91,
+          92,
+          93,
+          94,
+          95,
+          96,
+          97,
+          98,
+          99,
+          100,
+          101,
+          102,
+          103,
+          104,
+          105,
+          106,
+          107,
+          108,
+          109,
+          110,
+          111,
+          112,
+          113,
+          114,
+          115,
+          116,
+          117,
+          118,
+          119,
+          120,
+          121,
+          122,
+          123,
+          124,
+          125,
+          126,
+          127,
+          128,
+          129,
+          130,
+          131,
+          132,
+          133,
+          134,
+          135,
+          136,
+          137
+        ]
+      },
+      "single_level": {
+        "fixed": {
+          "type": [
+            "forecast"
+          ],
+          "data_format": "grib"
+        },
+        "levels_key": null,
+        "levels": null
+      }
+    },
+    "checked": "2026-09-30: form and constraints read from the public catalogue; 2025-01 and 2025-07 have 00Z and 12Z runs, model-level leads 0-120 h every 3 h, the 18 core model-level variables on all 137 levels, surface_pressure single-level 3-hourly"
+  },
+  "variables": {
+    "hydroxyl_radical": {
+      "request": "hydroxyl_radical",
+      "group": "model_level",
+      "selector": {
+        "discipline": 192,
+        "category": 217,
+        "parameter": 30,
+        "level_type": 105
+      },
+      "units": "kg kg-1",
+      "basis": "moist_air"
+    },
+    "hydrogen_peroxide": {
+      "request": "hydrogen_peroxide",
+      "group": "model_level",
+      "selector": {
+        "discipline": 192,
+        "category": 217,
+        "parameter": 3,
+        "level_type": 105
+      },
+      "units": "kg kg-1",
+      "basis": "moist_air"
+    },
+    "nitrate_radical": {
+      "request": "nitrate_radical",
+      "group": "model_level",
+      "selector": {
+        "discipline": 192,
+        "category": 217,
+        "parameter": 32,
+        "level_type": 105
+      },
+      "units": "kg kg-1",
+      "basis": "moist_air"
+    },
+    "specific_humidity": {
+      "request": "specific_humidity",
+      "group": "model_level",
+      "selector": {
+        "discipline": 0,
+        "category": 1,
+        "parameter": 0,
+        "level_type": 105
+      },
+      "units": "kg kg-1",
+      "basis": "moist_air"
+    },
+    "surface_pressure": {
+      "request": "surface_pressure",
+      "group": "single_level",
+      "selector": {
+        "discipline": 0,
+        "category": 3,
+        "parameter": 0,
+        "level_type": 1
+      },
+      "units": "Pa"
+    }
+  },
+  "time": {
+    "cadence_s": 10800,
+    "latency_s": 36000,
+    "persistence": null,
+    "interpolation": "daily_mean"
+  },
+  "remap": "bilinear",
+  "licence": "CC-BY-4.0 (Licence to use Copernicus Products)",
+  "attribution": "Generated using Copernicus Atmosphere Monitoring Service information {year}. Neither the European Commission nor ECMWF is responsible for any use that may be made of the Copernicus information or data it contains.",
+  "provenance": "Request grammar and availability read from the public ADS catalogue form and constraints on 2026-09-30. ecCodes definitions/grib2/paramId.def (WMO: 210121 NO2, 210122 SO2, 210123 CO, 210203 O3 as 0/20/2 with constituentType 5, 8, 4, 0) and definitions/grib2/localConcepts/ecmf/paramId.def (210001-210011 as 192/210/1-11), develop branch read 2026-09-30; the product definition template of every record is read from the record, never assumed. route is null because the fetch-route table (gpuwm/authorities/rw-wps-fetch-routes.v1.json) describes object downloads and a data-store API is a queued job protocol; the request grammar is this row's acquisition block, read by gpuwm.data_store_fetch. ecCodes localConcepts/ecmf/paramId.def: 217030 OH as 192/217/30, 217003 H2O2 as 192/217/3, 217032 NO3 as 192/217/32 (read 2026-09-30); the record's own template decides. the mean of the day's eight 3-hourly frames, the form GOCART's diurnal scaling expects (chem/module_gocart_chem.F:110, :122). Same acquisition block as cams-global: a run holding both rows submits one request per group."
+}

@@ -193,16 +193,24 @@ impl Fetcher {
 
     /// Gather every fact [`crate::plan::decide`] needs about one object.
     ///
-    /// The coverage proof is the interesting part.  Rather than trust a
-    /// declared object size, this reads the last indexed message's own
-    /// Section 0 to learn its length, then asks for exactly one byte
-    /// **more** than that message occupies.  If the origin returns the
-    /// message and nothing else, the index provably ends where the
-    /// object ends.  If it returns one extra byte, the object carries
-    /// records the index never mentions -- a mid-publish `.idx`, and
-    /// the case the project rule exists for.  Both answers cost one bounded
-    /// range GET whose bytes the cache keeps for the transfer that
-    /// follows.
+    /// The coverage proof is the interesting part.  It reads the last
+    /// indexed message's own Section 0 to learn its length, and compares
+    /// where that message ends with the object's total length, which the
+    /// origin states in the `Content-Range` of a one-byte range answer
+    /// (`bytes 0-0/TOTAL`).  Equal: the index provably ends where the
+    /// object ends.  Short: the object carries records the index never
+    /// mentions -- a mid-publish `.idx`, and the case the project rule
+    /// exists for.
+    ///
+    /// The proof used to ask for one byte past the last message instead.
+    /// An origin answers that request clipped at the object's end
+    /// (`bytes A-(END-1)/TOTAL`), which the strict range reader rightly
+    /// refuses as a foreign span, so every complete index read as
+    /// unproven and `--mode idx-subset` refused every HRRR object on S3
+    /// ("index coverage could not be proven") while the Python transport,
+    /// which compares against the object length, subset the same files.
+    /// That one-byte probe remains only for an origin that states no
+    /// total.
     pub fn probe_object(
         &self,
         grib_url: &str,
@@ -269,7 +277,21 @@ impl Fetcher {
         let Some(message_bytes) = grib2_message_length(&head) else {
             return (None, None, None);
         };
-        // One byte past the message: present => the index is short.
+        let indexed_end = last_offset + message_bytes;
+        if let Ok(Some(total)) = self.client.object_length(grib_url) {
+            return if indexed_end == total {
+                (Some(message_bytes), Some(true), Some(total))
+            } else if indexed_end < total {
+                // The object carries bytes past the last indexed message.
+                (Some(message_bytes), Some(false), Some(total))
+            } else {
+                // The last indexed message claims bytes the object does
+                // not have: no coverage statement is possible.
+                (Some(message_bytes), None, Some(total))
+            };
+        }
+        // No stated total.  One byte past the message: present => the
+        // index is short.
         let tail = match self
             .client
             .get_range(grib_url, last_offset, last_offset + message_bytes)

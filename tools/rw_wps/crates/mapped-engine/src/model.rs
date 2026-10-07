@@ -476,6 +476,47 @@ impl<'a> FieldSpec<'a> {
         }
     }
 
+    /// `fields.<name>.published_levels`: the declared ladder levels the
+    /// publisher writes this field on (`mapped_source._published_levels`).
+    /// On the other declared levels the field is zero when the file
+    /// leaves it out.  `None` when the field declares no subset.  The
+    /// authoring rules (which fields, which formats, a strict subset of
+    /// `vertical.levels`) are `load_mapping`'s; what the decode needs is
+    /// that the value is the one it implements.
+    pub fn published_levels(&self) -> Result<Option<Vec<f64>>> {
+        let Some(declaration) = self.raw.field("published_levels") else {
+            return Ok(None);
+        };
+        if declaration.get("absent").and_then(Node::as_str) != Some("zero") {
+            return Err(mapping_invalid(format!(
+                "fields.{}.published_levels.absent must be 'zero'",
+                self.name
+            )));
+        }
+        let levels = declaration
+            .get("levels")
+            .map(Node::items)
+            .filter(|items| !items.is_empty())
+            .ok_or_else(|| {
+                mapping_invalid(format!(
+                    "fields.{}.published_levels.levels must be a non-empty numeric list",
+                    self.name
+                ))
+            })?;
+        levels
+            .iter()
+            .map(|item| {
+                item.as_f64().ok_or_else(|| {
+                    mapping_invalid(format!(
+                        "fields.{}.published_levels.levels must be numbers",
+                        self.name
+                    ))
+                })
+            })
+            .collect::<Result<Vec<f64>>>()
+            .map(Some)
+    }
+
     pub fn selector_stack_axis(&self) -> Option<&'a str> {
         self.raw.field("selector_stack_axis").and_then(Node::as_str)
     }

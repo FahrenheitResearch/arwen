@@ -52,8 +52,12 @@ Noah-MP leaf batches that property is gated, not asserted, by
 from __future__ import annotations
 
 import ast
+import math
 import subprocess
 from pathlib import Path
+
+import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -161,6 +165,33 @@ _PER_COLUMN_STRIDE_NAMES = frozenset((
 #: the no-``DomainState`` path used by the standalone harnesses, and the
 #: 256-byte validity words, built once per process.
 _PHYSICS_ALLOCATION_INVENTORY = {
+    # Integer-define launchers are part of the same kernel family. Chem
+    # vertical mixing and IEVA draw only declared caller/state buffers;
+    # their empty rows reject any future raw allocation.
+    'gpuwm/core/chem_vertmx.py': {},
+    'gpuwm/core/ieva.py': {},
+    # Public Jacobi returns two fresh caller-owned arrays and reduces one
+    # transient status vector. The CPU witness below checks actual shapes,
+    # bytes, input-copy ownership and repeat-call independence.
+    # _launch_global (71b192639, ensembles above 64 members): one reused
+    # slab per call for the global tier, bounded by GLOBAL_SCRATCH_BYTES
+    # (or GLOBAL_MIN_IN_FLIGHT matrices) and freed on return.
+    'gpuwm/core/jacobi_eigh.py': {'batched_eigh': 3, '_launch_global': 1},
+    # SASE's pool-backed closure is priced by the two live-set phases in
+    # preflight.sase_workspace_phases, including the driver-held fields.
+    # The CPU allocation/lifetime witness executes its actual step with
+    # numerical kernels stubbed and compares peak bytes to that bound.
+    'gpuwm/core/sase.py': {
+        'launch_box_filter': 1, 'launch_structure_functions': 1,
+        '_z_stencil': 1, '_thickness_args': 1, 'launch_strain': 1,
+        'launch_germano_lift': 2, 'launch_model_stress': 1,
+        'launch_governed_stress': 3, 'launch_dynamic_solve': 2,
+        'launch_bulk_richardson_zi': 1, 'launch_w_sensor_moments': 1,
+        'launch_vertical_channel': 2, 'launch_blackadar_length': 1,
+        'launch_sase_step': 6, 'launch_n2': 1, 'launch_moist_n2': 1,
+        'launch_plume_vent_flux': 3, 'launch_vent_deposit_scale': 1,
+        'launch_scalar_mix': 2,
+    },
     # Active parameter-table scaling is reached from initialize_physics,
     # never the timestep driver. The validated registry selects at most
     # 61 unique cells, independent of domain dimensions. Two explicit
@@ -178,6 +209,13 @@ _PHYSICS_ALLOCATION_INVENTORY = {
     "gpuwm/core/lake.py": {
         "initialize_lake": 6,
         "refresh_columns": 6,
+        # c4ef64622 moved the CLM lake column storage out of the per-thread
+        # local frame into one device arena per lake model: at most
+        # LAKE_LAUNCH_COLUMNS * LAKE_ARENA_SLOTS * 8 bytes (0.31 GiB, less
+        # for fewer lake columns), reused while its size holds and priced as
+        # lake/arena.  Entered here, in the gate sweep, because that commit
+        # did not enter its own row.
+        "lake_arena": 1,
     },
     # Preparation seeds: candidate numbers span the grid, while rounded alt
     # and gathered scratch use at most 112 bytes per cell in one bounded chunk.
@@ -189,6 +227,127 @@ _PHYSICS_ALLOCATION_INVENTORY = {
         "thompson_cold_start_moment_closure": 2,
     },
     'gpuwm/core/acoustic.py': {},
+    # The chem program (lane/aq-core).  chem_bdy and chem_outputs allocate
+    # nothing through a cupy allocator (their launch tables are cp.asarray
+    # uploads of a handful of pointers).  chem_driver's three sites:
+    # ``_context`` builds the (rows, ny, nx) float32 deposition-velocity
+    # plane ONCE per chem domain and reuses it every step; ``_masses``
+    # allocates the (fields, nz*ny) float64 row partials of one ledger
+    # reduction (8 * nrows * nz * ny bytes: 1.7 MiB for 8 rows at
+    # 896 x 512 x 59) and a zero-length result for an empty row set.
+    'gpuwm/core/chem_bdy.py': {},
+    'gpuwm/core/chem_driver.py': {
+        '_masses': 2,
+        '_context': 1,
+    },
+    'gpuwm/core/chem_outputs.py': {},
+    # chem_prep's ``refresh`` allocates its thirteen met fields ONCE per
+    # chem domain (the ``shape`` check keeps them on every later step);
+    # the device inventory prices them as ``chemprep_<field>``
+    # (gpuwm/core/device_inventory.py:chem_state_array_shapes).
+    'gpuwm/core/chem_prep.py': {'refresh': 1},
+    # The smoke set (lane/aq-smoke).  The fire process and the large-scale
+    # washout allocate nothing through a cupy allocator: every array they
+    # write is one of their ChemAllocations (DomainState allocates them and
+    # device_inventory.chem_state_array_shapes prices them), and their host
+    # frames are uploaded into those.  The Freitas plume unit
+    # (gpuwm/core/chem_plumerise.py) is not on this list because it compiles
+    # through its own unflushed NVRTC site (chem_plumerise_cache) rather than
+    # get_kernel.  Its launch allocates per plume call, every
+    # plumerisefire_frq minutes, never per step: a (12, ny, nx) float32
+    # property plane (20 MiB at 896 x 512), per-fire-column outputs (about
+    # 1.5 KiB per fire column at 59 levels) and the bounded solver workspace,
+    # PLUME_BATCH_COLUMNS x PLUME_WORKSPACE_WORDS float32 = 217 MB.  The
+    # preflight does not price that transient yet: recorded as debt.
+    # trailing_planes (ea9faa63c, the HRRR-Smoke fire timing): once per run,
+    # the trailing window's mass and FRP sums (float64) and burning-hour
+    # count (int32) on the fire source's 2-D grid, 20 bytes per source cell,
+    # cached on the chem state and never reallocated per step.
+    'gpuwm/core/chem_fire.py': {
+        "trailing_planes": 3,
+    },
+    'gpuwm/core/chem_wetdep.py': {},
+    # WRF's monotonic final stage.  The forecast route hands it the six
+    # scratch arrays, the zero implicit flux, mub and the map factors from
+    # DomainState.scratch (gpuwm/core/chem_transport.py), so on that route
+    # the only site reached is ``launch_mono_fluxes``'s unit-map plane on a
+    # domain with no map factors, one (ny, nx) plane per row launch.  The
+    # other sites serve the oracle tests' standalone calls: ``_plane``
+    # broadcasts a scalar mass, and the launchers allocate the scratch, the
+    # zero implicit flux and a zero base mass when the caller supplies none.
+    'gpuwm/core/chem_advect_mono.py': {
+        '_plane': 1,
+        'launch_mono_fluxes': 3,
+        'launch_mono_renorm_apply': 1,
+    },
+    # GOCART-lite (lane/aq-gocart).  Every launcher below takes its outputs
+    # and workspaces from the caller and allocates only when handed None,
+    # which the chem processes never do on the forecast path: their arrays
+    # are the processes' ChemAllocations, which DomainState allocates and
+    # device_inventory.chem_state_array_shapes prices.  The exceptions:
+    # * chem_ageing ``launch_ageing``: the aging process hands None on the
+    #   first chem step and keeps the returned REAL*8 workspace on the chem
+    #   state, (3, participants, ny, nx) float64 = 96 B per column for the
+    #   four GOCART carbon rows, 42 MiB at 896 x 512, once per domain.
+    # * chem_dust ``step``: dust_opt = 3 (AFWA) only, once per domain: the
+    #   WRF-optional DRI/NGA sentinels (four float32 2-D planes) and the
+    #   scheme's TOT_DUST/VIS_DUST working columns (two float32 3-D fields,
+    #   8 B per cell, 207 MiB at 59 x 512 x 896).  NOT priced by the
+    #   preflight: a cost it does not know about, recorded as debt.
+    # * chem_seasalt ``prepare_seasalt_table``: the sub-bin offsets and
+    #   REAL*8 table, at most 100,000 words (refused above that), once per
+    #   distinct dt.
+    # * chem_optics ``gocart_optics``: each optical output the caller names
+    #   and does not hand in, the moments and diagnostics only when asked,
+    #   and the (ny, nx) int32 refractive-index mask every call.  The
+    #   optics process hands in tauaer, EXTCOF55 and AOD5502D and asks for
+    #   nothing else, so on the forecast path only the mask is allocated,
+    #   once per radiation interval.  ``opt_out`` and ``rrtmg_sw_bands``
+    #   allocate only when handed no outputs (parity tests; the radiation
+    #   adapter, when wired, hands its own).  ``step``: the process's four
+    #   SW wavelengths of tau, (4, nz, ny, nx) float32 = 16 B per cell,
+    #   432 MiB at 59 x 512 x 896, once per domain.
+    # * chem_rrtmgp_aerosol ``_outputs``: the column lookup's four
+    #   (ncol, nz, nbands) outputs and its (nz, ny, nx) type mask, per call.
+    #   Reached only from the parity tests today; the radiation adapter that
+    #   wires it must draw these from the radiation workspace instead.
+    'gpuwm/core/chem_ageing.py': {
+        'launch_ageing': 1,
+    },
+    'gpuwm/core/chem_drydep_aerosol.py': {
+        'launch_drydep': 1,
+    },
+    'gpuwm/core/chem_dust.py': {
+        'step': 5,
+    },
+    'gpuwm/core/chem_inventory.py': {},
+    'gpuwm/core/chem_mp_coupling.py': {},
+    'gpuwm/core/chem_optics.py': {
+        'gocart_optics': 6,
+        'opt_out': 2,
+        'rrtmg_sw_bands': 2,
+        'step': 1,
+    },
+    'gpuwm/core/chem_rrtmgp_aerosol.py': {
+        '_outputs': 2,
+    },
+    'gpuwm/core/chem_seasalt.py': {
+        'prepare_seasalt_table': 2,
+    },
+    'gpuwm/core/chem_settling.py': {
+        'launch_settling': 2,
+    },
+    'gpuwm/core/chem_sulfur.py': {
+        'launch_solar_init': 2,
+        'launch_solar_step': 1,
+    },
+    # lane/aq-cams.  The Wesely process's arrays are ChemAllocations the
+    # driver owns (the launch output, one (ny, nx) plane per Wesely row, and
+    # a zero plane); the one site left is the launcher's own output when a
+    # caller passes no buffer (the oracle test), (nrows, ny, nx) float32.
+    'gpuwm/core/chem_drydep_gas.py': {
+        'wesely_ddvel': 1,
+    },
     'gpuwm/core/advection.py': {
         '_launch': 1,
         'advect_scalar_rk3_periodic_test': 7,
@@ -831,6 +990,56 @@ def _tracked_core_modules() -> frozenset[str] | None:
     return tracked or None
 
 
+def _kernel_factory_modules(sources):
+    """Follow imported aliases and return-only wrappers of kernel loaders."""
+    trees = {module: ast.parse(source) for module, source in sources.items()}
+    imports = {}
+    for module, tree in trees.items():
+        names = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                prefix = node.module or ""
+                if node.level:
+                    parts = module.split(".")[:-node.level]
+                    prefix = ".".join(parts + ([prefix] if prefix else []))
+                for name in node.names:
+                    names[name.asname or name.name] = prefix + "." + name.name
+            elif isinstance(node, ast.Import):
+                for name in node.names:
+                    names[name.asname or name.name.split(".")[0]] = (
+                        name.name if name.asname else name.name.split(".")[0])
+        imports[module] = names
+
+    def symbol(module, node):
+        if isinstance(node, ast.Name):
+            return imports[module].get(node.id, module + "." + node.id)
+        if isinstance(node, ast.Attribute):
+            parent = symbol(module, node.value)
+            return parent + "." + node.attr if parent else None
+        return None
+
+    factories = {"gpuwm.core.kernels.get_kernel",
+                 "gpuwm.core.kernels.get_kernel_int_defines"}
+    changed = True
+    while changed:
+        changed = False
+        for module, tree in trees.items():
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                name = module + "." + node.name
+                if name in factories:
+                    continue
+                if any(isinstance(ret, ast.Return) and isinstance(ret.value, ast.Call)
+                       and symbol(module, ret.value.func) in factories
+                       for ret in ast.walk(node)):
+                    factories.add(name)
+                    changed = True
+    return {module for module, tree in trees.items()
+            if any(isinstance(node, ast.Call) and symbol(module, node.func) in factories
+                   for node in ast.walk(tree))}
+
+
 def _physics_gpu_modules() -> tuple[str, ...]:
     """Every tracked ``gpuwm/core`` module that launches a kernel, by AST.
 
@@ -838,65 +1047,174 @@ def _physics_gpu_modules() -> tuple[str, ...]:
     gate without anyone remembering to add it here.
     """
     tracked = _tracked_core_modules()
-    trees = {}
+    sources = {}
+    paths = {}
     for path in sorted((ROOT / "gpuwm" / "core").glob("*.py")):
         rel = path.relative_to(ROOT).as_posix()
         if tracked is not None and rel not in tracked:
             continue
-        trees[rel] = ast.parse(path.read_text(encoding="utf-8"))
-    fetchers = _kernel_fetchers(trees)
-    found = []
-    for rel, tree in trees.items():
-        # A fetcher counts only where it is imported from the module that
-        # defines it; a same-named local helper is not a kernel launch.
-        names = {"get_kernel"}
-        for node in ast.walk(tree):
-            if (isinstance(node, ast.ImportFrom)
-                    and node.module in fetchers):
-                names.update(alias.asname or alias.name
-                             for alias in node.names
-                             if alias.name in fetchers[node.module])
-        for node in ast.walk(tree):
-            if (isinstance(node, ast.Call)
-                    and isinstance(node.func, ast.Name)
-                    and node.func.id in names):
-                found.append(rel)
-                break
+        module = "gpuwm.core." + path.stem
+        sources[module] = path.read_text(encoding="utf-8")
+        paths[module] = rel
+    found = [paths[module] for module in sorted(_kernel_factory_modules(sources))]
     found.append("gpuwm/ingest/closure_device.py")
     return tuple(found)
 
 
-def _kernel_fetchers(trees) -> dict[str, frozenset[str]]:
-    """Top-level functions that only hand back a ``get_kernel`` result.
+def test_kernel_discovery_keeps_imported_and_local_loader_wrappers():
+    sources = {
+        "gpuwm.core.factory": "from gpuwm.core.kernels import get_kernel, get_kernel_int_defines\n"
+            "def loader(module, name, fork):\n"
+            "    if fork: return get_kernel_int_defines(module, name, {'FORK': 1})\n"
+            "    return get_kernel(module, name)\n",
+        "gpuwm.core.consumer": "from gpuwm.core.factory import loader as selected\n"
+            "def local(name): return selected('physics', name, False)\n"
+            "def step(): local('body')((1,), (1,), ())\n",
+        "gpuwm.core.qualified": "import gpuwm.core.factory as factory\n"
+            "def step(): factory.loader('physics', 'body', True)((1,), (1,), ())\n",
+        "gpuwm.core.relative": "from . import kernels as k\n"
+            "def step(): k.get_kernel('physics', 'body')((1,), (1,), ())\n",
+        "gpuwm.core.host": "def loader(): return object()\ndef step(): loader()\n",
+    }
+    assert _kernel_factory_modules(sources) == {
+        "gpuwm.core.factory", "gpuwm.core.consumer", "gpuwm.core.qualified",
+        "gpuwm.core.relative"}
+    # A new allocation in a transitive caller remains visible to the
+    # function-by-function ratchet; discovering wrappers is not an exemption.
+    allocated = sources["gpuwm.core.consumer"] + (
+        "def unpriced():\n    work = cp.empty((columns, levels), dtype=cp.float32)\n")
+    assert _inventory(allocated, "gpuwm/core/consumer.py") == {"unpriced": 1}
 
-    The breakage this closes: b0556bd76 routed the five aerosol Thompson
-    units (cold, sat, sed, state, warm) through
-    ``thompson_aerosol_launch.aerosol_kernel``, a one-line
-    ``get_kernel`` selector for the generation's define, and a scanner that
-    knew only the name ``get_kernel`` stopped seeing five modules that still
-    launch kernels every step.  Their rows, including the two empty
-    forecast-path rows this ratchet exists to assert, went unchecked.  A
-    function whose every ``return`` is a ``get_kernel`` or
-    ``get_kernel_int_defines`` call is the same launch under another name.
-    """
-    direct = {"get_kernel", "get_kernel_int_defines"}
-    fetchers: dict[str, frozenset[str]] = {}
-    for rel, tree in trees.items():
-        names = set()
-        for node in tree.body:
-            if not isinstance(node, ast.FunctionDef):
-                continue
-            returns = [inner for inner in ast.walk(node)
-                       if isinstance(inner, ast.Return)]
-            if returns and all(
-                    isinstance(inner.value, ast.Call)
-                    and isinstance(inner.value.func, ast.Name)
-                    and inner.value.func.id in direct
-                    for inner in returns):
-                names.add(node.name)
-        if names:
-            fetchers[rel[:-3].replace("/", ".")] = frozenset(names)
-    return fetchers
+
+def test_sase_actual_pool_peak_is_within_its_priced_phase(monkeypatch):
+    """Allocation ownership only: numerical kernels are outside this CPU test."""
+    import gc
+    import weakref
+    import numpy as np
+    from gpuwm.config import RunConfig, SASE_PBL_SCHEME
+    from gpuwm.core import preflight as pf, sase
+
+    class Allocations:
+        live = 0
+        peak = 0
+        rows = []
+
+        def __getattr__(self, name):
+            return getattr(np, name)
+
+        asnumpy = staticmethod(np.asarray)
+
+        def release(self, size):
+            self.live -= size
+
+        def record(self, result):
+            self.live += result.nbytes
+            self.peak = max(self.peak, self.live)
+            self.rows.append((result.shape, result.dtype.itemsize, result.nbytes))
+            weakref.finalize(result, self.release, result.nbytes)
+            return result
+
+        def empty(self, shape, dtype=np.float64):
+            return self.record(np.zeros(shape, dtype))
+
+        zeros = empty
+
+        def empty_like(self, value, **kwargs):
+            return self.record(np.zeros_like(value, **kwargs))
+
+    allocations = Allocations()
+    monkeypatch.setattr(sase, 'cp', allocations)
+    monkeypatch.setattr(sase, '_kern', lambda name: lambda *args, **kwargs: None)
+    # A zero-filled kernel stub produces zero z_i. The host scalar bound has
+    # no allocation, so replace it with a finite value for this storage test.
+    monkeypatch.setattr(sase, 'partition_cap', lambda *args, **kwargs: 1.0)
+    cfg = RunConfig(nx=9, ny=8, nz=6, dx=1000., dy=1000., ztop=6000., dt=1.,
+                    run_seconds=1., bl_pbl_physics=SASE_PBL_SCHEME)
+    shape = (cfg.nz, cfg.ny, cfg.nx)
+    # Match the model driver's seven held work fields and surface rho plane.
+    held = [allocations.empty(shape, np.float32) for _ in range(7)]
+    rho = allocations.empty(shape[1:], np.float32)
+    state = [np.ones(shape, np.float32) for _ in range(5)]
+    dz_col = np.full(shape, 100., np.float32)
+    result = sase.launch_sase_step(*state, dx=1000., dy=1000., dz=100., delta=1000.,
+        dt=1., n2=held[4], n2_moist=held[5], dz_col=dz_col, additive_dissipation=True)
+    phases = pf.sase_workspace_phases(cfg)
+    sizes = {name: sum(math.prod(dimensions) * width for dimensions, width in phase.values())
+             for name, phase in phases.items()}
+    assert allocations.peak == 102_400
+    assert sizes == {'solve': 102_848, 'apply': 71_000}
+    assert allocations.peak <= max(sizes.values())
+    priced = {(tuple(dimensions), width) for phase in phases.values()
+              for dimensions, width in phase.values()}
+    assert all((dimensions, width) in priced for dimensions, width, _ in allocations.rows)
+    assert all(value.dtype == np.dtype('float32') and value.shape == shape
+               for value in (result['kv'], result['km_h']))
+    assert sum(value.nbytes for value in (result['kv'], result['km_h'])) == 2 * 4 * math.prod(shape)
+    del result, held, rho
+    gc.collect()
+    assert allocations.live == 0
+
+
+@pytest.mark.parametrize('dtype', [np.float32, np.float64])
+@pytest.mark.parametrize('count', [0, 3])
+@pytest.mark.parametrize('contiguous', [False, True])
+def test_jacobi_outputs_are_caller_owned_and_status_is_transient(
+        monkeypatch, dtype, count, contiguous):
+    import sys
+    from types import SimpleNamespace
+    from gpuwm.core import jacobi_eigh as module
+
+    allocations, copies, launches = [], [], []
+
+    def empty(shape, dtype):
+        value = np.empty(shape, dtype=dtype)
+        allocations.append(value)
+        return value
+
+    def array(value):
+        copied = np.ascontiguousarray(value)
+        if copied is not value:
+            copies.append(copied)
+        return copied
+
+    def kernel(defines, shared_bytes):
+        def launch(grid, block, args, *, shared_mem):
+            source, w, v, status, n = args
+            assert source.flags.c_contiguous and n == count
+            assert shared_mem == shared_bytes
+            launches.append((grid, block, defines))
+            w.fill(7)
+            v.fill(9)
+            status.fill(2)
+        return launch
+
+    monkeypatch.setitem(sys.modules, 'cupy', SimpleNamespace(
+        empty=empty, ascontiguousarray=array, int32=np.int32))
+    monkeypatch.setattr(module, '_kernel', kernel)
+    original = np.arange(count * 25, dtype=dtype).reshape(count, 5, 5)
+    source = original if contiguous else original[:, :, ::-1]
+    before = source.tobytes()
+    w, v, sweeps = module.batched_eigh(source, return_sweeps=True)
+    assert source.tobytes() == before and len(allocations) == 3
+    assert w is allocations[0] and v is allocations[1]
+    status = allocations[2]
+    assert [(value.shape, value.dtype) for value in allocations] == [
+        ((count, 5), np.dtype(dtype)), ((count, 5, 5), np.dtype(dtype)),
+        ((count,), np.dtype(np.int32))]
+    assert sum(value.nbytes for value in allocations) == count * (30 * np.dtype(dtype).itemsize + 4)
+    assert all(not np.shares_memory(value, source) for value in allocations)
+    assert not np.shares_memory(w, v)
+    if count:
+        assert sweeps == 2 and len(launches) == 1
+        assert launches[0][2] == module.plan(5, np.dtype(dtype).str).defines
+        assert len(copies) == int(not contiguous)
+        assert sum(value.nbytes for value in copies) == int(not contiguous) * source.nbytes
+    else:
+        assert sweeps == 0 and launches == []
+    retained = w.copy()
+    module.batched_eigh(source)
+    assert np.array_equal(w, retained)
+    assert allocations[3] is not w and allocations[4] is not v
 
 
 def _allocator_names(node) -> tuple[str, ...]:

@@ -82,8 +82,11 @@ def test_static_samples_refresh_eos_and_preserve_background():
     background = {name: np.array(getattr(state, name), copy=True) for name in serialized_state_attrs()
                   if getattr(state, name, None) is not None}
     original = {name: values.copy() for name, values in background.items()}
-    names = ('thb', 'phb', 'dphb_resid', 'alb', 'rdnw', 'c1h', 'c2h', 'c3h', 'c4h',
-             'c3f', 'c4f', 'dc3f', 'dc4f', 'mub2d', 'p_top', 'dnw')
+    # the runtime's setup set (gpuwm.local_da_runtime), c1f/c2f/rdn included
+    # for the default hydrostatic mass balance of the member draw
+    names = ('thb', 'phb', 'dphb_resid', 'alb', 'rdnw', 'rdn', 'c1h', 'c2h',
+             'c1f', 'c2f', 'c3h', 'c4h', 'c3f', 'c4f', 'dc3f', 'dc4f', 'mub2d',
+             'p_top', 'dnw')
     setup = {name: getattr(state, name) for name in names}
     samples, report = covariance_states(background, setup, cfg, samples=3, seed=10,
         options=perturbation_options(length_scale_km=6., rim_width=1, mp_physics=6))

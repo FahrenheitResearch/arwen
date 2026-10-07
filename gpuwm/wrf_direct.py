@@ -1711,10 +1711,9 @@ def _wrfinput_fields(cache: PreparedCache, static: Mapping[str, np.ndarray],
     return result
 
 
-def _lbc_to_wrf(cache: PreparedCache, interval_index: int, logical: str,
-                side: str, kind: str) -> np.ndarray:
-    value = np.asarray(
-        cache.array(f"lbc/{interval_index}/{logical}/{side}/{kind}"))
+def _side_to_wrf(value: np.ndarray, logical: str, side: str) -> np.ndarray:
+    """One gpuwm-oriented side table in WRF's ``(width, z, side)`` layout."""
+    value = np.asarray(value)
     if side in {"west", "east"}:
         if logical == "mu":
             return value[0].T
@@ -1724,21 +1723,133 @@ def _lbc_to_wrf(cache: PreparedCache, interval_index: int, logical: str,
     return np.transpose(value, (1, 0, 2))
 
 
-def _wrfbdy_fields(cache: PreparedCache,
-                   interval_index: int) -> dict[str, np.ndarray]:
+def _lbc_to_wrf(cache: PreparedCache, interval_index: int, logical: str,
+                side: str, kind: str) -> np.ndarray:
+    return _side_to_wrf(
+        cache.array(f"lbc/{interval_index}/{logical}/{side}/{kind}"),
+        logical, side)
+
+
+#: The wrfbdy fields the export carries, WRF name to prepared logical name.
+_WRFBDY_EXPORT_FIELDS = {
+    "U": "u", "V": "v", "PH": "phi", "T": "theta",
+    "MU": "mu", "QVAPOR": "qv",
+}
+_WRFBDY_SUFFIX_SIDES = {"XS": "west", "XE": "east",
+                        "YS": "south", "YE": "north"}
+
+
+def _wrfbdy_export_fields(cache: PreparedCache, inventory,
+                          contract: Mapping[str, object]) -> dict[str, str]:
+    """The wrfbdy fields this cache's export carries, WRF to logical name.
+
+    The dynamics and water vapour always.  The Thompson-aerosol numbers
+    (QNWFA, QNIFA) when the prepared boundary carries them: the run forced
+    them at its lateral boundary, which is what WRF does under
+    ``aer_init_opt > 0`` (``use_aero_icbc``), real.exe writing their
+    coupled tables (main/real_em.F:888-899) and wrf.exe relaxing toward
+    them (dyn_em/solve_em.F:2804-2806).  Written as zeros instead, a stock
+    run relaxed its aerosol numbers toward none at every boundary, and the
+    WRF-input door refused the pair as a mixed one.
+    """
+    from gpuwm.boundary_fields import AEROSOL_BOUNDARY_FIELDS
+
+    fields = dict(_WRFBDY_EXPORT_FIELDS)
+    by_state = {field.state_key: field.netcdf_name
+                for field in inventory.wrfinput_fields
+                if field.state_key is not None}
+    declared = {item["name"] for item in contract["variables"]}
+    for logical in AEROSOL_BOUNDARY_FIELDS:
+        if f"lbc/0/{logical}/west/value" not in cache._arrays:
+            continue
+        wrf_name = by_state.get(logical)
+        if wrf_name is None or f"{wrf_name}_BXS" not in declared:
+            raise ValueError(
+                f"the prepared boundary forces {logical} but the "
+                f"mp_physics={inventory.mp_physics} wrfbdy contract has no "
+                f"table for it; the export cannot carry that boundary")
+        fields[wrf_name] = logical
+    return fields
+
+
+def _initial_boundary_head(wrfinput_fields: Mapping[str, np.ndarray],
+                           export_fields: Mapping[str, str]
+                           ) -> dict[str, np.ndarray]:
+    """real.exe's first wrfbdy record for the wrfinput this export writes.
+
+    The single definition the WRF-input door checks against
+    (:func:`gpuwm.ingest.wrfinput.wrf_initial_boundary_head`), applied to
+    the FP32 values the file will hold, under the export's own
+    ``USE_THETA_M``.
+    """
+    from gpuwm.ingest.wrfinput import wrf_initial_boundary_head
+
+    layouts = {logical: (wrf_name,)
+               for wrf_name, logical in export_fields.items()}
+    names = {"MU", "MUB", "C1H", "C2H", "C1F", "C2F",
+             "MAPFAC_M", "MAPFAC_U", "MAPFAC_V", *export_fields}
+    raw = {name: np.asarray(wrfinput_fields[name], dtype=np.float32)
+           for name in names}
+    return wrf_initial_boundary_head(
+        raw, layouts, moist_theta=EXPORT_USE_THETA_M == 1)
+
+
+def _wrfbdy_fields(cache: PreparedCache, interval_index: int, *,
+                   initial_head: Mapping[str, np.ndarray] | None = None,
+                   duration_seconds: float | None = None,
+                   export_fields: Mapping[str, str] | None = None,
+                   ) -> dict[str, np.ndarray]:
+    """One wrfbdy record from the prepared boundary tables.
+
+    ``initial_head`` (record 0 only) replaces the first record's values with
+    the coupling of the exported wrfinput, as real.exe's first record always
+    is (main/real_em.F:866-899), and re-derives that record's tendencies so
+    the end of the first interval stays the prepared one: WRFDA's
+    da_update_bc law for a start state that is not the one the boundary was
+    built from, ``BT' = (B + BT*dt - B') / dt``.  The prepared head is a
+    different atmosphere whenever the start state was replaced after the
+    boundary was built (a separate initial analysis, ``--initial-inputs``),
+    and a pair whose first record is not its own wrfinput is one no WRF
+    tool writes: the WRF-input door refuses it as a mixed pair.
+    """
+    if initial_head is not None and (
+            interval_index != 0 or duration_seconds is None
+            or not float(duration_seconds) > 0.0):
+        raise ValueError(
+            "the initial boundary head replaces record 0 only and needs "
+            "that record's positive duration")
     result: dict[str, np.ndarray] = {}
-    wrf_to_logical = {
-        "U": "u", "V": "v", "PH": "phi", "T": "theta",
-        "MU": "mu", "QVAPOR": "qv",
-    }
-    suffix_to_side = {"XS": "west", "XE": "east",
-                      "YS": "south", "YE": "north"}
-    for wrf_name, logical in wrf_to_logical.items():
-        for suffix, side in suffix_to_side.items():
-            result[f"{wrf_name}_B{suffix}"] = _lbc_to_wrf(
-                cache, interval_index, logical, side, "value")
-            result[f"{wrf_name}_BT{suffix}"] = _lbc_to_wrf(
-                cache, interval_index, logical, side, "tendency")
+    if export_fields is None:
+        export_fields = _WRFBDY_EXPORT_FIELDS
+    for wrf_name, logical in export_fields.items():
+        for suffix, side in _WRFBDY_SUFFIX_SIDES.items():
+            prefix = f"lbc/{interval_index}/{logical}/{side}"
+            if initial_head is None:
+                value = cache.array(f"{prefix}/value")
+                tendency = cache.array(f"{prefix}/tendency")
+            else:
+                from gpuwm.ingest.wrfinput import _boundary_strip
+
+                prepared = np.asarray(cache.array(f"{prefix}/value"),
+                                      dtype=np.float64)
+                prepared_tendency = np.asarray(
+                    cache.array(f"{prefix}/tendency"), dtype=np.float64)
+                width = (prepared.shape[-1] if side in {"west", "east"}
+                         else prepared.shape[-2])
+                value = _boundary_strip(
+                    initial_head[logical], side, width)
+                if value.shape != prepared.shape:
+                    raise ValueError(
+                        f"exported initial {wrf_name} {side} strip "
+                        f"{value.shape} != prepared boundary table "
+                        f"{prepared.shape}")
+                duration = float(duration_seconds)
+                end = prepared + duration * prepared_tendency
+                tendency = (end - value.astype(np.float64)) / duration
+            result[f"{wrf_name}_B{suffix}"] = _side_to_wrf(
+                value, logical, side)
+            result[f"{wrf_name}_BT{suffix}"] = _side_to_wrf(
+                tendency, logical, side)
     return result
 
 
@@ -1779,12 +1890,24 @@ def _write_wrfbdy(path: Path, contract: Mapping[str, object],
                   cache: PreparedCache,
                   boundary_times: list[datetime],
                   boundary_interval_seconds: int,
-                  engine: str | None = None) -> None:
+                  engine: str | None = None, *,
+                  initial_head: Mapping[str, np.ndarray] | None = None,
+                  export_fields: Mapping[str, str] | None = None,
+                  ) -> None:
+    """``initial_head`` (:func:`_initial_boundary_head` of the wrfinput
+    written beside this file) makes record 0 that file's own coupling;
+    every export passes it, with the ``export_fields`` it was built for."""
     dataset = _create_dataset(path, contract, dimensions, global_updates,
                               engine)
     try:
         for time_index, boundary_time in enumerate(boundary_times):
-            fields = _wrfbdy_fields(cache, time_index)
+            fields = (_wrfbdy_fields(cache, time_index,
+                                     export_fields=export_fields)
+                      if time_index != 0 or initial_head is None else
+                      _wrfbdy_fields(
+                          cache, 0, initial_head=initial_head,
+                          duration_seconds=boundary_interval_seconds,
+                          export_fields=export_fields))
             stamp = _date_text(boundary_time)
             next_stamp = _date_text(
                 boundary_time
@@ -2602,10 +2725,14 @@ def export_prepared_wrf(prepared_cache, static_cache, geometry_receipt,
         bdy_dimensions = _dimensions(
             bdy_contract, nx=nx, ny=ny, nz=nz,
             num_soil_layers=num_soil_layers)
+        export_fields = _wrfbdy_export_fields(
+            cache, physics_inventory, bdy_contract)
         _write_wrfbdy(
             staging / "wrfbdy_d01", bdy_contract, bdy_dimensions,
             updates, cache, boundary_times, boundary_interval_seconds,
-            engine)
+            engine, export_fields=export_fields,
+            initial_head=_initial_boundary_head(
+                wrfinput_fields, export_fields))
         files = {
             "wrfinput_d01": _validate_file(
                 staging / "wrfinput_d01", input_contract,

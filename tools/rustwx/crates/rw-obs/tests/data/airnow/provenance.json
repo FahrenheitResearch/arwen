@@ -1,0 +1,12 @@
+{
+  "hourly.dat": {
+    "url": "https://files.airnowtech.org/airnow/2025/20250730/HourlyData_2025073021.dat",
+    "download_sha256": "b04e2c12ea403a7938145d4cf2d9a04b0b8b010fd3944da2c669e40f7321043e",
+    "fixture_sha256": "dfe7d7454a96bc2235bf9e34e191a29d211016c236df164695b465a08cf2ab24"
+  },
+  "sites.dat": {
+    "url": "https://files.airnowtech.org/airnow/2025/20250730/Monitoring_Site_Locations_V2.dat",
+    "download_sha256": "72aa7ac24a8530d99e730be4f3f131c5422c16fe7cb6da29c86d900ca736e99c",
+    "fixture_sha256": "2533c2ccaa19230418359d84ee649077ebca62ed140c8b297a88932929dcbca8"
+  }
+}

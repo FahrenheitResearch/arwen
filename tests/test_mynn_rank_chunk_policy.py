@@ -103,6 +103,44 @@ def test_minimum_fits_without_snapshots_and_a_real_shortfall_still_refuses(
     assert devices_gate(refused, budgets=budgets)["refuse"]
 
 
+@pytest.mark.parametrize("ids", [(0, 1), (0, 0)])
+def test_the_required_footprint_is_the_minimum_width_not_the_widened_one(
+        exp, rank_api, monkeypatch, ids):
+    """Open-defects ledger A3c: the admitted price fills each card with
+    widened MYNN workspace, so it tracks the card's size, not the
+    forecast's need (105 KB per column on 8 x RTX 5090 against 75.5 on
+    3 x RTX PRO 6000 for one 1 km grid).  The required price is the
+    narrowest width, the one that refuses, and is stated beside it."""
+    from gpuwm.core.devices_memory import estimate_devices, devices_gate
+
+    split = _split(exp, ids)
+    minimum = estimate_devices(split, vram_gib=96)
+    priced96 = _fixed_price(monkeypatch, split, 98304)
+    budgets = _required(priced96)
+    wide = estimate_devices(split, budgets=budgets, vram_gib=96)
+    assert [rank["mynn_column_chunk"] for rank in wide["rank_shapes"]] == [98304] * 2
+    footprint = wide["footprint"]
+    assert footprint["required_bytes"] == minimum["footprint"]["required_bytes"]
+    # Required is state + seams + template at the narrowest width (the
+    # loader's envelope on the first card if larger); no frame snapshots.
+    narrowest = _required(minimum)
+    for row in wide["cards"]:
+        assert row["required_bytes"] >= narrowest[row["card"]]
+        if row["card"] != ids[0]:
+            assert row["required_bytes"] == narrowest[row["card"]]
+    assert footprint["mynn_widening_bytes"] == sum(
+        row["resident_bytes"] for row in wide["cards"]) - sum(
+        row["resident_bytes"] for row in minimum["cards"]) > 0
+    assert footprint["required_kb_per_column"] < footprint["admitted_kb_per_column"]
+    assert footprint["columns"] == 800 * 600
+    verdict = devices_gate(wide, budgets=budgets)["verdict"]
+    assert "MYNN workspace widened into free memory" in verdict
+    assert f"{footprint['required_kb_per_column']:.1f} KB per column required" in verdict
+    # Unwidened, the two figures agree and the line names no widening.
+    assert minimum["footprint"]["mynn_widening_bytes"] == 0
+    assert "widened into free memory)" not in devices_gate(minimum)["verdict"]
+
+
 @pytest.mark.parametrize("selection", ["environment", "pin"])
 def test_explicit_width_is_not_narrowed_to_make_admission_pass(
         exp, rank_api, monkeypatch, selection):

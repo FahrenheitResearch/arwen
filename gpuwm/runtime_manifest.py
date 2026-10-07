@@ -607,6 +607,9 @@ def _editable_provenance(identity: dict[str, object]) -> dict[str, object]:
 
 def _content_cache_path(root: Path) -> Path:
     key = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:32]
+    requested = os.environ.get("XDG_CACHE_HOME")
+    if requested and Path(requested).is_absolute():
+        return Path(requested) / "gpuwm" / "source-content" / f"{key}.json"
     return Path.home() / ".gpuwm" / "cache" / "source-content" / f"{key}.json"
 
 
@@ -659,7 +662,8 @@ def source_content_identity(root: Path) -> dict[str, object] | None:
 
     Reading 3,000 files costs seconds, so each digest is remembered
     against the file's size, modification time, change time and inode in
-    ``~/.gpuwm/cache/source-content``.  A later call re-reads only files
+    ``~/.gpuwm/cache/source-content`` or an absolute ``XDG_CACHE_HOME``
+    under ``gpuwm/source-content``. A later call re-reads only files
     whose stat moved, which is how git keeps ``git status`` cheap, and a
     file written within :data:`_CONTENT_RACY_NS` of its read is never
     remembered.  Returns ``None`` when ``root`` is a checkout (git

@@ -44,8 +44,20 @@
 //!            [--context WRFOUT ...] WRFOUT [WRFOUT ...]
 //! rw_compare --fetch-reference --store-root DIR --reference NAME
 //!            --cycle YYYYMMDDHH --forecast-hour N
+//! rw_compare --store-root DIR --out-dir DIR [--reference NAME[,NAME...]]
+//!            --panel "LABEL=WRFOUT|mean:LIST|pmm:LIST|max:LIST" ...
+//!            [--panel "LABEL=frames:ROOT@VALID|ttenref:WINDOW" ...]
+//!            [--panel-grid WRFOUT] [--row --panel ...]... [--order TOKEN,...]
+//!            [--sheet-name STEM]
+//! rw_compare --mode increment|spread|stamp|omb ...   (see da_sheet.rs)
 //! rw_compare --list-products | --help | --abi
 //! ```
+//!
+//! The `--panel` form is the N-panel sheet (`compare_panels.rs`): any number
+//! of labelled model panels beside the references, in the `--order` the
+//! caller gives.  The `--mode` forms are the data-assimilation sheets
+//! (`rw_wrfbatch::da_sheet`): analysis increments, ensemble spread, postage
+//! stamps with paintball, and observation-minus-background dots.
 //!
 //! A station file is the native decoded surface-observation record. An
 //! observation manifest is an array of rows `{quantity,label,path,grid_path}`.
@@ -70,8 +82,9 @@ use rw_wrfbatch::compare::{
     difference_scale, difference_stats, difference_step, ladder_scale, match_grids, sample,
     wind_speed,
 };
-use rw_wrfbatch::panel::{PanelRequest, layout_path, render_panel, safe_component};
+use rw_wrfbatch::panel::{PanelRequest, layout_path, render_panel_with_unobserved, safe_component};
 use rw_wrfbatch::annotate::MapOverlays;
+use rw_wrfbatch::coverage::{self, CoverageDraw, NO_COVERAGE_LEGEND};
 use rw_wrfbatch::station_overlay::{StationDot, scalar_dots, append_error_key};
 use rw_wrfbatch::verification_io::{GridData, RadarSpec, load_radar, load_station_observations};
 use rw_wrfbatch::wrf_process::{WrfProcessMessage, WrfProcessOptions, spawn_process_paths};
@@ -83,6 +96,9 @@ pub static GPUWM_BRIDGE_SOURCE_REV_STAMP: &str =
 
 #[path = "../comparison_observations.rs"]
 mod comparison_observations;
+
+#[path = "../compare_panels.rs"]
+mod compare_panels;
 
 /// The `--abi` contract line: the vocabulary the PYTHON half parses.
 const ABI_MARKER: &str = "gpuwm-rw-compare-references-v1\tREFERENCE\tname\tlabel\t\
@@ -266,6 +282,8 @@ fn product_specs() -> Vec<ProductSpec> {
     let apcp = FieldSelector::surface(CanonicalField::TotalPrecipitation);
     let hgt500 = FieldSelector::isobaric(CanonicalField::GeopotentialHeight, 500);
     let swdown = FieldSelector::surface(CanonicalField::DownwardShortwaveRadiationFlux);
+    let smoke_sfc = FieldSelector::height_agl(CanonicalField::SmokeMassDensity, 8);
+    let smoke_column = FieldSelector::entire_atmosphere(CanonicalField::ColumnIntegratedSmoke);
     vec![
         ProductSpec {
             name: "refc",
@@ -385,6 +403,42 @@ fn product_specs() -> Vec<ProductSpec> {
             ladder: None,
             neutral_range: Some((0.0, 1200.0)),
         },
+        // Smoke, product against product: the run's SMOKE_SFC / SMOKE_COLUMN
+        // planes are stored under the same selectors HRRR-Smoke publishes
+        // (wrf_process::CHEM_CORE_FIELD_CATALOG writes them in kg m-3 and
+        // kg m-2), so both panels wear the store's own smoke styles and a
+        // reference without the message (RRFS 2dfld) is SKIPPED, not
+        // substituted.
+        ProductSpec {
+            name: "smoke_sfc",
+            station_quantity: None,
+            observation_quantity: None,
+            slug: "smoke_near_surface",
+            title: "Near-surface smoke",
+            run: RunPlane::Selector(smoke_sfc),
+            reference: ReferencePlane::Selector(smoke_sfc),
+            reference_message: "MASSDEN, 8 m",
+            inventory_patterns: &["MASSDEN:8 m above ground"],
+            continuous: true,
+            style_variable: Some("smoke_near_surface"),
+            ladder: None,
+            neutral_range: None,
+        },
+        ProductSpec {
+            name: "smoke_column",
+            station_quantity: None,
+            observation_quantity: None,
+            slug: "smoke_column",
+            title: "Column smoke",
+            run: RunPlane::Selector(smoke_column),
+            reference: ReferencePlane::Selector(smoke_column),
+            reference_message: "COLMD, entire atmosphere",
+            inventory_patterns: &["COLMD:entire atmosphere"],
+            continuous: true,
+            style_variable: Some("smoke_column"),
+            ladder: None,
+            neutral_range: None,
+        },
     ]
 }
 
@@ -428,6 +482,15 @@ struct Args {
     observations: Option<PathBuf>,
     stations: Option<PathBuf>,
     station_mode: String,
+    /// `--panel` rows: empty unless the sheet is an N-panel sheet.
+    panels: Vec<Vec<compare_panels::PanelArg>>,
+    /// `--order`: the row's columns, panel numbers and reference names.
+    order: Option<Vec<String>>,
+    /// `--sheet-name`: the N-panel sheet's file stem.
+    sheet_name: Option<String>,
+    /// `--panel-grid`: the history file whose grid a row of `frames:` or
+    /// `ttenref:` panels alone is drawn on (its values are never drawn).
+    panel_grid: Option<PathBuf>,
 }
 
 fn usage() -> &'static str {
@@ -438,6 +501,10 @@ fn usage() -> &'static str {
 [--source-label TEXT] [--run-label TEXT] [--theme NAME|FILE] [--context WRFOUT ...] WRFOUT [WRFOUT ...]\n       \
 rw_compare --fetch-reference --store-root DIR --reference NAME --cycle YYYYMMDDHH --forecast-hour N\n       \
 [--observations FILE.json] [--stations FILE.json] [--station-mode observed|error]\n       \
+rw_compare --store-root DIR --out-dir DIR [--reference NAME[,NAME...]] \
+--panel \"LABEL=WRFOUT|mean:LIST|pmm:LIST|max:LIST|frames:ROOT@VALID|ttenref:WINDOW\" ... \
+[--panel-grid WRFOUT] [--row --panel ...]... [--order TOKEN,...] [--sheet-name STEM]\n       \
+rw_compare --mode increment|spread|stamp|omb ... (see rw_compare --mode stamp --help)\n       \
 rw_compare --list-products | --help | --abi"
 }
 
@@ -491,6 +558,10 @@ fn parse_args() -> Result<Invocation, String> {
     let mut observations = None;
     let mut stations = None;
     let mut station_mode = "observed".to_string();
+    let mut panels: Vec<Vec<compare_panels::PanelArg>> = vec![Vec::new()];
+    let mut order: Option<Vec<String>> = None;
+    let mut sheet_name = None;
+    let mut panel_grid = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -552,14 +623,59 @@ fn parse_args() -> Result<Invocation, String> {
                     return Err("--station-mode is observed or error".to_string());
                 }
             }
+            "--panel" => panels
+                .last_mut()
+                .expect("one row always open")
+                .push(compare_panels::parse_panel(&value("--panel")?)?),
+            "--row" => {
+                if panels.last().is_some_and(|row| !row.is_empty()) {
+                    panels.push(Vec::new());
+                }
+            }
+            "--order" => {
+                order = Some(
+                    value("--order")?
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|token| !token.is_empty())
+                        .map(str::to_string)
+                        .collect(),
+                )
+            }
+            "--sheet-name" => sheet_name = Some(value("--sheet-name")?),
+            "--panel-grid" => panel_grid = Some(PathBuf::from(value("--panel-grid")?)),
+            // The DA sheet modes are dispatched before this parser runs.
+            "--mode" => {
+                let mode = value("--mode")?;
+                if mode != "compare" {
+                    return Err(format!("--mode {mode:?} is handled by the DA sheet entry"));
+                }
+            }
             other if other.starts_with("--") => return Err(format!("unknown option {other}")),
             other => inputs.push(PathBuf::from(other)),
         }
     }
+    panels.retain(|row| !row.is_empty());
+    if let Some(first) = panels.first() {
+        if panels.iter().any(|row| row.len() != first.len()) {
+            return Err("every --row holds the same number of --panel entries".into());
+        }
+        if !inputs.is_empty() {
+            return Err(
+                "--panel names every model panel with its label; a positional WRFOUT beside                  --panel would be a panel with no label"
+                    .into(),
+            );
+        }
+    } else if order.is_some() || sheet_name.is_some() || panel_grid.is_some() {
+        return Err(
+            "--order, --sheet-name and --panel-grid arrange an N-panel sheet; give --panel".into(),
+        );
+    }
+    let panel_mode = !panels.is_empty();
 
     let store_root = store_root.ok_or("--store-root is required")?;
     let out_dir = out_dir.or_else(|| fetch_reference.then(|| store_root.clone())).ok_or("--out-dir is required")?;
-    if inputs.is_empty() && !fetch_reference {
+    if inputs.is_empty() && !fetch_reference && !panel_mode {
         return Err("at least one WRFOUT frame is required".into());
     }
     if !(256..=4096).contains(&width) || !(256..=4096).contains(&height) {
@@ -570,7 +686,7 @@ fn parse_args() -> Result<Invocation, String> {
     if reference_file.is_some() && reference_dir.is_some() {
         return Err("--reference-file and --reference-dir do not combine".into());
     }
-    if reference_file.is_some() && inputs.len() != 1 && !fetch_reference {
+    if reference_file.is_some() && inputs.len() != 1 && !fetch_reference && !panel_mode {
         return Err(
             "--reference-file names one cycle and lead, so it takes exactly one WRFOUT frame; \
              use --reference-dir for several"
@@ -584,14 +700,19 @@ fn parse_args() -> Result<Invocation, String> {
             .collect::<Vec<_>>()
             .join(", ")
     };
-    let reference = reference.ok_or_else(|| {
-        format!(
-            "--reference is required: the model the run is drawn beside. This build knows: {}",
-            known_references()
-        )
-    })?;
-    let selected = reference_names(&reference)?;
-    if reference_file.is_some() && selected.len() != 1 {
+    // An N-panel sheet may compare model panels with each other only.
+    let reference = match reference {
+        Some(reference) => reference,
+        None if panel_mode => String::new(),
+        None => {
+            return Err(format!(
+                "--reference is required: the model the run is drawn beside. This build knows: {}",
+                known_references()
+            ));
+        }
+    };
+    let selected = if reference.is_empty() { Vec::new() } else { reference_names(&reference)? };
+    if reference_file.is_some() && (selected.len() != 1 || panels.len() > 1) {
         return Err(
             "--reference-file requires one reference; use --reference-dir for a list".into(),
         );
@@ -656,11 +777,34 @@ fn parse_args() -> Result<Invocation, String> {
         observations,
         stations,
         station_mode,
+        panels,
+        order,
+        sheet_name,
+        panel_grid,
     })))
 }
 
 fn main() -> ExitCode {
     let _ = std::hint::black_box(GPUWM_BRIDGE_SOURCE_REV_STAMP);
+    // The DA sheet modes (increment, spread, stamp, omb) read their fields
+    // from the files directly and share no option with the comparison.
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(mode) = raw
+        .iter()
+        .position(|arg| arg == "--mode")
+        .and_then(|index| raw.get(index + 1))
+        .filter(|mode| mode.as_str() != "compare")
+    {
+        let _ = mode;
+        return match rw_wrfbatch::da_sheet::cli(&raw) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(message) => {
+                eprintln!("{message}");
+                eprintln!("{}", rw_wrfbatch::da_sheet::USAGE);
+                ExitCode::FAILURE
+            }
+        };
+    }
     match parse_args() {
         Ok(Invocation::Abi) => {
             println!("{ABI_MARKER}");
@@ -1657,6 +1801,13 @@ struct PanelSet<'a> {
     observation: Option<(PanelText, Vec<f32>)>,
     /// The third panel: its text, its plane and its ladder step.
     difference: Option<(PanelText, Vec<f32>, f64)>,
+    /// The sheet's radar no-coverage footprint on the run grid: outlined on
+    /// the run, forecast-reference and difference panels, filled on the
+    /// observation panel.  `None` when the sheet observes nothing.
+    coverage: Option<&'a [bool]>,
+    /// The reference panel's own unobserved cells when the reference IS an
+    /// observation: filled there instead of outlined.
+    reference_coverage: Option<&'a [bool]>,
 }
 
 fn comparison_difference_scale(theme: &rustwx_render::RenderTheme, step: f64) -> rustwx_render::ColorScale {
@@ -1685,12 +1836,123 @@ fn comparison_product_key(theme: &rustwx_render::RenderTheme, slug: &str, panel:
 /// reaches either (no range is fitted to the data).  That is the whole of
 /// "same colour table and value range", and it is why a panel's pixels
 /// depend only on its own plane.
+/// Where and how big one sheet's panels are drawn: the run grid, the panel
+/// size, the product slug the theme keys on, the sheet's one style and the
+/// scratch directory the panel PNGs pass through.
+#[derive(Clone, Copy)]
+struct PanelFrame<'a> {
+    geometry: (
+        &'a [f32],
+        &'a [f32],
+        Option<&'a GridProjection>,
+        usize,
+        usize,
+    ),
+    width: u32,
+    height: u32,
+    slug: &'a str,
+    style: &'a SheetStyle,
+    scratch: &'a Path,
+}
+
+/// One panel through the production panel path.
+///
+/// The single call every comparison panel goes through, whether it sits in
+/// a run-and-reference sheet or in an N-panel sheet: a panel's pixels depend
+/// on its frame, its name (the theme's product key), its text and its plane,
+/// and on nothing about the sheet it is composed into.
+#[allow(clippy::too_many_arguments)]
+fn draw_one_panel(
+    frame: PanelFrame<'_>,
+    theme: &rustwx_render::RenderTheme,
+    name: &str,
+    text: PanelText,
+    values: Vec<f32>,
+    scale: rustwx_render::ColorScale,
+    tick: Option<f64>,
+    legend: LegendControls,
+    contour_levels: &[f64],
+    overlays: Option<&MapOverlays>,
+    coverage: CoverageDraw<'_>,
+) -> Result<rustwx_render::RgbaImage, String> {
+    let (lat, lon, projection, ny, nx) = frame.geometry;
+    let style = frame.style;
+    let mut contours = if contour_levels.is_empty() {
+        Vec::new()
+    } else {
+        vec![rustwx_render::ContourLayer {
+            data: values.clone(),
+            levels: contour_levels.to_vec(),
+            color: rustwx_render::Color::rgba(20, 20, 20, 255),
+            width: 1,
+            labels: true,
+            show_extrema: false,
+            pattern: Default::default(),
+            major_every: None,
+            major_width: None,
+        }]
+    };
+    let fill = match coverage {
+        CoverageDraw::None => None,
+        CoverageDraw::Fill(mask) => Some(mask),
+        CoverageDraw::Outline(mask) => {
+            contours.extend(coverage::outline_layer(mask));
+            None
+        }
+    };
+    let themed_overlays = overlays.map(|overlays| {
+        let mut overlays = overlays.clone();
+        let key = rustwx_render::ProductKey::named(comparison_product_key(theme, frame.slug, name));
+        let palette = theme.product_scale_override(&key, &scale).unwrap_or_else(|| scale.clone());
+        for layer in &mut overlays.value_layers {
+            if layer.scale.is_none() { layer.scale = Some(palette.clone()); }
+        }
+        overlays
+    });
+    let path = render_panel_with_unobserved(PanelRequest {
+        lat_deg: lat,
+        lon_deg: lon,
+        projection,
+        ny,
+        nx,
+        values,
+        // Every themed field panel resolves the same product override.
+        product_slug: comparison_product_key(theme, frame.slug, name),
+        title: text.title,
+        display_units: style.display_units.clone(),
+        scale,
+        cbar_tick_step: tick,
+        legend,
+        render_density: style.density,
+        subtitle_left: text.left,
+        subtitle_center: None,
+        subtitle_right: text.right,
+        width: frame.width,
+        height: frame.height,
+        contours,
+        colorbar: true,
+        overlays: themed_overlays.as_ref(),
+        annotations: None,
+        out_path: frame.scratch.join(format!("{name}.png")),
+    }, fill)?;
+    Ok(image::open(&path)
+        .map_err(|error| format!("read back {}: {error}", path.display()))?
+        .to_rgba8())
+}
+
 fn draw_panels(set: PanelSet<'_>) -> Result<Vec<rustwx_render::RgbaImage>, String> {
-    let (lat, lon, projection, ny, nx) = set.geometry;
     std::fs::create_dir_all(set.scratch)
         .map_err(|error| format!("create {}: {error}", set.scratch.display()))?;
     let style = set.style;
     let theme = rustwx_render::active_theme();
+    let frame = PanelFrame {
+        geometry: set.geometry,
+        width: set.width,
+        height: set.height,
+        slug: set.slug,
+        style,
+        scratch: set.scratch,
+    };
     let panel = |name: &str,
                  text: PanelText,
                  values: Vec<f32>,
@@ -1698,67 +1960,21 @@ fn draw_panels(set: PanelSet<'_>) -> Result<Vec<rustwx_render::RgbaImage>, Strin
                  tick: Option<f64>,
                  legend: LegendControls,
                  contour_levels: &[f64],
-                 overlays: Option<&MapOverlays>|
+                 overlays: Option<&MapOverlays>,
+                 coverage: CoverageDraw<'_>|
      -> Result<rustwx_render::RgbaImage, String> {
-        let contours = if contour_levels.is_empty() {
-            Vec::new()
-        } else {
-            vec![rustwx_render::ContourLayer {
-                data: values.clone(),
-                levels: contour_levels.to_vec(),
-                color: rustwx_render::Color::rgba(20, 20, 20, 255),
-                width: 1,
-                labels: true,
-                show_extrema: false,
-                pattern: Default::default(),
-                major_every: None,
-                major_width: None,
-            }]
-        };
-        let themed_overlays = overlays.map(|overlays| {
-            let mut overlays = overlays.clone();
-            let key = rustwx_render::ProductKey::named(comparison_product_key(&theme, set.slug, name));
-            let palette = theme.product_scale_override(&key, &scale).unwrap_or_else(|| scale.clone());
-            for layer in &mut overlays.value_layers {
-                if layer.scale.is_none() { layer.scale = Some(palette.clone()); }
-            }
-            overlays
-        });
-        let path = render_panel(PanelRequest {
-            lat_deg: lat,
-            lon_deg: lon,
-            projection,
-            ny,
-            nx,
-            values,
-            // Every themed field panel resolves the same product override.
-            product_slug: comparison_product_key(&theme, set.slug, name),
-            title: text.title,
-            display_units: style.display_units.clone(),
-            scale,
-            cbar_tick_step: tick,
-            legend,
-            render_density: style.density,
-            subtitle_left: text.left,
-            subtitle_center: None,
-            subtitle_right: text.right,
-            width: set.width,
-            height: set.height,
-            contours,
-            colorbar: true,
-            overlays: themed_overlays.as_ref(),
-            annotations: None,
-            out_path: set.scratch.join(format!("{name}.png")),
-        })?;
-        Ok(image::open(&path)
-            .map_err(|error| format!("read back {}: {error}", path.display()))?
-            .to_rgba8())
+        draw_one_panel(
+            frame, &theme, name, text, values, scale, tick, legend, contour_levels, overlays,
+            coverage,
+        )
     };
+    let outline = set.coverage.map_or(CoverageDraw::None, CoverageDraw::Outline);
 
     let mut panels = Vec::with_capacity(3);
-    for (name, text, values, overlays) in [
-        ("run", set.run, set.run_values, set.run_overlays),
-        ("reference", set.reference, set.reference_values, set.reference_overlays),
+    let reference_coverage = set.reference_coverage.map_or(outline, CoverageDraw::Fill);
+    for (name, text, values, overlays, coverage) in [
+        ("run", set.run, set.run_values, set.run_overlays, outline),
+        ("reference", set.reference, set.reference_values, set.reference_overlays, reference_coverage),
     ] {
         panels.push(panel(
             name,
@@ -1769,12 +1985,14 @@ fn draw_panels(set: PanelSet<'_>) -> Result<Vec<rustwx_render::RgbaImage>, Strin
             style.legend,
             &style.contour_levels,
             overlays,
+            coverage,
         )?);
     }
     if let Some((text, values)) = set.observation {
         panels.push(panel(
             "observation", text, values, style.scale.clone(), style.cbar_tick_step,
             style.legend, &style.contour_levels, None,
+            set.coverage.map_or(CoverageDraw::None, CoverageDraw::Fill),
         )?);
     }
     if let Some((text, values, step)) = set.difference {
@@ -1790,6 +2008,7 @@ fn draw_panels(set: PanelSet<'_>) -> Result<Vec<rustwx_render::RgbaImage>, Strin
             },
             &[],
             None,
+            outline,
         )?);
     }
     Ok(panels)
@@ -1859,6 +2078,7 @@ fn write_sheet(
         _ => None,
     };
     let observation_metadata = observed.as_ref().map(|(_, _, metadata)| metadata.clone());
+    let observed_coverage = observed.as_ref().map(|(_, values, _)| coverage::mask_from_nan(values));
     let panels = draw_panels(PanelSet {
         geometry,
         width: args.width,
@@ -1899,6 +2119,8 @@ fn write_sheet(
                 step.expect("checked with draw_difference"),
             )
         }),
+        coverage: observed_coverage.as_deref(),
+        reference_coverage: None,
     })?;
 
     let mut facts = times.header_facts(&args.run_label, reference.label);
@@ -1906,6 +2128,9 @@ fn write_sheet(
         facts.push(label.to_string());
     }
     facts.push(grid_match.rule.describe(reference.label));
+    if observed_coverage.is_some() {
+        facts.push(NO_COVERAGE_LEGEND.to_string());
+    }
     let sheet = compose_sheet(
         &panels,
         &SheetHeader {
@@ -2055,6 +2280,9 @@ struct ReferencePanel {
     values: Vec<f32>,
     matched: GridMatch,
     receipt: serde_json::Value,
+    /// An observed reference's unobserved cells on the run grid
+    /// (`rw_wrfbatch::coverage`); `None` for a forecast reference.
+    no_coverage: Option<Vec<bool>>,
 }
 
 fn observation_source_matches(metadata: &serde_json::Value, name: &str, label: &str) -> bool {
@@ -2073,9 +2301,14 @@ fn packaged_reference(
     let matched = match_grids(lat, lon, ny, nx, lat, lon, ny, nx)?;
     receipt["name"] = serde_json::json!(name);
     receipt["kind"] = serde_json::json!("observation");
+    // A pack's no-echo floor is a finite valid value, so its NaN cells are
+    // exactly the cells nothing observed (or outside its lattice).
+    let no_coverage = coverage::mask_from_nan(&values);
+    receipt["no_coverage_cells"] = serde_json::json!(no_coverage.iter().filter(|cell| **cell).count());
     Ok(ReferencePanel {
         name, label: text.title, source_label,
         subtitle: format!("{} | {}", text.left, text.right), values, matched, receipt,
+        no_coverage: Some(no_coverage),
     })
 }
 
@@ -2093,6 +2326,49 @@ fn render_reference_list(
     model_id: ModelId,
     run_field: &RunField,
 ) -> Result<Result<PathBuf, String>, String> {
+    let (lat, lon, projection, ny, nx) = geometry;
+    let ResolvedReferences { style, references } = match resolve_references(
+        args, chosen, forecasts, spec, times, geometry, model_id, run_field,
+    )? {
+        Ok(resolved) => resolved,
+        Err(reason) => return Ok(Err(reason)),
+    };
+    let convert = |values: &[f32]| {
+        values
+            .iter()
+            .map(|value| style.convert.apply(*value))
+            .collect::<Vec<_>>()
+    };
+    let run_values = convert(&run_field.values);
+    render_reference_sheet(
+        args, chosen, spec, frame, times, domain_token, domain_label,
+        (lat, lon, projection, ny, nx), style, run_values, references,
+    )
+}
+
+/// The sheet's one style and every reference's plane on the run grid.
+struct ResolvedReferences {
+    style: SheetStyle,
+    references: Vec<ReferencePanel>,
+}
+
+/// Resolve the sheet style from the run's field and load, match and sample
+/// every chosen reference onto the run grid.
+///
+/// Shared by the run-and-references sheet and the N-panel sheet, so a
+/// reference panel is the same plane, on the same ladder, with the same
+/// subtitle whichever sheet it is drawn into.
+#[allow(clippy::too_many_arguments)]
+fn resolve_references(
+    args: &Args,
+    chosen: &[String],
+    forecasts: &[ReferenceSpec],
+    spec: &ProductSpec,
+    times: SheetTimes,
+    geometry: (&[f32], &[f32], Option<&GridProjection>, usize, usize),
+    model_id: ModelId,
+    run_field: &RunField,
+) -> Result<Result<ResolvedReferences, String>, String> {
     let observations = comparison_observations::specifications()?;
     // A sheet covers one product. Refuse a missing reference product explicitly
     // rather than substituting another quantity or silently omitting its panel.
@@ -2148,7 +2424,6 @@ fn render_reference_list(
             .map(|value| style.convert.apply(*value))
             .collect::<Vec<_>>()
     };
-    let run_values = convert(&run_field.values);
     let mut packaged_observation = match (args.observations.as_deref(), spec.observation_quantity) {
         (Some(path), Some(quantity)) => observed_panel(path, quantity, times.valid, geometry, &style)?,
         _ => None,
@@ -2162,6 +2437,7 @@ fn render_reference_list(
         .unwrap_or_else(|| args.store_root.join("reference-cache"));
     let mut references = Vec::new();
     for name in chosen {
+        let mut observed_coverage: Option<Vec<bool>> = None;
         if let Some(reference) = observations.iter().find(|row| &row.name == name) {
             let product = reference.products.iter().find(|row| row.product == spec.name).expect("supported above");
             if packaged_observation.as_ref().is_some_and(|(_, _, receipt)| {
@@ -2260,7 +2536,10 @@ fn render_reference_list(
                 "file": field.file_name, "origin": field.origin, "candidate": field.candidate,
                 "source_sha256": field.sha256, "message": product.message, "units": product.units,
                 "parameter_table": reference.parameter_table, "missing_source_cells": field.missing_cells,
+                "no_coverage_source_cells": field.unobserved.iter().filter(|cell| **cell).count(),
+                "no_coverage_values": product.unobserved_values,
             });
+            observed_coverage = Some(field.unobserved);
             (
                 reference.label.clone(),
                 reference.source_label.clone(),
@@ -2302,11 +2581,20 @@ fn render_reference_list(
             "max_distance_km": matched.max_distance_km, "spacing_km": matched.source_spacing_km,
             "lattice": matched.lattice.map(|fit| serde_json::json!({"same_lattice": fit.same_lattice,
                 "max_offset_cells": fit.max_offset_cells, "max_residual_cells": fit.max_residual_cells})) });
+        let mut no_coverage = None;
         let sampled = if receipt["kind"] == "observation" {
             let target = GridData {lat:lat.to_vec(), lon:lon.to_vec(), ny, nx, projection:projection.cloned()};
             let source = GridData {lat:field.lat.clone(), lon:field.lon.clone(), ny:field.ny, nx:field.nx, projection:None};
-            rw_wrfbatch::verification::mapped_fields(&target, &source, &field.values.iter().copied().map(f64::from).collect::<Vec<_>>())?
-                .into_iter().map(|value| value as f32).collect()
+            // One mapping carries the values and the coverage together: an
+            // unobserved source cell, and a run point outside the source
+            // lattice, both come back unobserved; an observed no-echo cell
+            // comes back drawn as nothing but observed.
+            let unobserved = observed_coverage.take().unwrap_or_else(|| coverage::mask_from_nan(&field.values));
+            let mapped = rw_wrfbatch::verification::mapped_fields(&target, &source, &coverage::encode_for_mapping(&field.values, &unobserved))?;
+            let (values, mask) = coverage::decode_mapped(&mapped);
+            receipt["no_coverage_cells"] = serde_json::json!(mask.iter().filter(|cell| **cell).count());
+            no_coverage = Some(mask);
+            values
         } else { sample(&field.values, &matched) };
         receipt["defined_sampled_cells"] =
             serde_json::json!(sampled.iter().filter(|value| value.is_finite()).count());
@@ -2318,6 +2606,7 @@ fn render_reference_list(
             values: convert(&sampled),
             matched,
             receipt,
+            no_coverage,
         });
     }
     if let Some(observed) = packaged_observation {
@@ -2329,6 +2618,26 @@ fn render_reference_list(
             references.push(packaged_reference(source, label, observed, geometry)?);
         }
     }
+    Ok(Ok(ResolvedReferences { style, references }))
+}
+
+/// The run panel beside every resolved reference (and a difference panel
+/// per reference when one is drawn), composed under one header.
+#[allow(clippy::too_many_arguments)]
+fn render_reference_sheet(
+    args: &Args,
+    chosen: &[String],
+    spec: &ProductSpec,
+    frame: &Frame,
+    times: SheetTimes,
+    domain_token: &str,
+    domain_label: Option<&str>,
+    geometry: (&[f32], &[f32], Option<&GridProjection>, usize, usize),
+    style: SheetStyle,
+    run_values: Vec<f32>,
+    references: Vec<ReferencePanel>,
+) -> Result<Result<PathBuf, String>, String> {
+    let (lat, lon, projection, ny, nx) = geometry;
     let stem = format!(
         "{}_vs_{}_{}_{}_{}",
         safe_component(&args.run_label, "run"),
@@ -2360,6 +2669,10 @@ fn render_reference_list(
             DifferenceMode::Off => false,
             DifferenceMode::Auto => chosen.len() == 1 && spec.continuous,
         };
+    // The first observed reference's footprint is the sheet's: outlined on
+    // the run panel whichever reference it is drawn beside.
+    let sheet_coverage: Option<Vec<bool>> =
+        references.iter().find_map(|reference| reference.no_coverage.clone());
     for reference in references {
         let reference_overlays = marks(&reference.values)?;
         let diff_values = difference_above_floor(
@@ -2407,6 +2720,8 @@ fn render_reference_list(
                     step.expect("checked"),
                 )
             }),
+            coverage: sheet_coverage.as_deref(),
+            reference_coverage: reference.no_coverage.as_deref(),
         })?;
         if panels.is_empty() {
             panels.push(images.remove(0));
@@ -2450,6 +2765,9 @@ fn render_reference_list(
         facts.push(label.to_string());
     }
     facts.push(format!("References: {}", chosen.join(", ")));
+    if sheet_coverage.is_some() {
+        facts.push(NO_COVERAGE_LEGEND.to_string());
+    }
     let sheet = compose_sheet(
         &panels,
         &SheetHeader {
@@ -2525,7 +2843,11 @@ fn comparison_presentation(mut theme: rustwx_render::RenderTheme, run_label: &st
 
 fn run(mut args: Args) -> Result<(), String> {
     let references = reference_specs();
-    let chosen = reference_names(&args.reference)?;
+    let chosen = if args.reference.is_empty() {
+        Vec::new()
+    } else {
+        reference_names(&args.reference)?
+    };
     let first_forecast = references
         .iter()
         .find(|spec| chosen.iter().any(|name| name == spec.name));
@@ -2569,49 +2891,17 @@ fn run(mut args: Args) -> Result<(), String> {
     args.run_source_subtitle = run_source_subtitle;
     rustwx_render::install_theme(theme)?;
 
+    if !args.panels.is_empty() {
+        return compare_panels::run(&args, &specs, &references);
+    }
+
     // --- import: the compared frames and their context, ONE store -------
     //
     // The context frames are the same run's earlier frames, wanted only so
     // an hourly accumulation can be differenced; they enter the same
     // import because rw-store merges frames written into one run and that
     // is exactly what a run's own frames are.
-    let chart_selectors: Vec<FieldSelector> = specs
-        .iter()
-        .filter_map(|spec| match spec.run {
-            RunPlane::Selector(selector)
-                if matches!(
-                    selector.vertical,
-                    rustwx_core::VerticalSelector::IsobaricHpa(_)
-                ) =>
-            {
-                Some(selector)
-            }
-            _ => None,
-        })
-        .collect();
-    let raw_names: Vec<&str> = specs.iter().filter_map(|spec| match spec.run {
-        RunPlane::Named { raw, .. } => Some(raw),
-        _ => None,
-    }).collect();
-    let raw_skip = if raw_names.is_empty() {
-        Vec::new()
-    } else {
-        rw_wrfbatch::wrf_process::RAW_EXTRA_CATALOG.iter()
-            .filter(|raw| !raw_names.contains(raw))
-            .map(|raw| raw.to_string()).collect()
-    };
-    let options = WrfProcessOptions {
-        core_fields: true,
-        diagnostics: false,
-        heavy_ecape: false,
-        raw_extras: !raw_names.is_empty(),
-        stored_planes: false,
-        only: Vec::new(),
-        skip: raw_skip,
-        viewer_2d: true,
-        chart_selectors,
-        named_products_only: false,
-    };
+    let options = import_options(&specs);
     let mut all_inputs = args.inputs.clone();
     let wants_accumulation = specs
         .iter()
@@ -2785,57 +3075,12 @@ fn run(mut args: Args) -> Result<(), String> {
         for spec in &specs {
             let outcome = (|| -> Result<Result<PathBuf, String>, String> {
                 // --- the run's plane ------------------------------------
-                let run_field = match spec.run {
-                    RunPlane::Selector(selector) => match run_plane(&source, &selector) {
-                        Ok(field) => field,
-                        Err(reason) => return Ok(Err(reason)),
-                    },
-                    RunPlane::Named { variable, .. } => match named_run_plane(&source, variable) {
-                        Ok(field) => field,
-                        Err(reason) => return Ok(Err(reason)),
-                    },
-                    RunPlane::HourlyAccumulation(selector) => {
-                        let now = match run_plane(&source, &selector) {
-                            Ok(field) => field,
-                            Err(reason) => return Ok(Err(reason)),
-                        };
-                        if frame.lead_seconds == 0 {
-                            return Ok(Err(
-                                "no hour has been accumulated at the run's start".into()
-                            ));
-                        }
-                        let earlier = frame.valid_unix - 3_600;
-                        if let Some(slot) = by_valid.get(&earlier) {
-                            let before_source = StoreFieldSource::open(
-                                &store_root,
-                                &summary.model,
-                                &summary.run,
-                                *slot,
-                            )
-                            .map_err(|error| format!("open the frame an hour earlier: {error}"))?;
-                            let before = match run_plane(&before_source, &selector) {
-                                Ok(field) => field,
-                                Err(reason) => {
-                                    return Ok(Err(format!("the frame an hour earlier: {reason}")));
-                                }
-                            };
-                            RunField {
-                                values: difference(&now.values, &before.values),
-                                ..now
-                            }
-                        } else if frame.lead_seconds == 3_600 {
-                            // One hour after the run's own start the run
-                            // total IS the hour's accumulation.
-                            now
-                        } else {
-                            return Ok(Err(
-                                "the run's frame an hour earlier is not beside this one and was \
-                                 not given, so its hourly accumulation cannot be formed (keep \
-                                 that frame, or pass it with --context)"
-                                    .into(),
-                            ));
-                        }
-                    }
+                let run_field = match read_run_field(
+                    &source, spec, frame.lead_seconds, frame.valid_unix, &by_valid,
+                    &store_root, &summary,
+                )? {
+                    Ok(field) => field,
+                    Err(reason) => return Ok(Err(reason)),
                 };
 
                 if !single_forecast {
@@ -3049,6 +3294,117 @@ fn run(mut args: Args) -> Result<(), String> {
     Ok(())
 }
 
+/// The import options for a set of products: the core fields, the chart
+/// selectors the isobaric products need, and the raw diagnostics the named
+/// products read.  One rule for every store a comparison imports into.
+fn import_options(specs: &[ProductSpec]) -> WrfProcessOptions {
+    let chart_selectors: Vec<FieldSelector> = specs
+        .iter()
+        .filter_map(|spec| match spec.run {
+            RunPlane::Selector(selector)
+                if matches!(
+                    selector.vertical,
+                    rustwx_core::VerticalSelector::IsobaricHpa(_)
+                ) =>
+            {
+                Some(selector)
+            }
+            _ => None,
+        })
+        .collect();
+    let raw_names: Vec<&str> = specs.iter().filter_map(|spec| match spec.run {
+        RunPlane::Named { raw, .. } => Some(raw),
+        _ => None,
+    }).collect();
+    let raw_skip = if raw_names.is_empty() {
+        Vec::new()
+    } else {
+        rw_wrfbatch::wrf_process::RAW_EXTRA_CATALOG.iter()
+            .filter(|raw| !raw_names.contains(raw))
+            .map(|raw| raw.to_string()).collect()
+    };
+    let options = WrfProcessOptions {
+        core_fields: true,
+        diagnostics: false,
+        heavy_ecape: false,
+        raw_extras: !raw_names.is_empty(),
+        stored_planes: false,
+        only: Vec::new(),
+        skip: raw_skip,
+        viewer_2d: true,
+        chart_selectors,
+        named_products_only: false,
+    };
+    options
+}
+
+/// The run's plane for one product at one stored frame: the stored plane,
+/// a named raw diagnostic, or the run total differenced over the hour that
+/// ends at the frame (read from the frame an hour earlier in the same store).
+#[allow(clippy::too_many_arguments)]
+fn read_run_field(
+    source: &StoreFieldSource,
+    spec: &ProductSpec,
+    lead_seconds: u64,
+    valid_unix: i64,
+    by_valid: &BTreeMap<i64, u16>,
+    store_root: &Path,
+    summary: &rw_wrfbatch::wrf_process::WrfProcessSummary,
+) -> Result<Result<RunField, String>, String> {
+    Ok(Ok(match spec.run {
+        RunPlane::Selector(selector) => match run_plane(source, &selector) {
+            Ok(field) => field,
+            Err(reason) => return Ok(Err(reason)),
+        },
+        RunPlane::Named { variable, .. } => match named_run_plane(source, variable) {
+            Ok(field) => field,
+            Err(reason) => return Ok(Err(reason)),
+        },
+        RunPlane::HourlyAccumulation(selector) => {
+            let now = match run_plane(source, &selector) {
+                Ok(field) => field,
+                Err(reason) => return Ok(Err(reason)),
+            };
+            if lead_seconds == 0 {
+                return Ok(Err(
+                    "no hour has been accumulated at the run's start".into()
+                ));
+            }
+            let earlier = valid_unix - 3_600;
+            if let Some(slot) = by_valid.get(&earlier) {
+                let before_source = StoreFieldSource::open(
+                    store_root,
+                    &summary.model,
+                    &summary.run,
+                    *slot,
+                )
+                .map_err(|error| format!("open the frame an hour earlier: {error}"))?;
+                let before = match run_plane(&before_source, &selector) {
+                    Ok(field) => field,
+                    Err(reason) => {
+                        return Ok(Err(format!("the frame an hour earlier: {reason}")));
+                    }
+                };
+                RunField {
+                    values: difference(&now.values, &before.values),
+                    ..now
+                }
+            } else if lead_seconds == 3_600 {
+                // One hour after the run's own start the run
+                // total IS the hour's accumulation.
+                now
+            } else {
+                return Ok(Err(
+                    "the run's frame an hour earlier is not beside this one and was \
+                     not given, so its hourly accumulation cannot be formed (keep \
+                     that frame, or pass it with --context)"
+                        .into(),
+                ));
+            }
+        }
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3113,13 +3469,16 @@ mod tests {
 
     impl Scratch {
         fn new(tag: &str) -> Self {
+            // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+            static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let path = std::env::temp_dir().join(format!(
-                "rw-compare-test-{tag}-{}-{}",
+                "rw-compare-test-{tag}-{}-{}-{}",
                 std::process::id(),
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|elapsed| elapsed.as_nanos())
-                    .unwrap_or(0)
+                    .unwrap_or(0),
+                NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             ));
             std::fs::create_dir_all(&path).expect("scratch");
             Self(path)
@@ -3283,6 +3642,8 @@ mod tests {
             reference_overlays: None,
             observation: None,
             difference,
+            coverage: None,
+            reference_coverage: None,
         })
         .expect("panels")
     }
@@ -3364,10 +3725,80 @@ mod tests {
             run: text(), run_values: convert(), reference: text(), reference_values: convert(),
             run_overlays: None, reference_overlays: None,
             observation: Some((text(), convert())), difference: None,
+            coverage: None, reference_coverage: None,
         }).unwrap();
         assert_eq!(observed.len(), 3);
         assert!(observed[0] == pair[0] && observed[1] == pair[1]);
         assert!(observed[2] == pair[0], "equal observed and forecast planes draw equal pixels");
+    }
+
+    /// Pixels of exactly `color` in a panel.
+    fn count_color(image: &rustwx_render::RgbaImage, color: rustwx_render::Color) -> usize {
+        image
+            .pixels()
+            .filter(|pixel| pixel.0 == [color.r, color.g, color.b, color.a])
+            .count()
+    }
+
+    #[test]
+    fn no_coverage_is_grey_on_the_observed_panel_and_outlined_on_every_other() {
+        let scratch = Scratch::new("no-coverage");
+        // An observed product's own ladder (hourly precipitation, which, like
+        // composite reflectivity, draws nothing below its floor), on a
+        // latitude-longitude grid: the inverse-raster path.
+        let selector = FieldSelector::surface(CanonicalField::TotalPrecipitation);
+        let style = SheetStyle::production(rustwx_products::viewer::operational_style_for_store_variable(
+            "apcp_1h", &serde_json::to_value(selector).unwrap(), "mm", ModelId::WrfGdex,
+        ).unwrap());
+        let (ny, nx) = (12_usize, 16_usize);
+        let lat: Vec<f32> = (0..ny * nx).map(|cell| 34.0 + 0.5 * (cell / nx) as f32).collect();
+        let lon: Vec<f32> = (0..ny * nx).map(|cell| -104.0 + 0.5 * (cell % nx) as f32).collect();
+        // The east third saw nothing (a radar outage); the rest observed.
+        let mask: Vec<bool> = (0..ny * nx).map(|cell| cell % nx >= 11).collect();
+        let native: Vec<f32> = (0..ny * nx).map(|cell| 0.5 + 0.05 * cell as f32).collect();
+        let convert = || -> Vec<f32> { native.iter().map(|value| style.convert.apply(*value)).collect() };
+        let observed: Vec<f32> = convert()
+            .into_iter()
+            .zip(&mask)
+            .map(|(value, unobserved)| if *unobserved { f32::NAN } else { value })
+            .collect();
+        let text = || PanelText {title: "panel".into(), left: "left".into(), right: "right".into()};
+        let draw = |name: &str, coverage: Option<&[bool]>| draw_panels(PanelSet {
+            geometry: (&lat, &lon, None, ny, nx), width: 480, height: 360,
+            slug: "test", style: &style, scratch: &scratch.0.join(name),
+            run: text(), run_values: convert(), reference: text(), reference_values: convert(),
+            run_overlays: None, reference_overlays: None,
+            observation: Some((text(), observed.clone())),
+            difference: Some((text(), vec![0.5; ny * nx], 1.0)),
+            coverage, reference_coverage: None,
+        }).unwrap();
+        let plain = draw("plain", None);
+        let marked = draw("marked", Some(&mask));
+        assert_eq!(plain.len(), 4);
+        // Observed panel: the unobserved third is flat grey, and without the
+        // mask it is not (blank, like an observed nothing).
+        let grey = count_color(&marked[2], coverage::NO_COVERAGE_FILL);
+        assert_eq!(count_color(&plain[2], coverage::NO_COVERAGE_FILL), 0);
+        let map_pixels = marked[2].width() as usize * marked[2].height() as usize;
+        assert!(grey > map_pixels / 40, "the outage is visibly grey: {grey} of {map_pixels} pixels");
+        // Run, forecast reference and difference panels: the same pictures
+        // plus the grey outline, nothing else.
+        for index in [0, 1, 3] {
+            assert_ne!(plain[index], marked[index], "panel {index} carries the outline");
+            let changed = plain[index]
+                .pixels()
+                .zip(marked[index].pixels())
+                .filter(|(a, b)| a != b)
+                .count();
+            assert!(changed < map_pixels / 10, "panel {index}: an outline, not a fill ({changed} pixels)");
+            assert_eq!(count_color(&marked[index], coverage::NO_COVERAGE_FILL), 0);
+        }
+        // A fully covered sheet draws exactly what it drew before.
+        let covered = vec![false; ny * nx];
+        let unchanged = draw("covered", Some(&covered));
+        for index in [0, 1, 3] {
+            assert!(unchanged[index] == plain[index], "panel {index}: no edge, no outline");
+        }
     }
 
     #[test]
@@ -3422,6 +3853,7 @@ mod tests {
             scratch:&scratch.0.join("panels"), run:title(), run_values:vec![1.0;4],
             reference:title(), reference_values:vec![1.0;4], run_overlays:None,
             reference_overlays:None, observation:Some((text, values)), difference:None,
+            coverage:None, reference_coverage:None,
         }).unwrap();
         assert_eq!(panels.len(), 3, "the manifest produces the observed third panel");
     }
@@ -3450,6 +3882,32 @@ mod tests {
         }
         for name in ["refc", "t2m", "td2m", "wspd10", "qpf1h", "hgt500", "swdown"] {
             assert!(names.contains(name), "{name} is in the brief");
+        }
+    }
+
+    #[test]
+    fn smoke_rows_compare_the_planes_the_wrfout_catalogue_stores() {
+        // The run plane must be the selector SMOKE_SFC / SMOKE_COLUMN are
+        // written under, or the sheet would find no run plane; the reference
+        // message is HRRR-Smoke's own MASSDEN at 8 m and COLMD.
+        let catalogue = rw_wrfbatch::wrf_process::CHEM_CORE_FIELD_CATALOG;
+        for (product, source, message) in [
+            ("smoke_sfc", "SMOKE_SFC", "MASSDEN:8 m above ground"),
+            ("smoke_column", "SMOKE_COLUMN", "COLMD:entire atmosphere"),
+        ] {
+            let spec = product_specs().into_iter().find(|s| s.name == product)
+                .unwrap_or_else(|| panic!("{product} row"));
+            let row = catalogue.iter().find(|r| r.source == source).expect("catalogue row");
+            match (spec.run, spec.reference) {
+                (RunPlane::Selector(run), ReferencePlane::Selector(reference)) => {
+                    assert_eq!(run, row.selector, "{product} run plane");
+                    assert_eq!(reference, row.selector, "{product} reference plane");
+                }
+                _ => panic!("{product} compares one selector on both sides"),
+            }
+            assert_eq!(spec.inventory_patterns, &[message]);
+            assert_eq!(spec.style_variable, Some(row.store_name));
+            assert!(spec.continuous, "{product} draws its difference panel");
         }
     }
 

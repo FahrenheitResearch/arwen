@@ -1,0 +1,67 @@
+{
+  "composition_sha256": "7e1739721286ed0c2bf0c44ef480bc80cf3a6c0f5fb032e46ae5c2a423544eb4",
+  "decoders": {
+    "gpuwm_mapped_engine": {
+      "bytes": 5706984,
+      "path": "../../../../.gpuwm/bridges/gpuwm_mapped_engine",
+      "sha256": "6a1ed079c2157ef2330fe4eff214648ac97cf0b1292165c056a4d6dae9204b0c"
+    }
+  },
+  "mapping_sha256": "770b747a0a8eb62b281fe51a5853a4fa82a43512079615a60f1c385f9713ee0c",
+  "primary_files": [
+    {
+      "bytes": 382723113,
+      "path": "../raw/hrrr.t06z.wrfprsf00.grib2",
+      "sha256": "5bb7baf109258ca74f5b010313c6bf8a8641444a0c1f744c055ec659dac50dc7"
+    },
+    {
+      "bytes": 404570195,
+      "path": "../raw/hrrr.t06z.wrfprsf01.grib2",
+      "sha256": "977a15ca91ab95d811b1c607db61c18a1b34e4d7368c33e981c3b58191695bed"
+    },
+    {
+      "bytes": 408200094,
+      "path": "../raw/hrrr.t06z.wrfprsf02.grib2",
+      "sha256": "358a431c6091f6dbb18577871a7f73c6cd8ba93b1b5bd51b5c5e3527487dc334"
+    }
+  ],
+  "provenance": {
+    "hrrr_prs_in_band_surface_provenance": {
+      "bytes": 871,
+      "path": "../../baseline-e62/gpuwm/authorities/rw-wps-hrrr-prs-grib2.provenance.json",
+      "sha256": "c7f2ea4142fe09c687f2b1ac0f4d4c462cb55398bfe5149fe9008d9d03ff2cc0"
+    },
+    "vegetation_surface_provenance": {
+      "bytes": 567,
+      "path": "../../baseline-e62/gpuwm/authorities/rw-wps-hrrr-surface-vegetation-grib2.provenance.json",
+      "sha256": "af36e1c31cc24813294a9af015b894529f5b9f3beb6103b3ae593b677763f566"
+    }
+  },
+  "schema": "gpuwm-mapped-composition-inputs-v1",
+  "supplements": {
+    "hrrr_prs_in_band_surface": [
+      {
+        "bytes": 382723113,
+        "path": "../raw/hrrr.t06z.wrfprsf00.grib2",
+        "sha256": "5bb7baf109258ca74f5b010313c6bf8a8641444a0c1f744c055ec659dac50dc7"
+      },
+      {
+        "bytes": 404570195,
+        "path": "../raw/hrrr.t06z.wrfprsf01.grib2",
+        "sha256": "977a15ca91ab95d811b1c607db61c18a1b34e4d7368c33e981c3b58191695bed"
+      },
+      {
+        "bytes": 408200094,
+        "path": "../raw/hrrr.t06z.wrfprsf02.grib2",
+        "sha256": "358a431c6091f6dbb18577871a7f73c6cd8ba93b1b5bd51b5c5e3527487dc334"
+      }
+    ],
+    "vegetation_surface_data": [
+      {
+        "bytes": 136539157,
+        "path": "../raw/hrrr.t06z.wrfsfcf00.grib2",
+        "sha256": "086b6c16bcbedbfc138c3ffcddd98a0fecfc8f5a864dffb80a0704dd1a831499"
+      }
+    ]
+  }
+}

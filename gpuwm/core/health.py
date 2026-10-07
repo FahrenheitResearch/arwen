@@ -55,6 +55,8 @@ STATUS_BITS = {
     "surface": 1 << 14,
     "generic": 1 << 15,
     "particle_volume": 1 << 16,
+    # Chem species fields and process arrays (gpuwm/core/chem_state.py).
+    "chem": 1 << 17,
 }
 
 _LOWER = 1 << 0
@@ -411,6 +413,17 @@ def rule_for_field(name: str, *, p_top: float | None = None) -> FieldRule:
         return FieldRule("moment", 0.0, 1.0e15)
     if leaf in ("qvolg", "qvolh"):
         return FieldRule("particle_volume", 0.0, 1.0)
+    if leaf.startswith("chem_"):
+        # A chem species (ug kg-1 or ppmv of dry air).  Non-negative, as
+        # the positive-definite transport and every process's epsilc floor
+        # keep it, and 1.0e9 is four decades above the densest surface
+        # smoke or dust ever measured (order 1e4 to 1e5 ug m-3), so the
+        # ceiling catches a runaway, not a plume.
+        return FieldRule("chem", 0.0, 1.0e9)
+    if leaf.startswith("chemdiag_") or leaf.startswith("chemwork_"):
+        # Process arrays and ledger totals: finiteness is the whole gate
+        # (a ledger bucket or a flux accumulator has either sign).
+        return FieldRule("chem")
     if leaf in ("effc", "effr", "effi", "effs"):
         # Morrison stores these diagnostics in microns.
         return FieldRule("effective_radius", 0.0, 1.0e6)
@@ -547,6 +560,17 @@ def collect_state_fields(state: Any, *, backend: str = "cpu",
                     p_top=p_top))
         else:
             result.append(field_from_array(name, value, p_top=p_top))
+    # Chem species fields and float32 process arrays, named by the chem
+    # table; absent on a chem-off state, so every other census is unchanged.
+    # The float64 ledger vectors are sums of these fields and carry no
+    # state of their own, and the fused gate takes float32/int32 only.
+    if getattr(state, "chem", None) is not None:
+        from gpuwm.state_serialization_contract import chem_state_attrs
+        for name in chem_state_attrs(state):
+            value = getattr(state, name, None)
+            if (value is not None
+                    and np.dtype(value.dtype) == np.dtype(np.float32)):
+                result.append(field_from_array(name, value, p_top=p_top))
 
     driver = getattr(state, "physics", None)
     if driver is not None:

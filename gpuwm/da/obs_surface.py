@@ -32,6 +32,13 @@ clean pair (altimeter or station pressure vs ``psfc`` adjusted to station
 elevation) needs the v2 schema too, so this adapter does not offer a
 pressure type at all rather than offering a wrong one.
 
+**Dewpoint is opt-in Q2.**  The pinned native liquid-water saturation
+operator converts observed dewpoint K to Q2 mixing ratio kg/kg. Since the
+surface seam carries no station PSFC, it uses and records the fixed-order
+ensemble-mean forecast PSFC proxy after station elevation QC. Its analytic
+sigma conversion holds pressure fixed and does not represent pressure error.
+H(x) is each member's leg-end Q2 diagnostic. It adds no humidity floor or clip.
+
 **Reports serve one slot each, and are dated to when they were taken.**  The
 decoder matches each report to the ONE valid time nearest it (a METAR
 record's stride is an hour, ``--step-hours`` in [1, 24]), so a report
@@ -96,6 +103,7 @@ ADAPTER_SCHEMA = "gpuwm-da.surface-obs-adapter.v1"
 #: can turn into batches, with the units the seam guarantees.
 TEMPERATURE_QUANTITY = "temperature_2m"    # K
 WIND_SPEED_QUANTITY = "wind_speed_10m"     # m s-1
+DEWPOINT_QUANTITY = "dewpoint_2m"         # input K, output Q2 mixing ratio
 
 #: The seam quantity id every unsupported row names as its way out.
 SEAM_V2 = "gpuwm-obs.asos-surface.v2"
@@ -114,7 +122,7 @@ class SurfaceObsError(ValueError):
 class SurfaceQuantity:
     """One row of the seam's quantity table.  Adding a quantity is a row.
 
-    A SUPPORTED row states the units the seam guarantees, the
+    A SUPPORTED row states its output batch units, the
     :class:`SurfaceObsConfig` field that enables it, the per-type
     localisation field, and the builder that turns the member surface
     diagnostics into this quantity's member plane.  An UNSUPPORTED row
@@ -126,7 +134,7 @@ class SurfaceQuantity:
     units: str = ""
     error_field: str | None = None
     localization_field: str | None = None
-    #: ``(t2, u10, v10) -> (R, ny, nx)`` member plane, supported rows only.
+    #: Member plane builder: T2/wind receive (t2,u10,v10), dewpoint receives q2.
     member_plane: Callable | None = None
     #: What an assimilation of this quantity would need and does not have.
     missing_operator: str | None = None
@@ -146,9 +154,12 @@ def _wind_speed_plane(t2, u10, v10):
     return np.hypot(u10, v10)
 
 
-#: Every quantity the v1 seam can carry, supported or not.  The two
-#: supported rows are the only ones with an observation operator; the two
-#: unsupported rows carry the operator that is missing and the way out, so
+def _dewpoint_plane(q2):
+    return q2
+
+
+#: Every quantity the seam can carry, supported or not. Supported rows
+#: name their operator; unsupported rows carry the missing operator, so
 #: a caller who names one is told why rather than being dropped in silence
 #: (see the module docstring for the physics behind each).
 SURFACE_QUANTITY_TABLE: Mapping[str, SurfaceQuantity] = {
@@ -164,16 +175,12 @@ SURFACE_QUANTITY_TABLE: Mapping[str, SurfaceQuantity] = {
         error_field="wind_speed_error_ms",
         localization_field="wind_localization",
         member_plane=_wind_speed_plane),
-    "dewpoint_2m": SurfaceQuantity(
-        quantity="dewpoint_2m",
-        units="K",
-        missing_operator=(
-            "the dewpoint-to-q2 inversion, which needs a saturation "
-            "formulation nobody has pinned here"),
-        way_out=(
-            f"pin one stated saturation formulation for the inversion and "
-            f"land it with the {SEAM_V2} seam, then add the row to "
-            f"SURFACE_QUANTITY_TABLE")),
+    DEWPOINT_QUANTITY: SurfaceQuantity(
+        quantity=DEWPOINT_QUANTITY,
+        units="kg kg-1 mixing ratio",
+        error_field="dewpoint_error_k",
+        localization_field="dewpoint_localization",
+        member_plane=_dewpoint_plane),
     "mslp": SurfaceQuantity(
         quantity="mslp",
         units="Pa",
@@ -277,6 +284,12 @@ class SurfaceObsConfig:
         configuration time instead of disappearing.  A supported id may
         be stated here or through its named field, never as two
         different numbers.
+    dewpoint_error_k / dewpoint_localization
+        Opt-in observed dewpoint K standard deviation and localization.
+        The observation is converted in native Rust to Q2 mixing ratio,
+        kg water per kg dry air, using a declared ensemble-mean forecast
+        PSFC proxy. Sigma is propagated analytically at fixed pressure.
+        This does not represent pressure uncertainty or assimilate MSLP.
     """
 
     temperature_error_k: float | None = None
@@ -287,12 +300,15 @@ class SurfaceObsConfig:
     temperature_localization: Localization | None = None
     wind_localization: Localization | None = None
     quantity_error_stddev: Mapping[str, float] | None = None
+    dewpoint_error_k: float | None = None
+    dewpoint_localization: Localization | None = None
 
     def __post_init__(self) -> None:
         stated: dict[str, float] = {}
         for quantity, value in (
                 (TEMPERATURE_QUANTITY, self.temperature_error_k),
-                (WIND_SPEED_QUANTITY, self.wind_speed_error_ms)):
+                (WIND_SPEED_QUANTITY, self.wind_speed_error_ms),
+                (DEWPOINT_QUANTITY, self.dewpoint_error_k)):
             if value is None:
                 continue
             resolve_quantity(quantity)
@@ -312,7 +328,7 @@ class SurfaceObsConfig:
             stated[row.quantity] = float(value)
         if not stated:
             raise SurfaceObsError(
-                "neither temperature_error_k nor wind_speed_error_ms is "
+                "none of temperature_error_k, wind_speed_error_ms or dewpoint_error_k is "
                 "stated, so this config would assimilate nothing. A "
                 "quantity is enabled by stating its error standard "
                 "deviation; there is no default sigma on purpose")
@@ -349,6 +365,10 @@ class SurfaceObsConfig:
     @property
     def wind_speed(self) -> bool:
         return WIND_SPEED_QUANTITY in self._stated_sigmas
+
+    @property
+    def dewpoint(self) -> bool:
+        return DEWPOINT_QUANTITY in self._stated_sigmas
 
     def error_stddev(self, quantity: str) -> float | None:
         """The stated sigma for one quantity, in either spelling."""
@@ -557,6 +577,8 @@ def surface_to_gridded_obs(
     simulated_t2=None,
     simulated_u10=None,
     simulated_v10=None,
+    simulated_q2=None,
+    simulated_psfc=None,
     analysis_times: Sequence[datetime] | None = None,
 ) -> tuple[list[GriddedObs], dict]:
     """Adapt one asos-surface record to the filter's observation batches.
@@ -583,6 +605,14 @@ def surface_to_gridded_obs(
         ``(R, ny, nx)`` member 10 m wind diagnostics, m/s, grid-relative.
         Required together when wind speed is enabled; H is their modulus,
         which no grid rotation can change.
+    simulated_q2, simulated_psfc
+        Required together when dewpoint is enabled, both (R, ny, nx),
+        leg-end model diagnostics. Q2 is mixing ratio kg water per kg dry
+        air, PSFC is Pa. Native Rust converts observed Td K to Q2 at the
+        fixed-member-order ensemble-mean forecast PSFC proxy. The observed
+        station pressure is absent from this seam. Sigma_Td is propagated
+        analytically while holding that proxy pressure fixed; no pressure
+        error is added and no temperature or pressure units are inferred.
     analysis_times
         Optional full analysis schedule of the run.  When given, a report
         is kept only at the analysis nearest its valid time, so no report
@@ -616,12 +646,18 @@ def surface_to_gridded_obs(
             "wind_speed_error_ms is stated but simulated_u10/simulated_v10 "
             "were not both given; H(x) for wind speed is hypot(u10, v10) "
             "of the member diagnostics")
+    if config.dewpoint and (simulated_q2 is None or simulated_psfc is None):
+        raise SurfaceObsError(
+            "dewpoint_error_k is stated but simulated_q2/simulated_psfc "
+            "were not both given; H(x) needs the member Q2 mixing ratio "
+            "in kg/kg and the pressure proxy needs member PSFC in Pa")
 
     ny, nx = int(target_grid.ny), int(target_grid.nx)
     nz = int(target_grid.nz)
     plane = (ny, nx)
     members = None
     t2_stack = u10_stack = v10_stack = None
+    q2_stack = psfc_stack = None
     if config.temperature:
         t2_stack = _member_stack("simulated_t2", simulated_t2, members,
                                  plane)
@@ -632,6 +668,10 @@ def surface_to_gridded_obs(
         members = u10_stack.shape[0]
         v10_stack = _member_stack("simulated_v10", simulated_v10, members,
                                   plane)
+    if config.dewpoint:
+        q2_stack = _member_stack("simulated_q2", simulated_q2, members, plane)
+        members = q2_stack.shape[0]
+        psfc_stack = _member_stack("simulated_psfc", simulated_psfc, members, plane)
 
     stations = {str(s["station_id"]): s for s in record["stations"]}
     counts = {
@@ -739,7 +779,8 @@ def surface_to_gridded_obs(
     for row, sigma in config.enabled_quantities():
         quantity_plan.append(
             (row.quantity, row.units, float(sigma),
-             row.member_plane(t2_stack, u10_stack, v10_stack),
+             (row.member_plane(q2_stack) if row.quantity == DEWPOINT_QUANTITY else
+              row.member_plane(t2_stack, u10_stack, v10_stack)),
              getattr(config, row.localization_field)))
 
     ages_used: list[float] = []
@@ -748,7 +789,10 @@ def surface_to_gridded_obs(
         counts["values_nonfinite_by_quantity"][quantity] = 0
         values = np.full(shape, np.nan, dtype=np.float64)
         mask = np.zeros(shape, dtype=bool)
+        errors = np.full(shape, (np.nan if quantity == DEWPOINT_QUANTITY
+                                else sigma * inflation), dtype=np.float64)
         observed = 0
+        dewpoint_points = []
         for (j, i), placement in sorted(placed.items()):
             raw = placement["report"].get("values", {}).get(quantity)
             if raw is None:
@@ -760,12 +804,42 @@ def surface_to_gridded_obs(
                 qc[placement["station_id"]].setdefault(
                     "nonfinite_quantities", []).append(quantity)
                 continue
-            values[0, j, i] = value
+            if quantity == DEWPOINT_QUANTITY:
+                dewpoint_points.append((j, i, placement, value))
+            else:
+                values[0, j, i] = value
             mask[0, j, i] = True
             observed += 1
             ages_used.append(float(placement["age_s"]))
-        sigma_eff = sigma * inflation
-        errors = np.full(shape, sigma_eff, dtype=np.float64)
+        dewpoint_receipt = None
+        if quantity == DEWPOINT_QUANTITY:
+            from gpuwm.da.surface_dewpoint import (
+                CONTRACT, PRESSURE_SOURCE, SATURATION_CONSTANTS,
+                dewpoint_to_q2)
+            if dewpoint_points:
+                js = [point[0] for point in dewpoint_points]
+                is_ = [point[1] for point in dewpoint_points]
+                raw_td = [point[3] for point in dewpoint_points]
+                try:
+                    q_observed, q_sigma, p_used = dewpoint_to_q2(
+                        raw_td, psfc_stack[:, js, is_], sigma, inflation)
+                except (ValueError, RuntimeError, OSError) as error:
+                    raise SurfaceObsError(
+                        f"dewpoint_2m pinned native operator refused: {error}") from error
+                for index, (j, i, placement, _raw) in enumerate(dewpoint_points):
+                    values[0, j, i] = q_observed[index]
+                    errors[0, j, i] = q_sigma[index]
+                    qc[placement["station_id"]]["dewpoint_pressure_proxy_pa"] = float(p_used[index])
+            dewpoint_receipt = {
+                "operator_contract": CONTRACT,
+                "input_units": "K", "input_error_stddev_k": sigma,
+                "output_quantity": "q2_mixing_ratio",
+                "saturation_constants": dict(SATURATION_CONSTANTS),
+                "pressure_source": PRESSURE_SOURCE,
+                "pressure_error": "not propagated; pressure proxy held fixed",
+                "error_model": "pointwise abs(dQ2/dTd) * stated sigma_K * error_inflation",
+                "humidity_floor_or_clip": "none",
+            }
         simulated = np.zeros((member_plane.shape[0],) + shape,
                              dtype=np.float64)
         simulated[:, 0, :, :] = member_plane
@@ -776,8 +850,10 @@ def surface_to_gridded_obs(
         used.append({
             "name": name, "kind": "surface", "quantity": quantity,
             "units": units, "level": "k=0 of the station column",
-            "error_stddev": sigma, "error_inflation": inflation,
+            "error_stddev": (None if dewpoint_receipt is not None else sigma),
+            "error_inflation": inflation,
             "observed_points": observed,
+            **(dewpoint_receipt or {}),
         })
 
     # -- declined quantities -------------------------------------------------

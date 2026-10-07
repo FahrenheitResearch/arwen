@@ -72,11 +72,17 @@ def wrfinput_ruc_mosaic_inputs(restored, cfg):
             or not (getattr(cfg, "mosaic_lu", 0)
                     or getattr(cfg, "mosaic_soil", 0))):
         return {}
+    # The category axis by every name a WRF writer gives it: real.exe
+    # writes land_cat_stag / soil_cat_stag (Registry.EM_COMMON:773-774 put
+    # LANDUSEF and SOILCTOP on stagger Z, and WRF's I/O appends _stag; the
+    # frozen v4.6.1 file wrf_direct_v461_contract.json records exactly
+    # that), WPS's geo_em spells it land_cat / soil_cat.  Accepting only
+    # the geo_em spelling refused every real.exe wrfinput under RUC mosaic.
     selected = {}
     if int(getattr(cfg, "mosaic_lu", 0)) == 1:
-        selected["LANDUSEF"] = "land_cat"
+        selected["LANDUSEF"] = ("land_cat_stag", "land_cat")
     if int(getattr(cfg, "mosaic_soil", 0)) == 1:
-        selected["SOILCTOP"] = "soil_cat"
+        selected["SOILCTOP"] = ("soil_cat_stag", "soil_cat")
     fields = {name: restored.raw[name] for name in selected
               if name in restored.raw}
     missing = set(selected) - fields.keys()
@@ -93,10 +99,11 @@ def wrfinput_ruc_mosaic_inputs(restored, cfg):
                 dimensions = tuple(variable.dimensions)
                 if dimensions and dimensions[0] == "Time":
                     dimensions = dimensions[1:]
-                expected = (selected[name], "south_north", "west_east")
-                if dimensions != expected:
+                expected = tuple((category, "south_north", "west_east")
+                                 for category in selected[name])
+                if dimensions not in expected:
                     raise ValueError(
-                        f"{name} axes {dimensions} != {expected}; RUC "
+                        f"{name} axes {dimensions} != {expected[0]}; RUC "
                         "fractions would be assigned to different columns")
                 fields[name] = _read_numeric(variable)
     return ruc_mosaic_physics_inputs(cfg, fields, processed=True)

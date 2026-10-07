@@ -30,7 +30,13 @@ SCHEMA = "arwen.case-catalog.v1"
 TIERS = ("lower", "recommended", "upper")
 MAX_CATALOG_BYTES = 128 * 1024 * 1024
 SCHEMA_PATH = Path(__file__).parent / "data" / "case-catalog" / "schema.json"
-BUILTIN_CATALOG_PATH = SCHEMA_PATH.with_name("historical.zip")
+#: The bundled historical catalog ships in the gpuwm-data companion since
+#: 2.8.7 (gpuwm.data_assets.COMPANION_TREES): with three new native
+#: executables the gpuwm manylinux wheel crossed PyPI's 100,000,000-byte
+#: limit, and this 2.73 MB ZIP is incompressible data.  ``None`` resolves it
+#: through gpuwm.data_assets.data_path; a path set here wins (tests).
+BUILTIN_CATALOG_RELATIVE = "case-catalog/historical.zip"
+BUILTIN_CATALOG_PATH: Path | None = None
 _ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,127}\Z")
 _CONTROL_TEXT = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 _RESERVED = {"con", "prn", "aux", "nul", *(f"com{i}" for i in range(1, 10)),
@@ -42,10 +48,19 @@ class CatalogError(ValueError):
 
 
 def builtin_catalog_path() -> Path:
-    """The historical catalog shipped inside every installed engine wheel."""
-    path = BUILTIN_CATALOG_PATH.resolve()
+    """The historical catalog every install carries (in the gpuwm-data companion)."""
+    from gpuwm import data_assets
+
+    path = BUILTIN_CATALOG_PATH
+    if path is None:
+        try:
+            path = data_assets.data_path(BUILTIN_CATALOG_RELATIVE)
+        except ImportError as error:
+            raise CatalogError(f"The bundled historical case catalog is missing; reinstall ArWen. {error}") from error
+    path = Path(path).resolve()
     if not path.is_file():
-        raise CatalogError("The bundled historical case catalog is missing; reinstall ArWen.")
+        raise CatalogError("The bundled historical case catalog is missing; reinstall ArWen: "
+                           + data_assets.companion_reinstall_command())
     return path
 
 

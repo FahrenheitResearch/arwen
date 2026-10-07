@@ -24,6 +24,10 @@ reader -- the default fetch set, ``--datasets wrf``, and each of
 a different scope, so adding a dataset for a future door is a row and a
 consumer name rather than a new code path.
 
+The dust door ``chem-dust`` adds three upstream-only archives. They are
+not in the mirror or mandatory bundle and are fetched only when selected.
+The default fetch set stays the WRF and mesh set.
+
 The soil archive is a REQUIRED download for the mesh door and no part
 of a WRF-only install.  It is large (864 MB compressed, ~13 GB
 unpacked) and the default fetch stages it anyway, because a tree the
@@ -111,7 +115,14 @@ GEOG_SOURCES = ("hf", "ncar")
 #: declarative.
 GEOG_CONSUMER_WRF = "wrf"
 GEOG_CONSUMER_MESH = "mesh"
-GEOG_CONSUMERS = (GEOG_CONSUMER_WRF, GEOG_CONSUMER_MESH)
+GEOG_CONSUMER_CHEM_DUST = "chem-dust"
+GEOG_CONSUMERS = (GEOG_CONSUMER_WRF, GEOG_CONSUMER_MESH, GEOG_CONSUMER_CHEM_DUST)
+
+
+def default_geog_consumers() -> tuple[str, ...]:
+    """Doors in a default install, derived from the pin scope and opt-in column."""
+    return tuple(c for c in GEOG_CONSUMERS
+                 if any(a.fetch_by_default and c in a.required_by for a in GEOG_ARCHIVES))
 
 #: The line that sets up the geography a WRF-grid forecast needs: the
 #: datasets the WRF static builder opens, and not the Noah-MP soil archive
@@ -186,6 +197,12 @@ class GeogArchive:
     required_by: tuple[str, ...] = (GEOG_CONSUMER_WRF,)
     optional_for: tuple[str, ...] = ()
     available_sources: tuple[str, ...] = GEOG_SOURCES
+    # Optional consumers must opt in without changing the default fetch bill.
+    fetch_by_default: bool = True
+    # None uses the invocation's source. Some upstream products are not mirrored.
+    download_source: str | None = None
+    pin_date: str = "2026-07-29"
+    pin_host: str = "www2.mmm.ucar.edu"
 
 
 #: Both doors need this pin; only the WRF static builder does; only the
@@ -195,8 +212,8 @@ _WRF_AND_MESH = (GEOG_CONSUMER_WRF, GEOG_CONSUMER_MESH)
 _WRF_ONLY = (GEOG_CONSUMER_WRF,)
 _MESH_ONLY = (GEOG_CONSUMER_MESH,)
 
-#: The ten archives, in GEOG_DATASETS order with the mesh-only soil
-#: container last.  A test binds the ``wrf``-scoped names to
+#: The pin inventory, with opt-in consumers after the default ten.
+#: A test binds the ``wrf``-scoped names to
 #: gpuwm.domain_wizard.GEOG_DATASETS and the ``mesh``-scoped ones to
 #: gpuwm.rustwx_static.REQUIRED_GEOG_DATASETS through the child
 #: declarations, so neither column can drift from the builder it speaks
@@ -273,6 +290,23 @@ GEOG_ARCHIVES: tuple[GeogArchive, ...] = (
         "7f016173f4999e67d9757bddb9e80f1b1f3794bfe820fd78b215eb599d59fd76",
         1884949370, in_mandatory_bundle=False,
         required_by=(), optional_for=_WRF_ONLY, available_sources=("ncar",)),
+    # TLS pins measured 2026-09-30 on www2.mmm.ucar.edu. These products
+    # are absent from the Hugging Face mirror and the mandatory bundle.
+    GeogArchive("erod", "erod.tar.bz2", 131569,
+        "a508b15bc7bc85ba3c34bdf01f0e8c0c582666bd739331333d289a5772edccd7",
+        6221082, in_mandatory_bundle=False,
+        required_by=(GEOG_CONSUMER_CHEM_DUST,), fetch_by_default=False,
+        download_source="ncar", available_sources=("ncar",), pin_date="2026-09-30"),
+    GeogArchive("clayfrac_5m", "clayfrac_5m.tar.bz2", 443388,
+        "9475bcc76119474ff4fe36215b7101c478d381097904d7c9b5e56a121470c2da",
+        20250288, in_mandatory_bundle=False,
+        required_by=(GEOG_CONSUMER_CHEM_DUST,), fetch_by_default=False,
+        download_source="ncar", available_sources=("ncar",), pin_date="2026-09-30"),
+    GeogArchive("sandfrac_5m", "sandfrac_5m.tar.bz2", 462249,
+        "53e169f64237d1ade90bd40813e40181e0da640413cc27c32ce093d2c3444815",
+        20250288, in_mandatory_bundle=False,
+        required_by=(GEOG_CONSUMER_CHEM_DUST,), fetch_by_default=False,
+        download_source="ncar", available_sources=("ncar",), pin_date="2026-09-30"),
     # Alternative 30 arc-second, 16-category soil textures selected by
     # geog_data_res=bnu_soil_30s. Pinned from official TLS downloads.
     GeogArchive(
@@ -333,7 +367,7 @@ def datasets_required_by(consumer: str) -> tuple[str, ...]:
 def size_phrase(datasets: tuple[str, ...] | None = None) -> str:
     """``'~2.2 GB compressed, ~30 GB unpacked'`` for a set of pins.
 
-    ``None`` means the default fetch set, which is every pin.  Decimal
+    ``None`` means the default fetch set. Decimal
     GB, matching every other published size in this product.
 
     Published because three surfaces quote these numbers before the
@@ -344,7 +378,7 @@ def size_phrase(datasets: tuple[str, ...] | None = None) -> str:
     place a reader is deciding whether to start it.
     """
 
-    chosen = (GEOG_ARCHIVES if datasets is None
+    chosen = (tuple(a for a in GEOG_ARCHIVES if a.fetch_by_default) if datasets is None
               else tuple(archive_for(name) for name in datasets))
     compressed = sum(archive.archive_bytes for archive in chosen) / 1e9
     unpacked = sum(archive.extracted_bytes for archive in chosen) / 1e9
@@ -362,9 +396,8 @@ def archive_for(dataset: str) -> GeogArchive:
 def parse_datasets(raw: str) -> tuple[str, ...]:
     """Parse ``--datasets`` into dataset names, in canonical order.
 
-    Three spellings, all read off the same table: ``all`` (the default,
-    every pin -- the soil container included, which is the ruling that
-    made it a sanctioned default download), a consumer name from
+    ``default`` selects fetch_by_default rows; ``all`` selects every pin.
+    Other spellings are a consumer name from
     :data:`GEOG_CONSUMERS` standing for that door's whole set, and an
     explicit comma list.  They mix, and duplicates collapse.
 
@@ -376,6 +409,8 @@ def parse_datasets(raw: str) -> tuple[str, ...]:
     """
 
     known = geog_datasets()
+    if raw.strip().lower() == "default":
+        return tuple(a.dataset for a in GEOG_ARCHIVES if a.fetch_by_default)
     if raw.strip().lower() == "all":
         return known
     requested = [part.strip() for part in raw.split(",") if part.strip()]
@@ -663,8 +698,14 @@ def _content_range_start(value: str) -> int | None:
 
 def download_archive(url: str, dest: Path, *, expected_bytes: int,
                      progress, label: str, strict_size: bool = True,
-                     urlopen_fn=_default_urlopen) -> None:
+                     urlopen_fn=_default_urlopen,
+                     report_every_bytes: int | None = None) -> None:
     """Download ``url`` to ``dest`` with Range resume and a size bar.
+
+    ``report_every_bytes`` adds a progress line each time the file grows
+    past another multiple of it (a single file of a gigabyte or more is
+    minutes of silence otherwise); ``None`` keeps the start and end lines
+    only.
 
     A ``dest`` left by an interrupted run resumes from its byte count
     (both NCAR and the mirror serve ranges).  A server that ignores the
@@ -773,8 +814,22 @@ def download_archive(url: str, dest: Path, *, expected_bytes: int,
                 except OSError as error:
                     raise fetch_guard.LocalWriteFailed(
                         sidecar, error) from error
+            on_bytes = None
+            if report_every_bytes:
+                base = offset if mode == "ab" else 0
+                said = {"step": base // report_every_bytes}
+
+                def on_bytes(written: int) -> None:
+                    total = base + written
+                    step = total // report_every_bytes
+                    if step > said["step"]:
+                        said["step"] = step
+                        progress(
+                            f"fetch-geog {label}: {total / 2**20:,.0f} of "
+                            f"{expected_bytes / 2**20:,.0f} MiB "
+                            f"({100.0 * total / expected_bytes:.0f}%)")
             fetch_guard.receive(response, dest, mode,
-                                block_bytes=_BLOCK_BYTES)
+                                block_bytes=_BLOCK_BYTES, on_bytes=on_bytes)
     except fetch_guard.LocalWriteFailed as failure:
         # Caught before the network handlers below: a folder Windows
         # will not write into used to be reported as "download failed
@@ -1103,10 +1158,13 @@ def _print_listing(datasets: tuple[str, ...], source: str,
             total_archive += archive.archive_bytes
             total_extracted += archive.extracted_bytes
         state = "staged" if ok else "needed"
+        actual_source = archive.download_source or source
+        source_note = (f"; {actual_source} only, absent from mirror"
+                       if archive.download_source else f"; source {source}")
         print(f"  {state}  {name}: {archive.filename} "
               f"{archive.archive_bytes / (1024 * 1024):.1f} MiB "
               f"(~{archive.extracted_bytes / (1024 * 1024):.0f} MiB "
-              "unpacked)")
+              f"unpacked){source_note}")
     if not needed:
         print(f"fetch-geog: all {len(datasets)} requested dataset(s) are "
               "staged; nothing to download")
@@ -1308,11 +1366,12 @@ def register_cli(subparsers) -> None:
     # the literal "~16 GiB", which stopped being true the moment a pin was
     # added and left the command understating its own download by most of
     # its size.
-    total_gib = sum(a.archive_bytes for a in GEOG_ARCHIVES) / (1024 ** 3)
-    unpacked_gib = sum(a.extracted_bytes for a in GEOG_ARCHIVES) / (1024 ** 3)
+    defaults = tuple(a for a in GEOG_ARCHIVES if a.fetch_by_default)
+    total_gib = sum(a.archive_bytes for a in defaults) / (1024 ** 3)
+    unpacked_gib = sum(a.extracted_bytes for a in defaults) / (1024 ** 3)
     parser = subparsers.add_parser(
         "fetch-geog",
-        help=f"download and stage the {len(GEOG_ARCHIVES)} WPS_GEOG static "
+        help=f"download and stage the {len(defaults)} default WPS_GEOG static "
              f"datasets (~{total_gib:.1f} GiB download, "
              f"~{unpacked_gib:.0f} GiB unpacked), SHA-256-verified against "
              "the packaged pins, resumable, idempotent when everything is "
@@ -1327,9 +1386,9 @@ def register_cli(subparsers) -> None:
                    for name in datasets_required_by(GEOG_CONSUMER_MESH)
                    if GEOG_CONSUMER_WRF not in archive_for(name).required_by)
     parser.add_argument(
-        "--datasets", default="all", metavar="all|CONSUMER|NAME,NAME",
-        help=f"which datasets to stage (default 'all', every pin -- the "
-             f"{len(GEOG_ARCHIVES)} above).  A consumer name stands for one "
+        "--datasets", default="default", metavar="default|all|CONSUMER|NAME,NAME",
+        help="which datasets to stage (default keeps the WRF and mesh set; "
+             "chem-dust opts into the three upstream dust datasets; all selects every pin). A consumer name stands for one "
              f"door's whole set: '{GEOG_CONSUMER_WRF}' is the {wrf_count} "
              f"the WRF static builder opens, '{GEOG_CONSUMER_MESH}' is what "
              "gpuwm mesh needs for the static half of its pair.  Use "
@@ -1375,13 +1434,13 @@ def register_cli(subparsers) -> None:
 
 __all__ = [
     "ARCHIVE_SUBDIR", "DRIFT_SIZE_BAND", "GEOG_ARCHIVES",
-    "GEOG_CONSUMERS", "GEOG_CONSUMER_MESH", "GEOG_CONSUMER_WRF",
+    "GEOG_CONSUMERS", "GEOG_CONSUMER_MESH", "GEOG_CONSUMER_WRF", "GEOG_CONSUMER_CHEM_DUST",
     "GEOG_FETCH_MANIFEST_NAME", "GEOG_FETCH_MANIFEST_SCHEMA",
     "GEOG_SOURCES", "GEOG_URL_BASE_ENV", "GeogArchive", "GeogFetchError",
     "HF_MIRROR_BASE_URL", "HF_MIRROR_REPO", "MANDATORY_BUNDLE_BYTES",
     "MANDATORY_BUNDLE_DATASETS", "MANDATORY_BUNDLE_FILENAME",
     "MANDATORY_BUNDLE_SHA256", "NCAR_BASE_URL", "archive_for",
-    "archive_url", "datasets_required_by", "default_geog_root",
+    "archive_url", "datasets_required_by", "default_geog_root", "default_geog_consumers",
     "download_archive", "extract_datasets", "fetch_geog", "fetch_geog_main",
     "geog_datasets", "parse_datasets", "register_cli", "resolve_source",
     "sha256_file", "size_phrase", "validate_dataset_dir",

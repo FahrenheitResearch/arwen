@@ -57,11 +57,12 @@ from pathlib import Path
 import numpy as np
 
 from gpuwm.static.lambert import LambertGrid
-from gpuwm.verify.field_metrics import fss_distance
-from tools.da_sweep_score import (ENSEMBLE_MEAN_STRUCTURE_WARNING,
-                                  load_composite, member_names,
-                                  metric_constants, structure_block,
-                                  structure_means)
+from tools.da_sweep_score import (COVERAGE_RULE, COVERAGE_WHY,
+                                  ENSEMBLE_MEAN_STRUCTURE_WARNING,
+                                  coverage_record, load_composite,
+                                  load_observation, member_names,
+                                  metric_constants, scored_fss,
+                                  structure_block, structure_means)
 
 #: Methods this module knows how to apply, in ascending order of mixing.
 METHODS = ("nearest", "bilinear", "parabolic")
@@ -261,18 +262,20 @@ def _amplitude(field: np.ndarray, threshold: float) -> dict:
 # --------------------------------------------------------------------------
 
 def observation_frame(path: Path, const: dict) -> dict:
-    """The verifier's own truth construction, unchanged."""
+    """The verifier's own truth construction, with its coverage.
 
-    import netCDF4
+    :func:`tools.da_sweep_score.load_observation` is the one reader, so the
+    external model and our run are scored over the same observed columns.
+    """
 
-    with netCDF4.Dataset(str(path)) as ds:
-        z = np.asarray(ds["z_obs"][:], float)
-        zmask = np.asarray(ds["z_mask"][:]).astype(bool)
-        valid = ds.getncattr("valid_time")
-    echo2d = zmask.any(axis=0)
-    comp = np.where(zmask, z, -np.inf).max(axis=0)
-    comp = np.where(np.isfinite(comp), comp, const["MISSING_OBS_FILL_DBZ"])
-    return {"valid_time": valid, "composite": comp, "echo2d": echo2d,
+    observation = load_observation(path, const)
+    z, zmask = observation["z"], observation["zmask"]
+    return {"valid_time": observation["valid_time"],
+            "composite": observation["composite"],
+            "echo2d": observation["echo2d"],
+            "coverage": observation["coverage"],
+            "coverage_record": coverage_record(
+                observation["coverage"], observation["coverage_source"]),
             "cols_gt35": int(((z * zmask).max(axis=0) >= 35.0).sum())}
 
 
@@ -280,9 +283,10 @@ def score_field(field: np.ndarray, obs: dict, const: dict,
                 half_width: int) -> dict:
     return {
         "cols_gt35_in_echo": int((field >= 35.0)[obs["echo2d"]].sum()),
-        "fss": round(1.0 - fss_distance(
-            field, obs["composite"], threshold=const["FSS_THRESHOLD_DBZ"],
-            half_width=half_width), 4),
+        "fss": scored_fss(field, obs["composite"],
+                          threshold=const["FSS_THRESHOLD_DBZ"],
+                          half_width=half_width,
+                          coverage=obs.get("coverage")),
     }
 
 
@@ -468,6 +472,7 @@ def main(argv: list[str] | None = None) -> int:
             "external_valid_time": frame_valid_key(ext_path),
             "obs_valid_time": obs["valid_time"],
             "obs_cols_gt35": obs["cols_gt35"],
+            "coverage": obs["coverage_record"],
             "external": external,
             "regrid_mixing": mixing_report(source, x, y, threshold),
         }
@@ -514,14 +519,16 @@ def main(argv: list[str] | None = None) -> int:
         frames.append(row)
 
     payload = {
-        "schema": "gpuwm-da.external-baseline-score.v1",
+        "schema": "gpuwm-da.external-baseline-score.v2",
         "external_label": args.external_label,
         "dx_km": args.dx_km,
         "constants_source": const_source,
         "constants": const,
         "metric_statement": {
-            "fss": "Roberts & Lean (2008) fractions skill score, computed by "
-                   "gpuwm.verify.field_metrics.fss_distance",
+            "fss": "Roberts & Lean (2008) fractions skill score over the "
+                   "observed columns, computed by "
+                   "tools.da_sweep_score.scored_fss",
+            "validity_mask": {"rule": COVERAGE_RULE, "why": COVERAGE_WHY},
             "both_fields_smoothed": True,
             "both_fields_smoothed_note":
                 "the TRUTH field is smoothed by the same neighborhood as the "
@@ -697,9 +704,9 @@ def _sensitivity(fields: dict, obs: dict, dx_km: float) -> dict:
         for threshold in SENSITIVITY_THRESHOLDS:
             key = f"{box}_{threshold:g}dBZ"
             out[key] = {
-                name: round(1.0 - fss_distance(
-                    field, obs["composite"], threshold=threshold,
-                    half_width=half_width), 4)
+                name: scored_fss(field, obs["composite"],
+                                 threshold=threshold, half_width=half_width,
+                                 coverage=obs.get("coverage"))
                 for name, field in fields.items()}
     return out
 

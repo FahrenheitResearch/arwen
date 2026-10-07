@@ -994,7 +994,7 @@ def test_simulated_shape_disagreement_is_refused():
 @pytest.mark.parametrize("kwargs,match", [
     ({"analysis_fields": ()}, "empty"),
     ({"analysis_fields": ("a", "a")}, "duplicates"),
-    ({"rtps_alpha": 1.5}, "rtps_alpha"),
+    ({"rtps_alpha": float("inf")}, "rtps_alpha"),
     ({"rtps_alpha": -0.1}, "rtps_alpha"),
     ({"prior_inflation": 0.0}, "rho"),
     ({"chunk_points": 0}, "chunk_points"),

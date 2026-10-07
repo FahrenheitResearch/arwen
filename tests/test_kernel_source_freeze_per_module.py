@@ -104,12 +104,34 @@ RE_PINNED_DRIFT: dict[str, tuple[str, str]] = {
 #: any of them is a decision somebody makes on purpose instead of an edit
 #: nothing observes.  The comment above each entry is the commit that last
 #: moved that file.
+#: The shared reason for the 2026-10-05 re-pins of the five thompson_aerosol
+#: units and their common header.  WRF v4.6.1's mp_thompson accumulates the
+#: cloud, rain and ice tendencies (qcten, qrten, nrten, qiten, niten) across
+#: the whole call and applies them once (module_mp_thompson.F :1670 zero,
+#: :3975 cloud, :4023-4053 rain and ice, bounded after the freeze); the port
+#: applied each stage to the state in place, one extra float32 rounding per
+#: stage, which left the g3 gate red on 7 cells since 2.8.5.  The rework
+#: (lane/cut286-mp28-g3, 87762b73a + 085c4db97, 2.8.6) carries WRF's
+#: accumulators in the v4.6.1 generation; the WRF 3.9 fork takes the cloud
+#: accumulator (its own Fortran applies qcten once too, HRRR v4.1.21
+#: module_mp_thompson.F:3691) and keeps its in-place rain and ice in its
+#: THOMPSON_AA_WRF39 arms; thompson.cu (mp=8) is untouched.
+#: Measured 2026-10-05: the g3 gate clears all 22 oracle fixtures inside the
+#: flat 2e-6 bound with no allowance on an RTX 5090 and an RTX 4090; a 1 h
+#: mp=8 forecast of a 151 x 151 x 50 real case writes byte-identical wrfout
+#: files before and after on both cards; the fork generation moves only in
+#: its cloud, toward its own Fortran (tools/thompson_fork_oracle/
+#: fork_column_parity.py: qc 2.9e-7 -> 1.2e-7, nc 3.4e-7 -> 2.3e-7 relative).
+MP28_ACCUMULATOR_REWORK = "lane/cut286-mp28-g3 (2.8.6)"
+
 BASELINE_PINNED: dict[str, str] = {
     # Already-staged vertical order kernel (f82847049); lane/ec-pd-upwind-286
     # confined its downstream cell at Courant <= 1 to the strict WRF
     # verification build (it manufactured scalar mass).
     "pd_vertical_sl": "c2b845e06f4aa693f021aadc19d8a32fe001da645f4c48b4684d7c99a09e231d",
-    # Already-staged upper-wind source, unchanged by this RUC merge.
+    # Already-staged upper-wind source, unchanged by this RUC merge (its
+    # baseline bytes came with 4b2bd1665, the fork saved-wind limiter; the
+    # AQ line pinned the same digest a second time, merged into this row).
     # Its fork device oracle and generic OFF controls are retained in
     # test_upper_wind_limiter.py; freeze its admitted raw source here.
     "upper_wind_limiter": "7c097a45c226cceda7ecae2424ce8a0fa3cd98a63648a12395be9f29d00ed724",
@@ -147,7 +169,36 @@ BASELINE_PINNED: dict[str, str] = {
     # :1365-1368 hands lakeini and lake the same 0.5 or 0.02 the land
     # surface runs) in place of the two local ``xice_threshold=0.5``
     # assignments.  At 0.5 every word is the previous build's.
-    "lake": "e47718427bb04a9b1f1bc1501b16889d02f9f67363b7a41cac34e7241cda7919",
+    # RE-PINNED at 2.8.6 from e47718427bb04a9b by the lake arena (A3/A13):
+    # both entry points take a launch window (col0, count) and the device
+    # arena the column arrays now live in, and set up that thread's arena
+    # before the column is built.  No statement of the column changed;
+    # test_lake_gpu compares every word against the native oracle, in one
+    # window and in three.
+    "lake": "0624bfb3866df26de935fbf1914f53f5d50bb5a9c1090789b313f34c1b247983",
+    # Native bulk source/units bridge, both GPU receipts; FTZ disabled.
+    "chem_sfire": "01a0c2dd43046d33254e4365d4cd87ee472b468d65077dfc06716b9bfe6e6596",
+    # lane/283-sfire: compiled WRF v4.7.1 routine controls at 0 ULP
+    # on both GPUs; wind/moisture driver and six-composition census
+    # receipts in tools/sfire_wrf471_oracle and sfire_coupled_ideal.
+    "sfire_atm": "b557a14a9c24d343077187001841e5a7fb5909f93aca7590aba4424e94d6ba80",
+    # A captured native quadrature raises one remaining-fuel word by one
+    # ULP. The driver preserves consumed fuel before heat and smoke;
+    # original and corrected compiled controls are retained separately.
+    "sfire_core": "51c0f7a7382a8abdaec33e8154342f3c330b80875150f2ee9367898a2cff94a1",
+    "sfire_phys": "e4e217cf69556cb2349ed01e2032be01edba51b94562f0a63525a6eb5c79dcb8",
+    "sfire_moisture": "4780e2e58c421c68d7cdfc6f868e25fea4fb2909286e826095fa321edc404ea1",
+    "sfire_wind": "81923bd9bf4c9ab11ec240cef898781c1e646520ab2047dc2493c358466435e6",
+    "sfire_coupling": "23d1c1c4b1c111b6d697cf462ce92caa5c8d22b4adc4524e9b9d24cabcab1aa5",
+    # 47 original/corrected native controls, 96 complete frames, and
+    # mapped-host/streamed/disk twins on both GPUs. Eight-composition
+    # census and exact receipts accompany the source in the SFIRE tools.
+    "sfire_spotting": "f5f6702af0dd58f433ae01502a31aa7c09d15a7bcb5da64c803ca04b570c7a97",
+    # Compiled original ideal initialization controls on both GPUs, with
+    # separately retained native geometry and table-boundary defects.
+    "sfire_ideal": "fb453b222c1915be8bce43f491a5ab634c11ccad6e688644bce27f8711251adc",
+    "sfire_ideal_atmos": "4a3676370effcee9c4a4413b1d649b19f25335b798080c770060e27dfa28751a",
+
     # gp-libm64: new test-only host-library bit grading entry points.
     "portable_libm64_grade":
         "080beeaea2eb617ae3e53beb529f8f99e793eea48c572710d0939c9ec19bb3a9",
@@ -243,9 +294,14 @@ BASELINE_PINNED: dict[str, str] = {
     # 1ee7f0be0 tiles: name the streamed-run config table, and part it from cycle streaming
     "health_tile":
         "2943d5e226a61487aefbe7f191dc120420a4cfe3f96deef19c90c2bb8c15bead",
-    # d76e25a82 feat(da): the LETKF factors its own matrices; cuSOLVER becomes optional
+    # d76e25a82 feat(da): the LETKF factors its own matrices; cuSOLVER becomes optional.
+    # Re-pinned by lane/ec-da-science-eigh: the JACOBI_GLOBAL_WORK tier for
+    # k above 64 (ensembles of 65 to 256 members stay on this kernel instead
+    # of cuSOLVER); without the define the preprocessed shared tiers are the
+    # same lines, and tests/test_jacobi_eigh_gpu.py proves the forced global
+    # tier reproduces them bit for bit.  Previously 7e24eff5cf84ff68.
     "jacobi_eigh":
-        "7e24eff5cf84ff6895e251aab6165d5e866c1eadfd3e4f33a740d5932631c23c",
+        "d2b39cfd26606a85b5f810bfca9fc576d39f8b33a9f256531b4a64f76978bcbd",
     # 0c8f2305d Batch native KF output validation
     "kf_validation":
         "697a1cab3ab07d2e1464c03cad72c08bda809d461a33b5d67273e31ca2a71f56",
@@ -361,6 +417,13 @@ BASELINE_PINNED: dict[str, str] = {
     # rounded reciprocal on Blackwell targets. Previously ebbd1f28.
     "p3":
         "449b70350553e31785c4a8a53c64d65ee846a3e77392e7a96ef8e58231b34080",
+    # Audit S14: P3's radar operator H_Z(x), the Z half of p3_final_level
+    # replayed on local copies over p3.cu's own device helpers so it updates
+    # nothing; compiled after p3.cu in its own module
+    # (gpuwm.core.p3_device.p3_reflectivity_module).  Held to the forecast
+    # step's own zdbz by tests/test_p3_reflectivity_gpu.py.
+    "p3_zdiag":
+        "f22e039d18c19625e1a100b79a6f3ccf0227bad1960215be0d7ecc0cf9e1cbad",
     # 9c57c4ee9 feat(sase): CUDA mirror of the S3-12 additive e^{3/2} dissipation channel, p
     # Re-pinned for A146 (a98f2482e): constant-divisor float divisions
     # spelled __fdiv_rn.  Previously 9c49c1d0.
@@ -414,8 +477,15 @@ BASELINE_PINNED: dict[str, str] = {
     # source, and the wrf_461 KS/CO cut forecast is compared word for word
     # with the branch base on a card (lane report).
     # Previously d8b8faa7ac626c96.
+    # RE-PINNED 2026-10-05 by the mp=28 accumulator rework (lane/cut286-mp28-g3,
+    # 87762b73a + 085c4db97, shipped in 2.8.6; MP28_ACCUMULATOR_REWORK below
+    # holds the shared reason and measurement).  Here: the cold network
+    # writes the accumulators (:2987), its rain, ice and number source
+    # balances take WRF's tendency form (:3022-3091), and the rain
+    # conservation ratio is REAL as WRF declares it (:1615).
+    # Previously 001c8655d12a2f4a.
     "thompson_aerosol_cold":
-        "001c8655d12a2f4ae7cb12da02d777e75e10b79889faafc3036f4d03473ceba4",
+        "1edfdad2d207da782e2429088b786492ae370d5b03a021173057da8b44b08750",
     # 0ebda6608 snapshot(mp28): the recovered aerosol-aware Thompson port, re-parented to it
     "thompson_aerosol_probe":
         "a83d3c9f8157b5702b504350ee93572c34378390917f8c037bf2762b27b0a91e",
@@ -436,8 +506,13 @@ BASELINE_PINNED: dict[str, str] = {
     # reference density (:3236); 217e84e18: the running vapour carried
     # unfloored (:3974).
     # Previously b54711ac9e07dfe8.
+    # RE-PINNED 2026-10-05 by the mp=28 accumulator rework
+    # (MP28_ACCUMULATOR_REWORK below).  Here: the condensation (:3480) and
+    # the rain evaporation (:3562-3564) write the accumulators and read the
+    # working state WRF reads (:3215, :3236-3238).
+    # Previously 44d3fb82ecfc49ae.
     "thompson_aerosol_sat":
-        "44d3fb82ecfc49aea7711d09a73262802299fa4889406c8ec547210053ee5c04",
+        "981c11536a58bb65b2f32f9706732b38199eef87f3daf2e65aeb2886c9a6d01c",
     # c1563f187 fix(release-scan): the gate reads by content, and sees an escaped path
     # RE-PINNED 2026-09-24 by the WRF v4.6.1 real-column repairs.  What
     # moved is WRF's own rule in each case, cited to module_mp_thompson.F
@@ -472,8 +547,28 @@ BASELINE_PINNED: dict[str, str] = {
     # Previously cff91a9693c01ab2.
     # Comment-only re-pin: the source note omits a personal attribution.
     # Stripping the fork arms still restores the pre-fork default source.
+    # RE-PINNED 2026-10-05 by the mp=28 accumulator rework
+    # (MP28_ACCUMULATOR_REWORK below).  Here: the cloud fallout (:3832) and
+    # the phase cleanup (:3949-3964) add to the accumulators, and mp=28 gets
+    # its own tendency-form rain and ice fallout
+    # (thompson_aa_{rain,ice}_sediment_accumulate_{64,256}, :3611-3698,
+    # :3790-3870), so the classic fallout kernels mp=8 runs stay as they are.
+    # Previously 248d83895eacbbe6.
+    # RE-PINNED 2026-10-06 by the two reworks together, merged for 2.8.7
+    # (lane/da-line-287): the accumulator rework above, plus the fork's rain
+    # fallout (audit T21, fork :3556, lane/da-line 1c5693862), a copy of
+    # thompson.cu's in-place rain-presence pass appended inside a
+    # THOMPSON_AA_WRF39 arm that counts surface rain above R1*10.  The fork
+    # keeps its in-place rain under the rework, so the two touch disjoint
+    # code: the bytes are the rework's file (52c3df61d73aa53d) with the
+    # fork arm appended, and stripping the fork arms still restores the
+    # pre-fork default source.  Measured on the merged tree on an RTX 5070
+    # Ti: tests/test_thompson_wrf39_rain_fallout_gpu.py (the fork's column
+    # state word for word against the frozen pass, its export differing
+    # only on trace surface rain) and the mp=28 oracle and sed GPU decks at
+    # their existing bounds.  The DA line's own pin was 664ae49ee658def6.
     "thompson_aerosol_sed":
-        "248d83895eacbbe60f31136f3d186820dd577c148380c23197364212e4ec0fb0",
+        "917dd29cfe9bb8f3cdc2c62e710acacb195a71534d7c30b750b2f1eb7f6fe1a4",
     # c1563f187 fix(release-scan): the gate reads by content, and sees an escaped path
     # RE-PINNED 2026-09-24 by the WRF v4.6.1 real-column repairs.  What
     # moved is WRF's own rule in each case, cited to module_mp_thompson.F
@@ -510,8 +605,13 @@ BASELINE_PINNED: dict[str, str] = {
     # The default state's 39 GPU gates pass, and the 42-column adapter's
     # 26 outputs remain byte-identical to 7ab2e3dcf. Fork compiler census:
     # zero constant-divisor and rewrite sites in all five translation units.
+    # RE-PINNED 2026-10-05 by the mp=28 accumulator rework
+    # (MP28_ACCUMULATOR_REWORK below).  Here: the terminal rain and ice
+    # apply with WRF's bounds after the freeze
+    # (thompson_aa_terminal_rain_ice, :4023-4053).
+    # Previously 009f1debca0c3ecb.
     "thompson_aerosol_state":
-        "009f1debca0c3ecbb86d44456d273ac699d18f18dd15031e2efc70f93e0f3eb2",
+        "afccd231a7bd2141e8f47e1c0216d509f035ca1bc381d7e6565303194e11ed82",
     # c1563f187 fix(release-scan): the gate reads by content, and sees an escaped path
     # RE-PINNED 2026-09-24 by the WRF v4.6.1 real-column repairs.  What
     # moved is WRF's own rule in each case, cited to module_mp_thompson.F
@@ -543,8 +643,13 @@ BASELINE_PINNED: dict[str, str] = {
     # source, and the wrf_461 KS/CO cut forecast is compared word for word
     # with the branch base on a card (lane report).
     # Previously 633791f61719e99f.
+    # RE-PINNED 2026-10-05 by the mp=28 accumulator rework
+    # (MP28_ACCUMULATOR_REWORK below).  Here: the warm network writes the
+    # accumulators (:2987) and its rain balances take WRF's tendency form
+    # (:3058-3091).
+    # Previously 56abc1c1082ee1f1.
     "thompson_aerosol_warm":
-        "56abc1c1082ee1f1b6e6d83ee663876be66eb4ae226fbaaa2309a2d52cbc9d36",
+        "243a060521afee87ab99e5148a3e359c9df1f6a0c6b615bab24d5bc88b50f89c",
     # 02cfd5301 feat(les): km_opt=2 restart carrier, lateral-boundary arm, TKE budget
     "tke_budget":
         "c7f6dc37f15b25fccbea50deef0c6d595c08b2ee4762f14eef169b654d54fccb",
@@ -600,8 +705,11 @@ BASELINE_PINNED: dict[str, str] = {
     # WRF built with that line fixed, tests/test_urban_ucm_noahmp_wrf471_
     # parity.py; the 750 m Los Angeles run's city T2 had fallen 11 K below
     # its own skin at 1,900 m).  Previously a692015a.
+    # Reference comments now record the original WRF v4.6.1 authority and
+    # shared native twin. No executable statement changed; both oracles
+    # retain exact float32 output words. Previously 30436e47.
     "urban_ucm":
-        "30436e47dcb5c3b5ae84975e26cfa045ea08fa8a6a8b33d3604e3f496743d1f2",
+        "25625842fefee5cf0a5281a28e2041b3fac72d8c11a37cc430caeb5274f59961",
     # a28017016 feat(urban-bep): MYJURB (MYJ under BEP/BEP+BEM), word-identical
     # to WRF v4.7.1 (tests/test_myjurb_wrf471_parity.py)
     # Re-pinned for A146 on lane/281-nvrtc-literal-div: the flag_bep lower
@@ -738,6 +846,103 @@ BASELINE_PINNED: dict[str, str] = {
     # (tests/test_noah_mosaic_wrf471_parity.py).
     "noah_mosaic":
         "8dab69ae3a7cb90ad41436b97ade1f4728e4030d3fc0b86fced12089ff21f791",
+    # lane/aq-core (smoke, aerosol and air-quality program).  chem_bdy:
+    # WRF-Chem's outer-domain flow_dep_bdy_chem, bit-identical to the
+    # Fortran on 24 oracle cases (tests/test_chem_bdy_wrf471_parity.py).
+    # chem_outputs: the table diagnostics' term programs, PM2_5_DRY/PM10 at
+    # 0 ULP to sum_pm_gocart (tests/test_chem_sum_pm_wrf471_parity.py,
+    # tests/test_chem_outputs.py).  chem_ledger: the mass ledger's
+    # row-parallel float64 reduction, a diagnostic that moves no model word
+    # (tests/test_chem_transport.py's ledger assertions).
+    "chem_bdy":
+        "2c8e91bd3c2af915967aa1287e946961d5e9f0b9403ab66281d7a94c5f222d67",
+    "chem_outputs":
+        "313503588f5c85ace60be4967995046c958e61ad63b8f1cd36b509b0348f0d99",
+    "chem_ledger":
+        "b253f8a0528c790212c9850b9b298ec84939b77de4a8cabfb27fd05b3a89b929",
+    # chem_prep: chem_prep's column inputs, 0 ULP to the Fortran on the CPU
+    # reference and the card (tests/test_chem_prep_wrf471_parity.py).
+    # chem_vertmx: vertmx with deposition as its lower boundary, 0 ULP the
+    # same way (tests/test_chem_vertmx_wrf471_parity.py); only the Thomas
+    # recurrences live in the thread frame.  mono_advection: WRF's
+    # advect_scalar_mono, 0 ULP on 74 oracle cases
+    # (tests/test_chem_advect_mono_wrf471_parity.py).
+    "chem_prep":
+        "bc3547b12038132555c7cb39ce93746719a51a50ad457f9e065ec002ed4ceb09",
+    "chem_vertmx":
+        "bc7c583f93775ff20c4a6ce8c8e492c4b3edeed7426c96f88b98d01410c3e0f9",
+    "mono_advection":
+        "ba9417639e3f0105dcf67e0e3eb18ae59d33dac00c1d0c84009a8b1c17c3a853",
+    # lane/aq-smoke.  chem_fire: GSL smoke_dust's fire preparation, unit
+    # conversion and diurnal injection, bitwise to the gfortran oracle on the
+    # CPU reference and on sm_89 and sm_120 (tests/test_chem_fire_emissions.py).
+    # chem_plumerise: the Freitas plume (WRF-Chem module_chem_plumerise_scalar
+    # and GSL module_plumerise), transcribed by
+    # tools/chem_wrf471_oracle/transcribe_plume.py and compiled unflushed
+    # through gpuwm.core.chem_plumerise_cache; bitwise on both oracles
+    # (tests/test_chem_plumerise_wrf471_parity.py,
+    # tests/test_chem_plumerise_frp_parity.py).  chem_wetdep_ls: WRF-Chem's
+    # wetdep_ls, bitwise (tests/test_chem_wetdep_ls_wrf471_parity.py).
+    "chem_fire":
+        "fed467fff8deff3590bd2323b9d1eadd4246ec4b5486f97b407cb90053ebb55d",
+    "chem_plumerise":
+        "e429393ea14973998248762040278b06e886a5de4deeb6c118716f7b27a0e798",
+    "chem_wetdep_ls":
+        "cc7e80c2205ff72b7e82999ec13bfc7b95240720e83f1b9d7369da5574f4ba2e",
+    # lane/aq-gocart (GOCART-lite).  Each is a CUDA port of WRF-Chem v4.7.1
+    # proven against gfortran -O0 builds of the pinned WRF-Chem sources
+    # (tools/chem_wrf471_oracle/gocart/), with the parity test named:
+    # chem_mp_coupling (69b71f60c): GSL's aerosol-aware Thompson NIFA/NWFA
+    #   diagnosis, 0 ULP (test_chem_mp_coupling.py).
+    # chem_inventory (9d14eb690): emissions_driver's emiss_opt=6 block,
+    #   0 ULP (test_chem_inventory_wrf471_parity.py).
+    # chem_settling and chem_drydep_gocart (019a96c4c): gocart_settling and
+    #   gocart_drydep_driver, 0 ULP (test_chem_settling_wrf471_parity.py,
+    #   test_chem_drydep_wrf471_parity.py).
+    # chem_dust and chem_seasalt (0c7e211f7): GOCART dust (dust_opt=1),
+    #   AFWA dust (dust_opt=3) and GOCART sea salt, 0 ULP
+    #   (test_chem_dust_wrf471_parity.py, test_chem_afwa_wrf471_parity.py,
+    #   test_chem_seasalt_wrf471_parity.py).
+    # chem_rrtmgp_aerosol (653596a4a): RTE-RRTMGP's MERRA aerosol optics
+    #   lookup, 0 ULP (test_chem_rrtmgp_aerosol_parity.py).
+    # chem_sulfur and chem_ageing (a812bfb79): gocart_chem's SO2/DMS
+    #   oxidation and gocart_aerosols' carbon aging, 0 ULP except MSA's
+    #   1 ULP and the solar geometry's documented trig-stub residual
+    #   (test_chem_sulfur_wrf471_parity.py, test_chem_ageing_wrf471_parity.py).
+    "chem_mp_coupling":
+        "d7f9c5727eec775045c791f0d8922811eafaf2e6dc8540527a7ea3e42c847ed2",
+    "chem_inventory":
+        "3cf17a7d466128c3a7a6ad206c10c967ab8b567b1f60758f19f98a7644039aeb",
+    "chem_settling":
+        "7c50c6ed45822901323c43dd62453157e7fc7c52c2279d1b409950d041d5efce",
+    "chem_drydep_gocart":
+        "dd82e5a1dcb8ee327785c185842fa4a435c19d313f7d7353ce86ebf554f789e3",
+    "chem_dust":
+        "250bcf60edc1afbeb64ee621a1d3e51f8695acddfb0bcb110f980a7521c96b70",
+    "chem_seasalt":
+        "394e116c698293482f7e96ce47018be175506d17b8b397729e80f8db318d55c3",
+    "chem_rrtmgp_aerosol":
+        "137d81d2d70e2fcd6f5e83c11f1bcab0ee63a1a7dc880c50cca4e7d926647f72",
+    "chem_sulfur":
+        "6d0f66093b352ff9befa8e35f9ceaf68d806a4d02d48343683e6d0ac8cacc6b2",
+    "chem_ageing":
+        "895cc8c46773b5354ed05cbcd1a703babdba536fc54f0d2dc2bea5c578f33be0",
+    # chem_optics: module_optical_averaging's GOCART volume optics, WRF's own
+    #   Mie fits, aer_opt_out's EXTCOF55 and its column integral, and RRTMG
+    #   SW's aerosol band conversion, 0 ULP and zero word mismatches on 33
+    #   cases plus the RRTMG edge column; each output store optional
+    #   (test_chem_optics_wrf471_parity.py).
+    "chem_optics":
+        "6b832bcd076af6b67c96a019d5f1db00206f6d75398f2aff2dc5b2b61263da87",
+    # lane/aq-cams.  chem_drydep_wesely: WRF-Chem v4.7.1's Wesely gas dry
+    # deposition (rc, landusevg, depvel, cellvg), 0 ULP to the unmodified
+    # Fortran on 11 cases / 4,752 columns on sm_89 and sm_120
+    # (tests/test_chem_wesely_wrf471_parity.py).
+    # Constant denominators use wd_div and the existing WFloat div.rn.f32
+    # operator. Passing WFloat to the float-only __fdiv_rn cannot compile.
+    # The native oracle cases grade these repaired bytes on the card.
+    "chem_drydep_wesely":
+        "33761f22276d75382a03dc2eb67ba1d866e24540eabaedc20daa5ebe31cda63d",
     # Lane 286-aer-swint: WRF swint_opt = 1 (radconst/calc_coszen at the
     # current xtime, update_swinterp_parameters, interp_sw_radiation of the
     # NOAA-EMC/HRRR v4.1.21 fork's module_radiation_driver.F), glibc libm
@@ -776,8 +981,6 @@ PINNED.update(BASELINE_PINNED)
 # docs/gf_gamma_known_delta.md and tests/test_gf_gamma_correctly_rounded.py;
 # header assembly is independently checked by test_kernel_loader_inert.py.
 PINNED_HEADERS = {
-    # The staged vertical loader borrows this already frozen raw unit.
-    "pd_advection.cu": PINNED["pd_advection"],
     # Lake lower bounds, REAL kinds and division rounding are part of the
     # column contract; test_lake_contract regenerates the WRF statements.
     # ABS sign clearing includes negative zero, subnormals and signed NaNs;
@@ -788,7 +991,12 @@ PINNED_HEADERS = {
     # carries, and promised CLM notices that file never held.  Both now name
     # licenses/LICENSE-WRF-public-domain.txt.  Comments only, measured: every
     # other line is byte-identical and the headers keep 92 and 4128 lines.
-    "lake_support.cuh": "5a8fb446ae3b0584a360e9961bb94d056cb9ebb7d8c5b7c4ca52ff1010ad76ae",
+    # RE-PINNED at 2.8.6 from 5a8fb446ae3b0584 by the lake arena (A3/A13):
+    # on the device a LakeStorage takes its elements from a per-launch
+    # global arena (strided, coalesced) instead of the 14,400 B local frame
+    # CUDA backed for every resident thread of the card; the host build
+    # keeps inline storage.  Addressing only; no arithmetic changed.
+    "lake_support.cuh": "0c931e51e4e449b62996a5c241d026c652031b12adac6eabe18194c130b00dc9",
     "lake_wrf.cuh": "196340026552b827c804eeea5f3ce9a6bd1883e86fdb694ca397882c26d58d94",
     # gp-libm64: new Rust libm 0.2.16 and glibc 2.39 log1pf twins.
     "portable_libm64.cuh": "bca62ac1366a4602b0c5bd0b11a11c9ee226a1e1a1f690060c924ef94a64655e",
@@ -798,6 +1006,8 @@ PINNED_HEADERS = {
     # noah_init reuses the full Noah unit through the real loader. Its
     # header authority is the same source pin as the forecast unit.
     "noah.cu": PINNED["noah"],
+    # The order-five eta entry borrows the existing scalar-flux helpers.
+    "pd_advection.cu": PINNED["pd_advection"],
     # RE-PINNED at 2.7.6 from 794c7d4123bb0642 by the notice correction: the
     # comments at lines 235-237 and 344-353 stop describing the earlier gamma
     # as derived from glibc.  Comments only, measured: with comments removed
@@ -808,7 +1018,12 @@ PINNED_HEADERS = {
     # RE-PINNED 2026-10-03 (lane/286-fork-thompson): the WRF 3.9 fork's
     # helpers and constants appended (thompson_aa_wrf39_*), referenced only
     # by THOMPSON_AA_WRF39 arms; previously 94876bfbc38db9c7.
-    "thompson_aerosol_common.cuh": "dce2673c68a7a0f80aae3a359051b8630b92c658472f8dc6375634820d9ebaf2",
+    # RE-PINNED 2026-10-05 by the mp=28 accumulator rework
+    # (MP28_ACCUMULATOR_REWORK below): the tendency-form rain and ice
+    # balance helpers the source kernels share
+    # (thompson_aa_rain_balance_tendency, thompson_aa_ice_balance_tendency);
+    # previously dce2673c68a7a0f8.
+    "thompson_aerosol_common.cuh": "92375bbdb8432cf535477a12e7d4346dfa638fcc0ef5b514e5f016c5871b15db",
     # 399b1c017: glibc 2.43 float32 trig (Arm sinf/cosf, CORE-MATH tanf/
     # asinf/acosf/atanf) for the urban BEP column, generated and proven by
     # tools/glibc_trig_flt32_proof/.
@@ -862,8 +1077,13 @@ PINNED_HEADERS = {
 #: tools/transcribe_urban_bem.py and compiled by gpuwm/core/urban_bem.py
 #: (04118fa24) into the BEP+BEM unit.
 COMPOSED_HEADERS = {
+    # Direct SFIRE NVRTC compositions, with scalar native libm controls.
+    "sfire_libm.cuh": "22f44144a81d60fbbd767cfcb33d260e4d1f08fdc759d962165bae70bb603ee3",
+    "sfire_phys.cuh": "8424f3793b152c96d68ee9b6f112ac19e65d5f823f3deb9a6ff9c44436caa0ae",
+
     "urban_bem.cuh": "b4cb2ac2ed49d7e8aeb71193a191eefbe4a6247624772428dd9ac322a89cdb99",
 }
+PINNED_HEADERS["sfire_libm.cuh"] = COMPOSED_HEADERS["sfire_libm.cuh"]
 
 
 @pytest.mark.parametrize("header", sorted(PINNED_HEADERS))
@@ -980,6 +1200,8 @@ def test_mosaic_ucm_composed_source_is_pinned():
     # families (tests/test_noah_mosaic_ucm_wrf471_parity.py).  Moved when
     # urban_ucm.cu's Noah-MP-only ucm_overrides T2 arm changed; the mosaic
     # unit never launches ucm_overrides.  Previously d70a75c1.
+    # Re-pinned for the reference-only comments in urban_ucm.cu; no
+    # executable statement changed. Previously 47dbe3c6.
     from gpuwm.core.noah_mosaic import mosaic_ucm_source
     assert hashlib.sha256(mosaic_ucm_source().encode()).hexdigest() == (
-        '47dbe3c6a16088ac14b298fc9e30e99110c7e161dfaf6f09c16776298eddee59')
+        'a44332ff09d358e2a078de2c4988db363587648f021f3470edea1c6b2e8a6dda')

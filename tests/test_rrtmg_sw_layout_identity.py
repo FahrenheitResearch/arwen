@@ -118,7 +118,10 @@ def test_abort_flag_is_zeroed_and_read_once_per_call():
     assert SW_CALL_ZEROED_SLOTS == ('err',)
     source = inspect.getsource(CudaSW.rrtmg_sw_batched_device)
     assert source.count('scratch.zeros("err"') == 1
-    assert source.count('cp.asnumpy(err_d)') == 1
+    # Read once per call, now through the call's deferred device checks
+    # (gpuwm.core.deferred_device_checks): one recorded copy of the word,
+    # no host read inside the chunk loop (asserted above).
+    assert source.count('check(err_d.copy(), _cldprmc_verdict)') == 1
 
 
 def test_mcica_copy_keeps_gpoint_fastest():

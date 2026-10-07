@@ -445,11 +445,29 @@ def test_up_heli_max_has_no_trajectory_or_restart_reader():
         # and the AST pins below still hold because streaming touches no
         # scratch API at all.
         "gpuwm/core/streaming.py",
-        # The native ensemble publisher resets the diagnostic after its
-        # synchronous history consumer, through reset_up_heli_max only.
-        # The scratch-access and no-trajectory AST guards below still apply.
+        # Packed member history resets the borrowed view after its
+        # synchronous consumer through reset_up_heli_max only. The strict
+        # scratch-access and no-trajectory AST guards below still apply.
         "gpuwm/ensemble/native_forecast.py",
     }
+
+    native_tree = ast.parse((REPO / "gpuwm/ensemble/native_forecast.py")
+                           .read_text(encoding="utf-8"))
+    uh_imports = [node for node in ast.walk(native_tree)
+                 if isinstance(node, ast.ImportFrom)
+                 and node.module == "gpuwm.core.uh_diag"]
+    assert len(uh_imports) == 1
+    assert [(alias.name, alias.asname) for alias in uh_imports[0].names] \
+        == [("reset_up_heli_max", None)]
+    uh_calls = [node for node in ast.walk(native_tree)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and "up_heli_max" in node.func.id]
+    assert len(uh_calls) == 1
+    assert uh_calls[0].func.id == "reset_up_heli_max"
+    assert len(uh_calls[0].args) == 1
+    assert isinstance(uh_calls[0].args[0], ast.Name)
+    assert uh_calls[0].args[0].id == "view"
 
     # Outside the owner and the sanctioned sites, no scratch-API access to
     # the slot at all; in dycore/runtime specifically, only the two entry

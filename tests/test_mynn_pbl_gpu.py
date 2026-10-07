@@ -16,7 +16,7 @@ from gpuwm.core.fp32_ulp import fp32_ulp_distance
 
 ORACLE = (
     Path(__file__).parents[1]
-    / "gpuwm" / "data" / "mynn" / "oracle" / "pbl-level2.csv"
+    / "tests" / "data" / "oracles" / "mynn" / "pbl-level2.csv"
 )
 
 
@@ -1345,7 +1345,7 @@ def test_device_glibc_libm_is_bitwise_with_the_host_transcription():
 def test_device_stability_functions_match_the_wrf_oracle_bitwise():
     """The device ``phim``/``phih`` against unmodified WRF, both arms.
 
-    ``gpuwm/data/mynn/oracle/stfunc.csv`` is 814 rows of ``bl_mynn_stfunc=1``
+    ``tests/data/oracles/mynn/stfunc.csv`` is 814 rows of ``bl_mynn_stfunc=1``
     output from the pinned WRF v4.6.1 tree.  Substituting the device's
     FP64-then-round ``mynn_atanf``/``mynn_powf`` here instead of the glibc
     transcription missed 22 of the 406 unstable ``phim`` rows by up to 80 ULP

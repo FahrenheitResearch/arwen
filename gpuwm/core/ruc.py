@@ -3458,27 +3458,136 @@ def ruc_initialize_cold_start(
             f"for {vegetation.name}"
         )
 
-    liquid = np.empty_like(total_water)
-    frozen = np.empty_like(total_water)
-    availability = np.empty(horizontal_shape, dtype=np.float32)
-    roughness = np.empty(horizontal_shape, dtype=np.float32)
+    flats = (temperature.reshape(nzs, -1), total_water.reshape(nzs, -1),
+             soil_type.reshape(-1), vegetation_type.reshape(-1),
+             ice_fraction.reshape(-1))
+    liquid, frozen, availability, roughness = _cold_start_columns(
+        *flats, bundle=bundle, vegetation=vegetation)
+    return RucInitialization(
+        sh2o=liquid.reshape(temperature.shape),
+        smfr3d=frozen.reshape(temperature.shape),
+        mavail=availability.reshape(horizontal_shape),
+        znt=roughness.reshape(horizontal_shape),
+    )
 
-    t_flat = temperature.reshape(nzs, -1)
-    w_flat = total_water.reshape(nzs, -1)
-    liquid_flat = liquid.reshape(nzs, -1)
-    frozen_flat = frozen.reshape(nzs, -1)
-    soil_flat = soil_type.reshape(-1)
-    vegetation_flat = vegetation_type.reshape(-1)
-    ice_flat = ice_fraction.reshape(-1)
-    availability_flat = availability.reshape(-1)
-    roughness_flat = roughness.reshape(-1)
 
-    riw = np.float32(np.float32(900.0) * np.float32(1.0e-3))
-    xlmelt = np.float32(3.35e5)
-    t_freeze = np.float32(273.15)
-    gravity = np.float32(9.81)
+#: ``ruclsminit``'s float32 constants, shared by the array path and the
+#: scalar reference so neither can drift from the other.
+_RIW = np.float32(np.float32(900.0) * np.float32(1.0e-3))
+_XLMELT = np.float32(3.35e5)
+_T_FREEZE = np.float32(273.15)
+_GRAVITY = np.float32(9.81)
+_MINIMUM_AVAILABILITY = np.float32(0.00001)
+#: STAS-RUC ``SOILPARM.TBL`` column positions ``ruclsminit`` reads: BB,
+#: DRYSMC, MAXSMC, REFSMC, SATPSI.
+_SOIL_COLUMNS = (0, 1, 3, 4, 5)
+#: ``ruclsminit``'s water soil category (``ISLTYP == 14``).
+_WATER_SOIL = 14
+
+
+def _cold_start_tables(bundle, vegetation):
+    """The per-category float32 words the column loop read one at a time."""
+    soil = np.asarray([[row.values[column] for column in _SOIL_COLUMNS]
+                       for row in bundle.soil.rows], dtype=np.float32)
+    roughness = np.asarray([row.z0 for row in vegetation.rows],
+                           dtype=np.float32)
+    return soil, roughness
+
+
+def _cold_start_columns(t_flat, w_flat, soil_flat, vegetation_flat, ice_flat,
+                        *, bundle, vegetation):
+    """``ruclsminit`` over every column at once, the reference's bits.
+
+    The same float32 operations in the same order as
+    :func:`_cold_start_columns_reference`, as whole-array NumPy operations:
+    every product, quotient, sum and difference is one correctly rounded
+    float32 operation in both, LOG is :func:`gpuwm.core.noahmp_libm.
+    logf_array` and ``**`` is :func:`gpuwm.core.noahmp_libm.powf_array`,
+    each the bits of its scalar transcription.  The ice and water columns
+    are answered by mask and kept out of the curve, exactly as the
+    reference answers them before it ever reaches the curve: STAS-RUC's
+    water category (``ISLTYP`` 14) carries ``SATPSI = 0``, so a frozen
+    water element put through the curve divides by zero and NumPy warns
+    at every launch over a frozen lake, for a value the mask then discards.
+
+    This exists because the reference took about 30 microseconds of CPython
+    per column: a 1.9 million column HRRR domain paid a minute of card idle
+    in restore_prepared_cache at every launch, and the same again when the
+    ranked road rebuilt its slabs (``tests/test_ruc.py`` holds the bit-for-
+    bit comparison of the two).
+    """
+    from gpuwm.core.noahmp_libm import logf_array, powf_array
+
     one = np.float32(1.0)
-    minimum_availability = np.float32(0.00001)
+    zero = np.float32(0.0)
+    soil_rows, roughness_rows = _cold_start_tables(bundle, vegetation)
+    soil_index = soil_flat.astype(np.intp) - 1
+    bb, drysmc, maxsmc, refsmc, satpsi = (
+        np.ascontiguousarray(soil_rows[soil_index, column])
+        for column in range(len(_SOIL_COLUMNS)))
+    dqm = maxsmc - drysmc
+    psis = -satpsi
+    roughness = np.ascontiguousarray(
+        roughness_rows[vegetation_flat.astype(np.intp) - 1])
+
+    ice = ice_flat > zero
+    water = (soil_flat == _WATER_SOIL) & ~ice
+
+    numerator = w_flat[0] - drysmc
+    denominator = refsmc - drysmc
+    raw_availability = numerator / denominator
+    availability = np.maximum(_MINIMUM_AVAILABILITY,
+                              np.minimum(one, raw_availability))
+    availability[ice | water] = one
+
+    tln = logf_array(t_flat / _T_FREEZE)
+    # Frozen land elements only: the reference never evaluates the curve
+    # on an ice or water column, and the water category's SATPSI is zero.
+    cold = (tln < zero) & ~(ice | water)[None, :]
+    liquid = w_flat.copy()
+    frozen = np.zeros_like(w_flat)
+    if cold.any():
+        # The curve on the frozen elements only, as the reference takes
+        # it: a warm element's base is negative, which powf answers through
+        # its per-element special path (26 s over the full HRRR lattice,
+        # measured on box S) to produce a value the branch then discards.
+        columns = np.nonzero(cold)[1]
+        t_cold = t_flat[cold]
+        w_cold = w_flat[cold]
+        base = _XLMELT * (t_cold - _T_FREEZE)
+        base = base / t_cold
+        base = base / _GRAVITY
+        base = base / psis[columns]
+        # Per frozen element, not per column: the water category's BB is
+        # zero too, and the reference never forms -1/BB there.
+        exponent = np.float32(-one) / bb[columns]
+        equilibrium = (dqm + drysmc)[columns] * powf_array(base, exponent)
+        equilibrium = np.maximum(zero, equilibrium)
+        equilibrium = np.minimum(equilibrium, w_cold)
+        liquid[cold] = equilibrium
+        frozen[cold] = (w_cold - equilibrium) / _RIW
+    liquid[:, ice] = zero
+    frozen[:, ice] = one
+    liquid[:, water] = one
+    frozen[:, water] = zero
+    return liquid, frozen, availability, roughness
+
+
+def _cold_start_columns_reference(t_flat, w_flat, soil_flat, vegetation_flat,
+                                  ice_flat, *, bundle, vegetation):
+    """``ruclsminit`` one column and one level at a time: the transcription.
+
+    The scalar authority :func:`_cold_start_columns` is held to, kept so the
+    comparison stays a test and not an argument.  Not called by a forecast.
+    """
+    nzs = int(t_flat.shape[0])
+    liquid_flat = np.empty_like(w_flat)
+    frozen_flat = np.empty_like(w_flat)
+    availability_flat = np.empty(soil_flat.shape, dtype=np.float32)
+    roughness_flat = np.empty(soil_flat.shape, dtype=np.float32)
+    riw, xlmelt, t_freeze, gravity = _RIW, _XLMELT, _T_FREEZE, _GRAVITY
+    one = np.float32(1.0)
+    minimum_availability = _MINIMUM_AVAILABILITY
 
     for column in range(soil_flat.size):
         soil = bundle.soil.rows[int(soil_flat[column]) - 1]
@@ -3539,12 +3648,7 @@ def ruc_initialize_cold_start(
                 frozen_flat[level, column] = np.float32(0.0)
                 liquid_flat[level, column] = w_flat[level, column]
 
-    return RucInitialization(
-        sh2o=liquid,
-        smfr3d=frozen,
-        mavail=availability,
-        znt=roughness,
-    )
+    return liquid_flat, frozen_flat, availability_flat, roughness_flat
 
 
 __all__ = [

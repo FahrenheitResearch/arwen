@@ -159,7 +159,11 @@ def attach_wrfinput_noah_mosaic(driver, cfg, restored, *,
                 dimensions = tuple(variable.dimensions)
                 if dimensions and dimensions[0] == "Time":
                     dimensions = dimensions[1:]
-                if dimensions != ("land_cat", "south_north", "west_east"):
+                # real.exe writes land_cat_stag (Registry stagger Z; see
+                # gpuwm.ingest.ruc_mosaic), WPS's geo_em land_cat.
+                if dimensions not in (
+                        ("land_cat_stag", "south_north", "west_east"),
+                        ("land_cat", "south_north", "west_east")):
                     raise ValueError("LANDUSEF has wrong axes; tile fractions "
                                      "would be assigned to the wrong cells")
                 landusef = _read_numeric(variable)

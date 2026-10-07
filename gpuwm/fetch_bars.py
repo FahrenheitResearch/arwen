@@ -38,6 +38,9 @@ CERTIFIED_RECORD_BARS = {
     "gfs": 124,
     #: 11 hybrid fields on all 50 levels + 11 surface/near-surface.
     "hrrr-atmosphere": 561,
+    #: The same selection with the analyzed aerosol number pair
+    #: (QNWFA/QNIFA) on its 50 levels, for a preparation that reads it.
+    "hrrr-atmosphere-aerosol": 661,
     #: TSOIL + SOILW at the nine RUC level depths.
     "hrrr-soil": 18,
 }
@@ -50,6 +53,8 @@ ACCEPT_FLAG = "--accept-inventory-change"
 _BAR_SUBJECTS = {
     "gfs": "the GFS pgrb2.0p25 variable/level selection",
     "hrrr-atmosphere": "the HRRR wrfnat atmosphere selection",
+    "hrrr-atmosphere-aerosol": ("the HRRR wrfnat atmosphere selection with "
+                                "the analyzed aerosol numbers"),
     "hrrr-soil": "the HRRR wrfprs soil selection",
 }
 

@@ -361,8 +361,11 @@ extern "C" __global__ void mynn_validate_batch({arguments}, int* flags) {{
         atomicOr(flags + blockIdx.y, 1);
 }}
 '''
+    # FTZ comes from CuPy, which appends -ftz=true to every kernel it
+    # compiles; spelling it here too made NVRTC 12 refuse the program
+    # ("--ftz (-ftz) defined more than once") on every gpu-cu12 install.
     return cp.RawKernel(source, "mynn_validate_batch",
-                        options=("-std=c++17", "--ftz=true"))
+                        options=("-std=c++17",))
 
 
 def _tendency_ncol(values: Mapping[str, object]) -> int:
@@ -432,7 +435,7 @@ def _tripped(kernel, arrays, flags) -> bool:
     return any(_flag_mask(kernel, arrays, flags))
 
 
-def _first_refusal(checks, flags) -> str | None:
+def _first_refusal(checks, flags, site: str | None = None) -> str | None:
     """The message of the first check in ``checks`` that trips, else None.
 
     ``checks`` is an ordered sequence of ``(kernel, arrays, message)``, the
@@ -448,6 +451,13 @@ def _first_refusal(checks, flags) -> str | None:
     """
     checks = [(kernel, tuple(arrays), message)
               for kernel, arrays, message in checks]
+    from gpuwm.core import health_ledger
+    # Strictly fewer words than the block: the deferred path takes its
+    # status word from the block's next word (below).
+    deferred = (site is not None and health_ledger.active() is not None
+                and len(checks) <= 32
+                and sum(len(arrays) for _, arrays, _ in checks)
+                < int(flags.size))
     if sum(len(arrays) for _, arrays, _ in checks) > int(flags.size):
         for kernel, arrays, message in checks:
             if _tripped(kernel, arrays, flags):
@@ -466,6 +476,35 @@ def _first_refusal(checks, flags) -> str | None:
         offsets[key] = offset
         _flag_launch(kernel, arrays, flags[offset:offset + len(arrays)])
         offset += len(arrays)
+    if deferred:
+        # Inside a forecast step with a health ledger active: fold each
+        # check's words into bit i of one device status word (check order is
+        # bit order, so the lowest set bit is the first check that tripped)
+        # and let the ledger read it once when the step returns, instead of
+        # draining the launch queue here.  The checks are error-only, so a
+        # healthy step is unchanged; a tripped one raises the same message
+        # from the same step at the drain.  Measured on a 6 h Boston run
+        # (2.8.5): these reads held the main thread about 4 ms per step.
+        words = flags[:offset]
+        # The status word is the workspace block's next word, not a fresh
+        # allocation (tests/test_physics_allocation_inventory.py holds this
+        # module to its recorded DMP buffers).  The ledger ORs it into its
+        # own slot when it records (stream-ordered, health_ledger.record),
+        # so the next call site may reuse the block at once.
+        status = flags[offset:offset + 1].view(cp.uint32)
+        status.fill(0)
+        for bit, (key, lo, hi, _message) in enumerate(spans):
+            base = offsets[key]
+            tripped = cp.any(words[base + lo:base + hi] != 0)
+            status |= tripped.astype(cp.uint32) << cp.uint32(bit)
+        messages = [message for _key, _lo, _hi, message in spans]
+
+        def describe(bits: int) -> None:
+            first = (bits & -bits).bit_length() - 1
+            raise ValueError(messages[first] + health_ledger.deferred_note())
+
+        health_ledger.read_status(status, site=site, describe=describe)
+        return None
     words = flags[:offset].get()
     for key, lo, hi, message in spans:
         base = offsets[key]
@@ -1100,7 +1139,7 @@ def _tendency_device_arrays(values: Mapping[str, object], work):
          "MYNN tendency delt and wspd must be positive"),
         (_nonpositive(), (scalars["psfc"],),
          "MYNN tendency psfc must be positive"),
-    ), work.flags())
+    ), work.flags(), site="mynn-tendency")
     if refusal is not None:
         raise ValueError(refusal)
     return columns, interfaces, scalars, ncol, nz
@@ -1404,7 +1443,7 @@ def mynn_initialize_default_cuda(
          "MYNN initialize layer depths must be positive"),
         (_nonpositive(), (scalars["ust"],),
          "MYNN initialize requires a positive ust"),
-    ), work.flags())
+    ), work.flags(), site="mynn-initialize")
     if refusal is not None:
         raise ValueError(refusal)
 
@@ -1532,7 +1571,7 @@ def mynn_dmp_mf_cuda(
          "MYNN mass-flux exner and tk must be positive"),
         (_nonpositive(), (scalars["pblh"], scalars["dx"]),
          "MYNN mass-flux pblh and dx must be positive"),
-    ), work.flags())
+    ), work.flags(), site="mynn-mass-flux")
     if refusal is not None:
         raise ValueError(refusal)
 

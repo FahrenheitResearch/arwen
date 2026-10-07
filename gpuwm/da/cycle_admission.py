@@ -54,6 +54,13 @@ RADAR_TTEN_HELD_BYTES_PER_POINT = 12
 #: the step working set rather than adding to it.
 RADAR_TTEN_BUILD_BYTES_PER_POINT = 32
 
+#: Device bytes per mass point each slot beyond the first adds
+#: (``--radar-tten-windows``: one slot per 15-minute window): the slot
+#: itself, float32, held through the leg, and the window's reflectivity,
+#: float32, held while the slots are built.
+RADAR_TTEN_EXTRA_SLOT_HELD_BYTES_PER_POINT = 4
+RADAR_TTEN_EXTRA_SLOT_BUILD_BYTES_PER_POINT = 4
+
 #: The analysis routes, in the order the solve takes them.  ``resident``
 #: holds every whole-domain array on the card and solves at the
 #: configured chunk; ``reduced-chunk`` is the same route when the solve
@@ -184,7 +191,8 @@ def worst_analysis(prices):
 
 def price_cycle(exp_leg, *, forcing_intervals: int, observation_points: int,
                 perturbation_bytes: int, profile=None,
-                analysis=None, radar_tten_points: int = 0
+                analysis=None, radar_tten_points: int = 0,
+                radar_tten_slots: int = 1
                 ) -> CycleAdmission:
     """The device peak of the cycle's largest trajectory and its analysis.
 
@@ -196,7 +204,8 @@ def price_cycle(exp_leg, *, forcing_intervals: int, observation_points: int,
     analysis's :class:`gpuwm.da.letkf.AnalysisDevicePrice` (see
     :func:`worst_analysis`), or None when no analysis runs on the card.
     ``radar_tten_points`` is the mass-point count of a cycle that forces
-    its members with radar latent heating, 0 when it does not.
+    its members with radar latent heating, 0 when it does not, and
+    ``radar_tten_slots`` the slots each forced leg holds (one per window).
     """
     from gpuwm.core import preflight
 
@@ -210,8 +219,13 @@ def price_cycle(exp_leg, *, forcing_intervals: int, observation_points: int,
             dycore_state_workspace_bytes=0)
     resident = int(estimate.resident_bytes)
     step = int(estimate.workspace_bytes + estimate.transient_peak_bytes)
-    radar_held = RADAR_TTEN_HELD_BYTES_PER_POINT * int(radar_tten_points)
-    radar_build = RADAR_TTEN_BUILD_BYTES_PER_POINT * int(radar_tten_points)
+    extra_slots = max(int(radar_tten_slots), 1) - 1
+    radar_held = (RADAR_TTEN_HELD_BYTES_PER_POINT
+                  + RADAR_TTEN_EXTRA_SLOT_HELD_BYTES_PER_POINT * extra_slots
+                  ) * int(radar_tten_points)
+    radar_build = (RADAR_TTEN_BUILD_BYTES_PER_POINT
+                   + RADAR_TTEN_EXTRA_SLOT_BUILD_BYTES_PER_POINT * extra_slots
+                   ) * int(radar_tten_points)
     observations = (OBSERVATION_BYTES_PER_POINT * int(observation_points)
                     + radar_held)
     perturbation = int(perturbation_bytes)

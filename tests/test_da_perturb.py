@@ -99,6 +99,12 @@ def _spec(name, amplitude, length_scale_km=4.0, vertical_scale_levels=0.0):
 def _pcfg(*specs, **kwargs):
     kwargs.setdefault("dx_km", 1.0)
     kwargs.setdefault("dy_km", 1.0)
+    # ``_prepared_state`` has no vertical coordinate (dnw is all zero), so
+    # the production default, mass_balance = "hydrostatic", refuses it by
+    # name (see test_mass_balance_refuses_a_state_without_a_vertical_
+    # coordinate).  The draw mechanics are tested with the balance off;
+    # the balance itself is tested on ``_column_state`` below.
+    kwargs.setdefault("mass_balance", "none")
     return PerturbationConfig(fields=tuple(specs), **kwargs)
 
 
@@ -391,13 +397,15 @@ def test_a_mis_staggered_state_is_rejected_not_broadcast():
     state = _prepared_state()
     state.u = np.zeros((12, 40, 48), dtype=np.float32)  # mass-shaped u
     with pytest.raises(ValueError, match="ARW staggering"):
-        apply_perturbations(state, 1, _pcfg(_spec("u", 1.0)))
+        apply_perturbations(state, 1, _pcfg(_spec("u", 1.0),
+                                            wind_mode="independent"))
 
 
 def test_dtype_and_backend_survive_the_perturbation():
     state = _prepared_state(qv=1.0e-3)
     apply_perturbations(state, 1, _pcfg(_spec("theta", 1.0),
-                                        _spec("u", 1.0)))
+                                        _spec("u", 1.0),
+                                        wind_mode="independent"))
     assert state.thp.dtype == np.float32
     assert state.u.dtype == np.float32
     assert isinstance(state.thp, np.ndarray)
@@ -613,11 +621,15 @@ def test_a_length_scale_that_spans_the_domain_is_refused():
                                                   length_scale_km=30.0)))
 
 
-def test_a_vertical_scale_that_spans_the_column_is_refused():
+def test_a_vertical_scale_that_spans_the_column_uses_padded_noise():
     state = _prepared_state(nz=12)
-    with pytest.raises(ValueError, match="12-level column"):
-        apply_perturbations(state, 1, _pcfg(
-            _spec("theta", 1.0, vertical_scale_levels=8.0)))
+    provenance = apply_perturbations(state, 1, _pcfg(
+        _spec("theta", 1.0, vertical_scale_levels=8.0)))
+    column = provenance["fields"][0]["vertical_wrap"]
+    assert column["fft_levels"] == 76
+    assert column["physical_crop_levels"] == [32, 44]
+    assert column["top_to_bottom_seam"] == pytest.approx(
+        math.exp(-11.0 ** 2 / (2.0 * 8.0 ** 2)), abs=1e-12)
 
 
 @pytest.mark.parametrize("kwargs,match", [
@@ -700,10 +712,11 @@ def test_fields_are_applied_in_a_canonical_order():
     """Listing order must not change the answer."""
     forward = _prepared_state(qv=1.0e-3)
     reverse = _prepared_state(qv=1.0e-3)
-    specs = (_spec("theta", 1.0), _spec("qv", 1.0e-4), _spec("u", 1.0))
+    specs = (_spec("theta", 1.0), _spec("qv", 1.0e-4), _spec("u", 1.0),
+             _spec("v", 1.0))
     apply_perturbations(forward, 6, _pcfg(*specs))
     apply_perturbations(reverse, 6, _pcfg(*reversed(specs)))
-    for name in ("thp", "qv", "u"):
+    for name in ("thp", "qv", "u", "v"):
         assert np.array_equal(getattr(forward, name),
                               getattr(reverse, name)), name
 
@@ -771,11 +784,17 @@ def test_the_noise_hash_changes_with_the_seed_and_not_with_the_run():
 # 11. documented stubs
 # --------------------------------------------------------------------------
 
-@pytest.mark.parametrize("stub", [recycled_difference_perturbations,
-                                  perturbed_lateral_boundaries])
+@pytest.mark.parametrize("stub", [recycled_difference_perturbations])
 def test_unbuilt_routes_raise_rather_than_falling_back(stub):
     with pytest.raises(NotImplementedError, match="non-goal"):
         stub()
+
+
+def test_member_boundaries_are_built_not_a_stub():
+    """Audit S4: perturbed_lateral_boundaries was a stub; it is built now
+    (tests/test_da_perturb_boundaries.py holds it to its claims)."""
+    with pytest.raises(TypeError):
+        perturbed_lateral_boundaries()
 
 
 def test_importing_the_module_does_not_import_cupy():
@@ -802,8 +821,16 @@ def test_importing_the_module_does_not_import_cupy():
 def test_the_module_documents_what_it_does_not_balance():
     from gpuwm.da import perturb
     text = perturb.__doc__
-    for phrase in ("No mass balance", "No wind balance",
-                   "No perturbation of the boundary forcing"):
+    # The boundary line changed with audit S4: the forcing is perturbed by
+    # a separate call (perturbed_lateral_boundaries), and the docstring
+    # says so rather than calling it a non-goal.
+    # 2026-10-06: the wind is non-divergent and the mass hydrostatic by
+    # default; what remains un-imposed is the coupling between them.
+    for phrase in ("Wind: non-divergent by construction",
+                   "Mass: hydrostatic",
+                   "No geostrophic or gradient-wind coupling",
+                   "The map factor is not seen",
+                   "The boundary forcing is perturbed by a separate call"):
         assert phrase in text
 
 
@@ -902,4 +929,393 @@ def test_mixed_backend_state_is_refused():
     state.thb[...] = cp.float32(300.0)
     state.u = np.zeros((12, 40, 49), dtype=np.float32)  # host array on a
     with pytest.raises(TypeError, match="different array backend"):
-        apply_perturbations(state, 1, _pcfg(_spec("u", 1.0), rh_cap=None))
+        apply_perturbations(state, 1, _pcfg(_spec("u", 1.0), rh_cap=None,
+                                            wind_mode="independent"))
+
+
+# --------------------------------------------------------------------------
+# 13. balance (2026-10-06): non-divergent wind, hydrostatic mass
+# --------------------------------------------------------------------------
+
+def _wind_cfg(amplitude=2.0, length_km=6.0, **kwargs):
+    kwargs.setdefault("dx_km", 1.0)
+    kwargs.setdefault("dy_km", 1.0)
+    return _pcfg(_spec("u", amplitude, length_km),
+                 _spec("v", amplitude, length_km), **kwargs)
+
+
+def _c_grid_divergence(u, v, dx_m, dy_m):
+    """``(u[i+1] - u[i]) / dx + (v[j+1] - v[j]) / dy`` at every mass point."""
+    u64, v64 = u.astype(np.float64), v.astype(np.float64)
+    return ((u64[:, :, 1:] - u64[:, :, :-1]) / dx_m
+            + (v64[:, 1:, :] - v64[:, :-1, :]) / dy_m)
+
+
+def test_rotational_wind_increment_has_zero_c_grid_divergence():
+    """The defect this exists for: two unrelated u/v draws put half their
+    kinetic energy into divergence, which the model radiates as gravity
+    waves in the first hour (the DA lanes measured the members' spread
+    3-5x below O-B and 3.4x the control's surface pressure tendency).
+    One streamfunction, differenced the C-grid way, is non-divergent on
+    the model's own stencil wherever the rim taper is one.  Inside the
+    rim band the component taper leaves ``u * grad(taper)`` and no more
+    (the taper is on the components, not on psi: see
+    test_rotational_rim_band_carries_no_more_than_the_spec)."""
+    rim = 5
+    state = _prepared_state(nx=64, ny=56, nz=6)
+    apply_perturbations(state, 11, _wind_cfg(compute_dtype="float64",
+                                             rim_width=rim))
+    div = _c_grid_divergence(state.u, state.v, 1000.0, 1000.0)
+    scale = np.abs(state.u).max() / 1000.0          # one-cell shear
+    assert scale > 1.0e-6, "the wind was not perturbed"
+    # Mass points whose four faces all sit where the taper is one.
+    interior = div[:, rim:-rim, rim:-rim]
+    # float32 state words: rounding at ~1e-7 of the shear, nothing more
+    assert np.abs(interior).max() <= 1.0e-5 * scale, (
+        f"max interior |div| {np.abs(interior).max():.3e} vs shear "
+        f"{scale:.3e}")
+    # The band: the cosine taper's steepest slope is pi/(2 rim dx), and
+    # the wind under it is at most a few sigma.
+    band_limit = 5.0 * 2.0 / (rim * 1000.0)          # amplitude 2.0
+    assert np.abs(div).max() <= band_limit, (
+        f"rim-band |div| {np.abs(div).max():.3e} exceeds u*grad(taper) "
+        f"{band_limit:.3e}")
+
+
+def test_rotational_rim_band_carries_no_more_than_the_spec():
+    """The defect the component taper prevents (2026-10-06, found in
+    review): with the taper on the streamfunction, a non-divergent field
+    that vanishes at the rim has psi constant there, so psi (amplitude
+    sigma_u * L_psi) drops to that constant across the rim band and the
+    tangential wind in the band is sigma_u * L_psi / W.  With the DA
+    cycle tool's numbers (1.5 m/s at 150 km, a 5-cell rim at 3 km) that
+    measured 35x the configured amplitude (unit row RMS 35, peak 47):
+    50-70 m/s of shear along every boundary of every member.  Here, the
+    cycle tool's own scale, spacing and rim on a span that resolves it:
+    no row or column of either component may carry more than the
+    interior does, within sampling."""
+    rim, dx_km, length_km, amplitude = 5, 3.0, 150.0, 1.5
+    u_rows, v_cols, u_in, v_in = [], [], [], []
+    for seed in (1, 2):
+        state = _prepared_state(nx=400, ny=400, nz=4)
+        apply_perturbations(state, seed, _wind_cfg(
+            amplitude, length_km, dx_km=dx_km, dy_km=dx_km, rim_width=rim,
+            compute_dtype="float64"))
+        u = state.u.astype(np.float64)
+        v = state.v.astype(np.float64)
+        u_rows.append(np.mean(u ** 2, axis=(0, 2)))      # per row j
+        v_cols.append(np.mean(v ** 2, axis=(0, 1)))      # per column i
+        u_in.append(np.mean(u[:, rim + 2:-rim - 2, rim + 2:-rim - 2] ** 2))
+        v_in.append(np.mean(v[:, rim + 2:-rim - 2, rim + 2:-rim - 2] ** 2))
+    u_row_rms = np.sqrt(np.mean(u_rows, axis=0))
+    v_col_rms = np.sqrt(np.mean(v_cols, axis=0))
+    u_interior = math.sqrt(float(np.mean(u_in)))
+    v_interior = math.sqrt(float(np.mean(v_in)))
+    assert 0.7 * amplitude <= u_interior <= 1.3 * amplitude, u_interior
+    # The band (the tapered rows and columns plus one): with the taper on
+    # psi it carried 35x the interior; with it on the components it
+    # carries at most the interior, within the sampling of a 150 km field
+    # on a 1200 km span.
+    band = rim + 2
+    u_band = np.concatenate([u_row_rms[:band], u_row_rms[-band:]])
+    v_band = np.concatenate([v_col_rms[:band], v_col_rms[-band:]])
+    assert u_band.max() <= 1.5 * u_interior, (
+        f"u rim-band row RMS peaks at {u_band.max():.2f} against an "
+        f"interior of {u_interior:.2f}: {np.round(u_band, 2)}")
+    assert v_band.max() <= 1.5 * v_interior, (
+        f"v rim-band column RMS peaks at {v_band.max():.2f} against an "
+        f"interior of {v_interior:.2f}: {np.round(v_band, 2)}")
+    # and the rim rows themselves are zero (the invariant)
+    assert u_row_rms[0] == 0.0 and u_row_rms[-1] == 0.0
+    assert v_col_rms[0] == 0.0 and v_col_rms[-1] == 0.0
+
+
+def test_independent_draws_are_half_divergent_and_rotational_are_not():
+    """Names the breakage in numbers: the divergent fraction of the
+    kinetic energy, from the RMS divergence against the RMS vorticity
+    on the same stencil (equal for two unrelated isotropic draws)."""
+    rim = 5
+
+    def fractions(cfg):
+        state = _prepared_state(nx=96, ny=96, nz=4)
+        apply_perturbations(state, 23, cfg)
+        u, v = state.u.astype(np.float64), state.v.astype(np.float64)
+        div = _c_grid_divergence(u, v, 1000.0, 1000.0)
+        # vorticity on the interior corners the same way
+        dv_dx = (v[:, :, 1:] - v[:, :, :-1])[:, 1:-1, :] / 1000.0
+        du_dy = (u[:, 1:, :] - u[:, :-1, :])[:, :, 1:-1] / 1000.0
+        vort = dv_dx - du_dy
+        return (np.sqrt(np.mean(div ** 2)), np.sqrt(np.mean(vort ** 2)),
+                np.abs(div[:, rim:-rim, rim:-rim]).max())
+
+    div_i, vort_i, _ = fractions(_wind_cfg(wind_mode="independent",
+                                           compute_dtype="float64",
+                                           rim_width=rim))
+    div_r, vort_r, interior_r = fractions(_wind_cfg(compute_dtype="float64",
+                                                    rim_width=rim))
+    assert 0.7 <= div_i / vort_i <= 1.3, (div_i, vort_i)   # half and half
+    # Rotational: nothing where the taper is one, and over the whole
+    # field (rim band included, where the component taper puts
+    # u * grad(taper) into the divergence) well under half.
+    assert interior_r <= 1.0e-5 * vort_r, (interior_r, vort_r)
+    assert div_r / vort_r <= 0.5 * (div_i / vort_i), (div_r, vort_r,
+                                                      div_i, vort_i)
+
+
+def test_independent_wind_mode_is_the_previous_draw_bit_for_bit():
+    """The comparison arm reproduces the pre-2026-10-06 members: same
+    stream (keyed on the field name), same bytes."""
+    state = _prepared_state(nx=48, ny=40, nz=6)
+    provenance = apply_perturbations(
+        state, 5, _wind_cfg(wind_mode="independent"))
+    for name in ("u", "v"):
+        record = next(r for r in provenance["fields"] if r["name"] == name)
+        shape = tuple(record["shape"])
+        _, info = gaussian_random_field(shape, seed=5, name=name, dx_km=1.0,
+                                        dy_km=1.0, length_scale_km=6.0, xp=np)
+        assert record["noise_sha256"] == info["noise_sha256"]
+        assert record["wind_mode"] == "independent"
+        assert "streamfunction" not in record
+    assert provenance["wind_mode"] == "independent"
+
+
+def test_rotational_wind_amplitude_matches_the_spec():
+    """One scaling for both components: u carries the configured 1-sigma
+    exactly in expectation, v within its analytic ratio (one, on a square
+    grid of equal extents).  Measured over 24 members on the untapered
+    interior; the band is sampling, not a fudge."""
+    amplitude, seeds = 2.0, range(24)
+    u_var, v_var, ratio = [], [], None
+    for seed in seeds:
+        state = _prepared_state(nx=96, ny=96, nz=1)
+        prov = apply_perturbations(state, seed, _wind_cfg(amplitude, 6.0))
+        rim = 5 + 2
+        u_var.append(np.mean(state.u[:, rim:-rim, rim:-rim]
+                             .astype(np.float64) ** 2))
+        v_var.append(np.mean(state.v[:, rim:-rim, rim:-rim]
+                             .astype(np.float64) ** 2))
+        ratio = next(r for r in prov["fields"] if r["name"] == "v")[
+            "streamfunction"]["v_amplitude_ratio"]
+    u_sigma, v_sigma = np.sqrt(np.mean(u_var)), np.sqrt(np.mean(v_var))
+    assert abs(ratio - 1.0) < 1.0e-6                      # square, equal
+    assert 0.9 <= u_sigma / amplitude <= 1.1, u_sigma
+    assert 0.9 <= v_sigma / amplitude <= 1.1, v_sigma
+
+
+def test_rotational_wind_spectrum_peaks_at_the_prescribed_scale():
+    """The module's length-scale contract, kept for the wind: the
+    streamfunction is drawn at sqrt(3) L so the WIND's radial spectrum
+    peaks at k = 1/L (a derivative of a Gaussian field peaks at
+    sqrt(3)/L_psi).  Averaged over four seeds; the band is the one the
+    scalar test uses."""
+    from gpuwm.da.perturb import rotational_wind_draw
+    energy = None
+    for seed in (1, 2, 3, 17):
+        u, _v, _info = rotational_wind_draw(
+            SPECTRAL_SHAPE, seed=seed, dx_km=SPECTRAL_DX_KM,
+            dy_km=SPECTRAL_DX_KM, length_scale_km=SPECTRAL_L_KM, xp=np)
+        k, e = radial_power_spectrum(u[:, :, :-1], SPECTRAL_DX_KM,
+                                     bins=SPECTRAL_BINS)
+        energy = e if energy is None else energy + e
+    peak = spectral_peak_wavenumber(k, energy)
+    ratio = peak * SPECTRAL_L_KM
+    assert 0.85 <= ratio <= 1.15, f"wind spectral peak ratio {ratio:.4f}"
+
+
+def test_rotational_wind_rim_rows_are_untouched_and_the_interior_moves():
+    state = _prepared_state(nx=48, ny=40, nz=6)
+    state.u[...] = np.float32(-0.0)
+    state.v[...] = np.float32(-0.0)
+    before = {"u": state.u.copy(), "v": state.v.copy()}
+    apply_perturbations(state, 3, _wind_cfg())
+    for name in ("u", "v"):
+        now, was = getattr(state, name), before[name]
+        for sl in (np.s_[:, 0, :], np.s_[:, -1, :], np.s_[:, :, 0],
+                   np.s_[:, :, -1]):
+            assert now[sl].tobytes() == was[sl].tobytes(), name
+        assert np.count_nonzero(now) > 0.5 * now.size, name
+
+
+def test_rotational_mode_refuses_a_lone_component_and_mismatched_specs():
+    with pytest.raises(ValueError, match="derives u AND v"):
+        _pcfg(_spec("u", 1.0))
+    with pytest.raises(ValueError, match="must agree on amplitude"):
+        _pcfg(_spec("u", 1.0), _spec("v", 2.0))
+    with pytest.raises(ValueError, match="must agree on length_scale_km"):
+        _pcfg(_spec("u", 1.0, 4.0), _spec("v", 1.0, 8.0))
+    with pytest.raises(ValueError, match="unknown wind_mode"):
+        _pcfg(_spec("u", 1.0), _spec("v", 1.0), wind_mode="sideways")
+    # the comparison arm takes a lone component
+    _pcfg(_spec("u", 1.0), wind_mode="independent")
+
+
+def test_rotational_provenance_records_the_streamfunction():
+    state = _prepared_state(nx=48, ny=40, nz=6)
+    prov = apply_perturbations(state, 8, _wind_cfg(2.0, 6.0))
+    json.dumps(prov)
+    u = next(r for r in prov["fields"] if r["name"] == "u")
+    v = next(r for r in prov["fields"] if r["name"] == "v")
+    assert u["wind_mode"] == v["wind_mode"] == "rotational"
+    assert u["streamfunction"]["noise_sha256"] == v["streamfunction"][
+        "noise_sha256"]
+    assert u["noise_sha256"] == v["noise_sha256"]            # one draw
+    assert u["streamfunction"]["shape"] == [6, 41, 49]
+    assert abs(u["streamfunction"]["length_scale_km"]
+               - math.sqrt(3.0) * 6.0) < 1e-12
+    assert "taper is one" in u["streamfunction"]["stencil"]
+    assert any("non-divergent" in line or "divergence of the increment"
+               in line for line in prov["balance_imposed"])
+
+
+def _column_state(nx=40, ny=32, nz=12, *, dtype=np.float32):
+    """A host state with a loaded sigma coordinate, enough for the
+    hydrostatic column integration (hypsometric_opt = 1): the arrays
+    :mod:`gpuwm.da.hydrostatic` reads, nothing the dycore would."""
+    from types import SimpleNamespace
+    eta = np.linspace(1.0, 0.0, nz + 1)
+    dnw = np.diff(eta)                                   # negative, WRF's
+    rdnw = 1.0 / dnw
+    dn = np.zeros(nz + 1)
+    dn[1:nz] = 0.5 * (dnw[:-1] + dnw[1:])
+    rdn = np.zeros(nz + 1)
+    rdn[1:nz] = 1.0 / dn[1:nz]
+    half = 0.5 * (eta[:-1] + eta[1:])
+    p_top, mub = 5000.0, 9.5e4
+    pressure = (p_top + half * mub).astype(np.float64)
+    z = lambda *s: np.zeros(s, dtype=dtype)  # noqa: E731
+    state = SimpleNamespace(
+        thp=z(nz, ny, nx), qv=np.full((nz, ny, nx), 2.0e-3, dtype),
+        u=z(nz, ny, nx + 1), v=z(nz, ny + 1, nx), php=z(nz + 1, ny, nx),
+        p=np.broadcast_to(pressure[:, None, None].astype(dtype),
+                          (nz, ny, nx)).copy(),
+        mup=z(ny, nx), mub2d=np.full((ny, nx), mub, dtype),
+        thb=np.full(nz, 300.0, dtype),
+        c1h=np.ones(nz, dtype), c2h=np.zeros(nz, dtype),
+        c1f=np.ones(nz + 1, dtype), c2f=np.zeros(nz + 1, dtype),
+        dnw=dnw.astype(dtype), rdnw=rdnw.astype(dtype),
+        rdn=rdn.astype(dtype), p_top=p_top)
+    return state
+
+
+def _theta_cfg(**kwargs):
+    kwargs.setdefault("dx_km", 1.0)
+    kwargs.setdefault("dy_km", 1.0)
+    kwargs.setdefault("rim_width", 4)
+    kwargs.setdefault("hypsometric_opt", 1)
+    return PerturbationConfig(fields=(_spec("theta", 1.0, 4.0),), **kwargs)
+
+
+def test_hydrostatic_mass_balance_re_integrates_php_where_theta_moved():
+    """The other half of the defect: a theta draw under a fixed
+    geopotential reads as a pressure jump of about 4 hPa per kelvin
+    (gpuwm.da.hydrostatic), which the first acoustic substeps answer
+    with a ring.  By default the column's php is re-integrated at its
+    own dry mass: zero at the surface, moving above exactly where theta
+    moved, and byte-identical in every column it did not reach."""
+    state = _column_state()
+    php_before = state.php.copy()
+    prov = apply_perturbations(state, 4, _theta_cfg())
+    receipt = prov["mass_balance"]
+    assert receipt["applied"] and receipt["mode"] == "hydrostatic"
+    assert receipt["perturbed_column_fields"] == ["theta"]
+    assert receipt["hypsometric_opt"] == 1
+    assert receipt["max_abs_dphp_m2s2"] > 0.0
+    assert np.array_equal(state.php[0], php_before[0])      # terrain
+    moved = state.thp != 0.0
+    columns = moved.any(axis=0)
+    assert columns.sum() > 0.5 * columns.size
+    dphp = state.php.astype(np.float64) - php_before
+    assert np.count_nonzero(dphp[1:][:, columns]) > 0
+    assert receipt["columns_moved"] == int(columns.sum())
+    # untouched columns (the rim): the words did not move
+    assert state.php[:, ~columns].tobytes() == php_before[:, ~columns].tobytes()
+    # The integration itself, restated independently: a warm layer is a
+    # thicker layer, d(phi_k) = -dnw_k * mu * d(alt_k) with alt from the
+    # equation of state at the unchanged pressure (no loading change),
+    # summed up from the terrain.
+    thb = state.thb.astype(np.float64)[:, None, None]
+    p = state.p.astype(np.float64)
+    qv = state.qv.astype(np.float64)
+    mu = (state.mub2d.astype(np.float64) + state.mup.astype(np.float64))
+
+    def alt(thp):
+        theta = thb + thp
+        return (c.RD * theta * (1.0 + c.RVOVRD * qv)
+                * (p / c.P0) ** c.RCP / p)
+
+    dalt = alt(state.thp.astype(np.float64)) - alt(0.0)
+    op = -state.dnw.astype(np.float64)[:, None, None] * mu[None]
+    expected = np.cumsum(op * dalt, axis=0)
+    np.testing.assert_allclose(dphp[1:], expected, rtol=2e-5, atol=1e-3)
+    # and the size is the hydrostatic one: about g * H * dtheta / theta,
+    # a few hundred m2/s2 per kelvin over a 10 km column at 300 K
+    gain = (np.abs(dphp[-1][columns]).max()
+            / np.abs(state.thp.astype(np.float64)).max())
+    assert 50.0 < gain < 2000.0, gain
+
+
+def test_mass_balance_none_leaves_php_alone():
+    state = _column_state()
+    php_before = state.php.copy()
+    prov = apply_perturbations(state, 4, _theta_cfg(mass_balance="none"))
+    assert prov["mass_balance"] == {
+        "applied": False, "mode": "none",
+        "reason": "mass_balance = 'none' (configured)"}
+    assert np.array_equal(state.php, php_before)
+    assert np.count_nonzero(state.thp) > 0
+
+
+def test_mass_balance_refuses_a_state_without_a_vertical_coordinate():
+    """``_prepared_state`` has dnw all zero: every layer operator would be
+    zero and the balance a silent no-op.  Refused by name, before any
+    field is written."""
+    state = _prepared_state()
+    thp = state.thp.copy()
+    with pytest.raises(ValueError, match="dnw is absent or all zero"):
+        apply_perturbations(state, 1, _pcfg(_spec("theta", 1.0),
+                                            mass_balance="hydrostatic",
+                                            hypsometric_opt=1))
+    assert np.array_equal(state.thp, thp)
+
+
+def test_mass_balance_needs_the_hypsometric_option():
+    state = _column_state()
+    with pytest.raises(ValueError, match="needs hypsometric_opt"):
+        apply_perturbations(state, 1, _theta_cfg(hypsometric_opt=None))
+    with pytest.raises(ValueError, match="hypsometric_opt must be 1 or 2"):
+        _theta_cfg(hypsometric_opt=3)
+    with pytest.raises(ValueError, match="needs state.p_top"):
+        state.p_top = None
+        apply_perturbations(state, 1, _theta_cfg(hypsometric_opt=2))
+
+
+def test_mass_balance_is_skipped_with_a_reason_for_a_wind_only_draw():
+    """A wind-only draw changes no column, so the default needs neither
+    hypsometric_opt nor a loaded base, and says why it did nothing."""
+    state = _prepared_state()
+    prov = apply_perturbations(state, 1, _wind_cfg(mass_balance="hydrostatic"))
+    assert prov["mass_balance"]["applied"] is False
+    assert "no thermodynamic" in prov["mass_balance"]["reason"]
+
+
+def test_config_table_accepts_the_balance_keys():
+    cfg = PerturbationConfig.from_mapping({
+        "dx_km": 3.0, "dy_km": 3.0,
+        "fields": [{"name": "u", "amplitude": 1.5, "length_scale_km": 150},
+                   {"name": "v", "amplitude": 1.5, "length_scale_km": 150}],
+        "wind_mode": "independent", "mass_balance": "none",
+        "hypsometric_opt": 2,
+    })
+    assert (cfg.wind_mode, cfg.mass_balance, cfg.hypsometric_opt) == (
+        "independent", "none", 2)
+    default = PerturbationConfig.from_mapping({
+        "dx_km": 3.0, "dy_km": 3.0,
+        "fields": [{"name": "theta", "amplitude": 0.5,
+                    "length_scale_km": 60}]})
+    assert (default.wind_mode, default.mass_balance,
+            default.hypsometric_opt) == ("rotational", "hydrostatic", None)
+    with pytest.raises(ValueError, match="unknown mass_balance"):
+        PerturbationConfig.from_mapping({
+            "dx_km": 3.0, "dy_km": 3.0, "mass_balance": "maybe",
+            "fields": [{"name": "theta", "amplitude": 0.5,
+                        "length_scale_km": 60}]})

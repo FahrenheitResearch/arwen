@@ -1014,6 +1014,7 @@ def _initialize_real_case_physics(
         **ruc_mosaic_physics_inputs(
             cfg, static, landuse_attrs=landuse_attrs, xice=soil.xice,
             fractional_seaice=ruc_fractional_seaice(cfg)),
+        **({"fire_grid_spec": grid._rust_spec()} if int(getattr(cfg, "ifire", 0)) == 2 else {}),
         **({"cam_ozone": cam_ozone} if cam_ozone is not None else {}))
     import cupy as cp
     from gpuwm.core.landuse import surface_snow_albedo
@@ -1319,13 +1320,20 @@ def prepare_real_case(cfg: RunConfig, *, grid, geog_root,
     # are held above.  Nothing between them is still resident.
     boundaries = forcing.build(times)
     attach_lateral_boundaries(initial_result.state, boundaries)
+    # The chem processes' preparation-time arrays (dust statics, sulfur
+    # lat/lon) onto this grid, so the prepared cache and every checkpoint
+    # carry them; nothing on a chem-off state (gpuwm/core/chem_statics.py).
+    from gpuwm.core.chem_statics import attach_chem_statics
+    attach_chem_statics(initial_result.state, grid, geog_root, geog_selection)
 
     soil_fields = dict(initial_met.fields)
     # No lake skin override: with metgrid's masked=both SKINTEMP chain and
     # static-landmask target classification, lake cells already carry the
     # water-source skin value, and real.exe (no TAVGSFC) keeps exactly that
     # SKINTEMP wherever SST has no valid support
-    # (module_initialize_real.F:2844-2866, :2898-2906).  The router forwards
+    # (module_initialize_real.F:2844-2866, :2898-2906).  Inland water with no
+    # source water within INLAND_WATER_SOURCE_REACH_M takes this forcing
+    # time's 2 m air temperature instead (gpuwm.ingest.horiz).  The router forwards
     # this exact argument list to preprocess_noah_soil for Noah-geometry
     # schemes, so their soil state is unchanged by the LSM dispatch seam.
     # ONE RULEBOOK (ArWen's ruling, 2026-08-06).  The soil column and the
@@ -1676,6 +1684,10 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
         radiation_parent=radiation_parent)
     geog_selection = GeogSelection.from_case_data(
         data, domain_id=dc.grid_id)
+    if getattr(state, "chem", None) is not None:
+        from gpuwm.core.chem_statics import attach_chem_statics
+        attach_chem_statics(state, initialized.grid, data.geog_root,
+                            geog_selection)
     landuse_attrs = geog_selection.landuse_global_attrs()
     from gpuwm.core.landuse import (ruc_fractional_seaice,
                                     usemonalb_landuse_inputs)
@@ -1712,7 +1724,9 @@ def prepare_child_case(initialized, child_dc, *, exp: ExperimentConfig,
         **lake_physics_inputs(cfg, static),
         **ruc_mosaic_physics_inputs(
             cfg, static, landuse_attrs=landuse_attrs, xice=soil.xice,
-            fractional_seaice=ruc_fractional_seaice(cfg)))
+            fractional_seaice=ruc_fractional_seaice(cfg)),
+        **({"fire_grid_spec": initialized.grid._rust_spec()}
+           if int(getattr(cfg, "ifire", 0)) == 2 else {}))
     from gpuwm.core.landuse import surface_snow_albedo
     driver.fields["snoalb"][...] = cp.asarray(
         surface_snow_albedo(cfg, static, driver.noah_params),
@@ -1820,6 +1834,14 @@ def rebuild_child_driver_from_land_state(*, exp: ExperimentConfig,
     from gpuwm.core.landuse import surface_leaf_area
     lai = surface_leaf_area(cfg, static["LAI12M"], now)
     lat, lon = grid.latlon_mass()
+    if getattr(state, "chem", None) is not None:
+        from gpuwm.core.chem_statics import attach_chem_statics
+        chem_geog_root = None if data is None else data.geog_root
+        chem_selection = (None if data is None else
+                          GeogSelection.from_case_data(
+                              data, domain_id=int(child_dc.grid_id)))
+        attach_chem_statics(state, grid, chem_geog_root, chem_selection,
+                            static_fields=static)
     if radiation_factory is None:
         parent_physics = getattr(parent_node.state, "physics", None)
         radiation = _child_radiation_adapter(
@@ -1874,7 +1896,8 @@ def rebuild_child_driver_from_land_state(*, exp: ExperimentConfig,
         **lake_physics_inputs(cfg, static),
         **ruc_mosaic_physics_inputs(
             cfg, static, landuse_attrs=attrs, xice=land.get("xice", 0.0),
-            fractional_seaice=ruc_fractional_seaice(cfg)))
+            fractional_seaice=ruc_fractional_seaice(cfg)),
+        **({"fire_grid_spec": grid._rust_spec()} if int(getattr(cfg, "ifire", 0)) == 2 else {}))
     from gpuwm.core.cam_ozone import configure_cam_ozone
     configure_cam_ozone(state, cfg, exp=exp, dc=child_dc, grid=grid)
     from gpuwm.core.landuse import surface_snow_albedo
@@ -2504,6 +2527,21 @@ def build_prepared_tree_relocation_runner(exp: ExperimentConfig, *,
 
     corridors = (statics_corridor if isinstance(statics_corridor, dict)
                  else {int(relocation.grid_id): statics_corridor})
+    for grid_id, corridor in sorted(corridors.items()):
+        dc = exp.domain(int(grid_id))
+        if not getattr(dc.run, "chem_sets", ""):
+            continue
+        from gpuwm.chem_table import load as load_chem_table
+        from gpuwm.core.chem_statics import DUST_KEY, STATIC_VARIABLES
+        if load_chem_table(dc.run).rows_for(DUST_KEY):
+            missing = [name for name in STATIC_VARIABLES
+                       if name not in corridor.fields]
+            if missing:
+                raise ValueError(
+                    f"prepared moving dust chemistry d{int(grid_id):02d} "
+                    f"requires sealed corridor statics {missing}; "
+                    "reprepare the chemistry-enabled statics corridor "
+                    "before moving the child")
     node = model.node(int(relocation.grid_id))
     child_config = node.cfg
 
@@ -2810,7 +2848,8 @@ def build_prepared_tree_descendant_regrounder(exp, *, model, corridors,
                           else None)
         if reconstruction is None:
             source_state = snapshot_state_to_host(
-                node.state, tuple(relocatable_attrs()) + _DONOR_ALIGNMENT_FIELDS)
+                node.state,
+                tuple(relocatable_attrs(node.state)) + _DONOR_ALIGNMENT_FIELDS)
             release_state_arrays(node.state)
             initialized = initializer(
                 node.cfg, node.parent,
@@ -4110,7 +4149,7 @@ def write_case_output(prepared, output_dir: Path, valid_time: datetime, *,
                       expect_refl_10cm: bool = True,
                       feedback=None, history_selection=None,
                       completed_records=None) -> Path | None:
-    from gpuwm.io.wrfout import (WrfoutWriter, state_frame,
+    from gpuwm.io.wrfout import (WrfoutWriter, state_frame, fire_history_attrs,
                                  wrfout_filename)
 
     state = prepared.initial_result.state
@@ -4167,6 +4206,7 @@ def write_case_output(prepared, output_dir: Path, valid_time: datetime, *,
                              coord=prepared.initial_result.coord,
                              feedback=feedback)
     attrs.update(history_attrs)
+    attrs.update(fire_history_attrs(getattr(state, "physics", None)))
     path = output_dir / wrfout_filename(valid_time, domain_id)
     with WrfoutWriter(
             path, nx=prepared.cfg.nx, ny=prepared.cfg.ny, nz=prepared.cfg.nz,
@@ -4245,7 +4285,14 @@ def _checkpoint_work_bytes(model) -> int:
     for node in model.walk_parent_first():
         streamed = getattr(node.state, "_streamed_domain", None)
         if streamed is not None:
-            arrays = dict(streamed.store).values()
+            # Sizes only.  On the ranked road ``store`` is a full drain that
+            # waits for the history writer; the planning view has the same
+            # members, shapes and dtypes without either.
+            run = getattr(streamed, "_run", None)
+            planning = (run.raw_store if getattr(run, "ranked", False)
+                        and hasattr(run, "raw_store") else None)
+            arrays = dict(planning if planning is not None
+                          else streamed.store).values()
         else:
             arrays = getattr(node.state, "__dict__", {}).values()
         total += sum(int(getattr(value, "nbytes", 0) or 0) for value in arrays
@@ -4734,6 +4781,12 @@ def integrate_prepared_case(
             if health_debug and not phase_hook_supported and health_armed:
                 health.require_healthy(phase=phase + ".pre-step")
             step_kwargs = {"refl_10cm_due": refl_due}
+            if int(getattr(cfg, "ifire", 0)) == 2:
+                step_kwargs["fire_history_due"] = refl_10cm_due(
+                    outer_step, substep, output_outer_steps,
+                    dynamics_substeps, final_outer_step=final_output_step,
+                    history_begin_outer_step=history_begin_step,
+                    history_end_outer_step=history_end_step)
             if health_debug and phase_hook_supported:
                 step_kwargs["phase_observer"] = health.phase_observer
             stepper(state, integration_cfg, **step_kwargs)

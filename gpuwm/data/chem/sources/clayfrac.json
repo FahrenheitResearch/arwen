@@ -1,0 +1,39 @@
+{
+  "schema": "gpuwm.chem.source.v1",
+  "name": "clayfrac",
+  "kind": "static",
+  "route": null,
+  "credential": null,
+  "format": "wps_geog",
+  "grid": {
+    "kind": "wps_geog",
+    "dataset": "clayfrac_5m",
+    "geog_consumer": "chem-dust"
+  },
+  "variables": {
+    "CLAYFRAC": {
+      "selector": {
+        "interp_options": [
+          "four_pt",
+          "average_4pt",
+          "average_16pt",
+          "search"
+        ],
+        "fill_missing": 0.0,
+        "planes": 1,
+        "water_mask": "landuse"
+      },
+      "units": "1",
+      "description": "clay fraction of the soil"
+    }
+  },
+  "time": {
+    "cadence_s": 31536000,
+    "latency_s": 0,
+    "persistence": "static"
+  },
+  "remap": "geogrid",
+  "licence": "Public domain (UCAR/NCAR WPS geographical input data, distributed with WRF)",
+  "attribution": "WPS geographical static data, NCAR/UCAR (www2.mmm.ucar.edu/wrf/src/wps_files/clayfrac_5m.tar.bz2)",
+  "provenance": "Sampled onto the model grid by the Rust static-fields crate's generic extra-field entry point with WPS geogrid/GEOGRID.TBL.ARW_CHEM, commit 5feccecd63384381b6942371c7a837f66e4ccb84 (sha256 d49c4f277679d73a92e634c3369e9196f788ffeb21dde07c2371ab6ddcfed305)'s own interpolation list, fill and water mask ('landuse' is the run's own land-use dataset, so the mask is the native build's); GEOGRID.TBL.ARW_CHEM:500-508; read by chem/module_gocart_dust_afwa.F (dust_soils=0). The archive is pinned by size and sha256 in gpuwm/geog_assets.py (door chem-dust)."
+}

@@ -159,7 +159,8 @@ def launch_aerosol_warm_source_network(
         nc_entry, nwfa_entry, nifa_entry,
         ncten, nwfaten, nifaten,
         rain_cloud_efficiency, snow_cloud_efficiency,
-        rain_snow_tables, rain_graupel_tables, dt: float) -> None:
+        rain_snow_tables, rain_graupel_tables, dt: float, *,
+        qcten=None, qrten=None, nrten=None) -> None:
     """Apply WRF-ordered warm-level sources with a prognostic droplet number.
 
     ``nc_entry``/``nwfa_entry``/``nifa_entry`` are the FROZEN per-kilogram
@@ -178,8 +179,14 @@ def launch_aerosol_warm_source_network(
     This launcher does NOT run the ncten balance limiter.  Call
     :func:`launch_ncten_balance` once, after this and after the cold
     network, and before the saturation adjustment.
+
+    ``qcten`` (keyword, optional) is WRF's per-kilogram-per-second cloud
+    water accumulator.  Given, ``qc`` is the read-only entry cloud and the
+    stage's cloud tendency is ADDED to ``qcten``, to be applied once with
+    every other cloud tendency (:3975); the production adapter passes it.
+    Left ``None``, the tendency is applied to ``qc`` in place.
     """
-    _, size = validate_fields({
+    fields = {
         "qc": qc,
         "qr": qr,
         "nr": nr,
@@ -197,7 +204,18 @@ def launch_aerosol_warm_source_network(
         "ncten": ncten,
         "nwfaten": nwfaten,
         "nifaten": nifaten,
-    })
+    }
+    if qcten is not None:
+        fields["qcten"] = qcten
+    if (qrten is None) != (nrten is None):
+        raise ValueError("qrten and nrten are given together or not at all")
+    if qrten is not None:
+        fields["qrten"] = qrten
+        fields["nrten"] = nrten
+    _, size = validate_fields(fields)
+    if qcten is not None and _arrays_overlap(qc, qcten):
+        raise ValueError("qcten must not alias qc; the entry cloud is "
+                         "read-only while the accumulator carries it")
     if _arrays_overlap(graupel_melt_marker, snow_melt_marker):
         raise ValueError(
             "snow_melt_marker must not alias graupel_melt_marker")
@@ -240,6 +258,7 @@ def launch_aerosol_warm_source_network(
          ncten, nwfaten, nifaten,
          rain_cloud_efficiency, snow_cloud_efficiency,
          *rain_snow_values, *rain_graupel_values,
+         qcten, qrten, nrten,
          DTYPE(dt), np.int32(size)))
 
 
@@ -249,7 +268,8 @@ def launch_aerosol_warm_source_network_from_owner(
         temperature, pressure, qv,
         nc_entry, nwfa_entry, nifa_entry,
         ncten, nwfaten, nifaten,
-        table_owner, dt: float) -> None:
+        table_owner, dt: float, *, qcten=None, qrten=None,
+        nrten=None) -> None:
     """Launch the warm network from one verified classic table owner.
 
     mp=28 reuses the four classic Thompson caches unchanged; only
@@ -269,7 +289,8 @@ def launch_aerosol_warm_source_network_from_owner(
         nc_entry, nwfa_entry, nifa_entry,
         ncten, nwfaten, nifaten,
         tables.rain_cloud_efficiency, table_owner.t_Efsw,
-        tables.rain_snow_tables, tables.rain_graupel_tables, dt)
+        tables.rain_snow_tables, tables.rain_graupel_tables, dt,
+        qcten=qcten, qrten=qrten, nrten=nrten)
 
 
 def launch_ncten_balance(

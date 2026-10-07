@@ -8,6 +8,7 @@ from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
+import tomllib
 
 import pytest
 
@@ -51,6 +52,26 @@ def assert_old_bytes(parent, pins, key, candidate):
     assert candidate.encode("utf-8") == old
 
 
+#: Lines a recipe emission gained after these parents were pinned, by
+#: source.  e19441c1e gave RAP the operational fork's request row (RAP runs
+#: the same WRF 3.9 fork as HRRR), so an authored rap recipe states the
+#: fork's surface-layer generation in [shared].  The matrix recipe is not
+#: mp_physics = 28, so the fork Thompson keys stay scoped out of it.
+FORK_GENERATION_LINES = {"rap": ('mynn_sfclay_variant = "gsl_wrf39"\n',)}
+
+
+def assert_old_recipe_bytes(parent, pins, source, candidate):
+    """The parent's recipe bytes, plus exactly the fork-generation lines."""
+    lines = candidate.splitlines(keepends=True)
+    shared = tomllib.loads(candidate)["shared"]
+    for line in FORK_GENERATION_LINES.get(source, ()):
+        assert lines.count(line) == 1, line
+        key = line.split(" = ")[0]
+        assert shared[key] == tomllib.loads(line)[key], line
+        lines.remove(line)
+    assert_old_bytes(parent, pins, "recipe/" + source, "".join(lines))
+
+
 @pytest.mark.parametrize("parent", PARENTS)
 @pytest.mark.parametrize("case", NAMELISTS)
 def test_non_hrrr_imported_config_bytes_match_original_audit_parent(parent, case, tmp_path):
@@ -75,4 +96,4 @@ def test_non_hrrr_recipe_bytes_match_original_audit_parent(parent, source):
         root_dx_m=recipe["root_dx_m"], fetch_hints={"source": source},
         case_data=None, profile=recipe["profile"],
     )
-    assert_old_bytes(parent, pins, "recipe/" + source, emitted)
+    assert_old_recipe_bytes(parent, pins, source, emitted)

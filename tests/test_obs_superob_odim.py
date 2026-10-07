@@ -103,6 +103,20 @@ def _write_pack(path: Path, schema: str, *,
     return path
 
 
+@pytest.fixture(autouse=True)
+def _numpy_reference(monkeypatch):
+    """These tests place gates on duck-typed test grids.
+
+    A test double's placement methods are Python, and the Rust superob
+    places gates with a TargetGrid's projection and column interfaces, so
+    it refuses these objects by name.  The census semantics are pinned
+    here on the numpy reference, opted into explicitly, and the Rust
+    route's census is held to that reference on a real TargetGrid by
+    tests/test_obs_superob_rust_parity.py.
+    """
+    monkeypatch.setenv("GPUWM_SUPEROB_PYTHON", "1")
+
+
 class _OffGrid:
     """A grid every gate misses. Reaching it at all is the point."""
 

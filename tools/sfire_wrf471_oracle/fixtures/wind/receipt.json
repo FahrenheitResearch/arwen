@@ -1,0 +1,6290 @@
+{
+  "source": "WRF v4.7.1",
+  "commit": "f52c197ed39d12e087d02c50f412d90d418f6186",
+  "tar_sha256": "0826f8878aa787e016586b6e3b43896c8467570b7cca47741b5e16d2f4def0ae",
+  "compiler": "GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+  "libc": "ldd (Ubuntu GLIBC 2.43-2ubuntu2.4) 2.43",
+  "flags": "-O0 -cpp -ffp-contract=off -fcheck=all -fbacktrace -ffree-form -ffree-line-length-none -fallow-argument-mismatch",
+  "source_sha256sums": "7662f29bb003697d08ccee585e272a3ed7362edc73bcef5ea8dc95d100d9e578  phys/module_fr_fire_driver.F\n",
+  "oracle_sha256sums": "02db12bda029c2351e22d53ccba119c1c8b83764da8f7c1ee0f0cc86f2300ad6  run_wind.F90\n786008d9b1f2794c8d8664d88cc27e76b797a5434fc699e7c076fe2dbb2580a1  extract_wind.py\nac306b6f07582a3981b74a7b9561a062df2e33859b04eff6983c9f5bdf2dec95  build_wind.sh\n",
+  "reference_kind": "byte-unmodified original WRF",
+  "layout": "2D (j,i); 3D (k,j,i); little-endian f4/i4; scalar rank zero",
+  "cases": {
+    "wind/compact_1": {
+      "sha256": "4b4a25d5687ee2de76a44d1713d20f5206d536ff2734e53021ea2399d3a7df97",
+      "native_stream_sha256": {
+        "u": "85d138a68f76670fc243d576fe684e6c3c2e8a1958899085a8cffe050287452d",
+        "v": "f5651c93e87803051407d4c2ce6a913f808787e801e76d5ea238ca7ba9cff894",
+        "ph": "6df10554647d68b6d938a9df67bc279c0970185932c6d4f832488a89c906bc62",
+        "phb": "932582a6a870d6ddadb6b15f8bf91e7fc4f6e9910d175dde9515d33a6b8321d4",
+        "z0": "3eafb2f22bb2d8ce408048708db53e36c3670df699ef470f1091a5bf151cebca",
+        "zs": "08b14ddce399109e6d9dbd3c7bde9ae79e8292b0249b5bf10a9e4f2a6cc62d85",
+        "z0f": "8742abf8bc8438760b7fb5f7d782c467a4c4fb8d63e68b3094638c5b952ccda5",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "a8b5a6d8e01443353705b52f19f73b43bf2e22cd2b64c5a54e60aecb476ad34b",
+        "sr_x": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "sr_y": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "fire_wind_height": "62ccfde6c0096a839dcdff2b48c4058ae411d18a1423c47d8cd546a784352582",
+        "fire_lsm_zcoupling": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "58e683cb4cef2cef26c8b5bcac5ee69a7b2430e7b768376574a498a3b2c259fc",
+        "vf": "3a986aabeea22c2803211c341957c96b4df8e308a8016505881d39bf16b63346",
+        "uah": "35d2b02b33f99e2fc565b93123f0efd90da1da452d2b0063ac46e292bb016e2a",
+        "vah": "92310bfe09b800b85a91afa28ad0463da8733cf569cc0f9f0061ee0918c31de2",
+        "uah_staggered": "4816f03d27b3a314d2cef92cf523069a1b8b3da8de94bb5a47f91594aa22ab49",
+        "vah_staggered": "371d9e3226c474acc600614455d43e6c16141f85d1cad2494266dc32525add37"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            24,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            24,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            24,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "uah_staggered": {
+          "shape": [
+            6,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "vah_staggered": {
+          "shape": [
+            7,
+            8
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/compact_2": {
+      "sha256": "1c2aaa39442a70934e18d7f2423c279436b6ac2a4f17da8c9005bfc35866d930",
+      "native_stream_sha256": {
+        "u": "85d138a68f76670fc243d576fe684e6c3c2e8a1958899085a8cffe050287452d",
+        "v": "f5651c93e87803051407d4c2ce6a913f808787e801e76d5ea238ca7ba9cff894",
+        "ph": "6df10554647d68b6d938a9df67bc279c0970185932c6d4f832488a89c906bc62",
+        "phb": "932582a6a870d6ddadb6b15f8bf91e7fc4f6e9910d175dde9515d33a6b8321d4",
+        "z0": "3eafb2f22bb2d8ce408048708db53e36c3670df699ef470f1091a5bf151cebca",
+        "zs": "08b14ddce399109e6d9dbd3c7bde9ae79e8292b0249b5bf10a9e4f2a6cc62d85",
+        "z0f": "d89c4a2f44372ef838f57de42baa10b511ec70b3295c9cffc3dbdb6d0224136d",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "523602ebe798b81d26c1373df9f716a05357e9e0d99c3948a81a4cc41697640b",
+        "sr_x": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "sr_y": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_wind_height": "e1190bbb02597d4bddb969b7bb153f15ca199b7b60e7acb8618d32d32aa8a90e",
+        "fire_lsm_zcoupling": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "3ac70a99b9aaeb41eb2a6c6440a76776c7e7915ad9d446e281a5602bf921d54f",
+        "vf": "879a50c346dfd31198e6ca15d18a5c06d4225ac5fac481ad62231a5e90ec2b5b",
+        "uah": "54d80c1335f43a6dcb5b6182553429c61ffac19879ef3e0f290ac643a24dab77",
+        "vah": "640b1a5712cade6c0f71eae8e4c5082374c5a14814d333c1a8802b31f8081f41",
+        "uah_staggered": "8c88c9c6bb08b2b8c4128c394d63882db8ac069428dec3e26e146315a609ea6e",
+        "vah_staggered": "a09d8bb2c7e42ecd914593b38ef73ee0ed4dd5d4fa2ee7309b2b3e956c1db921"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            12,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            12,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            12,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "uah_staggered": {
+          "shape": [
+            6,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "vah_staggered": {
+          "shape": [
+            7,
+            8
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/compact_3": {
+      "sha256": "b3ecdaed019b94d0a477e2a383ce0f9b9fa55c4ceb4c8b7d670c91c98ec22dbc",
+      "native_stream_sha256": {
+        "u": "85d138a68f76670fc243d576fe684e6c3c2e8a1958899085a8cffe050287452d",
+        "v": "f5651c93e87803051407d4c2ce6a913f808787e801e76d5ea238ca7ba9cff894",
+        "ph": "6df10554647d68b6d938a9df67bc279c0970185932c6d4f832488a89c906bc62",
+        "phb": "932582a6a870d6ddadb6b15f8bf91e7fc4f6e9910d175dde9515d33a6b8321d4",
+        "z0": "3eafb2f22bb2d8ce408048708db53e36c3670df699ef470f1091a5bf151cebca",
+        "zs": "08b14ddce399109e6d9dbd3c7bde9ae79e8292b0249b5bf10a9e4f2a6cc62d85",
+        "z0f": "9e13166417b36bcfaa5e6f9c0a3b3087ce3d2bcced85e68af83e6c064023f0d2",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "c4d568193375fcacbe33de41bea8cf095af7ea90722975b55efc1e9f3525033f",
+        "sr_x": "fb5e512425fc9449316ec95969ebe71e2d576dbab833d61e2a5b9330fd70ee02",
+        "sr_y": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "fire_wind_height": "60e19397f69ce0e6a8dea97681c2ee6eec8c18da2203f87d460a3509db4c7a26",
+        "fire_lsm_zcoupling": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "5b8b9c03f39a7d3f186c37b54ec3f2d00a01944a49c26cee78e9cd34f8d4c4ac",
+        "vf": "90ed8cdc5c30c046316279416ff60b0655539ecbb8e311de4bd72ee14f369150",
+        "uah": "0ed8d32cf809ebb32e779898447c61629b00c256b148caf4bb5b32410b1a598d",
+        "vah": "3939aec2ec33e2c66baa9136f0edde3fb34156bdcab2cec6a2e7b0cbf9d0729a",
+        "uah_staggered": "5cd68be1a389233ea93adc6d527b5c8c2a7f34b16aeb8db8ffd495c93c22113d",
+        "vah_staggered": "d125880b1d894b746abd5d78067f22c644d9983fe07fda5a47003fc477974704"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            18,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            18,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            18,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "uah_staggered": {
+          "shape": [
+            6,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "vah_staggered": {
+          "shape": [
+            7,
+            8
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/compact_4": {
+      "sha256": "5595d2f4ec319071dc079375b21581687a4db9701818809cc0d83d2e517963c5",
+      "native_stream_sha256": {
+        "u": "85d138a68f76670fc243d576fe684e6c3c2e8a1958899085a8cffe050287452d",
+        "v": "f5651c93e87803051407d4c2ce6a913f808787e801e76d5ea238ca7ba9cff894",
+        "ph": "6df10554647d68b6d938a9df67bc279c0970185932c6d4f832488a89c906bc62",
+        "phb": "932582a6a870d6ddadb6b15f8bf91e7fc4f6e9910d175dde9515d33a6b8321d4",
+        "z0": "3eafb2f22bb2d8ce408048708db53e36c3670df699ef470f1091a5bf151cebca",
+        "zs": "08b14ddce399109e6d9dbd3c7bde9ae79e8292b0249b5bf10a9e4f2a6cc62d85",
+        "z0f": "ba1ae1c5fc5ec261377114ea9ebbecfc3d267ff7968cc5b2d52e4589aa8bc30c",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "095ecb434aaa7624f9dd9ea2fb770af10b3d67c20c32d0c82005fc05aef26aa8",
+        "sr_x": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "sr_y": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "fire_wind_height": "da148fa537bf9ca878d4cb5c13ab3566a26eb29b1b3e0e4243424480c5f5fa2a",
+        "fire_lsm_zcoupling": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "09cb692c3f42691e3c83476d9b490faa25e9c78692bd748d4d812ca0e465a3b6",
+        "vf": "9a15b091f29e6b11da7045f5de593e86202c7c6e56cb489a98a84c68886d4942",
+        "uah": "703cccc3abf7a7bb7e49897454a99fc786dff0f39c93543b2829862c97922959",
+        "vah": "65bf51acc597d27f27fcfd74a0912220053ac88633c4e2ee6df7f8a758a84384",
+        "uah_staggered": "0d8f47e4219dde37e2d89e34c35c7a59b9a3623082d0445dc844da32e68cf6c4",
+        "vah_staggered": "d3713eed409f393962204431f2c6b343daeb3110e247a3baa24e907f6c1b4b7b"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            24,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            24,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            24,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "uah_staggered": {
+          "shape": [
+            6,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "vah_staggered": {
+          "shape": [
+            7,
+            8
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/compact_5": {
+      "sha256": "e28b640c680b5faff4ffc4163a976b7412d8fda2ba9ebb0717c3ab8d870768f1",
+      "native_stream_sha256": {
+        "u": "85d138a68f76670fc243d576fe684e6c3c2e8a1958899085a8cffe050287452d",
+        "v": "f5651c93e87803051407d4c2ce6a913f808787e801e76d5ea238ca7ba9cff894",
+        "ph": "6df10554647d68b6d938a9df67bc279c0970185932c6d4f832488a89c906bc62",
+        "phb": "932582a6a870d6ddadb6b15f8bf91e7fc4f6e9910d175dde9515d33a6b8321d4",
+        "z0": "3eafb2f22bb2d8ce408048708db53e36c3670df699ef470f1091a5bf151cebca",
+        "zs": "08b14ddce399109e6d9dbd3c7bde9ae79e8292b0249b5bf10a9e4f2a6cc62d85",
+        "z0f": "d96d97a9d07697211e93a3f681018c61fe439657735b1b14c231427557f69422",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "95838ec58449950dcee3fbcaf2700120894535caefd7a2cc503d0f5274e5983a",
+        "sr_x": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "sr_y": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_wind_height": "7c643fccce6596475e0d8ed5f1642b1781116be056b2c120f12f20bfd4aa05df",
+        "fire_lsm_zcoupling": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "49aed4ce036a2f087bb484225f4a7e4beab0165b324c9f464993d6ba016f3bd3",
+        "vf": "51f689828fbc1ec677ae2ce0c558247b825a180ac4fdb6849348a8d63396e375",
+        "uah": "703cccc3abf7a7bb7e49897454a99fc786dff0f39c93543b2829862c97922959",
+        "vah": "65bf51acc597d27f27fcfd74a0912220053ac88633c4e2ee6df7f8a758a84384",
+        "uah_staggered": "0d8f47e4219dde37e2d89e34c35c7a59b9a3623082d0445dc844da32e68cf6c4",
+        "vah_staggered": "d3713eed409f393962204431f2c6b343daeb3110e247a3baa24e907f6c1b4b7b"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            12,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            12,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            12,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "uah_staggered": {
+          "shape": [
+            6,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "vah_staggered": {
+          "shape": [
+            7,
+            8
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/compact_6": {
+      "sha256": "32370091c23d8577e3e9819a2cb3211906cb3e3bd9f2e597724cd70ded0532cd",
+      "native_stream_sha256": {
+        "u": "85d138a68f76670fc243d576fe684e6c3c2e8a1958899085a8cffe050287452d",
+        "v": "f5651c93e87803051407d4c2ce6a913f808787e801e76d5ea238ca7ba9cff894",
+        "ph": "6df10554647d68b6d938a9df67bc279c0970185932c6d4f832488a89c906bc62",
+        "phb": "932582a6a870d6ddadb6b15f8bf91e7fc4f6e9910d175dde9515d33a6b8321d4",
+        "z0": "3eafb2f22bb2d8ce408048708db53e36c3670df699ef470f1091a5bf151cebca",
+        "zs": "08b14ddce399109e6d9dbd3c7bde9ae79e8292b0249b5bf10a9e4f2a6cc62d85",
+        "z0f": "8fd42f21c44b869c14fddf4e0daad51004dbf35cd948d48781dffcdcbceb955e",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "b32f3f9bb83613709d84330c38ace6e1c9fad04ea084cc969d37c6a4ff20293d",
+        "sr_x": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "sr_y": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "fire_wind_height": "b72ddea6fb48319d38548cb4b29b9302feb5cbc74fdf010ad5bdeab0c25e26c2",
+        "fire_lsm_zcoupling": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "10f5ec0edc92d237afff896332dabf3d7ccd2eb84671c726713cd5d46d2371e9",
+        "vf": "f1aab6c4e5e2241c8b815d6f4b4ef6db8c6dfd6eeb220e93e62289b76a58283c",
+        "uah": "703cccc3abf7a7bb7e49897454a99fc786dff0f39c93543b2829862c97922959",
+        "vah": "65bf51acc597d27f27fcfd74a0912220053ac88633c4e2ee6df7f8a758a84384",
+        "uah_staggered": "0d8f47e4219dde37e2d89e34c35c7a59b9a3623082d0445dc844da32e68cf6c4",
+        "vah_staggered": "d3713eed409f393962204431f2c6b343daeb3110e247a3baa24e907f6c1b4b7b"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            18,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            18,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            18,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "uah_staggered": {
+          "shape": [
+            6,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "vah_staggered": {
+          "shape": [
+            7,
+            8
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/compact_7": {
+      "sha256": "c58dd7d670797979b0c7cc575f0a2e97f2436abb8dfa96045c60e67433f04159",
+      "native_stream_sha256": {
+        "u": "85d138a68f76670fc243d576fe684e6c3c2e8a1958899085a8cffe050287452d",
+        "v": "f5651c93e87803051407d4c2ce6a913f808787e801e76d5ea238ca7ba9cff894",
+        "ph": "6df10554647d68b6d938a9df67bc279c0970185932c6d4f832488a89c906bc62",
+        "phb": "939d9d89dbc6778b27549a26c9b02140d18f18b342f995d9a7a24d9e6c300055",
+        "z0": "3eafb2f22bb2d8ce408048708db53e36c3670df699ef470f1091a5bf151cebca",
+        "zs": "08b14ddce399109e6d9dbd3c7bde9ae79e8292b0249b5bf10a9e4f2a6cc62d85",
+        "z0f": "c2b40bdfed32b8415ddaf2eb306139c9137f81b1c1cc3b718ee8b1ec38ca7e07",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "c845a2590009101d14d4cc877951c33b79d91c30ce253403f261ee24a6eaf5cf",
+        "sr_x": "fb5e512425fc9449316ec95969ebe71e2d576dbab833d61e2a5b9330fd70ee02",
+        "sr_y": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "fire_wind_height": "963076d062eca2ce666ed630ff6c456f926ec66bfb3e22eb359baef5c6ab20fb",
+        "fire_lsm_zcoupling": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "248df5e961bdcca2d3d4c1d7e5803c955798f2b896b7d6e188608839ea374f47",
+        "vf": "4983ed4a44291c2d7f88b3ede34e27acc098bbb325f385aea142de278d59f05b",
+        "uah": "c7756ed2eecd1049f26e6dd5b0fe29b36e0adba7ca144d440509b3be5e83aee7",
+        "vah": "b1b49fe86d9dde4670349763e42dd251a5e940fa97f7c59f7d1ef90b070fc498",
+        "uah_staggered": "c254a4c715b2cbe7f635ebf13859b828a40bd511e6518afec759be78da4b0158",
+        "vah_staggered": "6d790cf3cb21452ed9db76c63e9291cc7eed8b2c8b3d380f7fb7446f3df5c3d0"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            24,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            24,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            24,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "uah_staggered": {
+          "shape": [
+            6,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "vah_staggered": {
+          "shape": [
+            7,
+            8
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/compact_8": {
+      "sha256": "5e6e15b331a3f2952ed08374c5ff741cebf342220369d7d0c7954fa9236ac24b",
+      "native_stream_sha256": {
+        "u": "85d138a68f76670fc243d576fe684e6c3c2e8a1958899085a8cffe050287452d",
+        "v": "f5651c93e87803051407d4c2ce6a913f808787e801e76d5ea238ca7ba9cff894",
+        "ph": "6df10554647d68b6d938a9df67bc279c0970185932c6d4f832488a89c906bc62",
+        "phb": "939d9d89dbc6778b27549a26c9b02140d18f18b342f995d9a7a24d9e6c300055",
+        "z0": "3eafb2f22bb2d8ce408048708db53e36c3670df699ef470f1091a5bf151cebca",
+        "zs": "08b14ddce399109e6d9dbd3c7bde9ae79e8292b0249b5bf10a9e4f2a6cc62d85",
+        "z0f": "9a866b53a4e27340abcf1e37bcffee4e3c7c5b7914e540e12b37dd681dd18a10",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "af2314d680fb02c51dadceaf23b13f0427425aa34dc05790bd2b55a298e9f0a3",
+        "sr_x": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "sr_y": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_wind_height": "3e7525a50088c7893a9bb02f574387b09b6731b4f0b8d9b6fc836bf20d46d9aa",
+        "fire_lsm_zcoupling": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "532f13c3b8676c7ca4b80673aa8e4f0f81c6818cdce87f0de1cd9a900bdf3d14",
+        "vf": "5ba3fc7e4308b5ac861b5df02fbe905273a20184b32c4c981135aef51a07e99e",
+        "uah": "c7756ed2eecd1049f26e6dd5b0fe29b36e0adba7ca144d440509b3be5e83aee7",
+        "vah": "b1b49fe86d9dde4670349763e42dd251a5e940fa97f7c59f7d1ef90b070fc498",
+        "uah_staggered": "c254a4c715b2cbe7f635ebf13859b828a40bd511e6518afec759be78da4b0158",
+        "vah_staggered": "6d790cf3cb21452ed9db76c63e9291cc7eed8b2c8b3d380f7fb7446f3df5c3d0"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            12,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            12,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            12,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "uah_staggered": {
+          "shape": [
+            6,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "vah_staggered": {
+          "shape": [
+            7,
+            8
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/compact_9": {
+      "sha256": "413c4af1a217e21e2c795d0559a1a0a39df2a549c6e98c5a2848372b7ae89ca9",
+      "native_stream_sha256": {
+        "u": "8472565c584af0f922d3c7c872da428b0aaefee230e8b47d42ef68a5454d8c32",
+        "v": "10155b6cd5bde2325222ad8355d6b90967d9935003a7a2bacebfd640647936cf",
+        "ph": "6df10554647d68b6d938a9df67bc279c0970185932c6d4f832488a89c906bc62",
+        "phb": "939d9d89dbc6778b27549a26c9b02140d18f18b342f995d9a7a24d9e6c300055",
+        "z0": "3eafb2f22bb2d8ce408048708db53e36c3670df699ef470f1091a5bf151cebca",
+        "zs": "08b14ddce399109e6d9dbd3c7bde9ae79e8292b0249b5bf10a9e4f2a6cc62d85",
+        "z0f": "823d5692529f8071a19d664f93b41778bc79c8870bdd5cbfac9e020301a4a698",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "89fa422560f1e61e754e96c0f3d01ffcee761b97aa844b3eccb3c74d975737be",
+        "sr_x": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "sr_y": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "fire_wind_height": "e401200e5808438991b94233b3ee6b5b06df51f6af1cb25db1a7629a7d694dc9",
+        "fire_lsm_zcoupling": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "344471013e4383ba7b98ef83a8113ce834b1c32fcdde77542332f0242ae07e2c",
+        "vf": "344471013e4383ba7b98ef83a8113ce834b1c32fcdde77542332f0242ae07e2c",
+        "uah": "5d89f056865052bcb89c910d2d62872e029fb273c3db03f8968a52a41593c1b5",
+        "vah": "5d89f056865052bcb89c910d2d62872e029fb273c3db03f8968a52a41593c1b5",
+        "uah_staggered": "e2364ccaa140041db40594bcb52e468ddd68b9a4223910c8fa867406c20abb0c",
+        "vah_staggered": "dcc754e9403101a1eed40cf0bb77c3c192a19d19091ab6ca80c4d3624280945f"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            18,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            18,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            18,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "uah_staggered": {
+          "shape": [
+            6,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "vah_staggered": {
+          "shape": [
+            7,
+            8
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/drivercompact_1": {
+      "sha256": "d377611f972569ebe9f150b4c82402aced2cd84d6c726fbc2055da2095c82d42",
+      "native_stream_sha256": {
+        "u": "85d138a68f76670fc243d576fe684e6c3c2e8a1958899085a8cffe050287452d",
+        "v": "f5651c93e87803051407d4c2ce6a913f808787e801e76d5ea238ca7ba9cff894",
+        "ph": "6df10554647d68b6d938a9df67bc279c0970185932c6d4f832488a89c906bc62",
+        "phb": "932582a6a870d6ddadb6b15f8bf91e7fc4f6e9910d175dde9515d33a6b8321d4",
+        "z0": "3eafb2f22bb2d8ce408048708db53e36c3670df699ef470f1091a5bf151cebca",
+        "zs": "08b14ddce399109e6d9dbd3c7bde9ae79e8292b0249b5bf10a9e4f2a6cc62d85",
+        "z0f": "8742abf8bc8438760b7fb5f7d782c467a4c4fb8d63e68b3094638c5b952ccda5",
+        "domain": "7a94934cffaf852bd845d2c433c2f14d7bf0828337891a5ab109838c2c011d2a",
+        "fine_domain": "a8b5a6d8e01443353705b52f19f73b43bf2e22cd2b64c5a54e60aecb476ad34b",
+        "sr_x": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "sr_y": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "fire_wind_height": "62ccfde6c0096a839dcdff2b48c4058ae411d18a1423c47d8cd546a784352582",
+        "fire_lsm_zcoupling": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "9b812cdab99b3be63bc8134d2c2c46881b0239b341155c143e4c283bf7e276a7",
+        "vf": "27fde3bc061d3132c0777e74c0c7d1080ef8e96f6a6f5f3fab1fdb0eb12715cd",
+        "uah": "35d2b02b33f99e2fc565b93123f0efd90da1da452d2b0063ac46e292bb016e2a",
+        "vah": "92310bfe09b800b85a91afa28ad0463da8733cf569cc0f9f0061ee0918c31de2",
+        "uah_staggered": "1445057150b51d4b20c0abe4cbdf0c1a8f248cc92ab2c7e988b65e88bcd055f7",
+        "vah_staggered": "07ed4ed3f11eeb0ee6816a78c75e2a90c6ab759c10c0b3d776cc6848742b3ed2"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            24,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            24,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            24,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "uah_staggered": {
+          "shape": [
+            6,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "vah_staggered": {
+          "shape": [
+            7,
+            8
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/drivercompact_2": {
+      "sha256": "0010906a94b9b26ffa65db439dbbfbb155894a87fbb8ac06d14c5134c28415b4",
+      "native_stream_sha256": {
+        "u": "85d138a68f76670fc243d576fe684e6c3c2e8a1958899085a8cffe050287452d",
+        "v": "f5651c93e87803051407d4c2ce6a913f808787e801e76d5ea238ca7ba9cff894",
+        "ph": "6df10554647d68b6d938a9df67bc279c0970185932c6d4f832488a89c906bc62",
+        "phb": "932582a6a870d6ddadb6b15f8bf91e7fc4f6e9910d175dde9515d33a6b8321d4",
+        "z0": "3eafb2f22bb2d8ce408048708db53e36c3670df699ef470f1091a5bf151cebca",
+        "zs": "08b14ddce399109e6d9dbd3c7bde9ae79e8292b0249b5bf10a9e4f2a6cc62d85",
+        "z0f": "d89c4a2f44372ef838f57de42baa10b511ec70b3295c9cffc3dbdb6d0224136d",
+        "domain": "7a94934cffaf852bd845d2c433c2f14d7bf0828337891a5ab109838c2c011d2a",
+        "fine_domain": "523602ebe798b81d26c1373df9f716a05357e9e0d99c3948a81a4cc41697640b",
+        "sr_x": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "sr_y": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_wind_height": "e1190bbb02597d4bddb969b7bb153f15ca199b7b60e7acb8618d32d32aa8a90e",
+        "fire_lsm_zcoupling": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "c923d5cbbd69b578022329936afc104f667f4ff4e28860d760b8dec83316784f",
+        "vf": "a878dafe96f0dea02f898646cb358df0ea5d349e26a1b72bb26be4db5ef3dfb5",
+        "uah": "54d80c1335f43a6dcb5b6182553429c61ffac19879ef3e0f290ac643a24dab77",
+        "vah": "640b1a5712cade6c0f71eae8e4c5082374c5a14814d333c1a8802b31f8081f41",
+        "uah_staggered": "06df55da13b1833a7ec0344e4a89dc7d3767cca682adc2582cb292bde627975d",
+        "vah_staggered": "d3dfeb2a08d617c3b471eb6ba36a545b60a6710b5de3e25e67c79d0304c65054"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            12,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            12,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            12,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "uah_staggered": {
+          "shape": [
+            6,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "vah_staggered": {
+          "shape": [
+            7,
+            8
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/drivercompact_3": {
+      "sha256": "6762d8b99b1e9b7500db8d42d5fa8d23338532b4edddff5f844037f2a7b3132f",
+      "native_stream_sha256": {
+        "u": "85d138a68f76670fc243d576fe684e6c3c2e8a1958899085a8cffe050287452d",
+        "v": "f5651c93e87803051407d4c2ce6a913f808787e801e76d5ea238ca7ba9cff894",
+        "ph": "6df10554647d68b6d938a9df67bc279c0970185932c6d4f832488a89c906bc62",
+        "phb": "932582a6a870d6ddadb6b15f8bf91e7fc4f6e9910d175dde9515d33a6b8321d4",
+        "z0": "3eafb2f22bb2d8ce408048708db53e36c3670df699ef470f1091a5bf151cebca",
+        "zs": "08b14ddce399109e6d9dbd3c7bde9ae79e8292b0249b5bf10a9e4f2a6cc62d85",
+        "z0f": "9e13166417b36bcfaa5e6f9c0a3b3087ce3d2bcced85e68af83e6c064023f0d2",
+        "domain": "7a94934cffaf852bd845d2c433c2f14d7bf0828337891a5ab109838c2c011d2a",
+        "fine_domain": "c4d568193375fcacbe33de41bea8cf095af7ea90722975b55efc1e9f3525033f",
+        "sr_x": "fb5e512425fc9449316ec95969ebe71e2d576dbab833d61e2a5b9330fd70ee02",
+        "sr_y": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "fire_wind_height": "60e19397f69ce0e6a8dea97681c2ee6eec8c18da2203f87d460a3509db4c7a26",
+        "fire_lsm_zcoupling": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "6427a8e1d7c3578e7da613d2b0b7d489e50d3e325b1cbd6a951ca8dc2a07a2a1",
+        "vf": "910b3ca7305684d2b68a20d636d07d4b125e8610c8da0e723aa19ebdbbe6e4b3",
+        "uah": "0ed8d32cf809ebb32e779898447c61629b00c256b148caf4bb5b32410b1a598d",
+        "vah": "3939aec2ec33e2c66baa9136f0edde3fb34156bdcab2cec6a2e7b0cbf9d0729a",
+        "uah_staggered": "67f811c7c13ecb6767f2c4f76368d9926bbbb3303da65f6b20a02fa2cbbd75fa",
+        "vah_staggered": "d676e46febfb61888c9d4a18f6dc4719171d50156f50610a33b25a6629b79570"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            18,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            18,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            18,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "uah_staggered": {
+          "shape": [
+            6,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "vah_staggered": {
+          "shape": [
+            7,
+            8
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/drivercompact_4": {
+      "sha256": "2e2a0b384b2c84a60b0497f5f0051d570e6a545b7ceda65f7322ce3836fde484",
+      "native_stream_sha256": {
+        "u": "85d138a68f76670fc243d576fe684e6c3c2e8a1958899085a8cffe050287452d",
+        "v": "f5651c93e87803051407d4c2ce6a913f808787e801e76d5ea238ca7ba9cff894",
+        "ph": "6df10554647d68b6d938a9df67bc279c0970185932c6d4f832488a89c906bc62",
+        "phb": "932582a6a870d6ddadb6b15f8bf91e7fc4f6e9910d175dde9515d33a6b8321d4",
+        "z0": "3eafb2f22bb2d8ce408048708db53e36c3670df699ef470f1091a5bf151cebca",
+        "zs": "08b14ddce399109e6d9dbd3c7bde9ae79e8292b0249b5bf10a9e4f2a6cc62d85",
+        "z0f": "ba1ae1c5fc5ec261377114ea9ebbecfc3d267ff7968cc5b2d52e4589aa8bc30c",
+        "domain": "7a94934cffaf852bd845d2c433c2f14d7bf0828337891a5ab109838c2c011d2a",
+        "fine_domain": "095ecb434aaa7624f9dd9ea2fb770af10b3d67c20c32d0c82005fc05aef26aa8",
+        "sr_x": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "sr_y": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "fire_wind_height": "da148fa537bf9ca878d4cb5c13ab3566a26eb29b1b3e0e4243424480c5f5fa2a",
+        "fire_lsm_zcoupling": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "37cd0a2891a5e3f95d23fec10862b4bc8a476d89236bb7feb20a16fc92bf9020",
+        "vf": "019fbb5a81f2eba537346766a8dedb0852ac7df56042b8384bbc14a937b0e82a",
+        "uah": "703cccc3abf7a7bb7e49897454a99fc786dff0f39c93543b2829862c97922959",
+        "vah": "65bf51acc597d27f27fcfd74a0912220053ac88633c4e2ee6df7f8a758a84384",
+        "uah_staggered": "dd4c3b29a1a2aae7b39ee781f178d3148d3553d0357046520899019ab9545a39",
+        "vah_staggered": "ee787ce0d9f6e29725932337661e859bb70b62f81eebdaa615fb766a283f795a"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            24,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            24,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            24,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "uah_staggered": {
+          "shape": [
+            6,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "vah_staggered": {
+          "shape": [
+            7,
+            8
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/drivercompact_5": {
+      "sha256": "fe36480de1dfe6e8150a0f95c7e60dc4f077256f14bae3d79d29c3c9fa078c9a",
+      "native_stream_sha256": {
+        "u": "85d138a68f76670fc243d576fe684e6c3c2e8a1958899085a8cffe050287452d",
+        "v": "f5651c93e87803051407d4c2ce6a913f808787e801e76d5ea238ca7ba9cff894",
+        "ph": "6df10554647d68b6d938a9df67bc279c0970185932c6d4f832488a89c906bc62",
+        "phb": "932582a6a870d6ddadb6b15f8bf91e7fc4f6e9910d175dde9515d33a6b8321d4",
+        "z0": "3eafb2f22bb2d8ce408048708db53e36c3670df699ef470f1091a5bf151cebca",
+        "zs": "08b14ddce399109e6d9dbd3c7bde9ae79e8292b0249b5bf10a9e4f2a6cc62d85",
+        "z0f": "d96d97a9d07697211e93a3f681018c61fe439657735b1b14c231427557f69422",
+        "domain": "7a94934cffaf852bd845d2c433c2f14d7bf0828337891a5ab109838c2c011d2a",
+        "fine_domain": "95838ec58449950dcee3fbcaf2700120894535caefd7a2cc503d0f5274e5983a",
+        "sr_x": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "sr_y": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_wind_height": "7c643fccce6596475e0d8ed5f1642b1781116be056b2c120f12f20bfd4aa05df",
+        "fire_lsm_zcoupling": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "600a0d9df0d9eff68f3b28ef3d6fa00e146a51f5f6a028e24d5856e79b2971c1",
+        "vf": "26c7617c0c7abefe1f332a6f03d4a875866dd6df31b51c6dd2f90598c85b47bf",
+        "uah": "703cccc3abf7a7bb7e49897454a99fc786dff0f39c93543b2829862c97922959",
+        "vah": "65bf51acc597d27f27fcfd74a0912220053ac88633c4e2ee6df7f8a758a84384",
+        "uah_staggered": "dd4c3b29a1a2aae7b39ee781f178d3148d3553d0357046520899019ab9545a39",
+        "vah_staggered": "ee787ce0d9f6e29725932337661e859bb70b62f81eebdaa615fb766a283f795a"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            12,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            12,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            12,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "uah_staggered": {
+          "shape": [
+            6,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "vah_staggered": {
+          "shape": [
+            7,
+            8
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/drivercompact_6": {
+      "sha256": "4ca1dd9c2920e91dec45cf244149cd5b8f56a6a76bc548cc82e99aba350bc5c3",
+      "native_stream_sha256": {
+        "u": "85d138a68f76670fc243d576fe684e6c3c2e8a1958899085a8cffe050287452d",
+        "v": "f5651c93e87803051407d4c2ce6a913f808787e801e76d5ea238ca7ba9cff894",
+        "ph": "6df10554647d68b6d938a9df67bc279c0970185932c6d4f832488a89c906bc62",
+        "phb": "932582a6a870d6ddadb6b15f8bf91e7fc4f6e9910d175dde9515d33a6b8321d4",
+        "z0": "3eafb2f22bb2d8ce408048708db53e36c3670df699ef470f1091a5bf151cebca",
+        "zs": "08b14ddce399109e6d9dbd3c7bde9ae79e8292b0249b5bf10a9e4f2a6cc62d85",
+        "z0f": "8fd42f21c44b869c14fddf4e0daad51004dbf35cd948d48781dffcdcbceb955e",
+        "domain": "7a94934cffaf852bd845d2c433c2f14d7bf0828337891a5ab109838c2c011d2a",
+        "fine_domain": "b32f3f9bb83613709d84330c38ace6e1c9fad04ea084cc969d37c6a4ff20293d",
+        "sr_x": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "sr_y": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "fire_wind_height": "b72ddea6fb48319d38548cb4b29b9302feb5cbc74fdf010ad5bdeab0c25e26c2",
+        "fire_lsm_zcoupling": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "0ad2a56aa4bd99900043ebe2c73c0631de53c7cd9816380b24ac5ddb824607b1",
+        "vf": "399a9fbad21d2782b5c4cf8801da45a872d0ba74b3dd02db5321bd07748d3f20",
+        "uah": "703cccc3abf7a7bb7e49897454a99fc786dff0f39c93543b2829862c97922959",
+        "vah": "65bf51acc597d27f27fcfd74a0912220053ac88633c4e2ee6df7f8a758a84384",
+        "uah_staggered": "dd4c3b29a1a2aae7b39ee781f178d3148d3553d0357046520899019ab9545a39",
+        "vah_staggered": "ee787ce0d9f6e29725932337661e859bb70b62f81eebdaa615fb766a283f795a"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            18,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            18,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            18,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "uah_staggered": {
+          "shape": [
+            6,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "vah_staggered": {
+          "shape": [
+            7,
+            8
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/drivercompact_7": {
+      "sha256": "0adbbaaf0da5747acba3ca67cff5ae88963491e07ab1078280b6607ee8abc0ef",
+      "native_stream_sha256": {
+        "u": "85d138a68f76670fc243d576fe684e6c3c2e8a1958899085a8cffe050287452d",
+        "v": "f5651c93e87803051407d4c2ce6a913f808787e801e76d5ea238ca7ba9cff894",
+        "ph": "6df10554647d68b6d938a9df67bc279c0970185932c6d4f832488a89c906bc62",
+        "phb": "939d9d89dbc6778b27549a26c9b02140d18f18b342f995d9a7a24d9e6c300055",
+        "z0": "3eafb2f22bb2d8ce408048708db53e36c3670df699ef470f1091a5bf151cebca",
+        "zs": "08b14ddce399109e6d9dbd3c7bde9ae79e8292b0249b5bf10a9e4f2a6cc62d85",
+        "z0f": "c2b40bdfed32b8415ddaf2eb306139c9137f81b1c1cc3b718ee8b1ec38ca7e07",
+        "domain": "7a94934cffaf852bd845d2c433c2f14d7bf0828337891a5ab109838c2c011d2a",
+        "fine_domain": "c845a2590009101d14d4cc877951c33b79d91c30ce253403f261ee24a6eaf5cf",
+        "sr_x": "fb5e512425fc9449316ec95969ebe71e2d576dbab833d61e2a5b9330fd70ee02",
+        "sr_y": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "fire_wind_height": "963076d062eca2ce666ed630ff6c456f926ec66bfb3e22eb359baef5c6ab20fb",
+        "fire_lsm_zcoupling": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "f28251b34859ac0a337168d8472906a6e53463922f33b2f48d58664746be1974",
+        "vf": "7a6b6ccc6ca65e21f93e456ff34da8426eb7ffc428436cde67f9389d6be2566b",
+        "uah": "c7756ed2eecd1049f26e6dd5b0fe29b36e0adba7ca144d440509b3be5e83aee7",
+        "vah": "b1b49fe86d9dde4670349763e42dd251a5e940fa97f7c59f7d1ef90b070fc498",
+        "uah_staggered": "bf81722c9facdfe3b1d21678da1615e1925e8ab767c3a7ed8eb50c556633358d",
+        "vah_staggered": "70e8a9c8211f3ee2c8815b9d9df0f7ea7efac4ae618626f4e29b649ba08c3983"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            24,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            24,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            24,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "uah_staggered": {
+          "shape": [
+            6,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "vah_staggered": {
+          "shape": [
+            7,
+            8
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/drivercompact_8": {
+      "sha256": "f69892a822edbbaf8eed0de4ca089e1e633a20f512a167232a4f8330bc7b8b7b",
+      "native_stream_sha256": {
+        "u": "85d138a68f76670fc243d576fe684e6c3c2e8a1958899085a8cffe050287452d",
+        "v": "f5651c93e87803051407d4c2ce6a913f808787e801e76d5ea238ca7ba9cff894",
+        "ph": "6df10554647d68b6d938a9df67bc279c0970185932c6d4f832488a89c906bc62",
+        "phb": "939d9d89dbc6778b27549a26c9b02140d18f18b342f995d9a7a24d9e6c300055",
+        "z0": "3eafb2f22bb2d8ce408048708db53e36c3670df699ef470f1091a5bf151cebca",
+        "zs": "08b14ddce399109e6d9dbd3c7bde9ae79e8292b0249b5bf10a9e4f2a6cc62d85",
+        "z0f": "9a866b53a4e27340abcf1e37bcffee4e3c7c5b7914e540e12b37dd681dd18a10",
+        "domain": "7a94934cffaf852bd845d2c433c2f14d7bf0828337891a5ab109838c2c011d2a",
+        "fine_domain": "af2314d680fb02c51dadceaf23b13f0427425aa34dc05790bd2b55a298e9f0a3",
+        "sr_x": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "sr_y": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_wind_height": "3e7525a50088c7893a9bb02f574387b09b6731b4f0b8d9b6fc836bf20d46d9aa",
+        "fire_lsm_zcoupling": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "a6f9fd4478a0fddd6508eb4b517a2cbee76be4f99cd7057e442e2d3113ed12e5",
+        "vf": "4f71a218f0d5351d6fa683f3c5359340d1b66ff61bbb4bd9232a60eb80ae1885",
+        "uah": "c7756ed2eecd1049f26e6dd5b0fe29b36e0adba7ca144d440509b3be5e83aee7",
+        "vah": "b1b49fe86d9dde4670349763e42dd251a5e940fa97f7c59f7d1ef90b070fc498",
+        "uah_staggered": "bf81722c9facdfe3b1d21678da1615e1925e8ab767c3a7ed8eb50c556633358d",
+        "vah_staggered": "70e8a9c8211f3ee2c8815b9d9df0f7ea7efac4ae618626f4e29b649ba08c3983"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            12,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            12,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            12,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "uah_staggered": {
+          "shape": [
+            6,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "vah_staggered": {
+          "shape": [
+            7,
+            8
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/drivercompact_9": {
+      "sha256": "060bf0ec22e433e1458461072539cefc388f4002f15216b151a80e62e114d252",
+      "native_stream_sha256": {
+        "u": "8472565c584af0f922d3c7c872da428b0aaefee230e8b47d42ef68a5454d8c32",
+        "v": "10155b6cd5bde2325222ad8355d6b90967d9935003a7a2bacebfd640647936cf",
+        "ph": "6df10554647d68b6d938a9df67bc279c0970185932c6d4f832488a89c906bc62",
+        "phb": "939d9d89dbc6778b27549a26c9b02140d18f18b342f995d9a7a24d9e6c300055",
+        "z0": "3eafb2f22bb2d8ce408048708db53e36c3670df699ef470f1091a5bf151cebca",
+        "zs": "08b14ddce399109e6d9dbd3c7bde9ae79e8292b0249b5bf10a9e4f2a6cc62d85",
+        "z0f": "823d5692529f8071a19d664f93b41778bc79c8870bdd5cbfac9e020301a4a698",
+        "domain": "7a94934cffaf852bd845d2c433c2f14d7bf0828337891a5ab109838c2c011d2a",
+        "fine_domain": "89fa422560f1e61e754e96c0f3d01ffcee761b97aa844b3eccb3c74d975737be",
+        "sr_x": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "sr_y": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "fire_wind_height": "e401200e5808438991b94233b3ee6b5b06df51f6af1cb25db1a7629a7d694dc9",
+        "fire_lsm_zcoupling": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "344471013e4383ba7b98ef83a8113ce834b1c32fcdde77542332f0242ae07e2c",
+        "vf": "344471013e4383ba7b98ef83a8113ce834b1c32fcdde77542332f0242ae07e2c",
+        "uah": "5d89f056865052bcb89c910d2d62872e029fb273c3db03f8968a52a41593c1b5",
+        "vah": "5d89f056865052bcb89c910d2d62872e029fb273c3db03f8968a52a41593c1b5",
+        "uah_staggered": "a5645e7a3fa0866cde8842c4dab96567507c3d1a3c028b816bc63f6966367b70",
+        "vah_staggered": "6eb69e26de2a26eda48af77d4cec893aa0cf4748a64cbefcfe11a22c1e680ad9"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            18,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            18,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            18,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            6,
+            8
+          ],
+          "dtype": "<f4"
+        },
+        "uah_staggered": {
+          "shape": [
+            6,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "vah_staggered": {
+          "shape": [
+            7,
+            8
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/native_1": {
+      "sha256": "31a0824540b91a14a8785c4a74ad381d479c67966f2e2de53ddb89820cf183cf",
+      "native_stream_sha256": {
+        "u": "ef10207b86d649a2f814345ad874b70492c3f740300ba24c2b9a17adb1bb3729",
+        "v": "a765a38d51aff689c726731b7a5ee2368b2ccb7e004be69bc57609fffa74d2e2",
+        "ph": "cb2fd9c5654312b3ca3d9c282574f64506dd9bfff14c86d13c4089aca37b1ad0",
+        "phb": "f1a61318659ed459deb198413b89483d1ac1879373307757f3c653e3fa037d8e",
+        "z0": "ace3495f9589f0f95543271f7c746e6b34f44179857b171b4a9a3fb5debef03c",
+        "zs": "46e725856d4dfe18ddaa67560d2bbc6ce7250ef67ede92c9697d6c85ebb6c026",
+        "z0f": "8742abf8bc8438760b7fb5f7d782c467a4c4fb8d63e68b3094638c5b952ccda5",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "a8b5a6d8e01443353705b52f19f73b43bf2e22cd2b64c5a54e60aecb476ad34b",
+        "sr_x": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "sr_y": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "fire_wind_height": "62ccfde6c0096a839dcdff2b48c4058ae411d18a1423c47d8cd546a784352582",
+        "fire_lsm_zcoupling": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "f2678cb529a6c2cdf628228d5cf5eb2aa6efa0f1573bae2c9e275791e9918d04",
+        "vf": "196db27865621f8f56fe9a3d022d7d9ccdd6c9afe9ea16a8025170acedf19fad",
+        "uah": "29d9b6d7e9ce732df152b462647d26a2b6fbfcd77043562723d32d5ca3ea602d",
+        "vah": "2adc5bce7fb2ae4334580de2c09deaba546da0c022190e2320ec0955330ff64e"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            24,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            24,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            24,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/native_10": {
+      "sha256": "4e2f1f154ffa294f763c32f319b57c59558c4e8d5ed39b2787d53c01eeaa482e",
+      "native_stream_sha256": {
+        "u": "ef10207b86d649a2f814345ad874b70492c3f740300ba24c2b9a17adb1bb3729",
+        "v": "a765a38d51aff689c726731b7a5ee2368b2ccb7e004be69bc57609fffa74d2e2",
+        "ph": "cb2fd9c5654312b3ca3d9c282574f64506dd9bfff14c86d13c4089aca37b1ad0",
+        "phb": "f1a61318659ed459deb198413b89483d1ac1879373307757f3c653e3fa037d8e",
+        "z0": "ace3495f9589f0f95543271f7c746e6b34f44179857b171b4a9a3fb5debef03c",
+        "zs": "46e725856d4dfe18ddaa67560d2bbc6ce7250ef67ede92c9697d6c85ebb6c026",
+        "z0f": "4ead6d20f57dd25db8fcf230bd56f3b8c323edbec38ad321ed58d39700622e6c",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "d48b0119f43f673cceefe755d35e482f26072762a1af619a81e823b239cb617b",
+        "sr_x": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "sr_y": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "fire_wind_height": "d2ee721779751fdae2ae59d078d51369dbce51f68fa965a17e187d30640a8a17",
+        "fire_lsm_zcoupling": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "3c66c8f62e583df0c9f029cf6b39f24769d81b394975baad80a4998b850c1506",
+        "vf": "0f60cb7ddebd9f1f1d72e4236b17aecc8ca57e1cf1cf27437b19da4febb37fbb",
+        "uah": "7978460d2e2f0ea7caa7c6ce94f6f40742368cdd527f84a7c5865e5c1c2025b6",
+        "vah": "b518440e0051e35626276b95b1c1137b96538c62ce2df505be70610536ca5e7f"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            24,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            24,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            24,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/native_11": {
+      "sha256": "209ee5fd5ebe3dbea50624c228118cda3c64b0fb21d7048067f4f87e9c532a05",
+      "native_stream_sha256": {
+        "u": "ef10207b86d649a2f814345ad874b70492c3f740300ba24c2b9a17adb1bb3729",
+        "v": "a765a38d51aff689c726731b7a5ee2368b2ccb7e004be69bc57609fffa74d2e2",
+        "ph": "cb2fd9c5654312b3ca3d9c282574f64506dd9bfff14c86d13c4089aca37b1ad0",
+        "phb": "f1a61318659ed459deb198413b89483d1ac1879373307757f3c653e3fa037d8e",
+        "z0": "ace3495f9589f0f95543271f7c746e6b34f44179857b171b4a9a3fb5debef03c",
+        "zs": "46e725856d4dfe18ddaa67560d2bbc6ce7250ef67ede92c9697d6c85ebb6c026",
+        "z0f": "48b38f70540eeb09465351f4825a8569cfc9a185e9b07c77905c64a0ba5fd20e",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "9e879e6947f46762188413f7793a2974deae5384440af81e1df10c2bc88ef8a8",
+        "sr_x": "fb5e512425fc9449316ec95969ebe71e2d576dbab833d61e2a5b9330fd70ee02",
+        "sr_y": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_wind_height": "4f4b9b7d8b86633e2824e2f439819357b0cd010ab410ea1a691b12c5f94e91e0",
+        "fire_lsm_zcoupling": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "bd0ffcc56da3c5403832cc0c839980be8da4741b450bdcd18cd19e03c7e3ac6e",
+        "vf": "3968744e626743986a22319dce3bf1501ded8145ffa906c913008c4458d4fbbd",
+        "uah": "7978460d2e2f0ea7caa7c6ce94f6f40742368cdd527f84a7c5865e5c1c2025b6",
+        "vah": "b518440e0051e35626276b95b1c1137b96538c62ce2df505be70610536ca5e7f"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            12,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            12,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            12,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/native_12": {
+      "sha256": "077235869f3e7000de2b51e17055a011bf23c146ceb0612fe02d18964dc7c024",
+      "native_stream_sha256": {
+        "u": "ef10207b86d649a2f814345ad874b70492c3f740300ba24c2b9a17adb1bb3729",
+        "v": "a765a38d51aff689c726731b7a5ee2368b2ccb7e004be69bc57609fffa74d2e2",
+        "ph": "cb2fd9c5654312b3ca3d9c282574f64506dd9bfff14c86d13c4089aca37b1ad0",
+        "phb": "f1a61318659ed459deb198413b89483d1ac1879373307757f3c653e3fa037d8e",
+        "z0": "ace3495f9589f0f95543271f7c746e6b34f44179857b171b4a9a3fb5debef03c",
+        "zs": "46e725856d4dfe18ddaa67560d2bbc6ce7250ef67ede92c9697d6c85ebb6c026",
+        "z0f": "9a3f7a332991bf847e1d181bf1b5290eeca45c4abe3a026d5f2a7ddf17808cdf",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "9fa9fbf8a45c7fdf7bffcf2365cd77b1ccb9ec5d36e2a3d33a8041af4ebccab0",
+        "sr_x": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "sr_y": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "fire_wind_height": "ba1c7fb54bdeea6fae39313e20619a29832c90008f08529e4cd7dd1d220744b4",
+        "fire_lsm_zcoupling": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "67ec8eedc312aec9a2ba1320aef9a8629325208e2ff4175865aeceafd78f8fbd",
+        "vf": "e7c06d308683f34f013ceda3dffcde0d2e6e0a4eccb758db73dcba384b783e12",
+        "uah": "7978460d2e2f0ea7caa7c6ce94f6f40742368cdd527f84a7c5865e5c1c2025b6",
+        "vah": "b518440e0051e35626276b95b1c1137b96538c62ce2df505be70610536ca5e7f"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            18,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            18,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            18,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/native_2": {
+      "sha256": "db85f0509fe82035a7d78dc5e1c267316443fc8de3cc3e3e8b0950810bc65ce1",
+      "native_stream_sha256": {
+        "u": "ef10207b86d649a2f814345ad874b70492c3f740300ba24c2b9a17adb1bb3729",
+        "v": "a765a38d51aff689c726731b7a5ee2368b2ccb7e004be69bc57609fffa74d2e2",
+        "ph": "cb2fd9c5654312b3ca3d9c282574f64506dd9bfff14c86d13c4089aca37b1ad0",
+        "phb": "f1a61318659ed459deb198413b89483d1ac1879373307757f3c653e3fa037d8e",
+        "z0": "ace3495f9589f0f95543271f7c746e6b34f44179857b171b4a9a3fb5debef03c",
+        "zs": "46e725856d4dfe18ddaa67560d2bbc6ce7250ef67ede92c9697d6c85ebb6c026",
+        "z0f": "d89c4a2f44372ef838f57de42baa10b511ec70b3295c9cffc3dbdb6d0224136d",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "523602ebe798b81d26c1373df9f716a05357e9e0d99c3948a81a4cc41697640b",
+        "sr_x": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "sr_y": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_wind_height": "183e462f90840876bf8300fbf7dc8b7e0d0a730a465c3f1a412f5cb37b484ba6",
+        "fire_lsm_zcoupling": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "68b51078ccf213655f2926844bf828d13fb0c1d401467f2c138b5288a277fe0b",
+        "vf": "68b51078ccf213655f2926844bf828d13fb0c1d401467f2c138b5288a277fe0b",
+        "uah": "7b6436b0c98f62380866d9432c2af0ee08ce16a171bda6951aecd95ee1307d61",
+        "vah": "7b6436b0c98f62380866d9432c2af0ee08ce16a171bda6951aecd95ee1307d61"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            12,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            12,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            12,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/native_3": {
+      "sha256": "d9439cc8553b658f929e95ae183be348a5e8e6259e0aae4b4aea1fa5df7ea37d",
+      "native_stream_sha256": {
+        "u": "ef10207b86d649a2f814345ad874b70492c3f740300ba24c2b9a17adb1bb3729",
+        "v": "a765a38d51aff689c726731b7a5ee2368b2ccb7e004be69bc57609fffa74d2e2",
+        "ph": "cb2fd9c5654312b3ca3d9c282574f64506dd9bfff14c86d13c4089aca37b1ad0",
+        "phb": "f1a61318659ed459deb198413b89483d1ac1879373307757f3c653e3fa037d8e",
+        "z0": "ace3495f9589f0f95543271f7c746e6b34f44179857b171b4a9a3fb5debef03c",
+        "zs": "46e725856d4dfe18ddaa67560d2bbc6ce7250ef67ede92c9697d6c85ebb6c026",
+        "z0f": "9e13166417b36bcfaa5e6f9c0a3b3087ce3d2bcced85e68af83e6c064023f0d2",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "c4d568193375fcacbe33de41bea8cf095af7ea90722975b55efc1e9f3525033f",
+        "sr_x": "fb5e512425fc9449316ec95969ebe71e2d576dbab833d61e2a5b9330fd70ee02",
+        "sr_y": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "fire_wind_height": "063c840d6e17b3298b5a9d5996650c299b526a2e093c68ae27f94150855b1ccb",
+        "fire_lsm_zcoupling": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "e1fd87d9bf0ce2d9bd085f43d023ad36fa25c96c52a6c094bd671a1b41cc6f35",
+        "vf": "0a38abbf18ea135a77e02afc0ff393d78373bf173cdff01600b487a74edf89ba",
+        "uah": "d1c86686da5a2b08f95b0700d7546ede1902b63bd30bfdcc40efa569dd472162",
+        "vah": "37698e8b4e154d8b9fc01177c937afefb87ecc7b18c0fd3b50ba467762d51a76"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            18,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            18,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            18,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/native_4": {
+      "sha256": "1103701f57237e15e059f47516fd5ee11d5b0e1e0936c229cfd5e52a233f05b3",
+      "native_stream_sha256": {
+        "u": "ef10207b86d649a2f814345ad874b70492c3f740300ba24c2b9a17adb1bb3729",
+        "v": "a765a38d51aff689c726731b7a5ee2368b2ccb7e004be69bc57609fffa74d2e2",
+        "ph": "cb2fd9c5654312b3ca3d9c282574f64506dd9bfff14c86d13c4089aca37b1ad0",
+        "phb": "f1a61318659ed459deb198413b89483d1ac1879373307757f3c653e3fa037d8e",
+        "z0": "ace3495f9589f0f95543271f7c746e6b34f44179857b171b4a9a3fb5debef03c",
+        "zs": "46e725856d4dfe18ddaa67560d2bbc6ce7250ef67ede92c9697d6c85ebb6c026",
+        "z0f": "ba1ae1c5fc5ec261377114ea9ebbecfc3d267ff7968cc5b2d52e4589aa8bc30c",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "095ecb434aaa7624f9dd9ea2fb770af10b3d67c20c32d0c82005fc05aef26aa8",
+        "sr_x": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "sr_y": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "fire_wind_height": "d2ee721779751fdae2ae59d078d51369dbce51f68fa965a17e187d30640a8a17",
+        "fire_lsm_zcoupling": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "db367c169b6a64f84ad12b4ca176065ef5861acd4076ea1109554789c025318d",
+        "vf": "d002a9704bd81675b60708a6c6b11abd0d71faa870187e05741a13f9c8ae33b2",
+        "uah": "243aa2291e65cc3c1bd8e5d9a962ab30eee76cd102e313a6c5affb0245bd23cf",
+        "vah": "7b23d18ba15026865c482692a7e5551ea6dc3fcb6abcfcfb44812a365cab4ccd"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            24,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            24,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            24,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/native_5": {
+      "sha256": "adbb096ca233509aaf76961273baad9d93d85ffd653c838d15178b90ebfa2f3c",
+      "native_stream_sha256": {
+        "u": "ef10207b86d649a2f814345ad874b70492c3f740300ba24c2b9a17adb1bb3729",
+        "v": "a765a38d51aff689c726731b7a5ee2368b2ccb7e004be69bc57609fffa74d2e2",
+        "ph": "cb2fd9c5654312b3ca3d9c282574f64506dd9bfff14c86d13c4089aca37b1ad0",
+        "phb": "f1a61318659ed459deb198413b89483d1ac1879373307757f3c653e3fa037d8e",
+        "z0": "ace3495f9589f0f95543271f7c746e6b34f44179857b171b4a9a3fb5debef03c",
+        "zs": "46e725856d4dfe18ddaa67560d2bbc6ce7250ef67ede92c9697d6c85ebb6c026",
+        "z0f": "d96d97a9d07697211e93a3f681018c61fe439657735b1b14c231427557f69422",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "95838ec58449950dcee3fbcaf2700120894535caefd7a2cc503d0f5274e5983a",
+        "sr_x": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "sr_y": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_wind_height": "4f4b9b7d8b86633e2824e2f439819357b0cd010ab410ea1a691b12c5f94e91e0",
+        "fire_lsm_zcoupling": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "8a4b57a4893710279c96399f2de092270abbfd4cd3ac949f3f73cc9248f52eb7",
+        "vf": "62e6a4a90a4ae075889df375df9c449de36e16a253982c28e763a86a4c38686b",
+        "uah": "d630664cd08ebe672e22575097f1468d151c0bb0509999b9c1bb6534d69f12e8",
+        "vah": "b6c81dc6561923242212af33ee0635cc4881d54767755450bc6ec551399976c5"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            12,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            12,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            12,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/native_6": {
+      "sha256": "19e9896d74b13f8c1108658a82305968c1ff1b396653148ce1df2e3e0fbe978d",
+      "native_stream_sha256": {
+        "u": "ef10207b86d649a2f814345ad874b70492c3f740300ba24c2b9a17adb1bb3729",
+        "v": "a765a38d51aff689c726731b7a5ee2368b2ccb7e004be69bc57609fffa74d2e2",
+        "ph": "cb2fd9c5654312b3ca3d9c282574f64506dd9bfff14c86d13c4089aca37b1ad0",
+        "phb": "f1a61318659ed459deb198413b89483d1ac1879373307757f3c653e3fa037d8e",
+        "z0": "ace3495f9589f0f95543271f7c746e6b34f44179857b171b4a9a3fb5debef03c",
+        "zs": "46e725856d4dfe18ddaa67560d2bbc6ce7250ef67ede92c9697d6c85ebb6c026",
+        "z0f": "8fd42f21c44b869c14fddf4e0daad51004dbf35cd948d48781dffcdcbceb955e",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "b32f3f9bb83613709d84330c38ace6e1c9fad04ea084cc969d37c6a4ff20293d",
+        "sr_x": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "sr_y": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "fire_wind_height": "ba1c7fb54bdeea6fae39313e20619a29832c90008f08529e4cd7dd1d220744b4",
+        "fire_lsm_zcoupling": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "2964f33c060e49698bdd0ea5191843604a1c4676d7c864b5b1421b3d2b8372e8",
+        "vf": "79d9e0d56ee9f59765cb753789dae8e05297cde906e013167dd4862b562fa4dc",
+        "uah": "3bd9c8dd1b08a25afd7e13f891c112f240831878ddd2809176570e42eb61e715",
+        "vah": "a3b82c27534e32ec64d66c55a1f248d73cbf5f3c9a01fba731b3477b6c5733a6"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            18,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            18,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            18,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/native_7": {
+      "sha256": "136e494db585fa70df750327a02ba651ccd286f47d6b132c56baac977ab5fc1b",
+      "native_stream_sha256": {
+        "u": "ef10207b86d649a2f814345ad874b70492c3f740300ba24c2b9a17adb1bb3729",
+        "v": "a765a38d51aff689c726731b7a5ee2368b2ccb7e004be69bc57609fffa74d2e2",
+        "ph": "cb2fd9c5654312b3ca3d9c282574f64506dd9bfff14c86d13c4089aca37b1ad0",
+        "phb": "f1a61318659ed459deb198413b89483d1ac1879373307757f3c653e3fa037d8e",
+        "z0": "ace3495f9589f0f95543271f7c746e6b34f44179857b171b4a9a3fb5debef03c",
+        "zs": "46e725856d4dfe18ddaa67560d2bbc6ce7250ef67ede92c9697d6c85ebb6c026",
+        "z0f": "c2b40bdfed32b8415ddaf2eb306139c9137f81b1c1cc3b718ee8b1ec38ca7e07",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "c845a2590009101d14d4cc877951c33b79d91c30ce253403f261ee24a6eaf5cf",
+        "sr_x": "fb5e512425fc9449316ec95969ebe71e2d576dbab833d61e2a5b9330fd70ee02",
+        "sr_y": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "fire_wind_height": "62ccfde6c0096a839dcdff2b48c4058ae411d18a1423c47d8cd546a784352582",
+        "fire_lsm_zcoupling": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "8eb2572e6c1a2f420e5dd2d06b132be505465e39254abfbf1cea447398711d6d",
+        "vf": "5edb3ba982b8413a7adb9ce42a45d32eaebb81c5a87cf53f0759848bb500b73d",
+        "uah": "7978460d2e2f0ea7caa7c6ce94f6f40742368cdd527f84a7c5865e5c1c2025b6",
+        "vah": "b518440e0051e35626276b95b1c1137b96538c62ce2df505be70610536ca5e7f"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            24,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            24,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            24,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/native_8": {
+      "sha256": "42fa1fa203947b04b2b09b3a1055c18bb0d32cb70a6c9a0c46f214be7bcb8f75",
+      "native_stream_sha256": {
+        "u": "ef10207b86d649a2f814345ad874b70492c3f740300ba24c2b9a17adb1bb3729",
+        "v": "a765a38d51aff689c726731b7a5ee2368b2ccb7e004be69bc57609fffa74d2e2",
+        "ph": "cb2fd9c5654312b3ca3d9c282574f64506dd9bfff14c86d13c4089aca37b1ad0",
+        "phb": "f1a61318659ed459deb198413b89483d1ac1879373307757f3c653e3fa037d8e",
+        "z0": "ace3495f9589f0f95543271f7c746e6b34f44179857b171b4a9a3fb5debef03c",
+        "zs": "46e725856d4dfe18ddaa67560d2bbc6ce7250ef67ede92c9697d6c85ebb6c026",
+        "z0f": "9a866b53a4e27340abcf1e37bcffee4e3c7c5b7914e540e12b37dd681dd18a10",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "af2314d680fb02c51dadceaf23b13f0427425aa34dc05790bd2b55a298e9f0a3",
+        "sr_x": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "sr_y": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_wind_height": "183e462f90840876bf8300fbf7dc8b7e0d0a730a465c3f1a412f5cb37b484ba6",
+        "fire_lsm_zcoupling": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "60b3341a62aec19d2705a43597319cab5131696b90ec1451a0cfbcf8fb59d284",
+        "vf": "dcafc46a4005b591688c8531a5d530a3387c30cb924c7e98870933693c34c940",
+        "uah": "7978460d2e2f0ea7caa7c6ce94f6f40742368cdd527f84a7c5865e5c1c2025b6",
+        "vah": "b518440e0051e35626276b95b1c1137b96538c62ce2df505be70610536ca5e7f"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            12,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            12,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            12,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/native_9": {
+      "sha256": "ce34db8a91e6067f2e8a7e11ede579d09f4c6ed0cb5c1d7c2f64536222cb64f4",
+      "native_stream_sha256": {
+        "u": "ef10207b86d649a2f814345ad874b70492c3f740300ba24c2b9a17adb1bb3729",
+        "v": "a765a38d51aff689c726731b7a5ee2368b2ccb7e004be69bc57609fffa74d2e2",
+        "ph": "cb2fd9c5654312b3ca3d9c282574f64506dd9bfff14c86d13c4089aca37b1ad0",
+        "phb": "f1a61318659ed459deb198413b89483d1ac1879373307757f3c653e3fa037d8e",
+        "z0": "ace3495f9589f0f95543271f7c746e6b34f44179857b171b4a9a3fb5debef03c",
+        "zs": "46e725856d4dfe18ddaa67560d2bbc6ce7250ef67ede92c9697d6c85ebb6c026",
+        "z0f": "823d5692529f8071a19d664f93b41778bc79c8870bdd5cbfac9e020301a4a698",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "89fa422560f1e61e754e96c0f3d01ffcee761b97aa844b3eccb3c74d975737be",
+        "sr_x": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "sr_y": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "fire_wind_height": "063c840d6e17b3298b5a9d5996650c299b526a2e093c68ae27f94150855b1ccb",
+        "fire_lsm_zcoupling": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "uf": "d67f22f9638bf924d5aede95a6b6c2d0df70376a001191ee9b8a1635d9a1c072",
+        "vf": "4d8890db137be7fc1a67d2ef16cb696791cd448e906499213062b4867ebef19a",
+        "uah": "7978460d2e2f0ea7caa7c6ce94f6f40742368cdd527f84a7c5865e5c1c2025b6",
+        "vah": "b518440e0051e35626276b95b1c1137b96538c62ce2df505be70610536ca5e7f"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            18,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "uf": {
+          "shape": [
+            18,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            18,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/tiled_1": {
+      "sha256": "d2474816b92b706a8f93565518715584023d18da4c34cdba03811115b9693be5",
+      "native_stream_sha256": {
+        "u": "ef10207b86d649a2f814345ad874b70492c3f740300ba24c2b9a17adb1bb3729",
+        "v": "a765a38d51aff689c726731b7a5ee2368b2ccb7e004be69bc57609fffa74d2e2",
+        "ph": "cb2fd9c5654312b3ca3d9c282574f64506dd9bfff14c86d13c4089aca37b1ad0",
+        "phb": "f1a61318659ed459deb198413b89483d1ac1879373307757f3c653e3fa037d8e",
+        "z0": "ace3495f9589f0f95543271f7c746e6b34f44179857b171b4a9a3fb5debef03c",
+        "zs": "46e725856d4dfe18ddaa67560d2bbc6ce7250ef67ede92c9697d6c85ebb6c026",
+        "z0f": "8742abf8bc8438760b7fb5f7d782c467a4c4fb8d63e68b3094638c5b952ccda5",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "a8b5a6d8e01443353705b52f19f73b43bf2e22cd2b64c5a54e60aecb476ad34b",
+        "sr_x": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "sr_y": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "fire_wind_height": "62ccfde6c0096a839dcdff2b48c4058ae411d18a1423c47d8cd546a784352582",
+        "fire_lsm_zcoupling": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "tiles": "7fbf1b95fb222f5d67a3dd5b698bd960f5ead7f912393e92c378f17c06e51c52",
+        "fine_tiles": "aa389cbc8614c6f7dc3359746df677b1d55dbcb8c1f0ca0d209a9e946992cd34",
+        "uf": "f2678cb529a6c2cdf628228d5cf5eb2aa6efa0f1573bae2c9e275791e9918d04",
+        "vf": "196db27865621f8f56fe9a3d022d7d9ccdd6c9afe9ea16a8025170acedf19fad",
+        "uah": "29d9b6d7e9ce732df152b462647d26a2b6fbfcd77043562723d32d5ca3ea602d",
+        "vah": "2adc5bce7fb2ae4334580de2c09deaba546da0c022190e2320ec0955330ff64e"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            24,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "tiles": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_tiles": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "uf": {
+          "shape": [
+            24,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            24,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/tiled_10": {
+      "sha256": "1671eb4c8f957313ea39c596acf6a6208c00fe0ad52be63474afe02a5fb439fa",
+      "native_stream_sha256": {
+        "u": "ef10207b86d649a2f814345ad874b70492c3f740300ba24c2b9a17adb1bb3729",
+        "v": "a765a38d51aff689c726731b7a5ee2368b2ccb7e004be69bc57609fffa74d2e2",
+        "ph": "cb2fd9c5654312b3ca3d9c282574f64506dd9bfff14c86d13c4089aca37b1ad0",
+        "phb": "f1a61318659ed459deb198413b89483d1ac1879373307757f3c653e3fa037d8e",
+        "z0": "ace3495f9589f0f95543271f7c746e6b34f44179857b171b4a9a3fb5debef03c",
+        "zs": "46e725856d4dfe18ddaa67560d2bbc6ce7250ef67ede92c9697d6c85ebb6c026",
+        "z0f": "4ead6d20f57dd25db8fcf230bd56f3b8c323edbec38ad321ed58d39700622e6c",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "d48b0119f43f673cceefe755d35e482f26072762a1af619a81e823b239cb617b",
+        "sr_x": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "sr_y": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "fire_wind_height": "d2ee721779751fdae2ae59d078d51369dbce51f68fa965a17e187d30640a8a17",
+        "fire_lsm_zcoupling": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "tiles": "7fbf1b95fb222f5d67a3dd5b698bd960f5ead7f912393e92c378f17c06e51c52",
+        "fine_tiles": "e6b1140a4ef274d6b25598a8f99f29a371484d439abb4198c12f988b7af78b33",
+        "uf": "3c66c8f62e583df0c9f029cf6b39f24769d81b394975baad80a4998b850c1506",
+        "vf": "0f60cb7ddebd9f1f1d72e4236b17aecc8ca57e1cf1cf27437b19da4febb37fbb",
+        "uah": "7978460d2e2f0ea7caa7c6ce94f6f40742368cdd527f84a7c5865e5c1c2025b6",
+        "vah": "b518440e0051e35626276b95b1c1137b96538c62ce2df505be70610536ca5e7f"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            24,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "tiles": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_tiles": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "uf": {
+          "shape": [
+            24,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            24,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/tiled_11": {
+      "sha256": "36329a12639bb46fb5acb081face25aa175c55ebc86b122b20c916adf7af7866",
+      "native_stream_sha256": {
+        "u": "ef10207b86d649a2f814345ad874b70492c3f740300ba24c2b9a17adb1bb3729",
+        "v": "a765a38d51aff689c726731b7a5ee2368b2ccb7e004be69bc57609fffa74d2e2",
+        "ph": "cb2fd9c5654312b3ca3d9c282574f64506dd9bfff14c86d13c4089aca37b1ad0",
+        "phb": "f1a61318659ed459deb198413b89483d1ac1879373307757f3c653e3fa037d8e",
+        "z0": "ace3495f9589f0f95543271f7c746e6b34f44179857b171b4a9a3fb5debef03c",
+        "zs": "46e725856d4dfe18ddaa67560d2bbc6ce7250ef67ede92c9697d6c85ebb6c026",
+        "z0f": "48b38f70540eeb09465351f4825a8569cfc9a185e9b07c77905c64a0ba5fd20e",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "9e879e6947f46762188413f7793a2974deae5384440af81e1df10c2bc88ef8a8",
+        "sr_x": "fb5e512425fc9449316ec95969ebe71e2d576dbab833d61e2a5b9330fd70ee02",
+        "sr_y": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_wind_height": "4f4b9b7d8b86633e2824e2f439819357b0cd010ab410ea1a691b12c5f94e91e0",
+        "fire_lsm_zcoupling": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "tiles": "7fbf1b95fb222f5d67a3dd5b698bd960f5ead7f912393e92c378f17c06e51c52",
+        "fine_tiles": "83f617124dfaf713d005aef6d0ddf16b056fbbcb1dd3a930d22fb75a5bec30b8",
+        "uf": "bd0ffcc56da3c5403832cc0c839980be8da4741b450bdcd18cd19e03c7e3ac6e",
+        "vf": "3968744e626743986a22319dce3bf1501ded8145ffa906c913008c4458d4fbbd",
+        "uah": "7978460d2e2f0ea7caa7c6ce94f6f40742368cdd527f84a7c5865e5c1c2025b6",
+        "vah": "b518440e0051e35626276b95b1c1137b96538c62ce2df505be70610536ca5e7f"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            12,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "tiles": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_tiles": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "uf": {
+          "shape": [
+            12,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            12,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/tiled_12": {
+      "sha256": "e2a380e33af732da882c466e426152e1bb544729a57c1b5928b8ca5895ffef7f",
+      "native_stream_sha256": {
+        "u": "ef10207b86d649a2f814345ad874b70492c3f740300ba24c2b9a17adb1bb3729",
+        "v": "a765a38d51aff689c726731b7a5ee2368b2ccb7e004be69bc57609fffa74d2e2",
+        "ph": "cb2fd9c5654312b3ca3d9c282574f64506dd9bfff14c86d13c4089aca37b1ad0",
+        "phb": "f1a61318659ed459deb198413b89483d1ac1879373307757f3c653e3fa037d8e",
+        "z0": "ace3495f9589f0f95543271f7c746e6b34f44179857b171b4a9a3fb5debef03c",
+        "zs": "46e725856d4dfe18ddaa67560d2bbc6ce7250ef67ede92c9697d6c85ebb6c026",
+        "z0f": "9a3f7a332991bf847e1d181bf1b5290eeca45c4abe3a026d5f2a7ddf17808cdf",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "9fa9fbf8a45c7fdf7bffcf2365cd77b1ccb9ec5d36e2a3d33a8041af4ebccab0",
+        "sr_x": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "sr_y": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "fire_wind_height": "ba1c7fb54bdeea6fae39313e20619a29832c90008f08529e4cd7dd1d220744b4",
+        "fire_lsm_zcoupling": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "tiles": "7fbf1b95fb222f5d67a3dd5b698bd960f5ead7f912393e92c378f17c06e51c52",
+        "fine_tiles": "a028784f57bfd286be36f305e17e5572e2ff637b2db76405ab99f2ec50a3ecc4",
+        "uf": "67ec8eedc312aec9a2ba1320aef9a8629325208e2ff4175865aeceafd78f8fbd",
+        "vf": "e7c06d308683f34f013ceda3dffcde0d2e6e0a4eccb758db73dcba384b783e12",
+        "uah": "7978460d2e2f0ea7caa7c6ce94f6f40742368cdd527f84a7c5865e5c1c2025b6",
+        "vah": "b518440e0051e35626276b95b1c1137b96538c62ce2df505be70610536ca5e7f"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            18,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "tiles": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_tiles": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "uf": {
+          "shape": [
+            18,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            18,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/tiled_2": {
+      "sha256": "7d05e6f3d0a75ef0198a1a892966c60b8d7df6c4a1c696a458f0ccf29cae0064",
+      "native_stream_sha256": {
+        "u": "ef10207b86d649a2f814345ad874b70492c3f740300ba24c2b9a17adb1bb3729",
+        "v": "a765a38d51aff689c726731b7a5ee2368b2ccb7e004be69bc57609fffa74d2e2",
+        "ph": "cb2fd9c5654312b3ca3d9c282574f64506dd9bfff14c86d13c4089aca37b1ad0",
+        "phb": "f1a61318659ed459deb198413b89483d1ac1879373307757f3c653e3fa037d8e",
+        "z0": "ace3495f9589f0f95543271f7c746e6b34f44179857b171b4a9a3fb5debef03c",
+        "zs": "46e725856d4dfe18ddaa67560d2bbc6ce7250ef67ede92c9697d6c85ebb6c026",
+        "z0f": "d89c4a2f44372ef838f57de42baa10b511ec70b3295c9cffc3dbdb6d0224136d",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "523602ebe798b81d26c1373df9f716a05357e9e0d99c3948a81a4cc41697640b",
+        "sr_x": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "sr_y": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_wind_height": "183e462f90840876bf8300fbf7dc8b7e0d0a730a465c3f1a412f5cb37b484ba6",
+        "fire_lsm_zcoupling": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "tiles": "7fbf1b95fb222f5d67a3dd5b698bd960f5ead7f912393e92c378f17c06e51c52",
+        "fine_tiles": "ca69ee4bfe2bd6a8fd0cc9f1728691eaa7931fa7da1e25feb6ceea2c31b48d44",
+        "uf": "68b51078ccf213655f2926844bf828d13fb0c1d401467f2c138b5288a277fe0b",
+        "vf": "68b51078ccf213655f2926844bf828d13fb0c1d401467f2c138b5288a277fe0b",
+        "uah": "7b6436b0c98f62380866d9432c2af0ee08ce16a171bda6951aecd95ee1307d61",
+        "vah": "7b6436b0c98f62380866d9432c2af0ee08ce16a171bda6951aecd95ee1307d61"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            12,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "tiles": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_tiles": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "uf": {
+          "shape": [
+            12,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            12,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/tiled_3": {
+      "sha256": "6e8069b79fff7109fbd5a64202567d76d1f32746e9147c16b3daf37a00969a1e",
+      "native_stream_sha256": {
+        "u": "ef10207b86d649a2f814345ad874b70492c3f740300ba24c2b9a17adb1bb3729",
+        "v": "a765a38d51aff689c726731b7a5ee2368b2ccb7e004be69bc57609fffa74d2e2",
+        "ph": "cb2fd9c5654312b3ca3d9c282574f64506dd9bfff14c86d13c4089aca37b1ad0",
+        "phb": "f1a61318659ed459deb198413b89483d1ac1879373307757f3c653e3fa037d8e",
+        "z0": "ace3495f9589f0f95543271f7c746e6b34f44179857b171b4a9a3fb5debef03c",
+        "zs": "46e725856d4dfe18ddaa67560d2bbc6ce7250ef67ede92c9697d6c85ebb6c026",
+        "z0f": "9e13166417b36bcfaa5e6f9c0a3b3087ce3d2bcced85e68af83e6c064023f0d2",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "c4d568193375fcacbe33de41bea8cf095af7ea90722975b55efc1e9f3525033f",
+        "sr_x": "fb5e512425fc9449316ec95969ebe71e2d576dbab833d61e2a5b9330fd70ee02",
+        "sr_y": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "fire_wind_height": "063c840d6e17b3298b5a9d5996650c299b526a2e093c68ae27f94150855b1ccb",
+        "fire_lsm_zcoupling": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "tiles": "7fbf1b95fb222f5d67a3dd5b698bd960f5ead7f912393e92c378f17c06e51c52",
+        "fine_tiles": "1acc7b8840cfc29950798751671e22a49999fd41aaea72b97612ab6fc16fac5b",
+        "uf": "e1fd87d9bf0ce2d9bd085f43d023ad36fa25c96c52a6c094bd671a1b41cc6f35",
+        "vf": "0a38abbf18ea135a77e02afc0ff393d78373bf173cdff01600b487a74edf89ba",
+        "uah": "d1c86686da5a2b08f95b0700d7546ede1902b63bd30bfdcc40efa569dd472162",
+        "vah": "37698e8b4e154d8b9fc01177c937afefb87ecc7b18c0fd3b50ba467762d51a76"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            18,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "tiles": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_tiles": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "uf": {
+          "shape": [
+            18,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            18,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/tiled_4": {
+      "sha256": "3026e0aebf1f8563d839716804c42d67aec0530b09de654d13135afeb7dc4397",
+      "native_stream_sha256": {
+        "u": "ef10207b86d649a2f814345ad874b70492c3f740300ba24c2b9a17adb1bb3729",
+        "v": "a765a38d51aff689c726731b7a5ee2368b2ccb7e004be69bc57609fffa74d2e2",
+        "ph": "cb2fd9c5654312b3ca3d9c282574f64506dd9bfff14c86d13c4089aca37b1ad0",
+        "phb": "f1a61318659ed459deb198413b89483d1ac1879373307757f3c653e3fa037d8e",
+        "z0": "ace3495f9589f0f95543271f7c746e6b34f44179857b171b4a9a3fb5debef03c",
+        "zs": "46e725856d4dfe18ddaa67560d2bbc6ce7250ef67ede92c9697d6c85ebb6c026",
+        "z0f": "ba1ae1c5fc5ec261377114ea9ebbecfc3d267ff7968cc5b2d52e4589aa8bc30c",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "095ecb434aaa7624f9dd9ea2fb770af10b3d67c20c32d0c82005fc05aef26aa8",
+        "sr_x": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "sr_y": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "fire_wind_height": "d2ee721779751fdae2ae59d078d51369dbce51f68fa965a17e187d30640a8a17",
+        "fire_lsm_zcoupling": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "tiles": "7fbf1b95fb222f5d67a3dd5b698bd960f5ead7f912393e92c378f17c06e51c52",
+        "fine_tiles": "f90d9c162d36cb578706b164d51b5ed20cd479654102c08694bf70da9e10519e",
+        "uf": "db367c169b6a64f84ad12b4ca176065ef5861acd4076ea1109554789c025318d",
+        "vf": "d002a9704bd81675b60708a6c6b11abd0d71faa870187e05741a13f9c8ae33b2",
+        "uah": "243aa2291e65cc3c1bd8e5d9a962ab30eee76cd102e313a6c5affb0245bd23cf",
+        "vah": "7b23d18ba15026865c482692a7e5551ea6dc3fcb6abcfcfb44812a365cab4ccd"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            24,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "tiles": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_tiles": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "uf": {
+          "shape": [
+            24,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            24,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/tiled_5": {
+      "sha256": "92c29814a9998603e4a514ac38d6a19b1062d1133cc058937fd647d5e3d41d24",
+      "native_stream_sha256": {
+        "u": "ef10207b86d649a2f814345ad874b70492c3f740300ba24c2b9a17adb1bb3729",
+        "v": "a765a38d51aff689c726731b7a5ee2368b2ccb7e004be69bc57609fffa74d2e2",
+        "ph": "cb2fd9c5654312b3ca3d9c282574f64506dd9bfff14c86d13c4089aca37b1ad0",
+        "phb": "f1a61318659ed459deb198413b89483d1ac1879373307757f3c653e3fa037d8e",
+        "z0": "ace3495f9589f0f95543271f7c746e6b34f44179857b171b4a9a3fb5debef03c",
+        "zs": "46e725856d4dfe18ddaa67560d2bbc6ce7250ef67ede92c9697d6c85ebb6c026",
+        "z0f": "d96d97a9d07697211e93a3f681018c61fe439657735b1b14c231427557f69422",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "95838ec58449950dcee3fbcaf2700120894535caefd7a2cc503d0f5274e5983a",
+        "sr_x": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "sr_y": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_wind_height": "4f4b9b7d8b86633e2824e2f439819357b0cd010ab410ea1a691b12c5f94e91e0",
+        "fire_lsm_zcoupling": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "tiles": "7fbf1b95fb222f5d67a3dd5b698bd960f5ead7f912393e92c378f17c06e51c52",
+        "fine_tiles": "c19d70be8e4b099ca70721761b155a02901b205461845de5b54954c10c9f30ef",
+        "uf": "8a4b57a4893710279c96399f2de092270abbfd4cd3ac949f3f73cc9248f52eb7",
+        "vf": "62e6a4a90a4ae075889df375df9c449de36e16a253982c28e763a86a4c38686b",
+        "uah": "d630664cd08ebe672e22575097f1468d151c0bb0509999b9c1bb6534d69f12e8",
+        "vah": "b6c81dc6561923242212af33ee0635cc4881d54767755450bc6ec551399976c5"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            12,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "tiles": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_tiles": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "uf": {
+          "shape": [
+            12,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            12,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/tiled_6": {
+      "sha256": "f61f579c887547159b1529fc8cb1f466249168cf6639f87c3f2ff9e20d70b6df",
+      "native_stream_sha256": {
+        "u": "ef10207b86d649a2f814345ad874b70492c3f740300ba24c2b9a17adb1bb3729",
+        "v": "a765a38d51aff689c726731b7a5ee2368b2ccb7e004be69bc57609fffa74d2e2",
+        "ph": "cb2fd9c5654312b3ca3d9c282574f64506dd9bfff14c86d13c4089aca37b1ad0",
+        "phb": "f1a61318659ed459deb198413b89483d1ac1879373307757f3c653e3fa037d8e",
+        "z0": "ace3495f9589f0f95543271f7c746e6b34f44179857b171b4a9a3fb5debef03c",
+        "zs": "46e725856d4dfe18ddaa67560d2bbc6ce7250ef67ede92c9697d6c85ebb6c026",
+        "z0f": "8fd42f21c44b869c14fddf4e0daad51004dbf35cd948d48781dffcdcbceb955e",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "b32f3f9bb83613709d84330c38ace6e1c9fad04ea084cc969d37c6a4ff20293d",
+        "sr_x": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "sr_y": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "fire_wind_height": "ba1c7fb54bdeea6fae39313e20619a29832c90008f08529e4cd7dd1d220744b4",
+        "fire_lsm_zcoupling": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "tiles": "7fbf1b95fb222f5d67a3dd5b698bd960f5ead7f912393e92c378f17c06e51c52",
+        "fine_tiles": "1d8f4b0b1c6639972aa58f02a7bdb70d4dd843e7630219492c544c60b4676e87",
+        "uf": "2964f33c060e49698bdd0ea5191843604a1c4676d7c864b5b1421b3d2b8372e8",
+        "vf": "79d9e0d56ee9f59765cb753789dae8e05297cde906e013167dd4862b562fa4dc",
+        "uah": "3bd9c8dd1b08a25afd7e13f891c112f240831878ddd2809176570e42eb61e715",
+        "vah": "a3b82c27534e32ec64d66c55a1f248d73cbf5f3c9a01fba731b3477b6c5733a6"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            18,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "tiles": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_tiles": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "uf": {
+          "shape": [
+            18,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            18,
+            30
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/tiled_7": {
+      "sha256": "8642a9b0cd75e5d6416f579e78cf36e14ae192d1f8b07ca4ef3e48c14e25ae31",
+      "native_stream_sha256": {
+        "u": "ef10207b86d649a2f814345ad874b70492c3f740300ba24c2b9a17adb1bb3729",
+        "v": "a765a38d51aff689c726731b7a5ee2368b2ccb7e004be69bc57609fffa74d2e2",
+        "ph": "cb2fd9c5654312b3ca3d9c282574f64506dd9bfff14c86d13c4089aca37b1ad0",
+        "phb": "f1a61318659ed459deb198413b89483d1ac1879373307757f3c653e3fa037d8e",
+        "z0": "ace3495f9589f0f95543271f7c746e6b34f44179857b171b4a9a3fb5debef03c",
+        "zs": "46e725856d4dfe18ddaa67560d2bbc6ce7250ef67ede92c9697d6c85ebb6c026",
+        "z0f": "c2b40bdfed32b8415ddaf2eb306139c9137f81b1c1cc3b718ee8b1ec38ca7e07",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "c845a2590009101d14d4cc877951c33b79d91c30ce253403f261ee24a6eaf5cf",
+        "sr_x": "fb5e512425fc9449316ec95969ebe71e2d576dbab833d61e2a5b9330fd70ee02",
+        "sr_y": "9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178",
+        "fire_wind_height": "62ccfde6c0096a839dcdff2b48c4058ae411d18a1423c47d8cd546a784352582",
+        "fire_lsm_zcoupling": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "tiles": "7fbf1b95fb222f5d67a3dd5b698bd960f5ead7f912393e92c378f17c06e51c52",
+        "fine_tiles": "5fff658a5ce984b82d535072c406ec4ef6c8d9a4a006a830968ccfb279f0fed4",
+        "uf": "8eb2572e6c1a2f420e5dd2d06b132be505465e39254abfbf1cea447398711d6d",
+        "vf": "5edb3ba982b8413a7adb9ce42a45d32eaebb81c5a87cf53f0759848bb500b73d",
+        "uah": "7978460d2e2f0ea7caa7c6ce94f6f40742368cdd527f84a7c5865e5c1c2025b6",
+        "vah": "b518440e0051e35626276b95b1c1137b96538c62ce2df505be70610536ca5e7f"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            24,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "tiles": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_tiles": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "uf": {
+          "shape": [
+            24,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            24,
+            38
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/tiled_8": {
+      "sha256": "e33ef4c17959805bb2c71069c2cd076f3983f798bb226507a8a3a1206f484cd1",
+      "native_stream_sha256": {
+        "u": "ef10207b86d649a2f814345ad874b70492c3f740300ba24c2b9a17adb1bb3729",
+        "v": "a765a38d51aff689c726731b7a5ee2368b2ccb7e004be69bc57609fffa74d2e2",
+        "ph": "cb2fd9c5654312b3ca3d9c282574f64506dd9bfff14c86d13c4089aca37b1ad0",
+        "phb": "f1a61318659ed459deb198413b89483d1ac1879373307757f3c653e3fa037d8e",
+        "z0": "ace3495f9589f0f95543271f7c746e6b34f44179857b171b4a9a3fb5debef03c",
+        "zs": "46e725856d4dfe18ddaa67560d2bbc6ce7250ef67ede92c9697d6c85ebb6c026",
+        "z0f": "9a866b53a4e27340abcf1e37bcffee4e3c7c5b7914e540e12b37dd681dd18a10",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "af2314d680fb02c51dadceaf23b13f0427425aa34dc05790bd2b55a298e9f0a3",
+        "sr_x": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "sr_y": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_wind_height": "183e462f90840876bf8300fbf7dc8b7e0d0a730a465c3f1a412f5cb37b484ba6",
+        "fire_lsm_zcoupling": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "tiles": "7fbf1b95fb222f5d67a3dd5b698bd960f5ead7f912393e92c378f17c06e51c52",
+        "fine_tiles": "dfd4c26eea08ebe037d3351cd57bbf59259e13caf1f44da187338918702487bd",
+        "uf": "60b3341a62aec19d2705a43597319cab5131696b90ec1451a0cfbcf8fb59d284",
+        "vf": "dcafc46a4005b591688c8531a5d530a3387c30cb924c7e98870933693c34c940",
+        "uah": "7978460d2e2f0ea7caa7c6ce94f6f40742368cdd527f84a7c5865e5c1c2025b6",
+        "vah": "b518440e0051e35626276b95b1c1137b96538c62ce2df505be70610536ca5e7f"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            12,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "tiles": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_tiles": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "uf": {
+          "shape": [
+            12,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            12,
+            14
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "wind/tiled_9": {
+      "sha256": "af620a9afb98c22fbd5839ced153509f59914d8314bce808d26abb7e0aa23558",
+      "native_stream_sha256": {
+        "u": "ef10207b86d649a2f814345ad874b70492c3f740300ba24c2b9a17adb1bb3729",
+        "v": "a765a38d51aff689c726731b7a5ee2368b2ccb7e004be69bc57609fffa74d2e2",
+        "ph": "cb2fd9c5654312b3ca3d9c282574f64506dd9bfff14c86d13c4089aca37b1ad0",
+        "phb": "f1a61318659ed459deb198413b89483d1ac1879373307757f3c653e3fa037d8e",
+        "z0": "ace3495f9589f0f95543271f7c746e6b34f44179857b171b4a9a3fb5debef03c",
+        "zs": "46e725856d4dfe18ddaa67560d2bbc6ce7250ef67ede92c9697d6c85ebb6c026",
+        "z0f": "823d5692529f8071a19d664f93b41778bc79c8870bdd5cbfac9e020301a4a698",
+        "domain": "f143049ccb190c3d81e853c204e31a271afa5ee2c6063bf7dc50b89e661a1cea",
+        "fine_domain": "89fa422560f1e61e754e96c0f3d01ffcee761b97aa844b3eccb3c74d975737be",
+        "sr_x": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "sr_y": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "fire_wind_height": "063c840d6e17b3298b5a9d5996650c299b526a2e093c68ae27f94150855b1ccb",
+        "fire_lsm_zcoupling": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "fire_lsm_zcoupling_ref": "0c05e73c2748cbfd2e38c0afaf9cb594f78e14fefa3c24190ebc121d45dbee4f",
+        "tiles": "7fbf1b95fb222f5d67a3dd5b698bd960f5ead7f912393e92c378f17c06e51c52",
+        "fine_tiles": "77706c7aa715270747b8202d11657cd576efe2f61cf9c857f53c689da8108bb3",
+        "uf": "d67f22f9638bf924d5aede95a6b6c2d0df70376a001191ee9b8a1635d9a1c072",
+        "vf": "4d8890db137be7fc1a67d2ef16cb696791cd448e906499213062b4867ebef19a",
+        "uah": "7978460d2e2f0ea7caa7c6ce94f6f40742368cdd527f84a7c5865e5c1c2025b6",
+        "vah": "b518440e0051e35626276b95b1c1137b96538c62ce2df505be70610536ca5e7f"
+      },
+      "arrays": {
+        "u": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "v": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "ph": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "phb": {
+          "shape": [
+            7,
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "zs": {
+          "shape": [
+            11,
+            13
+          ],
+          "dtype": "<f4"
+        },
+        "z0f": {
+          "shape": [
+            18,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_domain": {
+          "shape": [
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "sr_x": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "sr_y": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_wind_height": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "fire_lsm_zcoupling": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fire_lsm_zcoupling_ref": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "tiles": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "fine_tiles": {
+          "shape": [
+            4,
+            4
+          ],
+          "dtype": "<i4"
+        },
+        "uf": {
+          "shape": [
+            18,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "vf": {
+          "shape": [
+            18,
+            22
+          ],
+          "dtype": "<f4"
+        },
+        "uah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        },
+        "vah": {
+          "shape": [
+            8,
+            10
+          ],
+          "dtype": "<f4"
+        }
+      }
+    }
+  }
+}

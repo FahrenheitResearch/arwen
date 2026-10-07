@@ -178,6 +178,7 @@ __device__ __forceinline__ void thompson_aa_cloud_sediment_impl(
     float* __restrict__ out_number_velocity,
     float* __restrict__ out_cloud_mass,
     float* __restrict__ out_cloud_number,
+    float* __restrict__ qcten,
     float dt, int nz, int ny, int nx)
 {
     const int column = blockIdx.x * blockDim.x + threadIdx.x;
@@ -194,7 +195,10 @@ __device__ __forceinline__ void thompson_aa_cloud_sediment_impl(
         && dt >= 0.0f && dt <= 100000.0f;
     for (int k = 0; empty && k < nz; ++k) {
         const size_t idx = IDX3(k, j, i);
-        empty = qc[idx] >= -1.0f && qc[idx] <= THOMPSON_AA_R1
+        const float qc_working = qcten != nullptr
+            ? thompson_aa_add(qc[idx], thompson_aa_mul(qcten[idx], dt))
+            : qc[idx];
+        empty = qc_working >= -1.0f && qc_working <= THOMPSON_AA_R1
             && isfinite(cloud_number_entry[idx])
             && isfinite(cloud_number_tendency[idx])
             && reference_density[idx] >= 0.00001f
@@ -209,9 +213,13 @@ __device__ __forceinline__ void thompson_aa_cloud_sediment_impl(
         const size_t bottom = IDX3(0, j, i);
         cloud_number_tendency[bottom] = thompson_aa_add(
             cloud_number_tendency[bottom], 0.0f);
-        for (int k = 0; k < nz; ++k) {
-            const size_t idx = IDX3(k, j, i);
-            qc[idx] = thompson_aa_add(qc[idx], thompson_aa_mul(0.0f, dt));
+        // With the accumulator the zero divergence is added to qcten, and
+        // qcten + 0 is qcten: nothing to write.
+        if (qcten == nullptr) {
+            for (int k = 0; k < nz; ++k) {
+                const size_t idx = IDX3(k, j, i);
+                qc[idx] = thompson_aa_add(qc[idx], thompson_aa_mul(0.0f, dt));
+            }
         }
         return;
     }
@@ -238,12 +246,19 @@ __device__ __forceinline__ void thompson_aa_cloud_sediment_impl(
         const float qvk = fmaxf(1.0e-10f, qv[idx]);
         density[k] = 0.622f * pressure[idx]
             / (287.04f * temperature[idx] * (qvk + 0.622f));
+        // With the accumulator, qc is qc1d and the tendency starts from
+        // WRF's running qcten, so :3832 adds the fallout to it and :3975
+        // applies the sum once.  Without it, qc already carries the earlier
+        // tendencies and only the fallout's is accumulated here.
         qc_initial[k] = qc[idx];
-        qc_tendency[k] = 0.0f;
+        qc_tendency[k] = qcten != nullptr ? qcten[idx] : 0.0f;
+        const float qc_working = qcten != nullptr
+            ? thompson_aa_add(qc[idx], thompson_aa_mul(qcten[idx], dt))
+            : qc[idx];
         const float held = reference_density[idx];
         // :3215-3216 / :3484 rc(k) = MAX(R1, (qc1d(k) + qcten(k)*DT)*rho(k))
-        cloud_mass[k] = qc[idx] > THOMPSON_AA_R1
-            ? qc[idx] * held : THOMPSON_AA_R1;
+        cloud_mass[k] = qc_working > THOMPSON_AA_R1
+            ? qc_working * held : THOMPSON_AA_R1;
         // :3217 / :3486 nc(k) = MAX(2., MIN((nc1d(k)+ncten(k)*DT)*rho(k),
         //                                   Nt_c_max))
         //
@@ -389,8 +404,12 @@ __device__ __forceinline__ void thompson_aa_cloud_sediment_impl(
         // out of both: cloud that WRF keeps at 1.6e-12 to 2.0e-12 kg/kg,
         // with its droplets, came back as zero on saved real-data columns
         // (tools/thompson_real_column_parity).
-        qc[idx] = thompson_aa_add(
-            qc_initial[k], thompson_aa_mul(qc_tendency[k], dt));
+        if (qcten != nullptr) {
+            qcten[idx] = qc_tendency[k];
+        } else {
+            qc[idx] = thompson_aa_add(
+                qc_initial[k], thompson_aa_mul(qc_tendency[k], dt));
+        }
         if (out_cloud_number != nullptr) out_cloud_number[idx] = cloud_number[k];
     }
 }
@@ -412,7 +431,7 @@ __device__ __forceinline__ void thompson_aa_cloud_sediment_impl(
     qc, cloud_number_entry, cloud_number_tendency, temperature, pressure, \
     qv, reference_density, (const float*)0, (const float*)0,              \
     vertical_velocity, dz, (float*)0, (float*)0, (float*)0, (float*)0,    \
-    dt, nz, ny, nx
+    (float*)0, dt, nz, ny, nx
 
 extern "C" __global__ void thompson_aa_cloud_sediment_64(
     THOMPSON_AA_CLOUD_SEDIMENT_PARAMETERS)
@@ -446,7 +465,7 @@ extern "C" __global__ void thompson_aa_cloud_sediment_256(
     qc, cloud_number_entry, cloud_number_tendency, temperature, pressure, \
     qv, reference_density, rain_active_columns, (const float*)0,          \
     vertical_velocity, dz, (float*)0, (float*)0, (float*)0, (float*)0,    \
-    dt, nz, ny, nx
+    (float*)0, dt, nz, ny, nx
 
 extern "C" __global__ void thompson_aa_cloud_sediment_64_with_rain(
     THOMPSON_AA_CLOUD_SEDIMENT_RAIN_PARAMETERS)
@@ -463,6 +482,8 @@ extern "C" __global__ void thompson_aa_cloud_sediment_256_with_rain(
 }
 
 
+// The production entry points.  qcten is WRF's cloud-water accumulator
+// (null: qc is read-modify-written in place, as the unit gates drive it).
 #define THOMPSON_AA_CLOUD_SEDIMENT_MASKS_PARAMETERS                       \
     float* __restrict__ qc,                                               \
     const float* __restrict__ cloud_number_entry,                         \
@@ -475,13 +496,14 @@ extern "C" __global__ void thompson_aa_cloud_sediment_256_with_rain(
     const float* __restrict__ cloud_active_columns,                       \
     const float* __restrict__ vertical_velocity,                          \
     const float* __restrict__ dz,                                         \
+    float* __restrict__ qcten,                                            \
     float dt, int nz, int ny, int nx
 
 #define THOMPSON_AA_CLOUD_SEDIMENT_MASKS_ARGUMENTS                        \
     qc, cloud_number_entry, cloud_number_tendency, temperature, pressure, \
     qv, reference_density, rain_active_columns, cloud_active_columns,     \
     vertical_velocity, dz, (float*)0, (float*)0, (float*)0, (float*)0,    \
-    dt, nz, ny, nx
+    qcten, dt, nz, ny, nx
 
 extern "C" __global__ void thompson_aa_cloud_sediment_64_with_masks(
     THOMPSON_AA_CLOUD_SEDIMENT_MASKS_PARAMETERS)
@@ -524,7 +546,7 @@ extern "C" __global__ void thompson_aa_cloud_sediment_256_with_masks(
     qc, cloud_number_entry, cloud_number_tendency, temperature, pressure, \
     qv, reference_density, rain_active_columns, cloud_active_columns,     \
     vertical_velocity, dz, out_mass_velocity, out_number_velocity,        \
-    out_cloud_mass, out_cloud_number, dt, nz, ny, nx
+    out_cloud_mass, out_cloud_number, (float*)0, dt, nz, ny, nx
 
 extern "C" __global__ void thompson_aa_cloud_sediment_64_diagnostic(
     THOMPSON_AA_CLOUD_SEDIMENT_DIAG_PARAMETERS)
@@ -613,10 +635,18 @@ extern "C" __global__ void thompson_aa_final_phase_cleanup(
     float* __restrict__ cloud_number_tendency,
     const float* __restrict__ pressure,
     const float* __restrict__ qv,
+    float* __restrict__ qcten,
+    // WRF's qiten / niten (both given with qcten on the v4.6.1 accumulator
+    // path): qi and ni are then the read-only qi1d / ni1d, the melt and the
+    // freeze write :3949-3964's tendencies, and the ice size bound waits for
+    // the terminal apply, AFTER the freeze, where WRF has it.
+    float* __restrict__ qiten,
+    float* __restrict__ niten,
     float dt, int size)
 {
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= size) return;
+    const bool accumulate_ice = niten != nullptr;
 
     const float temp0 = temperature[idx];
     const float qv0 = fmaxf(1.0e-10f, qv[idx]);
@@ -625,19 +655,40 @@ extern "C" __global__ void thompson_aa_final_phase_cleanup(
     const float inverse_cp = 1.0f / (1004.0f * (1.0f + 0.887f * qv0));
     const float odt = 1.0f / dt;
 
-    if (temp0 > 273.15f && qi[idx] > 0.0f) {
-        const float transferred = fmaxf(0.0f, qi[idx]);
-        qc[idx] += transferred;
+    // :3946, `xri = MAX(0.0, qi1d(k) + qiten(k)*DT)`.
+    const float qi_working = accumulate_ice
+        ? thompson_aa_add(qi[idx], thompson_aa_mul(qiten[idx], dt)) : qi[idx];
+    if (temp0 > 273.15f && qi_working > 0.0f) {
+        const float transferred = fmaxf(0.0f, qi_working);
+        if (qcten != nullptr) {
+            // :3949, `qcten(k) = qcten(k) + xri*odt`.
+            qcten[idx] = thompson_aa_add(qcten[idx],
+                                         thompson_aa_mul(transferred, odt));
+        } else {
+            qc[idx] += transferred;
+        }
         cloud_number_tendency[idx] = thompson_aa_add(
             cloud_number_tendency[idx],
             thompson_aa_mul(ice_number_entry[idx], odt));
-        qi[idx] = 0.0f;
-        ni[idx] = 0.0f;
+        if (accumulate_ice) {
+            // :3951-3952.  niten is ASSIGNED, so the terminal ni1d is
+            // exactly ni1d - ni1d*odt*DT's rounding of zero.
+            qiten[idx] = thompson_aa_sub(qiten[idx],
+                                         thompson_aa_mul(transferred, odt));
+            niten[idx] = thompson_aa_mul(-ice_number_entry[idx], odt);
+        } else {
+            qi[idx] = 0.0f;
+            ni[idx] = 0.0f;
+        }
         temperature[idx] -= 334000.0f * inverse_cp * transferred;
     }
 
-    if (temp0 < 235.16f && qc[idx] > 0.0f) {
-        const float transferred = fmaxf(0.0f, qc[idx]);
+    // :3955, `xrc = MAX(0.0, qc1d(k) + qcten(k)*DT)`, read after the melt.
+    const float qc_working = qcten != nullptr
+        ? thompson_aa_add(qc[idx], thompson_aa_mul(qcten[idx], dt))
+        : qc[idx];
+    if (temp0 < 235.16f && qc_working > 0.0f) {
+        const float transferred = fmaxf(0.0f, qc_working);
         // lfus2 = lsub - lvap(k); lvap(k) = lvap0 + (2106.0 - 4218.0)*tempc.
         const float latent_vapor = 2.5e6f
             + (2106.0f - 4218.0f) * (temp0 - 273.15f);
@@ -645,9 +696,23 @@ extern "C" __global__ void thompson_aa_final_phase_cleanup(
         const float xnc = thompson_aa_add(
             cloud_number_entry[idx],
             thompson_aa_mul(cloud_number_tendency[idx], dt));
-        qc[idx] = 0.0f;
-        qi[idx] += transferred;
-        ni[idx] += xnc;
+        if (qcten != nullptr) {
+            // :3962, `qcten(k) = qcten(k) - xrc*odt`.
+            qcten[idx] = thompson_aa_sub(qcten[idx],
+                                         thompson_aa_mul(transferred, odt));
+        } else {
+            qc[idx] = 0.0f;
+        }
+        if (accumulate_ice) {
+            // :3959-3960.
+            qiten[idx] = thompson_aa_add(qiten[idx],
+                                         thompson_aa_mul(transferred, odt));
+            niten[idx] = thompson_aa_add(niten[idx],
+                                         thompson_aa_mul(xnc, odt));
+        } else {
+            qi[idx] += transferred;
+            ni[idx] += xnc;
+        }
         cloud_number_tendency[idx] = thompson_aa_sub(
             cloud_number_tendency[idx], thompson_aa_mul(xnc, odt));
         temperature[idx] += latent_fusion * inverse_cp * transferred;
@@ -657,7 +722,10 @@ extern "C" __global__ void thompson_aa_final_phase_cleanup(
     // idempotent, so WP-04's terminal state kernel may repeat them.  Droplet
     // number is deliberately absent: nc is entry state and is only ever
     // written by that terminal kernel.
-    if (qc[idx] <= THOMPSON_AA_R1) qc[idx] = 0.0f;
+    // With the accumulator, qc is still qc1d here; the terminal apply forms
+    // qc1d + qcten*DT and zeroes it at or below R1 (:3975, :4007-4009).
+    if (qcten == nullptr && qc[idx] <= THOMPSON_AA_R1) qc[idx] = 0.0f;
+    if (accumulate_ice) return;
     if (qi[idx] <= THOMPSON_AA_R1) {
         qi[idx] = 0.0f;
         ni[idx] = 0.0f;
@@ -725,6 +793,7 @@ extern "C" __global__ void thompson_aa_cloud_sediment_levels_64_with_masks(
     const float* __restrict__ cloud_active_columns,
     const float* __restrict__ vertical_velocity,
     const float* __restrict__ dz,
+    float* __restrict__ qcten,
     float dt, int nz, int ny, int nx)
 {
     const int c = threadIdx.x;
@@ -747,11 +816,15 @@ extern "C" __global__ void thompson_aa_cloud_sediment_levels_64_with_masks(
         const float qvk = fmaxf(1.0e-10f, qv[idx]);
         density = 0.622f * pressure[idx]
             / (287.04f * temperature[idx] * (qvk + 0.622f));
+        // The column kernel's accumulator contract, level by level.
         qc_initial = qc[idx];
-        qc_tendency = 0.0f;
+        qc_tendency = qcten != nullptr ? qcten[idx] : 0.0f;
+        const float qc_working = qcten != nullptr
+            ? thompson_aa_add(qc[idx], thompson_aa_mul(qcten[idx], dt))
+            : qc[idx];
         const float held = reference_density[idx];
-        cloud_mass = qc[idx] > THOMPSON_AA_R1
-            ? qc[idx] * held : THOMPSON_AA_R1;
+        cloud_mass = qc_working > THOMPSON_AA_R1
+            ? qc_working * held : THOMPSON_AA_R1;
         cloud_number = thompson_aa_clamp_nc(
             thompson_aa_mul(
                 thompson_aa_add(
@@ -842,10 +915,474 @@ extern "C" __global__ void thompson_aa_cloud_sediment_levels_64_with_masks(
     }
     if (live && k < nz) {
         const size_t idx = IDX3(k, j, i);
-        qc[idx] = thompson_aa_add(qc_initial, thompson_aa_mul(qc_tendency, dt));
+        if (qcten != nullptr) {
+            qcten[idx] = qc_tendency;
+        } else {
+            qc[idx] = thompson_aa_add(qc_initial, thompson_aa_mul(qc_tendency, dt));
+        }
     }
 }
 #endif  // __CUDACC_RTC__
+
+
+// ---------------------------------------------------------------------------
+// RAIN AND ICE FALLOUT IN WRF'S TENDENCY FORM (the v4.6.1 accumulator path).
+// ---------------------------------------------------------------------------
+//
+// mp=28's own copies of the rain (:3611-3640, :3790-3812) and ice (:3664-
+// 3698, :3838-3870) fallout, for the adapter's accumulator path: qr/nr/qi/ni
+// arrive as WRF's read-only qr1d/nr1d/qi1d/ni1d, the working pair is formed
+// exactly where WRF forms it, the fallout is ADDED to qrten/nrten/qiten/
+// niten, and nothing is applied here.  The terminal apply and its size
+// bounds (:4023-4053) run once, after the phase cleanup, in
+// thompson_aa_terminal_rain_ice (thompson_aerosol_state.cu) -- the classic
+// kernels fold them into the fallout, which put the ice size bound before
+// the :3956 freeze where WRF puts it after.
+//
+// The classic kernels in thompson.cu are mp=8's, byte-frozen
+// (tests/test_mp8_frozen.py), and keep their in-place form; that is why these
+// live here.  The physics is theirs statement for statement.  The arithmetic
+// is WRF's: every REAL product, quotient and sum is pinned against nvrtc's
+// contraction (gfortran -O2 baseline x86-64 has no FMA), the REAL**REAL
+// slopes are the correctly rounded powf glibc gives gfortran, and the
+// substep factors associate as WRF writes them, odzq*DT*onstep and
+// odzq*onstep*orho, where the classic kernels fold DT*onstep first.
+//
+// The working pair, rain (:3236-3255, :3568-3570).  reference_density is the
+// rain evaporation's level-wise export: ZERO where :3236's L_qr failed (rr =
+// R1, nr = R2), NEGATIVE where :3568-3570 rebuilt the pair from the :3490
+// density -- MAX(R1, (qr1d + DT*qrten)*rho) and the same for nr -- and
+// otherwise the :3193 TAU+1 density the :3237-3250 pair was formed on,
+// including the mean-volume-diameter clamp that rebuilds nr (the tendencies
+// are unchanged at a level the evaporation gate skipped, so re-forming that
+// pair here gives the value WRF formed then).
+
+__device__ __forceinline__ float thompson_aa_tau1_rain_number(float rr,
+                                                             float nr_m3)
+{
+    // :3239-3250, the clamp the rain evaporation's own copy also applies.
+    float nr_work = fmaxf(THOMPSON_AA_R2, nr_m3);
+    const double lamr = (double)thompson_aa_powf_cr(
+        thompson_aa_div(thompson_aa_mul(thompson_aa_mul(
+            thompson_aa_mul(THOMPSON_AA_AM_R, 6.0f), 1.0f), nr_work), rr),
+        THOMPSON_AA_OBMR);
+    const float mvd_num = thompson_aa_add(thompson_aa_add(3.0f, 0.0f), 0.672f);
+    float mvd_r = (float)((double)mvd_num / lamr);
+    const float d0r_low = thompson_aa_mul(THOMPSON_AA_D0R, 0.75f);
+    const bool high = mvd_r > 2.5e-3f;
+    const bool low = mvd_r < d0r_low;
+    if (high || low) {
+        mvd_r = high ? 2.5e-3f : d0r_low;
+        const double lamr_bounded = (double)thompson_aa_div(mvd_num, mvd_r);
+        nr_work = (float)(
+            (double)thompson_aa_mul(thompson_aa_mul(1.0f, 1.0f / 6.0f), rr)
+            * pow(lamr_bounded, 3.0) / (double)THOMPSON_AA_AM_R);
+    }
+    return nr_work;
+}
+
+template <int KMAX>
+__device__ __forceinline__ void thompson_aa_rain_sediment_accumulate_impl(
+    const float* __restrict__ qr1d,
+    const float* __restrict__ nr1d,
+    float* __restrict__ qrten,
+    float* __restrict__ nrten,
+    const float* __restrict__ temperature,
+    const float* __restrict__ pressure,
+    const float* __restrict__ qv,
+    const float* __restrict__ reference_density,
+    const float* __restrict__ dz,
+    float* __restrict__ rainnc,
+    float* __restrict__ rainncv,
+    int accumulate_surface, float dt, int nz, int ny, int nx)
+{
+    const int column = blockIdx.x * blockDim.x + threadIdx.x;
+    if (column >= ny * nx) return;
+    const int j = column / nx;
+    const int i = column - j * nx;
+
+    float density[KMAX];
+    float rain_mass[KMAX];
+    float rain_number[KMAX];
+    float mass_velocity[KMAX];
+    float number_velocity[KMAX];
+    float mass_flux[KMAX];
+    float number_flux[KMAX];
+    float mass_tendency[KMAX];
+    float number_tendency[KMAX];
+
+    const float rho_not = 101325.0f / (287.05f * 298.0f);
+    bool any_rain = false;
+    int sediment_top = 0;
+    int nstep = 0;
+    float velocity_above_mass = 0.0f;
+    float velocity_above_number = 0.0f;
+
+    for (int k = nz - 1; k >= 0; --k) {
+        const size_t idx = IDX3(k, j, i);
+        const float qvk = fmaxf(1.0e-10f, qv[idx]);
+        const float rho = 0.622f * pressure[idx]
+            / (287.04f * temperature[idx] * (qvk + 0.622f));
+        density[k] = rho;
+        mass_tendency[k] = qrten[idx];
+        number_tendency[k] = nrten[idx];
+        const float carried = reference_density[idx];
+        const float mass_working = thompson_aa_add(
+            qr1d[idx], thompson_aa_mul(qrten[idx], dt));
+        const float number_working = thompson_aa_add(
+            nr1d[idx], thompson_aa_mul(nrten[idx], dt));
+        float rr, nn;
+        if (carried == 0.0f) {
+            rr = THOMPSON_AA_R1;
+            nn = THOMPSON_AA_R2;
+        } else if (carried < 0.0f) {
+            // :3568 and :3570.
+            rr = fmaxf(THOMPSON_AA_R1, thompson_aa_mul(mass_working, -carried));
+            nn = fmaxf(THOMPSON_AA_R2,
+                       thompson_aa_mul(number_working, -carried));
+            any_rain = true;
+        } else {
+            // :3237-3250.
+            rr = thompson_aa_mul(mass_working, carried);
+            nn = thompson_aa_tau1_rain_number(
+                rr, thompson_aa_mul(number_working, carried));
+            any_rain = true;
+        }
+        rain_mass[k] = rr;
+        rain_number[k] = nn;
+        // :3612-3632.
+        const float rhof = sqrtf(rho_not / rho);
+        if (rr > THOMPSON_AA_R1) {
+            const double lamr = (double)thompson_aa_powf_cr(
+                thompson_aa_div(thompson_aa_mul(thompson_aa_mul(
+                    thompson_aa_mul(THOMPSON_AA_AM_R, 6.0f), 1.0f), nn), rr),
+                THOMPSON_AA_OBMR);
+            // rhof*av_r*crg(6)*org3, crg(6) = 24, then the DOUBLE powers.
+            mass_velocity[k] = (float)((double)thompson_aa_mul(
+                thompson_aa_mul(thompson_aa_mul(rhof, 4854.0f), 24.0f),
+                1.0f / 6.0f)
+                * pow(lamr, 4.0) * pow(lamr + 195.0, -5.0));
+            // rhof*av_r*crg(7)/crg(12).
+            number_velocity[k] = (float)((double)thompson_aa_div(
+                thompson_aa_mul(thompson_aa_mul(rhof, 4854.0f), 3.3233511f),
+                1.3293403f)
+                * pow(lamr, 2.5) * pow(lamr + 195.0, -3.5));
+        } else {
+            mass_velocity[k] = velocity_above_mass;
+            number_velocity[k] = velocity_above_number;
+        }
+        velocity_above_mass = mass_velocity[k];
+        velocity_above_number = number_velocity[k];
+        // :3634-3638.
+        const float vmax = fmaxf(mass_velocity[k], number_velocity[k]);
+        if (vmax > 1.0e-3f) {
+            sediment_top = max(sediment_top, k);
+            const float delta_tp = thompson_aa_div(dz[idx], vmax);
+            nstep = max(nstep, (int)thompson_aa_add(
+                thompson_aa_div(dt, delta_tp), 1.0f));
+        }
+    }
+
+    float exported = 0.0f;
+    if (any_rain) {
+        // :3640-3641 and :3790.
+        if (sediment_top == nz - 1) sediment_top = nz - 2;
+        const float onstep = nstep > 0
+            ? thompson_aa_div(1.0f, (float)nstep) : 1.0f;
+        const int steps = (int)rintf(thompson_aa_div(1.0f, onstep));
+        for (int step = 0; step < steps; ++step) {
+            for (int k = nz - 1; k >= 0; --k) {
+                mass_flux[k] = thompson_aa_mul(mass_velocity[k], rain_mass[k]);
+                number_flux[k] = thompson_aa_mul(number_velocity[k],
+                                                 rain_number[k]);
+            }
+            int k = nz - 1;
+            size_t idx = IDX3(k, j, i);
+            float odzq = thompson_aa_div(1.0f, dz[idx]);
+            float orho = thompson_aa_div(1.0f, density[k]);
+            mass_tendency[k] = thompson_aa_sub(mass_tendency[k],
+                thompson_aa_mul(thompson_aa_mul(thompson_aa_mul(
+                    mass_flux[k], odzq), onstep), orho));
+            number_tendency[k] = thompson_aa_sub(number_tendency[k],
+                thompson_aa_mul(thompson_aa_mul(thompson_aa_mul(
+                    number_flux[k], odzq), onstep), orho));
+            rain_mass[k] = fmaxf(THOMPSON_AA_R1, thompson_aa_sub(rain_mass[k],
+                thompson_aa_mul(thompson_aa_mul(thompson_aa_mul(
+                    mass_flux[k], odzq), dt), onstep)));
+            rain_number[k] = fmaxf(THOMPSON_AA_R2, thompson_aa_sub(
+                rain_number[k], thompson_aa_mul(thompson_aa_mul(
+                    thompson_aa_mul(number_flux[k], odzq), dt), onstep)));
+            for (k = sediment_top; k >= 0; --k) {
+                idx = IDX3(k, j, i);
+                odzq = thompson_aa_div(1.0f, dz[idx]);
+                orho = thompson_aa_div(1.0f, density[k]);
+                const float mass_divergence =
+                    thompson_aa_sub(mass_flux[k + 1], mass_flux[k]);
+                const float number_divergence =
+                    thompson_aa_sub(number_flux[k + 1], number_flux[k]);
+                mass_tendency[k] = thompson_aa_add(mass_tendency[k],
+                    thompson_aa_mul(thompson_aa_mul(thompson_aa_mul(
+                        mass_divergence, odzq), onstep), orho));
+                number_tendency[k] = thompson_aa_add(number_tendency[k],
+                    thompson_aa_mul(thompson_aa_mul(thompson_aa_mul(
+                        number_divergence, odzq), onstep), orho));
+                rain_mass[k] = fmaxf(THOMPSON_AA_R1, thompson_aa_add(
+                    rain_mass[k], thompson_aa_mul(thompson_aa_mul(
+                        thompson_aa_mul(mass_divergence, odzq), dt),
+                        onstep)));
+                rain_number[k] = fmaxf(THOMPSON_AA_R2, thompson_aa_add(
+                    rain_number[k], thompson_aa_mul(thompson_aa_mul(
+                        thompson_aa_mul(number_divergence, odzq), dt),
+                        onstep)));
+            }
+            // :3811-3812.
+            if (rain_mass[0] > thompson_aa_mul(THOMPSON_AA_R1, 1000.0f)) {
+                exported = thompson_aa_add(exported, thompson_aa_mul(
+                    thompson_aa_mul(mass_flux[0], dt), onstep));
+            }
+        }
+        for (int k = 0; k < nz; ++k) {
+            const size_t idx = IDX3(k, j, i);
+            qrten[idx] = mass_tendency[k];
+            nrten[idx] = number_tendency[k];
+        }
+    }
+    // The surface bookkeeping of the classic launcher, unchanged.
+    if (accumulate_surface) rainncv[column] += exported;
+    else rainncv[column] = exported;
+    rainnc[column] += exported;
+}
+
+#define THOMPSON_AA_RAIN_ACCUMULATE_PARAMETERS                            \
+    const float* __restrict__ qr1d, const float* __restrict__ nr1d,     \
+    float* __restrict__ qrten, float* __restrict__ nrten,               \
+    const float* __restrict__ temperature,                              \
+    const float* __restrict__ pressure, const float* __restrict__ qv,   \
+    const float* __restrict__ reference_density,                        \
+    const float* __restrict__ dz, float* __restrict__ rainnc,           \
+    float* __restrict__ rainncv, int accumulate_surface, float dt,     \
+    int nz, int ny, int nx
+
+#define THOMPSON_AA_RAIN_ACCUMULATE_ARGUMENTS                             \
+    qr1d, nr1d, qrten, nrten, temperature, pressure, qv,                 \
+    reference_density, dz, rainnc, rainncv, accumulate_surface, dt,      \
+    nz, ny, nx
+
+extern "C" __global__ void thompson_aa_rain_sediment_accumulate_64(
+    THOMPSON_AA_RAIN_ACCUMULATE_PARAMETERS)
+{
+    thompson_aa_rain_sediment_accumulate_impl<THOMPSON_AA_KMAX_SHALLOW>(
+        THOMPSON_AA_RAIN_ACCUMULATE_ARGUMENTS);
+}
+
+extern "C" __global__ void thompson_aa_rain_sediment_accumulate_256(
+    THOMPSON_AA_RAIN_ACCUMULATE_PARAMETERS)
+{
+    thompson_aa_rain_sediment_accumulate_impl<THOMPSON_AA_KMAX_GENERIC>(
+        THOMPSON_AA_RAIN_ACCUMULATE_ARGUMENTS);
+}
+
+
+// Ice (:3664-3698, :3838-3870).  The working pair is :3226-3233's, on the
+// held :3193 density: ri = (qi1d + qiten*DT)*rho where L_qi, else R1 / R2;
+// nothing between the TAU+1 refresh and the ice fallout moves qiten or
+// niten.  rhof is :3614's refresh from the current density in a column
+// with any L_qr (rain_active_columns), and :3194's on the held density
+// otherwise -- the cloud fallout's model.
+template <int KMAX>
+__device__ __forceinline__ void thompson_aa_ice_sediment_accumulate_impl(
+    const float* __restrict__ qi1d,
+    const float* __restrict__ ni1d,
+    float* __restrict__ qiten,
+    float* __restrict__ niten,
+    const float* __restrict__ temperature,
+    const float* __restrict__ pressure,
+    const float* __restrict__ qv,
+    const float* __restrict__ reference_density,
+    const float* __restrict__ rain_active_columns,
+    const float* __restrict__ dz,
+    float* __restrict__ rainnc,
+    float* __restrict__ rainncv,
+    float* __restrict__ snownc,
+    float* __restrict__ snowncv,
+    float dt, int nz, int ny, int nx)
+{
+    const int column = blockIdx.x * blockDim.x + threadIdx.x;
+    if (column >= ny * nx) return;
+    const int j = column / nx;
+    const int i = column - j * nx;
+
+    float density[KMAX];
+    float ice_mass[KMAX];
+    float ice_number[KMAX];
+    float mass_velocity[KMAX];
+    float number_velocity[KMAX];
+    float mass_flux[KMAX];
+    float number_flux[KMAX];
+    float mass_tendency[KMAX];
+    float number_tendency[KMAX];
+
+    const float rho_not = 101325.0f / (287.05f * 298.0f);
+    const bool rain_refreshes_rhof = rain_active_columns != nullptr
+        && rain_active_columns[column] != 0.0f;
+    bool any_ice = false;
+    int sediment_top = 0;
+    int nstep = 0;
+    float velocity_above_mass = 0.0f;
+    float velocity_above_number = 0.0f;
+
+    for (int k = nz - 1; k >= 0; --k) {
+        const size_t idx = IDX3(k, j, i);
+        const float qvk = fmaxf(1.0e-10f, qv[idx]);
+        const float rho = 0.622f * pressure[idx]
+            / (287.04f * temperature[idx] * (qvk + 0.622f));
+        density[k] = rho;
+        mass_tendency[k] = qiten[idx];
+        number_tendency[k] = niten[idx];
+        const float held = reference_density[idx];
+        const float mass_working = thompson_aa_add(
+            qi1d[idx], thompson_aa_mul(qiten[idx], dt));
+        float ri, nn;
+        if (mass_working > THOMPSON_AA_R1) {
+            ri = thompson_aa_mul(mass_working, held);
+            nn = fmaxf(THOMPSON_AA_R2, thompson_aa_mul(thompson_aa_add(
+                ni1d[idx], thompson_aa_mul(niten[idx], dt)), held));
+            any_ice = true;
+        } else {
+            ri = THOMPSON_AA_R1;
+            nn = THOMPSON_AA_R2;
+        }
+        ice_mass[k] = ri;
+        ice_number[k] = nn;
+        const float rhof = sqrtf(rho_not / (rain_refreshes_rhof ? rho : held));
+        if (ri > THOMPSON_AA_R1) {
+            // :3679-3686.  bv_i = 1, so ilami**bv_i is ilami.
+            const double lami = (double)thompson_aa_powf_cr(
+                thompson_aa_div(thompson_aa_mul(thompson_aa_mul(
+                    thompson_aa_mul(THOMPSON_AA_AM_I, THOMPSON_AA_CIG2),
+                    THOMPSON_AA_OIG1), nn), ri),
+                THOMPSON_AA_OBMI);
+            const double ilami = 1.0 / lami;
+            mass_velocity[k] = (float)((double)thompson_aa_mul(
+                thompson_aa_mul(thompson_aa_mul(rhof, 1493.9f), 24.0f),
+                1.0f / 6.0f) * ilami);
+            number_velocity[k] = (float)((double)thompson_aa_div(
+                thompson_aa_mul(thompson_aa_mul(rhof, 1493.9f), 3.3233511f),
+                1.3293403f) * ilami);
+        } else {
+            mass_velocity[k] = velocity_above_mass;
+            number_velocity[k] = velocity_above_number;
+        }
+        velocity_above_mass = mass_velocity[k];
+        velocity_above_number = number_velocity[k];
+        // :3692-3696.
+        if (mass_velocity[k] > 1.0e-3f) {
+            sediment_top = max(sediment_top, k);
+            const float delta_tp = thompson_aa_div(dz[idx], mass_velocity[k]);
+            nstep = max(nstep, (int)thompson_aa_add(
+                thompson_aa_div(dt, delta_tp), 1.0f));
+        }
+    }
+
+    float exported = 0.0f;
+    if (any_ice) {
+        if (sediment_top == nz - 1) sediment_top = nz - 2;
+        const float onstep = nstep > 0
+            ? thompson_aa_div(1.0f, (float)nstep) : 1.0f;
+        const int steps = (int)rintf(thompson_aa_div(1.0f, onstep));
+        for (int step = 0; step < steps; ++step) {
+            for (int k = nz - 1; k >= 0; --k) {
+                mass_flux[k] = thompson_aa_mul(mass_velocity[k], ice_mass[k]);
+                number_flux[k] = thompson_aa_mul(number_velocity[k],
+                                                 ice_number[k]);
+            }
+            int k = nz - 1;
+            size_t idx = IDX3(k, j, i);
+            float odzq = thompson_aa_div(1.0f, dz[idx]);
+            float orho = thompson_aa_div(1.0f, density[k]);
+            mass_tendency[k] = thompson_aa_sub(mass_tendency[k],
+                thompson_aa_mul(thompson_aa_mul(thompson_aa_mul(
+                    mass_flux[k], odzq), onstep), orho));
+            number_tendency[k] = thompson_aa_sub(number_tendency[k],
+                thompson_aa_mul(thompson_aa_mul(thompson_aa_mul(
+                    number_flux[k], odzq), onstep), orho));
+            ice_mass[k] = fmaxf(THOMPSON_AA_R1, thompson_aa_sub(ice_mass[k],
+                thompson_aa_mul(thompson_aa_mul(thompson_aa_mul(
+                    mass_flux[k], odzq), dt), onstep)));
+            ice_number[k] = fmaxf(THOMPSON_AA_R2, thompson_aa_sub(
+                ice_number[k], thompson_aa_mul(thompson_aa_mul(
+                    thompson_aa_mul(number_flux[k], odzq), dt), onstep)));
+            for (k = sediment_top; k >= 0; --k) {
+                idx = IDX3(k, j, i);
+                odzq = thompson_aa_div(1.0f, dz[idx]);
+                orho = thompson_aa_div(1.0f, density[k]);
+                const float mass_divergence =
+                    thompson_aa_sub(mass_flux[k + 1], mass_flux[k]);
+                const float number_divergence =
+                    thompson_aa_sub(number_flux[k + 1], number_flux[k]);
+                mass_tendency[k] = thompson_aa_add(mass_tendency[k],
+                    thompson_aa_mul(thompson_aa_mul(thompson_aa_mul(
+                        mass_divergence, odzq), onstep), orho));
+                number_tendency[k] = thompson_aa_add(number_tendency[k],
+                    thompson_aa_mul(thompson_aa_mul(thompson_aa_mul(
+                        number_divergence, odzq), onstep), orho));
+                ice_mass[k] = fmaxf(THOMPSON_AA_R1, thompson_aa_add(
+                    ice_mass[k], thompson_aa_mul(thompson_aa_mul(
+                        thompson_aa_mul(mass_divergence, odzq), dt),
+                        onstep)));
+                ice_number[k] = fmaxf(THOMPSON_AA_R2, thompson_aa_add(
+                    ice_number[k], thompson_aa_mul(thompson_aa_mul(
+                        thompson_aa_mul(number_divergence, odzq), dt),
+                        onstep)));
+            }
+            // :3868-3869.
+            if (ice_mass[0] > thompson_aa_mul(THOMPSON_AA_R1, 1000.0f)) {
+                exported = thompson_aa_add(exported, thompson_aa_mul(
+                    thompson_aa_mul(mass_flux[0], dt), onstep));
+            }
+        }
+        for (int k = 0; k < nz; ++k) {
+            const size_t idx = IDX3(k, j, i);
+            qiten[idx] = mass_tendency[k];
+            niten[idx] = number_tendency[k];
+        }
+    }
+    // The surface bookkeeping of the classic launcher, unchanged.
+    rainncv[column] = exported;
+    snowncv[column] = exported;
+    rainnc[column] += exported;
+    snownc[column] += exported;
+}
+
+#define THOMPSON_AA_ICE_ACCUMULATE_PARAMETERS                             \
+    const float* __restrict__ qi1d, const float* __restrict__ ni1d,     \
+    float* __restrict__ qiten, float* __restrict__ niten,               \
+    const float* __restrict__ temperature,                              \
+    const float* __restrict__ pressure, const float* __restrict__ qv,   \
+    const float* __restrict__ reference_density,                        \
+    const float* __restrict__ rain_active_columns,                      \
+    const float* __restrict__ dz, float* __restrict__ rainnc,           \
+    float* __restrict__ rainncv, float* __restrict__ snownc,            \
+    float* __restrict__ snowncv, float dt, int nz, int ny, int nx
+
+#define THOMPSON_AA_ICE_ACCUMULATE_ARGUMENTS                              \
+    qi1d, ni1d, qiten, niten, temperature, pressure, qv,                 \
+    reference_density, rain_active_columns, dz, rainnc, rainncv, snownc, \
+    snowncv, dt, nz, ny, nx
+
+extern "C" __global__ void thompson_aa_ice_sediment_accumulate_64(
+    THOMPSON_AA_ICE_ACCUMULATE_PARAMETERS)
+{
+    thompson_aa_ice_sediment_accumulate_impl<THOMPSON_AA_KMAX_SHALLOW>(
+        THOMPSON_AA_ICE_ACCUMULATE_ARGUMENTS);
+}
+
+extern "C" __global__ void thompson_aa_ice_sediment_accumulate_256(
+    THOMPSON_AA_ICE_ACCUMULATE_PARAMETERS)
+{
+    thompson_aa_ice_sediment_accumulate_impl<THOMPSON_AA_KMAX_GENERIC>(
+        THOMPSON_AA_ICE_ACCUMULATE_ARGUMENTS);
+}
 
 
 #if defined(THOMPSON_AA_WRF39)
@@ -1527,5 +2064,261 @@ extern "C" __global__ void thompson_aa_wrf39_warm_snow_boost(
     const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= size) return;
     if (entry_warm_mask[idx] != 0.0f) velocity_boost[idx] = 1.5f;
+}
+#endif  // THOMPSON_AA_WRF39
+
+
+
+#if defined(THOMPSON_AA_WRF39)
+// ---------------------------------------------------------------------------
+// THE FORK'S RAIN FALLOUT (RunConfig.thompson_version = "wrf_39_noaa").
+// ---------------------------------------------------------------------------
+//
+// thompson.cu's thompson_rain_sediment_impl<KMAX, true> (the rain-presence
+// arm the coupled adapter launches, accumulating the surface totals)
+// statement for statement, with the fork's one difference:
+//
+//   surface rain is counted above R1*10 (fork :3556, rr(kts) > R1*10),
+//   where v4.6.1 counts it above R1*1000 (:3817).  Audit T21.
+//
+// thompson.cu stays byte-frozen (it is the mp=8 numerics guarantee), so the
+// pass lives here beside the fork's ice, snow and graupel passes, which
+// carry the same R1*10 test (fork :3603, :3628, :3653).  The empty-column
+// shortcut is thompson.cu's: a column with no rain presence performs exactly
+// the writes of the full sweep, and its export is zero under either
+// threshold because every level then holds the R1 sentinel.
+__device__ __forceinline__ bool thompson_aa_wrf39_empty_rain_column(
+    const float* q, const float* temperature, const float* pressure,
+    const float* qv, const float* dz, const float* presence, float dt,
+    int column, int nz, int ny, int nx)
+{
+    if (!(dt >= 0.0f && dt <= 100000.0f)) return false;
+    for (int k = 0; k < nz; ++k) {
+        const size_t idx = (size_t)k * ny * nx + column;
+        if (!(q[idx] >= -1.0f && q[idx] <= 1.0f)) return false;
+        if (presence[idx] != 0.0f) return false;
+        if (!(temperature[idx] >= 100.0f && temperature[idx] <= 400.0f
+                && pressure[idx] >= 1.0f && pressure[idx] <= 120000.0f
+                && qv[idx] >= -1.0f && qv[idx] <= 1.0f
+                && dz[idx] >= 1.0f && dz[idx] <= 100000.0f)) return false;
+    }
+    return true;
+}
+
+template <int KMAX>
+__device__ __forceinline__ void thompson_aa_wrf39_rain_sediment_impl(
+    float* __restrict__ qr,
+    float* __restrict__ nr,
+    const float* __restrict__ temperature,
+    const float* __restrict__ pressure,
+    const float* __restrict__ qv,
+    const float* __restrict__ reference_density,
+    const float* __restrict__ dz,
+    float* __restrict__ rainnc,
+    float* __restrict__ rainncv,
+    float dt, int nz, int ny, int nx)
+{
+    const int column = blockIdx.x * blockDim.x + threadIdx.x;
+    if (column >= ny * nx) return;
+    const int j = column / nx;
+    const int i = column - j * nx;
+
+    if (thompson_aa_wrf39_empty_rain_column(qr, temperature, pressure, qv, dz,
+            reference_density, dt, column, nz, ny, nx)) {
+        for (int k = 0; k < nz; ++k) {
+            const size_t idx = IDX3(k, j, i);
+            const float qr_new = qr[idx] + 0.0f * dt;
+            if (qr_new <= 1.0e-12f) {
+                qr[idx] = 0.0f;
+                nr[idx] = 0.0f;
+                continue;
+            }
+            const float qvk = fmaxf(1.0e-10f, qv[idx]);
+            const float rho = 0.622f * pressure[idx]
+                / (287.04f * temperature[idx] * (qvk + 0.622f));
+            const float am_r = 3.1415926536f * 1000.0f / 6.0f;
+            const float org3 = 1.0f / 6.0f;
+            float nr_new = fmaxf(1.0e-6f / rho, nr[idx] + 0.0f * dt);
+            const float lambda_arg = am_r * 6.0f * nr_new / qr_new;
+            double lambda = (double)powf(lambda_arg, 1.0f / 3.0f);
+            float mvd = (float)(3.672 / lambda);
+            if (mvd > 2.5e-3f) mvd = 2.5e-3f;
+            else if (mvd < 37.5e-6f) mvd = 37.5e-6f;
+            lambda = 3.672 / (double)mvd;
+            const float prefix = __fdiv_rn(org3 * qr_new, am_r);
+            nr_new = (float)((double)prefix * pow(lambda, 3.0));
+            qr[idx] = qr_new;
+            nr[idx] = nr_new;
+        }
+        rainncv[column] += 0.0f;
+        rainnc[column] += 0.0f;
+        return;
+    }
+
+    float density[KMAX];
+    float rain_mass[KMAX];
+    float rain_number[KMAX];
+    float mass_velocity[KMAX];
+    float number_velocity[KMAX];
+    float mass_flux[KMAX];
+    float number_flux[KMAX];
+    float qr_tendency[KMAX];
+    float nr_tendency[KMAX];
+    float qr_initial[KMAX];
+    float nr_initial[KMAX];
+
+    const float pi = 3.1415926536f;
+    const float am_r = pi * 1000.0f / 6.0f;
+    const float org3 = 1.0f / 6.0f;
+    const float rho_not = __fdiv_rn(101325.0f, 287.05f * 298.0f);
+    int sediment_top = 0;
+    int nstep = 0;
+    float velocity_above_mass = 0.0f;
+    float velocity_above_number = 0.0f;
+
+    for (int k = nz - 1; k >= 0; --k) {
+        const size_t idx = IDX3(k, j, i);
+        const float qvk = fmaxf(1.0e-10f, qv[idx]);
+        const float rho = 0.622f * pressure[idx]
+            / (287.04f * temperature[idx] * (qvk + 0.622f));
+        // The reference density carries L_qr (zero where it failed) and the
+        // :3568 rewrite (negative), exactly as for the v4.6.1 pass.
+        const float rain_density_carried = reference_density[idx];
+        const float rain_density = fabsf(rain_density_carried);
+        density[k] = rho;
+        qr_initial[k] = qr[idx];
+        nr_initial[k] = nr[idx];
+        qr_tendency[k] = 0.0f;
+        nr_tendency[k] = 0.0f;
+
+        const bool l_qr = rain_density_carried != 0.0f;
+        const bool rewritten = rain_density_carried < 0.0f;
+        const float rr = !l_qr ? 1.0e-12f
+            : rewritten ? fmaxf(1.0e-12f, qr[idx] * rain_density)
+            : qr[idx] * rain_density;
+        if (rr > 1.0e-12f) {
+            const float nn = fmaxf(1.0e-6f, nr[idx] * rain_density);
+            const float lambda_arg = am_r * 6.0f * nn / rr;
+            const double lambda = (double)powf(lambda_arg, 1.0f / 3.0f);
+            rain_mass[k] = rr;
+            rain_number[k] = nn;
+
+            const float rhof = sqrtf(rho_not / rho);
+            const float mass_prefix = rhof * 4854.0f * 24.0f * org3;
+            mass_velocity[k] = (float)((double)mass_prefix
+                * pow(lambda, 4.0) * pow(lambda + 195.0, -5.0));
+            const float number_prefix = __fdiv_rn(rhof * 4854.0f
+                * 3.3233511f, 1.3293403f);
+            number_velocity[k] = (float)((double)number_prefix
+                * pow(lambda, 2.5) * pow(lambda + 195.0, -3.5));
+        } else {
+            rain_mass[k] = rr;
+            rain_number[k] = l_qr
+                ? fmaxf(1.0e-6f, nr[idx] * rain_density) : 1.0e-6f;
+            mass_velocity[k] = velocity_above_mass;
+            number_velocity[k] = velocity_above_number;
+        }
+        velocity_above_mass = mass_velocity[k];
+        velocity_above_number = number_velocity[k];
+
+        const float vmax = fmaxf(mass_velocity[k], number_velocity[k]);
+        if (vmax > 1.0e-3f) {
+            sediment_top = max(sediment_top, k);
+            const float delta_tp = dz[idx] / vmax;
+            nstep = max(nstep, (int)(dt / delta_tp + 1.0f));
+        }
+    }
+    if (sediment_top == nz - 1) sediment_top = nz - 2;
+    nstep = max(nstep, 1);
+    const float onstep = 1.0f / (float)nstep;
+    const float dt_substep = dt * onstep;
+    float exported = 0.0f;
+
+    for (int step = 0; step < nstep; ++step) {
+        for (int k = nz - 1; k >= 0; --k) {
+            mass_flux[k] = mass_velocity[k] * rain_mass[k];
+            number_flux[k] = number_velocity[k] * rain_number[k];
+        }
+
+        int k = nz - 1;
+        size_t idx = IDX3(k, j, i);
+        float inv_dz = 1.0f / dz[idx];
+        float inv_rho = 1.0f / density[k];
+        qr_tendency[k] -= mass_flux[k] * inv_dz * onstep * inv_rho;
+        nr_tendency[k] -= number_flux[k] * inv_dz * onstep * inv_rho;
+        rain_mass[k] = fmaxf(1.0e-12f,
+            rain_mass[k] - mass_flux[k] * inv_dz * dt_substep);
+        rain_number[k] = fmaxf(1.0e-6f,
+            rain_number[k] - number_flux[k] * inv_dz * dt_substep);
+
+        for (k = sediment_top; k >= 0; --k) {
+            idx = IDX3(k, j, i);
+            inv_dz = 1.0f / dz[idx];
+            inv_rho = 1.0f / density[k];
+            const float mass_divergence = mass_flux[k + 1] - mass_flux[k];
+            const float number_divergence =
+                number_flux[k + 1] - number_flux[k];
+            qr_tendency[k] += mass_divergence * inv_dz * onstep * inv_rho;
+            nr_tendency[k] += number_divergence * inv_dz * onstep * inv_rho;
+            rain_mass[k] = fmaxf(1.0e-12f,
+                rain_mass[k] + mass_divergence * inv_dz * dt_substep);
+            rain_number[k] = fmaxf(1.0e-6f,
+                rain_number[k] + number_divergence * inv_dz * dt_substep);
+        }
+        // fork :3556, rr(kts) > R1*10.
+        if (rain_mass[0] > 1.0e-11f) {
+            exported += mass_flux[0] * dt_substep;
+        }
+    }
+
+    for (int k = 0; k < nz; ++k) {
+        const size_t idx = IDX3(k, j, i);
+        float qr_new = qr_initial[k] + qr_tendency[k] * dt;
+        float nr_new = fmaxf(1.0e-6f / density[k],
+                             nr_initial[k] + nr_tendency[k] * dt);
+        if (qr_new <= 1.0e-12f) {
+            qr[idx] = 0.0f;
+            nr[idx] = 0.0f;
+            continue;
+        }
+        const float lambda_arg = am_r * 6.0f * nr_new / qr_new;
+        double lambda = (double)powf(lambda_arg, 1.0f / 3.0f);
+        float mvd = (float)(3.672 / lambda);
+        if (mvd > 2.5e-3f) mvd = 2.5e-3f;
+        else if (mvd < 37.5e-6f) mvd = 37.5e-6f;
+        lambda = 3.672 / (double)mvd;
+        const float prefix = __fdiv_rn(org3 * qr_new, am_r);
+        nr_new = (float)((double)prefix * pow(lambda, 3.0));
+        qr[idx] = qr_new;
+        nr[idx] = nr_new;
+    }
+    rainncv[column] += exported;
+    rainnc[column] += exported;
+}
+
+#define THOMPSON_AA_WRF39_RAIN_SEDIMENT_PARAMETERS                       \
+    float* __restrict__ qr, float* __restrict__ nr,                      \
+    const float* __restrict__ temperature,                               \
+    const float* __restrict__ pressure, const float* __restrict__ qv,    \
+    const float* __restrict__ reference_density,                         \
+    const float* __restrict__ dz, float* __restrict__ rainnc,            \
+    float* __restrict__ rainncv, float dt, int nz, int ny, int nx
+
+#define THOMPSON_AA_WRF39_RAIN_SEDIMENT_ARGUMENTS                        \
+    qr, nr, temperature, pressure, qv, reference_density, dz, rainnc,    \
+    rainncv, dt, nz, ny, nx
+
+extern "C" __global__ void thompson_aa_wrf39_rain_sediment_64(
+    THOMPSON_AA_WRF39_RAIN_SEDIMENT_PARAMETERS)
+{
+    thompson_aa_wrf39_rain_sediment_impl<THOMPSON_AA_KMAX_SHALLOW>(
+        THOMPSON_AA_WRF39_RAIN_SEDIMENT_ARGUMENTS);
+}
+
+extern "C" __global__ void thompson_aa_wrf39_rain_sediment_256(
+    THOMPSON_AA_WRF39_RAIN_SEDIMENT_PARAMETERS)
+{
+    thompson_aa_wrf39_rain_sediment_impl<THOMPSON_AA_KMAX_GENERIC>(
+        THOMPSON_AA_WRF39_RAIN_SEDIMENT_ARGUMENTS);
 }
 #endif  // THOMPSON_AA_WRF39

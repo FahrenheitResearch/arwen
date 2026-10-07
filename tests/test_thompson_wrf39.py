@@ -15,7 +15,10 @@ The breakage each gate prevents, named:
    statement sits in a THOMPSON_AA_WRF39 arm; with the define absent the
    preprocessed source of every aerosol unit must be the v4.6.1 code, which
    this test checks by stripping the fork arms and comparing with the
-   pre-fork source pinned by its SHA-256.
+   v4.6.1 source pinned by its SHA-256 (V461_STRIPPED_SHA256, moved by the
+   2.8.6 mp=28 accumulator rework; the pre-rework claim against the
+   pre-fork commit is held by
+   ``test_the_fork_arms_were_pure_insertions_until_the_rework``).
 4. ``test_fork_fixture_against_the_fork_fortran`` -- the port's fork
    generation against the fork's own Fortran (NOAA-EMC/HRRR v4.1.21
    module_mp_thompson.F, built by tools/thompson_fork_oracle/build.sh) on 42
@@ -137,6 +140,12 @@ def test_a_missing_fork_table_set_is_refused_with_the_build_command(
     def unavailable(*args):
         raise FileNotFoundError("GNU Fortran is unavailable for this control")
     monkeypatch.setattr(thompson_fork_assets, "_build_source", unavailable)
+    # The published route is a real download once a release carries the
+    # set (2.8.7 on); this control is about the refusal, not the network.
+    monkeypatch.setenv(thompson_fork_assets.FORK_RELEASE_BASE_ENV, "")
+    monkeypatch.delenv(thompson_fork_assets.FORK_TABLE_SOURCE_ROOT_ENV, raising=False)
+    monkeypatch.delenv(thompson_fork_assets.FORK_TABLE_ASSET_URL_BASE_ENV, raising=False)
+    monkeypatch.setattr(thompson_fork_assets, "_packaged_source", lambda: None)
     monkeypatch.setenv("GPUWM_THOMPSON_FORK_TABLE_ROOT", str(tmp_path))
     with pytest.raises(FileNotFoundError,
                        match="tools/thompson_fork_oracle/build.sh"):
@@ -162,29 +171,66 @@ def _strip_fork_arms(text: str) -> str:
     return _FORK_ARM.sub(lambda m: m.group("else") or "", text)
 
 
-@pytest.mark.parametrize("unit", [
-    "thompson_aerosol_state.cu", "thompson_aerosol_sed.cu"])
+#: SHA-256 of each unit's v4.6.1 source: the file with every THOMPSON_AA_WRF39
+#: arm stripped (#else arms kept), right-stripped, UTF-8.
+#:
+#: MOVED ON PURPOSE 2026-10-05 by the mp=28 accumulator rework
+#: (lane/cut286-mp28-g3, 2.8.6).  Until then this test compared the stripped
+#: source with the pre-fork commit 7ab2e3dcf through git, so it skipped on
+#: every test tree without history (the node and box trees), and the rework,
+#: which changes the v4.6.1 path itself (WRF's qcten/qrten/nrten/qiten/niten
+#: accumulators and one terminal apply, module_mp_thompson.F :1670, :3975,
+#: :4023-4053), would have failed it only where git was present.  The v4.6.1
+#: path is now pinned here by hash, so the check runs on every tree: an edit
+#: to a fork arm that leaks into the v4.6.1 code changes this hash and fails.
+#: The rework's own v4.6.1 change is graded against WRF by the g3 gate
+#: (tests/test_thompson_aerosol_adapter.py, 22 of 22 fixtures inside the
+#: flat 2e-6 bound); the fork arms themselves are untouched by it
+#: (test_the_fork_arms_were_pure_insertions_until_the_rework below holds
+#: the earlier claim at the last pre-rework staging commit, ed2b14e7d).
+V461_STRIPPED_SHA256 = {
+    "thompson_aerosol_state.cu":
+        "b8deeb182263313d91d4ddffbce283136ebe95f547f11a9917af0baf2ae60186",
+    "thompson_aerosol_sed.cu":
+        "5a0c8065fb7c3008aac0cd93efb2b1e7aeeaf25e26c7cbad17887b9064a9dedd",
+}
+
+
+@pytest.mark.parametrize("unit", sorted(V461_STRIPPED_SHA256))
 def test_the_v461_arms_are_untouched_by_the_fork_define(unit):
     """For the units whose fork arms are pure insertions and #else pairs,
-    stripping the fork arms returns the pre-fork source byte for byte."""
-    import subprocess as sp
+    stripping the fork arms returns the pinned v4.6.1 source byte for byte."""
+    import hashlib
     current = (_KERNELS / unit).read_text(encoding="utf-8")
-    exported = os.environ.get("GPUWM_FORK_BASE_TREE")
-    if exported:
-        # An export of the pre-fork commit (a node test tree has no .git).
-        base = (Path(exported) / "gpuwm" / "core" / "kernels"
-                / unit).read_text(encoding="utf-8")
+    # The appended fork kernels leave only their separating blank lines.
+    stripped = _strip_fork_arms(current).rstrip()
+    assert hashlib.sha256(stripped.encode("utf-8")).hexdigest() == (
+        V461_STRIPPED_SHA256[unit])
+
+
+@pytest.mark.parametrize("unit", sorted(V461_STRIPPED_SHA256))
+def test_the_fork_arms_were_pure_insertions_until_the_rework(unit):
+    """The fork lane's claim as it stood before the accumulator rework: at
+    ed2b14e7d, stripping the fork arms returned the pre-fork 7ab2e3dcf
+    source byte for byte.  Reads git history (or two exports named by
+    GPUWM_FORK_BASE_TREE and GPUWM_FORK_PRE_REWORK_TREE)."""
+    import subprocess as sp
+    trees = (os.environ.get("GPUWM_FORK_BASE_TREE"),
+             os.environ.get("GPUWM_FORK_PRE_REWORK_TREE"))
+    if all(trees):
+        base, pre = ((Path(tree) / "gpuwm" / "core" / "kernels"
+                      / unit).read_text(encoding="utf-8") for tree in trees)
     else:
         try:
-            base = sp.run(
-                ["git", "show", f"7ab2e3dcf:gpuwm/core/kernels/{unit}"],
+            base, pre = (sp.run(
+                ["git", "show", f"{rev}:gpuwm/core/kernels/{unit}"],
                 cwd=_ROOT, capture_output=True, text=True, check=True,
-                encoding="utf-8").stdout
+                encoding="utf-8").stdout for rev in ("7ab2e3dcf", "ed2b14e7d"))
         except (OSError, sp.CalledProcessError):
-            pytest.skip("no git history (or GPUWM_FORK_BASE_TREE export) "
-                        "to read the pre-fork source from")
-    # The appended fork kernels leave only their separating blank lines.
-    assert _strip_fork_arms(current).rstrip() == base.rstrip()
+            pytest.skip("no git history (or GPUWM_FORK_BASE_TREE and "
+                        "GPUWM_FORK_PRE_REWORK_TREE exports) to read the "
+                        "pre-fork and pre-rework sources from")
+    assert _strip_fork_arms(pre).rstrip() == base.rstrip()
 
 
 def test_every_fork_arm_is_reachable_only_through_the_define():
@@ -202,9 +248,9 @@ def _run_check(snow_fall: str) -> dict:
     root = os.environ.get("GPUWM_THOMPSON_FORK_TABLE_ROOT") or str(
         Path.home() / ".gpuwm" / "tables" / "thompson-wrf39-noaa")
     if not (Path(root) / "qr_acr_qg.dat").is_file():
-        pytest.skip("the fork's Thompson tables are not staged (build them "
-                    "with tools/thompson_fork_oracle/build.sh and set "
-                    "GPUWM_THOMPSON_FORK_TABLE_ROOT)")
+        pytest.skip("the fork's Thompson tables are not staged (run gpuwm "
+                    "fetch-tables --thompson-fork --thompson-fork-only, or "
+                    "set GPUWM_THOMPSON_FORK_TABLE_ROOT)")
     if shutil.which("g++") is None and shutil.which("c++") is None:
         pytest.skip("no C++ compiler to build the host kernels")
     done = subprocess.run(

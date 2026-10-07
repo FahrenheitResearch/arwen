@@ -374,6 +374,26 @@ def test_after_lsm_runs_wrfs_column_then_the_shared_couple():
     must have weighted the source terms by the urban fraction, as
     module_sf_noahdrv.F:1684-1697 does above level 1.
     """
+    _after_lsm_first_call()
+
+
+@requires_gpu
+def test_after_lsm_matches_wrf_under_the_step_health_ledger():
+    """Since ac988f1fd every single-device forecast step routes the scheme
+    status words into a HealthLedger (uint32 slots).  BEP_BEM's int32 err
+    word made cupy refuse the OR (TypeError, same_kind), so option 3
+    crashed on its first deferred step while the immediate-read gates in
+    this file stayed green.  Same WRF words, recorded, and a clean drain."""
+    from gpuwm.core import health_ledger
+
+    ledger = health_ledger.HealthLedger(label="urban bem test")
+    with health_ledger.deferring(ledger):
+        _after_lsm_first_call()
+    assert ledger.records > 0
+    ledger.drain()
+
+
+def _after_lsm_first_call():
     import types
 
     import cupy as cp

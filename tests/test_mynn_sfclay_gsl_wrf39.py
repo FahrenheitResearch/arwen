@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 
 ROOT = Path(__file__).parents[1]
-ORACLE_DIR = ROOT / "gpuwm" / "data" / "mynn" / "oracle"
+ORACLE_DIR = ROOT / "tests" / "data" / "oracles" / "mynn"
 ORACLE = ORACLE_DIR / "surface-layer-gsl-wrf39.csv.gz"
 DECK = ORACLE_DIR / "surface-layer-gsl-wrf39-columns.txt"
 TOOLS = ROOT / "tools" / "mynn_gsl_wrf39_oracle"

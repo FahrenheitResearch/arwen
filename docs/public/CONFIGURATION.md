@@ -23,6 +23,15 @@ one of three report sections --
 - **not implemented** -- consumed without a counterpart, each with a
   reason.
 
+Groups and keys for machinery WOOF does not run (`&chem`, `&dfi_control`,
+`&logging`, the operational fork's `gsd_diagnostics` and history-cadence
+switch, `cycling`, HAILCAST, `ra_sw_eclipse`, `prec_acc_dt`, real.exe
+vertical-interpolation choices) never refuse: they are inert while their
+selector is off, and a requested package is a declared divergence printed
+under "Physics substitutions" with what the forecast does instead. The
+unmodified operational 3 km namelist (NOAA-EMC/HRRR v4.1.21
+`parm/conus/hrrr_wrf.nl`) imports this way.
+
 This page is the complete knob table. "Default" is the value a key
 takes when omitted from the TOML (the frozen `RunConfig` default,
 `gpuwm/config.py`); where WRF's Registry default differs, the importer
@@ -53,6 +62,25 @@ exclusive. The same table sits inline on a `[[domain]]` as
 enter the restart identity, so a trimmed run resumes a full run's
 checkpoints. Full page:
 [OUTPUT-VARIABLES.md](OUTPUT-VARIABLES.md).
+
+## GRIB2 output
+
+`gpuwm export-grib2 RUN_DIR --out EXPORT_DIR --zip` turns saved history
+into `wrfsfc_dNN_<valid>.grib2` and `wrfprs_dNN_<valid>.grib2` per domain
+and time, plus `manifest.json`. Every product comes from the WOOF
+post-processor (catalog `woof-post/v1`), computed on a GPU when one has room
+and on the CPU otherwise; both give the same bytes. `--post-device gpu|cpu`
+forces a device. `--domains`, `--times`, `--start`, `--end`, `--fields`
+and `--levels` choose what is written, `--packing simple` replaces the
+default complex packing, and `--winds earth` rotates wind components to
+east/north. [GRIB2 export](../grib2-export.md) lists the fields.
+
+In a run-plan document `run_options.grib2 = true` exports each history
+frame while the forecast runs (off by default); `gpuwm go CONFIG.toml
+--grib2` sets the same option. Files land in `<run>/grib2/` and
+`<run>/grib2-grib2.zip` follows when the forecast ends. A restarted
+forecast exports into its own attempt folder. `gpuwm render HISTORY...
+--grib2-out EXPORT_DIR` exports the frames a render draws.
 
 ## `[case_data]` -- the inputs a config-driven run declares
 
@@ -305,26 +333,69 @@ consumed `RunConfig` field -- the knob-parity battery
 consuming kernel/module rather than being decorative -- and every one
 is importable from a WRF namelist.
 
-**Which keys a `[[domain]]` table may override.** Exactly these 79,
+**Which keys a `[[domain]]` table may override.** Exactly these 230,
 and no others (`gpuwm/experiment.py`'s `_DOMAIN_RUN_OVERRIDES`):
 
     cu_physics  cudt_minutes  clos_choice  ishallow  radt  radt_minutes  bldt
     ra_physics  ra_lw_physics  ra_sw_physics  ra_rrtmg_variant
-    wrf_rrtmg_compatibility  o3input  use_mp_re  swrad_scat  diff_6th_factor  epssm
-    spec_exp  mp_physics  moist  moist_cq  nest_microphysics_transition  spp_conv
-    spp_pbl  km_opt  bl_pbl_physics  sf_sfclay_physics  c_s  c_k  moist_mix6_off
-    diff_6th_factor2  diff_6th_opt  mix_isotropic  mix_upper_bound  isfflx
-    tke_heat_flux  tke_drag_coefficient  tke_upper_bound  diff_6th_slopeopt
-    diff_6th_thresh  dampcoef  zdamp  emdiv  smdiv  khdif  kvdif  diff_opt
-    mix_full_fields  h_sca_adv_order  moist_adv_opt  v_sca_adv_order
-    v_mom_adv_order  h_mom_adv_order  tke_budget  sase_flux_diag  hmix_k_diag
+    wrf_rrtmg_compatibility  o3input  use_mp_re  swrad_scat  diff_6th_factor
+    epssm  spec_exp  mp_physics  moist  moist_cq  nest_microphysics_transition
+    spp_conv  spp_pbl  km_opt  bl_pbl_physics  sf_sfclay_physics  c_s  c_k
+    moist_mix6_off  diff_6th_factor2  diff_6th_opt  mix_isotropic
+    mix_upper_bound  isfflx  tke_heat_flux  tke_drag_coefficient
+    tke_upper_bound  diff_6th_slopeopt  diff_6th_thresh  dampcoef  zdamp  emdiv
+    smdiv  khdif  kvdif  diff_opt  mix_full_fields  h_sca_adv_order
+    moist_adv_opt  v_sca_adv_order  v_mom_adv_order  h_mom_adv_order
+    tke_budget  sase_flux_diag  hmix_k_diag  surface_energy_diag
     inflow_perturbation  inflow_perturbation_seed
     inflow_perturbation_amplitude_scale  inflow_perturbation_faces  target_cfl
-    target_hcfl  max_step_increase_pct  starting_time_step  starting_time_step_den
-    max_time_step  max_time_step_den  min_time_step  min_time_step_den
-    min_time_step_sound  slope_rad  topo_shading  mosaic_urban_canopy
-    sf_lake_physics  use_lakedepth  lakedepth_default  lake_min_elev  topo_wind
-    gwd_opt
+    target_hcfl  max_step_increase_pct  starting_time_step
+    starting_time_step_den  max_time_step  max_time_step_den  min_time_step
+    min_time_step_den  min_time_step_sound  slope_rad  topo_shading
+    mosaic_urban_canopy  sf_lake_physics  use_lakedepth  lakedepth_default
+    lake_min_elev  topo_wind  gwd_opt  fmoist_run  fmoist_interp  fmoist_only
+    fmoist_freq  fmoist_dt  ifire  fire_boundary_guard  fire_num_ignitions
+    fire_ignition_ros1  fire_ignition_start_lon1  fire_ignition_start_lat1
+    fire_ignition_end_lon1  fire_ignition_end_lat1  fire_ignition_radius1
+    fire_ignition_start_time1  fire_ignition_end_time1  fire_ignition_ros2
+    fire_ignition_start_lon2  fire_ignition_start_lat2  fire_ignition_end_lon2
+    fire_ignition_end_lat2  fire_ignition_radius2  fire_ignition_start_time2
+    fire_ignition_end_time2  fire_ignition_ros3  fire_ignition_start_lon3
+    fire_ignition_start_lat3  fire_ignition_end_lon3  fire_ignition_end_lat3
+    fire_ignition_radius3  fire_ignition_start_time3  fire_ignition_end_time3
+    fire_ignition_ros4  fire_ignition_start_lon4  fire_ignition_start_lat4
+    fire_ignition_end_lon4  fire_ignition_end_lat4  fire_ignition_radius4
+    fire_ignition_start_time4  fire_ignition_end_time4  fire_ignition_ros5
+    fire_ignition_start_lon5  fire_ignition_start_lat5  fire_ignition_end_lon5
+    fire_ignition_end_lat5  fire_ignition_radius5  fire_ignition_start_time5
+    fire_ignition_end_time5  fire_ignition_start_x1  fire_ignition_start_y1
+    fire_ignition_end_x1  fire_ignition_end_y1  fire_ignition_start_x2
+    fire_ignition_start_y2  fire_ignition_end_x2  fire_ignition_end_y2
+    fire_ignition_start_x3  fire_ignition_start_y3  fire_ignition_end_x3
+    fire_ignition_end_y3  fire_ignition_start_x4  fire_ignition_start_y4
+    fire_ignition_end_x4  fire_ignition_end_y4  fire_ignition_start_x5
+    fire_ignition_start_y5  fire_ignition_end_x5  fire_ignition_end_y5
+    fire_lat_init  fire_lon_init  fire_ign_time  fire_shape  fire_sprd_mdl
+    fire_crwn_hgt  fire_ext_grnd  fire_ext_crwn  fire_sfc_flx  fire_heat_peak
+    fire_tg_ub  fire_smk_scheme  fire_smk_peak  fire_smk_ext  fire_wind_height
+    fire_fuel_read  fire_fuel_cat  fire_fmc_read  fire_print_msg
+    fire_print_file  fire_fuel_left_method  fire_fuel_left_irl
+    fire_fuel_left_jrl  fire_grows_only  fire_upwinding  fire_upwind_split
+    fire_viscosity  fire_lfn_ext_up  fire_topo_from_atm  fire_advection
+    fire_test_steps  fire_const_time  fire_const_grnhfx  fire_const_grnqfx
+    fire_atm_feedback  fire_mountain_type  fire_mountain_height
+    fire_mountain_start_x  fire_mountain_start_y  fire_mountain_end_x
+    fire_mountain_end_y  delt_perturbation  xrad_perturbation
+    yrad_perturbation  zrad_perturbation  hght_perturbation  stretch_grd
+    stretch_hyp  z_grd_scale  sfc_full_init  sfc_lu_index  sfc_tsk  sfc_tmn
+    fire_read_lu  fire_read_tsk  fire_read_tmn  fire_read_atm_ht
+    fire_read_fire_ht  fire_read_atm_grad  fire_read_fire_grad  sfc_vegfra
+    sfc_canwat  sfc_ivgtyp  sfc_isltyp  fire_lsm_reinit  fire_lsm_reinit_iter
+    fire_upwinding_reinit  fire_is_real_perim  fire_lsm_band_ngp
+    fire_lsm_zcoupling  fire_lsm_zcoupling_ref  fire_tracer_smoke
+    fire_viscosity_bg  fire_viscosity_band  fire_viscosity_ngp
+    fire_slope_factor  fuel_crosswalk  sr_x  sr_y  fire_static
+    fire_fuel_namelist  fire_smoke
 
 `clos_choice` and `ishallow` configure the Grell-Freitas cumulus scheme
 (`cu_physics = 3`): which closure the deep scheme uses (0, the default,
@@ -615,6 +686,73 @@ cell. Refusals (never silent): an unknown key in the table, or a
 non-boolean value. Full rationale, the WRF references, and the
 measurements in `docs/soil-texture-downscaling.md`.
 
+### `[radar_heating]` -- radar latent heating for the first part of a forecast (WOOF-only)
+
+For the first `active_minutes` of a deterministic forecast, the model's
+microphysics heating is replaced wherever a reflectivity window says what
+is there, by NOAA's HRRR rule (`gpuwm/da/radar_tten.py`). After that the
+model runs free. Off when the table is absent.
+
+```toml
+[radar_heating]
+windows = "windows/stormscope"   # required: <root>/<YYYYmmddTHHMMZ>/ref.f32 per window end
+window_minutes = 10              # default 15; must divide active_minutes
+active_minutes = 120             # default 60; forced period from the run start
+latent_heat_period_min = 20      # NOAA dt_cond
+strict_suppression = false       # observed clear means exactly zero heating
+pbl_extension = false            # heat down to the PBL top where 200 hPa is observed
+mp_tend_lim = 0.07               # HRRR's microphysics clamp, K/s, only while forced
+```
+
+| key | type | default | meaning |
+|---|---|---|---|
+| `windows` | path | none (table absent = off) | window root; a relative path is anchored at the config file |
+| `window_minutes` | number | 15 | window length; must divide `active_minutes` |
+| `active_minutes` | number | 60 | forced period from the run start, then pass-through |
+| `latent_heat_period_min` | number | 20 | NOAA dt_cond |
+| `strict_suppression` | bool | false | WOOF option, as in DA lane 6 |
+| `pbl_extension` | bool | false | WOOF option, as in DA lane 6 |
+| `mp_tend_lim` | number | 0.07 | HRRR's microphysics clamp, applied only while forced |
+
+The forcing attaches at the run start and reads the window ending at start
+plus n times `window_minutes`, for n = 1 to `active_minutes /
+window_minutes`. There is no arrangement key: an observed pre-forecast hour
+is "start an hour early with observed windows", a nowcast is "start at the
+analysis with nowcast windows". Windows come from `tools/radar_tten_windows.py
+--grid-prepared` (observed Level II) or `rw_nexrad grid-composite` (a 2D
+nowcast or the MRMS composite, see `docs/nowcast-frames.md`).
+
+The prepared door also takes the table on its command line
+(`--radar-heating-table JSON`), so one preparation serves the unheated
+control and every heated arm. A table inside the door's
+`--experiment-config` works the same way: the door cuts it out and binds
+the rest to the preparation, writing that copy beside the config as
+`<name>.bound-<digest>.toml` so the config's relative paths still resolve.
+When the preparation was made from the config with the table in it, the
+door keeps the config whole instead. `gpuwm go` on the HRRR route forwards
+the table as the flag and prepares without it.
+
+Every window is read by the strict reader: its schema, status, digest and
+grid identity must match, the identity is the run's own
+(`gpuwm.da.forecast_heating.grid_for_prepared`), and its receipt must state
+the window end its directory names. The run report carries a
+`radar_heating` block with every window's `lead_class`: `forecast` for a
+causal nowcast, `oracle` for frames issued or valid after the start (the
+MRMS composite, for one), and `observed` for a Level II window. An
+`observed` forced period is an analysis period: the forecast proper starts
+when the forced period ends.
+
+A present table binds the restart identity (without the windows path); an
+absent table leaves every fingerprint untouched. Refusals (never silent):
+a nested or tree run; a tile-streamed or batched-ensemble state;
+`mp_physics = 0`; a window gridded onto another grid; a missing window or a
+`window_minutes` that does not divide `active_minutes`; resuming from a
+checkpoint inside the forced period; any route other than the prepared door
+(the table would otherwise be dropped). A multi-card (`[devices]`) run
+builds every slot on the first card and hands each card its slab, so the
+heating is the one-card heating by construction; the box test that proves
+it byte for byte is `tests/test_forecast_heating_gpu.py`.
+
 ## Identity-pinned option families
 
 These are real WRF namelist keys that ArWen carries as configuration
@@ -637,7 +775,15 @@ still recorded as fixed at the pin the run used:
   `bl_mynn_mixlength` instead accepts 1 (default) or 2.
   `scalar_pblmix = 1` runs WRF post-PBL local diffusion of
   `nc/ni/nwfa/nifa`; `bl_mynn_mixscalars = 1` runs MYNN plume transport.
-  Both default to 0 and require MYNN with `mp_physics = 28`, `bldt = 0`.
+  Both default to 0 (the WRF v4.6.1 Registry default; WRF 4.7.x defaults
+  `bl_mynn_mixscalars` to 1 and the importer records that divergence when
+  a MYNN namelist omits the key). `scalar_pblmix = 1` requires MYNN with
+  `mp_physics = 28` and `bldt = 0`. `bl_mynn_mixscalars = 1` mixes the qn
+  family under MYNN with `mp_physics = 28` (and then requires `bldt = 0`),
+  is admitted as WRF's no-op under a microphysics with no number species
+  (`mp_physics` 0, 1, 6), and is refused by name under a scheme WRF would
+  mix only in part (8, 9, 10, 16, 18, 50: Thompson's `qni`, WDM6's `qnc`
+  and the like; `MYNN_QN_FLAG_SPECIES`, `gpuwm/config.py`).
   Selecting both is refused because WRF disables the former in that pair.
 - **Noah-MP** (`&noah_mp`): `dveg 4`, `opt_crs 1`, `opt_btr 1`,
   `opt_run 3`, `opt_sfc 1`, `opt_frz 1`, `opt_inf 1`, `opt_rad 3`,
@@ -792,8 +938,8 @@ namelist assumes for an omitted key (`mix_full_fields` is an ordinary knob).
 | `sf_lake_physics`, `mosaic_lu/soil` | 0 (default), 1 | CLM lake columns and RUC weighted land-use/soil parameters; lake bathymetry and mosaic source fractions must be supplied |
 | `mynn_sfclay_variant` | `"wrf_461"` (global default), `"gsl_wrf39"` | gpuwm key, `[shared]`: which generation of the MYNN surface layer (`sf_sfclay_physics = 5`) runs. `wrf_461` is WRF v4.6.1 `module_sf_mynn.F`. `gsl_wrf39` uses the GSL WRF 3.9 fork's 5-pass secant z/L search, 5 Ri / 8 Ri fallback, cap and Richardson clamp at 50, thermal log numerators and psih lower limit. Imports named `hrrr_wrf.nl` or `hrrr_wrf.nl.*`, newly authored HRRR recipes, and shipped HRRR templates select `gsl_wrf39` explicitly. Other requests retain the global default. Explicit TOML selections are preserved, and a flip is refused on restart. This does not claim exact HRRR forecast parity |
 | `ruc_soilprop` | `"wrf_45"` (default), `"wrf_461"` | gpuwm key, `[shared]`: which WRF lineage's LSMRUC SOILPROP sets soil-water diffusivity and hydraulic conductivity. `wrf_45` (WRF v4.0-4.5, also the operational RAP/HRRR branch) normalises both by the moisture above the residual, (theta - qmin)/(theta_sat - qmin), with mineral conductivity 2.0 at every quartz fraction. `wrf_461` (WRF v4.6.1) uses total moisture over porosity and 3.0 below 20 percent quartz; in dry soil its water diffusivity is 2.5 to 8 times larger, measured to raise a 3 km afternoon top soil level from 0.161 to 0.187 m3/m3 in one hour from the levels below. Select it by name for WRF v4.6.1 parity. Every RUC configuration changes answers with this key; a flip is refused on restart |
-| `thompson_version` | `"wrf_461"` (default), `"wrf_39_noaa"` | gpuwm key, `[shared]`: which generation of the aerosol-aware Thompson microphysics (`mp_physics = 28`) runs. `wrf_461` is WRF v4.6.1's. `wrf_39_noaa` is the operational WRF 3.9 fork's (NOAA-EMC/HRRR v4.1.21): graupel intercept from graupel content and supercooled rain, non-increasing downward; ice-to-snow size 200 microns; graupel density 500 kg/m3; the fork's rain-number, ice-number, ice fall speed, nucleation, sublimation and melting rules, surface CCN emission recomputed from the analyzed lowest-level number at each domain start, and its own lookup tables, acquired before first use into `GPUWM_THOMPSON_FORK_TABLE_ROOT` or `~/.gpuwm/tables/thompson-wrf39-noaa`. A fresh cache builds the unmodified, hash-pinned public Fortran source using GNU Fortran and a pinned portable libc on Linux x86-64, or an installed WSL Ubuntu distribution on Windows; `gfortran` and `dpkg-deb` are required. `gpuwm fetch-tables --thompson-fork --thompson-fork-only` acquires the same set explicitly. Offline, add `--from DIR` or set `GPUWM_THOMPSON_FORK_TABLE_SOURCE_ROOT`; a pinned mirror can use `GPUWM_THOMPSON_FORK_TABLE_ASSET_URL_BASE`. Every file must match the existing size and SHA-256 pins. Configuration preview declares those pins and defers acquisition and validation to execution. Refused with `mp_physics = 8`; a flip is refused on restart |
-| `thompson_fork_snow_fall` | `"blend"` (default), `"wrf_39_noaa"` | gpuwm key, `[shared]`, read only with `thompson_version = "wrf_39_noaa"`: how melting snow falls. `blend` uses the rain-share blend (WRF v4.6.1, and the fix the fork carries commented out). `wrf_39_noaa` is the fork's live form, a 1.5 boost above 0 C and a speed divided by (T - 273.15) just above +0.1 C, singular there; kept by name, not the default |
+| `thompson_version` | `"wrf_461"` (default), `"wrf_39_noaa"` | gpuwm key, `[shared]`: which generation of the aerosol-aware Thompson microphysics (`mp_physics = 28`) runs. `wrf_461` is WRF v4.6.1's. `wrf_39_noaa` is the operational WRF 3.9 fork's (NOAA-EMC/HRRR v4.1.21): graupel intercept from graupel content and supercooled rain, non-increasing downward; ice-to-snow size 200 microns; graupel density 500 kg/m3; the fork's rain-number, ice-number, ice fall speed, nucleation, sublimation and melting rules, surface CCN emission recomputed from the analyzed lowest-level number at each domain start, and its own lookup tables, acquired before first use into `GPUWM_THOMPSON_FORK_TABLE_ROOT` or `~/.gpuwm/tables/thompson-wrf39-noaa`. A fresh cache downloads the four `thompson-wrf39-noaa-*` release assets (330 MiB, from this version's release, then from v2.8.7, the first to carry them); when no release answers it builds the unmodified, hash-pinned public Fortran source using GNU Fortran and a pinned portable libc on Linux x86-64, or an installed WSL Ubuntu distribution on Windows, for which `gfortran` and `dpkg-deb` are required. `gpuwm fetch-tables --thompson-fork --thompson-fork-only` acquires the same set explicitly. A run that does not select `wrf_39_noaa` never reads or acquires it. Offline, add `--from DIR` or set `GPUWM_THOMPSON_FORK_TABLE_SOURCE_ROOT`; a pinned mirror can use `GPUWM_THOMPSON_FORK_TABLE_ASSET_URL_BASE`. Every file must match the existing size and SHA-256 pins. Configuration preview declares those pins and defers acquisition and validation to execution. Refused with `mp_physics = 8`; a flip is refused on restart |
+| `thompson_fork_snow_fall` | `"blend"` (default), `"wrf_39_noaa"` | gpuwm key, `[shared]`, read only with `thompson_version = "wrf_39_noaa"`: how melting snow falls. `blend` uses the rain-share blend (WRF v4.6.1, and the fix the fork carries commented out). `wrf_39_noaa` is the fork's live form, a 1.5 boost above 0 C and a speed divided by (T - 273.15) just above +0.1 C, singular there. It is what the operational model integrates: the HRRR namelist importer, the shipped mp28 HRRR recipes and a configuration whose `[fetch] source` names an operational-fork model (hrrr*, rap*) under the fork generation on every domain select it at load when the key is omitted; a written value is kept, and the generic default stays `blend` |
 | `bl_mynn_version` | `"wrf_461"` (default), `"gsd_41"` | gpuwm key, `[shared]`: which generation of the MYNN boundary layer runs. `wrf_461` is WRF v4.6.1 `module_bl_mynn.F`. `gsd_41` ports the GSD MYNN v4.1 surface vapour flux, mixing length option 2, cloud block and radiation merge, mass-flux block, TKE predictor and water tendency conversion. Mixing length option 1, cycled initialization and closure 2.5 remain unported (`docs/dev/mynn-gsd41.md`). The named `hrrr_wrf.nl` importer, explicit HRRR recipes and the fork budget spelling `bl_mynn_tkebudget` select `gsd_41`. Requires the legacy RRTMG pair for radiation and `bl_mynn_mixscalars = 0`; refused with `spp_pbl = 1`. A flip is refused on restart |
 | `bl_mynn_gsd41_unsquared_qtke` | false (default), true | gpuwm key, `[shared]`: true takes the `gsd_41` option-2 mixing length's TKE conversion as written, 0.5*q without the square (v4.1.21 `module_bl_mynn.F:995`); false takes 0.5*q**2, as that file's option 1 and every later generation do. Read only under `bl_mynn_version = "gsd_41"`, `bl_mynn_mixlength = 2` |
 
@@ -1001,3 +1147,38 @@ ordinary forecast door.
   field by driving a distinctive value through the import and
   asserting it reaches the consuming kernel/module -- the tests
   themselves name the per-kernel consumption sites.
+
+## Smoke, dust and air quality (`[shared]`, opt-in)
+
+Off by default: with `chem_sets` absent or empty a run, its wrfout files and
+its checkpoints are byte for byte what they were before the option existed.
+Turning it on is a few `[shared]` keys. A worked example for the editable
+starter (`configs/starters/regional-gfs-rrtmgp.toml`, 12 km with Kain-Fritsch
+cumulus) that carries wildfire smoke from NOAA's RAVE fire product plus
+GOCART dust, sea salt and black and organic carbon:
+
+```toml
+[shared]
+chem_sets = "gocart_primary,smoke"
+chem_sources = "rave-3km"
+dust_opt = 1
+seas_opt = 1
+wetscav_onoff = -1
+chem_conv_tr = 0
+```
+
+| key | values | what it does |
+|---|---|---|
+| `chem_sets` | `smoke`, `gocart_primary`, `dust`, `gocart_lite`, `gocart_simple`, `cams_aq`, comma separated | the transported species; empty is off |
+| `chem_sources` | `rave-3km`, `cams-global`, `cams-oxidants`, `hrrr-native-smoke` | where emissions and start and edge values come from; a smoke run whose `[fetch] source` is HRRR gets `hrrr-native-smoke` (HRRR-Smoke's own smoke as start and edge values) without naming it |
+| `fire_emission_mode` | `trailing_24h_dcycle` (default), `observed_hourly`, `daily_mean_dcycle` | how RAVE feeds the fires: by default each fire's mean over the 24 hours before the start, newest hour included, on a diurnal cycle (HRRR-Smoke's method); observed only for hindcasts |
+| `dust_opt`, `seas_opt` | 1 GOCART dust (3 AFWA), 1 GOCART sea salt | dust and sea-salt emission |
+| `wetscav_onoff` | -1 (the default when `smoke` is on) | large-scale rain washes species out; 0 turns it off |
+| `chem_conv_tr` | 0 | required with a cumulus scheme on: convective transport is not transcribed and the default 1 is refused |
+
+The run then writes `smoke`, `PM2_5_DRY`, `PM10`, `SMOKE_SFC`,
+`SMOKE_COLUMN`, `DUST_SFC`, `AOD5502D` and the species rows to every wrfout,
+and `gpuwm render --products smoke_near_surface,pm25_near_surface,aod_550`
+draws them. Dust needs `gpuwm fetch-geog --datasets chem-dust` once; CAMS
+sources need an Atmosphere Data Store key. Every option, refusal and output is
+in [SMOKE-AND-AIR-QUALITY.md](SMOKE-AND-AIR-QUALITY.md).

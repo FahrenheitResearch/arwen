@@ -161,41 +161,61 @@ def test_a_frame_carrying_all_five_needs_no_initialization_policy(frame):
             assert np.all(snapshot.fields[legacy] > 0.0)
 
 
-def test_a_carried_vertical_velocity_is_dropped_with_one_notice(
+def test_a_carried_vertical_velocity_is_packed_not_dropped(
         frame, monkeypatch):
-    """A source carrying more than the join consumes is a drop, not a refusal.
+    """A carried vertical velocity reaches the pack; nothing is dropped.
 
-    ONE notice per run, not one per door: a single preparation reaches
-    warn_regular_join_drops from both plan-review call sites in
-    gpuwm.mapped_direct.prepare_mapped_wrf and again from the frame join,
-    and every one of them still gets the dropped list back for its
-    receipt.
+    The join used to drop ``vertical_velocity`` by name (the guard that
+    kept every HRRR-analysis start at W = 0).  Now geometric W is packed
+    as ``WW`` and omega as ``OMEGA``, each under its own units, and the
+    drop list is empty, so the plan review's notice has nothing to say.
     """
 
     from gpuwm import explain, mapped_source
 
     monkeypatch.setattr(mapped_source, "_JOIN_DROPS_WARNED", set())
     shape = frame.fields["specific_humidity"].values.shape
-    changed = _with_hydrometeors(
-        frame, {"vertical_velocity": np.full(shape, -0.1, dtype=np.float64)})
+    w = np.full(shape, -0.1, dtype=np.float64)
+    omega = np.full(shape, 2.5, dtype=np.float64)
+    changed = _with_hydrometeors(frame, {"vertical_velocity": w})
+    changed = replace(changed, fields={
+        **changed.fields,
+        "vertical_velocity": replace(
+            changed.fields["vertical_velocity"], units="m s-1"),
+        "pressure_vertical_velocity": replace(
+            changed.fields["vertical_velocity"],
+            name="pressure_vertical_velocity", units="Pa s-1", values=omega),
+    })
     seen = []
     explain.add_warning_observer(seen.append)
     try:
         review = mapped_source.warn_regular_join_drops(
-            ("vertical_velocity",), subject="this mapping")
-        again = mapped_source.warn_regular_join_drops(
-            ("vertical_velocity",), subject="this mapping")
+            ("vertical_velocity", "pressure_vertical_velocity"),
+            subject="this mapping")
         snapshot = mapped_frames_to_regular_snapshots((changed,))[0]
     finally:
         explain.remove_warning_observer(seen.append)
-    assert "W" not in snapshot.fields
+    assert review == ()
+    assert mapped_source.REGULAR_JOIN_DROPPED_FIELDS == ()
+    assert snapshot.fields["WW"].tobytes() == w.tobytes()
+    assert snapshot.fields["OMEGA"].tobytes() == omega.tobytes()
     assert snapshot.fields["T"].shape == shape
-    # Every door still learns what was dropped; only the line is once.
-    assert review == again == ("vertical_velocity",)
-    named = [record for record in seen
-             if "vertical_velocity" in record["action"]]
-    assert len(named) == 1
-    assert "no consumer" in named[0]["action"]
+    assert not [record for record in seen
+                if "vertical_velocity" in record["action"]]
+
+
+def test_a_vertical_velocity_in_the_wrong_units_is_refused(frame):
+    """Omega packed as W would be a silent factor of minus rho g."""
+
+    shape = frame.fields["specific_humidity"].values.shape
+    changed = _with_hydrometeors(
+        frame, {"vertical_velocity": np.full(shape, 1.0, dtype=np.float64)})
+    changed = replace(changed, fields={
+        **changed.fields,
+        "vertical_velocity": replace(
+            changed.fields["vertical_velocity"], units="Pa s-1")})
+    with pytest.raises(ValueError, match="vertical_velocity must carry m s-1"):
+        mapped_frames_to_regular_snapshots((changed,))
 
 
 def test_real_netcdf_decoding_reaches_identical_regular_pack(tmp_path):

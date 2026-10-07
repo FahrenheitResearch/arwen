@@ -494,11 +494,52 @@ ADVECTIVE_FORCING_STATE = ("rthften", "rqvften")
 #: the domain, never admitted to the step-local rebuilt workspace.
 CHECKPOINT_ONLY_STATE = ("ww_pp",)
 
+#: Chem species fields (gpuwm/core/chem_state.py).  They are named by the
+#: chem table (``chem_<row>``), not listed in :data:`STATE_SERIALIZED_ATTRS`,
+#: because which rows a run carries is data.  ``chem_<row>`` is serialized
+#: state exactly like ``qv``; ``chem0_<row>`` is its RK time-t copy, rebuilt
+#: like ``qv0``.  PREFIXES, because WRF species names end in digits
+#: (``dust_1``, ``so2``): a ``0`` suffix would make ``chem_dust_10``
+#: ambiguous.  Defined here, in the package that ships in the standalone
+#: RW-WPS wheel, so a prepared chem state serializes through the same
+#: contract as every other field.
+CHEM_STATE_PREFIX = "chem_"
+CHEM_TIME_PREFIX = "chem0_"
+#: Chem PROCESS arrays and the mass ledger (gpuwm/core/chem_driver.py):
+#: ``chemdiag_<name>`` is cross-step state a checkpoint carries
+#: (accumulations, persistence buffers, the ledger's running totals);
+#: ``chemwork_<name>`` is rewritten before every read.
+CHEM_DIAG_PREFIX = "chemdiag_"
+CHEM_WORK_PREFIX = "chemwork_"
+
+
+def chem_state_attrs(state) -> tuple[str, ...]:
+    """The serialized chem arrays ``state`` carries, sorted by name.
+
+    ``chem_<row>`` species fields and ``chemdiag_<name>`` process/ledger
+    arrays.  Empty on every state whose run carries no chem, so
+    :func:`serialized_state_attrs` is then exactly
+    :data:`STATE_SERIALIZED_ATTRS`.
+    """
+    names = getattr(state, "__dict__", None) or {}
+    return tuple(sorted(name for name in names
+                        if name.startswith(CHEM_STATE_PREFIX)
+                        or name.startswith(CHEM_DIAG_PREFIX)))
+
+
+def serialized_state_attrs(state) -> tuple[str, ...]:
+    """:data:`STATE_SERIALIZED_ATTRS` plus this state's chem species fields."""
+    return STATE_SERIALIZED_ATTRS + chem_state_attrs(state)
+
 
 __all__ = [
     "ADVECTIVE_FORCING_STATE",
     "BUILT_END_FRAME_PREFIX_SCHEMA",
     "CHECKPOINT_ONLY_STATE",
+    "CHEM_DIAG_PREFIX",
+    "CHEM_STATE_PREFIX",
+    "CHEM_TIME_PREFIX",
+    "CHEM_WORK_PREFIX",
     "LATERAL_BOUNDARY_PREFIX_SCHEMA",
     "LATERAL_BOUNDARY_PREFIX_SCHEMAS",
     "RATIONAL_BOUNDARY_PREFIX_SCHEMA",
@@ -509,7 +550,9 @@ __all__ = [
     "STATE_SETUP_SCALARS",
     "boundary_frame_sha256",
     "built_end_frame",
+    "chem_state_attrs",
     "lateral_boundary_prefix_identity",
     "setup_core_fingerprint",
+    "serialized_state_attrs",
     "setup_fingerprint",
 ]

@@ -57,11 +57,37 @@ def _host(value) -> np.ndarray:
     return np.ascontiguousarray(np.asarray(value))
 
 
+def _hosts_ahead(arrays):
+    """``(name, host copy)`` in order, the next array's copy fetched on a
+    thread while the caller hashes the current one.
+
+    Breakage it removes: a whole-state hash of a 9 km CONUS member copied
+    every array off the card and then hashed it, one after the other, twice
+    per increment application (before and after): seconds of host time per
+    member leg with the card idle.  Copy and hash both run without the GIL,
+    so they overlap; the bytes hashed and their order are unchanged.
+    """
+    arrays = list(arrays)
+    if len(arrays) < 2:
+        for name, value in arrays:
+            yield name, _host(value)
+        return
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=1,
+                            thread_name_prefix="state-sha-copy") as pool:
+        pending = pool.submit(_host, arrays[0][1])
+        for index, (name, _value) in enumerate(arrays):
+            host = pending.result()
+            if index + 1 < len(arrays):
+                pending = pool.submit(_host, arrays[index + 1][1])
+            yield name, host
+
+
 def hash_state_arrays(arrays) -> str:
     """Hash an ordered ``(name, array)`` sequence under the contract."""
     digest = hashlib.sha256(STATE_SHA_CONTRACT.encode("ascii") + b"\0")
-    for name, value in arrays:
-        host = _host(value)
+    for name, host in _hosts_ahead(arrays):
         digest.update(name.encode("utf-8"))
         digest.update(b"\0")
         digest.update(str(host.dtype).encode("ascii"))

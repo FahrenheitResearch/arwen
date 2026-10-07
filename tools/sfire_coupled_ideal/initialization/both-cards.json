@@ -1,0 +1,37 @@
+{
+  "schema": "native-initializer-both-cards-v1",
+  "source_revision": "3431d240846128fc63f5ede110030c31f1e0a467",
+  "source_sha256": {
+    "gpuwm/core/sfire_ideal.py": "c88d61d713f6fe088accf579a6f8df85695e408cbbf516c5619c78ef6d743e9b",
+    "gpuwm/core/kernels/sfire_ideal.cu": "fb453b222c1915be8bce43f491a5ab634c11ccad6e688644bce27f8711251adc",
+    "gpuwm/core/sfire_ideal_atmos.py": "798825d20bef6a9937d728b3b2a8e164896a7287c5766acaecc7aa75d80dc707",
+    "gpuwm/core/kernels/sfire_ideal_atmos.cu": "4a3676370effcee9c4a4413b1d649b19f25335b798080c770060e27dfa28751a"
+  },
+  "cards": {
+    "4090": {
+      "checks": 127,
+      "passed": 127,
+      "graded_words": 237993,
+      "different_words": 0,
+      "max_ulp": 0,
+      "geometry_words": 36525,
+      "landuse_words": 21420,
+      "moisture_driver_words": 179040,
+      "surface_words": 1008,
+      "junit_sha256": "60ba5402658b4514b7559b7be7a88af6f4905873691b128ce7af88e7f398f21a"
+    },
+    "5090": {
+      "checks": 127,
+      "passed": 127,
+      "graded_words": 237993,
+      "different_words": 0,
+      "max_ulp": 0,
+      "geometry_words": 36525,
+      "landuse_words": 21420,
+      "moisture_driver_words": 179040,
+      "surface_words": 1008,
+      "junit_sha256": "d7e9712cc14dc2181077f4df4beeefa7de7c9b67ec5afebc0b8b931a31cc6208"
+    }
+  },
+  "reference": "Compiled original WRF v4.7.1 routines and byte-extracted initialization blocks; separately labeled corrected callers and native defects"
+}

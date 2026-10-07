@@ -34,46 +34,88 @@ realized variance, which is wrong: sample variance is supposed to fluctuate
 between members.  The realized RMS of each draw is recorded in the provenance
 instead.
 
-What this does NOT do (v1, stated plainly)
-------------------------------------------
-* **No mass balance.**  ``mu'`` is untouched and the perturbed state is not
-  re-balanced hydrostatically.  The perturbations are added to ``theta'`` and
-  the moisture field directly; the column mass they imply is not imposed.
-* **No wind balance.**  The ``u``/``v`` perturbations are not divergence-free
-  and are not in gradient-wind or geostrophic balance with the temperature
-  perturbation.  Expect the first minutes of the forecast to radiate gravity
-  waves while the model adjusts.  For storm-scale ensembles with a short
-  spin-up this is the accepted cost of a simple, auditable perturbation; a
-  balanced route (a streamfunction/velocity-potential control vector, or a
-  digital filter over the first steps) is future work.
-* **No perturbation of the boundary forcing.**  Members share one boundary
-  file.  The rim taper is what keeps that legal; it does not make the members
-  independent out to the boundary, and it means ensemble spread decays toward
-  the rim by construction.  :func:`recycled_difference_perturbations` and
-  :func:`perturbed_lateral_boundaries` are documented stubs, not code.
+Balance (2026-10-06: what the member start now keeps)
+-----------------------------------------------------
+Two measurements drove this.  The DA lanes found the members' spread well
+below O-B against every conventional observation type one analysis in
+(about 2x in temperature, 1.5-2.5x in wind, 3-5x in dewpoint once the
+observation error and the posterior-versus-prior spread are accounted for),
+and the members' surface pressure tendency 2-3x the control's over their
+first 30 minutes before any analysis had touched them.  The second has its
+cause here: the leg-0 perturbation was unbalanced.  Two draws of ``u`` and
+``v`` that know nothing of each other put half their kinetic energy into
+divergence, which radiates; a theta perturbation under a fixed geopotential
+reads as a pressure jump of about ``gamma * dtheta / theta`` (4 hPa per
+kelvin), which rings.  The first does NOT (measured 2026-10-06 on a 3 km
+crop, 4 members per arm, 60 min): balancing the start cut the insertion
+pressure jump 28x and the members' 30-minute surface-pressure noise from
+2.1x to 1.3x the control's, but the retained spread moved by only 1-4
+points (wind 0.81 to 0.83 at 30 min; theta and vapour unchanged).  The
+spread deficit is the configured draw amplitude with nothing in the cycle
+growing it, a separate question this module's balance does not answer.
+
+* **Wind: non-divergent by construction** (``wind_mode = "rotational"``,
+  the default).  ONE streamfunction is drawn on the corner grid and the
+  ``u``/``v`` increments are its C-grid differences, so the model's own
+  divergence stencil sees exactly zero at every mass point where the rim
+  taper is one.  Each component then takes the scalar rim taper, which
+  leaves a divergence of order ``u * grad(taper)`` inside the rim band
+  only (the independent draws always carried that term there too); the
+  taper is NOT put on the streamfunction, because a streamfunction that
+  vanishes across a 5-cell rim at 150 km scale is a 35x tangential wind
+  along the boundary (measured, 2026-10-06; see
+  :func:`rotational_wind_draw`).  A non-divergent perturbation at scales
+  below the Rossby radius is the part geostrophic adjustment keeps; the
+  mass field adjusts to it instead of the other way round.  The
+  streamfunction's own scale is ``sqrt(3)`` times the configured one,
+  which is exactly what puts the WIND's radial spectrum peak at
+  ``k = 1/L``, the module's length-scale contract.  ``"independent"``
+  keeps the old unrelated draws as a labelled comparison arm.
+* **Mass: hydrostatic** (``mass_balance = "hydrostatic"``, the default).
+  After the thermodynamic perturbations the column geopotential ``php`` is
+  re-integrated at the column's own dry mass by
+  :mod:`gpuwm.da.hydrostatic` (the same operator the analysis insertion
+  uses), so the perturbed column starts hydrostatic.  ``mu'`` is untouched.
+  It needs the run's ``hypsometric_opt`` and a state with a loaded base;
+  a state without one must say ``mass_balance = "none"`` rather than get a
+  silent zero.
+
+What this still does NOT do (stated plainly)
+--------------------------------------------
+* **No geostrophic or gradient-wind coupling.**  The streamfunction and
+  the theta draw are independent: the wind is balanced with itself, not
+  with the temperature.  The thermal-wind tie (theta from the vertical
+  shear of the streamfunction) is the next step and is not here.
+* **The map factor is not seen.**  Non-divergence is exact on the index
+  stencil; on a projected grid the residual divergence is of the order
+  of the map factor's variation across the domain.
+* **The boundary forcing is perturbed by a separate call.**  The initial
+  perturbation is tapered to zero at the rim so it agrees with the
+  boundary at the start; :func:`perturbed_lateral_boundaries` then gives
+  each member its own boundary tables, ramping from that agreement into the
+  member's own draw over the first boundary interval, so spread no longer
+  decays toward the rim as the shared inflow floods the domain.  A caller
+  that never calls it keeps the shared boundary, and the rim taper is then
+  the whole boundary story.  :func:`recycled_difference_perturbations` is a
+  documented stub, not code.
 * **No perturbation of surface, soil, or physics parameters**, and no
   perturbation of ``w`` or ``mu'``.
-* **No vertical taper.**  Perturbations reach the model top and the surface
-  at full amplitude; only the lateral rim is tapered.
+* **The initial-condition call has no vertical taper.**  Its perturbations
+  reach the model top and surface at full amplitude.  The separate
+  :func:`vertical_taper` helper lets a spread-maintenance policy prescribe
+  its own surface and model-top attenuation.
 * **No flow dependence.**  The correlation length is prescribed and uniform,
   not derived from the analysis error covariance of the day.
-* **The draw is periodic, because the FFT is, and the vertical wrap is NOT
-  controlled.**  Opposite edges of the raw field are correlated.
-  Horizontally the rim taper hides it completely -- both edges are
-  multiplied by zero.  Vertically nothing hides it, and the quarter-column
-  cap on ``vertical_scale_levels`` does not fix it: on a periodic column
-  level ``0`` and level ``nz-1`` are ONE grid interval apart, not ``nz/2``,
-  so their correlation is about ``exp(-1 / (2 Lv^2))`` -- which at the
-  admitted cap (``nz=24``, ``Lv=6``) is ``0.983``, essentially locked
-  together, and was previously documented as ``exp(-2) ~ 0.14``.  That
-  claim confused the maximum circular separation with the seam and was
-  simply wrong.  What the cap does control is the mid-column correlation,
-  and even there periodic image covariance keeps it above the Gaussian
-  value (measured ``0.297`` against a claimed ``0.135``).  Every draw with
-  a nonzero vertical scale now reports its exact seam and half-column
-  correlations in ``provenance["fields"][i]["vertical_wrap"]``, computed
-  from the filter that was actually used; read them before interpreting
-  any top-versus-bottom spread.
+* **The horizontal draw is periodic; the physical vertical column is a
+  crop of a larger independent-noise draw.**  Each vertical end has a halo
+  of at least four correlation lengths, so the nearest periodic image of
+  the opposite physical endpoint is more than eight correlation lengths
+  away.  The old quarter-column cap did not repair the seam and is retired.
+  Long vertical scales may now produce physically coherent columns rather
+  than being refused.  The analytic normalization uses the padded spectrum,
+  and every draw reports the exact cropped top-to-bottom and half-column
+  correlations in ``provenance["fields"][i]["vertical_wrap"]``.  No sample
+  normalization or repeated physical column is used.
 
 Multiplicative perturbations, and why the hydrometeors get them
 --------------------------------------------------------------
@@ -89,9 +131,14 @@ cell whose slope closure evaluates to NaN (see :mod:`gpuwm.da.moments`).
 So a hydrometeor species is perturbed **multiplicatively**, by a
 lognormal factor drawn from the same smooth spectrum as everything else:
 
-    ``f = exp(sigma_ln * clip(g, -k, +k) * taper)``,  ``g`` unit-variance,
+    ``f = exp(sigma_ln * clip(g, -k, +k) * taper - c)``,  ``g`` unit-variance,
 
-and that ONE factor multiplies every prognostic moment of the species --
+with ``c = log E[f]`` of the uncorrected factor per column
+(:func:`clipped_lognormal_log_mean`), so that ``E[f] = 1`` exactly: the
+ensemble MEAN carries the background's mass, and the members carry the
+spread.  Without ``c`` the mean took ``exp(sigma_ln^2 / 2)``, +27% at 0.7,
+measured on the module's own draw (2026-10-06), which every analysis then
+started from.  That ONE factor multiplies every prognostic moment of the species --
 mass, number, and NSSL's predicted volume.  Four properties follow, and
 each is a property rather than a hope:
 
@@ -160,16 +207,29 @@ __all__ = [
     "apply_perturbations",
     "gaussian_random_field",
     "boundary_taper",
+    "vertical_taper",
     "radial_power_spectrum",
     "spectral_peak_wavenumber",
     "fit_gaussian_length_scale",
     "default_array_module",
     "recycled_difference_perturbations",
     "perturbed_lateral_boundaries",
+    "boundary_coupling_weights",
+    "boundary_perturbation_unavailable",
+    "additive_inflation",
+    "echo_weight",
+    "rotational_wind_draw",
+    "WIND_MODES",
+    "MASS_BALANCE_MODES",
+    "STREAMFUNCTION_SCALE_FACTOR",
+    "ECHO_NOISE_THRESHOLD_DBZ",
+    "BOUNDARY_PERTURBATION_SCHEMA",
+    "ADDITIVE_INFLATION_SCHEMA",
+    "DEFAULT_BOUNDARY_TIME_SCALE_HOURS",
 ]
 
 #: Provenance schema identifier.  Bump on any change to the emitted keys.
-PROVENANCE_SCHEMA = "gpuwm.da.perturb/provenance/v1"
+PROVENANCE_SCHEMA = "gpuwm.da.perturb/provenance/v2"
 
 #: Domain-separation string mixed into every random stream key, so a seed
 #: reused by an unrelated module cannot reproduce these draws.
@@ -194,15 +254,11 @@ _MIN_SCALE_CELLS = 2.0
 #: between 0.159 and 0.25 of the span are now refused rather than quietly
 #: given a domain-wide offset.
 _MAX_HORIZONTAL_SPAN_FRACTION = 1.0 / (2.0 * math.pi)
-#: The vertical ceiling, which is a DIFFERENT and weaker claim than the
-#: horizontal one.  It bounds how much of the column one coherent blob may
-#: span; it does NOT control the FFT seam.  On a periodic column the top and
-#: bottom levels are one interval apart, so their correlation is about
-#: ``exp(-1/(2 Lv^2))`` -- 0.98 at this ceiling, not the ``exp(-2)`` this
-#: constant used to claim.  See the module docstring, and
-#: :func:`vertical_wrap_correlations`, which reports the real numbers per
-#: draw.
-_MAX_VERTICAL_SPAN_FRACTION = 0.25
+#: Independent-noise halo on EACH end of the physical column.  The nearest
+#: periodic image of the opposite endpoint is then more than 8 Lv away,
+#: giving a Gaussian image contribution below exp(-32).  The exact discrete
+#: covariance, including remaining image contributions, is in provenance.
+_VERTICAL_HALO_SCALES = 4.0
 
 
 # --------------------------------------------------------------------------
@@ -231,11 +287,59 @@ class _Target:
 #:   ``sigma`` in the field's own units.  The only defensible mode for a
 #:   signed quantity.
 #:
-#: ``"lognormal"`` -- ``x <- x * exp(sigma_ln * g)``, with ``sigma_ln``
-#:   dimensionless.  Positivity-preserving in IEEE arithmetic and scale
-#:   free, which is what a mixing ratio spanning six decades needs.  Only
-#:   available on non-negative fields.
+#: ``"lognormal"`` -- ``x <- x * exp(sigma_ln * clip(g) - c)``, with
+#:   ``sigma_ln`` dimensionless and ``c = log E[exp(sigma_ln * clip(g))]``
+#:   (:func:`clipped_lognormal_log_mean`) so the factor's expectation is 1
+#:   and the ensemble MEAN keeps the background's value; the factor's
+#:   median is then ``exp(-c)``, below 1.  Positivity-preserving in IEEE
+#:   arithmetic and scale free, which is what a mixing ratio spanning six
+#:   decades needs.  Only available on non-negative fields.
 PERTURBATION_MODES = ("additive", "lognormal")
+
+#: How the ``u`` and ``v`` draws are related.
+#:
+#: ``"rotational"`` (the default) -- ONE streamfunction draw on the corner
+#:   grid, ``u = -d(psi)/dy`` and ``v = d(psi)/dx`` by the C-grid
+#:   differences, so the wind perturbation is exactly non-divergent on
+#:   the model's own divergence stencil wherever the rim taper is 1 (the
+#:   components take the scalar rim taper, so the rim band carries a
+#:   divergence of order ``u * grad(taper)`` and nothing more).  A
+#:   non-divergent perturbation projects onto the slow (balanced) manifold;
+#:   the model keeps it.  Both components share the ``u`` spec's length
+#:   scales; the ``u`` and ``v`` amplitudes must agree.
+#:
+#: ``"independent"`` -- the pre-2026-10-06 behaviour: ``u`` and ``v`` are
+#:   two unrelated draws.  Half their kinetic energy is divergent and
+#:   radiates away as gravity waves within the first hour.  Measured
+#:   2026-10-06 together with the mass half (independent draws without
+#:   the hydrostatic php against rotational draws with it; the two
+#:   half-arms that would split the credit were not run): the members'
+#:   surface pressure tendency over the first 30 min fell from 2.1x to
+#:   1.3x the control's.  The members' spread deficit against the
+#:   conventional observation types is NOT this: the retained spread
+#:   barely differs between the two starts.  Kept as a labelled
+#:   comparison arm only.
+WIND_MODES = ("rotational", "independent")
+
+#: What happens to the column geopotential after a thermodynamic draw.
+#:
+#: ``"hydrostatic"`` (the default) -- ``php`` is re-integrated at the
+#:   column's own dry mass so the perturbed column starts hydrostatic
+#:   (:mod:`gpuwm.da.hydrostatic`, the analysis insertion's own operator).
+#:   Measured on the 10-01 CONUS members (lane 7, arm basep): the leg-0
+#:   surface pressure tendency fell from 29.1 to 21.5 hPa/h with it.
+#:   Needs ``hypsometric_opt`` and a state whose base is loaded.
+#:
+#: ``"none"`` -- the pre-2026-10-06 behaviour; for states without a
+#:   vertical coordinate (unit tests, synthetic grids) and for comparison.
+MASS_BALANCE_MODES = ("hydrostatic", "none")
+
+#: The streamfunction's scale is this times the configured wind scale.
+#: A derivative of a Gaussian field with correlation length ``L_psi`` has
+#: the radially binned spectrum ``k^3 exp(-k^2 L_psi^2 / 2)``, which
+#: peaks at ``k = sqrt(3) / L_psi``; drawing ``psi`` at ``sqrt(3) L``
+#: puts the wind's peak at ``1/L``, the same place a scalar's sits.
+STREAMFUNCTION_SCALE_FACTOR = math.sqrt(3.0)
 
 
 #: The fields this module knows how to perturb.
@@ -539,6 +643,16 @@ class PerturbationConfig:
     #: resident member and a streamed member of the same seed are
     #: byte-identical.  See the class docstring for the measurement.
     fft_host: bool = False
+    #: How ``u`` and ``v`` relate; see :data:`WIND_MODES`.
+    wind_mode: str = "rotational"
+    #: What happens to ``php`` after a thermodynamic draw; see
+    #: :data:`MASS_BALANCE_MODES`.
+    mass_balance: str = "hydrostatic"
+    #: The run's WRF ``hypsometric_opt`` (1 or 2), which the hydrostatic
+    #: re-integration keys its layer operator on.  Required whenever the
+    #: mass balance has a column field to act on; a state does not carry
+    #: its run configuration, so the caller states it.
+    hypsometric_opt: int | None = None
 
     def __post_init__(self) -> None:
         for label, value in (("dx_km", self.dx_km), ("dy_km", self.dy_km)):
@@ -611,6 +725,50 @@ class PerturbationConfig:
                 f"{self.compute_dtype!r}")
         object.__setattr__(self, "fft_host", bool(self.fft_host))
 
+        if self.wind_mode not in WIND_MODES:
+            raise ValueError(
+                f"unknown wind_mode {self.wind_mode!r}; supported: "
+                + ", ".join(WIND_MODES))
+        if self.wind_mode == "rotational" and ("u" in names or "v" in names):
+            if not ("u" in names and "v" in names):
+                raise ValueError(
+                    "wind_mode 'rotational' derives u AND v from one "
+                    "streamfunction; configuring only "
+                    f"{'u' if 'u' in names else 'v'} would leave the other "
+                    "component's half of the non-divergent field out and "
+                    "the increment divergent. Configure both, or "
+                    "wind_mode = 'independent' for a one-component draw")
+            u_spec, v_spec = self.spec("u"), self.spec("v")
+            for label in ("amplitude", "length_scale_km",
+                          "vertical_scale_levels", "mode"):
+                if getattr(u_spec, label) != getattr(v_spec, label):
+                    raise ValueError(
+                        f"wind_mode 'rotational': u and v must agree on "
+                        f"{label} (u {getattr(u_spec, label)!r}, v "
+                        f"{getattr(v_spec, label)!r}); both components "
+                        "are differences of ONE streamfunction and cannot "
+                        "carry two amplitudes or two scales")
+        if self.mass_balance not in MASS_BALANCE_MODES:
+            raise ValueError(
+                f"unknown mass_balance {self.mass_balance!r}; supported: "
+                + ", ".join(MASS_BALANCE_MODES))
+        if self.hypsometric_opt is not None:
+            if (int(self.hypsometric_opt) != self.hypsometric_opt
+                    or int(self.hypsometric_opt) not in (1, 2)):
+                raise ValueError(
+                    f"hypsometric_opt must be 1 or 2 (WRF's), got "
+                    f"{self.hypsometric_opt!r}")
+            object.__setattr__(self, "hypsometric_opt",
+                               int(self.hypsometric_opt))
+
+    @property
+    def column_field_names(self) -> tuple[str, ...]:
+        """The configured perturbations that change the hydrostatic
+        column: theta (either spelling), vapour and every species."""
+        thermo = tuple(n for n in self.field_names if n in ("t", "theta",
+                                                             "qv"))
+        return thermo + self.species_names
+
     @property
     def field_names(self) -> tuple[str, ...]:
         """Configured field names in the canonical application order."""
@@ -638,7 +796,7 @@ class PerturbationConfig:
         """
         known = {"dx_km", "dy_km", "fields", "species", "rim_width",
                  "rim_taper", "qv_floor", "rh_cap", "compute_dtype",
-                 "fft_host"}
+                 "fft_host", "wind_mode", "mass_balance", "hypsometric_opt"}
         unknown = sorted(set(mapping) - known)
         if unknown:
             raise ValueError(
@@ -684,6 +842,14 @@ class PerturbationConfig:
             kwargs["compute_dtype"] = str(mapping["compute_dtype"])
         if "fft_host" in mapping:
             kwargs["fft_host"] = bool(mapping["fft_host"])
+        if "wind_mode" in mapping:
+            kwargs["wind_mode"] = str(mapping["wind_mode"])
+        if "mass_balance" in mapping:
+            kwargs["mass_balance"] = str(mapping["mass_balance"])
+        if "hypsometric_opt" in mapping:
+            option = mapping["hypsometric_opt"]
+            kwargs["hypsometric_opt"] = (None if option is None
+                                         else int(option))
         return cls(**kwargs)
 
 
@@ -783,11 +949,32 @@ def _device_fft_plan(shape: Sequence[int], dtype, value_type: str):
 
 def _draw_shapes(cfg: "PerturbationConfig", mass_shape: Sequence[int]
                  ) -> tuple[tuple[int, int, int], ...]:
-    """Every distinct field shape :func:`apply_perturbations` draws."""
+    """Every distinct padded FFT shape the configuration draws.
+
+    Under ``wind_mode = "rotational"`` (the default) ``u`` and ``v`` are
+    not drawn at all: ONE streamfunction is drawn on the corner grid
+    ``(nz, ny + 1, nx + 1)`` and differenced.  That is the shape whose
+    plan the card builds and whose work area the admission must price;
+    listing the ``u``/``v`` face shapes instead measured two plans the
+    draw never runs and priced the one it does at zero (review,
+    2026-10-06: the cycle's admission test saw the plan sizes change
+    nothing).
+    """
     nz, ny, nx = (int(extent) for extent in mass_shape)
-    shapes = [_expected_shape(name, nz, ny, nx) for name in cfg.field_names]
-    if cfg.species:
-        shapes.append((nz, ny, nx))
+    rotational = cfg.wind_mode == "rotational" and "u" in cfg.field_names
+    shapes = []
+    for name in cfg.field_names:
+        levels = cfg.spec(name).vertical_scale_levels
+        if rotational and name in ("u", "v"):
+            if name == "u":
+                shapes.append(_vertical_fft_shape((nz, ny + 1, nx + 1),
+                                                  levels)[0])
+            continue
+        shapes.append(_vertical_fft_shape(_expected_shape(name, nz, ny, nx),
+                                          levels)[0])
+    shapes.extend(_vertical_fft_shape((nz, ny, nx),
+                                      spec.vertical_scale_levels)[0]
+                  for spec in cfg.species)
     return tuple(dict.fromkeys(shapes))
 
 
@@ -795,8 +982,8 @@ def fft_plan_work_bytes(cfg: "PerturbationConfig", mass_shape: Sequence[int],
                         xp=None) -> dict:
     """cuFFT's own work area for each plan a member's perturbation runs.
 
-    ``{shape: (forward_bytes, inverse_bytes)}`` for every distinct field
-    shape the configuration draws, read off the plans themselves: each is
+    ``{shape: (forward_bytes, inverse_bytes)}`` for every distinct padded
+    FFT shape the configuration draws, read off the plans themselves: each is
     built with :func:`_device_fft_plan`, exactly as the draw builds it, and
     its work area (allocated from the device pool at the size
     ``cufftMakePlanMany`` reported) is measured and released.  Empty when
@@ -887,65 +1074,75 @@ def _analytic_variance(n: int, spacing: float,
         _axis_filter(n, spacing, length_scale, half=False) ** 2))
 
 
+def _vertical_fft_shape(shape: Sequence[int], vertical_scale_levels: float
+                        ) -> tuple[tuple[int, int, int], int]:
+    """Independent-noise FFT domain and physical-column crop offset.
+
+    Padding is fresh noise, never a tiled or reflected physical column.
+    The filter is stationary on this larger domain, so cropping preserves
+    its analytic point variance while separating the physical endpoints.
+    """
+    nz, ny, nx = (int(extent) for extent in shape)
+    scale = float(vertical_scale_levels)
+    if not math.isfinite(scale) or scale < 0.0:
+        raise ValueError(
+            "vertical_scale_levels must be finite and non-negative; a "
+            f"non-finite or negative scale cannot define a covariance, got {scale!r}")
+    halo = int(math.ceil(_VERTICAL_HALO_SCALES * scale))
+    return (nz + 2 * halo, ny, nx), halo
+
+
 def vertical_wrap_correlations(nz: int,
                                vertical_scale_levels: float) -> dict[str, Any]:
-    """The column's real periodic correlations, from the filter in use.
+    """Exact correlations of the physical crop of the actual FFT domain.
 
-    The field is white noise multiplied by the separable amplitude filter
-    ``H``, so along the vertical axis its circular autocorrelation at lag
-    ``d`` is exactly
-
-    ``rho(d) = sum_k |H(k)|^2 cos(2 pi k d / nz) / sum_k |H(k)|^2``
-
-    -- no sampling, no fitting, no approximation.  Evaluated at ``d=1``
-    (adjacent interior levels), at ``d=nz-1`` (the FFT SEAM: on a circle
-    the top and bottom levels are one interval apart, which is why the
-    seam correlation is close to the adjacent one and nowhere near the
-    ``exp(-(nz/2)^2/(2 Lv^2))`` the cap used to be justified by), and at
-    ``d=nz//2`` (the maximum circular separation, which is the quantity
-    the quarter-column cap actually bounds).
-
-    ``gaussian_random_field`` puts this in its ``info`` and
-    :func:`apply_perturbations` puts it in every field record, so the
-    number a reader needs is in the manifest instead of in a docstring.
+    For ``N`` padded levels, the stationary correlation at physical lag
+    ``d`` is ``sum_k |H(k)|^2 cos(2 pi k d/N) / sum_k |H(k)|^2``.
+    ``top_to_bottom_seam`` retains its legacy key but measures lag ``nz-1``
+    in the PADDED domain, not a one-level circular seam.  The periodic FFT
+    seam lies outside the physical column.  All values include the exact
+    finite-spectrum and periodic-image effects; none are fitted to a draw.
     """
     nz = int(nz)
+    if nz < 1:
+        raise ValueError(f"vertical correlation needs positive levels, got {nz}")
     scale = float(vertical_scale_levels)
-    if nz < 2:
-        return {
-            "vertical_scale_levels": scale,
-            "note": "a single-level column has no vertical correlation",
-        }
-    power = _axis_filter(nz, 1.0, scale, half=False) ** 2
-    total = float(power.sum())
-    if not (total > 0.0):
-        return {
-            "vertical_scale_levels": scale,
-            "note": "the vertical filter has no power on this column",
-        }
-    modes = np.fft.fftfreq(nz, d=1.0) * nz
-
-    def rho(lag: int) -> float:
-        return float((power * np.cos(2.0 * np.pi * modes * lag / nz)).sum()
-                     / total)
-
-    seam = rho(nz - 1)
-    return {
+    fft_shape, halo = _vertical_fft_shape((nz, 1, 1), scale)
+    padded_nz = fft_shape[0]
+    geometry = {
         "vertical_scale_levels": scale,
         "levels": nz,
+        "fft_levels": padded_nz,
+        "independent_noise_halo_levels": halo,
+        "physical_crop_levels": [halo, halo + nz],
+        "periodic_seam_in_physical_column": False,
+    }
+    if nz < 2:
+        return {**geometry,
+                "note": "a single-level column has no vertical correlation"}
+    power = _axis_filter(padded_nz, 1.0, scale, half=False) ** 2
+    total = float(power.sum())
+    if not (total > 0.0):
+        return {**geometry, "note": "the vertical filter has no power on this column"}
+    modes = np.fft.fftfreq(padded_nz, d=1.0) * padded_nz
+
+    def rho(lag: int) -> float:
+        return float((power * np.cos(2.0 * np.pi * modes * lag / padded_nz)).sum()
+                     / total)
+
+    return {
+        **geometry,
         "adjacent_interior": rho(1),
-        #: Level 0 against level nz-1 -- the periodic seam.
-        "top_to_bottom_seam": seam,
-        #: The largest circular separation, which is what the cap bounds.
+        "top_to_bottom_seam": rho(nz - 1),
         "half_column": rho(nz // 2),
-        "method": ("exact circular autocorrelation of the applied "
-                   "amplitude filter: sum_k |H(k)|^2 cos(2 pi k d/nz) / "
+        "nearest_periodic_image_lag_levels": padded_nz - (nz - 1),
+        "method": ("exact autocorrelation of the padded amplitude filter "
+                   "at physical crop lags: sum_k |H(k)|^2 cos(2 pi k d/N) / "
                    "sum_k |H(k)|^2"),
         "caveat": (
-            "the top and bottom levels are ONE grid interval apart on a "
-            "periodic column, so top_to_bottom_seam tracks "
-            "adjacent_interior and is not controlled by the "
-            "quarter-column cap on vertical_scale_levels"),
+            "top_to_bottom_seam is a legacy key for the physical endpoint "
+            "correlation; the physical endpoints are nz-1 levels apart. "
+            "These are raw-field correlations before any vertical taper."),
     }
 
 
@@ -980,13 +1177,6 @@ def _check_resolvable(shape: Sequence[int], dx_km: float, dy_km: float,
                 f"{_MIN_SCALE_CELLS:g} levels; use 0 to decorrelate the "
                 "levels outright rather than a sub-level scale that only "
                 "looks like a correlation")
-        vertical_ceiling = _MAX_VERTICAL_SPAN_FRACTION * nz
-        if spec.vertical_scale_levels > vertical_ceiling:
-            raise ValueError(
-                f"{spec.name}: vertical_scale_levels="
-                f"{spec.vertical_scale_levels} exceeds "
-                f"{_MAX_VERTICAL_SPAN_FRACTION:g} of the {nz}-level column "
-                f"(limit {vertical_ceiling:g})")
 
 
 def gaussian_random_field(shape: Sequence[int], *, seed: int, name: str,
@@ -1006,7 +1196,10 @@ def gaussian_random_field(shape: Sequence[int], *, seed: int, name: str,
 
     The field's *expected* variance is exactly 1 by analytic normalization;
     its realized variance fluctuates like any finite sample, which is the
-    behaviour an ensemble wants.
+    behaviour an ensemble wants.  For a nonzero vertical scale the FFT
+    uses fresh independent noise with a four-scale halo on each end, then
+    crops the physical column.  Its variance is normalized from that
+    padded spectrum; the crop is neither repeated nor sample-normalized.
 
     ``fft_host`` runs the transform on the host regardless of ``xp``.  The
     draw already does (host Philox, so the SHA is machine-independent);
@@ -1023,12 +1216,22 @@ def gaussian_random_field(shape: Sequence[int], *, seed: int, name: str,
     if dtype not in ("float32", "float64"):
         raise ValueError(
             f"dtype must be 'float32' or 'float64', got {dtype!r}")
+    for label, value in (("dx_km", dx_km), ("dy_km", dy_km)):
+        if not math.isfinite(float(value)) or float(value) <= 0.0:
+            raise ValueError(f"{label} must be finite and positive; invalid "
+                             f"spacing cannot define a spectrum, got {value!r}")
+    if not math.isfinite(float(length_scale_km)) or float(length_scale_km) < 0.0:
+        raise ValueError("length_scale_km must be finite and non-negative; "
+                         "invalid scale cannot define a covariance, got "
+                         f"{length_scale_km!r}")
     if xp is None:
         xp = default_array_module()
     nz, ny, nx = shape
+    fft_shape, crop_start = _vertical_fft_shape(shape, vertical_scale_levels)
+    padded_nz = fft_shape[0]
     np_dtype = np.float32 if dtype == "float32" else np.float64
 
-    noise, key, digest = _white_noise(shape, seed=seed, name=name,
+    noise, key, digest = _white_noise(fft_shape, seed=seed, name=name,
                                       dtype=np_dtype)
 
     # Filter wherever the FFT actually works; move the finished field to the
@@ -1047,9 +1250,9 @@ def gaussian_random_field(shape: Sequence[int], *, seed: int, name: str,
         # draw (priced by device_working_bytes from fft_plan_work_bytes).
         # cupy's plan cache would keep both plans of every drawn shape,
         # work areas included, on the card for the rest of the process.
-        with _device_fft_plan(shape, np_dtype, "R2C"):
+        with _device_fft_plan(fft_shape, np_dtype, "R2C"):
             spectrum = fft_xp.fft.rfftn(working, axes=(0, 1, 2))
-    hz = _axis_filter(nz, 1.0, float(vertical_scale_levels), half=False)
+    hz = _axis_filter(padded_nz, 1.0, float(vertical_scale_levels), half=False)
     hy = _axis_filter(ny, float(dy_km), float(length_scale_km), half=False)
     hx = _axis_filter(nx, float(dx_km), float(length_scale_km), half=True)
     kernel = (hz[:, None, None] * hy[None, :, None]
@@ -1058,12 +1261,12 @@ def gaussian_random_field(shape: Sequence[int], *, seed: int, name: str,
         kernel = fft_xp.asarray(kernel)
     spectrum = spectrum * kernel
     if fft_xp is np:
-        field = fft_xp.fft.irfftn(spectrum, s=shape, axes=(0, 1, 2))
+        field = fft_xp.fft.irfftn(spectrum, s=fft_shape, axes=(0, 1, 2))
     else:
-        with _device_fft_plan(shape, np_dtype, "C2R"):
-            field = fft_xp.fft.irfftn(spectrum, s=shape, axes=(0, 1, 2))
+        with _device_fft_plan(fft_shape, np_dtype, "C2R"):
+            field = fft_xp.fft.irfftn(spectrum, s=fft_shape, axes=(0, 1, 2))
 
-    variance = (_analytic_variance(nz, 1.0, float(vertical_scale_levels))
+    variance = (_analytic_variance(padded_nz, 1.0, float(vertical_scale_levels))
                 * _analytic_variance(ny, float(dy_km),
                                      float(length_scale_km))
                 * _analytic_variance(nx, float(dx_km),
@@ -1074,13 +1277,17 @@ def gaussian_random_field(shape: Sequence[int], *, seed: int, name: str,
             f"(analytic variance {variance!r}); the requested scales are "
             "degenerate")
     field = field / math.sqrt(variance)
-    field = field.astype(np_dtype, copy=False)
+    # Own only the physical crop.  A view would pin the padded allocation
+    # through every application and into the next draw's peak memory.
+    field = field[crop_start:crop_start + nz].astype(np_dtype, copy=True)
 
     realized = float(fft_xp.sqrt(fft_xp.mean(field.astype(np.float64) ** 2)))
     if fft_xp is not xp:
         field = xp.asarray(field)
     info = {
         "shape": shape,
+        "noise_shape": fft_shape,
+        "vertical_crop_levels": [crop_start, crop_start + nz],
         "stream_key_hex": f"{key:032x}",
         "noise_sha256": digest,
         "noise_dtype": dtype,
@@ -1092,9 +1299,7 @@ def gaussian_random_field(shape: Sequence[int], *, seed: int, name: str,
         "fft_backend": "numpy" if fft_xp is np else "cupy",
         "length_scale_km": float(length_scale_km),
         "vertical_scale_levels": float(vertical_scale_levels),
-        # The periodic column's real correlations, including the seam the
-        # quarter-column cap does NOT control.  Reported on every draw so
-        # a reader never has to take the docstring's word for it.
+        # Exact correlations of the physical crop of the padded spectrum.
         "vertical_wrap": vertical_wrap_correlations(
             nz, float(vertical_scale_levels)),
     }
@@ -1104,6 +1309,41 @@ def gaussian_random_field(shape: Sequence[int], *, seed: int, name: str,
 # --------------------------------------------------------------------------
 # Boundary taper
 # --------------------------------------------------------------------------
+
+def vertical_taper(nz: int, bottom_width_levels: int = 0,
+                   top_width_levels: int = 0, *, kind: str = "cosine",
+                   xp=None, dtype=np.float64):
+    """Optional ``(nz,)`` attenuation at the physical column's two ends.
+
+    A zero width leaves that end untouched.  A positive width gives exactly
+    zero on its end level and reaches one ``width`` levels into the column.
+    Each end is independent; overlapping ramps multiply, so a thin column
+    remains bounded and needs no artificial untapered-interior requirement.
+    This scales amplitude, not a sampled variance or the length scale.
+    """
+    if int(nz) != nz or nz < 1:
+        raise ValueError(f"vertical_taper needs positive integer levels, got {nz!r}")
+    widths = (bottom_width_levels, top_width_levels)
+    for width in widths:
+        if not isinstance(width, (int, np.integer)) or width < 0:
+            raise ValueError("vertical taper widths must be non-negative "
+                             f"integer levels; invalid widths cannot define a ramp, got {width!r}")
+    if kind not in ("cosine", "linear"):
+        raise ValueError(f"unknown vertical taper kind {kind!r}")
+    if xp is None:
+        xp = default_array_module()
+    levels = np.arange(int(nz), dtype=np.float64)
+    taper = np.ones(int(nz), dtype=np.float64)
+    for distance, width in ((levels, bottom_width_levels),
+                            (int(nz) - 1 - levels, top_width_levels)):
+        if width:
+            ratio = np.clip(distance / int(width), 0.0, 1.0)
+            ramp = (0.5 * (1.0 - np.cos(np.pi * ratio))
+                    if kind == "cosine" else ratio)
+            taper *= ramp
+    taper = taper.astype(dtype, copy=False)
+    return taper if xp is np else xp.asarray(taper)
+
 
 def boundary_taper(ny: int, nx: int, rim_width: int, *, kind: str = "cosine",
                    xp=None, dtype=np.float64):
@@ -1145,6 +1385,116 @@ def boundary_taper(ny: int, nx: int, rim_width: int, *, kind: str = "cosine",
         taper = ratio
     taper = taper.astype(dtype, copy=False)
     return taper if xp is np else xp.asarray(taper)
+
+
+def _difference_variance(n: int, spacing_m: float,
+                         length_scale_m: float) -> float:
+    """Variance of the one-cell difference, per unit spacing, of a unit
+    Gaussian-filtered axis: ``mean_k |H|^2 |e^{ik dx} - 1|^2 / dx^2``
+    over ``mean_k |H|^2``, so it multiplies the normalized field's own
+    unit variance.  Units ``1/m^2``."""
+    freq = np.fft.fftfreq(int(n), d=float(spacing_m))
+    k = 2.0 * np.pi * freq
+    h2 = np.exp(-0.5 * (k * float(length_scale_m)) ** 2)
+    d2 = (2.0 * np.sin(0.5 * k * float(spacing_m))) ** 2 / float(spacing_m) ** 2
+    return float(np.mean(h2 * d2) / np.mean(h2))
+
+
+def rotational_wind_draw(mass_shape: Sequence[int], *, seed: int,
+                         dx_km: float, dy_km: float, length_scale_km: float,
+                         vertical_scale_levels: float = 0.0, xp=None,
+                         dtype: str = "float64", fft_host: bool = False):
+    """Unit-amplitude non-divergent ``(u, v)`` increments from ONE draw.
+
+    A streamfunction ``psi`` is drawn on the corner grid ``(nz, ny+1,
+    nx+1)`` at ``sqrt(3)`` times the configured scale
+    (:data:`STREAMFUNCTION_SCALE_FACTOR`) and differenced the C-grid way:
+    ``u = -(psi[j+1, i] - psi[j, i]) / dy`` on the ``u`` faces and
+    ``v = (psi[j, i+1] - psi[j, i]) / dx`` on the ``v`` faces.  The model's
+    divergence at every mass point, ``(u[i+1] - u[i]) / dx + (v[j+1] -
+    v[j]) / dy``, is then a telescoping sum of the same four corners and
+    is exactly zero in exact arithmetic (rounding only, in floating
+    point).
+
+    The fields come back UNTAPERED; :func:`apply_perturbations` applies
+    the rim taper to each component exactly as it does to a scalar.
+    Tapering ``psi`` instead was tried first (2026-10-06) and refused by
+    measurement: a non-divergent field that must vanish at the rim has
+    ``psi`` constant there, and a ``psi`` of amplitude ``sigma_u *
+    L_psi`` dropping to that constant across the rim band is a
+    tangential wind of ``sigma_u * L_psi / W``.  With the DA cycle
+    tool's own numbers (1.5 m/s at 150 km, a 5-cell rim at 3 km) that is
+    35 times the configured amplitude, some 50 m/s of shear along every
+    boundary.  Tapering the components keeps the rim band's amplitude
+    at or below the spec, exactly as for the scalars, at the price of a
+    divergence of order ``u * grad(taper)`` confined to the rim band
+    (the same term the independent draws always carried there); the
+    interior, where the taper is one, stays exactly non-divergent.
+
+    ``psi`` is scaled ONCE so that the ``u`` increment has unit expected
+    variance (the analytic variance of the discrete ``y`` difference,
+    :func:`_difference_variance`).  ``v`` gets whatever the ``x``
+    difference gives at that scaling -- equal to ``u``'s on a square grid
+    of similar extents, and reported as ``v_amplitude_ratio`` otherwise.
+    Scaling the two components separately would restore exact unit
+    variance on both and destroy exact non-divergence, which is the
+    property the whole draw exists for.
+
+    Returns ``(u, v, info)``: the unit increments on the ``(nz, ny,
+    nx+1)`` and ``(nz, ny+1, nx)`` face grids and the provenance of the
+    draw (the ``psi`` stream key and noise digest, the scales and the
+    variances).
+    """
+    shape = tuple(int(extent) for extent in mass_shape)
+    if len(shape) != 3 or any(extent < 1 for extent in shape):
+        raise ValueError(
+            f"rotational_wind_draw needs a positive (nz, ny, nx) mass "
+            f"shape, got {shape}")
+    for label, value in (("dx_km", dx_km), ("dy_km", dy_km),
+                         ("length_scale_km", length_scale_km)):
+        if not math.isfinite(float(value)) or float(value) <= 0.0:
+            raise ValueError(f"{label} must be finite and positive, got "
+                             f"{value!r}")
+    if xp is None:
+        xp = default_array_module()
+    nz, ny, nx = shape
+    psi_scale_km = STREAMFUNCTION_SCALE_FACTOR * float(length_scale_km)
+    psi, info = gaussian_random_field(
+        (nz, ny + 1, nx + 1), seed=seed, name="psi", dx_km=dx_km,
+        dy_km=dy_km, length_scale_km=psi_scale_km,
+        vertical_scale_levels=vertical_scale_levels, xp=xp, dtype=dtype,
+        fft_host=fft_host)
+    dx_m, dy_m = float(dx_km) * 1000.0, float(dy_km) * 1000.0
+    psi_scale_m = psi_scale_km * 1000.0
+    var_u = _difference_variance(ny + 1, dy_m, psi_scale_m)
+    var_v = _difference_variance(nx + 1, dx_m, psi_scale_m)
+    if not (var_u > 0.0) or not math.isfinite(var_u):
+        raise RuntimeError(
+            f"the streamfunction's y difference has no variance "
+            f"({var_u!r}) on this grid; the requested scale is degenerate")
+    # One scaling for both components: psi in m^2/s per unit u amplitude.
+    psi *= psi.dtype.type(1.0 / math.sqrt(var_u))
+    u = -(psi[:, 1:, :] - psi[:, :-1, :]) / psi.dtype.type(dy_m)
+    v = (psi[:, :, 1:] - psi[:, :, :-1]) / psi.dtype.type(dx_m)
+    del psi
+    info = dict(info)
+    info.update({
+        "wind_mode": "rotational",
+        "streamfunction_shape": [nz, ny + 1, nx + 1],
+        "streamfunction_length_scale_km": psi_scale_km,
+        "scale_factor": STREAMFUNCTION_SCALE_FACTOR,
+        "u_difference_variance_per_m2": var_u,
+        "v_difference_variance_per_m2": var_v,
+        #: Expected v amplitude per unit u amplitude at this scaling.
+        "v_amplitude_ratio": math.sqrt(var_v / var_u),
+        "u_realized_rms": float(xp.sqrt(xp.mean(u.astype(np.float64) ** 2))),
+        "v_realized_rms": float(xp.sqrt(xp.mean(v.astype(np.float64) ** 2))),
+        "stencil": "u = -d(psi)/dy, v = d(psi)/dx by one-cell C-grid "
+                   "differences of a corner-grid psi; the mass-point "
+                   "divergence is zero wherever the rim taper is one and "
+                   "of order u * grad(taper) inside the rim band",
+    })
+    return u, v, info
 
 
 # --------------------------------------------------------------------------
@@ -1384,6 +1734,73 @@ def _clip_draw(xp, draw, clip_sigmas: float):
     return xp.clip(draw, -limit, limit)
 
 
+def clipped_lognormal_log_mean(amplitude: float, clip_sigmas: float):
+    """``log E[exp(a * clip(g, -k, k))]`` for a unit Gaussian ``g``.
+
+    The ensemble-mean correction of a lognormal factor.  ``exp(a g)`` has
+    mean ``exp(a^2 / 2)``, not 1: at the storm-scale amplitude ``a = 0.7``
+    it is 1.27, so an ensemble whose members each take an uncorrected
+    factor carries 27% more condensate (and number) in its mean than the
+    background it was drawn around, before a single observation is used.
+    Measured on the 2024-05-21 18Z 3 km crop with the module's own draw:
+    factor mean 1.262, mass-weighted 1.266 (analytic 1.268 with the
+    2.5-sigma clip).  Subtracting this value from the exponent makes the
+    factor's expectation exactly 1 for the clipped draw, so the
+    perturbation adds spread and no mass.
+
+    With the clip at ``k`` sigma the exponent's distribution has point
+    masses at ``+/- a k``, and the exact mean is
+
+        ``exp(a^2/2) [Phi(k - a) - Phi(-k - a)] + Phi(-k) [exp(-a k) + exp(a k)]``
+
+    (``Phi`` the standard normal CDF).  ``a = 0`` gives exactly 0, so a
+    tapered rim whose amplitude is zero keeps its factor at exactly 1.
+    Returns a float for a scalar ``amplitude``; a NumPy array in, an
+    array out, evaluated per element.
+    """
+    k = float(clip_sigmas)
+    if not math.isfinite(k) or k <= 0.0:
+        raise ValueError(f"clip_sigmas must be positive and finite, got {clip_sigmas!r}")
+
+    def _phi(x):
+        return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+    def _one(a: float) -> float:
+        a = float(a)
+        if a == 0.0:
+            return 0.0
+        mean = (math.exp(0.5 * a * a) * (_phi(k - a) - _phi(-k - a))
+                + _phi(-k) * (math.exp(-a * k) + math.exp(a * k)))
+        return math.log(mean)
+
+    if np.ndim(amplitude) == 0:
+        return _one(amplitude)
+    values = np.asarray(amplitude, dtype=np.float64)
+    unique, inverse = np.unique(values, return_inverse=True)
+    table = np.array([_one(a) for a in unique], dtype=np.float64)
+    return table[inverse].reshape(values.shape)
+
+
+def _lognormal_exponent(xp, draw, amplitude: float, clip_sigmas: float,
+                        taper):
+    """The mean-preserving lognormal exponent on the draw's backend.
+
+    ``amplitude * clip(draw) * taper - log E[exp(amplitude * taper * clip(g))]``,
+    the second term per column from :func:`clipped_lognormal_log_mean`
+    (the taper scales the amplitude, so the correction follows it; a zero
+    taper gives a zero correction and a factor of exactly 1).  Returns the
+    exponent and the correction field ``(ny, nx)`` on the host.
+    """
+    taper_host = np.asarray(taper.get() if hasattr(taper, "get") else taper,
+                            dtype=np.float64)
+    correction = clipped_lognormal_log_mean(
+        float(amplitude) * taper_host, clip_sigmas)
+    scaled = (_clip_draw(xp, draw, clip_sigmas) * float(amplitude)
+              * taper.astype(draw.dtype, copy=False)[None, :, :])
+    exponent = scaled - xp.asarray(correction, dtype=draw.dtype)[None, :, :]
+    return exponent, correction
+
+
 def _state_field_names(state) -> tuple[str, ...]:
     """Every prognostic field the state actually carries, for pair
     detection.  ``None`` attributes are absent, not empty."""
@@ -1467,8 +1884,13 @@ def _apply_species_perturbations(state, seed: int, cfg: PerturbationConfig,
             xp=xp, dtype=cfg.compute_dtype, fft_host=cfg.fft_host)
         taper = boundary_taper(ny, nx, cfg.rim_width, kind=cfg.rim_taper,
                                xp=xp, dtype=draw.dtype)
-        exponent = (_clip_draw(xp, draw, spec.clip_sigmas)
-                    * float(spec.amplitude) * taper[None, :, :])
+        # Mean-preserving: the exponent carries ``- log E[exp(.)]`` per
+        # column (clipped_lognormal_log_mean), so the ensemble-mean mass
+        # and number equal the background's.  Without it the mean took
+        # exp(sigma^2/2): +27% condensate at sigma 0.7 before any
+        # observation (the DA echo surplus's first term, 2026-10-06).
+        exponent, mean_correction = _lognormal_exponent(
+            xp, draw, spec.amplitude, spec.clip_sigmas, taper)
         factor = xp.exp(exponent)
 
         # ``active`` is where the background pair is JOINTLY usable.  A
@@ -1545,6 +1967,10 @@ def _apply_species_perturbations(state, seed: int, cfg: PerturbationConfig,
             "total_points": int(nz * ny * nx),
             "factor_min": float(xp.min(factor)),
             "factor_max": float(xp.max(factor)),
+            #: The factor's expectation is 1 by construction: the exponent
+            #: carries ``- log E[exp(sigma * taper * clip(g))]`` per column.
+            "mean_preserving": True,
+            "mean_log_correction_max": float(np.max(mean_correction)),
             "mass_before_sum": before_mass,
             "mass_after_sum": after_mass,
             "negative_points": negative,
@@ -1588,24 +2014,34 @@ def _apply_species_perturbations(state, seed: int, cfg: PerturbationConfig,
 
 def device_working_bytes(cfg: PerturbationConfig,
                          mass_shape: Sequence[int],
-                         plan_work_bytes: Mapping | None = None) -> int:
+                         plan_work_bytes: Mapping | None = None,
+                         *, loading_masses: Sequence[str] | None = None
+                         ) -> int:
     """Peak device bytes :func:`apply_perturbations` holds beside the state.
 
     A census of the arrays this module allocates on the state's device,
     for a caller that has to admit the perturbation before the state
     exists.  ``s`` is the compute dtype's width, ``M`` a field's points
-    and ``K = nz * ny * (nx // 2 + 1)`` its real-FFT spectrum points.
+    and ``K = N * ny * (nx // 2 + 1)`` its real-FFT spectrum points, with
+    ``N`` the padded vertical FFT size.  Draw temporaries are priced on
+    that padded shape; application arrays and the returned crop use the
+    physical field shape.
 
     One draw (:func:`gaussian_random_field`) with the device FFT peaks at
-    the largest of its five stages: the forward transform (the working
+    the largest of its stages: the forward transform (the working
     copy ``sM``, the spectrum ``2sK`` and the forward plan's work area),
     the spectrum multiply (the working copy, the old and new spectra
     ``2sK`` each and the kernel ``sK``), the inverse transform (the output
     ``sM`` beside the spectrum, the kernel, cuFFT's copy of its complex
     input and the inverse plan's work area), the normalisation (a second
-    ``sM`` beside the first) and the realized RMS (a float64 copy and its
-    square, ``16M``).  With ``fft_host`` only the finished field reaches
+    ``sM`` beside the first), the owned physical crop, and the realized RMS
+    (a float64 copy and its square on the physical crop).  With ``fft_host``
+    only the finished field reaches
     the device.
+
+    ``loading_masses`` names the moist masses the state carries
+    (:func:`gpuwm.da.hydrostatic.loading_masses_for_scheme`), which the
+    hydrostatic balance copies; omitted, every one it can copy is priced.
 
     ``plan_work_bytes`` is :func:`fft_plan_work_bytes`'s answer, the work
     area each plan reported on the card that will run it; each plan lives
@@ -1627,17 +2063,20 @@ def device_working_bytes(cfg: PerturbationConfig,
     plans = {tuple(int(extent) for extent in shape): tuple(sizes)
              for shape, sizes in (plan_work_bytes or {}).items()}
 
-    def draw_peak(shape) -> int:
-        points = math.prod(shape)
+    def draw_peak(shape, vertical_scale_levels) -> int:
+        crop_points = math.prod(shape)
         if cfg.fft_host:
-            return width * points
-        spectrum = shape[0] * shape[1] * (shape[2] // 2 + 1)
-        forward, inverse = plans.get(tuple(shape), (0, 0))
+            return width * crop_points
+        fft_shape, _ = _vertical_fft_shape(shape, vertical_scale_levels)
+        points = math.prod(fft_shape)
+        spectrum = fft_shape[0] * fft_shape[1] * (fft_shape[2] // 2 + 1)
+        forward, inverse = plans.get(fft_shape, (0, 0))
         return max(width * points + 2 * width * spectrum + int(forward),
                    width * points + 5 * width * spectrum,
                    2 * width * points + 5 * width * spectrum + int(inverse),
                    3 * width * points + 3 * width * spectrum,
-                   2 * width * points + 16 * points + 3 * width * spectrum)
+                   2 * width * points + width * crop_points + 3 * width * spectrum,
+                   width * points + (width + 16) * crop_points + 3 * width * spectrum)
 
     held = 0
     if any(SUPPORTED_FIELDS[name].exner_from_temperature
@@ -1645,10 +2084,58 @@ def device_working_bytes(cfg: PerturbationConfig,
         held += 2 * 4 * mass_points
     peak = 0
     kept = 0
+
+    # The hydrostatic mass balance (default since 2026-10-06): float64
+    # copies of thp, p and every loading mass the state carries are taken
+    # BEFORE the draws and held for the whole call, the same capture is
+    # taken again after the bounds, and the column integration works in
+    # float64 temporaries of the mass shape (two loading sums, two
+    # recurrence outputs and their difference, the analysed pressure,
+    # two inverse densities with their factors, the layer operator, the
+    # thickness change, the summed dphp and the masked write).  The
+    # census cannot see the state, so a caller that knows the scheme names
+    # the masses it carries (``loading_masses``) and one that does not
+    # gets all of them priced: an admission that under-prices this is an
+    # out-of-memory on the first member, which is the breakage this line
+    # prevents.  Pricing hail for a scheme that allocates none put a
+    # 601 x 601 Thompson member over a 32 GiB card's 28 GiB budget
+    # (tests/test_da_recent_case.py).
+    column_capture = 0
+    if cfg.mass_balance == "hydrostatic" and cfg.column_field_names:
+        from gpuwm.da.hydrostatic import LOADING_MASSES
+        carried = (LOADING_MASSES if loading_masses is None
+                   else tuple(name for name in LOADING_MASSES
+                              if name in set(loading_masses)))
+        column_capture = 8 * (2 + len(carried)) * mass_points
+        held += column_capture
+
+    rotational = cfg.wind_mode == "rotational" and "u" in cfg.field_names
+    if rotational:
+        # ONE streamfunction draw on the corner grid; then psi beside the
+        # two differences (each a temporary of its component's size
+        # before the division writes the result); then both unit
+        # components held until each is applied in the loop below.
+        psi_shape = (nz, ny + 1, nx + 1)
+        psi_points = math.prod(psi_shape)
+        u_points = nz * ny * (nx + 1)
+        v_points = nz * (ny + 1) * nx
+        peak = max(peak,
+                   held + draw_peak(psi_shape,
+                                    cfg.spec("u").vertical_scale_levels),
+                   held + width * (psi_points + 2 * u_points),
+                   held + width * (psi_points + u_points + 2 * v_points))
+        held += width * (u_points + v_points)
+
     for name in cfg.field_names:
         shape = _expected_shape(name, nz, ny, nx)
         points = math.prod(shape)
-        peak = max(peak, held + kept + draw_peak(shape))
+        if rotational and name in ("u", "v"):
+            # The unit component already held becomes this iteration's
+            # draw; nothing new is drawn.
+            held -= width * points
+        else:
+            peak = max(peak, held + kept + draw_peak(
+                shape, cfg.spec(name).vertical_scale_levels))
         kept = width * points + 4 * points
         if cfg.spec(name).mode == "lognormal":
             kept += 2 * width * points + 4 * points
@@ -1656,9 +2143,12 @@ def device_working_bytes(cfg: PerturbationConfig,
         if name == "qv":
             held += 4 * mass_points
     for _species in cfg.species:
-        peak = max(peak, held + kept + draw_peak((nz, ny, nx)))
+        peak = max(peak, held + kept + draw_peak(
+            (nz, ny, nx), _species.vertical_scale_levels))
         kept = 3 * width * mass_points + 3 * mass_points + 4 * mass_points
         peak = max(peak, held + kept + (width + 1) * mass_points)
+    if column_capture:
+        peak = max(peak, held + kept + column_capture + 14 * 8 * mass_points)
     return int(peak)
 
 
@@ -1745,35 +2235,59 @@ def apply_perturbations(state, seed: int, cfg: PerturbationConfig
             state, xp, f"the temperature perturbation {needs_pressure_for}")
         exner = (pressure / c.P0) ** c.RCP
 
+    column_before = _capture_column_for_balance(state, cfg, xp)
+
+    rotational = None
+    if cfg.wind_mode == "rotational" and "u" in names:
+        wind = cfg.spec("u")
+        _check_resolvable((nz, ny, nx + 1), cfg.dx_km, cfg.dy_km, wind)
+        u_unit, v_unit, wind_info = rotational_wind_draw(
+            (nz, ny, nx), seed=seed, dx_km=cfg.dx_km, dy_km=cfg.dy_km,
+            length_scale_km=wind.length_scale_km,
+            vertical_scale_levels=wind.vertical_scale_levels, xp=xp,
+            dtype=cfg.compute_dtype, fft_host=cfg.fft_host)
+        rotational = {"u": u_unit, "v": v_unit}
+        del u_unit, v_unit
+
     field_records: list[dict[str, Any]] = []
     qv_increment = None
     for name in names:
         spec = cfg.spec(name)
         target = targets[name]
         shape = tuple(int(e) for e in target.shape)
-        _check_resolvable(shape, cfg.dx_km, cfg.dy_km, spec)
-        draw, info = gaussian_random_field(
-            shape, seed=seed, name=name, dx_km=cfg.dx_km, dy_km=cfg.dy_km,
-            length_scale_km=spec.length_scale_km,
-            vertical_scale_levels=spec.vertical_scale_levels,
-            xp=xp, dtype=cfg.compute_dtype, fft_host=cfg.fft_host)
+        if rotational is not None and name in rotational:
+            # One component of the streamfunction draw; it takes the
+            # same rim taper a scalar does (see rotational_wind_draw for
+            # why the taper is not on psi).
+            draw = rotational.pop(name)
+            info = wind_info
+        else:
+            _check_resolvable(shape, cfg.dx_km, cfg.dy_km, spec)
+            draw, info = gaussian_random_field(
+                shape, seed=seed, name=name, dx_km=cfg.dx_km,
+                dy_km=cfg.dy_km, length_scale_km=spec.length_scale_km,
+                vertical_scale_levels=spec.vertical_scale_levels,
+                xp=xp, dtype=cfg.compute_dtype, fft_host=cfg.fft_host)
         taper = boundary_taper(shape[1], shape[2], cfg.rim_width,
                                kind=cfg.rim_taper, xp=xp,
                                dtype=draw.dtype)
         # Write ONLY where the taper is active.  ``target += increment``
         # over the whole array looks like the identity wherever the
         # increment is exactly zero, and is -- except for signed zero:
-        # IEEE ``-0.0 + 0.0`` is ``+0.0``, so a rim holding -0.0 came back
-        # numerically equal and byte-different, and the state sha sees
-        # bytes.  Selecting with ``where`` keeps the original words.
+        # IEEE ``-0.0 + 0.0`` is ``+0.0``, so a rim holding -0.0 came
+        # back numerically equal and byte-different, and the state sha
+        # sees bytes.  Selecting with ``where`` keeps the original words.
         active = (taper > 0.0)[None, :, :]
         factor_record: dict[str, Any] | None = None
         if spec.mode == "lognormal":
             # The taper multiplies the EXPONENT, so a zero taper gives
             # exactly exp(0) = 1 and the rim is untouched by construction
             # as well as by the ``where``.
-            exponent = (_clip_draw(xp, draw, spec.clip_sigmas)
-                        * float(spec.amplitude) * taper[None, :, :])
+            # Mean-preserving, as the species factor is: the exponent
+            # carries ``- log E[exp(.)]`` per column, so the ensemble
+            # mean of the field equals the background's.
+            exponent, mean_correction = _lognormal_exponent(
+                xp, draw, spec.amplitude, spec.clip_sigmas, taper)
             factor = xp.exp(exponent)
             scaled = (target * factor.astype(target.dtype, copy=False))
             increment = scaled - target
@@ -1781,6 +2295,8 @@ def apply_perturbations(state, seed: int, cfg: PerturbationConfig
             factor_record = {
                 "factor_min": float(xp.min(factor)),
                 "factor_max": float(xp.max(factor)),
+                "mean_preserving": True,
+                "mean_log_correction_max": float(np.max(mean_correction)),
                 "clip_sigmas": float(spec.clip_sigmas),
                 "clipped_points": int(xp.count_nonzero(
                     xp.abs(draw) > float(spec.clip_sigmas))),
@@ -1816,6 +2332,28 @@ def apply_perturbations(state, seed: int, cfg: PerturbationConfig
             "vertical_wrap": info["vertical_wrap"],
             "mode": spec.mode,
         }
+        if name in ("u", "v"):
+            record["wind_mode"] = (
+                "rotational" if info.get("wind_mode") == "rotational"
+                else "independent")
+        if info.get("wind_mode") == "rotational":
+            record["unit_field_realized_rms"] = info[f"{name}_realized_rms"]
+            record["streamfunction"] = {
+                "shape": info["streamfunction_shape"],
+                "length_scale_km": info["streamfunction_length_scale_km"],
+                "scale_factor": info["scale_factor"],
+                "noise_sha256": info["noise_sha256"],
+                "psi_realized_rms": info["realized_rms"],
+                "u_difference_variance_per_m2":
+                    info["u_difference_variance_per_m2"],
+                "v_difference_variance_per_m2":
+                    info["v_difference_variance_per_m2"],
+                "v_amplitude_ratio": info["v_amplitude_ratio"],
+                "stencil": info["stencil"],
+            }
+            if name == "v":
+                record["analytic_amplitude"] = (
+                    float(spec.amplitude) * info["v_amplitude_ratio"])
         if factor_record is not None:
             record["lognormal"] = factor_record
             record["amplitude_units"] = "log-space sigma (dimensionless)"
@@ -1829,6 +2367,9 @@ def apply_perturbations(state, seed: int, cfg: PerturbationConfig
 
     bounds = _enforce_bounds(state, cfg, xp, perturbed=set(names),
                              qv_increment=qv_increment)
+
+    mass_balance = _apply_mass_balance(state, cfg, column_before)
+    del column_before
 
     combined = hashlib.sha256()
     for record in field_records:
@@ -1869,35 +2410,124 @@ def apply_perturbations(state, seed: int, cfg: PerturbationConfig
             "axes": "lateral only (no vertical taper)",
         },
         "bounds": bounds,
+        "wind_mode": cfg.wind_mode,
+        "mass_balance": mass_balance,
         "post_conditions": [
             "wherever the rim taper is zero this call was the identity, "
-            "byte for byte, bounds included",
+            "byte for byte, bounds and mass balance included",
             "state.p / state.al / state.alt are now stale: run "
             "gpuwm.core.diagnostics.update_diagnostics(state, ...) before "
-            "the first step",
+            "the first step (it folds the re-integrated php into p)",
             "the supersaturation cap was evaluated against the pressure as "
             "it stood on entry, not against the re-diagnosed pressure",
         ],
+        "balance_imposed": [
+            ("wind: u and v are C-grid differences of one streamfunction, "
+             "so the mass-point divergence of the increment is zero "
+             "wherever the rim taper is one; inside the rim band the "
+             "component taper leaves a divergence of order u * grad(taper) "
+             "(rotational)")
+            if cfg.wind_mode == "rotational" else
+            ("wind: none; u and v are independent draws and half their "
+             "kinetic energy is divergent (comparison arm)"),
+            ("mass: php re-integrated hydrostatically at the column's own "
+             "dry mass after the thermodynamic draw")
+            if mass_balance.get("applied") else
+            "mass: none (" + str(mass_balance.get("reason")) + ")",
+        ],
         "balance_not_imposed": [
-            "mass: mu' is untouched and the column is not re-balanced "
-            "hydrostatically",
-            "wind: the u/v increments are neither non-divergent nor in "
-            "geostrophic/gradient balance with the theta increment",
-            "boundary: members share one unperturbed boundary file; only "
-            "the rim taper keeps them consistent with it",
+            "mass: mu' is untouched (no surface-pressure perturbation)",
+            "wind: the streamfunction and the theta draw are independent; "
+            "no geostrophic, gradient-wind or thermal-wind coupling, and "
+            "the map factor is not seen by the divergence stencil",
+            "boundary: this call leaves the boundary tables alone; only "
+            "the rim taper keeps the member consistent with them, until a "
+            "caller attaches perturbed_lateral_boundaries for the member",
             "hydrometeors: a species factor scales the moments together, "
             "which preserves the drop size distribution exactly and the "
             "column's condensate loading not at all -- the perturbed "
             "member is not re-balanced for the buoyancy its new "
             "condensate mass implies",
-            "vertical: the draw is FFT-periodic in the column and nothing "
-            "tapers it, so the top and bottom levels are correlated at the "
-            "figure each field record's vertical_wrap.top_to_bottom_seam "
-            "states -- near 1 for any usable vertical scale. The "
-            "quarter-column cap on vertical_scale_levels bounds the "
-            "half-column correlation, not the seam",
+            "vertical: the physical column is cropped from an enlarged "
+            "independent-noise FFT draw; exact endpoint correlation is in "
+            "each field's vertical_wrap.top_to_bottom_seam and its crop "
+            "geometry is in vertical_wrap. This "
+            "initial-condition call does not apply vertical attenuation",
         ],
     }
+
+
+def _mass_balance_fields(state, cfg: PerturbationConfig) -> tuple[str, ...]:
+    """The configured column fields the state actually carries."""
+    return tuple(name for name in cfg.column_field_names
+                 if name in ("t", "theta")
+                 or getattr(state, name, None) is not None)
+
+
+def _capture_column_for_balance(state, cfg: PerturbationConfig, xp):
+    """Snapshot the column (``thp``, the loading masses, the diagnosed
+    ``p``) BEFORE the thermodynamic draws, or ``None`` when the mass
+    balance has nothing to do.  Every refusal is raised here, before a
+    single field is written, so a refused call leaves the state alone."""
+    if cfg.mass_balance != "hydrostatic":
+        return None
+    if not _mass_balance_fields(state, cfg):
+        return None
+    if cfg.hypsometric_opt is None:
+        raise ValueError(
+            "mass_balance 'hydrostatic' needs hypsometric_opt (the run's "
+            "WRF option, 1 or 2) to integrate the column with the same "
+            "layer operator the dycore diagnoses pressure with, and a "
+            "state does not carry its run configuration. State it in the "
+            "PerturbationConfig, or set mass_balance = 'none' for a state "
+            "without a vertical coordinate")
+    from gpuwm.da import hydrostatic as hydro
+
+    missing = [attr for attr in hydro.COLUMN_SETUP_ATTRS
+               if getattr(state, attr, None) is None]
+    if missing:
+        raise ValueError(
+            "mass_balance 'hydrostatic' cannot integrate a column on this "
+            "state: it carries no " + ", ".join(missing) + ". A state "
+            "without a loaded base needs mass_balance = 'none' rather "
+            "than a silent zero")
+    if int(cfg.hypsometric_opt) == 2 and getattr(state, "p_top", None) is None:
+        raise ValueError(
+            "mass_balance 'hydrostatic' with hypsometric_opt=2 needs "
+            "state.p_top (load_base); a state without a loaded base "
+            "needs mass_balance = 'none'")
+    if int(cfg.hypsometric_opt) == 1:
+        dnw = getattr(state, "dnw", None)
+        if dnw is None or not bool(_array_module(dnw).any(dnw)):
+            raise ValueError(
+                "mass_balance 'hydrostatic' with hypsometric_opt=1 needs a "
+                "vertical coordinate (state.dnw is absent or all zero), "
+                "else every layer operator is zero and the balance is a "
+                "silent no-op; a state without a loaded base needs "
+                "mass_balance = 'none'")
+    _require_pressure(state, xp, "the hydrostatic mass balance")
+    return hydro.capture_column(state)
+
+
+def _apply_mass_balance(state, cfg: PerturbationConfig, column_before
+                        ) -> dict[str, Any]:
+    """Re-integrate ``php`` so the perturbed columns start hydrostatic."""
+    if cfg.mass_balance != "hydrostatic":
+        return {"applied": False, "mode": cfg.mass_balance,
+                "reason": "mass_balance = 'none' (configured)"}
+    fields = _mass_balance_fields(state, cfg)
+    if column_before is None:
+        return {"applied": False, "mode": cfg.mass_balance,
+                "reason": "no thermodynamic or species perturbation was "
+                          "configured, so the column did not change"}
+    from gpuwm.da import hydrostatic as hydro
+
+    receipt = hydro.rebalance_columns(
+        state, column_before, hypsometric_opt=int(cfg.hypsometric_opt),
+        names=fields, how="perturbation, after the draws and bounds")
+    receipt["mode"] = cfg.mass_balance
+    receipt["perturbed_column_fields"] = list(fields)
+    return receipt
 
 
 def _enforce_bounds(state, cfg: PerturbationConfig, xp,
@@ -1984,6 +2614,582 @@ def _enforce_bounds(state, cfg: PerturbationConfig, xp,
 
 
 # --------------------------------------------------------------------------
+# Per-member lateral boundaries and additive inflation
+# --------------------------------------------------------------------------
+
+#: Provenance schema of :func:`perturbed_lateral_boundaries`.
+BOUNDARY_PERTURBATION_SCHEMA = "gpuwm.da.perturb/lateral-boundaries/v1"
+
+#: Provenance schema of :func:`additive_inflation`.
+ADDITIVE_INFLATION_SCHEMA = "gpuwm.da.perturb/additive-inflation/v1"
+
+#: Default e-folding time of a member's boundary perturbation between
+#: boundary frames.  The perturbation stands in for the driving model's own
+#: error, which decorrelates on synoptic time scales; six hours keeps
+#: hourly frames strongly correlated (0.85 frame to frame) so the forcing
+#: does not jump, and lets a three-hourly series wander (0.61).
+DEFAULT_BOUNDARY_TIME_SCALE_HOURS = 6.0
+
+#: Which boundary table each perturbable field lands on.  Boundary tables
+#: are in WRF's coupled units (gpuwm/ingest/lateral_bc.py
+#: ``_coupled_device_fields``): ``theta`` is the coupled perturbation
+#: theta, so both a temperature and a potential-temperature amplitude land
+#: there.
+_BOUNDARY_TABLE = {"u": "u", "v": "v", "theta": "theta", "t": "theta",
+                   "qv": "qv"}
+
+
+def boundary_coupling_weights(state) -> dict[str, np.ndarray]:
+    """Host ``float64`` weights that turn an uncoupled increment into the
+    coupled units the boundary tables hold, per table, on each field's own
+    stagger.
+
+    The SAME formula as ``gpuwm.ingest.lateral_bc._coupled_device_fields``
+    (u and v: half-level mass at the face, the boundary faces taking their
+    adjacent cell's mass, divided by the map factor; scalars: half-level
+    mass), evaluated on ``state`` as it stands.  A boundary perturbation is
+    a fraction of a field's spread, so weighting every frame by the
+    starting state's column mass is a sub-percent approximation of the
+    amplitude, and it is the one this module states.  ``"exner"`` is the
+    mass-point Exner function, for a temperature amplitude.
+    """
+    mu = _to_host(state.total_mu()).astype(np.float64)
+    mux = 0.5 * (mu + np.roll(mu, 1, axis=1))
+    mux = np.concatenate([mux, mux[:, :1]], axis=1)
+    muy = 0.5 * (mu + np.roll(mu, 1, axis=0))
+    muy = np.concatenate([muy, muy[:1, :]], axis=0)
+    mux[:, 0] = mu[:, 0]
+    mux[:, -1] = mu[:, -1]
+    muy[0, :] = mu[0, :]
+    muy[-1, :] = mu[-1, :]
+    c1h = _to_host(state.c1h).astype(np.float64)[:, None, None]
+    c2h = _to_host(state.c2h).astype(np.float64)[:, None, None]
+    weights = {
+        "u": c1h * mux[None] + c2h,
+        "v": c1h * muy[None] + c2h,
+        "theta": c1h * mu[None] + c2h,
+    }
+    weights["qv"] = weights["theta"]
+    if getattr(state, "has_msf", False):
+        weights["u"] = weights["u"] / _to_host(state.msfu).astype(
+            np.float64)[None]
+        weights["v"] = weights["v"] / _to_host(state.msfv).astype(
+            np.float64)[None]
+    pressure = getattr(state, "p", None)
+    if pressure is not None:
+        weights["exner"] = (_to_host(pressure).astype(np.float64)
+                            / c.P0) ** c.RCP
+    return weights
+
+
+def _boundary_frames(intervals) -> list[float]:
+    """Frame times (s): every interval's start, then the last one's end."""
+    times = [float(interval.start_seconds) for interval in intervals]
+    times.append(float(intervals[-1].end_seconds))
+    return times
+
+
+def boundary_perturbation_unavailable(boundaries) -> str | None:
+    """Why a member's boundaries cannot be perturbed here, or ``None``.
+
+    A state with no boundary tables (a periodic or idealized domain) has
+    nothing to perturb, and a streamed series (its intervals declare
+    ``bounds`` and load as the run reaches them) cannot have a member's
+    perturbation built ahead of intervals that may not be prepared yet.
+    The caller records the reason and runs the shared tables.
+    """
+    if boundaries is None:
+        return "the state carries no lateral boundary tables"
+    intervals = getattr(boundaries, "intervals", None)
+    if intervals is None:
+        return (f"the boundary object {type(boundaries).__name__} holds no "
+                "interval series (a rolling nest boundary is the parent's)")
+    if getattr(intervals, "bounds", None) is not None:
+        return ("a streamed boundary series loads its intervals as the run "
+                "reaches them, so a member's perturbation cannot be built "
+                "ahead of them; this member runs the shared tables")
+    return None
+
+
+def perturbed_lateral_boundaries(boundaries, cfg: PerturbationConfig, *,
+                                 seed: int, coupling: Mapping[str, Any],
+                                 scale: float = 1.0,
+                                 time_scale_hours: float =
+                                 DEFAULT_BOUNDARY_TIME_SCALE_HOURS,
+                                 ) -> tuple[Any, dict[str, Any]]:
+    """One member's own lateral boundary forcing: ``(boundaries, record)``.
+
+    Why.  Members that share one boundary file lose their spread toward the
+    rim as the forecast runs, because the unperturbed inflow floods the
+    domain; on a small storm-scale domain that matters more than the
+    initial perturbation does.  So each member's boundary tables get a
+    perturbation of their own.
+
+    What.  For every field of ``cfg.fields`` the boundary tables carry
+    (``u``, ``v``, ``theta`` from a ``"theta"`` or ``"t"`` spec, ``qv``), a
+    unit Gaussian random field with the spec's own length scales is drawn
+    at every boundary frame and sliced to the four sides exactly as the
+    boundary builder slices a snapshot
+    (:func:`gpuwm.ingest.lateral_bc.extract_lateral_side`):
+
+    * frame 0 (the run's start) gets NO perturbation: the member's initial
+      state is tapered to the shared boundary at the rim
+      (:func:`apply_perturbations`), and the boundary must agree with it;
+    * frame 1 is the member's OWN initial draw -- the same seed, field name
+      and length scales :func:`apply_perturbations` used, untapered -- so
+      the forcing ramps over the first interval into the pattern the
+      member's interior already carries;
+    * frame ``j >= 2`` is ``rho * Z(j-1) + sqrt(1 - rho**2) * G(j)``, an
+      AR(1) in time with ``rho = exp(-dt / time_scale)`` and ``G(j)`` a
+      fresh draw on its own stream, so each frame keeps unit variance and
+      the forcing never jumps.
+
+    Additive fields add ``scale * amplitude * Z`` times the coupling weight
+    (:func:`boundary_coupling_weights`), divided by the Exner function for a
+    ``"t"`` spec.  A ``"lognormal"`` ``qv`` multiplies the coupled table by
+    ``exp(scale * amplitude * clip(Z))``: positive by construction, as the
+    initial perturbation is.  Hydrometeor and number tables, ``phi`` and
+    ``mu`` are not perturbed (stated in the record).
+
+    Between frames the perturbation follows the interval's own time law:
+    the value gains the start frame's perturbation and the tendency is
+    chosen so the interval reaches the end frame's perturbation exactly at
+    its end (with a rational law ``value + t (tendency + t q) / (1 + t d)``
+    the added tendency is ``(P_end - P_start) (1 + T d) / T``).
+
+    Deterministic in ``(seed, field, grid, frame)``: the same member gets
+    the same boundaries on every leg and in every process, which is what
+    keeps its restart sets' setup fingerprint (which hashes the attached
+    tables) stable across legs.
+    """
+    from gpuwm.ingest.lateral_bc import (BoundaryInterval, FieldBoundary,
+                                         LateralBoundaries, SideBoundary,
+                                         evaluate_boundary_side,
+                                         extract_lateral_side)
+
+    if not isinstance(cfg, PerturbationConfig):
+        raise TypeError("cfg must be a PerturbationConfig")
+    if int(seed) != seed:
+        raise TypeError(f"seed must be an integer, got {seed!r}")
+    scale = float(scale)
+    time_scale_s = float(time_scale_hours) * 3600.0
+    if not math.isfinite(scale) or scale < 0.0:
+        raise ValueError(f"scale must be finite and >= 0, got {scale!r}")
+    if not math.isfinite(time_scale_s) or time_scale_s <= 0.0:
+        raise ValueError(
+            f"time_scale_hours must be positive, got {time_scale_hours!r}")
+    intervals = tuple(boundaries.intervals)
+    if getattr(boundaries.intervals, "bounds", None) is not None:
+        raise ValueError(
+            "a streamed boundary series holds intervals that may not be "
+            "prepared yet, so a member's perturbation cannot be built ahead "
+            "of them; perturb an eagerly attached series")
+    width = int(boundaries.spec_bdy_width)
+    frames = _boundary_frames(intervals)
+    available = set(intervals[0].fields)
+    record: dict[str, Any] = {
+        "schema": BOUNDARY_PERTURBATION_SCHEMA, "status": STATUS,
+        "seed": int(seed), "scale": scale,
+        "time_scale_hours": float(time_scale_hours),
+        "frames_seconds": frames, "fields": [],
+        "not_perturbed": sorted(
+            name for name in available
+            if name not in {_BOUNDARY_TABLE[spec.name]
+                            for spec in cfg.fields}),
+    }
+    if scale == 0.0:
+        record["note"] = "scale 0: the shared boundaries, unchanged"
+        return boundaries, record
+
+    # Side perturbations per table, per frame: {table: [frame -> sides]}.
+    added: dict[str, list] = {}
+    plans = []
+    for spec in cfg.fields:
+        table = _BOUNDARY_TABLE[spec.name]
+        if table not in available:
+            record["fields"].append({"name": spec.name, "table": table,
+                                     "perturbed": False,
+                                     "reason": "no such boundary table"})
+            continue
+        weight = coupling.get(table)
+        if spec.mode == "additive" and weight is None:
+            raise ValueError(
+                f"{spec.name}: no coupling weight for the {table!r} table; "
+                "build them with boundary_coupling_weights(state)")
+        shape = (tuple(int(n) for n in weight.shape) if weight is not None
+                 else None)
+        if shape is None:
+            west = intervals[0].fields[table].west.value
+            south = intervals[0].fields[table].south.value
+            shape = (int(west.shape[0]), int(west.shape[1]),
+                     int(south.shape[2]))
+        exner = None
+        if spec.name == "t":
+            exner = coupling.get("exner")
+            if exner is None:
+                raise ValueError(
+                    "a temperature amplitude needs the Exner function "
+                    "(boundary_coupling_weights(state) on a state with p)")
+        record["fields"].append({
+            "name": spec.name, "table": table, "perturbed": True,
+            "mode": spec.mode, "amplitude": float(spec.amplitude),
+            "length_scale_km": float(spec.length_scale_km),
+            "vertical_scale_levels": float(spec.vertical_scale_levels),
+            "frame_streams": ([spec.name] + [
+                f"{spec.name}/lateral-boundary/frame{i}"
+                for i in range(2, len(frames))]),
+            "uncoupled_rms_per_frame": None,
+        })
+        plans.append((spec, table, weight, shape, exner, record["fields"][-1]))
+
+    def field_frames(plan):
+        """One field's side perturbation at every frame: ``per_frame, rms``.
+
+        Every frame's draw is independent of the others (its own stream), so
+        they are drawn on threads -- NumPy's Philox fill, its FFT and
+        hashlib all run without the GIL -- and combined in frame order, the
+        serial result byte for byte; the fields run side by side the same
+        way.  Drawn one after another they were 40 s of one host core per
+        member at the start of every 9 km CONUS run (box L probe,
+        2026-10-06), with the member's card idle meanwhile.
+        """
+        spec, table, weight, shape, exner, _entry = plan
+
+        def frame_draw(index):
+            name = (spec.name if index == 1
+                    else f"{spec.name}/lateral-boundary/frame{index}")
+            draw, _info = gaussian_random_field(
+                shape, seed=int(seed), name=name, dx_km=cfg.dx_km,
+                dy_km=cfg.dy_km, length_scale_km=spec.length_scale_km,
+                vertical_scale_levels=spec.vertical_scale_levels,
+                xp=np, dtype=cfg.compute_dtype, fft_host=True)
+            return np.asarray(draw, dtype=np.float64)
+
+        draws = _boundary_draws(frame_draw, range(1, len(frames)))
+        per_frame = [None]
+        z = None
+        rms = []
+        for index in range(1, len(frames)):
+            draw = draws.pop(index)
+            if z is None:
+                z = draw
+            else:
+                rho = math.exp(-(frames[index] - frames[index - 1])
+                               / time_scale_s)
+                z = rho * z + math.sqrt(1.0 - rho * rho) * draw
+            if spec.mode == "lognormal":
+                exponent = (_clip_draw(np, z, spec.clip_sigmas)
+                            * float(spec.amplitude) * scale)
+                per_frame.append(("factor", extract_lateral_side_all(
+                    extract_lateral_side, {table: np.exp(exponent)},
+                    width)[table]))
+            else:
+                increment = z * float(spec.amplitude) * scale
+                if exner is not None:
+                    increment = increment / exner
+                coupled = increment * weight
+                rms.append(float(np.sqrt(np.mean(increment ** 2))))
+                per_frame.append(("add", extract_lateral_side_all(
+                    extract_lateral_side, {table: coupled}, width)[table]))
+        return per_frame, rms
+
+    for plan, (per_frame, rms) in zip(
+            plans, _boundary_draws(lambda k: field_frames(plans[k]),
+                                   range(len(plans))).values()):
+        added[plan[1]] = per_frame
+        plan[5]["uncoupled_rms_per_frame"] = rms or None
+
+    def side_perturbation(table, frame, side_name, base_value):
+        entry = added[table][frame]
+        if entry is None:
+            return np.zeros_like(base_value)
+        kind, sides = entry
+        if kind == "factor":
+            return base_value * (sides[side_name] - 1.0)
+        return sides[side_name]
+
+    new_intervals = []
+    for index, interval in enumerate(intervals):
+        duration = float(interval.end_seconds - interval.start_seconds)
+        fields = {}
+        for table, boundary in interval.fields.items():
+            if table not in added:
+                fields[table] = boundary
+                continue
+            sides = {}
+            for side_name in ("west", "east", "south", "north"):
+                side = getattr(boundary, side_name)
+                start = np.asarray(side.value, dtype=np.float64)
+                end = evaluate_boundary_side(side, duration)[0]
+                p_start = side_perturbation(table, index, side_name, start)
+                p_end = side_perturbation(table, index + 1, side_name, end)
+                rate = (p_end - p_start) / duration
+                if side.time_law is not None:
+                    rate = rate * (1.0 + duration * np.asarray(
+                        side.time_law.denominator_rate, dtype=np.float64))
+                sides[side_name] = SideBoundary(
+                    start + p_start,
+                    np.asarray(side.tendency, dtype=np.float64) + rate,
+                    side.time_law)
+            fields[table] = FieldBoundary(**sides)
+        new_intervals.append(BoundaryInterval(
+            interval.start_seconds, interval.end_seconds, fields))
+    perturbed = LateralBoundaries(
+        tuple(new_intervals), boundaries.spec_bdy_width,
+        boundaries.spec_zone, boundaries.relax_zone,
+        seam_sides=tuple(boundaries.seam_sides))
+    digest = hashlib.sha256()
+    for interval in new_intervals:
+        for table in sorted(interval.fields):
+            for side_name in ("west", "east", "south", "north"):
+                side = getattr(interval.fields[table], side_name)
+                digest.update(np.ascontiguousarray(side.value).tobytes())
+                digest.update(np.ascontiguousarray(side.tendency).tobytes())
+    record["tables_sha256"] = digest.hexdigest()
+    return perturbed, record
+
+
+#: Threads one boundary field's frames are drawn on (the fields of a member
+#: run side by side too, so a member uses up to four times this many).
+BOUNDARY_DRAW_THREADS = 5
+
+
+def _boundary_draws(draw, indices) -> dict:
+    """``{index: draw(index)}``, drawn on up to :data:`BOUNDARY_DRAW_THREADS`
+    threads.  Each draw is a pure function of its index, so the result is
+    the serial one whatever order the threads finish in."""
+    indices = list(indices)
+    if len(indices) < 2:
+        return {index: draw(index) for index in indices}
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(
+            max_workers=min(BOUNDARY_DRAW_THREADS, len(indices)),
+            thread_name_prefix="boundary-draw") as pool:
+        return dict(zip(indices, pool.map(draw, indices)))
+
+
+def extract_lateral_side_all(extract, snapshot, width):
+    """``{table: {side: array}}`` for every side, by the builder's slicer."""
+    out: dict[str, dict[str, np.ndarray]] = {name: {} for name in snapshot}
+    for side_name in ("west", "east", "south", "north"):
+        for name, array in extract(snapshot, side_name, width).items():
+            out[name][side_name] = np.asarray(array, dtype=np.float64)
+    return out
+
+
+def additive_inflation(priors: Mapping[int, Mapping[str, Any]],
+                       cfg: PerturbationConfig, *, seed: int, leg: int,
+                       scale: float, weight=None,
+                       stream: str = "additive-inflation",
+                       ) -> tuple[dict[int, dict], dict]:
+    """Additive inflation after an analysis: ``(noise_by_member, record)``.
+
+    Why.  RTPS and RTPP only rescale the spread the ensemble still has;
+    neither can restore spread lost in the forecast step or rank lost by a
+    collapsed subspace, and members started from one draw and relaxed every
+    analysis lose both (Mitchell and Houtekamer 2000; Dowell and Wicker
+    2009 add noise after each storm-scale analysis for the same reason).
+
+    What.  For every member ``m`` (the keys of ``priors``) and every field
+    of ``cfg.fields``, a fresh smooth draw from the module's own generator:
+    seed ``seed + m``, stream ``"<field>/additive-inflation/leg<leg>"``, the
+    spec's own length scales, host Philox and host FFT (so the draw is the
+    same on every machine), tapered at the rim like the initial
+    perturbation.  Additive fields add ``scale * amplitude * draw``
+    (divided by the Exner function of the prior's ``p`` for a ``"t"``
+    spec); a ``"lognormal"`` ``qv`` adds ``qv * (exp(scale * amplitude *
+    clip(draw)) - 1)``.  Then the ENSEMBLE MEAN of the added noise is
+    removed at every cell, so the analysis mean is exactly the filter's
+    and only the spread grows.
+
+    ``scale`` is the fraction of the initial perturbation's amplitude added
+    per analysis; ``0`` returns ``({}, record)``.  Hydrometeor species are
+    not inflated: a multiplicative factor there must move each species'
+    moments together and is left to the model, which rebuilds condensate
+    spread from the inflated wind, temperature and vapour within a leg.
+
+    ``weight`` (``(ny, nx)`` on mass points, values in [0, 1]) scales the
+    noise column by column, carried to the u and v faces by averaging the
+    two adjacent mass columns; ``stream`` names the draw stream, so a
+    weighted call (:func:`echo_weight`, audit S5) never repeats the
+    domain-wide one.
+
+    Returns host arrays keyed by state attribute (``u``, ``v``, ``thp``,
+    ``qv``) in each prior's dtype.  Members with no key in ``priors`` get
+    nothing; one member gets nothing (an ensemble of one has no mean to
+    keep, and the noise would be all bias).
+    """
+    if not isinstance(cfg, PerturbationConfig):
+        raise TypeError("cfg must be a PerturbationConfig")
+    scale = float(scale)
+    if not math.isfinite(scale) or scale < 0.0:
+        raise ValueError(f"scale must be finite and >= 0, got {scale!r}")
+    members = sorted(int(index) for index in priors)
+    record: dict[str, Any] = {
+        "schema": ADDITIVE_INFLATION_SCHEMA, "status": STATUS,
+        "scale": scale, "leg": int(leg), "seed": int(seed),
+        "members": len(members), "fields": [],
+        "mean_removed": True, "rim_width_cells": cfg.rim_width,
+        "species_inflated": False,
+    }
+    if scale == 0.0 or len(members) < 2:
+        record["note"] = ("scale 0: nothing added" if scale == 0.0 else
+                          "one member: no ensemble mean to keep")
+        return {}, record
+    noise: dict[int, dict] = {index: {} for index in members}
+    # Members are drawn side by side: each draw is its own seeded stream
+    # and host FFT, so threads change when it is computed, never what.  One
+    # after another this was about 0.5 s a draw, 32 members x four fields x
+    # (inflation + echo noise), two minutes of every 9 km CONUS analysis.
+    from concurrent.futures import ThreadPoolExecutor
+
+    from gpuwm.da import ensemble_stats
+
+    def member_added(name, spec, attribute, index):
+        prior = priors[index]
+        if attribute not in prior:
+            raise ValueError(
+                f"member {index}: the prior carries no {attribute!r}, "
+                f"which the {name!r} inflation draws on")
+        target = np.asarray(prior[attribute])
+        shape = tuple(int(n) for n in target.shape)
+        stream_name = f"{name}/{stream}/leg{int(leg)}"
+        draw, _ = gaussian_random_field(
+            shape, seed=int(seed) + index, name=stream_name,
+            dx_km=cfg.dx_km, dy_km=cfg.dy_km,
+            length_scale_km=spec.length_scale_km,
+            vertical_scale_levels=spec.vertical_scale_levels,
+            xp=np, dtype=cfg.compute_dtype, fft_host=True)
+        draw = np.asarray(draw, dtype=np.float64)
+        taper = boundary_taper(shape[1], shape[2], cfg.rim_width,
+                               kind=cfg.rim_taper, xp=np,
+                               dtype=np.float64)[None]
+        if weight is not None:
+            taper = taper * _weight_on(weight, shape[1:])[None]
+        if spec.mode == "lognormal":
+            exponent = (_clip_draw(np, draw, spec.clip_sigmas)
+                        * float(spec.amplitude) * scale * taper)
+            added = target.astype(np.float64) * np.expm1(exponent)
+        else:
+            added = draw * float(spec.amplitude) * scale * taper
+            if SUPPORTED_FIELDS[name].exner_from_temperature:
+                if "p" not in prior:
+                    raise ValueError(
+                        f"member {index}: a temperature amplitude "
+                        "needs the prior's pressure 'p'")
+                added = added / (np.asarray(prior["p"], np.float64)
+                                 / c.P0) ** c.RCP
+        return added
+
+    workers = max(1, min(32, len(members)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for name in cfg.field_names:
+            spec = cfg.spec(name)
+            attribute = SUPPORTED_FIELDS[name].attribute
+            stack = np.stack(list(pool.map(
+                lambda index: member_added(name, spec, attribute, index),
+                members)))
+            # stack -= stack.mean(axis=0, keepdims=True), span by span: the
+            # member mean of a point is the same sequential sum whichever
+            # thread forms it.
+            flat = stack.reshape(len(members), -1)
+
+            def demean(span, _flat=flat):
+                lo, hi = span
+                block = _flat[:, lo:hi]
+                block -= block.mean(axis=0, keepdims=True)
+
+            list(pool.map(demean, ensemble_stats._spans(
+                flat.shape[1], 4 * workers)))
+            for slot, index in enumerate(members):
+                noise[index][attribute] = stack[slot].astype(
+                    np.asarray(priors[index][attribute]).dtype)
+            squares = np.empty_like(flat)
+
+            def square(span, _flat=flat, _out=squares):
+                lo, hi = span
+                np.multiply(_flat[:, lo:hi], _flat[:, lo:hi],
+                            out=_out[:, lo:hi])
+
+            list(pool.map(square, ensemble_stats._spans(
+                flat.shape[1], 4 * workers)))
+            record["fields"].append({
+                "name": name, "attribute": attribute, "mode": spec.mode,
+                "amplitude_fraction": scale,
+                "amplitude": float(spec.amplitude) * scale,
+                "length_scale_km": float(spec.length_scale_km),
+                "added_rms": float(np.sqrt(
+                    ensemble_stats.exact_sum(squares.reshape(-1))
+                    / squares.size)),
+                "added_max_abs": max(pool.map(
+                    lambda span, _flat=flat: float(
+                        np.abs(_flat[:, span[0]:span[1]]).max()),
+                    ensemble_stats._spans(flat.shape[1], 4 * workers))),
+            })
+            del stack, flat, squares
+    return noise, record
+
+
+def _weight_on(weight, shape) -> np.ndarray:
+    """A mass-point ``(ny, nx)`` weight on ``shape``: itself, or averaged
+    onto the u (``nx + 1``) or v (``ny + 1``) faces."""
+    w = np.asarray(weight, dtype=np.float64)
+    ny, nx = int(shape[0]), int(shape[1])
+    if w.shape == (ny, nx):
+        return w
+    if w.shape == (ny, nx - 1):
+        padded = np.pad(w, ((0, 0), (1, 1)), mode="edge")
+        return 0.5 * (padded[:, 1:] + padded[:, :-1])
+    if w.shape == (ny - 1, nx):
+        padded = np.pad(w, ((1, 1), (0, 0)), mode="edge")
+        return 0.5 * (padded[1:, :] + padded[:-1, :])
+    raise ValueError(f"weight {w.shape} does not sit on a field {shape}")
+
+
+#: Default observed-echo threshold (dBZ) of :func:`echo_weight`.  Dowell
+#: and Wicker (2009, J. Atmos. Oceanic Technol. 26, 911-927) add their
+#: noise where observed reflectivity exceeds 25 dBZ.
+ECHO_NOISE_THRESHOLD_DBZ = 25.0
+
+
+def echo_weight(z_obs, z_mask, *, threshold_dbz: float =
+                ECHO_NOISE_THRESHOLD_DBZ, dx_km: float, dy_km: float,
+                length_scale_km: float) -> np.ndarray:
+    """``(ny, nx)`` weight in [0, 1]: 1 in columns where the radar observed
+    echo at or above ``threshold_dbz`` at any level, spread smoothly over
+    about one ``length_scale_km`` around them (a Gaussian of that scale,
+    renormalised so a large echo region sits at 1).
+
+    Why (audit S5).  An ensemble filter can only build echo some member
+    has: where no member has the storm the background covariance between
+    reflectivity and the state is zero and the observation moves nothing.
+    Dowell and Wicker (2009) answer this by adding smooth noise to wind,
+    temperature and moisture where radar observes echo, so the members
+    differ there and the next analyses have spread to work with.  This is
+    that weight; :func:`additive_inflation` draws the noise.
+    """
+    z = np.asarray(z_obs, dtype=np.float64)
+    mask = np.asarray(z_mask, dtype=bool)
+    echo = np.where(mask, z, -np.inf).max(axis=0) >= float(threshold_dbz)
+    if not echo.any():
+        return np.zeros(echo.shape, dtype=np.float64)
+    ny, nx = echo.shape
+    sigma = float(length_scale_km)
+    # Zero-padded to twice the grid so the smoothing does not wrap around.
+    pad_y, pad_x = ny, nx
+    field = np.zeros((ny + pad_y, nx + pad_x))
+    field[:ny, :nx] = echo
+    ky = np.fft.fftfreq(ny + pad_y, d=float(dy_km))
+    kx = np.fft.fftfreq(nx + pad_x, d=float(dx_km))
+    kernel = np.exp(-2.0 * (np.pi * sigma) ** 2
+                    * (ky[:, None] ** 2 + kx[None, :] ** 2))
+    smooth = np.fft.ifft2(np.fft.fft2(field) * kernel).real[:ny, :nx]
+    smooth = np.clip(smooth / 0.5, 0.0, 1.0)
+    smooth[echo] = 1.0
+    return smooth
+
+
+# --------------------------------------------------------------------------
 # Documented stubs -- routes that exist on paper only
 # --------------------------------------------------------------------------
 
@@ -2009,25 +3215,3 @@ def recycled_difference_perturbations(*args, **kwargs):
         "recycled-difference perturbations are a documented v1 non-goal; "
         "use apply_perturbations with a PerturbationConfig, or implement "
         "this route with its own provenance schema")
-
-
-def perturbed_lateral_boundaries(*args, **kwargs):
-    """Not built in v1.  Per-member perturbation of the boundary forcing.
-
-    The idea: give each member its own boundary tendencies so spread does not
-    collapse toward the rim as the forecast runs and the unperturbed inflow
-    floods the domain.  For a multi-hour storm-scale forecast on a small
-    domain this matters more than the initial-condition perturbation does.
-
-    What it needs that this module does not have: a per-member boundary file
-    (or an in-memory equivalent) that the lateral-BC reader can be pointed
-    at, a perturbation that is consistent in time across boundary intervals
-    rather than redrawn each interval, and agreement with the driving model's
-    own uncertainty.  Until then the rim taper in
-    :func:`apply_perturbations` is the whole boundary story, and the
-    provenance says so.
-    """
-    raise NotImplementedError(
-        "perturbed lateral boundaries are a documented v1 non-goal; members "
-        "share one boundary file and apply_perturbations tapers the rim to "
-        "zero so that stays legal")

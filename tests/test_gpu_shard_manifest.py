@@ -176,10 +176,66 @@ def test_no_entry_is_listed_twice() -> None:
     assert not duplicates, duplicates
 
 
+@pytest.mark.parametrize("entry", ["tests/test_chem_nest_lifecycle.py",
+                                   "tests/test_chem_fork_integration.py"])
+def test_chem_integration_runs_on_every_cut_and_not_the_cpu_leg(entry) -> None:
+    """Device chemistry and continuation must not disappear under CPU marks."""
+    assert entry in _entries("shard1"), (
+        "chemistry transport, relocation and restart coverage is absent from "
+        "the per-cut GPU leg")
+    cpu_list = MANIFEST.with_name("stage1_files.txt").read_text(encoding="utf-8")
+    cpu_entries = {line.strip() for line in cpu_list.splitlines()
+                   if line.strip() and not line.lstrip().startswith("#")}
+    assert entry not in cpu_entries, (
+        "the device-only chemistry lifecycle suite contributes no CPU rows")
+    from tools.battery.no_silent_deselection import ZERO_COLLECT_ALLOWED
+    assert entry not in ZERO_COLLECT_ALLOWED, (
+        "the device lifecycle requires an executing GPU leg, not a zero-row allowance")
+
+
 def test_the_file_is_lf_only() -> None:
     assert b"\r" not in MANIFEST.read_bytes(), (
         "tools/battery/gpu_shard_files.txt contains CR bytes; the repository "
         "commits LF and .gitattributes does no conversion")
+
+
+_TRANSITIVE_DEVICE_HELPERS = {
+    "tests/test_chem_dust_wrf471_parity.py": ("chem_emis_parity_support", "replay"),
+    "tests/test_chem_afwa_wrf471_parity.py": ("chem_emis_parity_support", "replay"),
+    "tests/test_chem_seasalt_wrf471_parity.py": ("chem_emis_parity_support", "replay"),
+    "tests/test_chem_sulfur_wrf471_parity.py": ("chem_gocart_checks", "sulfur_case"),
+    "tests/test_chem_ageing_wrf471_parity.py": ("chem_gocart_checks", "aging_case"),
+    "tests/test_sfire_moisture_driver_wrf471_parity.py": (
+        "tools.sfire_coupled_ideal.moisture_driver.grade", "replay"),
+    "tests/test_sfire_open_geopotential_wrf471_parity.py": (
+        "tools.sfire_coupled_ideal.rhs_ph_open.grade", "grade"),
+    # The ideal initializer graders replay their native words on the card
+    # (cupy imported inside the replay helpers).
+    "tests/test_sfire_ideal_geometry_wrf471_parity.py": (
+        "tools.sfire_coupled_ideal.initialization.grade_geometry", "replay"),
+    "tests/test_sfire_ideal_landuse_wrf471_parity.py": (
+        "tools.sfire_coupled_ideal.initialization.grade_landuse", "replay"),
+}
+
+
+def _module_fixture_calls_device_helper(entry, fixture_name, helper, name):
+    """Follow an imported module returned by a fixture to its CUDA witness."""
+    import ast
+
+    tree = ast.parse((REPOSITORY_ROOT / entry).read_text(encoding="utf-8"))
+    aliases = {alias.asname or alias.name
+               for node in tree.body if isinstance(node, ast.Import)
+               for alias in node.names if alias.name == helper}
+    assert aliases, (entry, helper)
+    fixture = next(node for node in tree.body
+                   if isinstance(node, ast.FunctionDef) and node.name == fixture_name)
+    assert any(isinstance(node, ast.Return) and isinstance(node.value, ast.Name)
+               and node.value.id in aliases for node in ast.walk(fixture)), entry
+    assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+               and isinstance(node.func.value, ast.Name)
+               and node.func.value.id == fixture_name and node.func.attr == name
+               for node in ast.walk(tree)), entry
+    assert _helper_opens_cuda(helper, name, REPOSITORY_ROOT / "tests"), entry
 
 
 @pytest.mark.parametrize("entry", _entries())
@@ -196,6 +252,28 @@ def test_every_entry_is_actually_gpu_bound(entry: str) -> None:
 
     from conftest import _cupy_scope
 
+    if entry == "tests/test_ruc_fork_gpu.py":
+        _module_fixture_calls_device_helper(
+            entry, "fork_gpu", "test_ruc_gpu",
+            "test_ruc_snow_temperature_cuda_matches_unmodified_wrf_bit_for_bit")
+        return
+    if entry in _TRANSITIVE_DEVICE_HELPERS:
+        import ast
+        helper, name = _TRANSITIVE_DEVICE_HELPERS[entry]
+        tree = ast.parse((REPOSITORY_ROOT / entry).read_text(encoding="utf-8"))
+        assert any(isinstance(node, ast.ImportFrom) and node.module == helper
+                   and any(alias.name == name for alias in node.names)
+                   for node in ast.walk(tree)), entry
+        if "." in helper:
+            # A dotted helper is a tools/ module (the SFIRE oracle graders),
+            # which imports cupy at module scope; conftest's detector reads it.
+            from conftest import _cupy_scope
+            helper_whole, helper_functions = _cupy_scope(
+                str(REPOSITORY_ROOT / (helper.replace(".", "/") + ".py")))
+            assert helper_whole or name in helper_functions, entry
+        else:
+            assert _helper_opens_cuda(helper, name, REPOSITORY_ROOT / "tests"), entry
+        return
     whole, functions = _cupy_scope(str(REPOSITORY_ROOT / entry))
     if entry in DEVICE_ORACLE_IMPORTS:
         # The compiled-WRF suites call device adapters transitively. Keep
@@ -388,6 +466,26 @@ def test_every_entry_is_actually_gpu_bound(entry: str) -> None:
         assert runner_whole or runner_functions, (
             "the prepared tree runner no longer opens CUDA")
         return
+    if entry == "tests/test_urban_ucm_wrf461_parity.py":
+        # Its device read belongs to the production replay helper, while
+        # this file also owns CPU fixture and native-twin rows.
+        import ast
+        tree = ast.parse((REPOSITORY_ROOT / entry).read_text(encoding="utf-8"))
+        assert any(
+            isinstance(node, ast.ImportFrom)
+            and node.module == "gpuwm.verify.urban_ucm_oracle"
+            and any(alias.name == "replay" and alias.asname is None for alias in node.names)
+            for node in ast.walk(tree)), (
+            "the original WRF urban oracle no longer imports the device replay")
+        assert any(
+            isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == "replay" for node in ast.walk(tree)), (
+            "the original WRF urban oracle no longer executes the device replay")
+        module_whole, module_functions = _cupy_scope(
+            str(REPOSITORY_ROOT / "gpuwm/core/urban_ucm.py"))
+        assert module_whole or "run_columns" in module_functions, (
+            "the original WRF urban replay no longer reaches CUDA columns")
+        return
     if entry in DEVICE_HELPERS:
         # The entry must still use its helper, and the helper must still
         # read device words; either change turns this red.
@@ -557,3 +655,28 @@ def test_the_weekly_shard_is_the_frozen_cumulus_oracle_families() -> None:
         assert any(pathlib.PurePosixPath(e).name.startswith(prefix)
                    for e in shard2), prefix
     assert "tests/test_cumulus_momentum_extension.py" in _entries("shard1")
+
+
+def test_sfire_device_controls_remain_on_per_cut_shard() -> None:
+    """Dropping these entries would omit SFIRE compiled WRF comparisons and coupled GPU trajectories."""
+    required = {
+        "tests/test_sfire_atm_wrf471_parity.py",
+        "tests/test_sfire_clock_gpu.py",
+        "tests/test_sfire_dated_perimeter_gpu.py",
+        "tests/test_sfire_debug_runtime.py",
+        "tests/test_sfire_driver_wrf471_parity.py",
+        "tests/test_sfire_moisture_driver_wrf471_parity.py",
+        "tests/test_sfire_negative_burn_gpu.py",
+        "tests/test_sfire_open_geopotential_wrf471_parity.py",
+        "tests/test_sfire_ranked_gpu.py",
+        "tests/test_sfire_restart_coupled_gpu.py",
+        "tests/test_sfire_smoke.py",
+        "tests/test_sfire_smoke_tiled_gpu.py",
+        "tests/test_sfire_spotting_streamed_gpu.py",
+        "tests/test_sfire_spotting_wrf471_parity.py",
+        "tests/test_sfire_tilestream_gpu.py",
+        "tests/test_sfire_wind_wrf471_parity.py",
+        "tests/test_sfire_wrf471_parity.py",
+    }
+    missing = sorted(required - set(_entries("shard1")))
+    assert not missing, (f"{missing} have no required SFIRE battery leg")

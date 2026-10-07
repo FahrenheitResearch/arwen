@@ -127,8 +127,12 @@ fn one_hour_accumulation_parameter_rows_select_the_zero_altitude_quantity() {
         assert_eq!(field.values, values);
         let partial = extract_fields_from_grib2_partial(&grib, &[selector]).unwrap();
         assert!(partial.missing.is_empty());
+        assert_eq!(partial.extracted.len(), 1);
         assert_eq!(partial.extracted[0].units, "mm");
-        assert_eq!(partial.extracted[0].values, values);
+        assert_eq!(
+            partial.extracted[0].values.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+            values.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+        );
         let bytes = ieee_f32_grib_bytes(
             ParameterCode { discipline: 209, category: 6, number },
             102, 0, &values, None,
@@ -190,6 +194,12 @@ fn accumulation_native_units_preserve_mass_per_area_without_rescaling() {
     let bare = &native.extracted[0];
     assert_eq!(bare.selector, selector);
     assert_eq!(bare.grid_index, 0);
+    let unfiltered = extract_field_values_partial_from_model_bytes_at_forecast_hour(
+        ModelId::Hrrr, &bytes, None, &[selector], None,
+    ).unwrap();
+    assert!(unfiltered.missing.is_empty());
+    assert_eq!(unfiltered.extracted.len(), 1);
+    assert_eq!(partial.extracted.len(), 1);
     for (units, decoded) in [
         (field.units.as_str(), &field.values),
         (
@@ -197,6 +207,7 @@ fn accumulation_native_units_preserve_mass_per_area_without_rescaling() {
             &partial.extracted[0].values,
         ),
         (bare.units.as_str(), &bare.values),
+        (unfiltered.extracted[0].units.as_str(), &unfiltered.extracted[0].values),
     ] {
         assert_eq!(units, "kg/m^2");
         assert_eq!(
@@ -1022,6 +1033,15 @@ fn structured_selector_matches_supported_upper_air_subset() {
         -99.0,
     );
     assert!(smoke_column.matches(&smoke_column_message));
+
+    let aod = StructuredMessageSelector::try_from(FieldSelector::entire_atmosphere(
+        CanonicalField::AerosolOpticalDepth550,
+    ))
+    .unwrap();
+    let aod_message = ieee_f32_message(PARAMETER_AOD550[0], 200, 0.0, &[0.5], -99.0, -99.0);
+    assert!(aod.matches(&aod_message));
+    let wrong_level = ieee_f32_message(PARAMETER_AOD550[0], 103, 8.0, &[0.5], -99.0, -99.0);
+    assert!(!aod.matches(&wrong_level));
 
     let u_10m =
         StructuredMessageSelector::try_from(FieldSelector::height_agl(CanonicalField::UWind, 10))

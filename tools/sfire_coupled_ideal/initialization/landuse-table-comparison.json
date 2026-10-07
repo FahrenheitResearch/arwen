@@ -1,0 +1,17 @@
+{
+  "section": "USGS",
+  "shape": [
+    2,
+    61,
+    7
+  ],
+  "packaged_file_sha256": "cafdb5f4982b88c93f2cb321f18d9559e7c03b6d213388d5ae3d07b7280caa08",
+  "native_file_sha256": "7f661318ff5f06aed6b4b5508e4d077dc794cff03d5fb4447fe59c88d0ed2ece",
+  "compared_columns": "all fields; SCFX only the last read season, as native source retains",
+  "grade": {
+    "words": 793,
+    "different_words": 0,
+    "max_ulp": 0,
+    "nonfinite_differences": 0
+  }
+}

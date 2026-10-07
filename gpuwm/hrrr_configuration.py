@@ -64,10 +64,27 @@ def resolve_root_experiment(*, target, vertical, namelist_input, start_time,
         root_perturbation_deferral(experiment_config, announce=False)
         raw = tomllib.loads(read_config_authority(experiment_config).payload.decode("utf-8"))
         authority = str(read_config_authority(experiment_config).source)
+        # The scheme generations the declared [fetch] source carries are
+        # filled BEFORE the table is split off, exactly as the config-table
+        # loader behind `gpuwm sim` fills them
+        # (gpuwm.physics_source_defaults.fill_omitted_generation_selectors),
+        # so the physics this preparation resolves, records in its receipt
+        # and holds its benchmark to is the physics the forecast integrates
+        # from the same file.  Breakage this prevents: a bare
+        # operational-fork-source configuration (no thompson_version,
+        # thompson_fork_snow_fall or mynn_sfclay_variant written) prepared
+        # through this route resolved and recorded WRF v4.6.1's generations
+        # while `gpuwm sim` ran the fork pair (lane review, 2026-10-06).
+        from gpuwm.physics_source_defaults import fill_omitted_generation_selectors
+        fill_omitted_generation_selectors(raw, raw.get("fetch"))
         # Prepared meteorological identity is independent of execution capacity
         # and fetch hints. The caller keeps these in its unchanged launch config.
         raw.pop("fetch", None)
         raw.pop("tiles", None)
+        # [radar_heating] is an execution control too: one preparation
+        # serves the unheated control and every heated arm, and the launch
+        # config hands the table to the door (--radar-heating-table).
+        raw.pop("radar_heating", None)
         for domain in raw.get("domain", ()):
             domain.pop("tiles", None)
     else:

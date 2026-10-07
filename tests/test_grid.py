@@ -28,3 +28,32 @@ def test_rebalance_matches_base_when_unperturbed():
     th3 = np.broadcast_to(b.thb[:, None, None], (32, 1, 8)).copy()
     ph3 = rebalance_hydrostatic(th3, b.mub, vc, p_surf=1.0e5)
     np.testing.assert_allclose(ph3[:, 0, 0], b.phb, atol=1e-6)
+
+
+def test_base_theta_over_constant_terrain_is_the_whole_array_evaluation():
+    """A constant terrain evaluates the sounding once per column height and
+    broadcasts; the words must be the whole-array evaluation's, and the
+    sounding must see one column, not ny*nx of them (the tile-buffer cost
+    the lane/pi-startup-idle profile could not attribute)."""
+    from gpuwm.core.grid import _base_theta
+    seen = []
+
+    def sounding(z):
+        seen.append(np.shape(z))
+        return 300.0 + 0.003 * np.asarray(z, dtype=np.float64)
+
+    z = np.linspace(50.0, 15000.0, 20)[:, None, None] + np.zeros((20, 3, 4))
+    const = np.full((3, 4), 120.0)
+    fast = _base_theta(sounding, z, const)
+    assert seen == [(20,)]
+    whole = sounding(z)
+    np.testing.assert_array_equal(fast, whole)
+    assert fast.shape == (20, 3, 4) and fast.flags.c_contiguous
+    varied = const.copy()
+    varied[1, 2] = 121.0
+    seen.clear()
+    np.testing.assert_array_equal(_base_theta(sounding, z, varied), whole)
+    assert seen == [(20, 3, 4)]
+    seen.clear()
+    _base_theta(sounding, z[:, 0, 0], None)
+    assert seen == [(20,)]

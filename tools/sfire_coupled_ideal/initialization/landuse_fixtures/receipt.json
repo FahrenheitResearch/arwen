@@ -1,0 +1,5726 @@
+{
+  "source": "WRF v4.7.1",
+  "commit": "f52c197ed39d12e087d02c50f412d90d418f6186",
+  "tar_sha256": "0826f8878aa787e016586b6e3b43896c8467570b7cca47741b5e16d2f4def0ae",
+  "compiler": "GNU Fortran (Ubuntu 15.2.0-16ubuntu1) 15.2.0",
+  "libc": "ldd (Ubuntu GLIBC 2.43-2ubuntu2.4) 2.43",
+  "flags": "-O0 -cpp -ffp-contract=off -fcheck=all -fbacktrace -ffree-form -ffree-line-length-none -fallow-argument-mismatch",
+  "source_sha256sums": "f48cf9793f782a72c3969e986eef24746252f030cd33cfba71cc82b81d128d90  phys/module_physics_init.F\n7f661318ff5f06aed6b4b5508e4d077dc794cff03d5fb4447fe59c88d0ed2ece  run/LANDUSE.TBL\n",
+  "oracle_sha256sums": "7e5f2696e084180d5089391a839d5765d6e7c4268f3628e4f87adc435c2d6f97  extract_landuse.py\na6044866c5d8475838c01778a9323532914b52b4c8183dd2a2a9a62477ab74e7  run_landuse.F90\n4ee9c8a4bb86a0a815eead6ba7661b845d030a0ded1764fe3cd120f2e6b382b4  build_landuse.sh\n",
+  "reference_kind": "byte-unmodified original WRF",
+  "layout": "2D (j,i); 3D (k,j,i); little-endian f4/i4; scalar rank zero",
+  "cases": {
+    "landuse/case_10_reuse_0": {
+      "sha256": "5a658d3ebae154c9b50419b2eb52f55daba116de51ccbea42ee0489eca7051ee",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "5a667734987b65ef5c4d07bf176148504bcf8378a5a1a0e23a7fa2c1121cc143",
+        "cen_lat": "bd5cbc36d144a3f1f63fab2093cbf3b2c2d7b852d5359a482720b6a6d45fdf02",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "monalb": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "season": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "albedo": "a7c6560ce37c7336c0366d51220aa472632e9848f3311532cd642d87ad0410e4",
+        "albbck": "0f0dec50ae6fc7167a133a2fc9528b126ec3c55564c61833134eca7dc3b17ce5",
+        "mavail": "5d1c183ef54b1174a38ab3872c1603da8f0bba4769c0534a4b722638078bf537",
+        "emiss": "6e729846464702b6e127e27638f8b38186cd0b1623f28a719b22dcfcf7a64478",
+        "embck": "4194a52fcdf00df24cb861a1d9389eb11a3e35cf04adf93235ae1bcb48b168a5",
+        "znt": "6cd5886d03adfd7dfb65ae0b67467463b650c96b728a223f7d9ec7baf3163c22",
+        "z0": "6cd5886d03adfd7dfb65ae0b67467463b650c96b728a223f7d9ec7baf3163c22",
+        "thc": "0b095f34faf4f34d1e4e7e7504715b5d5e3bb16bb7bb5e31ca418b2fc7c3c026",
+        "xland": "6804272fea2cf4e860710f349961d98fb19b43091ece0713e9b71397164628dd",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_10_reuse_1": {
+      "sha256": "5a658d3ebae154c9b50419b2eb52f55daba116de51ccbea42ee0489eca7051ee",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "5a667734987b65ef5c4d07bf176148504bcf8378a5a1a0e23a7fa2c1121cc143",
+        "cen_lat": "bd5cbc36d144a3f1f63fab2093cbf3b2c2d7b852d5359a482720b6a6d45fdf02",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "monalb": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "season": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "albedo": "a7c6560ce37c7336c0366d51220aa472632e9848f3311532cd642d87ad0410e4",
+        "albbck": "0f0dec50ae6fc7167a133a2fc9528b126ec3c55564c61833134eca7dc3b17ce5",
+        "mavail": "5d1c183ef54b1174a38ab3872c1603da8f0bba4769c0534a4b722638078bf537",
+        "emiss": "6e729846464702b6e127e27638f8b38186cd0b1623f28a719b22dcfcf7a64478",
+        "embck": "4194a52fcdf00df24cb861a1d9389eb11a3e35cf04adf93235ae1bcb48b168a5",
+        "znt": "6cd5886d03adfd7dfb65ae0b67467463b650c96b728a223f7d9ec7baf3163c22",
+        "z0": "6cd5886d03adfd7dfb65ae0b67467463b650c96b728a223f7d9ec7baf3163c22",
+        "thc": "0b095f34faf4f34d1e4e7e7504715b5d5e3bb16bb7bb5e31ca418b2fc7c3c026",
+        "xland": "6804272fea2cf4e860710f349961d98fb19b43091ece0713e9b71397164628dd",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_11_reuse_0": {
+      "sha256": "465df0dd488b5c1b5ce8d5874b3e130327d4a91d04a07cb1c0539edd0c7065b2",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "5a667734987b65ef5c4d07bf176148504bcf8378a5a1a0e23a7fa2c1121cc143",
+        "cen_lat": "bd5cbc36d144a3f1f63fab2093cbf3b2c2d7b852d5359a482720b6a6d45fdf02",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "monalb": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "season": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "albedo": "9e0117cc57ec3a7fa9f43636c62aa397b678c9041b6b29bf6ae5ba3ede4aaeee",
+        "albbck": "87386f3fcf919008faa8454083e32f3d21665b3f92cac283112f37e2f9573138",
+        "mavail": "c0f06a401a608a7416870b1b9dfae4815256d54a016d83851abbd80380c54050",
+        "emiss": "e6ba6b4d6ec0441872aa42ee0cc60fc086a4f3a75b2b6750cadfd4513804d046",
+        "embck": "e6ba6b4d6ec0441872aa42ee0cc60fc086a4f3a75b2b6750cadfd4513804d046",
+        "znt": "171a48c6e0f0491700125da528842129ab80524a0f2ff5cd1a137949cbe4e76b",
+        "z0": "171a48c6e0f0491700125da528842129ab80524a0f2ff5cd1a137949cbe4e76b",
+        "thc": "6edd36116794058d42e9ddfb904b78d18092d9d8f810891af7d485c52f500411",
+        "xland": "b06b91f95ff8c24231ac7205edf6ab2e322d9883d0cb30a6fb598d40c056a68e",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_11_reuse_1": {
+      "sha256": "465df0dd488b5c1b5ce8d5874b3e130327d4a91d04a07cb1c0539edd0c7065b2",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "5a667734987b65ef5c4d07bf176148504bcf8378a5a1a0e23a7fa2c1121cc143",
+        "cen_lat": "bd5cbc36d144a3f1f63fab2093cbf3b2c2d7b852d5359a482720b6a6d45fdf02",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "monalb": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "season": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "albedo": "9e0117cc57ec3a7fa9f43636c62aa397b678c9041b6b29bf6ae5ba3ede4aaeee",
+        "albbck": "87386f3fcf919008faa8454083e32f3d21665b3f92cac283112f37e2f9573138",
+        "mavail": "c0f06a401a608a7416870b1b9dfae4815256d54a016d83851abbd80380c54050",
+        "emiss": "e6ba6b4d6ec0441872aa42ee0cc60fc086a4f3a75b2b6750cadfd4513804d046",
+        "embck": "e6ba6b4d6ec0441872aa42ee0cc60fc086a4f3a75b2b6750cadfd4513804d046",
+        "znt": "171a48c6e0f0491700125da528842129ab80524a0f2ff5cd1a137949cbe4e76b",
+        "z0": "171a48c6e0f0491700125da528842129ab80524a0f2ff5cd1a137949cbe4e76b",
+        "thc": "6edd36116794058d42e9ddfb904b78d18092d9d8f810891af7d485c52f500411",
+        "xland": "b06b91f95ff8c24231ac7205edf6ab2e322d9883d0cb30a6fb598d40c056a68e",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_12_reuse_0": {
+      "sha256": "71e7edaf5ff2c2f6ef153008bc9c52443f2517dbcf00419550772fc7f44564ca",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "5a667734987b65ef5c4d07bf176148504bcf8378a5a1a0e23a7fa2c1121cc143",
+        "cen_lat": "bd5cbc36d144a3f1f63fab2093cbf3b2c2d7b852d5359a482720b6a6d45fdf02",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "monalb": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "season": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "albedo": "d03ba87485d1f1d9cba950f0a0939b5b9bf00fe6967c5cfaab9ef3a5adf4bd94",
+        "albbck": "6a85fb955c6f439ec69b7768f728f4316175846bf899f88fd30aa469ad23d335",
+        "mavail": "5d1c183ef54b1174a38ab3872c1603da8f0bba4769c0534a4b722638078bf537",
+        "emiss": "6e729846464702b6e127e27638f8b38186cd0b1623f28a719b22dcfcf7a64478",
+        "embck": "4194a52fcdf00df24cb861a1d9389eb11a3e35cf04adf93235ae1bcb48b168a5",
+        "znt": "6cd5886d03adfd7dfb65ae0b67467463b650c96b728a223f7d9ec7baf3163c22",
+        "z0": "6cd5886d03adfd7dfb65ae0b67467463b650c96b728a223f7d9ec7baf3163c22",
+        "thc": "0b095f34faf4f34d1e4e7e7504715b5d5e3bb16bb7bb5e31ca418b2fc7c3c026",
+        "xland": "6804272fea2cf4e860710f349961d98fb19b43091ece0713e9b71397164628dd",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_12_reuse_1": {
+      "sha256": "71e7edaf5ff2c2f6ef153008bc9c52443f2517dbcf00419550772fc7f44564ca",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "5a667734987b65ef5c4d07bf176148504bcf8378a5a1a0e23a7fa2c1121cc143",
+        "cen_lat": "bd5cbc36d144a3f1f63fab2093cbf3b2c2d7b852d5359a482720b6a6d45fdf02",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "monalb": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "season": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "albedo": "d03ba87485d1f1d9cba950f0a0939b5b9bf00fe6967c5cfaab9ef3a5adf4bd94",
+        "albbck": "6a85fb955c6f439ec69b7768f728f4316175846bf899f88fd30aa469ad23d335",
+        "mavail": "5d1c183ef54b1174a38ab3872c1603da8f0bba4769c0534a4b722638078bf537",
+        "emiss": "6e729846464702b6e127e27638f8b38186cd0b1623f28a719b22dcfcf7a64478",
+        "embck": "4194a52fcdf00df24cb861a1d9389eb11a3e35cf04adf93235ae1bcb48b168a5",
+        "znt": "6cd5886d03adfd7dfb65ae0b67467463b650c96b728a223f7d9ec7baf3163c22",
+        "z0": "6cd5886d03adfd7dfb65ae0b67467463b650c96b728a223f7d9ec7baf3163c22",
+        "thc": "0b095f34faf4f34d1e4e7e7504715b5d5e3bb16bb7bb5e31ca418b2fc7c3c026",
+        "xland": "6804272fea2cf4e860710f349961d98fb19b43091ece0713e9b71397164628dd",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_13_reuse_0": {
+      "sha256": "4b7aa8b9009617dea3742dfac03a67a30013d1576654d11c48df7ecf22d51588",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "85dd751867e3155c7f2e23e8446546906f5bf617d4d985ed474822613764d69e",
+        "cen_lat": "bd5cbc36d144a3f1f63fab2093cbf3b2c2d7b852d5359a482720b6a6d45fdf02",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "monalb": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "season": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "albedo": "aa9544c3c266fd2e1bdd7bcaf26df6f391855e6ff37343573436a2d66650b4a3",
+        "albbck": "8828e99dda4a8be825d299d97599e757365f4da3b8a684551ad74f7d7c4609e8",
+        "mavail": "65ebf8645481091f267e7e941c964edb65869e4e8ada35e5299cdd71774a4a81",
+        "emiss": "67fcf8e1fcaf0dcaca587b27913688b4df708523ab5db2d8033f1be213923cf6",
+        "embck": "67fcf8e1fcaf0dcaca587b27913688b4df708523ab5db2d8033f1be213923cf6",
+        "znt": "5c7fac7bf7108b2e978f58a2820f5764924c6d52eb554bba8695a7553fa3e049",
+        "z0": "5c7fac7bf7108b2e978f58a2820f5764924c6d52eb554bba8695a7553fa3e049",
+        "thc": "19c4e4ff222c796e7d26c2370ff0a0f7aaeb3962e2bc5066aa2d34501ffab00f",
+        "xland": "b06b91f95ff8c24231ac7205edf6ab2e322d9883d0cb30a6fb598d40c056a68e",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_13_reuse_1": {
+      "sha256": "4b7aa8b9009617dea3742dfac03a67a30013d1576654d11c48df7ecf22d51588",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "85dd751867e3155c7f2e23e8446546906f5bf617d4d985ed474822613764d69e",
+        "cen_lat": "bd5cbc36d144a3f1f63fab2093cbf3b2c2d7b852d5359a482720b6a6d45fdf02",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "monalb": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "season": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "albedo": "aa9544c3c266fd2e1bdd7bcaf26df6f391855e6ff37343573436a2d66650b4a3",
+        "albbck": "8828e99dda4a8be825d299d97599e757365f4da3b8a684551ad74f7d7c4609e8",
+        "mavail": "65ebf8645481091f267e7e941c964edb65869e4e8ada35e5299cdd71774a4a81",
+        "emiss": "67fcf8e1fcaf0dcaca587b27913688b4df708523ab5db2d8033f1be213923cf6",
+        "embck": "67fcf8e1fcaf0dcaca587b27913688b4df708523ab5db2d8033f1be213923cf6",
+        "znt": "5c7fac7bf7108b2e978f58a2820f5764924c6d52eb554bba8695a7553fa3e049",
+        "z0": "5c7fac7bf7108b2e978f58a2820f5764924c6d52eb554bba8695a7553fa3e049",
+        "thc": "19c4e4ff222c796e7d26c2370ff0a0f7aaeb3962e2bc5066aa2d34501ffab00f",
+        "xland": "b06b91f95ff8c24231ac7205edf6ab2e322d9883d0cb30a6fb598d40c056a68e",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_14_reuse_0": {
+      "sha256": "46c418987e6e795623265f7381854905e4e3806e949b91354c3ce7f2699efd54",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "85dd751867e3155c7f2e23e8446546906f5bf617d4d985ed474822613764d69e",
+        "cen_lat": "bd5cbc36d144a3f1f63fab2093cbf3b2c2d7b852d5359a482720b6a6d45fdf02",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "monalb": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "season": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "albedo": "1d245675eec0acf892771d2b5072ee79f2df4c259e33f23010ce0b2bdb5b12f3",
+        "albbck": "d92f2744f18c0c8e478c632797803d317e681e5820d6fa0ca9b8f3d80fe375ed",
+        "mavail": "06250535f5246c5e14142b87289ee6faeb8931abc2cd283660fbc5fc6aa1ee7e",
+        "emiss": "a59b6efcd640bb3e74d61d001dca185fc2105fb576be51531e99c0c0f2ae68c8",
+        "embck": "71fbf431d288d22e4c6f791c4625ffefec8ca3dfe0177f726f1c5b4cd264e89e",
+        "znt": "2a7a222cc088a24497b261ffd1ba8d588562d5ff8c6cf881b1963a02df14455f",
+        "z0": "2a7a222cc088a24497b261ffd1ba8d588562d5ff8c6cf881b1963a02df14455f",
+        "thc": "e5d1eb0901595c768e22e4700c3473374cc91097a27938b270502dbea41658d4",
+        "xland": "6804272fea2cf4e860710f349961d98fb19b43091ece0713e9b71397164628dd",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_14_reuse_1": {
+      "sha256": "46c418987e6e795623265f7381854905e4e3806e949b91354c3ce7f2699efd54",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "85dd751867e3155c7f2e23e8446546906f5bf617d4d985ed474822613764d69e",
+        "cen_lat": "bd5cbc36d144a3f1f63fab2093cbf3b2c2d7b852d5359a482720b6a6d45fdf02",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "monalb": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "season": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "albedo": "1d245675eec0acf892771d2b5072ee79f2df4c259e33f23010ce0b2bdb5b12f3",
+        "albbck": "d92f2744f18c0c8e478c632797803d317e681e5820d6fa0ca9b8f3d80fe375ed",
+        "mavail": "06250535f5246c5e14142b87289ee6faeb8931abc2cd283660fbc5fc6aa1ee7e",
+        "emiss": "a59b6efcd640bb3e74d61d001dca185fc2105fb576be51531e99c0c0f2ae68c8",
+        "embck": "71fbf431d288d22e4c6f791c4625ffefec8ca3dfe0177f726f1c5b4cd264e89e",
+        "znt": "2a7a222cc088a24497b261ffd1ba8d588562d5ff8c6cf881b1963a02df14455f",
+        "z0": "2a7a222cc088a24497b261ffd1ba8d588562d5ff8c6cf881b1963a02df14455f",
+        "thc": "e5d1eb0901595c768e22e4700c3473374cc91097a27938b270502dbea41658d4",
+        "xland": "6804272fea2cf4e860710f349961d98fb19b43091ece0713e9b71397164628dd",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_15_reuse_0": {
+      "sha256": "6bfd996fbe386a0c420fac0811f8e54918a52aed2e79d74ecbd8e174ccef3220",
+      "native_stream_sha256": {
+        "lu": "2252a02c03d54b4528c9927a464ea98f21ecd462e83bada47afd82e3cbccc221",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "85dd751867e3155c7f2e23e8446546906f5bf617d4d985ed474822613764d69e",
+        "cen_lat": "bd5cbc36d144a3f1f63fab2093cbf3b2c2d7b852d5359a482720b6a6d45fdf02",
+        "iswater": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "monalb": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "season": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "albedo": "f1b42f4f461bbca790668f4f7464b003e0cfd851cae19bc5ef1849e1f4155929",
+        "albbck": "d521c7f167fc2d18832411ddfb22bf2b6bfdba3b656c696dffcffff7311da1ba",
+        "mavail": "bc2989c298857e50cedc5e416e21088b31ab84ef316722db5423ddf5d23c32cb",
+        "emiss": "940c198777ad070a92e74ae7de663aa9685c7cf5f964e5d7454f710f1931a253",
+        "embck": "940c198777ad070a92e74ae7de663aa9685c7cf5f964e5d7454f710f1931a253",
+        "znt": "d0d39df0680e350af4a1b469bbfbee76c292cd3b96208c3942f2fef9220db070",
+        "z0": "d0d39df0680e350af4a1b469bbfbee76c292cd3b96208c3942f2fef9220db070",
+        "thc": "9533b2879daa3409bcec6fe1dc3daaacfbd0d21598df152088b3c82f8e1319f5",
+        "xland": "39ff7fd58a24b553d268cd73247c2de945d8b5fb8f1ba30b7120250b88e3a366",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_15_reuse_1": {
+      "sha256": "6bfd996fbe386a0c420fac0811f8e54918a52aed2e79d74ecbd8e174ccef3220",
+      "native_stream_sha256": {
+        "lu": "2252a02c03d54b4528c9927a464ea98f21ecd462e83bada47afd82e3cbccc221",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "85dd751867e3155c7f2e23e8446546906f5bf617d4d985ed474822613764d69e",
+        "cen_lat": "bd5cbc36d144a3f1f63fab2093cbf3b2c2d7b852d5359a482720b6a6d45fdf02",
+        "iswater": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "monalb": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "season": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "albedo": "f1b42f4f461bbca790668f4f7464b003e0cfd851cae19bc5ef1849e1f4155929",
+        "albbck": "d521c7f167fc2d18832411ddfb22bf2b6bfdba3b656c696dffcffff7311da1ba",
+        "mavail": "bc2989c298857e50cedc5e416e21088b31ab84ef316722db5423ddf5d23c32cb",
+        "emiss": "940c198777ad070a92e74ae7de663aa9685c7cf5f964e5d7454f710f1931a253",
+        "embck": "940c198777ad070a92e74ae7de663aa9685c7cf5f964e5d7454f710f1931a253",
+        "znt": "d0d39df0680e350af4a1b469bbfbee76c292cd3b96208c3942f2fef9220db070",
+        "z0": "d0d39df0680e350af4a1b469bbfbee76c292cd3b96208c3942f2fef9220db070",
+        "thc": "9533b2879daa3409bcec6fe1dc3daaacfbd0d21598df152088b3c82f8e1319f5",
+        "xland": "39ff7fd58a24b553d268cd73247c2de945d8b5fb8f1ba30b7120250b88e3a366",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_16_reuse_0": {
+      "sha256": "d1a1e497e2a7e65eb0db8d38718d2e524ddeed2a264a46f0adeb4b72dcfcf5d5",
+      "native_stream_sha256": {
+        "lu": "2252a02c03d54b4528c9927a464ea98f21ecd462e83bada47afd82e3cbccc221",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "85dd751867e3155c7f2e23e8446546906f5bf617d4d985ed474822613764d69e",
+        "cen_lat": "bd5cbc36d144a3f1f63fab2093cbf3b2c2d7b852d5359a482720b6a6d45fdf02",
+        "iswater": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "monalb": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "season": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "albedo": "c890295552e7fe24621c78de8c804907492b64efa72f025eea66c2eea73c1f24",
+        "albbck": "00f1cabbc63c3fb88017c40b7568dec54fc94f84acdbea68e2a62b482744c0db",
+        "mavail": "1e009744d3fa124365b19490a32962f058fdc8a87c19e96196251a6e1de935eb",
+        "emiss": "a58d6b935430c12d635bc868ddab565758d6c836fd4e8b575a2caa008447b410",
+        "embck": "70d00a795ba02a00a25d7e450a7a21940f3ab2d3696fa716359a530f62a40df5",
+        "znt": "58640fbd469f8bd04faf8a0b293b900c5abdac1b036f2445d6da04d76031578f",
+        "z0": "58640fbd469f8bd04faf8a0b293b900c5abdac1b036f2445d6da04d76031578f",
+        "thc": "a68e79d27b4404ea775d84e357181d145f65ac218805445788cb74c0773544ee",
+        "xland": "39ff7fd58a24b553d268cd73247c2de945d8b5fb8f1ba30b7120250b88e3a366",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_16_reuse_1": {
+      "sha256": "d1a1e497e2a7e65eb0db8d38718d2e524ddeed2a264a46f0adeb4b72dcfcf5d5",
+      "native_stream_sha256": {
+        "lu": "2252a02c03d54b4528c9927a464ea98f21ecd462e83bada47afd82e3cbccc221",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "85dd751867e3155c7f2e23e8446546906f5bf617d4d985ed474822613764d69e",
+        "cen_lat": "bd5cbc36d144a3f1f63fab2093cbf3b2c2d7b852d5359a482720b6a6d45fdf02",
+        "iswater": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "monalb": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "season": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "albedo": "c890295552e7fe24621c78de8c804907492b64efa72f025eea66c2eea73c1f24",
+        "albbck": "00f1cabbc63c3fb88017c40b7568dec54fc94f84acdbea68e2a62b482744c0db",
+        "mavail": "1e009744d3fa124365b19490a32962f058fdc8a87c19e96196251a6e1de935eb",
+        "emiss": "a58d6b935430c12d635bc868ddab565758d6c836fd4e8b575a2caa008447b410",
+        "embck": "70d00a795ba02a00a25d7e450a7a21940f3ab2d3696fa716359a530f62a40df5",
+        "znt": "58640fbd469f8bd04faf8a0b293b900c5abdac1b036f2445d6da04d76031578f",
+        "z0": "58640fbd469f8bd04faf8a0b293b900c5abdac1b036f2445d6da04d76031578f",
+        "thc": "a68e79d27b4404ea775d84e357181d145f65ac218805445788cb74c0773544ee",
+        "xland": "39ff7fd58a24b553d268cd73247c2de945d8b5fb8f1ba30b7120250b88e3a366",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_17_reuse_0": {
+      "sha256": "bb4a7a581a6e1d114f4eff98d01f55611e82d233572e4ea5075ecf36b13a2e95",
+      "native_stream_sha256": {
+        "lu": "893c7f3d72d73497aa9bb06d6e1562f89b76c877e3ec2f5a60e95e17d0e6c355",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "5a667734987b65ef5c4d07bf176148504bcf8378a5a1a0e23a7fa2c1121cc143",
+        "cen_lat": "bd5cbc36d144a3f1f63fab2093cbf3b2c2d7b852d5359a482720b6a6d45fdf02",
+        "iswater": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "monalb": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "season": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "albedo": "35ce5c878b763f7ff2db6267af080a636b685b11e4163f748994bdddc0360aac",
+        "albbck": "8577c8c8615b334602b4503cdd70ee6e47b3c8ac08a6c2474ff968205f33a924",
+        "mavail": "50c72fabbceefa6489db18af3bb3b13c921a7294478d8ead3df87686e4bc3314",
+        "emiss": "3d6b84bdbad5c83f531e487ec298b3483348c722bbf1ac4aa13ae5ca94748488",
+        "embck": "3d6b84bdbad5c83f531e487ec298b3483348c722bbf1ac4aa13ae5ca94748488",
+        "znt": "696fbd42d6ee22865766df72332e999a6d0962114f8ccd496950bfb1f24986bd",
+        "z0": "696fbd42d6ee22865766df72332e999a6d0962114f8ccd496950bfb1f24986bd",
+        "thc": "aa07012d68973aac079b8cfc7fb9ea414a301544e2235fd4828c386a8019d72a",
+        "xland": "39ff7fd58a24b553d268cd73247c2de945d8b5fb8f1ba30b7120250b88e3a366",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_17_reuse_1": {
+      "sha256": "bb4a7a581a6e1d114f4eff98d01f55611e82d233572e4ea5075ecf36b13a2e95",
+      "native_stream_sha256": {
+        "lu": "893c7f3d72d73497aa9bb06d6e1562f89b76c877e3ec2f5a60e95e17d0e6c355",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "5a667734987b65ef5c4d07bf176148504bcf8378a5a1a0e23a7fa2c1121cc143",
+        "cen_lat": "bd5cbc36d144a3f1f63fab2093cbf3b2c2d7b852d5359a482720b6a6d45fdf02",
+        "iswater": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "monalb": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "season": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "albedo": "35ce5c878b763f7ff2db6267af080a636b685b11e4163f748994bdddc0360aac",
+        "albbck": "8577c8c8615b334602b4503cdd70ee6e47b3c8ac08a6c2474ff968205f33a924",
+        "mavail": "50c72fabbceefa6489db18af3bb3b13c921a7294478d8ead3df87686e4bc3314",
+        "emiss": "3d6b84bdbad5c83f531e487ec298b3483348c722bbf1ac4aa13ae5ca94748488",
+        "embck": "3d6b84bdbad5c83f531e487ec298b3483348c722bbf1ac4aa13ae5ca94748488",
+        "znt": "696fbd42d6ee22865766df72332e999a6d0962114f8ccd496950bfb1f24986bd",
+        "z0": "696fbd42d6ee22865766df72332e999a6d0962114f8ccd496950bfb1f24986bd",
+        "thc": "aa07012d68973aac079b8cfc7fb9ea414a301544e2235fd4828c386a8019d72a",
+        "xland": "39ff7fd58a24b553d268cd73247c2de945d8b5fb8f1ba30b7120250b88e3a366",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_1_reuse_0": {
+      "sha256": "9825d8feb86c6ab36c41191d91bd4fc9ddd3fa1f5ea44a438934c4644e64b33c",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "5a667734987b65ef5c4d07bf176148504bcf8378a5a1a0e23a7fa2c1121cc143",
+        "cen_lat": "5d5d32c7cf8e2ca77d9af6bf35a0ba5cd09074ccb4f3871aba6f67420b324a57",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "monalb": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "season": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "albedo": "aa9544c3c266fd2e1bdd7bcaf26df6f391855e6ff37343573436a2d66650b4a3",
+        "albbck": "8828e99dda4a8be825d299d97599e757365f4da3b8a684551ad74f7d7c4609e8",
+        "mavail": "65ebf8645481091f267e7e941c964edb65869e4e8ada35e5299cdd71774a4a81",
+        "emiss": "67fcf8e1fcaf0dcaca587b27913688b4df708523ab5db2d8033f1be213923cf6",
+        "embck": "67fcf8e1fcaf0dcaca587b27913688b4df708523ab5db2d8033f1be213923cf6",
+        "znt": "5c7fac7bf7108b2e978f58a2820f5764924c6d52eb554bba8695a7553fa3e049",
+        "z0": "5c7fac7bf7108b2e978f58a2820f5764924c6d52eb554bba8695a7553fa3e049",
+        "thc": "19c4e4ff222c796e7d26c2370ff0a0f7aaeb3962e2bc5066aa2d34501ffab00f",
+        "xland": "b06b91f95ff8c24231ac7205edf6ab2e322d9883d0cb30a6fb598d40c056a68e",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_1_reuse_1": {
+      "sha256": "9825d8feb86c6ab36c41191d91bd4fc9ddd3fa1f5ea44a438934c4644e64b33c",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "5a667734987b65ef5c4d07bf176148504bcf8378a5a1a0e23a7fa2c1121cc143",
+        "cen_lat": "5d5d32c7cf8e2ca77d9af6bf35a0ba5cd09074ccb4f3871aba6f67420b324a57",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "monalb": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "season": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "albedo": "aa9544c3c266fd2e1bdd7bcaf26df6f391855e6ff37343573436a2d66650b4a3",
+        "albbck": "8828e99dda4a8be825d299d97599e757365f4da3b8a684551ad74f7d7c4609e8",
+        "mavail": "65ebf8645481091f267e7e941c964edb65869e4e8ada35e5299cdd71774a4a81",
+        "emiss": "67fcf8e1fcaf0dcaca587b27913688b4df708523ab5db2d8033f1be213923cf6",
+        "embck": "67fcf8e1fcaf0dcaca587b27913688b4df708523ab5db2d8033f1be213923cf6",
+        "znt": "5c7fac7bf7108b2e978f58a2820f5764924c6d52eb554bba8695a7553fa3e049",
+        "z0": "5c7fac7bf7108b2e978f58a2820f5764924c6d52eb554bba8695a7553fa3e049",
+        "thc": "19c4e4ff222c796e7d26c2370ff0a0f7aaeb3962e2bc5066aa2d34501ffab00f",
+        "xland": "b06b91f95ff8c24231ac7205edf6ab2e322d9883d0cb30a6fb598d40c056a68e",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_2_reuse_0": {
+      "sha256": "efaf17a6eafc601b09df5130c54c3b2d68fd414a0fc600fbe7bfefcd2aeebf96",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "5a667734987b65ef5c4d07bf176148504bcf8378a5a1a0e23a7fa2c1121cc143",
+        "cen_lat": "5d5d32c7cf8e2ca77d9af6bf35a0ba5cd09074ccb4f3871aba6f67420b324a57",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "monalb": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "season": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "albedo": "1d245675eec0acf892771d2b5072ee79f2df4c259e33f23010ce0b2bdb5b12f3",
+        "albbck": "d92f2744f18c0c8e478c632797803d317e681e5820d6fa0ca9b8f3d80fe375ed",
+        "mavail": "06250535f5246c5e14142b87289ee6faeb8931abc2cd283660fbc5fc6aa1ee7e",
+        "emiss": "a59b6efcd640bb3e74d61d001dca185fc2105fb576be51531e99c0c0f2ae68c8",
+        "embck": "71fbf431d288d22e4c6f791c4625ffefec8ca3dfe0177f726f1c5b4cd264e89e",
+        "znt": "2a7a222cc088a24497b261ffd1ba8d588562d5ff8c6cf881b1963a02df14455f",
+        "z0": "2a7a222cc088a24497b261ffd1ba8d588562d5ff8c6cf881b1963a02df14455f",
+        "thc": "e5d1eb0901595c768e22e4700c3473374cc91097a27938b270502dbea41658d4",
+        "xland": "6804272fea2cf4e860710f349961d98fb19b43091ece0713e9b71397164628dd",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_2_reuse_1": {
+      "sha256": "efaf17a6eafc601b09df5130c54c3b2d68fd414a0fc600fbe7bfefcd2aeebf96",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "5a667734987b65ef5c4d07bf176148504bcf8378a5a1a0e23a7fa2c1121cc143",
+        "cen_lat": "5d5d32c7cf8e2ca77d9af6bf35a0ba5cd09074ccb4f3871aba6f67420b324a57",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "monalb": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "season": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "albedo": "1d245675eec0acf892771d2b5072ee79f2df4c259e33f23010ce0b2bdb5b12f3",
+        "albbck": "d92f2744f18c0c8e478c632797803d317e681e5820d6fa0ca9b8f3d80fe375ed",
+        "mavail": "06250535f5246c5e14142b87289ee6faeb8931abc2cd283660fbc5fc6aa1ee7e",
+        "emiss": "a59b6efcd640bb3e74d61d001dca185fc2105fb576be51531e99c0c0f2ae68c8",
+        "embck": "71fbf431d288d22e4c6f791c4625ffefec8ca3dfe0177f726f1c5b4cd264e89e",
+        "znt": "2a7a222cc088a24497b261ffd1ba8d588562d5ff8c6cf881b1963a02df14455f",
+        "z0": "2a7a222cc088a24497b261ffd1ba8d588562d5ff8c6cf881b1963a02df14455f",
+        "thc": "e5d1eb0901595c768e22e4700c3473374cc91097a27938b270502dbea41658d4",
+        "xland": "6804272fea2cf4e860710f349961d98fb19b43091ece0713e9b71397164628dd",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_3_reuse_0": {
+      "sha256": "ed0b04427b6eb71c4d254e5612bdfa791ec0cab676ef445549154452f2da5dfd",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "5a667734987b65ef5c4d07bf176148504bcf8378a5a1a0e23a7fa2c1121cc143",
+        "cen_lat": "5d5d32c7cf8e2ca77d9af6bf35a0ba5cd09074ccb4f3871aba6f67420b324a57",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "monalb": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "season": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "albedo": "f1b42f4f461bbca790668f4f7464b003e0cfd851cae19bc5ef1849e1f4155929",
+        "albbck": "d521c7f167fc2d18832411ddfb22bf2b6bfdba3b656c696dffcffff7311da1ba",
+        "mavail": "65ebf8645481091f267e7e941c964edb65869e4e8ada35e5299cdd71774a4a81",
+        "emiss": "67fcf8e1fcaf0dcaca587b27913688b4df708523ab5db2d8033f1be213923cf6",
+        "embck": "67fcf8e1fcaf0dcaca587b27913688b4df708523ab5db2d8033f1be213923cf6",
+        "znt": "5c7fac7bf7108b2e978f58a2820f5764924c6d52eb554bba8695a7553fa3e049",
+        "z0": "5c7fac7bf7108b2e978f58a2820f5764924c6d52eb554bba8695a7553fa3e049",
+        "thc": "19c4e4ff222c796e7d26c2370ff0a0f7aaeb3962e2bc5066aa2d34501ffab00f",
+        "xland": "b06b91f95ff8c24231ac7205edf6ab2e322d9883d0cb30a6fb598d40c056a68e",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_3_reuse_1": {
+      "sha256": "ed0b04427b6eb71c4d254e5612bdfa791ec0cab676ef445549154452f2da5dfd",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "5a667734987b65ef5c4d07bf176148504bcf8378a5a1a0e23a7fa2c1121cc143",
+        "cen_lat": "5d5d32c7cf8e2ca77d9af6bf35a0ba5cd09074ccb4f3871aba6f67420b324a57",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "monalb": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "season": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "albedo": "f1b42f4f461bbca790668f4f7464b003e0cfd851cae19bc5ef1849e1f4155929",
+        "albbck": "d521c7f167fc2d18832411ddfb22bf2b6bfdba3b656c696dffcffff7311da1ba",
+        "mavail": "65ebf8645481091f267e7e941c964edb65869e4e8ada35e5299cdd71774a4a81",
+        "emiss": "67fcf8e1fcaf0dcaca587b27913688b4df708523ab5db2d8033f1be213923cf6",
+        "embck": "67fcf8e1fcaf0dcaca587b27913688b4df708523ab5db2d8033f1be213923cf6",
+        "znt": "5c7fac7bf7108b2e978f58a2820f5764924c6d52eb554bba8695a7553fa3e049",
+        "z0": "5c7fac7bf7108b2e978f58a2820f5764924c6d52eb554bba8695a7553fa3e049",
+        "thc": "19c4e4ff222c796e7d26c2370ff0a0f7aaeb3962e2bc5066aa2d34501ffab00f",
+        "xland": "b06b91f95ff8c24231ac7205edf6ab2e322d9883d0cb30a6fb598d40c056a68e",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_4_reuse_0": {
+      "sha256": "2e9491daae9845ddf8ac9f8dc0a49834297417409429b5f5c2ec5952cefd0723",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "5a667734987b65ef5c4d07bf176148504bcf8378a5a1a0e23a7fa2c1121cc143",
+        "cen_lat": "5d5d32c7cf8e2ca77d9af6bf35a0ba5cd09074ccb4f3871aba6f67420b324a57",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "monalb": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "season": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "albedo": "c890295552e7fe24621c78de8c804907492b64efa72f025eea66c2eea73c1f24",
+        "albbck": "00f1cabbc63c3fb88017c40b7568dec54fc94f84acdbea68e2a62b482744c0db",
+        "mavail": "06250535f5246c5e14142b87289ee6faeb8931abc2cd283660fbc5fc6aa1ee7e",
+        "emiss": "a59b6efcd640bb3e74d61d001dca185fc2105fb576be51531e99c0c0f2ae68c8",
+        "embck": "71fbf431d288d22e4c6f791c4625ffefec8ca3dfe0177f726f1c5b4cd264e89e",
+        "znt": "2a7a222cc088a24497b261ffd1ba8d588562d5ff8c6cf881b1963a02df14455f",
+        "z0": "2a7a222cc088a24497b261ffd1ba8d588562d5ff8c6cf881b1963a02df14455f",
+        "thc": "e5d1eb0901595c768e22e4700c3473374cc91097a27938b270502dbea41658d4",
+        "xland": "6804272fea2cf4e860710f349961d98fb19b43091ece0713e9b71397164628dd",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_4_reuse_1": {
+      "sha256": "2e9491daae9845ddf8ac9f8dc0a49834297417409429b5f5c2ec5952cefd0723",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "5a667734987b65ef5c4d07bf176148504bcf8378a5a1a0e23a7fa2c1121cc143",
+        "cen_lat": "5d5d32c7cf8e2ca77d9af6bf35a0ba5cd09074ccb4f3871aba6f67420b324a57",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "monalb": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "season": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "albedo": "c890295552e7fe24621c78de8c804907492b64efa72f025eea66c2eea73c1f24",
+        "albbck": "00f1cabbc63c3fb88017c40b7568dec54fc94f84acdbea68e2a62b482744c0db",
+        "mavail": "06250535f5246c5e14142b87289ee6faeb8931abc2cd283660fbc5fc6aa1ee7e",
+        "emiss": "a59b6efcd640bb3e74d61d001dca185fc2105fb576be51531e99c0c0f2ae68c8",
+        "embck": "71fbf431d288d22e4c6f791c4625ffefec8ca3dfe0177f726f1c5b4cd264e89e",
+        "znt": "2a7a222cc088a24497b261ffd1ba8d588562d5ff8c6cf881b1963a02df14455f",
+        "z0": "2a7a222cc088a24497b261ffd1ba8d588562d5ff8c6cf881b1963a02df14455f",
+        "thc": "e5d1eb0901595c768e22e4700c3473374cc91097a27938b270502dbea41658d4",
+        "xland": "6804272fea2cf4e860710f349961d98fb19b43091ece0713e9b71397164628dd",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_5_reuse_0": {
+      "sha256": "ecf93a7a6dc850071386972b583f563785d96563ba548edc34a0ec7a9155b3cc",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "85dd751867e3155c7f2e23e8446546906f5bf617d4d985ed474822613764d69e",
+        "cen_lat": "5d5d32c7cf8e2ca77d9af6bf35a0ba5cd09074ccb4f3871aba6f67420b324a57",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "monalb": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "season": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "albedo": "398cf63c2d93f4bb2b0038b13fa0438406ad25c21826bcccb8f626fda47111ce",
+        "albbck": "237b409584323a3139ed501be22ed4454f1cf67ae47a0b71326bc20cd695032a",
+        "mavail": "c0f06a401a608a7416870b1b9dfae4815256d54a016d83851abbd80380c54050",
+        "emiss": "e6ba6b4d6ec0441872aa42ee0cc60fc086a4f3a75b2b6750cadfd4513804d046",
+        "embck": "e6ba6b4d6ec0441872aa42ee0cc60fc086a4f3a75b2b6750cadfd4513804d046",
+        "znt": "171a48c6e0f0491700125da528842129ab80524a0f2ff5cd1a137949cbe4e76b",
+        "z0": "171a48c6e0f0491700125da528842129ab80524a0f2ff5cd1a137949cbe4e76b",
+        "thc": "6edd36116794058d42e9ddfb904b78d18092d9d8f810891af7d485c52f500411",
+        "xland": "b06b91f95ff8c24231ac7205edf6ab2e322d9883d0cb30a6fb598d40c056a68e",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_5_reuse_1": {
+      "sha256": "ecf93a7a6dc850071386972b583f563785d96563ba548edc34a0ec7a9155b3cc",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "85dd751867e3155c7f2e23e8446546906f5bf617d4d985ed474822613764d69e",
+        "cen_lat": "5d5d32c7cf8e2ca77d9af6bf35a0ba5cd09074ccb4f3871aba6f67420b324a57",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "monalb": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "season": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "albedo": "398cf63c2d93f4bb2b0038b13fa0438406ad25c21826bcccb8f626fda47111ce",
+        "albbck": "237b409584323a3139ed501be22ed4454f1cf67ae47a0b71326bc20cd695032a",
+        "mavail": "c0f06a401a608a7416870b1b9dfae4815256d54a016d83851abbd80380c54050",
+        "emiss": "e6ba6b4d6ec0441872aa42ee0cc60fc086a4f3a75b2b6750cadfd4513804d046",
+        "embck": "e6ba6b4d6ec0441872aa42ee0cc60fc086a4f3a75b2b6750cadfd4513804d046",
+        "znt": "171a48c6e0f0491700125da528842129ab80524a0f2ff5cd1a137949cbe4e76b",
+        "z0": "171a48c6e0f0491700125da528842129ab80524a0f2ff5cd1a137949cbe4e76b",
+        "thc": "6edd36116794058d42e9ddfb904b78d18092d9d8f810891af7d485c52f500411",
+        "xland": "b06b91f95ff8c24231ac7205edf6ab2e322d9883d0cb30a6fb598d40c056a68e",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_6_reuse_0": {
+      "sha256": "79d5b111870f5adad765a9574dd9eb87c0bfd410493a6bb33c1e33add4a1acb8",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "85dd751867e3155c7f2e23e8446546906f5bf617d4d985ed474822613764d69e",
+        "cen_lat": "5d5d32c7cf8e2ca77d9af6bf35a0ba5cd09074ccb4f3871aba6f67420b324a57",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "monalb": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "season": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "albedo": "a7c6560ce37c7336c0366d51220aa472632e9848f3311532cd642d87ad0410e4",
+        "albbck": "0f0dec50ae6fc7167a133a2fc9528b126ec3c55564c61833134eca7dc3b17ce5",
+        "mavail": "5d1c183ef54b1174a38ab3872c1603da8f0bba4769c0534a4b722638078bf537",
+        "emiss": "6e729846464702b6e127e27638f8b38186cd0b1623f28a719b22dcfcf7a64478",
+        "embck": "4194a52fcdf00df24cb861a1d9389eb11a3e35cf04adf93235ae1bcb48b168a5",
+        "znt": "6cd5886d03adfd7dfb65ae0b67467463b650c96b728a223f7d9ec7baf3163c22",
+        "z0": "6cd5886d03adfd7dfb65ae0b67467463b650c96b728a223f7d9ec7baf3163c22",
+        "thc": "0b095f34faf4f34d1e4e7e7504715b5d5e3bb16bb7bb5e31ca418b2fc7c3c026",
+        "xland": "6804272fea2cf4e860710f349961d98fb19b43091ece0713e9b71397164628dd",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_6_reuse_1": {
+      "sha256": "79d5b111870f5adad765a9574dd9eb87c0bfd410493a6bb33c1e33add4a1acb8",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "85dd751867e3155c7f2e23e8446546906f5bf617d4d985ed474822613764d69e",
+        "cen_lat": "5d5d32c7cf8e2ca77d9af6bf35a0ba5cd09074ccb4f3871aba6f67420b324a57",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "monalb": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "season": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "albedo": "a7c6560ce37c7336c0366d51220aa472632e9848f3311532cd642d87ad0410e4",
+        "albbck": "0f0dec50ae6fc7167a133a2fc9528b126ec3c55564c61833134eca7dc3b17ce5",
+        "mavail": "5d1c183ef54b1174a38ab3872c1603da8f0bba4769c0534a4b722638078bf537",
+        "emiss": "6e729846464702b6e127e27638f8b38186cd0b1623f28a719b22dcfcf7a64478",
+        "embck": "4194a52fcdf00df24cb861a1d9389eb11a3e35cf04adf93235ae1bcb48b168a5",
+        "znt": "6cd5886d03adfd7dfb65ae0b67467463b650c96b728a223f7d9ec7baf3163c22",
+        "z0": "6cd5886d03adfd7dfb65ae0b67467463b650c96b728a223f7d9ec7baf3163c22",
+        "thc": "0b095f34faf4f34d1e4e7e7504715b5d5e3bb16bb7bb5e31ca418b2fc7c3c026",
+        "xland": "6804272fea2cf4e860710f349961d98fb19b43091ece0713e9b71397164628dd",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_7_reuse_0": {
+      "sha256": "0b47d050987927f858bb58d9d46e3e4d25cb023a3b5654a20d0f64abad4f3105",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "85dd751867e3155c7f2e23e8446546906f5bf617d4d985ed474822613764d69e",
+        "cen_lat": "5d5d32c7cf8e2ca77d9af6bf35a0ba5cd09074ccb4f3871aba6f67420b324a57",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "monalb": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "season": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "albedo": "9e0117cc57ec3a7fa9f43636c62aa397b678c9041b6b29bf6ae5ba3ede4aaeee",
+        "albbck": "87386f3fcf919008faa8454083e32f3d21665b3f92cac283112f37e2f9573138",
+        "mavail": "c0f06a401a608a7416870b1b9dfae4815256d54a016d83851abbd80380c54050",
+        "emiss": "e6ba6b4d6ec0441872aa42ee0cc60fc086a4f3a75b2b6750cadfd4513804d046",
+        "embck": "e6ba6b4d6ec0441872aa42ee0cc60fc086a4f3a75b2b6750cadfd4513804d046",
+        "znt": "171a48c6e0f0491700125da528842129ab80524a0f2ff5cd1a137949cbe4e76b",
+        "z0": "171a48c6e0f0491700125da528842129ab80524a0f2ff5cd1a137949cbe4e76b",
+        "thc": "6edd36116794058d42e9ddfb904b78d18092d9d8f810891af7d485c52f500411",
+        "xland": "b06b91f95ff8c24231ac7205edf6ab2e322d9883d0cb30a6fb598d40c056a68e",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_7_reuse_1": {
+      "sha256": "0b47d050987927f858bb58d9d46e3e4d25cb023a3b5654a20d0f64abad4f3105",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "85dd751867e3155c7f2e23e8446546906f5bf617d4d985ed474822613764d69e",
+        "cen_lat": "5d5d32c7cf8e2ca77d9af6bf35a0ba5cd09074ccb4f3871aba6f67420b324a57",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "monalb": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "season": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "albedo": "9e0117cc57ec3a7fa9f43636c62aa397b678c9041b6b29bf6ae5ba3ede4aaeee",
+        "albbck": "87386f3fcf919008faa8454083e32f3d21665b3f92cac283112f37e2f9573138",
+        "mavail": "c0f06a401a608a7416870b1b9dfae4815256d54a016d83851abbd80380c54050",
+        "emiss": "e6ba6b4d6ec0441872aa42ee0cc60fc086a4f3a75b2b6750cadfd4513804d046",
+        "embck": "e6ba6b4d6ec0441872aa42ee0cc60fc086a4f3a75b2b6750cadfd4513804d046",
+        "znt": "171a48c6e0f0491700125da528842129ab80524a0f2ff5cd1a137949cbe4e76b",
+        "z0": "171a48c6e0f0491700125da528842129ab80524a0f2ff5cd1a137949cbe4e76b",
+        "thc": "6edd36116794058d42e9ddfb904b78d18092d9d8f810891af7d485c52f500411",
+        "xland": "b06b91f95ff8c24231ac7205edf6ab2e322d9883d0cb30a6fb598d40c056a68e",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_8_reuse_0": {
+      "sha256": "a1230ce7d795480f5ed9b2929091e482cecea205dabbf67ce3e6a6a9cf04a8aa",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "85dd751867e3155c7f2e23e8446546906f5bf617d4d985ed474822613764d69e",
+        "cen_lat": "5d5d32c7cf8e2ca77d9af6bf35a0ba5cd09074ccb4f3871aba6f67420b324a57",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "monalb": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "season": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "albedo": "d03ba87485d1f1d9cba950f0a0939b5b9bf00fe6967c5cfaab9ef3a5adf4bd94",
+        "albbck": "6a85fb955c6f439ec69b7768f728f4316175846bf899f88fd30aa469ad23d335",
+        "mavail": "5d1c183ef54b1174a38ab3872c1603da8f0bba4769c0534a4b722638078bf537",
+        "emiss": "6e729846464702b6e127e27638f8b38186cd0b1623f28a719b22dcfcf7a64478",
+        "embck": "4194a52fcdf00df24cb861a1d9389eb11a3e35cf04adf93235ae1bcb48b168a5",
+        "znt": "6cd5886d03adfd7dfb65ae0b67467463b650c96b728a223f7d9ec7baf3163c22",
+        "z0": "6cd5886d03adfd7dfb65ae0b67467463b650c96b728a223f7d9ec7baf3163c22",
+        "thc": "0b095f34faf4f34d1e4e7e7504715b5d5e3bb16bb7bb5e31ca418b2fc7c3c026",
+        "xland": "6804272fea2cf4e860710f349961d98fb19b43091ece0713e9b71397164628dd",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_8_reuse_1": {
+      "sha256": "a1230ce7d795480f5ed9b2929091e482cecea205dabbf67ce3e6a6a9cf04a8aa",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "85dd751867e3155c7f2e23e8446546906f5bf617d4d985ed474822613764d69e",
+        "cen_lat": "5d5d32c7cf8e2ca77d9af6bf35a0ba5cd09074ccb4f3871aba6f67420b324a57",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "monalb": "67abdd721024f0ff4e0b3f4c2fc13bc5bad42d0b7851d456d88d203d15aaa450",
+        "season": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "albedo": "d03ba87485d1f1d9cba950f0a0939b5b9bf00fe6967c5cfaab9ef3a5adf4bd94",
+        "albbck": "6a85fb955c6f439ec69b7768f728f4316175846bf899f88fd30aa469ad23d335",
+        "mavail": "5d1c183ef54b1174a38ab3872c1603da8f0bba4769c0534a4b722638078bf537",
+        "emiss": "6e729846464702b6e127e27638f8b38186cd0b1623f28a719b22dcfcf7a64478",
+        "embck": "4194a52fcdf00df24cb861a1d9389eb11a3e35cf04adf93235ae1bcb48b168a5",
+        "znt": "6cd5886d03adfd7dfb65ae0b67467463b650c96b728a223f7d9ec7baf3163c22",
+        "z0": "6cd5886d03adfd7dfb65ae0b67467463b650c96b728a223f7d9ec7baf3163c22",
+        "thc": "0b095f34faf4f34d1e4e7e7504715b5d5e3bb16bb7bb5e31ca418b2fc7c3c026",
+        "xland": "6804272fea2cf4e860710f349961d98fb19b43091ece0713e9b71397164628dd",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_9_reuse_0": {
+      "sha256": "4ce45d6b74cdaf050ca8c8263ad0f42942caf017b467ba8a9ec6bfede2f7c0d8",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "5a667734987b65ef5c4d07bf176148504bcf8378a5a1a0e23a7fa2c1121cc143",
+        "cen_lat": "bd5cbc36d144a3f1f63fab2093cbf3b2c2d7b852d5359a482720b6a6d45fdf02",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "monalb": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "season": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "albedo": "398cf63c2d93f4bb2b0038b13fa0438406ad25c21826bcccb8f626fda47111ce",
+        "albbck": "237b409584323a3139ed501be22ed4454f1cf67ae47a0b71326bc20cd695032a",
+        "mavail": "c0f06a401a608a7416870b1b9dfae4815256d54a016d83851abbd80380c54050",
+        "emiss": "e6ba6b4d6ec0441872aa42ee0cc60fc086a4f3a75b2b6750cadfd4513804d046",
+        "embck": "e6ba6b4d6ec0441872aa42ee0cc60fc086a4f3a75b2b6750cadfd4513804d046",
+        "znt": "171a48c6e0f0491700125da528842129ab80524a0f2ff5cd1a137949cbe4e76b",
+        "z0": "171a48c6e0f0491700125da528842129ab80524a0f2ff5cd1a137949cbe4e76b",
+        "thc": "6edd36116794058d42e9ddfb904b78d18092d9d8f810891af7d485c52f500411",
+        "xland": "b06b91f95ff8c24231ac7205edf6ab2e322d9883d0cb30a6fb598d40c056a68e",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    },
+    "landuse/case_9_reuse_1": {
+      "sha256": "4ce45d6b74cdaf050ca8c8263ad0f42942caf017b467ba8a9ec6bfede2f7c0d8",
+      "native_stream_sha256": {
+        "lu": "92c0dfb88d2adbcc4efef15d0abb3288fcd5c0d600f1545b092564569afae463",
+        "snow": "26b3b1f6cc560b93bf9d2afb46b37bc85e8e4230543d6acefb8c129bf375ce79",
+        "xice": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47",
+        "snoalb": "a330389cdda725f9d7cf820be3c0d9d3313e3ed9667f819dd946440abec51151",
+        "initial_albbck": "6ee66a59aa0de1ef6c847fda72ff1720e791631a808c04ee92c585b463cfded4",
+        "table": "35668f879317a4d9124650b56b8774b825f9162b3f17967a7d87bed03e64f701",
+        "julday": "5a667734987b65ef5c4d07bf176148504bcf8378a5a1a0e23a7fa2c1121cc143",
+        "cen_lat": "bd5cbc36d144a3f1f63fab2093cbf3b2c2d7b852d5359a482720b6a6d45fdf02",
+        "iswater": "097328e8c957de2428283954f6a1ee8ff7ad7def12e100a600178407f5decf24",
+        "isice": "17fa9c7f5e9039a2d46e73e17d8e094a796ee4c313199bad42db4ee1dc30d865",
+        "fractional": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "monalb": "df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119",
+        "season": "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        "albedo": "398cf63c2d93f4bb2b0038b13fa0438406ad25c21826bcccb8f626fda47111ce",
+        "albbck": "237b409584323a3139ed501be22ed4454f1cf67ae47a0b71326bc20cd695032a",
+        "mavail": "c0f06a401a608a7416870b1b9dfae4815256d54a016d83851abbd80380c54050",
+        "emiss": "e6ba6b4d6ec0441872aa42ee0cc60fc086a4f3a75b2b6750cadfd4513804d046",
+        "embck": "e6ba6b4d6ec0441872aa42ee0cc60fc086a4f3a75b2b6750cadfd4513804d046",
+        "znt": "171a48c6e0f0491700125da528842129ab80524a0f2ff5cd1a137949cbe4e76b",
+        "z0": "171a48c6e0f0491700125da528842129ab80524a0f2ff5cd1a137949cbe4e76b",
+        "thc": "6edd36116794058d42e9ddfb904b78d18092d9d8f810891af7d485c52f500411",
+        "xland": "b06b91f95ff8c24231ac7205edf6ab2e322d9883d0cb30a6fb598d40c056a68e",
+        "xicem": "a2e5f61a6591da8c58ae58a7aff94833b59e06b3ace699013dd7ee7794b1bd47"
+      },
+      "arrays": {
+        "lu": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snow": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xice": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "snoalb": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "initial_albbck": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "table": {
+          "shape": [
+            61,
+            2,
+            7
+          ],
+          "dtype": "<f4"
+        },
+        "julday": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "cen_lat": {
+          "shape": [],
+          "dtype": "<f4"
+        },
+        "iswater": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "isice": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "fractional": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "monalb": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "season": {
+          "shape": [],
+          "dtype": "<i4"
+        },
+        "albedo": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "albbck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "mavail": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "emiss": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "embck": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "znt": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "z0": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "thc": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xland": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        },
+        "xicem": {
+          "shape": [
+            7,
+            9
+          ],
+          "dtype": "<f4"
+        }
+      }
+    }
+  }
+}

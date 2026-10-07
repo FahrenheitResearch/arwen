@@ -2088,6 +2088,11 @@ const PARAMETER_SMOKE_MASS_DENSITY: &[ParameterCode] = &[ParameterCode {
     category: 20,
     number: 0,
 }];
+// HRRR/RAP AOTK: NCEP GRIB2 Table 4.2, discipline 0 category 20 number 102.
+// https://www.weather.gov/media/notification/pdf2/scn22-54_rap_grids_aotk.pdf
+const PARAMETER_AOD550: &[ParameterCode] = &[ParameterCode {
+    discipline: 0, category: 20, number: 102,
+}];
 const PARAMETER_COLUMN_INTEGRATED_SMOKE: &[ParameterCode] = &[ParameterCode {
     discipline: 0,
     category: 20,
@@ -2550,6 +2555,15 @@ impl TryFrom<FieldSelector> for StructuredMessageSelector {
                 parameters: PARAMETER_PWAT,
                 level: LevelMatch::EntireAtmosphere,
                 units: "kg/m^2",
+            }),
+            FieldSelector {
+                field: CanonicalField::AerosolOpticalDepth550,
+                vertical: VerticalSelector::EntireAtmosphere,
+                ..
+            } => Ok(Self {
+                parameters: PARAMETER_AOD550,
+                level: LevelMatch::EntireAtmosphere,
+                units: "1",
             }),
             FieldSelector {
                 field: CanonicalField::ColumnIntegratedSmoke,

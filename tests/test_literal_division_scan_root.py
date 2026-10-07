@@ -87,6 +87,10 @@ def test_the_census_builds_every_unit_from_the_scanned_tree(
     labels = {label for _start, label, _first in p3.segments}
     assert {"gpuwm/core/kernels/noahmp_leaves.cu",
             "gpuwm/core/kernels/p3.cu"} <= labels
+    # The dedicated urban loader needs its glibc/trig/layout headers. A bare
+    # kernel failed compilation and silently omitted this production route.
+    (urban,) = [unit for unit in units if unit.key == "kernels:urban_bep_bem"]
+    assert "struct ubm_Context" in urban.source and "sincosf" in urban.source
 
 
 def test_the_scans_report_and_read_only_the_scanned_tree(

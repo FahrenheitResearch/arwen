@@ -1,0 +1,90 @@
+{
+  "schema": "gpuwm.chem.species.v1",
+  "owner": "aq-core",
+  "description": "Two passive tracers with no processes: passive_1 (zero inflow) for the identity, conservation and carry tests, passive_2 (unit inflow) for a real forecast's boundary exercise. Never a product.",
+  "rows": [
+    {
+      "name": "passive_1",
+      "wrf_array": "tracer",
+      "output_name": "PASSIVE_1",
+      "long_name": "passive test tracer",
+      "units": "ug kg-1",
+      "phase": "aerosol",
+      "family": "tracer",
+      "sets": [
+        "tracer_test"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 0.0,
+      "molar_mass_g_mol": null,
+      "processes": [],
+      "emissions": [],
+      "boundary": [],
+      "drydep": null,
+      "settling": null,
+      "wetdep_ls_alpha": 0.0,
+      "aging": null,
+      "optics": null,
+      "mp_coupling": null,
+      "exclusive_group": null,
+      "provenance": "ArWen test row. floor = WRF epsilc 1.E-16 (chem/module_data_radm2.F:5; the inflow floor of bdy_chem_value_gcm, chem/module_input_chem_data.F:2349); default_inflow 0 so outflow and inflow are both exact under conservation tests."
+    },
+    {
+      "name": "passive_2",
+      "wrf_array": "tracer",
+      "output_name": "PASSIVE_2",
+      "long_name": "passive test tracer with unit inflow",
+      "units": "ug kg-1",
+      "phase": "aerosol",
+      "family": "tracer",
+      "sets": [
+        "tracer_test"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 1.0,
+      "molar_mass_g_mol": null,
+      "processes": [],
+      "emissions": [],
+      "boundary": [],
+      "drydep": null,
+      "settling": null,
+      "wetdep_ls_alpha": 0.0,
+      "aging": null,
+      "optics": null,
+      "mp_coupling": null,
+      "exclusive_group": null,
+      "provenance": "ArWen test row. default_inflow 1 ug kg-1 so a real forecast exercises the outer-domain inflow rule (flow_dep_bdy_chem, chem/module_input_chem_data.F:1685-2008) and the ledger's transport bucket; floor = WRF epsilc 1.E-16 (chem/module_data_radm2.F:5)."
+    },
+    {
+      "name": "passive_mixed",
+      "wrf_array": "tracer",
+      "output_name": "PASSIVE_MIXED",
+      "long_name": "passive test tracer with unit inflow and vertical mixing",
+      "units": "ug kg-1",
+      "phase": "aerosol",
+      "family": "tracer",
+      "sets": [
+        "tracer_mixing"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 1.0,
+      "molar_mass_g_mol": null,
+      "processes": [
+        "mixing.vertmx"
+      ],
+      "emissions": [],
+      "boundary": [],
+      "drydep": null,
+      "settling": null,
+      "wetdep_ls_alpha": 0.0,
+      "aging": null,
+      "optics": null,
+      "mp_coupling": null,
+      "exclusive_group": null,
+      "provenance": "ArWen test row: passive_2 plus WRF-Chem's PBL-independent vertical mixing (mixing.vertmx), so a real forecast exercises a process and the ledger's process bucket; default_inflow 1 ug kg-1, floor = WRF epsilc 1.E-16 (chem/module_data_radm2.F:5)."
+    }
+  ]
+}

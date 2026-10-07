@@ -1223,6 +1223,128 @@ mod tests {
         assert!(failure.message().starts_with("f018: no source served this object"));
     }
 
+    /// Two GRIB2 messages of `each` bytes, framed so Section 0 states
+    /// the length and the message ends in `7777`.
+    fn two_messages(each: u64) -> Vec<u8> {
+        let mut object = Vec::new();
+        for _ in 0..2 {
+            let mut message = b"GRIB\0\0\0\x02".to_vec();
+            message.extend(each.to_be_bytes());
+            message.resize(each as usize - 4, 0);
+            message.extend(b"7777");
+            object.extend(message);
+        }
+        object
+    }
+
+    /// An origin that answers ranges the way S3 does: a range reaching
+    /// past the end is clipped to the object, and the clipped span and
+    /// the total are stated in Content-Range.  `idx` is served whole.
+    fn s3_like_origin(object: Vec<u8>, idx: String) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("address");
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut request = Vec::new();
+                let mut byte = [0u8; 1];
+                while !request.ends_with(b"\r\n\r\n") {
+                    if stream.read(&mut byte).unwrap_or(0) == 0 {
+                        break;
+                    }
+                    request.push(byte[0]);
+                }
+                let text = String::from_utf8_lossy(&request).to_string();
+                let path = text.split_whitespace().nth(1).unwrap_or("").to_string();
+                let range = text.lines().find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("range: bytes=")
+                        .map(str::to_string)
+                });
+                let reply = if path.ends_with(".idx") {
+                    let mut reply = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        idx.len()
+                    )
+                    .into_bytes();
+                    reply.extend(idx.as_bytes());
+                    reply
+                } else if let Some(range) = range {
+                    let total = object.len() as u64;
+                    let (first, last) = range.trim().split_once('-').unwrap();
+                    let first: u64 = first.parse().unwrap();
+                    let last = last
+                        .parse::<u64>()
+                        .map_or(total - 1, |last| last.min(total - 1));
+                    let mut reply = format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes {first}-{last}/{total}\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n",
+                        last - first + 1
+                    )
+                    .into_bytes();
+                    reply.extend(&object[first as usize..=last as usize]);
+                    reply
+                } else {
+                    let mut reply = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        object.len()
+                    )
+                    .into_bytes();
+                    reply.extend(&object);
+                    reply
+                };
+                let _ = stream.write_all(&reply);
+            }
+        });
+        format!("http://{address}")
+    }
+
+    /// An index that ends exactly where the object ends is proven complete
+    /// against an origin that clips a past-the-end range, as S3 does.  The
+    /// old proof asked for one byte past the last message, the clipped
+    /// answer read as a foreign span, and every HRRR object on S3 was
+    /// refused for --mode idx-subset ("index coverage could not be proven").
+    #[test]
+    fn a_complete_index_is_proven_against_an_origin_that_clips_past_the_end() {
+        let object = two_messages(100);
+        let idx = "1:0:d=2026100221:PRES:1 hybrid level:anl:\n\
+                   2:100:d=2026100221:PRES:2 hybrid level:anl:\n"
+            .to_string();
+        let origin = s3_like_origin(object, idx);
+        let (facts, payload) = Fetcher::for_test().probe_object(
+            &format!("{origin}/hrrr.t21z.wrfnatf00.grib2"),
+            Some(&format!("{origin}/hrrr.t21z.wrfnatf00.grib2.idx")),
+            true,
+        );
+        assert!(payload.is_some(), "{facts:?}");
+        assert_eq!(facts.idx_covers_object, Some(true), "{facts:?}");
+        assert_eq!(facts.object_bytes, Some(200));
+        let Decision::Take(mode, _) = decide(ModeRequest::IdxSubset, &facts, 1) else {
+            panic!("a complete index is taken");
+        };
+        assert_eq!(mode, Mode::IdxSubset);
+    }
+
+    /// A genuinely short index still refuses: the object carries a message
+    /// the index never lists, and a subset would silently drop it.
+    #[test]
+    fn a_short_index_is_still_refused_against_that_origin() {
+        let object = two_messages(100);
+        let idx = "1:0:d=2026100221:PRES:1 hybrid level:anl:\n".to_string();
+        let origin = s3_like_origin(object, idx);
+        let (facts, _payload) = Fetcher::for_test().probe_object(
+            &format!("{origin}/hrrr.t21z.wrfnatf00.grib2"),
+            Some(&format!("{origin}/hrrr.t21z.wrfnatf00.grib2.idx")),
+            true,
+        );
+        assert_eq!(facts.idx_covers_object, Some(false), "{facts:?}");
+        let Decision::Refuse(reason) = decide(ModeRequest::IdxSubset, &facts, 1) else {
+            panic!("a short index is refused");
+        };
+        assert!(reason.contains("silently drop trailing records"), "{reason}");
+    }
+
     /// One reply per connection, in order, from a local origin.
     fn local_origin(replies: Vec<Vec<u8>>) -> String {
         use std::io::{Read, Write};

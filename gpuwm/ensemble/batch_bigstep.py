@@ -38,6 +38,15 @@ POINTER_FIELDS = {
         ("fnm", "fnm"), ("fnp", "fnp"), ("c1f", "c1f"),
         ("c2f", "c2f"), ("msft", "msft"), ("msfu", "msfu"),
         ("msfv", "msfv")),
+    # Radiative open boundaries without specified forcing take WRF's native
+    # rhs_ph (890e2523a); without face masses both face pointers read mup.
+    "slow_geopotential_open": (
+        ("rph_t", "rph_t"), ("ww", "scratch:rk_ww"), ("w", "w"),
+        ("u", "u"), ("v", "v"), ("php", "php"), ("phb", "phb"),
+        ("mup", "mup"), ("mub", "mub2d"), ("rdnw", "rdnw"),
+        ("fnm", "fnm"), ("fnp", "fnp"), ("c1f", "c1f"),
+        ("c2f", "c2f"), ("msft", "msft"), ("msfu", "msfu"),
+        ("msfv", "msfv"), ("mux", "mup"), ("muy", "mup")),
     "small_step_init_uv": tuple((name, name) for name in (
         "u_pp", "v_pp", "u0", "v0", "u", "v", "mup0", "mup", "mub2d",
         "c1h", "c2h", "msfu", "msfv")),
@@ -63,7 +72,8 @@ POINTER_FIELDS = {
 _MODULES = {"set_surface_w": "surface_w", "coriolis_curvature": "coriolis_map"}
 _WRITE_PARAMETERS = {
     "slow_pgf": ("ru_t", "rv_t"), "slow_buoyancy": ("rw_t",),
-    "slow_geopotential": ("rph_t",), "set_surface_w": ("w",),
+    "slow_geopotential": ("rph_t",), "slow_geopotential_open": ("rph_t",),
+    "set_surface_w": ("w",),
     "coriolis_curvature": ("ru_t", "rv_t", "rw_t"),
     "small_step_init_uv": ("u_pp", "v_pp"),
     "small_step_init_column": ("w_pp", "th_pp", "ph_pp", "mu_pp", "al_pp", "p_pp", "p_pp_old"),
@@ -276,6 +286,20 @@ def prepare_slow_geopotential(state, cfg=None, *, ww="scratch:rk_ww", add_vertic
     a = lambda name: _allocation(state, name)
     nz, ny, nx = cfg.nz, cfg.ny, cfg.nx
     rdx, rdy = 1.0 / cfg.dx, 1.0 / cfg.dy
+    if (cfg.open_x or cfg.open_y) and not dycore._boundary_forced(cfg):
+        # The scalar helper sends this configuration to the native open
+        # kernel (890e2523a); the members must take the same entry or their
+        # words differ from a single run's.
+        args = (a("rph_t"), a(ww), a("w"), a("u"), a("v"), a("php"), a("phb"),
+                a("mup"), a("mub2d"), a("rdnw"), a("fnm"), a("fnp"), a("c1f"), a("c2f"),
+                state.cfn, state.cfn1, a("msft"), a("msfu"), a("msfv"), a("mup"), a("mup"),
+                np.float32(0.25 / cfg.dx), np.float32(0.25 / cfg.dy), np.int32(state.has_msf),
+                np.int32(cfg.open_x), np.int32(cfg.open_y), np.int32(0),
+                np.int32(add_vertical), np.int32(cfg.h_sca_adv_order),
+                np.int32(len(_shape(state, "phb")) == 3),
+                np.int32(nz), np.int32(ny), np.int32(nx))
+        return _bound_launch(state, "slow_geopotential_open", args, ((nz * ny * nx + 255) // 256,),
+                             bindings={"ww": ww})
     args = (a("rph_t"), a(ww), a("w"), a("u"), a("v"), a("php"), a("phb"),
             a("mup"), a("mub2d"), a("rdnw"), a("fnm"), a("fnp"), a("c1f"), a("c2f"),
             state.cfn, state.cfn1, a("msft"), a("msfu"), a("msfv"),

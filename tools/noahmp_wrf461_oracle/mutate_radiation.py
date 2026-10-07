@@ -35,7 +35,7 @@ sys.path.insert(0, str(REPO))
 
 from gpuwm.core import noahmp_radiation as rad  # noqa: E402
 
-ORACLE = REPO / "gpuwm" / "data" / "noahmp" / "oracle"
+ORACLE = REPO / "tests" / "data" / "oracles" / "noahmp"
 
 
 def _f(h: str) -> np.float32:

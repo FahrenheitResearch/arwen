@@ -78,6 +78,16 @@ km_opt = 4
 diff_6th_opt = 2
 diff_6th_slopeopt = 1
 map_proj = 1
+# Opt-in smoke, dust and air quality (off while chem_sets is absent; see
+# docs/public/SMOKE-AND-AIR-QUALITY.md). Uncomment to carry NOAA RAVE
+# wildfire smoke plus GOCART dust, sea salt and carbon; chem_conv_tr = 0 is
+# required beside this starter's Kain-Fritsch cumulus.
+# chem_sets = "gocart_primary,smoke"
+# chem_sources = "rave-3km"
+# dust_opt = 1
+# seas_opt = 1
+# wetscav_onoff = -1
+# chem_conv_tr = 0
 
 [tiles]
 mode = "off"

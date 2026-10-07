@@ -484,7 +484,7 @@ pub(crate) fn static_supersample_sharpen() -> bool {
         .unwrap_or(false)
 }
 
-pub(crate) fn static_chrome_scale() -> ChromeScale {
+pub fn static_chrome_scale() -> ChromeScale {
     let scale = std::env::var("RUSTWX_CHROME_SCALE")
         .ok()
         .and_then(|value| value.parse::<f32>().ok())

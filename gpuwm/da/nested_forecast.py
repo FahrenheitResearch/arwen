@@ -1001,6 +1001,8 @@ def _initialize_child_physics(initialized, child_run, inventory,
         glw=constant_glw_wm2,
         radiation_start_time=valid_time, radiation_latitude=lat,
         radiation_longitude=lon,
+        **({"frc_urb2d": static.get("FRC_URB2D")}
+           if int(getattr(child_run, "sf_urban_physics", 0)) == 1 else {}),
         **lake_physics_inputs(child_run, static),
         **ruc_mosaic_physics_inputs(
             child_run, static, landuse_attrs=landuse_identity,

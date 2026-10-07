@@ -1,0 +1,250 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "gpuwm.chem.schema.v1",
+  "title": "ArWen chem table v1: species rows, sets, sources and output diagnostics",
+  "description": "Every file under gpuwm/data/chem/{species,sets,sources,diagnostics}/ validates against one definition here, chosen by its 'schema' member. Adding a species, a set, an emission or boundary source or a table diagnostic is a new row or file; no code path names a species. Unknown members are refused everywhere (additionalProperties false) except inside the 'optics' and 'mp_coupling' objects, whose keys the owning process defines. Loader: gpuwm.chem_table.",
+  "definitions": {
+    "name": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,23}$"},
+    "process_key": {"type": "string", "pattern": "^[a-z]+\\.[a-z0-9_]+$"},
+    "provenance": {"type": "string", "minLength": 1},
+    "emission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "field", "weight", "vertical", "provenance"],
+      "properties": {
+        "source": {"$ref": "#/definitions/name_or_dash"},
+        "field": {"type": "string", "minLength": 1},
+        "weight": {"type": "number", "minimum": 0},
+        "vertical": {"enum": ["surface", "kemit", "plumerise"]},
+        "provenance": {"$ref": "#/definitions/provenance"}
+      }
+    },
+    "name_or_dash": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,47}$"},
+    "boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "fields", "weights", "conversion", "provenance"],
+      "properties": {
+        "source": {"$ref": "#/definitions/name_or_dash"},
+        "fields": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "weights": {"type": "array", "minItems": 1, "items": {"type": "number"}},
+        "conversion": {"enum": ["identity", "kg_m3_to_ug_kg_dry", "kg_kg_moist_to_ug_kg_dry", "kg_kg_moist_to_ppmv_dry"]},
+        "provenance": {"$ref": "#/definitions/provenance"}
+      }
+    },
+    "drydep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scheme"],
+      "properties": {
+        "scheme": {"enum": ["gocart_aerosol", "wesely", "none"]},
+        "wesely": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["hstar", "dhr", "f0", "dratio", "scpr23", "arm", "from"],
+          "properties": {
+            "hstar": {"type": "number"},
+            "dhr": {"type": "number"},
+            "f0": {"type": "number"},
+            "dratio": {"type": "number"},
+            "scpr23": {"type": "number"},
+            "arm": {"enum": ["general", "ozone", "sulfur_dioxide", "ammonia"]},
+            "from": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    },
+    "settling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["radius_m", "density_kg_m3", "from"],
+      "properties": {
+        "radius_m": {"type": "number", "exclusiveMinimum": 0},
+        "density_kg_m3": {"type": "number", "exclusiveMinimum": 0},
+        "growth": {"enum": ["none", "gerber_seasalt"]},
+        "from": {"type": "string", "minLength": 1}
+      }
+    },
+    "aging": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["to", "efold_s", "from"],
+      "properties": {
+        "to": {"$ref": "#/definitions/name"},
+        "efold_s": {"type": "number", "exclusiveMinimum": 0},
+        "rate_per_s": {"type": "number", "exclusiveMinimum": 0},
+        "coproduct": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["to", "factor"],
+          "properties": {
+            "to": {"$ref": "#/definitions/name"},
+            "factor": {"type": "number", "minimum": 0}
+          }
+        },
+        "from": {"type": "string", "minLength": 1}
+      }
+    },
+    "dust_emission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["erod_class", "frac_s", "ch_dust", "afwa_distr", "afwa_vis_coefficient", "from"],
+      "properties": {
+        "erod_class": {"enum": [1, 2, 3]},
+        "frac_s": {"type": "number", "minimum": 0},
+        "ch_dust": {"type": "number", "exclusiveMinimum": 0},
+        "afwa_distr": {"type": "number", "minimum": 0},
+        "afwa_vis_coefficient": {"type": "number", "minimum": 0},
+        "from": {"type": "string", "minLength": 1}
+      }
+    },
+    "seasalt_emission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["r_lo_um", "r_hi_um", "from"],
+      "properties": {
+        "r_lo_um": {"type": "number", "exclusiveMinimum": 0},
+        "r_hi_um": {"type": "number", "exclusiveMinimum": 0},
+        "from": {"type": "string", "minLength": 1}
+      }
+    },
+    "species_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "output_name", "long_name", "units", "phase", "family",
+                   "sets", "default_inflow", "processes", "provenance"],
+      "properties": {
+        "name": {"$ref": "#/definitions/name"},
+        "output_name": {"type": ["string", "null"], "pattern": "^[A-Za-z][A-Za-z0-9_]{0,31}$"},
+        "long_name": {"type": "string", "minLength": 1},
+        "units": {"enum": ["ug kg-1", "ppmv", "mol mol-1"]},
+        "phase": {"enum": ["aerosol", "gas"]},
+        "family": {"enum": ["tracer", "smoke", "dust", "seasalt", "bc", "oc", "sulfate",
+                            "sulfur_gas", "ozone", "nox", "co", "pm_other", "oxidant"]},
+        "wrf_array": {"enum": ["chem", "tracer"], "default": "chem"},
+        "sets": {"type": "array", "minItems": 1, "uniqueItems": true,
+                 "items": {"$ref": "#/definitions/name"}},
+        "transported": {"type": "boolean"},
+        "floor": {"type": "number", "minimum": 0},
+        "default_inflow": {"type": "number", "minimum": 0},
+        "molar_mass_g_mol": {"type": ["number", "null"], "exclusiveMinimum": 0},
+        "processes": {"type": "array", "uniqueItems": true,
+                      "items": {"$ref": "#/definitions/process_key"}},
+        "emissions": {"type": "array", "items": {"$ref": "#/definitions/emission"}},
+        "boundary": {"type": "array", "items": {"$ref": "#/definitions/boundary"}},
+        "drydep": {"oneOf": [{"type": "null"}, {"$ref": "#/definitions/drydep"}]},
+        "settling": {"oneOf": [{"type": "null"}, {"$ref": "#/definitions/settling"}]},
+        "wetdep_ls_alpha": {"type": "number", "minimum": 0, "maximum": 1},
+        "aging": {"oneOf": [{"type": "null"}, {"$ref": "#/definitions/aging"}]},
+        "optics": {"type": ["object", "null"]},
+        "mp_coupling": {"type": ["object", "null"]},
+        "exclusive_group": {"type": ["string", "null"]},
+        "dust_emission": {"oneOf": [{"type": "null"}, {"$ref": "#/definitions/dust_emission"}]},
+        "seasalt_emission": {"oneOf": [{"type": "null"}, {"$ref": "#/definitions/seasalt_emission"}]},
+        "sulfur_role": {"enum": [null, "dms", "so2", "so4", "msa", "oh", "h2o2", "no3"]},
+        "process_sets": {
+          "description": "Optional per-set gating of this row's processes: a process key listed here acts on the row only in a run that selects one of the named sets (each must be one of the row's own sets); a process not listed acts in every set the row belongs to. One species shared by two sets with different physics (so2: oxidized by GOCART's sulfur chemistry, carried without chemistry by the CAMS set) stays ONE row.",
+          "oneOf": [
+            {"type": "null"},
+            {"type": "object",
+             "propertyNames": {"$ref": "#/definitions/process_key"},
+             "additionalProperties": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/definitions/name"}}}
+          ]
+        },
+        "provenance": {"$ref": "#/definitions/provenance"}
+      }
+    },
+    "species_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "owner", "rows"],
+      "properties": {
+        "schema": {"const": "gpuwm.chem.species.v1"},
+        "owner": {"type": "string", "minLength": 1},
+        "description": {"type": "string"},
+        "rows": {"type": "array", "minItems": 1, "items": {"$ref": "#/definitions/species_row"}}
+      }
+    },
+    "set_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "name", "description", "wrf_chem_opt", "wrf_tracer_opt", "provenance"],
+      "properties": {
+        "schema": {"const": "gpuwm.chem.set.v1"},
+        "name": {"$ref": "#/definitions/name"},
+        "description": {"type": "string", "minLength": 1},
+        "wrf_chem_opt": {"type": ["integer", "null"]},
+        "wrf_tracer_opt": {"type": ["integer", "null"]},
+        "test_only": {"type": "boolean"},
+        "namelist_defaults": {"type": "object", "minProperties": 1, "additionalProperties": {"type": ["integer", "number", "boolean", "string"]}},
+        "namelist_defaults_provenance": {"$ref": "#/definitions/provenance"},
+        "provenance": {"$ref": "#/definitions/provenance"}
+      },
+      "dependencies": {"namelist_defaults": ["namelist_defaults_provenance"]}
+    },
+    "source_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "name", "kind", "route", "credential", "format", "grid",
+                   "variables", "time", "remap", "licence", "attribution", "provenance"],
+      "properties": {
+        "schema": {"const": "gpuwm.chem.source.v1"},
+        "name": {"$ref": "#/definitions/name_or_dash"},
+        "kind": {"enum": ["emission", "boundary", "oxidant", "static"]},
+        "route": {"type": ["string", "null"]},
+        "credential": {"type": ["string", "null"]},
+        "format": {"enum": ["grib2", "netcdf", "wps_geog"]},
+        "grid": {"type": "object"},
+        "variables": {"type": "object", "minProperties": 1},
+        "time": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cadence_s", "latency_s", "persistence"],
+          "properties": {
+            "cadence_s": {"type": "number", "exclusiveMinimum": 0},
+            "latency_s": {"type": "number", "minimum": 0},
+            "persistence": {"type": ["string", "null"]},
+            "interpolation": {"enum": ["linear", "daily_mean", "hold"]}
+          }
+        },
+        "remap": {"enum": ["bilinear", "cell_sum", "cell_sum_split", "native_levels", "geogrid"]},
+        "raises_mixing_floor": {"type": "boolean"},
+        "default_for_fetch_sources": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "description": {"type": "string"},
+        "vertical": {"type": "object"},
+        "acquisition": {"type": "object"},
+        "licence": {"type": "string", "minLength": 1},
+        "attribution": {"type": "string", "minLength": 1},
+        "provenance": {"$ref": "#/definitions/provenance"}
+      }
+    },
+    "term": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["species"],
+      "properties": {
+        "species": {"type": "array", "minItems": 1, "items": {"$ref": "#/definitions/name"}},
+        "ops": {"type": "array",
+                "items": {"type": "array", "minItems": 2, "maxItems": 2,
+                          "items": [{"enum": ["mul", "div"]}, {"type": "number"}]}},
+        "from": {"type": "string"}
+      }
+    },
+    "diagnostic_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema", "output_name", "units", "description", "kind", "terms", "provenance"],
+      "properties": {
+        "schema": {"const": "gpuwm.chem.diagnostic.v1"},
+        "output_name": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,31}$"},
+        "units": {"type": "string", "minLength": 1},
+        "description": {"type": "string", "minLength": 1},
+        "kind": {"enum": ["term_sum_3d", "term_sum_surface", "column_integral"]},
+        "divide_by_alt": {"type": "boolean"},
+        "column_scale": {"type": "number"},
+        "terms": {"type": "array", "minItems": 1, "items": {"$ref": "#/definitions/term"}},
+        "provenance": {"$ref": "#/definitions/provenance"}
+      }
+    }
+  }
+}

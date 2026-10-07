@@ -1,0 +1,26 @@
+{
+  "url": "https://noaa-goes18.s3.amazonaws.com/ABI-L2-AODC/2025/211/21/OR_ABI-L2-AODC-M6_G18_s20252112101187_e20252112103560_c20252112106367.nc",
+  "source_sha256": "8e43980cf1ece8190d05ef7990a4a3701d84358fe822e23ac1848e83b5349cd7",
+  "source_bytes": 7441391,
+  "window": [
+    1000,
+    16,
+    600,
+    16
+  ],
+  "crop_sha256": "b5ff36219f6508054b2ef9691bc2422ab4eb5fcaea5ce0d875a64f0ea369bb0a",
+  "command": "rw_goes aod --aod OR_ABI-L2-AODC-M6_G18_s20252112101187_e20252112103560_c20252112106367.nc --window 1000,16,600,16 --out aod-crop.goespack",
+  "dqf_source": "source NetCDF DQF flag_values and flag_meanings; validated by rw_goes",
+  "dqf_values": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "dqf_meanings": [
+    "high_quality_retrieval_qf",
+    "medium_quality_retrieval_qf",
+    "low_quality_retrieval_qf",
+    "no_retrieval_qf"
+  ]
+}

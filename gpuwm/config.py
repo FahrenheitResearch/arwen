@@ -1,8 +1,9 @@
 from __future__ import annotations
 import math
 import tomllib
-from dataclasses import dataclass, fields
+from dataclasses import KW_ONLY, dataclass, fields
 from pathlib import Path
+from gpuwm.sfire_config import FireRunFields, validate_fire_config
 
 from gpuwm.physics_compat import (
     RRTMG_VARIANT_LEGACY,
@@ -55,6 +56,21 @@ def validate_surface_radiation_policy(policy: str) -> str:
 
 @dataclass(frozen=True)
 class RunConfig:
+    def __post_init__(self):
+        # Resolve this public shortcut before arena, cache and restart
+        # identities inspect chem_sets. It is inert for existing configs.
+        if not isinstance(self.chem_sets, str) or not isinstance(self.fire_smoke, bool):
+            return
+        selected = tuple(name.strip() for name in self.chem_sets.split(","))
+        profiles = ("sfire_smoke", "sfire_smoke_mixed")
+        if self.fire_smoke or any(name in selected for name in profiles):
+            from gpuwm.chem_table import chem_names
+            names = chem_names(self.chem_sets)
+            if not any(name in names for name in profiles):
+                names = (*names, "sfire_smoke")
+            object.__setattr__(self, "chem_sets", ",".join(names))
+            object.__setattr__(self, "fire_smoke", True)
+
     nx: int
     ny: int
     nz: int
@@ -305,6 +321,20 @@ class RunConfig:
     bl_mynn_edmf: int = 1
     bl_mynn_edmf_mom: int = 1
     bl_mynn_edmf_tke: int = 0
+    # 0 is the Registry default of the MYNN generation this solver ports
+    # (WRF v4.6.1 Registry.EM_COMMON:2479, ``rconfig integer
+    # bl_mynn_mixscalars namelist,physics max_domains 0``); the V3.9 line
+    # HRRR runs (gsd_41) has no such key and mixes its aerosols through
+    # scalar_pblmix=1 instead.  WRF 4.7.x flipped the default to 1
+    # (Registry.EM_COMMON:2482) with the MYNN-EDMF submodule, a generation
+    # this solver does not carry; the namelist importer names that
+    # divergence on every MYNN import that omits the key.  1 mixes WRF's
+    # qn family (nc/ni/nwfa/nifa) when the microphysics carries all of it
+    # (mp=28), is inert under a scheme WRF gives no number species (mp
+    # 0/1/6: WRF's flag-gated skips), and is refused under a scheme WRF
+    # would mix in part (Thompson's qni and the like, MYNN_QN_FLAG_SPECIES)
+    # because this port's solve runs the whole family or nothing
+    # (``mynn_mixscalars_active``).
     bl_mynn_mixscalars: int = 0
     bl_mynn_cloudmix: int = 1
     bl_mynn_mixqt: int = 0
@@ -956,7 +986,11 @@ class RunConfig:
     #: module (NOAA-EMC/HRRR v4.1.21), a 5-pass secant z/L search that gives
     #: up to 5 Ri / 8 Ri, z/L capped at 50, the Richardson number clamped at
     #: 50 after step 1, zt in the heat log numerators and z0/L as psih's
-    #: lower limit.  Appended last.
+    #: lower limit.  A configuration whose ``[fetch] source`` names an
+    #: operational-fork model (hrrr, hrrr-native, hrrr-prs, rap,
+    #: rap-native) and omits this key takes ``gsl_wrf39`` at load
+    #: (gpuwm.physics_source_defaults.GENERATION_SELECTORS); a written
+    #: value, including ``wrf_461``, is kept.  Appended last.
     mynn_sfclay_variant: str = "wrf_461"
     #: Whether the engine's measured terrain rules may rewrite this
     #: domain's clock at launch.  ``"measured"`` (the default, every
@@ -1132,15 +1166,27 @@ class RunConfig:
     #: and supercooled rain, non-increasing downward, the ice-to-snow size
     #: 200 microns, its own lookup tables
     #: (gpuwm.physics_compat.thompson_fork_table_root).  An imported WRF
-    #: namelist that carries the fork's own keys selects it.  Appended last.
+    #: namelist that carries the fork's own keys selects it, and so does a
+    #: configuration whose ``[fetch] source`` names an operational-fork
+    #: model (hrrr*, rap*) under mp_physics = 28 on every domain when this
+    #: key is omitted (gpuwm.physics_source_defaults.GENERATION_SELECTORS);
+    #: a written value is kept.  Appended last.
     thompson_version: str = "wrf_461"
     #: How melting snow falls under thompson_version = "wrf_39_noaa".
     #: ``blend`` (the default): the rain-share blend of WRF v4.6.1, which the
     #: fork itself carries commented out as the upstream bug fix.
     #: ``wrf_39_noaa``: the fork's live expression, vts_boost 1.5 above 0 C
     #: and a fall speed divided by (T - 273.15) just above +0.1 C, singular
-    #: there: a fork defect kept by name for the owner's ruling, never the
-    #: default.  Appended last.
+    #: there.  It is what the operational model integrates, so the HRRR
+    #: namelist importer, the shipped mp28 recipes and a configuration
+    #: whose ``[fetch] source`` names an operational-fork model (hrrr*,
+    #: rap*) under the fork generation on every domain select it when this
+    #: key is omitted (gpuwm.physics_source_defaults.GENERATION_SELECTORS):
+    #: the fork generation with the v4.6.1 snow fall is a physics HRRR
+    #: never runs, and on the Iowa 2024-05-21 HRRR crop it kept three
+    #: quarters of the first-hour gap to HRRR that the pair closes
+    #: (WOOF-FIX-PROGRAM-2026-10-06, woof-hour1-spinup).  A written value
+    #: is kept; the generic default stays ``blend``.  Appended last.
     thompson_fork_snow_fall: str = "blend"
 
     #: Source form of the legacy RRTMG cloud wrapper. WRF v4.6.1 is the
@@ -1152,6 +1198,258 @@ class RunConfig:
     #: Empty keeps the existing no-smoke trajectory. This is a forcing
     #: sensitivity input, not an advected or emitted smoke chemistry state.
     rrtmg_smoke_manifest: str = ""
+    #: Output-only surface energy carriers for reconstructed net radiation.
+    #: The history writer reads live fields; no physics kernel reads this.
+    #: Appended after rrtmg_smoke_manifest, ahead of the chem block (which
+    #: stays the last positional block) and the keyword-only fire block.
+    surface_energy_diag: bool = False
+
+    # Appended after the existing selectors.
+    # The chem block (smoke, GOCART-lite aerosols, CAMS-carried gases;
+    # Downloads/SMOKE-AQ-2026-09-30/DESIGN.md section 1.5).  Every key is
+    # inert while ``chem_sets`` is empty, which is the default: no table is
+    # read, nothing is allocated and no launch runs, so a default run is the
+    # engine it was.  :func:`validate_chem_config` is the law.
+    #: The chem door: the species sets this run carries, by name (files under
+    #: gpuwm/data/chem/sets/), comma-separated in order ("smoke,gocart_lite").
+    #: Empty = chem off.  A STRING, not a tuple: RunConfig is echoed into
+    #: JSON receipts, checkpoint headers and identity documents that are
+    #: compared with the live config, and a tuple comes back from JSON as a
+    #: list and would never match itself.  A TOML array is accepted by both
+    #: loaders and joined.  gpuwm.chem_table.chem_names parses it.
+    chem_sets: str = ""
+    #: External chem sources enabled for this run, by name (files under
+    #: gpuwm/data/chem/sources/), comma-separated in priority order.
+    chem_sources: str = ""
+    #: WRF ``&dynamics chem_adv_opt`` (Registry.EM_COMMON:2881, default 1):
+    #: 1 = positive-definite final RK stage, 2 = WRF's monotonic
+    #: ``advect_scalar_mono`` (gpuwm.core.chem_advect_mono); 0, 3 and 4 are
+    #: refused at the door.
+    chem_adv_opt: int = 1
+    #: WRF ``&dynamics chem_mix2_off``/``chem_mix6_off``
+    #: (Registry.EM_COMMON:2888, :2894): switch the 2nd-order horizontal
+    #: mixing / 6th-order filter off for the chem array only.
+    chem_mix2_off: bool = False
+    chem_mix6_off: bool = False
+    #: WRF ``&chem chemdt`` (registry.chem:3778), minutes; 0 = every step.
+    chemdt: float = 0.0
+    #: WRF ``&chem kemit`` (registry.chem:3780, default 9): the emission
+    #: layer count.
+    kemit: int = 9
+    #: WRF ``&chem biomass_burn_opt``/``plumerisefire_frq``
+    #: (registry.chem:3853-3854; minutes).
+    biomass_burn_opt: int = 0
+    plumerisefire_frq: int = 180
+    #: WRF ``&chem dust_opt``/``seas_opt``/``dmsemis_opt``
+    #: (registry.chem:3844, :3851, :3850).
+    dust_opt: int = 0
+    seas_opt: int = 0
+    dmsemis_opt: int = 0
+    #: WRF ``&chem wetscav_onoff`` (registry.chem:3822): <0 large-scale
+    #: washout (wetdep_ls), 1 aqueous scavenging (refused: needs a mechanism).
+    wetscav_onoff: int = 0
+    #: WRF ``&chem chem_conv_tr`` (registry.chem:3816, default 1): subgrid
+    #: convective transport of chem.  Read only with a cumulus scheme on.
+    chem_conv_tr: int = 1
+    #: WRF ``&chem vertmix_onoff`` (registry.chem:3832, default 1).
+    vertmix_onoff: int = 1
+    #: WRF ``&chem aer_ra_feedback``/``aer_op_opt`` (registry.chem:3863-3864).
+    aer_ra_feedback: int = 0
+    aer_op_opt: int = 1
+    #: WRF AFWA dust tuning (registry.chem:3887-3890).
+    dust_alpha: float = 1.0
+    dust_gamma: float = 1.0
+    dust_smtune: float = 1.0
+    dust_ustune: float = 1.0
+    #: WRF ``&chem mynn_chem_vertmx`` (registry.chem:3793).
+    mynn_chem_vertmx: bool = False
+    #: ArWen: fire emission timing.  ``trailing_24h_dcycle`` (the default,
+    #: HRRR-Smoke's method: the previous 24 h of fire detections with a
+    #: diurnal cycle, gpuwm.core.chem_fire.TRAILING_MODE),
+    #: ``daily_mean_dcycle`` (RRFS ebb_dcycle 2) or ``observed_hourly``
+    #: (hindcast only).  ``persistence_hourly`` is retired (RETIRED_MODES).
+    fire_emission_mode: str = "trailing_24h_dcycle"
+    #: ArWen: plume-rise fire properties, ``frp`` (HRRR-Smoke) or ``landuse``
+    #: (WRF-Chem plumerise_driver).
+    plume_fire_properties: str = "frp"
+    #: ArWen: aerosol to aerosol-aware Thompson, ``none``, ``diagnose`` or
+    #: ``emission`` (DESIGN 5.6, 6.7).
+    aerosol_mp_coupling: str = "none"
+    # The WRF v4.7.1 fire (SFIRE) namelist, appended keyword-only so the
+    # positional API and the order of every field above are unchanged.
+    # Names, types and defaults are gpuwm.sfire_config.FireRunFields'
+    # (tests/test_sfire_config_fields.py holds the two equal).
+    _: KW_ONLY
+    nfmc: int = 5
+    fmoist_run: bool = False
+    fmoist_interp: bool = False
+    fmoist_only: bool = False
+    fmoist_freq: int = 0
+    fmoist_dt: float = 600.0
+    fmep_decay_tlag: float = 999999.0
+    ifire: int = 0
+    fire_boundary_guard: int = 8
+    fire_num_ignitions: int = 0
+    fire_ignition_ros1: float = 0.01
+    fire_ignition_start_lon1: float = 0.0
+    fire_ignition_start_lat1: float = 0.0
+    fire_ignition_end_lon1: float = 0.0
+    fire_ignition_end_lat1: float = 0.0
+    fire_ignition_radius1: float = 0.0
+    fire_ignition_start_time1: float = 0.0
+    fire_ignition_end_time1: float = 0.0
+    fire_ignition_ros2: float = 0.01
+    fire_ignition_start_lon2: float = 0.0
+    fire_ignition_start_lat2: float = 0.0
+    fire_ignition_end_lon2: float = 0.0
+    fire_ignition_end_lat2: float = 0.0
+    fire_ignition_radius2: float = 0.0
+    fire_ignition_start_time2: float = 0.0
+    fire_ignition_end_time2: float = 0.0
+    fire_ignition_ros3: float = 0.01
+    fire_ignition_start_lon3: float = 0.0
+    fire_ignition_start_lat3: float = 0.0
+    fire_ignition_end_lon3: float = 0.0
+    fire_ignition_end_lat3: float = 0.0
+    fire_ignition_radius3: float = 0.0
+    fire_ignition_start_time3: float = 0.0
+    fire_ignition_end_time3: float = 0.0
+    fire_ignition_ros4: float = 0.01
+    fire_ignition_start_lon4: float = 0.0
+    fire_ignition_start_lat4: float = 0.0
+    fire_ignition_end_lon4: float = 0.0
+    fire_ignition_end_lat4: float = 0.0
+    fire_ignition_radius4: float = 0.0
+    fire_ignition_start_time4: float = 0.0
+    fire_ignition_end_time4: float = 0.0
+    fire_ignition_ros5: float = 0.01
+    fire_ignition_start_lon5: float = 0.0
+    fire_ignition_start_lat5: float = 0.0
+    fire_ignition_end_lon5: float = 0.0
+    fire_ignition_end_lat5: float = 0.0
+    fire_ignition_radius5: float = 0.0
+    fire_ignition_start_time5: float = 0.0
+    fire_ignition_end_time5: float = 0.0
+    fire_ignition_start_x1: float = 0.0
+    fire_ignition_start_y1: float = 0.0
+    fire_ignition_end_x1: float = 0.0
+    fire_ignition_end_y1: float = 0.0
+    fire_ignition_start_x2: float = 0.0
+    fire_ignition_start_y2: float = 0.0
+    fire_ignition_end_x2: float = 0.0
+    fire_ignition_end_y2: float = 0.0
+    fire_ignition_start_x3: float = 0.0
+    fire_ignition_start_y3: float = 0.0
+    fire_ignition_end_x3: float = 0.0
+    fire_ignition_end_y3: float = 0.0
+    fire_ignition_start_x4: float = 0.0
+    fire_ignition_start_y4: float = 0.0
+    fire_ignition_end_x4: float = 0.0
+    fire_ignition_end_y4: float = 0.0
+    fire_ignition_start_x5: float = 0.0
+    fire_ignition_start_y5: float = 0.0
+    fire_ignition_end_x5: float = 0.0
+    fire_ignition_end_y5: float = 0.0
+    fire_lat_init: float = 0.0
+    fire_lon_init: float = 0.0
+    fire_ign_time: float = 0.0
+    fire_shape: int = 0
+    fire_sprd_mdl: int = 1
+    fire_crwn_hgt: float = 15.0
+    fire_ext_grnd: float = 50.0
+    fire_ext_crwn: float = 50.0
+    fire_sfc_flx: int = 0
+    fire_heat_peak: float = 0.0
+    fire_tg_ub: float = 1000.0
+    fire_smk_scheme: int = 0
+    fire_smk_peak: float = 0.0
+    fire_smk_ext: float = 50.0
+    fire_wind_height: float = 6.096
+    fire_fuel_read: int = -1
+    fire_fuel_cat: int = 1
+    fire_fmc_read: int = 1
+    fire_print_msg: int = 0
+    fire_print_file: int = 0
+    fire_fuel_left_method: int = 1
+    fire_fuel_left_irl: int = 2
+    fire_fuel_left_jrl: int = 2
+    fire_grows_only: int = 1
+    fire_upwinding: int = 9
+    fire_upwind_split: int = 0
+    fire_viscosity: float = 0.4
+    fire_lfn_ext_up: float = 1.0
+    fire_topo_from_atm: int = 1
+    fire_advection: int = 1
+    fire_test_steps: int = 0
+    fire_const_time: float = -1.0
+    fire_const_grnhfx: float = 0.0
+    fire_const_grnqfx: float = 0.0
+    fire_atm_feedback: float = 1.0
+    fire_mountain_type: int = 0
+    fire_mountain_height: float = 500.0
+    fire_mountain_start_x: float = 100.0
+    fire_mountain_start_y: float = 100.0
+    fire_mountain_end_x: float = 100.0
+    fire_mountain_end_y: float = 100.0
+    delt_perturbation: float = 0.0
+    xrad_perturbation: float = 0.0
+    yrad_perturbation: float = 0.0
+    zrad_perturbation: float = 0.0
+    hght_perturbation: float = 0.0
+    stretch_grd: bool = True
+    stretch_hyp: bool = False
+    z_grd_scale: float = 0.4
+    sfc_full_init: bool = False
+    sfc_lu_index: int = 28
+    sfc_tsk: float = 285.0
+    sfc_tmn: float = 285.0
+    fire_read_lu: bool = False
+    fire_read_tsk: bool = False
+    fire_read_tmn: bool = False
+    fire_read_atm_ht: bool = False
+    fire_read_fire_ht: bool = False
+    fire_read_atm_grad: bool = False
+    fire_read_fire_grad: bool = False
+    sfc_vegfra: float = 0.5
+    sfc_canwat: float = 0.0
+    sfc_ivgtyp: int = 18
+    sfc_isltyp: int = 7
+    fire_lsm_reinit: bool = True
+    fire_lsm_reinit_iter: int = 1
+    fire_upwinding_reinit: int = 4
+    fire_is_real_perim: bool = False
+    fire_lsm_band_ngp: int = 4
+    fire_lsm_zcoupling: bool = False
+    fire_lsm_zcoupling_ref: float = 50.0
+    fire_tracer_smoke: float = 0.02
+    fire_viscosity_bg: float = 0.4
+    fire_viscosity_band: float = 0.5
+    fire_viscosity_ngp: int = 2
+    fire_slope_factor: float = 1.0
+    fs_array_maxsize: int = 100000
+    fs_firebrand_gen_lim: int = 0
+    fs_firebrand_gen_dt: int = 5
+    fs_firebrand_gen_levels: int = 5
+    fs_firebrand_gen_maxhgt: int = 50
+    fs_firebrand_gen_levrand: bool = False
+    fs_firebrand_gen_levrand_seed: int = 1
+    fs_firebrand_gen_mom3d_dt: int = 4
+    fs_firebrand_gen_prop_diam: float = 10.0
+    fs_firebrand_gen_prop_effd: float = 10.0
+    fs_firebrand_gen_prop_temp: float = 900.0
+    fs_firebrand_gen_prop_tvel: float = 0.0
+    fs_firebrand_dens: float = 513000.0
+    fs_firebrand_dens_char: float = 299000.0
+    fs_firebrand_max_life_dt: int = 200
+    fs_firebrand_land_hgt: float = 0.15
+    fuel_crosswalk: bool = False
+    trackember: bool = False
+    sr_x: int = 0
+    sr_y: int = 0
+    fire_static: str = ""
+    fire_fuel_namelist: str = ""
+    fire_smoke: bool = False
+
 
 #: The two ways a domain's clock meets the measured terrain rules
 #: (:attr:`RunConfig.terrain_clock`).
@@ -1290,14 +1588,96 @@ MYNN_PBL_OPTION_IDENTITY: dict[str, object] = {
     "bl_mynn_edmf_tke": 0,
     # bl_mynn_mixscalars left this pin at the W4 full admission (mf-close2
     # Stage B): it is validated by its own block in validate_run_config --
-    # {0,1}, with 1 admitted only under the anchored fixture combo
-    # (bl_pbl_physics=5, mp_physics=28, bldt=0).
+    # {0,1}; 1 mixes when the microphysics carries the qn family and is
+    # inert otherwise (mynn_mixscalars_active below).
     "bl_mynn_cloudmix": 1,
     "bl_mynn_mixqt": 0,
     "bl_mynn_output": 0,
     "bl_mynn_tkeadvect": False,
     "icloud_bl": 1,
 }
+
+
+#: Microphysics schemes whose state carries the WHOLE qn family this
+#: port's mixscalars solve runs (nc/ni/nwfa/nifa, qnbca as an exact zero):
+#: the aerosol-aware Thompson scheme only.  The solve admits the key with
+#: all five of WRF's flags true or not at all (mynn_pbl_gpu.py qn_flags;
+#: the anchored oracle fixture family was generated at exactly that combo).
+MYNN_QN_FAMILY_SCHEMES: tuple[int, ...] = (28,)
+
+#: The number species WRF v4.6.1's MYNN mixes under ``bl_mynn_mixscalars=1``
+#: for each ported microphysics selector: the scalar members of the
+#: scheme's Registry package that one of mynn_tendencies' five flag-gated
+#: solves reads (``bl_mynn_mixscalars > 0 .AND. FLAG_QNI`` at :4654, qnc
+#: :4695, qnwfa :4736, qnifa :4778, qnbca :4820).  Registry.EM_COMMON
+#: package lines: thompson (8) scalar:qni,qnr; milbrandt2mom (9)
+#: qnc,qnr,qni,...; morr_two_moment (10) qni,...; wdm6scheme (16)
+#: qnn,qnc,qnr; nssl_2mom (18) qni,... through nssl2mconc; thompsonaero
+#: (28) qni,qnr,qnc,qnwfa,qnifa,qnbca; p3_1category (50) qni,...  The
+#: moist-only schemes (kessler 1, wsm6 6, and 0) carry none: there every
+#: flag is false, ``mynn_bl_driver`` hands the solves zero columns and the
+#: key is WRF's no-op.  Any scheme not listed here is a new table row, not
+#: a new code path.
+MYNN_QN_FLAG_SPECIES: dict[int, tuple[str, ...]] = {
+    0: (), 1: (), 6: (),
+    8: ("qni",), 9: ("qnc", "qni"), 10: ("qni",), 16: ("qnc",),
+    18: ("qni",), 28: ("qnc", "qni", "qnwfa", "qnifa", "qnbca"),
+    50: ("qni",),
+}
+
+
+def mynn_mixscalars_active(cfg) -> bool:
+    """Whether ``bl_mynn_mixscalars=1`` mixes anything on this configuration.
+
+    WRF v4.6.1 gates every scalar solve on the key AND the species flag
+    (``phys/module_bl_mynn.F`` mynn_tendencies: ``bl_mynn_mixscalars > 0
+    .AND. FLAG_QNI`` at :4654 and the same shape for qnc :4695, qnwfa
+    :4736, qnifa :4778, qnbca :4820), and ``mynn_bl_driver`` zeroes each
+    column whose flag is false.  This port's solve runs the whole family
+    or nothing, so the key is active only under MYNN itself with a scheme
+    in ``MYNN_QN_FAMILY_SCHEMES``; the runtime stages the family, the
+    preflight prices its storage and the bldt=0 restart invariant applies
+    in exactly that case.  Inactive is one of two things, which
+    ``validate_run_config`` tells apart with ``MYNN_QN_FLAG_SPECIES``: a
+    scheme WRF gives no number species, where the key is WRF's no-op and
+    the run records it and mixes nothing; or a scheme WRF would mix in
+    part, which is refused by name.
+    """
+    return (int(cfg.bl_mynn_mixscalars) == 1
+            and int(cfg.bl_pbl_physics) == 5
+            and int(cfg.mp_physics) in MYNN_QN_FAMILY_SCHEMES)
+
+
+def mynn_mixscalars_unported_species(cfg) -> tuple[str, ...]:
+    """The number species WRF would mix under this key that the port cannot.
+
+    Empty when the key is off, when the key is active (mp=28 carries the
+    whole family) and when the microphysics carries no number species at
+    all (WRF's no-op).  Non-empty names the concrete divergence the
+    validator refuses: WRF v4.6.1 runs the listed flag-gated solves on
+    this scheme (Thompson's qni, WDM6's qnc, ...) and this port's solve
+    cannot run a subset of the family, so a run that recorded the key
+    would claim a mixing it does not perform.
+    """
+    if int(cfg.bl_mynn_mixscalars) != 1 or int(cfg.bl_pbl_physics) != 5:
+        return ()
+    if int(cfg.mp_physics) in MYNN_QN_FAMILY_SCHEMES:
+        return ()
+    return tuple(MYNN_QN_FLAG_SPECIES.get(int(cfg.mp_physics), ()))
+
+
+def mynn_mixscalars_driver_value(cfg) -> int:
+    """The ``bl_mynn_mixscalars`` the MYNN driver is handed.
+
+    The fixture-anchored driver admits 1 only with all five qn flags true
+    (the solves it then runs are exactly WRF's).  The inert case -- key 1,
+    a microphysics with no number species -- is WRF's five skipped solves
+    on zeroed columns, which leave every tendency the driver exports
+    exactly as the key-0 path does, so the driver is handed 0 and runs
+    that path bit for bit.  The partial case never reaches the driver
+    (``validate_run_config`` refuses it, ``mynn_mixscalars_unported_species``).
+    """
+    return 1 if mynn_mixscalars_active(cfg) else 0
 
 
 #: The RUC option identity gpuwm admits, field -> (only accepted value, what
@@ -1324,6 +1704,34 @@ RUC_OPTION_IDENTITY: dict[str, object] = {
     name: value for name, (value, _why) in
     RUC_OPTION_IDENTITY_EVIDENCE.items()
 }
+
+
+def validate_scalar_pblmix_consumer(cfg) -> None:
+    """scalar_pblmix=1 needs its one implemented consumer pair.
+
+    Shared with plan review (gpuwm.physics_registry), which calls it on the
+    resolved settings so a plan is not offered that this refuses.
+    """
+    if cfg.scalar_pblmix == 1 and (cfg.bl_pbl_physics != 5
+                                   or cfg.mp_physics != 28):
+        raise NotImplementedError(
+            "scalar_pblmix=1 requires bl_pbl_physics=5 and mp_physics=28; "
+            "the implemented coupling reads MYNN exch_h and the "
+            "Thompson aerosol scalar fields nc/ni/nwfa/nifa.")
+
+
+def validate_mynn_generation_spp(cfg) -> None:
+    """The stochastic MYNN kernels exist for the WRF v4.6.1 generation only.
+
+    Shared with plan review (gpuwm.physics_registry) like
+    :func:`validate_scalar_pblmix_consumer`.
+    """
+    if cfg.bl_mynn_version == "gsd_41" and cfg.spp_pbl == 1:
+        raise ValueError(
+            "bl_mynn_version='gsd_41' with spp_pbl=1: the stochastic MYNN "
+            "kernels are specialised from the WRF v4.6.1 source only, so "
+            "the gsd_41 rows (dew flux, mixing length) would be absent from "
+            "every perturbed step while the run claimed them.")
 
 
 def validate_spp_config(cfg) -> None:
@@ -1855,6 +2263,13 @@ def soil_layer_count(cfg: RunConfig) -> int:
     is how a run produces plausible, wrong soil and no receipt of it.
     """
     scheme = int(cfg.sf_surface_physics)
+    if scheme == 0:
+        requested = cfg.num_soil_layers
+        if isinstance(requested, bool) or not isinstance(requested, int) or requested < 1:
+            raise ValueError("num_soil_layers must be a positive integer to preserve supplied inactive soil geometry")
+        # With no LSM there is no scheme-specific soil geometry to override
+        # the initializer. Keep its declared extent for I/O and restart.
+        return requested
     defined = LAND_SURFACE_SOIL_LAYERS.get(scheme)
     if defined is None:
         # module_check_a_mundo.F:3573-3576, the same fail-closed default.
@@ -2769,7 +3184,7 @@ def validate_milbrandt2_options(cfg: RunConfig) -> None:
 
 
 #: Tables whose keys merge into :class:`RunConfig` field by field.
-_RUN_CONFIG_TABLES = ("grid", "dynamics", "run")
+_RUN_CONFIG_TABLES = ("grid", "dynamics", "run", "fire")
 
 #: Every table a RunConfig TOML may legally carry.
 #:
@@ -2879,6 +3294,7 @@ def load_streaming_options(path: str | Path):
 #: identities move underneath runs that were never reconfigured.
 CONFIG_RELATIVE_FILE_KEYS: tuple[str, ...] = (
     "wif_climatology_path", "rrtmg_smoke_manifest",
+    "fire_static", "fire_fuel_namelist",
 )
 
 
@@ -2908,7 +3324,8 @@ def _anchor_config_file_paths(merged: dict, config_path: str | Path,
 
 
 def load_config(path: str | Path, *, accept_epssm_auto: bool = False,
-                child_static: bool = False) -> RunConfig:
+                child_static: bool = False,
+                native_fire_ideal: bool = False) -> RunConfig:
     """The RunConfig a legacy ``[grid]``/``[dynamics]``/``[run]`` TOML names.
 
     ``accept_epssm_auto`` admits ``epssm = "auto"`` (:data:`EPSSM_AUTO`),
@@ -3028,7 +3445,158 @@ def load_config(path: str | Path, *, accept_epssm_auto: bool = False,
     # validate_run_config, which returns its argument unchanged.
     if isinstance(merged.get("eta_levels"), list):
         merged["eta_levels"] = tuple(merged["eta_levels"])
-    return validate_run_config(RunConfig(**merged))
+    join_chem_name_lists(merged)
+    apply_chem_set_defaults(merged)
+    return validate_run_config(RunConfig(**merged),
+                               native_fire_ideal=native_fire_ideal)
+
+
+#: RunConfig's chem name lists: comma-separated strings on RunConfig, and
+#: accepted from TOML either as that string or as an array of names.
+CHEM_NAME_LIST_KEYS = ("chem_sets", "chem_sources")
+
+
+def join_chem_name_lists(values: dict) -> None:
+    """Join TOML arrays of chem names into RunConfig's string, in place."""
+    for key in CHEM_NAME_LIST_KEYS:
+        value = values.get(key)
+        if isinstance(value, (list, tuple)):
+            if not all(isinstance(v, str) for v in value):
+                raise ValueError(f"{key} must name chem sets/sources as "
+                                 f"strings, got {value!r}")
+            values[key] = ",".join(value)
+
+
+def apply_chem_set_defaults(values: dict) -> dict:
+    """Fill the chem keys a configuration leaves unset from its sets' rows.
+
+    A set whose reference scheme runs a process by default says so in its
+    file (``namelist_defaults``): the smoke set's reference, NOAA GSL's
+    RRFS-SD smoke code (the descendant of HRRR-Smoke), washes smoke out and
+    refreshes the plume every hour by default, where WRF-Chem's registry
+    defaults (``wetscav_onoff = 0``, ``plumerisefire_frq = 180``) would run
+    the smoke path with no washout and a three-hour plume.  So a bare
+    ``chem_sets = "smoke"`` runs the scheme it names; a key the
+    configuration states is never touched, so ``wetscav_onoff = 0`` still
+    turns washout off.  ``values`` is the loader's merged key table, after
+    :func:`join_chem_name_lists`; changed in place and returned.  Shared by
+    both loaders.
+
+    Refused (naming the breakage): a default for a key outside the chem
+    block (a species set must not retune the dynamics), and two active sets
+    defaulting one key to different values (the run would take whichever set
+    happened to be listed first).  Nothing else records the filled keys:
+    the resolved values are in the RunConfig every receipt already echoes.
+    """
+    sets_text = values.get("chem_sets")
+    if not sets_text:
+        return values
+    from gpuwm.chem_table import catalog, chem_names
+    try:
+        names = chem_names(sets_text, "chem_sets")
+    except ValueError:
+        return values       # validate_chem_config names the bad list
+    sets = catalog().sets
+    chosen: dict[str, tuple[object, str]] = {}
+    for name in names:
+        row = sets.get(name)
+        if row is None:
+            continue        # validate_chem_config refuses an unknown set
+        for key, value in row.namelist_defaults.items():
+            if key not in CHEM_RUN_FIELDS:
+                raise ValueError(
+                    f"chem set {name!r} defaults {key!r}, which is not a "
+                    "chem key; a species set may only default the chem "
+                    f"block ({', '.join(CHEM_RUN_FIELDS)}), or choosing a "
+                    "set would silently retune the rest of the model.")
+            if key in values:
+                continue    # stated: the configuration's own choice
+            if key in chosen and chosen[key][0] != value:
+                raise ValueError(
+                    f"chem sets {chosen[key][1]!r} and {name!r} default "
+                    f"{key} to {chosen[key][0]!r} and {value!r}; set {key} "
+                    "in the configuration, or the run would take whichever "
+                    "set is listed first.")
+            chosen.setdefault(key, (value, name))
+    for key, (value, _name) in chosen.items():
+        values.setdefault(key, value)
+    return values
+
+def apply_route_chem_sources(raw: dict, fetch_table) -> dict:
+    """Enable the boundary sources a run's meteorological source brings.
+
+    A boundary source row may name the ``[fetch]`` sources it belongs to
+    (``default_for_fetch_sources``): HRRR-Smoke's 3-D smoke for a run that
+    starts from HRRR (``hrrr``, ``hrrr-prs``).  HRRR begins every run from
+    its previous run's smoke and takes smoke in at its edges; a WOOF run
+    started from the same HRRR with smoke on and no smoke in the air or at
+    the edges would forecast an atmosphere HRRR says is smoky as clean.  So
+    when the config's ``[shared] chem_sets`` carries a row whose boundary
+    list names such a source, and its ``[fetch] source`` is one of the
+    source's, the source joins ``chem_sources`` (after the stated ones).
+
+    ``raw`` is the experiment's parsed tables (changed in place, its
+    ``[shared]`` table only); ``fetch_table`` the advisory ``[fetch]`` table
+    or None.  Both experiment loaders call this before building, from the
+    same file, so preparation and forecast resolve the same sources.
+    """
+    shared = raw.get("shared")
+    source = (fetch_table or {}).get("source") if isinstance(fetch_table, _Mapping) else None
+    if not isinstance(shared, dict) or not source or not shared.get("chem_sets"):
+        return raw
+    from gpuwm.chem_table import catalog, chem_names
+    values = dict(shared)
+    join_chem_name_lists(values)
+    try:
+        sets = chem_names(values.get("chem_sets"), "chem_sets")
+        stated = list(chem_names(values.get("chem_sources", ""), "chem_sources"))
+    except ValueError:
+        return raw      # validate_chem_config names the bad list
+    table = catalog()
+    named = {ref["source"] for row in table.species.values()
+             if any(s in sets for s in row.sets)
+             for ref in row.boundary}
+    added = [name for name in sorted(named)
+             if name in table.sources and name not in stated
+             and source in table.sources[name].default_for_fetch_sources]
+    if added:
+        shared["chem_sources"] = ",".join(stated + added)
+    return raw
+
+#: Every RunConfig field of the chem block, in declaration order: inert
+#: while ``chem_sets`` is empty, which is what lets a checkpoint or a
+#: prepared state written before the block existed be read at defaults.
+CHEM_RUN_FIELDS = (
+    "chem_sets", "chem_sources", "chem_adv_opt", "chem_mix2_off",
+    "chem_mix6_off", "chemdt", "kemit", "biomass_burn_opt",
+    "plumerisefire_frq", "dust_opt", "seas_opt", "dmsemis_opt",
+    "wetscav_onoff", "chem_conv_tr", "vertmix_onoff", "aer_ra_feedback",
+    "aer_op_opt", "dust_alpha", "dust_gamma", "dust_smtune", "dust_ustune",
+    "mynn_chem_vertmx", "fire_emission_mode", "plume_fire_properties",
+    "aerosol_mp_coupling")
+
+#: Every RunConfig field of the fire (SFIRE) block, in declaration order,
+#: appended keyword-only after CHEM_RUN_FIELDS: inert while ``ifire`` is 0
+#: (no FireCoupler is built and no fire static is read, gpuwm/core/physics.py),
+#: which is what lets a checkpoint or prepared state written before the
+#: block existed be read at defaults.
+from gpuwm.sfire_config import FIRE_CONFIG_FIELDS as FIRE_RUN_FIELDS  # noqa: E402
+
+
+def inert_fire_fields(values) -> tuple[str, ...]:
+    """The fire keys an identity or public document omits for values.
+
+    With ifire 0 no fire key is read by the forecast, so the block is
+    left out and every fire-off identity keeps the bytes it had before the
+    block existed.  fire_smoke is the one exception: it also selects the
+    bulk-smoke chem profile without a fire grid, so a True value stays (it is
+    bound through chem_sets as well).  With ifire 2 nothing is omitted.
+    """
+    get = values.get if hasattr(values, "get") else (lambda k, d=None: getattr(values, k, d))
+    if int(get("ifire", 0) or 0) != 0:
+        return ()
+    return tuple(name for name in FIRE_RUN_FIELDS
+                 if not (name == "fire_smoke" and get(name, False)))
 
 
 #: SASE's structural requirements: attribute -> (admitted value, why).
@@ -4409,7 +4977,261 @@ def validate_noah_mosaic_config(cfg) -> None:
             "(WRF module_check_a_mundo.F:505-518).")
 
 
-def validate_run_config(cfg: RunConfig) -> RunConfig:
+#: ``chem_adv_opt`` values and the module each needs (DESIGN 2.2).  1 is the
+#: positive-definite final stage the moist path already ports; 2 is WRF's
+#: monotonic limiter (``advect_scalar_mono``), admitted only when its module
+#: is in the build.
+CHEM_ADV_OPT_MODULES = {1: None, 2: "gpuwm.core.chem_advect_mono"}
+FIRE_EMISSION_MODES = ("trailing_24h_dcycle", "daily_mean_dcycle",
+                       "observed_hourly")
+PLUME_FIRE_PROPERTIES = ("frp", "landuse")
+AEROSOL_MP_COUPLINGS = ("none", "diagnose", "emission")
+
+
+def _module_in_build(name: str) -> bool:
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def validate_chem_config(cfg) -> None:
+    """The chem law (DESIGN 1.5 and 9), each refusal naming its breakage.
+
+    Inert at the default ``chem_sets = ()``: the other chem keys are then read
+    by nothing, exactly as WRF reads none of ``&chem`` with ``chem_opt = 0``,
+    so no value of them can make a run wrong and none is refused.
+    """
+    from gpuwm.chem_table import ChemTableError, chem_names
+
+    for name in ("chem_sets", "chem_sources"):
+        value = getattr(cfg, name, "")
+        if not isinstance(value, str):
+            raise ValueError(
+                f"{name} must be a comma-separated string of names, got "
+                f"{value!r}: RunConfig is echoed into JSON identity documents, "
+                "where only a string survives the round trip unchanged.")
+        try:
+            chem_names(value, name)
+        except ChemTableError as error:
+            raise ValueError(str(error)) from error
+    sets = chem_names(cfg.chem_sets, "chem_sets")
+    sources = chem_names(cfg.chem_sources, "chem_sources")
+    if not sets:
+        return
+    from gpuwm.chem_table import load_sets, process_in_build
+
+    try:
+        table = load_sets(sets, sources)
+    except ChemTableError as error:
+        raise ValueError(str(error)) from error
+    for name in ("chem_adv_opt", "kemit", "biomass_burn_opt",
+                 "plumerisefire_frq", "dust_opt", "seas_opt", "dmsemis_opt",
+                 "wetscav_onoff", "chem_conv_tr", "vertmix_onoff",
+                 "aer_ra_feedback", "aer_op_opt"):
+        value = getattr(cfg, name)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{name} must be an integer (WRF declares it an "
+                             f"integer namelist key), got {value!r}.")
+    option = cfg.chem_adv_opt
+    if option not in CHEM_ADV_OPT_MODULES:
+        raise ValueError(
+            f"chem_adv_opt={option}: only 1 (positive definite) and 2 "
+            "(monotonic) are defined for this build; WRF's 0 (unlimited), 3 "
+            "(WENO) and 4 (WENO positive definite) are not transcribed, so "
+            "the chem array would be advected by an operator nobody ported.")
+    module = CHEM_ADV_OPT_MODULES[option]
+    if module is not None and not _module_in_build(module):
+        raise ValueError(
+            f"chem_adv_opt={option}: option {option}'s kernel is not in this "
+            f"build ({module} is absent), so the monotonic limiter would be "
+            "silently replaced by the positive-definite one.")
+    if cfg.chem_conv_tr != 0 and int(getattr(cfg, "cu_physics", 0)) != 0:
+        raise ValueError(
+            f"chem_conv_tr={cfg.chem_conv_tr} with cu_physics="
+            f"{cfg.cu_physics}: WRF-Chem's subgrid convective transport of "
+            "chem (grelldrvct) is not transcribed, so with a cumulus scheme "
+            "on, chem would stay under the cloud base the scheme vents.  Set "
+            "chem_conv_tr = 0 (WRF's own option) to run without it.")
+    if cfg.wetscav_onoff > 0:
+        raise ValueError(
+            f"wetscav_onoff={cfg.wetscav_onoff}: aqueous scavenging needs a "
+            "gas-phase and cloud-chemistry mechanism, which this program does "
+            "not carry by design; wetscav_onoff < 0 selects the large-scale "
+            "washout (wetdep_ls).")
+    if cfg.dust_opt not in (0, 1, 3):
+        raise ValueError(
+            f"dust_opt={cfg.dust_opt}: only 1 (GOCART) and 3 (AFWA) are "
+            "transcribed; 4 (University of Cologne) and the others are not, "
+            "so no dust would be emitted under the name of a scheme.")
+    if cfg.dmsemis_opt != 0:
+        raise ValueError(
+            f"dmsemis_opt={cfg.dmsemis_opt}: no DMS seawater concentration "
+            "source row exists, so the DMS flux would read an absent field.")
+    if cfg.mynn_chem_vertmx and not _module_in_build(
+            "gpuwm.core.mynn_chem_mix"):
+        raise ValueError(
+            "mynn_chem_vertmx = true: the MYNN chem mixing kernel is not in "
+            "this build (gpuwm.core.mynn_chem_mix is absent), so chem would be "
+            "mixed by vertmx under a flag that says it is not.")
+    from gpuwm.core.chem_fire import RETIRED_MODES
+    if cfg.fire_emission_mode in RETIRED_MODES:
+        raise ValueError(RETIRED_MODES[cfg.fire_emission_mode])
+    for name, value, allowed in (
+            ("fire_emission_mode", cfg.fire_emission_mode,
+             FIRE_EMISSION_MODES),
+            ("plume_fire_properties", cfg.plume_fire_properties,
+             PLUME_FIRE_PROPERTIES),
+            ("aerosol_mp_coupling", cfg.aerosol_mp_coupling,
+             AEROSOL_MP_COUPLINGS)):
+        if value not in allowed:
+            raise ValueError(f"{name}={value!r}: must be one of {allowed}.")
+    if cfg.aerosol_mp_coupling != "none" and int(cfg.mp_physics) != 28:
+        raise ValueError(
+            f"aerosol_mp_coupling={cfg.aerosol_mp_coupling!r} needs "
+            f"mp_physics=28 (aerosol-aware Thompson), got {cfg.mp_physics}: "
+            "no other scheme carries the nwfa/nifa fields it writes.")
+    if cfg.aerosol_mp_coupling == "emission":
+        raise ValueError(
+            "aerosol_mp_coupling='emission' (GSL rrfs_smoke_wrapper.F90:"
+            "632-655: emitted smoke, sea-salt and dust number added to "
+            "nwfa/nifa at kemit) is not in this build: no process adds it, "
+            "so Thompson would see none of the emitted aerosol while the "
+            "configuration says it does; use 'diagnose' or 'none'.")
+    if (cfg.aerosol_mp_coupling == "diagnose"
+            and (int(getattr(cfg, "aer_init_opt", 0)) != 0
+                 or int(getattr(cfg, "wif_input_opt", 0)) != 0)):
+        raise ValueError(
+            "aerosol_mp_coupling='diagnose' with the WIF climatology "
+            "(aer_init_opt/wif_input_opt): two aerosol sources for one number "
+            "field, and the second would overwrite the first every step.")
+    missing = [key for key in table.processes if not process_in_build(key)]
+    if missing:
+        from gpuwm.chem_table import CHEM_PROCESS_MODULES
+
+        raise ValueError(
+            "chem_sets " + repr(list(sets)) + " name process(es) not in this "
+            "build: " + ", ".join(
+                f"{key} ({CHEM_PROCESS_MODULES[key]} is absent)"
+                for key in missing)
+            + "; the rows naming them would silently skip that physics.")
+    from gpuwm.chem_table import CHEM_PROCESS_MODULES
+    import importlib
+
+    for key in table.processes:
+        module = importlib.import_module(CHEM_PROCESS_MODULES[key])
+        hook = getattr(module, "refusal", None)
+        reason = hook(cfg) if hook is not None else None
+        if reason:
+            raise ValueError(f"chem process {key}: {reason}.")
+    if (cfg.aerosol_mp_coupling == "diagnose"
+            and not table.rows_for("coupling.thompson")):
+        raise ValueError(
+            f"aerosol_mp_coupling='diagnose' with chem_sets {list(sets)}: no "
+            "active row feeds get_niwfa (coupling.thompson), so nwfa/nifa "
+            "would stay the scheme's own under a flag that says the chem "
+            "species set them; select a set with dust, sea-salt, sulfate or "
+            "organic-carbon rows, or set aerosol_mp_coupling = 'none'.")
+    claims: dict[str, set[str]] = {}
+    for row in table.rows:
+        if row.exclusive_group is None:
+            continue
+        group, _, claimant = row.exclusive_group.partition(":")
+        claims.setdefault(group, set()).add(claimant or row.name)
+    for group, claimants in claims.items():
+        if len(claimants) > 1:
+            raise ValueError(
+                f"chem_sets {list(sets)} activate {sorted(claimants)} as "
+                f"claimants of one source field ({group!r}): the same "
+                "emitted mass would be added twice.")
+    catalog_sources = _catalog_sources()
+    if (table.rows_for("chem.sulfur")
+            and not any(catalog_sources[name].kind == "oxidant"
+                        for name in sources)):
+        raise ValueError(
+            "the sulfur rows (chem.sulfur) need an oxidant source (OH, H2O2, "
+            "NO3) in chem_sources, and none is enabled: SO2 would never "
+            "oxidize and sulfate would be emission-only.")
+    if cfg.aer_ra_feedback != 0 and not table.rows_for("optics.gocart"):
+        raise ValueError(
+            f"aer_ra_feedback={cfg.aer_ra_feedback} with no active row naming "
+            "optics.gocart: radiation would be handed aerosol optics nothing "
+            "computes.")
+    if cfg.aer_ra_feedback != 0:
+        # The optics and WRF's RRTMG SW band conversion are ported
+        # (gpuwm/core/chem_optics.py), but no radiation scheme in this build
+        # reads them: the batched legacy RRTMG SW engine builds WRF's neutral
+        # aer_opt=0 optics internally and has no aerosol inputs
+        # (gpuwm/core/rrtmg_legacy.py, "SW aerosol"), and neither the LW
+        # engine's tauaer nor RTE-RRTMGP is handed chem optics.  Accepting
+        # the switch would run radiation aerosol-free under a namelist that
+        # says the aerosol feeds it.
+        raise ValueError(
+            f"aer_ra_feedback={cfg.aer_ra_feedback}: aerosol-radiation "
+            "feedback is not wired in this build -- the chem optics are "
+            "computed (EXTCOF55, AOD5502D) but no radiation scheme reads "
+            "them, so radiation would run aerosol-free.  Set "
+            "aer_ra_feedback = 0.")
+    if cfg.aer_op_opt != 1 and table.rows_for("optics.gocart"):
+        raise ValueError(
+            f"aer_op_opt={cfg.aer_op_opt}: only WRF-Chem's volume "
+            "approximation (aer_op_opt = 1, module_optical_averaging.F) is "
+            "ported; the Maxwell-Garnett and exact-Mie mixing rules are not, "
+            "so the optics would silently use the volume rule.")
+    if int(cfg.km_opt) == 1 and (cfg.khdif > 0.0 or cfg.kvdif > 0.0):
+        raise ValueError(
+            f"chem with km_opt=1 and khdif={cfg.khdif}/kvdif={cfg.kvdif}: the "
+            "constant-K operator (dycore.add_diffusion_tendencies) acts on "
+            "the dry fields only, so chem would not be diffused where WRF's "
+            "rk_scalar_tend diffuses it (module_em.F, diff_opt=1 branch).")
+    # Emission frames.  The one frame provider in this build
+    # (gpuwm.chem_emission_frames, through gpuwm.chem_source_netcdf.ingest)
+    # serves extensive NetCDF sources on a cell-sum remap, the RAVE fire
+    # rows.  An enabled emission source it cannot serve (EDGAR's annual
+    # flux densities: no fetch route carries its archives and no
+    # intensive-field remap feeds the frames) passed the door and stopped
+    # the run at its first chem step, after a whole preparation, with "no
+    # source frames to read them from".
+    unserved = sorted({ref["source"] for row in table.rows
+                       for ref in row.emissions
+                       if ref["source"] in sources
+                       and catalog_sources[ref["source"]].kind == "emission"
+                       and catalog_sources[ref["source"]].remap
+                       not in ("cell_sum", "cell_sum_split")})
+    if unserved:
+        raise ValueError(
+            f"chem_sources enables emission source(s) {unserved}, but no "
+            "emission frame provider in this build can supply them (frames "
+            "come from extensive NetCDF sources on a cell-sum remap, such as "
+            "the RAVE fire rows), so the run would stop at its first chem "
+            "step; leave them out of chem_sources and the rows naming them "
+            "take no emission from them.")
+    # A data-store source (a row with an acquisition block, CAMS through the
+    # ADS) fills its rows on every forcing frame (gpuwm.chem_source_init),
+    # and the root's sealed forcing carries them as WRF-Chem's
+    # have_bcs_chem rows.  Any other boundary source has no frame fill in
+    # this build, so its rows would take their default inflow instead.
+    boundary_sources = sorted({ref["source"] for row in table.rows
+                               for ref in row.boundary
+                               if ref["source"] in sources
+                               and catalog_sources[ref["source"]].acquisition
+                               is None})
+    if boundary_sources:
+        raise ValueError(
+            f"chem_sources enables boundary source(s) {boundary_sources} for "
+            "active rows, but no forcing-frame fill for them is in this "
+            "build, so the rows would take their default inflow instead.")
+
+
+def _catalog_sources():
+    from gpuwm.chem_table import catalog
+
+    return catalog().sources
+
+
+def validate_run_config(cfg: RunConfig, *, native_fire_ideal: bool = False) -> RunConfig:
     """The RunConfig invariant battery, shared by BOTH loaders.
 
     Historically these checks lived inline in :func:`load_config`; the
@@ -4420,6 +5242,9 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
     experiment TOML fails exactly as it always has on the legacy path.
     Returns ``cfg`` unchanged on success.
     """
+    validate_fire_config(cfg)
+    if type(cfg.surface_energy_diag) is not bool:
+        raise ValueError("surface_energy_diag must be boolean")
     why = terrain_drag_refusal(
         topo_wind=cfg.topo_wind, gwd_opt=cfg.gwd_opt,
         bl_pbl_physics=cfg.bl_pbl_physics,
@@ -4474,12 +5299,19 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "k=0 pressure-gradient stencil read the three lowest half "
             "levels."
         )
-    if cfg.hybrid_opt not in (0, 1, 2):
+    hybrid_choices = (0, 1, 2, 3) if native_fire_ideal else (0, 1, 2)
+    if cfg.hybrid_opt not in hybrid_choices:
         raise ValueError(
             f"hybrid_opt must be 0 or 1 (B(eta) = eta, the Phase 1 sigma "
             f"coordinate) or 2 (WRF v4 cubic-B hybrid), got "
-            f"{cfg.hybrid_opt}."
+            f"{cfg.hybrid_opt}. The native fire-ideal initializer also "
+            "implements 3 (WRF sine-squared hybrid); the generic vertical "
+            "initializer does not produce that coefficient set."
         )
+    if native_fire_ideal and (cfg.ifire != 2 or cfg.map_proj != 0):
+        raise ValueError(
+            "fire-ideal requires ifire=2 and map_proj=0: its sounding and "
+            "Cartesian coordinates initialize the native ideal fire domain")
     if cfg.map_proj not in (0, 1, 2, 3):
         raise ValueError(
             f"map_proj must be 0 (idealized/none), 1 (Lambert conformal), "
@@ -4518,6 +5350,7 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
     validate_sase_config(cfg)
     validate_uwpbl_config(cfg)
     validate_urban_config(cfg)
+    validate_chem_config(cfg)
     require_ready_wrf_physics(
         mp_physics=cfg.mp_physics,
         sf_sfclay_physics=cfg.sf_sfclay_physics,
@@ -4825,11 +5658,7 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
                 "scalar_pblmix=1 and bl_mynn_mixscalars=1 cannot be combined: "
                 "WRF disables scalar_pblmix for MYNN scalar plume mixing "
                 "(module_check_a_mundo.F:2497-2511). Select one mixing path.")
-        if cfg.bl_pbl_physics != 5 or cfg.mp_physics != 28:
-            raise NotImplementedError(
-                "scalar_pblmix=1 requires bl_pbl_physics=5 and mp_physics=28; "
-                "the implemented coupling reads MYNN exch_h and the "
-                "Thompson aerosol scalar fields nc/ni/nwfa/nifa.")
+        validate_scalar_pblmix_consumer(cfg)
         if cfg.bldt != 0.0:
             raise NotImplementedError(
                 "scalar_pblmix=1 requires bldt=0: scalar tendencies are "
@@ -4837,15 +5666,24 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
                 "tendency manifest; a restart between PBL calls would "
                 "otherwise drop them.")
     # W4 full admission (mf-close2 Stage B): bl_mynn_mixscalars leaves the
-    # single-value identity table and is admitted at {0,1}.  The 1 arm is
-    # pinned to the combo the anchored oracle fixture family
-    # (w4-oracle-fixtures) was generated at and the runtime
-    # was wired for: MYNN itself (bl_pbl_physics=5), the one scheme whose
-    # state carries the qn family (mp_physics=28: nc/ni/nwfa/nifa), and
-    # every-step PBL cadence (bldt=0) -- the qn tendencies are held as
-    # plain-attribute extras outside the restart TENDENCY_COMPONENTS
-    # manifest, which is restart-exact only when every compute() replaces
-    # them before any read (gpuwm/core/physics.py scalar_for).
+    # single-value identity table and is admitted at {0,1}.  The 1 arm
+    # mixes under the combo the anchored oracle fixture family
+    # (w4-oracle-fixtures) was generated at and the runtime was wired
+    # for: MYNN itself (bl_pbl_physics=5) and a scheme whose state carries
+    # the whole qn family (MYNN_QN_FAMILY_SCHEMES: nc/ni/nwfa/nifa).  Under
+    # a microphysics WRF gives no number species (MYNN_QN_FLAG_SPECIES
+    # empty: 0/1/6) the key is inert, as it is in WRF (every solve is
+    # gated on its species flag; mynn_mixscalars_active): the former
+    # "requires mp_physics=28" refusal named no breakage there -- WRF
+    # mixes nothing and runs -- and is retired for those schemes.  Under a
+    # microphysics WRF mixes in PART (Thompson's qni, WDM6's qnc, ...) the
+    # key is refused by name below: this port's solve runs all five
+    # species or none, so the run would record a mixing WRF performs and
+    # it does not.  The every-step cadence (bldt=0) binds the ACTIVE case
+    # only: the qn tendencies are held as plain-attribute extras outside
+    # the restart TENDENCY_COMPONENTS manifest, which is restart-exact only
+    # when every compute() replaces them before any read
+    # (gpuwm/core/physics.py scalar_for); the inert case holds none.
     if cfg.bl_mynn_mixscalars not in (0, 1) or \
             type(cfg.bl_mynn_mixscalars) is not int:
         raise ValueError(
@@ -4862,15 +5700,22 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
                 "and no other PBL scheme reads the key -- accepting it "
                 "would record a mixing option no code performs."
             )
-        if cfg.mp_physics != 28:
+        unported = mynn_mixscalars_unported_species(cfg)
+        if unported:
             raise NotImplementedError(
-                "bl_mynn_mixscalars=1 requires mp_physics=28, got "
-                f"mp_physics={cfg.mp_physics}. The five mixed species are "
-                "the aerosol-aware Thompson qn family (nc/ni/nwfa/nifa; "
-                "qnbca has no mp=28 field and rides as an exact zero); no "
-                "other ported scheme carries them, so the solve would mix "
-                "columns that do not exist."
+                f"bl_mynn_mixscalars=1 with mp_physics={cfg.mp_physics}: WRF "
+                f"v4.6.1 mixes {', '.join(unported)} under this key on that "
+                "scheme (module_bl_mynn.F mynn_tendencies, the flag-gated "
+                "solves at :4654-4860), and this port's mixscalars solve "
+                "runs the whole nc/ni/nwfa/nifa family or nothing "
+                "(mynn_pbl_gpu.py qn_flags; config.MYNN_QN_FLAG_SPECIES). "
+                "Accepting the key would record a number-concentration "
+                "mixing WRF performs and this run does not.  Select "
+                "mp_physics=28 (the whole family), bl_mynn_mixscalars=0, "
+                "or a microphysics with no number species, where the key "
+                "is WRF's no-op and is admitted."
             )
+    if mynn_mixscalars_active(cfg):
         if cfg.bldt != 0.0:
             raise NotImplementedError(
                 f"bl_mynn_mixscalars=1 requires bldt=0, got {cfg.bldt!r}. "
@@ -5003,18 +5848,13 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "radiation couplings add QC_BL as a grid mean and would make "
             "every subgrid cloud 1/CLDFRA_BL times too thick.  Select that "
             "pair, or bl_mynn_version='wrf_461'.")
-    if cfg.bl_mynn_version == "gsd_41" and cfg.bl_mynn_mixscalars == 1:
+    if cfg.bl_mynn_version == "gsd_41" and mynn_mixscalars_active(cfg):
         raise ValueError(
             "bl_mynn_version='gsd_41' with bl_mynn_mixscalars=1: the scalar "
             "plume transport runs the mass flux from its sibling unit, which "
             "carries the v4.6.1 shallow-cumulus cloud only, so a gsd_41 run "
             "would hand radiation grid-mean plume water as in-cloud water.")
-    if cfg.bl_mynn_version == "gsd_41" and cfg.spp_pbl == 1:
-        raise ValueError(
-            "bl_mynn_version='gsd_41' with spp_pbl=1: the stochastic MYNN "
-            "kernels are specialised from the WRF v4.6.1 source only, so "
-            "the gsd_41 rows (dew flux, mixing length) would be absent from "
-            "every perturbed step while the run claimed them.")
+    validate_mynn_generation_spp(cfg)
     if cfg.mynn_sfclay_variant not in ("wrf_461", "gsl_wrf39"):
         raise ValueError(
             f"mynn_sfclay_variant={cfg.mynn_sfclay_variant!r} must be "
@@ -5447,12 +6287,20 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
                 f"{name} must be a finite non-negative constant-K "
                 f"diffusivity, got {value}."
             )
-    if cfg.km_opt in (2, 3, 4) and (cfg.khdif > 0.0 or cfg.kvdif > 0.0):
+    # Under diff_opt = 1 WRF's constant-K vertical diffusion
+    # (module_em.F vertical_diffusion_u/_v/_mp) reads kvdif whatever
+    # km_opt is, and this engine applies khdif/kvdif only under km_opt = 1
+    # (gpuwm/core/diffusion.py), so 2/3/4 beside a nonzero constant would
+    # silently drop a term WRF runs.  Under diff_opt = 2 WRF ignores both
+    # outside km_opt = 1, so WRF's own fire namelists (km_opt = 2 with
+    # khdif/kvdif set) import as written (lane/ec-sfire).
+    if (cfg.diff_opt == 1 and cfg.km_opt in (2, 3, 4)
+            and (cfg.khdif > 0.0 or cfg.kvdif > 0.0)):
         raise ValueError(
-            f"km_opt={cfg.km_opt} selects WRF turbulence mixing; "
-            "khdif/kvdif are constant-K controls for km_opt=1 and cannot "
-            "also be active."
-        )
+            f"diff_opt=1 with km_opt={cfg.km_opt}: khdif/kvdif are constant-K "
+            "controls for km_opt=1 and cannot also be active; WRF's "
+            "diff_opt=1 vertical diffusion would read kvdif, which this "
+            "engine does not run outside km_opt=1.")
     if not math.isfinite(cfg.c_k) or cfg.c_k <= 0.0:
         raise ValueError(
             f"c_k must be a finite positive TKE-closure constant, got "
@@ -5512,13 +6360,9 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             f"(WRF Registry-default rhs_ph advection), got "
             f"{cfg.h_sca_adv_order}."
         )
-    if cfg.h_sca_adv_order == 5 and (cfg.open_x or cfg.open_y):
-        raise NotImplementedError(
-            "h_sca_adv_order=5 with radiative open boundaries is not "
-            "wired: only WRF's periodic and specified rhs_ph loop bounds "
-            "are implemented (the open branch additionally needs the "
-            "boundary-row ph_old upwind terms)."
-        )
+    # Open-boundary rhs_ph (h_sca_adv_order 5 with radiative edges) is the
+    # compiled slow_geopotential_open kernel since the SFIRE port; the former
+    # refusal named exactly that missing boundary-row upwinding.
     why = advection_order_refusal(
         v_sca_adv_order=cfg.v_sca_adv_order,
         v_mom_adv_order=cfg.v_mom_adv_order,
@@ -5534,14 +6378,6 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
     # in dycore.step (which also catches nonzero terrain heights and directly
     # constructed RunConfigs): their stencils wrap unconditionally across
     # a physical boundary.
-    if (cfg.open_x or cfg.open_y) and cfg.terrain_opt != 0:
-        raise NotImplementedError(
-            "terrain_opt != 0 with open_x/open_y is not wired: the "
-            "kinematic surface boundary condition (set_w_surface / "
-            "advance_w_phi) differences the terrain height with "
-            "unconditional periodic wraps, coupling the two open "
-            "boundaries through the terrain slope."
-        )
     if cfg.zadvect_implicit and (cfg.open_x or cfg.open_y):
         raise NotImplementedError(
             "zadvect_implicit = 1 with radiative open boundaries is not "
@@ -5552,7 +6388,7 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
             "on an invented flux.  Periodic, specified and nested "
             "boundaries are wired."
         )
-    if ((cfg.open_x or cfg.open_y or cfg.specified)
+    if (cfg.km_opt == 1 and (cfg.open_x or cfg.open_y or cfg.specified)
             and (cfg.khdif > 0.0 or cfg.kvdif > 0.0)):
         raise NotImplementedError(
             "khdif/kvdif > 0 with open or specified lateral boundaries is "
@@ -5668,6 +6504,130 @@ def validate_run_config(cfg: RunConfig) -> RunConfig:
     return cfg
 
 
+
+# ---------------------------------------------------------------------------
+# [radar_heating]: radar latent heating in a deterministic forecast
+# ---------------------------------------------------------------------------
+
+from gpuwm.config_keys import KeyRow as _KeyRow, key_rows as _key_rows  # noqa: E402
+
+#: One row per key of the ``[radar_heating]`` table.  The table is OFF when
+#: absent; present, it must name its windows.
+RADAR_HEATING_KEY_ROWS = _key_rows(
+    _KeyRow("windows", "string", None,
+            "root of the heating windows, <root>/<YYYYmmddTHHMMZ>/ref.f32 per window end",
+            required=True),
+    _KeyRow("window_minutes", "number", 15.0,
+            "window length in minutes; must divide active_minutes"),
+    _KeyRow("active_minutes", "number", 60.0,
+            "forced period in minutes from the run start, pass-through after it"),
+    _KeyRow("latent_heat_period_min", "number", 20.0,
+            "NOAA dt_cond: minutes over which observed condensate is taken to form"),
+    _KeyRow("strict_suppression", "boolean", False,
+            "force observed-no-echo points to exactly zero heating after NOAA's smoothing"),
+    _KeyRow("pbl_extension", "boolean", False,
+            "heat down to the PBL top where 200 hPa of the column is observed"),
+    _KeyRow("mp_tend_lim", "number", 0.07,
+            "microphysics heating clamp in K/s while forced (HRRR's 0.07)"),
+)
+RADAR_HEATING_KEYS = frozenset(RADAR_HEATING_KEY_ROWS)
+
+
+@dataclass(frozen=True)
+class RadarHeatingConfig:
+    """The ``[radar_heating]`` table: lane 6's NOAA heating rule driven from
+    reflectivity windows for the first ``active_minutes`` of a forecast.
+
+    The forcing attaches at the run start and reads the window ending at
+    ``start + n * window_minutes`` while the clock is inside window ``n``,
+    for ``n = 1 .. active_minutes / window_minutes``; after that every
+    microphysics step is a pass-through.  There is no arrangement key: an
+    observed pre-forecast hour is "start an hour early with observed
+    windows", a nowcast is "start at the analysis with nowcast windows".
+
+    ``windows=None`` is OFF, and an OFF table leaves every document,
+    fingerprint and argv byte for byte as it was.  The attach, refusals and
+    receipt are :mod:`gpuwm.da.forecast_heating`.
+    """
+
+    windows: str | None = None
+    window_minutes: float = 15.0
+    active_minutes: float = 60.0
+    latent_heat_period_min: float = 20.0
+    strict_suppression: bool = False
+    pbl_extension: bool = False
+    mp_tend_lim: float = 0.07
+
+    @property
+    def enabled(self) -> bool:
+        return self.windows is not None
+
+    @property
+    def window_count(self) -> int:
+        return int(round(float(self.active_minutes) / float(self.window_minutes)))
+
+    def window_end_minutes(self) -> tuple[float, ...]:
+        """Window end times in minutes from the run start."""
+        return tuple(float(self.window_minutes) * n
+                     for n in range(1, self.window_count + 1))
+
+    def to_mapping(self) -> dict:
+        return {name: getattr(self, name) for name in RADAR_HEATING_KEY_ROWS}
+
+    @classmethod
+    def from_mapping(cls, table, *, source: str,
+                     base_dir: "Path | None" = None) -> "RadarHeatingConfig":
+        """Validate ``table`` (absent means OFF) against the declared rows.
+
+        A relative ``windows`` path is anchored at ``base_dir`` when one is
+        given (the config file's directory), so a moved working directory
+        cannot point a run at another case's windows.
+        """
+        if table is None:
+            return RADAR_HEATING_OFF
+        where = f"[radar_heating] of {source}"
+        if not isinstance(table, _Mapping):
+            raise ValueError(f"{where} must be a table, got {table!r}")
+        unknown = sorted(set(table) - RADAR_HEATING_KEYS)
+        if unknown:
+            raise ValueError(
+                f"{where} has unknown key(s) {unknown}; known: "
+                f"{sorted(RADAR_HEATING_KEYS)}. No key is ignored, because a "
+                "dropped heating setting would run defaults under its name")
+        if "windows" not in table:
+            raise ValueError(
+                f"{where} names no windows: a heating table without windows "
+                "would record a heated forecast whose heating never ran")
+        values = {name: row.get(table, where=where)
+                  for name, row in RADAR_HEATING_KEY_ROWS.items()}
+        windows = str(values["windows"]).strip()
+        if not windows:
+            raise ValueError(f"{where} windows is empty")
+        path = Path(windows)
+        if base_dir is not None and not path.is_absolute():
+            path = Path(base_dir) / path
+        values["windows"] = str(path)
+        for name in ("window_minutes", "active_minutes",
+                     "latent_heat_period_min", "mp_tend_lim"):
+            value = float(values[name])
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(
+                    f"{where} {name} = {values[name]!r} must be a finite "
+                    "positive number")
+            values[name] = value
+        ratio = values["active_minutes"] / values["window_minutes"]
+        if abs(ratio - round(ratio)) > 1e-9 or round(ratio) < 1:
+            raise ValueError(
+                f"{where}: window_minutes {values['window_minutes']:g} does not "
+                f"divide active_minutes {values['active_minutes']:g}; part of "
+                "the forced period would run on the model's own heating while "
+                "the record says forced")
+        return cls(**values)
+
+
+RADAR_HEATING_OFF = RadarHeatingConfig()
+
+
 def declared_key_rows() -> dict[str, dict[str, dict]]:
     """Every declared configuration key row, by the table that owns it.
 
@@ -5693,6 +6653,7 @@ def declared_key_rows() -> dict[str, dict[str, dict]]:
         "fetch": FETCH_HINT_ROWS,
         "ingest": INGEST_TABLE_ROWS,
         "simulated_radar": radar_key_rows(),
+        "radar_heating": RADAR_HEATING_KEY_ROWS,
     }
     return {table: {name: row.to_json() for name, row in rows.items()}
             for table, rows in tables.items()}

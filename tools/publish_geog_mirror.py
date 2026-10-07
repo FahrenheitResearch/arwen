@@ -59,6 +59,9 @@ _SOILGRIDS = ("ISRIC -- World Soil Information, SoilGrids250m (Hengl "
               "texture classes NCAR generated the tiles; CC BY 4.0 (ISRIC's "
               "terms for SoilGrids products since 2019), attribution "
               "required")
+_DUST_WPS = ("NCAR WPS geography distribution; exact pins captured "
+             "2026-09-30; underlying source/licence not declared in "
+             "this engine pin receipt")
 
 _PROVENANCE = {
     "topo_gmted2010_30s": (
@@ -108,6 +111,15 @@ _PROVENANCE = {
         "alternative 30-arc-second, 16-category bottom-layer soil texture",
         "NCAR WPS geography distribution; the download index does not "
         "state a separate redistribution licence"),
+    "erod": (
+        "erodible surface fractions for sand, silt and clay dust classes",
+        _DUST_WPS),
+    "clayfrac_5m": (
+        "5-arc-minute soil clay fraction for optional dust emissions",
+        _DUST_WPS),
+    "sandfrac_5m": (
+        "5-arc-minute soil sand fraction for optional dust emissions",
+        _DUST_WPS),
 }
 
 

@@ -209,6 +209,56 @@ the P3 lookup table, an ERA5 Vtable, two WRF Fortran radiation sources
 kept as transcription authorities, and the RRTMG radiation data files
 named below.
 
+The operational WRF 3.9 Thompson generation (thompson_version =
+"wrf_39_noaa", the HRRR configurations) reads four lookup tables that
+are distributed as release assets of this project, not inside the
+package, and staged by `gpuwm fetch-tables --thompson-fork` or on first
+use. They are generated from the HRRR fork of WRF's Thompson
+microphysics, NOAA GSL and NCAR work on the same public-domain WRF
+module: NOAA-EMC/HRRR tag v4.1.21 (commit
+a131d6c7f6ebf57ae3c43f198229ad6afdf4d886),
+sorc/hrrr_wrfarw.fd/WRFV3.9/phys/module_mp_thompson.F (sha256
+4d60011188443eb432294f7693beb64bdbc8f812541a15c7800013060c877283) and
+module_mp_radar.F (sha256
+08329c87604b234efab53f7986163a4f6050f58823da9099cb464163c1920f08). That
+fork's own WRFV3.9/README opens with the WRF Public Domain Notice, word
+for word the notice reproduced below, and neither source file carries a
+copyright line or a licence clause of its own. The fork's thompson_init,
+compiled unmodified, writes the tables;
+tools/thompson_fork_oracle/generate_tables.F90 calls it and
+tools/thompson_fork_oracle/build.sh builds and runs it (harness commit
+43d87c73cf72554044108c74bb647d79a415916f). The assets, each pinned in
+gpuwm/core/thompson_contract.py (FORK_TABLE_ASSETS):
+
+    thompson-wrf39-noaa-qr_acr_qg.dat            51,518,256 bytes
+      sha256 8b9b5039ec560748c6261cc9ecbc4366332473a9a1d0666ee5a7f04686abf402
+    thompson-wrf39-noaa-qr_acr_qs.dat            33,118,944 bytes
+      sha256 39b4fd363d440a867cc8c37a22ebf2651c8ffcf54f8c05ab7a6f5e753e630ac0
+    thompson-wrf39-noaa-freezeH2O.dat           254,944,848 bytes
+      sha256 28c12192251969cd79a02e08e3174f26113de51490689f728cfc44af9cf76b2c
+    thompson-wrf39-noaa-thompson_aux_tables.dat   6,164,536 bytes
+      sha256 13d304911e5322fb5bcc2a0639effc20ad5381c59f076ced2386b56f2fb441ae
+
+They are covered by the WRF notice below and
+licenses/LICENSE-WRF-public-domain.txt. PROVENANCE.md records how they
+were generated and reproduced.
+
+The HRRR CONUS static file that the HRRR configurations take their
+geography from (static-source row hrrr-conus-v4,
+gpuwm/data/static_sources/static-sources.v1.toml) is NOAA/NCEP
+operational HRRR v4 static data, a work of the United States Government
+and in the public domain. It is downloaded on first use from NCO's
+production tree,
+https://www.nco.ncep.noaa.gov/pmb/codes/nwprod/hrrr.v4.1.21/fix/conus/hrrr_geo_em.d01.nc,
+and is redistributed unmodified as an asset of the v2.8.7 release of this
+project, so the download survives NCO's version folders moving:
+
+    hrrr-conus-v4-hrrr_geo_em.d01.nc         1,112,724,420 bytes
+      sha256 a785b53fdb8493e376b88ece6e166ddd8046588dd1c0062181141bf2b012f6e2
+
+Either copy is installed only when its size and SHA-256 match these
+pins. PROVENANCE.md records its source.
+
 --------------------------------------------------------------------------
 
 RRTMG (Atmospheric and Environmental Research, Inc.)
@@ -276,6 +326,42 @@ under a different copyright line, "Copyright (c) 2015-2018, Atmospheric
 and Environmental Research and Regents of the University of Colorado".
 That text ships beside the data at gpuwm_data/data/rrtmgp/LICENSE with
 a per-file PROVENANCE.md giving URLs, tag, commit and SHA-256.
+
+--------------------------------------------------------------------------
+
+NOAA GSL smoke and dust (ccpp-physics)
+
+The smoke option's fire preparation, fire emission unit conversion,
+diurnal injection and FRP plume rise (gpuwm/core/chem_fire.py,
+gpuwm/core/chem_plumerise.py, gpuwm/core/chem_plumerise_cache.py and the
+chem_fire.cu and chem_plumerise.cu kernels) transcribe NOAA GSL's RRFS
+smoke and dust code, ccpp-physics physics/smoke_dust at commit
+3e6660c6df54e95a0871e990c2294dd397ae3860
+(https://github.com/ufs-community/ccpp-physics). That project is
+"Copyright 2017, NOAA, UCAR/NCAR CU/CIRES" and licensed under the Apache
+License, Version 2.0, the licence ArWen itself carries. Its LICENSE file
+is reproduced at licenses/NOTICE-NOAA-GSL-ccpp-physics.txt. The GOCART
+option's aerosol-aware Thompson coupling (gpuwm/core/chem_mp_coupling.py
+and the chem_mp_coupling.cu kernel) transcribes get_niwfa from the same
+project's physics/MP/Thompson/mp_thompson.F90 at the same commit. The smoke
+option's WRF-Chem transcriptions (the Freitas plume solver and the
+large-scale wet removal, from WRF v4.7.1's chem/ directory) are WRF code
+under the WRF notice above.
+
+--------------------------------------------------------------------------
+
+NOAA EMC Unified Post Processor (UPP)
+
+HRRR's MASSDEN smoke field is written by UPP's sorc/ncep_post.fd/MDLFLD.f
+as (1/RD)(P/T) times the smoke mixing ratio over 1e9, with RD = 287.04 from
+params.F (https://github.com/NOAA-EMC/UPP, commit
+1296eebb295251d0fe1cc697f47058c62d887977). The smoke option's decode
+(tools/grib1_bridge/src/chem_conversions.rs) cites those two files so a
+reader can check the field definition it inverts; the inverse is ArWen's
+own algebra and no UPP source ships with ArWen. The oracle harness
+(tools/chem_wrf471_oracle/build_source_conversion.sh) downloads the two
+pinned files at build time to compile that one statement. UPP is
+distributed under the GNU Lesser General Public License, version 3.
 
 --------------------------------------------------------------------------
 
@@ -437,6 +523,13 @@ gpuwm/core/kernels/noah_mosaic.cu transcribe the same CORE-MATH log10f
 (bc385c2, Copyright (c) 2022-2023 Alexei Sibidanov, the same MIT
 permission) for the Noah mosaic column, whose TDFCND takes LOG10 of the
 soil saturation ratio; that file too carries the copyright line and the
+permission notice beside the code.
+
+The sfire_tanhf function in gpuwm/core/kernels/sfire_libm.cuh transcribes
+CORE-MATH's correctly-rounded binary32 tanhf as glibc 2.43 carries it
+(sysdeps/ieee754/flt-32/s_tanhf.c: src/binary32/tanh/tanhf.c, b1ecd83),
+Copyright (c) 2022-2024 Alexei Sibidanov, under the same MIT permission, for
+the native SFIRE fire state; that file carries the copyright line and the
 permission notice beside the code.
 
 Both upstream copyright-year lines and the exact common permission text
@@ -780,7 +873,7 @@ below; a renderer shipped without it would satisfy clause 2 nowhere.
 
 Compiled artifacts (release bridge bundles and platform wheels)
 
-Thirty-seven Rust executables and libraries (gpuwm.bridge_assets
+Forty-two Rust executables and libraries (gpuwm.bridge_assets
 .BUNDLED_ARTIFACTS) are distributed in compiled form: as GitHub release
 bridge bundles, and staged into platform wheels at gpuwm/libexec/bridges/.
 They are built from the three bridge dependency trees and the terminal

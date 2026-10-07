@@ -1,0 +1,9 @@
+{
+  "schema": "gpuwm.chem.set.v1",
+  "name": "tracer_test",
+  "description": "Two passive tracers, no processes: the chem foundation's identity, conservation, restart, carry and boundary tests. Never a product.",
+  "wrf_chem_opt": null,
+  "wrf_tracer_opt": null,
+  "test_only": true,
+  "provenance": "ArWen test set; no WRF namelist maps to it."
+}

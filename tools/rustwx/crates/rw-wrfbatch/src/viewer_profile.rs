@@ -288,6 +288,9 @@ fn processing_name(selector: FieldSelector) -> String {
     if !selector.product.is_default() {
         return selector.key();
     }
+    if let Some(row) = crate::wrf_process::CHEM_CORE_FIELD_CATALOG.iter().find(|row| row.selector == selector) {
+        return row.store_name.to_string();
+    }
     match (selector.field, selector.vertical) {
         (F::GeopotentialHeight, V::Surface) => "orography".into(),
         (F::Temperature, V::HeightAboveGroundMeters(2)) => "temperature_2m".into(),

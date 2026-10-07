@@ -64,7 +64,7 @@ pub fn draw_colorbar(
     } else {
         presentation.divider_color
     };
-    if matches!(mode, LegendMode::Stepped | LegendMode::Categories) {
+    if matches!(mode, LegendMode::Stepped | LegendMode::Categories | LegendMode::Thresholds) {
         for i in 1..n_intervals {
             let Some(frac) = level_fraction(legend_levels, legend_levels[i]) else {
                 continue;
@@ -145,7 +145,7 @@ pub fn draw_vertical_colorbar(
     } else {
         presentation.divider_color
     };
-    if matches!(mode, LegendMode::Stepped | LegendMode::Categories) {
+    if matches!(mode, LegendMode::Stepped | LegendMode::Categories | LegendMode::Thresholds) {
         for i in 1..n_intervals {
             let Some(frac) = level_fraction(legend_levels, legend_levels[i]) else {
                 continue;
@@ -214,7 +214,7 @@ pub fn legend_color_at_rel(cmap: &LeveledColormap, mode: LegendMode, rel: f64) -
     let legend_levels = cmap.legend_levels_for_display();
     let legend_colors = cmap.legend_colors_for_display();
     match mode {
-        LegendMode::Stepped | LegendMode::Categories => {
+        LegendMode::Stepped | LegendMode::Categories | LegendMode::Thresholds => {
             stepped_color_at_rel(legend_levels, legend_colors, rel)
         }
         LegendMode::SmoothRamp if cmap.levels.len() > 1 && !cmap.colors.is_empty() => {

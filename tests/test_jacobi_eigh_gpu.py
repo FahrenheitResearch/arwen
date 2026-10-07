@@ -339,7 +339,7 @@ def test_k_outside_the_supported_range_is_refused_by_name():
     assert not supported(MIN_K - 1, np.float64)
     assert not supported(10, np.float16)
     for bad in (MIN_K - 1, MAX_K + 1):
-        with pytest.raises(JacobiEighError, match=r"supports 2 <= k <= 64"):
+        with pytest.raises(JacobiEighError, match=r"supports 2 <= k <= 256"):
             plan(bad, np.dtype(np.float64).str)
     with pytest.raises(JacobiEighError, match="float32 or float64"):
         plan(10, np.dtype(np.float16).str)
@@ -432,3 +432,149 @@ def test_the_sweep_count_is_reported_and_stays_far_below_the_cap():
     a = cp.asarray(_batch("letkf", 4096, 10, seed=9200))
     w, v, sweeps = batched_eigh(a, return_sweeps=True)
     assert 0 < sweeps < SWEEP_CAP // 2, sweeps
+
+
+# ---------------------------------------------------------------------------
+# The global-work tier: k above 64
+# ---------------------------------------------------------------------------
+#
+# Before this tier an ensemble above 64 members left this kernel for
+# cuSOLVER, which agrees to rounding but is not bit-reproducible across
+# cards.  The tier is the same source lines with the two working arrays in a
+# launcher-owned global slab, so it is held to the same battery: it
+# reconstructs, agrees with cuSOLVER where agreement is defined, converges
+# well inside the cap, and returns the same bytes run to run, slice to slice.
+
+#: The global tier's sizes: the first odd and even past the shared ceiling,
+#: two ensemble sizes a larger run would pick, and the ceiling itself.
+GLOBAL_SIZES = (65, 66, 80, 96, 128)
+GLOBAL_KINDS = ("letkf", "one_observation", "no_observation", "wide_spectrum")
+
+
+@pytest.mark.parametrize("k", GLOBAL_SIZES)
+def test_sizes_above_64_take_the_global_tier(k):
+    from gpuwm.core.jacobi_eigh import SHARED_MAX_K, plan, supported
+
+    tier = plan(k, np.dtype(np.float64).str)
+    assert k > SHARED_MAX_K and tier.global_work
+    assert ("JACOBI_GLOBAL_WORK", 1) in tier.defines
+    assert tier.matrices_per_block == 1 and tier.threads_per_matrix > 32
+    assert supported(k, np.float64) and supported(k, np.float32)
+
+
+def test_the_shared_tiers_compile_from_the_define_tuple_they_always_had():
+    """No shared tier gains the global define, so none of them changes."""
+    from gpuwm.core.jacobi_eigh import SHARED_MAX_K, plan
+
+    for k in range(2, SHARED_MAX_K + 1):
+        tier = plan(k, np.dtype(np.float64).str)
+        assert not tier.global_work
+        assert [name for name, _ in tier.defines] == [
+            "JACOBI_K", "JACOBI_TPB", "JACOBI_MPB", "JACOBI_SWEEPS",
+            "JACOBI_REAL_BYTES"]
+
+
+@pytest.mark.parametrize("k", GLOBAL_SIZES)
+@pytest.mark.parametrize("kind", GLOBAL_KINDS)
+def test_the_global_tier_reconstructs_and_agrees_with_cusolver(k, kind):
+    import cupy as cp
+    from gpuwm.core.jacobi_eigh import batched_eigh
+
+    a = _batch(kind, 16, k, seed=11000 + k)
+    device = cp.asarray(a)
+    w, v = (cp.asnumpy(x) for x in batched_eigh(device))
+
+    scale = np.abs(a).max(axis=(1, 2))
+    scale = np.where(scale > 0, scale, 1.0)
+    residual = np.abs(_matrix_function(w, v, lambda x: x) - a).max(axis=(1, 2))
+    assert (residual / scale).max() < _tolerance(k)
+    assert np.abs(np.swapaxes(v, 1, 2) @ v - np.eye(k)).max() < _tolerance(k)
+    assert np.all(np.diff(w, axis=1) >= 0.0)
+
+    wt, vt = (cp.asnumpy(x) for x in cp.linalg.eigh(device))
+    assert (np.abs(w - wt).max(axis=1) / scale).max() < _tolerance(k)
+    root = float(np.sqrt(k - 1))
+    for f in (lambda x: 1.0 / x, lambda x: root / np.sqrt(x)):
+        mine = _matrix_function(w, v, f)
+        theirs = _matrix_function(wt, vt, f)
+        fscale = np.abs(theirs).max(axis=(1, 2))
+        worst = (np.abs(mine - theirs).max(axis=(1, 2)) / fscale).max()
+        budget = _tolerance(k) * float(
+            (np.abs(wt).max(axis=1) / np.abs(wt).min(axis=1)).max())
+        assert worst < max(budget, _tolerance(k)), (kind, k, worst)
+
+
+@pytest.mark.parametrize("k", (65, 128, 256))
+def test_the_global_tier_solves_to_the_same_bytes_and_well_inside_the_cap(k):
+    """Run to run, and the measurement MAX_K rests on: 256 converges."""
+    import cupy as cp
+    from gpuwm.core.jacobi_eigh import SWEEP_CAP, batched_eigh
+
+    a = cp.asarray(_batch("letkf", 64, k, seed=12000 + k))
+    w, v, sweeps = batched_eigh(a, return_sweeps=True)
+    assert 0 < sweeps < SWEEP_CAP // 2, sweeps
+    first = [_raw(w), _raw(v)]
+    for _ in range(2):
+        assert [_raw(x) for x in batched_eigh(a)] == first
+
+
+def test_the_global_tier_is_invariant_to_the_slab_slicing(monkeypatch):
+    """A batch larger than the slab is launched in slices; no byte moves."""
+    import cupy as cp
+    from gpuwm.core import jacobi_eigh as je
+
+    k = 80
+    a = cp.asarray(_batch("letkf", 40, k, seed=13000))
+    whole = [_raw(x) for x in je.batched_eigh(a)]
+    per_matrix = je.plan(k, np.dtype(np.float64).str).global_bytes_per_matrix
+    monkeypatch.setattr(je, "GLOBAL_MIN_IN_FLIGHT", 1)
+    for matrices in (1, 3, 7):
+        monkeypatch.setattr(je, "GLOBAL_SCRATCH_BYTES", matrices * per_matrix)
+        assert [_raw(x) for x in je.batched_eigh(a)] == whole, matrices
+    monkeypatch.undo()
+    full = [cp.asnumpy(x) for x in je.batched_eigh(a)]
+    for lo, hi in ((0, 1), (13, 17), (39, 40)):
+        part = [cp.asnumpy(x) for x in je.batched_eigh(a[lo:hi])]
+        for array, piece in zip(full, part):
+            assert (np.ascontiguousarray(array[lo:hi]).tobytes()
+                    == np.ascontiguousarray(piece).tobytes()), (lo, hi)
+
+
+@pytest.mark.parametrize("k", (10, 36, 64))
+def test_the_global_tier_is_the_same_arithmetic_as_the_shared_tier(k):
+    """The tier forced onto a size the shared tier also takes: same bytes.
+
+    The strongest available evidence that the global tier is the same
+    algorithm and not a reimplementation: compiled from the same lines with
+    only the storage moved, it reproduces the shared tier bit for bit.
+    """
+    import dataclasses
+
+    import cupy as cp
+    from gpuwm.core import jacobi_eigh as je
+
+    a = cp.asarray(_batch("letkf", 96, k, seed=14000 + k))
+    shared = [_raw(x) for x in je.batched_eigh(a)]
+
+    tier = je.plan(k, np.dtype(np.float64).str)
+    threads = max(64, tier.threads_per_matrix)
+    forced = dataclasses.replace(
+        tier, global_work=True, threads_per_matrix=threads,
+        matrices_per_block=1,
+        shared_bytes_per_matrix=je._shared_per_matrix(tier.m, 8, True),
+        shared_bytes=je._shared_per_matrix(tier.m, 8, True))
+    fn = je._kernel(forced.defines, forced.shared_bytes)
+    n = int(a.shape[0])
+    w = cp.empty((n, k), dtype=cp.float64)
+    v = cp.empty((n, k, k), dtype=cp.float64)
+    status = cp.empty((n,), dtype=cp.int32)
+    je._launch_global(fn, forced, a, w, v, status, n)
+    assert int(status.min()) > 0
+    assert [_raw(w), _raw(v)] == shared
+
+
+def test_above_the_ceiling_the_refusal_names_the_measured_size():
+    from gpuwm.core.jacobi_eigh import MAX_K, JacobiEighError, plan
+
+    with pytest.raises(JacobiEighError, match="largest size measured"):
+        plan(MAX_K + 1, np.dtype(np.float64).str)

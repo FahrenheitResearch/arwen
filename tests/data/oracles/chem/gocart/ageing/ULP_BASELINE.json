@@ -1,0 +1,436 @@
+{
+  "dt1": {
+    "step1_oc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step1_bc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step1_bc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step1_oc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_oc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_bc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_bc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_oc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_oc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_bc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_bc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_oc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    }
+  },
+  "dt2": {
+    "step1_oc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step1_bc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step1_bc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step1_oc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_oc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_bc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_bc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_oc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_oc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_bc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_bc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_oc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    }
+  },
+  "dt3": {
+    "step1_oc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step1_bc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step1_bc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step1_oc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_oc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_bc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_bc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_oc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_oc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_bc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_bc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_oc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    }
+  },
+  "dt4": {
+    "step1_oc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step1_bc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step1_bc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step1_oc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_oc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_bc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_bc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_oc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_oc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_bc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_bc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_oc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    }
+  },
+  "dt5": {
+    "step1_oc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step1_bc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step1_bc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step1_oc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_oc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_bc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_bc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_oc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_oc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_bc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_bc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_oc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    }
+  },
+  "dt6": {
+    "step1_oc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step1_bc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step1_bc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step1_oc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_oc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_bc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_bc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_oc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_oc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_bc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_bc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_oc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    }
+  },
+  "dt7": {
+    "step1_oc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step1_bc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step1_bc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step1_oc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_oc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_bc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_bc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step2_oc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_oc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_bc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_bc2": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    },
+    "step3_oc1": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 64
+    }
+  }
+}

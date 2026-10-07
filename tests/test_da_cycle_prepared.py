@@ -45,24 +45,23 @@ def _main_calls(name: str) -> list:
 
 
 def test_every_leg_after_the_first_is_restored_through_the_restart_owner():
-    """``restore_leg_restart`` inside the leg loop, and nothing else joins."""
+    """Serial and packed controllers invoke the same complete-tree worker."""
     import ast
-
+    import inspect
+    from tools.da_member_leg import run_member_leg
     main = _main_body()
-    loops = [stmt for stmt in main.body
-             if isinstance(stmt, ast.For)
+    loops = [stmt for stmt in main.body if isinstance(stmt, ast.For)
              and getattr(stmt.target, "id", None) == "leg"]
     assert len(loops) == 1
-    inside = [node.lineno for node in ast.walk(loops[0])
-              if isinstance(node, ast.Call)
-              and getattr(node.func, "id", None) in (
-                  "restore_leg_restart", "write_leg_restart")]
-    assert len(inside) == 2, (
-        "the leg loop restores each trajectory through restore_leg_restart "
-        "and writes it back through write_leg_restart, once each; found "
-        f"{inside}")
-    # The retired join: a clock placed by arithmetic instead of by the
-    # checkpoint header.  Its name is gone from the driver altogether.
+    calls = [node for node in ast.walk(loops[0]) if isinstance(node, ast.Call)
+             and getattr(node.func, "id", None) == "forecast_roster"]
+    assert len(calls) == 1
+    shared = ast.parse(inspect.getsource(run_member_leg))
+    owner_calls = [node.func.id for node in ast.walk(shared)
+                   if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                   and node.func.id in ("restore_leg_restart", "write_leg_restart")]
+    assert sorted(owner_calls) == ["restore_leg_restart", "write_leg_restart"]
+    assert "jump_clock" not in inspect.getsource(run_member_leg)
     assert "jump_clock" not in _driver_source()
 
 
@@ -281,7 +280,8 @@ def test_every_staged_path_in_the_cycle_comes_from_the_stage():
              and node.left.id == "stage_root"]
     assert joins == []
     assert len(_main_calls("StagedRestarts")) == 1
-    assert len(_main_calls("write_leg_restart")) == 1
+    assert len(_main_calls("forecast_roster")) == 1
+    assert len(_main_calls("write_leg_restart")) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -609,16 +609,31 @@ def _routed_and_fused_schemes():
     return routed, fused
 
 
-def test_the_plan_probe_refuses_a_scheme_the_radar_operator_cannot_simulate():
+def test_the_plan_probe_refuses_a_scheme_the_radar_operator_cannot_simulate(
+        monkeypatch):
     """The refusal a cycle used to get after leg 0, before leg 0.
 
     Same function the leg builds its configuration with, so what is
-    checked here is what will run.
+    checked here is what will run.  No shipped scheme is fused any more
+    (P3 left the class with audit S14), so the fused scheme is a probe
+    row on the registry, the state P3 was in.
     """
+    from copy import deepcopy
+
+    import gpuwm.physics_registry as pr
+    from gpuwm.da import obsop
     from gpuwm.da.radar_assimilation import RadarAssimilationError
     from tools.da_cycle_prepared import (plan_radar_assimilation,
                                          planned_analysis_fields)
 
+    perturbed = deepcopy(pr.registry_view())
+    row = perturbed["components"]["microphysics"]["options"]["kessler-mp1"][
+        "consumers"]["radar_da"]
+    row["reflectivity_route"] = "native-not-separable"
+    row["reflectivity_route_reason"] = "a probe row, not a shipped state"
+    monkeypatch.setattr(pr, "_REGISTRY", perturbed)
+    monkeypatch.setitem(obsop.NATIVE_Z_NOT_SEPARABLE_FROM_THE_STEP, 1,
+                        "a probe scheme whose Z is fused with its step.")
     routed, fused = _routed_and_fused_schemes()
     assert routed and fused, (routed, fused)
 

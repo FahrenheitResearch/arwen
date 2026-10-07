@@ -97,9 +97,9 @@ def test_a_requested_size_the_kernel_cannot_take_is_refused_by_number():
     # ``object()`` stands in for a cupy namespace without needing a device:
     # the resolver only asks "is this numpy?" and then "does the kernel take
     # R?", and the second question is answered on the host.
-    with pytest.raises(LetkfError, match="2 <= R <= 64"):
+    with pytest.raises(LetkfError, match="2 <= R <= 256"):
         letkf._resolve_eigensolver(
-            object(), 200, np.dtype(np.float64),
+            object(), 300, np.dtype(np.float64),
             _cfg(("theta",), eigensolver="jacobi"))
 
 
@@ -107,8 +107,25 @@ def test_auto_falls_back_rather_than_refusing_when_the_kernel_cannot_take_it():
     import gpuwm.da.letkf as letkf
 
     which = letkf._resolve_eigensolver(
-        object(), 200, np.dtype(np.float64), _cfg(("theta",)))
+        object(), 300, np.dtype(np.float64), _cfg(("theta",)))
     assert which == "library"
+
+
+@pytest.mark.parametrize("members", (65, 80, 128, 256))
+def test_ensembles_above_64_members_stay_on_the_kernel(members):
+    """The cuSOLVER fallback is no longer reached between 65 and 256.
+
+    It used to be: above 64 members ``auto`` resolved to the library, whose
+    answer is not bit-reproducible across cards.  The global-work tier of
+    the project kernel now takes these sizes, under ``auto`` and under a
+    required ``jacobi`` alike.
+    """
+    import gpuwm.da.letkf as letkf
+
+    for mode in ("auto", "jacobi"):
+        assert letkf._resolve_eigensolver(
+            object(), members, np.dtype(np.float64),
+            _cfg(("theta",), eigensolver=mode)) == "jacobi"
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +177,44 @@ def test_the_two_solvers_produce_the_same_analysis():
         # The localisation guarantee is structural, not numerical: a
         # gridpoint outside every cutoff must be EXACTLY zero under both.
         assert np.array_equal(mine == 0.0, theirs == 0.0), f
+
+
+def test_an_80_member_device_analysis_runs_on_the_kernel_reproducibly():
+    """The end-to-end form of the E7 fix: R = 80 through the whole analysis.
+
+    The kernel factors every matrix (no cuSOLVER call), the increments match
+    the library route to rounding, and a repeat returns the same bytes.
+    """
+    cp = pytest.importorskip("cupy")
+
+    fields = ("theta", "qv")
+    grid, prior, obs, members, shape = _tiny_case(
+        members=80, nz=4, ny=12, nx=12, n_obs=30, fields=fields)
+    device_prior = {f: cp.asarray(v) for f, v in prior.items()}
+    device_obs = GriddedObs(
+        name=obs.name, values=cp.asarray(obs.values), errors=obs.errors,
+        simulated=cp.asarray(obs.simulated), mask=cp.asarray(obs.mask))
+
+    diag = LetkfDiagnostics()
+    with pytest.MonkeyPatch.context() as patch:
+        def no_library(*_args, **_kwargs):
+            raise AssertionError("cupy.linalg.eigh was reached at R = 80")
+        patch.setattr(cp.linalg, "eigh", no_library)
+        first = analyze(device_prior, [device_obs], grid, _cfg(fields), diag)
+        again = analyze(device_prior, [device_obs], grid, _cfg(fields))
+    assert diag.eigensolver == "jacobi"
+    assert 0 < diag.max_jacobi_sweeps < 20
+    for f in fields:
+        assert (cp.asnumpy(again[f]).tobytes()
+                == cp.asnumpy(first[f]).tobytes()), f
+
+    library = analyze(device_prior, [device_obs], grid,
+                      _cfg(fields, eigensolver="library"))
+    for f in fields:
+        mine = cp.asnumpy(first[f])
+        theirs = cp.asnumpy(library[f])
+        scale = max(float(np.abs(theirs).max()), 1e-30)
+        assert float(np.abs(mine - theirs).max()) / scale < 1e-11, f
 
 
 def test_auto_prefers_the_kernel_on_the_device():

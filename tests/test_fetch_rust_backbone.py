@@ -746,6 +746,9 @@ def test_a_resume_that_re_resolves_a_bar_records_the_new_one(tmp_path,
 def test_the_manifest_carries_the_cache_dedup_summary(tmp_path, monkeypatch):
     """Per-transfer accounting, summed over the transfers of one run."""
 
+    from test_fetch import _install_runtime_surface_inputs, _assert_runtime_surface_requests
+    runtime_calls = _install_runtime_surface_inputs(monkeypatch)
+
     _install_fake_backbone(
         monkeypatch, CERTIFIED_RECORD_BARS["hrrr-atmosphere"],
         dedup={"cache_bytes_written": 700,
@@ -758,6 +761,7 @@ def test_the_manifest_carries_the_cache_dedup_summary(tmp_path, monkeypatch):
         progress=lambda _: None)
 
     payload = json.loads(manifest.read_text(encoding="utf-8"))
+    _assert_runtime_surface_requests(runtime_calls, payload, datetime(2026, 7, 28, 5))
     # Two products in one forecast hour, so two transfers.
     assert payload["dedup"] == {
         "transfers": 2,
@@ -771,6 +775,9 @@ def test_a_record_without_a_dedup_block_still_publishes(tmp_path,
                                                         monkeypatch):
     """An older backbone reports nothing; the receipt claims nothing."""
 
+    from test_fetch import _install_runtime_surface_inputs, _assert_runtime_surface_requests
+    runtime_calls = _install_runtime_surface_inputs(monkeypatch)
+
     _install_fake_backbone(monkeypatch,
                            CERTIFIED_RECORD_BARS["hrrr-atmosphere"])
     out = tmp_path / "hrrr"
@@ -780,6 +787,7 @@ def test_a_record_without_a_dedup_block_still_publishes(tmp_path,
         progress=lambda _: None)
 
     payload = json.loads(manifest.read_text(encoding="utf-8"))
+    _assert_runtime_surface_requests(runtime_calls, payload, datetime(2026, 7, 28, 5))
     assert payload["dedup"]["transfers"] == 0
     assert payload["dedup"]["cache_bytes_written"] == 0
     assert payload["dedup"]["cache_bytes_deduplicated"] == 0
@@ -794,6 +802,9 @@ def test_a_malformed_dedup_block_is_ignored_rather_than_fatal(tmp_path,
                                                               monkeypatch):
     """A key of the wrong shape is not arithmetic; it is not counted."""
 
+    from test_fetch import _install_runtime_surface_inputs, _assert_runtime_surface_requests
+    runtime_calls = _install_runtime_surface_inputs(monkeypatch)
+
     _install_fake_backbone(
         monkeypatch, CERTIFIED_RECORD_BARS["hrrr-atmosphere"],
         dedup={"cache_bytes_written": "lots", "reference_entries": 3})
@@ -804,6 +815,7 @@ def test_a_malformed_dedup_block_is_ignored_rather_than_fatal(tmp_path,
         progress=lambda _: None)
 
     payload = json.loads(manifest.read_text(encoding="utf-8"))
+    _assert_runtime_surface_requests(runtime_calls, payload, datetime(2026, 7, 28, 5))
     assert payload["dedup"]["transfers"] == 2
     assert payload["dedup"]["cache_bytes_written"] == 0
     assert payload["dedup"]["reference_entries"] == 6

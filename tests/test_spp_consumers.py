@@ -20,6 +20,9 @@ import test_mynn_pbl as pbl
 import test_mynn_surface_water as surface
 
 DATA = Path(__file__).resolve().parents[1] / "gpuwm" / "data" / "spp"
+# The native captures ship in the gpuwm-data companion since 2.8.7
+# (gpuwm.data_assets.COMPANION_TREES); the ULP receipts stay in DATA.
+NATIVE_ZIP = "spp/native-wrf461.zip"
 NATIVE_ZIP_SHA256 = "9bc14a88c46b54547a6a19000830a3f4028fbce4b755f5bfb2648e853e4d0f4b"
 
 
@@ -28,7 +31,8 @@ def native_directory(tmp_path_factory):
     directory = os.environ.get("GPUWM_SPP_ORACLE")
     if directory:
         return Path(directory)
-    archive = DATA / "native-wrf461.zip"
+    from gpuwm.data_assets import data_path
+    archive = data_path(NATIVE_ZIP)
     assert hashlib.sha256(archive.read_bytes()).hexdigest() == NATIVE_ZIP_SHA256
     target = tmp_path_factory.mktemp("spp-native")
     with zipfile.ZipFile(archive) as source:

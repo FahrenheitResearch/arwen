@@ -471,7 +471,16 @@ def test_every_registered_source_resolves_latest_or_says_what_it_lacks():
             # would be a horizon miss, which is still a derived answer.
             refused.append(source)
             continue
-        assert cycle_grid_for(source) is not None
+        grid = cycle_grid_for(source)
+        if grid is None:
+            # Closed annual CF archives resolve their final analysis from
+            # their packaged coverage, rather than a forecast cycle grid.
+            from gpuwm import cf_archive_fetch
+            assert fetch.native_cf_fetch_contract(source) is not None
+            assert adapter.time_axis == "analysis_times"
+            metadata = cf_archive_fetch.row(source)
+            assert cycle == datetime.fromisoformat(metadata["coverage_end"])
+            assert cf_archive_fetch.validate_window(source, cycle, 0) == (cycle,)
         assert cycle <= now
         resolved.append(source)
 
@@ -1165,27 +1174,68 @@ def _fake_hrrr_product(request, *, workers, retries,
 
 
 def _install_runtime_surface_inputs(monkeypatch):
-    """Keep mocked transfers complete when the source declares extra fields.
+    """Exercise the real append/manifest path with synthetic transport bytes.
 
-    Only the generated input bytes are substituted. The shipped manifest,
-    envelope census, digest verification and frozen runtime binding still
-    determine whether a completed file resumes.
+    Only Rust transport and extraction are substituted. Actual requests
+    must match the source's product, pattern and numeric selectors, and
+    the shipped code selects one envelope, appends it and binds its digest.
+    This is a transport contract witness, not a native extraction claim.
     """
-    from gpuwm import runtime_surface_fetch
+    from gpuwm import runtime_surface_fetch, rustwx_fetch
+    from gpuwm.source_adapters import get_source_adapter
+    adapter = get_source_adapter("hrrr")
+    declared = {row[0]: row for row in adapter.runtime_surface_fields}
+    calls = []
 
-    def append(path, *, adapter, cycle, lead, host, **kwargs):
-        evidence = []
-        for name, product, selector, units, numeric in adapter.runtime_surface_fields:
-            payload = _grib2_stream(1)
-            with Path(path).open("ab") as target:
-                target.write(payload)
-            evidence.append({"field": name, "units": units, "selector": selector,
-                "numeric_selector": dict(numeric), "source_file": f"fixture-{product}-f{lead:02d}",
-                "url": "https://example.invalid/runtime-surface", "bytes": len(payload),
-                "sha256": hashlib.sha256(payload).hexdigest(), "fetch_mode": "fixture"})
-        return evidence
+    def acquire(binary, **request):
+        folder = Path(request["out"])
+        name = folder.name
+        assert name in declared
+        _, product, selector, _units, numeric = declared[name]
+        assert binary is not None
+        assert request["model"] == adapter.upstream_model_id
+        assert request["product"] == product
+        assert request["mode"] == "auto" and request["keep_idx"] is True
+        assert request["source"] in ("aws", "nomads")
+        assert Path(request["pattern_file"]).read_text().splitlines() == [selector]
+        assert len(request["hours"]) == 1
+        lead = request["hours"][0]
+        payload = _grib2_stream(2)
+        filename = f"fixture-{product}-f{lead:02d}.grib2"
+        (folder / filename).write_bytes(payload)
+        calls.append({"field": name, "binary": binary,
+                      "numeric_selector": dict(numeric), **request})
+        return {"files": [{"name": filename,
+            "grib_url": f"https://example.invalid/{request['source']}/{filename}",
+            "sha256": hashlib.sha256(payload).hexdigest(), "mode": "idx-subset"}]}
 
-    monkeypatch.setattr(runtime_surface_fetch, "append_runtime_surface_records", append)
+    def extract(path, output, numeric_selector):
+        name = Path(path).parent.name
+        assert name in declared
+        assert dict(numeric_selector) == dict(declared[name][4])
+        assert Path(path).read_bytes() == _grib2_stream(2)
+        Path(output).write_bytes(_grib2_stream(1))
+
+    monkeypatch.setattr(rustwx_fetch, "run_fetch", acquire)
+    monkeypatch.setattr(runtime_surface_fetch, "extract_runtime_record", extract)
+    return calls
+
+
+def _assert_runtime_surface_requests(calls, manifest, cycle):
+    from gpuwm.source_adapters import get_source_adapter
+    rows = get_source_adapter("hrrr").runtime_surface_fields
+    soil = [entry for entry in manifest["files"] if entry["role"] == "soil"]
+    assert sorted((call["hours"][0], call["field"]) for call in calls) == sorted(
+        (entry["forecast_hour"], row[0]) for entry in soil for row in rows)
+    by_hour = {entry["forecast_hour"]: entry for entry in soil}
+    for call in calls:
+        assert call["date"] == f"{cycle:%Y%m%d}" and call["cycle"] == cycle.hour
+        entry = by_hour[call["hours"][0]]
+        assert call["source"] == fetch.RW_FETCH_SOURCES[entry["transport"]]
+        assert entry["records"] == hrrr_transport.SOIL_RECORD_COUNT + len(rows)
+        assert len(entry["runtime_surface"]) == len(rows)
+        assert all(record["sha256"] == hashlib.sha256(_grib2_stream(1)).hexdigest()
+                   for record in entry["runtime_surface"])
 
 
 def test_fetch_hrrr_downloads_wrfnat_and_soil_products(tmp_path,
@@ -2551,6 +2601,7 @@ def test_fetch_hrrr_nomads_transport_keeps_the_contracts(tmp_path,
                                                          monkeypatch):
     """Same 561/18 record bars, same manifest discipline -- only the
     host differs, and the manifest records it per file."""
+    runtime_calls = _install_runtime_surface_inputs(monkeypatch)
     seen = []
 
     def product(request, *, workers, retries, expected_count=-1):
@@ -2580,6 +2631,7 @@ def test_fetch_hrrr_nomads_transport_keeps_the_contracts(tmp_path,
     assert all(request.index_url == request.url + ".idx"
                for request in seen)
     manifest = json.loads(manifest_path.read_text())
+    _assert_runtime_surface_requests(runtime_calls, manifest, datetime(2026, 7, 28, 5))
     assert [item["role"] for item in manifest["files"]] == [
         "atmosphere", "soil", "atmosphere", "soil", "checksums"]
     assert [item.get("transport") for item in manifest["files"]] == [
@@ -2657,6 +2709,7 @@ def test_fetch_hrrr_wait_downloads_hours_as_they_publish(tmp_path,
     """The live-cycle mode: f00 is up immediately, f01 publishes 45
     fake-seconds in; both arrive from NOMADS without a single real
     sleep, and the finished manifest is the normal complete one."""
+    runtime_calls = _install_runtime_surface_inputs(monkeypatch)
     live = _LivePublication({
         ("wrfnat", 0, "nomads"): 0.0, ("wrfprs", 0, "nomads"): 0.0,
         ("wrfnat", 1, "nomads"): 45.0, ("wrfprs", 1, "nomads"): 45.0,
@@ -2682,6 +2735,7 @@ def test_fetch_hrrr_wait_downloads_hours_as_they_publish(tmp_path,
                for url in downloaded)
     assert live.sleeps, "f01 was not up at t=0, so the fetch had to poll"
     manifest = json.loads(manifest_path.read_text())
+    _assert_runtime_surface_requests(runtime_calls, manifest, datetime(2026, 7, 28, 5))
     assert manifest["forecast_hours"] == [0, 1]
     assert [item.get("transport") for item in manifest["files"]] == [
         "nomads"] * 4 + [None]
@@ -2691,6 +2745,7 @@ def test_fetch_hrrr_wait_auto_falls_back_per_product(tmp_path,
                                                      monkeypatch):
     """Under auto, every poll round tries NOMADS first and S3 second,
     so a product NOMADS never serves still arrives -- from S3."""
+    runtime_calls = _install_runtime_surface_inputs(monkeypatch)
     live = _LivePublication({
         ("wrfnat", 0, "nomads"): 0.0, ("wrfprs", 0, "nomads"): 0.0,
         ("wrfnat", 1, "nomads"): 30.0,
@@ -2705,6 +2760,7 @@ def test_fetch_hrrr_wait_auto_falls_back_per_product(tmp_path,
         probe=live.probe, sleeper=live.sleep, clock=live.clock,
         progress=lambda line: None)
     manifest = json.loads(manifest_path.read_text())
+    _assert_runtime_surface_requests(runtime_calls, manifest, datetime(2026, 7, 28, 5))
     by_name = {item["name"]: item.get("transport")
                for item in manifest["files"]}
     assert by_name["hrrr.t05z.wrfnatf01.grib2"] == "nomads"
@@ -2720,6 +2776,7 @@ def test_fetch_hrrr_wait_polls_nomads_and_transfers_from_the_mirror(
     to transfer from the slower host is gone -- and at peak hours that
     reason cost ~20 min on a 3.4 GB request.
     """
+    runtime_calls = _install_runtime_surface_inputs(monkeypatch)
     live = _LivePublication({
         ("wrfnat", 0, "nomads"): 0.0, ("wrfprs", 0, "nomads"): 0.0,
         ("wrfnat", 0, "s3"): 0.0, ("wrfprs", 0, "s3"): 0.0,
@@ -2740,6 +2797,7 @@ def test_fetch_hrrr_wait_polls_nomads_and_transfers_from_the_mirror(
     assert any(url.startswith(fetch.HRRR_NOMADS_BASE)
                for url in live.probed)
     manifest = json.loads(manifest_path.read_text())
+    _assert_runtime_surface_requests(runtime_calls, manifest, datetime(2026, 7, 28, 5))
     by_name = {item["name"]: item.get("transport")
                for item in manifest["files"]}
     # f00 is on both, so it is mirrored; f01 is on NOMADS alone when it

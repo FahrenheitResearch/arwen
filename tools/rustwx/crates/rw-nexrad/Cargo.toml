@@ -26,6 +26,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 # rather than the zlib C shim, matching rustwx-io: this bin is built
 # --offline from the vendor closure and must not need a system zlib.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# grid-ref: placement runs in parallel over volumes and radials.
+rayon.workspace = true
 rustls.workspace = true
 rustls-rustcrypto.workspace = true
 serde.workspace = true
@@ -33,4 +35,8 @@ serde_json.workspace = true
 sha2 = "0.10"
 ureq.workspace = true
 rw-store = { path = "../rw-store" }
+# grid-ref: the model grid's projection.  The byte-parity Rust port of
+# gpuwm/static/projection.py, so a gate lands in the column
+# TargetGrid.mass_index names rather than in a second transcription's.
+static-fields = { path = "../static-fields" }
 wx-radar = { path = "../../vendor/wx-radar" }

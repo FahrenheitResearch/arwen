@@ -1,0 +1,66 @@
+{
+  "seconds": 8.986331871943548,
+  "ulp": {
+    "ebu": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 17496
+    },
+    "ztopmax": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 864
+    },
+    "steps": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 864
+    },
+    "solver_k_min": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 432
+    },
+    "solver_k_max": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 432
+    },
+    "w": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 21600
+    },
+    "t": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 21600
+    },
+    "qv": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 21600
+    },
+    "qc": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 21600
+    },
+    "qh": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 21600
+    },
+    "qi": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 21600
+    },
+    "radius": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 21600
+    }
+  },
+  "failures": []
+}

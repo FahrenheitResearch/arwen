@@ -438,7 +438,13 @@ def run_bep(state, params, *, atmosphere: Mapping, fields: Mapping,
         sfw1_urb3d=state.sfw1_urb3d, sfw2_urb3d=state.sfw2_urb3d,
         sfr_urb3d=state.sfr_urb3d, sfg_urb3d=state.sfg_urb3d,
         outputs=outputs)
-    status = out["error_flags"].max().reshape(1)
+    # The health ledger's slots are uint32 status words, and every other
+    # site reports one.  error_flags is int32 (it carries the Fortran source
+    # line, always >= 0), and cupy will not OR an int32 word into a uint32
+    # slot (TypeError, same_kind), so since ac988f1fd deferred every
+    # single-device forecast step's health reads, option 2 crashed on its
+    # first step.  The cast keeps every line number (0 .. 2**31-1).
+    status = out["error_flags"].max().reshape(1).astype(np.uint32)
 
     def refuse(line: int) -> None:
         raise RuntimeError(

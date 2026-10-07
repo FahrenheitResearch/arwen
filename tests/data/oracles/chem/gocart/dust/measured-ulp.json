@@ -1,0 +1,160 @@
+{
+  "aggregate": {
+    "chem": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 13680
+    },
+    "edust": {
+      "max_ulp": 0,
+      "n_nonzero": 0,
+      "n": 4560
+    }
+  },
+  "cases": {
+    "variant_000_step_1": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      }
+    },
+    "variant_000_step_2": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      }
+    },
+    "variant_000_step_3": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      }
+    },
+    "variant_001_step_1": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      }
+    },
+    "variant_001_step_2": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      }
+    },
+    "variant_001_step_3": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      }
+    },
+    "variant_002_step_1": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      }
+    },
+    "variant_002_step_2": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      }
+    },
+    "variant_002_step_3": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      }
+    },
+    "variant_003_step_1": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      }
+    },
+    "variant_003_step_2": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      }
+    },
+    "variant_003_step_3": {
+      "chem": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 1140
+      },
+      "edust": {
+        "max_ulp": 0,
+        "n_nonzero": 0,
+        "n": 380
+      }
+    }
+  }
+}

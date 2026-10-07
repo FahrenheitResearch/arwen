@@ -385,7 +385,7 @@ def test_the_obs_front_doors_are_reported_when_absent(monkeypatch, tmp_path):
                         lambda: tmp_path / "userdir")
 
     checks = {check.name: check for check in doctor._obs_front_door_checks()}
-    assert len(checks) == len(frontdoor.FRONT_DOORS) == 6
+    assert len(checks) == len(frontdoor.FRONT_DOORS) == 7
     for name, check in checks.items():
         assert check.status == "missing", name
         assert check.severity == doctor.SEVERITY_UNREACHABLE
@@ -432,7 +432,7 @@ def test_an_obs_front_door_that_is_present_and_current_is_verified(
                         lambda self, path: (True, "rw 0.1.0 -- --abi matches"))
 
     checks = doctor._obs_front_door_checks()
-    assert len(checks) == len(frontdoor.FRONT_DOORS) == 6
+    assert len(checks) == len(frontdoor.FRONT_DOORS) == 7
     assert all(check.status == "verified" for check in checks)
     assert doctor.blocking_gaps(checks) == []
 
@@ -552,7 +552,7 @@ def test_an_obs_front_door_that_the_bundle_carries_gets_the_one_command(
     monkeypatch.setattr(bridge_assets, "BUNDLED_ARTIFACTS", bundled)
 
     checks = doctor._obs_front_door_checks()
-    assert len(checks) == len(frontdoor.FRONT_DOORS) == 6
+    assert len(checks) == len(frontdoor.FRONT_DOORS) == 7
     for check in checks:
         assert check.status == "missing"
         assert check.action == "gpuwm fetch-bridges"
@@ -587,7 +587,7 @@ def test_an_obs_front_door_the_bundle_lacks_still_gets_the_build_route(
         if artifact.name not in doors))
 
     checks = doctor._obs_front_door_checks()
-    assert len(checks) == len(frontdoor.FRONT_DOORS) == 6
+    assert len(checks) == len(frontdoor.FRONT_DOORS) == 7
     for check in checks:
         assert check.status == "missing"
         assert check.action == doctor._OBS_FRONT_DOOR_ACTION

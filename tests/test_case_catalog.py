@@ -775,22 +775,30 @@ def test_worldwide_source_geometry_and_cadence_reach_native_creation(tmp_path, s
 
 
 def test_a_regional_case_the_route_cannot_state_is_refused_whole(tmp_path):
-    """The route reads namelists, and they have no key for this one.
+    """The route reads namelists, and the pair it writes has no row for this one.
 
-    WRF always applies the moisture pressure correction when moisture
-    exists, and its namelist cannot encode an explicit verification
-    opt-out.  A configuration requesting false would therefore run a
-    different model after the route re-imported its namelists.
+    The HRRR route prepares the tree, and its mirrored WRF arm runs, from
+    the namelist pair it emits beside the TOML.  Its renderer writes no
+    swrad_scat row, so a configuration stating swrad_scat = 1.5 would be
+    read back as WRF's 1.0: a different model from the TOML beside it.
     Publication refuses the mismatch and creates nothing.
+
+    (moist_cq = false was this example until 6ce05efd2 made the forecast
+    read it from the TOML (ROUTE_FORECAST_TOML_FIELDS), so it no longer
+    refuses.  relax_w, the example 574743358 moved the bare-configuration
+    test to, is not a catalog override.  swrad_scat is one of the
+    catalog-allowed settings the route's renderer does not write, measured
+    2026-10-07 at the 2.8.7 gate; when the renderer learns to carry it,
+    this example moves again.)
     """
     from gpuwm.hrrr_route_inputs import HrrrRouteInputError
 
     loaded = catalog.load_catalog(proposal_zip(tmp_path, document=worldwide_proposal_document()))
     output = tmp_path / "unstateable.toml"
-    with pytest.raises(HrrrRouteInputError, match="moist_cq"):
+    with pytest.raises(HrrrRouteInputError, match="swrad_scat"):
         catalog.create_case(loaded, "synthetic-import", out=output, tier="lower",
                             source_option="hrrr", vram_gib=32, now=NOW,
-                            native_overrides={"shared": {"moist_cq": False}})
+                            native_overrides={"shared": {"swrad_scat": 1.5}})
     assert not output.exists()
     assert not list(tmp_path.glob("unstateable*"))
 

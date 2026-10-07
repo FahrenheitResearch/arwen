@@ -200,9 +200,25 @@ def _atomic_savez(path: Path, arrays: dict) -> None:
 
 
 def _atomic_copy(source: Path, target: Path) -> None:
+    """Publish ``source``'s bytes at ``target``, atomically.
+
+    A hard link when both names are on one filesystem: a restart member
+    is immutable once published (the restart owner writes a new file and
+    renames it; nothing writes one in place), so a second name for the
+    same inode IS a copy that cannot diverge, and the stage removing its
+    own name later leaves the generation's intact.  The packed controller
+    writes a recovery generation at every leg boundary, and copying the
+    whole ensemble's restarts there each time was the largest file write
+    between legs.  Across filesystems it copies, as it always did.
+    """
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(target.name + ".tmp")
-    shutil.copyfile(source, tmp)
+    if tmp.exists():
+        tmp.unlink()
+    try:
+        os.link(source, tmp)
+    except OSError:
+        shutil.copyfile(source, tmp)
     os.replace(tmp, target)
 
 
@@ -241,7 +257,8 @@ def write_generation(directory: Path, *, identity: EnsembleIdentity,
                      restarts: dict, pending: dict,
                      nest: dict | None = None,
                      valid_time: str | None = None,
-                     note: str | None = None) -> dict:
+                     note: str | None = None,
+                     on_written=None, spread_repair=None) -> dict:
     """Write one generation; return the manifest that was written.
 
     ``restarts`` maps each trajectory, keyed exactly as the driver keys
@@ -276,9 +293,7 @@ def write_generation(directory: Path, *, identity: EnsembleIdentity,
     if marker.exists():
         os.replace(marker, marker.with_name(marker.name + ".superseded"))
 
-    entries = {}
-    for name in names:
-        key = trajectory_key(name)
+    def one(name):
         entry = {"restart": restart_dir(directory, name).name}
         entry.update(copy_restart_set(Path(restarts[name]),
                                       restart_dir(directory, name)))
@@ -292,7 +307,21 @@ def write_generation(directory: Path, *, identity: EnsembleIdentity,
             stale = pending_path(directory, name)
             if stale.exists():
                 stale.unlink()
-        entries[key] = entry
+        if on_written is not None:
+            # A trajectory's files are complete here; ``on_written`` lets a
+            # caller use them (a next-leg request links the pending file)
+            # before the whole generation and its manifest land.
+            on_written(name, entry)
+        return entry
+
+    # Trajectories own disjoint files, so they are written concurrently
+    # (file writes and the zip CRC release the GIL); the manifest below is
+    # still the single completion marker, written after every one landed.
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=max(1, min(32, len(names)))) as pool:
+        written = list(pool.map(one, names))
+    entries = {trajectory_key(name): entry
+               for name, entry in zip(names, written, strict=True)}
 
     manifest = {
         "schema": SCHEMA,
@@ -313,6 +342,11 @@ def write_generation(directory: Path, *, identity: EnsembleIdentity,
                      "it exactly as gpuwm run --restart continues a "
                      "run"),
     }
+    if spread_repair is not None:
+        from gpuwm.da.spread_restart import write_sidecar
+        manifest["spread_repair"] = write_sidecar(
+            directory, spread_repair, identity=identity.to_payload(),
+            elapsed_seconds=elapsed_seconds, leg_number=leg_number)
     tmp = marker.with_name(marker.name + ".tmp")
     tmp.write_text(json.dumps(manifest, indent=1), encoding="utf-8")
     os.replace(tmp, marker)
@@ -384,6 +418,9 @@ def read_generation(directory: Path, identity: EnsembleIdentity
     directory = Path(directory)
     manifest = read_manifest(directory)
     validate_resume(manifest, identity)
+    if "spread_repair" in manifest:
+        from gpuwm.da.spread_restart import read_sidecar
+        read_sidecar(directory, manifest, identity=identity.to_payload())
     restarts: dict = {}
     pending: dict = {}
     for name in trajectory_names(identity.members):

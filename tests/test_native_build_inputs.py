@@ -23,6 +23,7 @@ from pathlib import Path
 import posixpath
 import re
 import subprocess
+import tomllib
 
 import pytest
 
@@ -102,6 +103,30 @@ def test_shared_preparation_resources_follow_native_dependency_closures():
         assert "tools/preparation_resources.rs" in bridge_assets.NATIVE_BUILD_INPUTS[crate]
 
 
+def _cargo_path_dependency(manifest: Path, name: str) -> Path:
+    document = tomllib.loads(manifest.read_text(encoding="utf-8"))
+    dependency = document["dependencies"][name]
+    return (manifest.parent / dependency["path"]).resolve()
+
+
+@pytest.mark.parametrize("crate,manifest,dependency", [
+    ("tools/rw_wps", "tools/rw_wps/vendor/netcrust/Cargo.toml", "netcrust_shared"),
+    ("tools/zarr_bridge", "tools/zarr_bridge/Cargo.toml", "netcrust"),
+])
+def test_shared_netcdf_reader_and_its_cargo_dependencies_are_declared(
+        crate, manifest, dependency):
+    """A facade path cannot hide a shared reader from the reuse proof."""
+    reader = _cargo_path_dependency(REPO_ROOT / manifest, dependency)
+    cargo = reader / "Cargo.toml"
+    assert tomllib.loads(cargo.read_text(encoding="utf-8"))["package"]["name"] == "netcrust"
+    reached = [reader, *(_cargo_path_dependency(cargo, name)
+                        for name in ("netcdf-reader", "hdf5-reader"))]
+    declared = bridge_assets.NATIVE_BUILD_INPUTS[crate]
+    for path in reached:
+        relative = path.relative_to(REPO_ROOT.resolve()).as_posix()
+        assert _covered(relative, declared), (crate, relative, declared)
+
+
 def test_the_table_covers_every_outside_input_the_sources_reach():
     references = _outside_references()
     missing = {}
@@ -168,14 +193,40 @@ def history(tmp_path):
 
     git("init", "-q")
     first = commit({"tools/grib1_bridge/src/lib.rs": "a", "gpuwm/other.py": "1",
-                    "tools/arwen-tui/src/main.rs": "t", "gpuwm/tui_worker.py": "w"}, "one")
+                    "tools/arwen-tui/src/main.rs": "t", "gpuwm/tui_worker.py": "w",
+                    "tools/rustwx/vendor/netcrust/src/lib.rs": "reader1",
+                    "tools/rustwx/vendor/netcrust/vendor/hdf5-reader/src/lib.rs": "hdf51"}, "one")
     python_only = commit({"gpuwm/other.py": "2"}, "python only")
     worker = commit({"gpuwm/tui_worker.py": "w2"}, "the embedded worker")
     notice = commit({"tools/rustwx/assets/basemap/NOTICE.txt": "n2"}, "notice refresh")
+    reader = commit({"tools/rustwx/vendor/netcrust/src/lib.rs": "reader2"}, "shared reader")
+    hdf5 = commit({"tools/rustwx/vendor/netcrust/vendor/hdf5-reader/src/lib.rs": "hdf52"},
+                  "shared HDF5 reader")
     git("checkout", "-q", "-b", "side", first)
     side = commit({"gpuwm/side.py": "s"}, "side")
     return dict(repo=repo, first=first, python_only=python_only, worker=worker, side=side,
-                notice=notice)
+                notice=notice, reader=reader, hdf5=hdf5)
+
+
+@pytest.mark.parametrize("crate", ["tools/rw_wps", "tools/zarr_bridge"])
+@pytest.mark.parametrize("before,after,path", [
+    ("notice", "reader", "tools/rustwx/vendor/netcrust/src/lib.rs"),
+    ("reader", "hdf5", "tools/rustwx/vendor/netcrust/vendor/hdf5-reader/src/lib.rs"),
+])
+def test_shared_reader_changes_refuse_mapped_and_zarr_reuse(
+        history, crate, before, after, path):
+    repo = history["repo"]
+    assert bridge_assets.native_input_difference(
+        repo, crate, history["first"], history["python_only"]) is None
+    reason = bridge_assets.native_input_difference(
+        repo, crate, history[before], history[after])
+    assert reason is not None and path in reason
+    payload = b"junk " + MARKER + history[before].encode() + b" tail"
+    with pytest.raises(bridge_assets.BridgeAssetError, match=re.escape(path)):
+        bridge_assets.verify_source_revision(
+            payload, expected=history[after], label=crate,
+            equivalent=lambda built: bridge_assets.native_input_difference(
+                repo, crate, built, history[after]))
 
 
 def test_a_packed_data_file_does_not_force_a_rebuild(history):

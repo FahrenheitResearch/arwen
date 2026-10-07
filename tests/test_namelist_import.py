@@ -25,6 +25,7 @@ import gpuwm.cli as cli
 from gpuwm.physics_compat import CONSTANT_DOWNWARD_LONGWAVE_ACK
 from gpuwm.experiment import DEFAULT_COLUMN_CHUNK, load_experiment
 from gpuwm.namelist_import import (GF_SCHEME_GENERATION_NOTICE,
+                                   MYNN_MIXSCALARS_DEFAULT_NOTICE,
                                    SubstitutionReport, import_namelists,
                                    parse_namelist)
 from gpuwm.native_wrf_contract import validate_native_lambert_contracts
@@ -1894,6 +1895,51 @@ def test_mynn_mixing_length_and_scalar_diffusion_import_without_substitution(tmp
         assert domain.run.bl_mynn_mixscalars == 0
     assert "bl_mynn_mixlength = 2" in text
     assert "scalar_pblmix = 1" in text
+    # The omitted key took the v4.6.1 Registry default, and the import
+    # says so: v4.7.x defaults it to 1 and is indistinguishable here.
+    assert MYNN_MIXSCALARS_DEFAULT_NOTICE in report.notices
+    assert "Registry.EM_COMMON:2479" in report.format()
+
+
+def test_mynn_mixscalars_default_notice_names_the_omission_only(tmp_path):
+    base = INPUT_TEXT.replace(" mp_physics = 55, 55,", " mp_physics = 28, 28,")
+    base = base.replace(" bl_pbl_physics = 11, 11,", " bl_pbl_physics = 5, 5,")
+    base = base.replace(" sf_sfclay_physics = 91, 91,", " sf_sfclay_physics = 5, 5,")
+    # Stated explicitly (either value): the namelist chose, no notice.
+    for value in (0, 1):
+        inp = base.replace(" mp_physics = 28, 28,",
+                           f" mp_physics = 28, 28,\n bl_mynn_mixscalars = {value},")
+        text, report = import_namelists(
+            *_pair(tmp_path, inp=inp), name=f"mynn-mixscalars-{value}")
+        assert MYNN_MIXSCALARS_DEFAULT_NOTICE not in report.notices
+        exp = _load(tmp_path, text, f"mynn-mixscalars-{value}.toml")
+        assert {d.run.bl_mynn_mixscalars for d in exp.domains} == {value}
+    # A non-MYNN namelist that omits the key gets no MYNN notice.
+    _, report = import_namelists(*_pair(tmp_path, inp=INPUT_TEXT), name="ysu-plain")
+    assert MYNN_MIXSCALARS_DEFAULT_NOTICE not in report.notices
+
+
+def test_hrrr_fork_namelist_omits_mixscalars_and_imports_hrrr_mixing(tmp_path):
+    """The operational HRRR namelist (V3.9 line, no bl_mynn_mixscalars key)
+    imports as HRRR runs: scalar_pblmix = 1 diffuses the aerosols, the
+    MYNN plume key stays 0, and the receipt names the omitted default."""
+    from gpuwm.fortran_namelist import parse_namelist
+    path = Path(__file__).parent / "fixtures/namelist/hrrr_wrf-v4.1.21.nl"
+    physics = parse_namelist(path)["physics"]
+    assert "bl_mynn_mixscalars" not in physics
+    assert physics["scalar_pblmix"][0] == 1
+    assert physics["mp_physics"][0] == 28
+    assert physics["bl_pbl_physics"][0] == 5
+    inp = INPUT_TEXT.replace(" mp_physics = 55, 55,",
+                             " mp_physics = 28, 28,\n scalar_pblmix = 1,")
+    inp = inp.replace(" bl_pbl_physics = 11, 11,", " bl_pbl_physics = 5, 5,")
+    inp = inp.replace(" sf_sfclay_physics = 91, 91,", " sf_sfclay_physics = 5, 5,")
+    text, report = import_namelists(*_pair(tmp_path, inp=inp), name="hrrr-mixing")
+    exp = _load(tmp_path, text, "hrrr-mixing.toml")
+    for domain in exp.domains:
+        assert domain.run.scalar_pblmix == 1
+        assert domain.run.bl_mynn_mixscalars == 0
+    assert MYNN_MIXSCALARS_DEFAULT_NOTICE in report.notices
 
 
 def test_wrf3x_mynn_tkebudget_spelling_imports_the_gsd41_generation(tmp_path):

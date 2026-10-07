@@ -70,8 +70,9 @@ The lake module was added on 2026-10-03. Recordings without a lake reading
 are partial again. Its production loader on RTX 5090 with NVRTC 13.4.92
 read 4,720 B for initialization and 14,224 B for stepping; that platform's
 existing recording includes the new module. RTX PRO 6000 Blackwell Server
-with NVRTC 12.8.93 read 4,720 B and 14,400 B in the two-card oracle run;
-the partial recording below raises the module ceiling to that reading.
+with NVRTC 12.8.93 read 4,720 B and 14,400 B in the two-card oracle run.
+On 2026-10-05 the column arrays moved to a device arena and the RTX 5090
+re-read 0 B and 1,240 B; the PRO 6000 reading of the old source is retired.
 
 COMPLETE is a claim about the ``.cu`` files that compile ALONE, and those
 are the whole key domain of a ``frames`` mapping: both readers --
@@ -722,6 +723,16 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         'pd_vertical_sl': 0,
         'rrtmg_smoke_manifest': 0,
         'upper_wind_limiter': 0,
+        # The coupled fire's standalone units (lane/ec-sfire), read
+        # 2026-10-06 with `tools/vram_reserve_probe.py frames` on node-4's
+        # RTX 5070 Ti (sm_120), CuPy 14.2.0, nvidia-cuda-nvrtc 13.4.92,
+        # through the production loader: 0 B each.  The same reading
+        # reproduced every other row of this recording to the byte.  The
+        # other six fire units never compile alone (UNMEASURED_KERNEL_MODULES).
+        'chem_sfire': 0,
+        'sfire_coupling': 0,
+        'sfire_ideal': 0,
+        'sfire_ideal_atmos': 0,
         # Initialization-only parameter-table scaler, driver attributes
         # read through the production loader on 2026-10-04, CuPy 14.2.0,
         # NVRTC 13.4.92 (CL-38855100), -std=c++17: 0 B local, 16 registers,
@@ -738,8 +749,12 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         'ensemble_stochastic': 0,
         'ruc_spp': 0,
         # WRF lake through the production --fmad=false loader, 2026-10-03:
-        # init 4,720 B and step 14,224 B on this card and compiler.
-        'lake': 14224,
+        # init 4,720 B and step 14,224 B on this card and compiler, with the
+        # column arrays in the local frame.  Re-read 2026-10-05 after they
+        # moved to the device arena (kernels/lake_support.cuh): init 0 B,
+        # step 1,240 B (box F, RTX 5090, CuPy 14.2.0, NVRTC 13.4, through
+        # the production loader); every oracle word unchanged.
+        'lake': 1240,
         # horizontal.cu: fused RH adds 0 B; unit maximum stays 16 B, NVRTC 13.4.92.
         'horizontal': 16,
         # thompson_cold_start.cu (the card closure) and the test-only
@@ -753,8 +768,57 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         # REAL units re-read after IEEE neighbor repair, 2026-10-01.
         'real_init': 0,
         'real_init_math': 0,
+        # The chem program's standalone kernels, read 2026-09-30 on
+        # weather-node-2's RTX 5090 through gpuwm.core.kernels.load_module
+        # in a venv of cupy-cuda13x 14.2.0 and nvidia-cuda-nvrtc 13.4.92
+        # (read_compile_platform() == ('120', '13.4.92')); the same pass
+        # at nvidia-cuda-nvrtc 13.4.59 read every value identically
+        # (lane/aq-gocart; lane/aq-core's chem kernels are entered below
+        # from its own read, which the same pass reproduced, and so are
+        # the dycore-host speed lane's four units).  The same pass on
+        # weather-node-1's RTX 4090 (sm_89, NVRTC 13.0.48) is
+        # SM89_NVRTC_13_0_48 below.
+        'chem_ageing': 0,
+        'chem_drydep_gocart': 0,
+        'chem_dust': 0,
+        'chem_inventory': 0,
+        'chem_mp_coupling': 0,
+        'chem_optics': 1648,
+        'chem_rrtmgp_aerosol': 0,
+        'chem_seasalt': 0,
+        'chem_settling': 0,
+        'chem_sulfur': 32,
+        # lane/aq-cams, read 2026-09-30 on weather-node-2's RTX 5090 with
+        # tools/vram_reserve_probe.py frames (NVRTC 13.4.92, CL-38855100);
+        # the same kernel reads 0 B on weather-node-1's RTX 4090 (sm_89).
+        'chem_drydep_wesely': 0,
         'acoustic': 544,
         'advection': 0,
+        # The chem program's kernels (lane/aq-core), read 2026-09-30 on
+        # this box at this NVRTC with the frames reader: every entry point
+        # 0 B except chem_vertmx, whose two Thomas recurrences are the only
+        # per-level arrays in any chem kernel: 2,048 B at its unspecialized
+        # CHEM_NZ = 256 and exactly 8 B a level at every bound read (11, 30,
+        # 49, 59, 96, 128, 129, 200, 256), so nothing reserved through 128
+        # levels.  The same six read the same bytes on weather-node-1's RTX
+        # 4090 (sm_89, NVRTC 13.4).  mono_advection sits in order below.
+        'chem_bdy': 0,
+        # The smoke lane's three units (lane/aq-smoke), read 2026-09-30 on
+        # this box and on weather-node-1's RTX 4090 (sm_89, NVRTC 13.4.92)
+        # with the same frames reader, every entry point equal on both:
+        # chem_fire 64 B (its fire-type classifier's 16 group sums),
+        # chem_plumerise 0 B -- the Freitas plume state lives in a global
+        # workspace slice per fire column (it was a 93 KB frame) -- and
+        # chem_wetdep_ls 0 B.  chem_plumerise runs unflushed through NVRTC
+        # directly (chem_plumerise_cache.PLUME_COMPILE_OPTIONS); that image
+        # reads 0 B for all three of its entries too (sm_89).
+        'chem_fire': 64,
+        'chem_ledger': 0,
+        'chem_outputs': 0,
+        'chem_plumerise': 0,
+        'chem_prep': 0,
+        'chem_vertmx': 2048,
+        'chem_wetdep_ls': 0,
         'coriolis_map': 0,
         'diagnostics': 0,
         'diff6': 0,
@@ -813,6 +877,7 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
         'microphysics_validation': 0,
         'milbrandt2': 2048,
         'milbrandt2_zet': 0,
+        'mono_advection': 0,
         'morrison': 5120,
         'myjpbl': 9232,
         'myjsfc': 0,
@@ -931,6 +996,17 @@ SM120_NVRTC_13_4_92 = KernelFrameRecording(
 # The exact production source of the measured parameter-table shader.
 PHYSICS_PARAMS_MEASURED_SOURCE_SHA256 = (
     "84d8f6741e1ea69c6bd48f7ef7589526d09382edf0c213a8a4ffbbc8072eeaca")
+
+# Composed sources read through actual loaded modules during the same
+# completed forecast as the two SM120_NVRTC_13_4_92 rows above.
+# pd_vertical_sl was re-read 2026-10-06 after its production faces at
+# Courant <= 1 kept the upwind flux (lane/ec-tracer-mass): RTX 5090
+# (box L), CuPy 14.2.0, nvidia-cuda-nvrtc 13.4.92, through the production
+# loader with `tools/vram_reserve_probe.py frames`: 0 B, as before.
+DYCORE_FRAME_MEASURED_SOURCE_SHA256 = MappingProxyType({
+    "pd_vertical_sl": "929291a52c94c01fc7a3c648d867e26f0339b84865a24445911d8f7b2f862222",
+    "upper_wind_limiter": "e9b862f461fbb18827ec6768ae7517020d55e20ba12683fa11b626fc119dfe6c",
+})
 
 #: A167: sm_120 at NVRTC 12.9.86, the compiler of the default gpuwm[gpu]
 #: extra (cupy-cuda12x[ctk], RESOLVED_TOOLCHAIN_PINS) and of the shipped
@@ -1291,14 +1367,10 @@ SM89_NVRTC_13_4_59_COLD_START = KernelFrameRecording(
 )
 
 KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
-    # Production loader, final WRF lake source, 2026-10-03. Both cards
-    # matched every native 300-step oracle word at this compiler profile.
-    KernelFrameRecording(
-        box='box-e', device='NVIDIA RTX PRO 6000 Blackwell Server Edition',
-        compute_capability='120', nvrtc_build='12.8.93',
-        platform_family='linux', measured='2026-10-03', complete=False,
-        frames=MappingProxyType({'lake': 14400}),
-    ),
+    # The 2026-10-03 RTX PRO 6000 / NVRTC 12.8.93 lake reading (14,400 B)
+    # described the local-frame source that the device arena replaced on
+    # 2026-10-05, so it is retired rather than kept as a ceiling for code
+    # that no longer exists; that platform re-reads lake on its next box.
     # gp-libm64 records only its new grading unit on the measured compiler.
     KernelFrameRecording(
         box='node-2', device='NVIDIA GeForce RTX 5090',
@@ -1482,6 +1554,82 @@ KERNEL_LOCAL_FRAME_RECORDINGS: tuple[KernelFrameRecording, ...] = (
     SM89_NVRTC_13_4_92,
     SM120_VERT_NVRTC_13_4_59,
     SM89_VERT_NVRTC_13_4_59,
+
+    # A FIFTH COMPILE PLATFORM, partial on purpose: sm_89 at NVRTC
+    # 13.0.48, weather-node-1's RTX 4090 (CuPy 14.0.1), read 2026-09-30
+    # by lane/aq-gocart with the same instrument (load_module, then the
+    # widest local_size_bytes over each module's exported __global__
+    # symbols, zero launches) over the chem program's standalone modules
+    # only.  Two differ from sm_120 at 13.4.92 and RAISE the ceiling:
+    # chem_dust 72 B (AFWA's chem_dust_afwa; 0 B on sm_120) and
+    # chem_optics 1,904 B (1,648 B on sm_120).  No other module was read.
+    KernelFrameRecording(
+        box='weather-node-1',
+        device='NVIDIA GeForce RTX 4090',
+        compute_capability='89',
+        nvrtc_build='13.0.48',
+        platform_family='linux',
+        measured='2026-09-30',
+        complete=False,
+        frames=MappingProxyType({
+            'chem_ageing': 0,
+            'chem_bdy': 0,
+            'chem_drydep_gocart': 0,
+            'chem_dust': 72,
+            'chem_inventory': 0,
+            'chem_ledger': 0,
+            'chem_mp_coupling': 0,
+            'chem_optics': 1904,
+            'chem_outputs': 0,
+            'chem_prep': 0,
+            'chem_rrtmgp_aerosol': 0,
+            'chem_seasalt': 0,
+            'chem_settling': 0,
+            'chem_sulfur': 32,
+        }),
+    ),
+
+    # A SIXTH COMPILE PLATFORM, partial on purpose: sm_89 at NVRTC 13.4.59
+    # (CuPy 14.2.0, CUDA runtime 13.2), weather-node-1's RTX 4090, read
+    # 2026-10-01 on the integrated chem line (lane/aq-integrate) with
+    # tools/vram_reserve_probe.py frames: load_module, then the widest
+    # local_size_bytes over each module's exported __global__ symbols, zero
+    # launches.  Every chem program translation unit, smoke, GOCART and CAMS
+    # included, and nothing else.  Each equals its sm_120 / 13.4.92 row above
+    # except chem_dust (72 B, AFWA's entry) and chem_optics (1,904 B), the
+    # same two the 13.0.48 reading raised; chem_vertmx is its unspecialized
+    # CHEM_NZ = 256 frame, as on sm_120.
+    KernelFrameRecording(
+        box='weather-node-1',
+        device='NVIDIA GeForce RTX 4090',
+        compute_capability='89',
+        nvrtc_build='13.4.59',
+        platform_family='linux',
+        measured='2026-10-01',
+        complete=False,
+        frames=MappingProxyType({
+            'chem_ageing': 0,
+            'chem_bdy': 0,
+            'chem_drydep_gocart': 0,
+            'chem_drydep_wesely': 0,
+            'chem_dust': 72,
+            'chem_fire': 64,
+            'chem_inventory': 0,
+            'chem_ledger': 0,
+            'chem_mp_coupling': 0,
+            'chem_optics': 1904,
+            'chem_outputs': 0,
+            'chem_plumerise': 0,
+            'chem_prep': 0,
+            'chem_rrtmgp_aerosol': 0,
+            'chem_seasalt': 0,
+            'chem_settling': 0,
+            'chem_sulfur': 32,
+            'chem_vertmx': 2048,
+            'chem_wetdep_ls': 0,
+            'mono_advection': 0,
+        }),
+    ),
 )
 
 

@@ -1,0 +1,73 @@
+{
+  "bytes": 956,
+  "counts": {
+    "unsupported_parameter": 2
+  },
+  "created_at": "2026-09-30T19:02:15",
+  "inputs": [
+    {
+      "name": "2025/20250730/HourlyData_2025073021.dat",
+      "sha256": "d81166d6e9e214df2aa91fd6b51c4e66c184754706f46757f634f001111ac3d0",
+      "site_name": "2025/20250730/Monitoring_Site_Locations_V2.dat",
+      "site_sha256": "d653f079dca9f45f2d04b2d428cd0054b188a92666c1f5645b02968f74bedf96"
+    }
+  ],
+  "latency_verified": false,
+  "reports": [
+    {
+      "station_id": "000010601",
+      "valid_time": "2025-07-30T21:00:00",
+      "values": {
+        "ozone_mole_fraction": 30.0
+      }
+    },
+    {
+      "station_id": "000020104",
+      "valid_time": "2025-07-30T21:00:00",
+      "values": {
+        "no2_mole_fraction": 0.3,
+        "ozone_mole_fraction": 32.0,
+        "pm25_mass_concentration": 11.5,
+        "so2_mole_fraction": 0.6
+      }
+    },
+    {
+      "station_id": "000020301",
+      "valid_time": "2025-07-30T21:00:00",
+      "values": {
+        "no2_mole_fraction": 0.2
+      }
+    }
+  ],
+  "rows": 6,
+  "rows_by_variable": {
+    "no2_mole_fraction": 2,
+    "ozone_mole_fraction": 2,
+    "pm25_mass_concentration": 1,
+    "so2_mole_fraction": 1
+  },
+  "schema": "gpuwm-obs.airnow-table.v1",
+  "sha256": "35b4a0f765a0d562b2f628ab1e3c048b961a8df45eceb381b2b7d583023484fc",
+  "stations": [
+    {
+      "elevation_m": 38.7,
+      "latitude": 53.3047,
+      "longitude": -60.3644,
+      "station_id": "000010601"
+    },
+    {
+      "elevation_m": 19.8,
+      "latitude": 46.2406,
+      "longitude": -63.1306,
+      "station_id": "000020104"
+    },
+    {
+      "elevation_m": 33.9,
+      "latitude": 46.4783,
+      "longitude": -63.98689999999999,
+      "station_id": "000020301"
+    }
+  ],
+  "table_schema": "gpuwm-obs.table.v2",
+  "time_basis": "utc"
+}

@@ -98,8 +98,16 @@ def test_actual_hrrr_active_diagnostics_are_not_silently_imported(tmp_path):
     source = _actual_hrrr_sections()
     assert source['time_control']['gsd_diagnostics'] == [1]
     text = _supported_actual_ruc_input().replace('gsd_diagnostics = 0', 'gsd_diagnostics = 1')
-    with pytest.raises(ValueError, match='gsd_diagnostics'):
-        import_namelists(*_pair(tmp_path, inp=text))
+    # Output only, so it imports -- but as a declared difference the
+    # report and the emitted TOML both print, never silently.
+    _assert_declared_diagnostics(*import_namelists(*_pair(tmp_path, inp=text)))
+
+
+def _assert_declared_diagnostics(toml_text, report):
+    declared = {s.key: s for s in report.substitutions if s.reason}
+    assert 'not written' in declared['gsd_diagnostics'].reason
+    assert '#   gsd_diagnostics 1' in toml_text
+    assert 'gsd_diagnostics' in report.format()
 
 
 def _import(tmp_path, *, fork, filename):
@@ -149,10 +157,9 @@ def test_the_fork_signature_does_not_change_a_non_ruc_configuration():
     assert operational_fork_ruc_defaults(sections) == {}
 
 
-def test_enabled_unported_fork_diagnostics_still_refuse(tmp_path):
+def test_enabled_unported_fork_diagnostics_are_declared(tmp_path):
     text = _ruc_input(fork=True).replace('gsd_diagnostics = 0', 'gsd_diagnostics = 1')
-    with pytest.raises(ValueError, match='gsd_diagnostics'):
-        import_namelists(*_pair(tmp_path, inp=text))
+    _assert_declared_diagnostics(*import_namelists(*_pair(tmp_path, inp=text)))
 
 
 @pytest.mark.parametrize('recipe', RECIPES, ids=lambda p: p.stem)

@@ -60,7 +60,7 @@ def inspect_routes(request, rung, experiment):
     """
     from gpuwm import domain_wizard as dw
     from gpuwm.obs.frontdoor import FRONT_DOORS
-    from gpuwm.obs.surface_networks import networks_for_bbox, SurfaceNetworkError
+    from gpuwm.obs.surface_networks import networks_for_domain, SurfaceNetworkError
     from gpuwm.obs.coverage import read_site_table, sites_covering
     from gpuwm.obs.nexrad import find_nexrad_bin, probe_nexrad_bin
     from gpuwm.obs.superob import SuperobParams
@@ -87,7 +87,7 @@ def inspect_routes(request, rung, experiment):
         networks = set()
         for box in boxes:
             try:
-                networks.update(networks_for_bbox(*box))
+                networks.update(networks_for_domain(*box))
             except SurfaceNetworkError:
                 pass
         binary, reason = _door_record(FRONT_DOORS['asos'])

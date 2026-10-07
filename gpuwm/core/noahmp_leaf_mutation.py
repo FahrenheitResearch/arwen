@@ -66,7 +66,7 @@ from gpuwm.core.noahmp_leaves import LEAF_EVALUATORS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_FIXTURE = (
-    REPO_ROOT / "gpuwm" / "data" / "noahmp" / "oracle" / "noahmp-leaves.csv"
+    REPO_ROOT / "tests" / "data" / "oracles" / "noahmp" / "noahmp-leaves.csv"
 )
 _VALIDATOR = (
     REPO_ROOT / "tools" / "noahmp_wrf461_oracle" / "validate_leaf_oracle.py"

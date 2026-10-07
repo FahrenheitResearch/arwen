@@ -1,0 +1,26 @@
+z_at_w f4 3 12 60 1
+pbl f4 2 12 1
+t f4 3 12 59 1
+p f4 3 12 59 1
+qv f4 3 12 59 1
+u f4 2 12 59
+v f4 2 12 59
+z f4 3 12 59 1
+oro f4 1 12
+u10 f4 1 12
+v10 f4 1 12
+totprcp f4 1 12
+totprcp_24hrs f4 2 12 1
+wetness f4 1 12
+t2m f4 1 12
+dpt2m f4 1 12
+swdown f4 1 12
+snow f4 1 12
+hour i4 0
+kpbl i4 2 12 1
+kpbl_thetav i4 2 12 1
+raw_kpbl i4 2 12 1
+uspdavg2d f4 2 12 1
+windgustpot f4 2 12 1
+hpbl2d f4 2 12 1
+hwp f4 2 12 1

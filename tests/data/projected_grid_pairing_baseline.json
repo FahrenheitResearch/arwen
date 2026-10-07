@@ -1,9 +1,15 @@
 {
   "revision": "bf8a9a71d93e24748a872f04bea23d5bfe818ecd",
-  "source_adapters_sha256": "9b7a54e06429022fcbc1c2de69eab80271405010365bfb7152dce490f8f8ed0c",
+  "source_adapters_sha256": "1a292810745dd39b5e62c9864644005e97b47a135f9b027b0b2c7cf0e372fc53",
   "frame_header_sha256": "834081c12b05041e1cadf2011ba4b10d56613b77a5eaef600e927a9d5a05e8eb",
   "source_files": [
     "gpuwm/source_adapters.py",
     "gpuwm/mapped_source.py"
+  ],
+  "source_adapters_rebased_on": [
+    {
+      "commit": "5ecd0d4a98e48911e55690ec4fccbf2f5725c0f3",
+      "why": "Adds the public 20CRv3 CF fetch: the 20crv3-cf adapter's notes and required_products changed after the baseline revision. Only that commit's gpuwm/source_adapters.py hunks were applied to the retained copy; every other unmarked adapter still compares against the revision above."
+    }
   ]
 }

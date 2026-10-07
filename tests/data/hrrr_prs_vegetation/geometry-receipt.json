@@ -1,0 +1,55 @@
+{
+  "cache": {
+    "bytes": 7002172,
+    "path": "native-static.npz",
+    "sha256": "4cd205e63a76be97c6f10dca933cc1dc78708e8b6eb80df297868bbc3cf2b7f6"
+  },
+  "geometry": {
+    "center_lat": 34.08,
+    "center_lon": -118.4,
+    "definition": {
+      "dx": 3000.0,
+      "dy": 3000.0,
+      "e_sn": 81,
+      "e_we": 87,
+      "known_x": 43.5,
+      "known_y": 40.5,
+      "map_proj": "lambert",
+      "moad_cen_lat": 34.08,
+      "moad_cen_lon": -118.4,
+      "ref_lat": 34.08,
+      "ref_lon": -118.4,
+      "stand_lon": -97.5,
+      "truelat1": 38.5,
+      "truelat2": 38.5
+    },
+    "dx_m": 3000.0,
+    "dy_m": 3000.0,
+    "known_x": 43.5,
+    "known_y": 40.5,
+    "lat_range": [
+      32.7833671746891,
+      35.36878077445602
+    ],
+    "lon_range": [
+      -120.05067810793096,
+      -116.78266897388065
+    ],
+    "map_proj": "lambert",
+    "mass_shape": [
+      80,
+      86
+    ],
+    "moad_cen_lat": 34.08,
+    "moad_cen_lon": -118.4,
+    "nz": 49,
+    "ref_lat": 34.08,
+    "ref_lon": -118.4,
+    "stand_lon": -97.5,
+    "truelat1": 38.5,
+    "truelat2": 38.5
+  },
+  "schema": "gpuwm-native-static-direct-v1",
+  "static_sampling_contract": "wps-sampling-portable-v1",
+  "status": "PASS"
+}

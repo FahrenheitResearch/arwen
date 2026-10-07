@@ -13,11 +13,12 @@ the GRIB decoders, the CPU preprocessing library, the fetch backbone,
 the batch renderer, the two radar front doors, the MRMS, Stage-IV,
 surface, GOES and European-composite front doors, the NetCDF decoder,
 the mapped decode engine, the Zarr reader, the observation remap, the
-isobaric-height reader, the ML dataset exporter, the
+isobaric-height reader, the radar superob, the native GRIB2 and ML dataset
+exporters, the nowcast frames converter, the
 simulated radar and the terminal workspace onto a
 wheel install was to clone the repository and run ``cargo build`` -- a
 Rust toolchain, a 2.5 GB checkout and a few minutes of compiling, for
-thirty-seven files.
+forty-two files.
 ``gpuwm fetch-bridges`` is the same trade :mod:`gpuwm.table_assets`
 already makes for the externalized physics tables: the artifacts are
 published as versioned GitHub release assets, their exact size and
@@ -26,7 +27,7 @@ byte is verified against those pins *before* anything is installed.
 
 What is staged, and where
 -------------------------
-One bundle per platform, holding the thirty-seven artifacts of
+One bundle per platform, holding the forty-two artifacts of
 :data:`BUNDLED_ARTIFACTS`, staged into :func:`gpuwm.bridges
 .default_bridge_dir` (``~/.gpuwm/bridges/<release>-<bundle digest>``)
 -- the staged rung of the resolution ladder every consumer already
@@ -327,6 +328,10 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         "rw_wrfbatch", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_WRFBATCH", "gpuwm render --engine rust"),
     BundledArtifact(
+        "rw_ensbatch", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_ENSEMBLE_RENDERER",
+        "ensemble diagnostic reduction and aggregate product rendering"),
+    BundledArtifact(
         "rw_compare", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_COMPARE", "native reference panels and observation overlays"),
     BundledArtifact(
@@ -359,6 +364,10 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         "rw_asos", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_ASOS",
         "ASOS/METAR surface observations (gpuwm obs asos)"),
+    BundledArtifact(
+        "rw_airnow", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_AIRNOW",
+        "AirNow hourly air-quality observations"),
     BundledArtifact(
         "rw_goes", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_GOES",
@@ -489,6 +498,20 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         "GPUWM_ISOBARIC_BRIDGE",
         "isobaric heights read between layer interfaces (vortex tracker, "
         "GNSS-RO operator, verification maps)"),
+    # The RADAR SUPEROB.  It joined this list the moment the superob
+    # stage of the radar observation build flipped onto the Rust crate by
+    # default.  The stage refuses rather than falls back when the library
+    # is absent (the numpy module is the parity reference and an explicit
+    # opt-out, GPUWM_SUPEROB_PYTHON=1), so a wheel without it could not
+    # build one radar observation: every radar DA cycle would refuse an
+    # hour in.  Environment variable spelled to match
+    # gpuwm.obs.superob_bridge.SUPEROB_BRIDGE_ENV; a test binds the two
+    # (tests/test_bridge_fetch.py).
+    BundledArtifact(
+        "rw_superob", "library", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_SUPEROB_BRIDGE",
+        "radar superob, merge and region-global dealias (the default "
+        "radar observation build)"),
     # The four MPAS binaries of the first wave (the fifth, the
     # lateral-boundary producer, is the last entry in this tuple and
     # carries its own note), and `rw_mpas_convert` is the artifact this
@@ -563,6 +586,28 @@ BUNDLED_ARTIFACTS: tuple[BundledArtifact, ...] = (
         "rw_mpas_lbc", "executable", bridges.RUSTWX_CRATE_RELATIVE,
         "GPUWM_RW_MPAS_LBC",
         "MPAS lateral boundaries for a limited-area mesh"),
+    # The native GRIB2 exporter (2.8.7, crate rw-grib2export): reads
+    # history, computes every product with the clean-room post-processor
+    # rw-post (GPU by default, CPU reference path) and packs GRIB2 in Rust.
+    # An install without it cannot run `export-grib2`, `go --grib2` or
+    # `render --grib2-out`.
+    BundledArtifact(
+        "rw_grib2export", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_GRIB2EXPORT", "native GRIB2 history export (gpuwm export-grib2)"),
+    # The nowcast frames converter (2.8.7, crate rw-wrfbatch): a 2D
+    # reflectivity NetCDF nowcast written out as the
+    # `gpuwm-obs.nowcast-frames.v1` contract, the only form the
+    # comparison sheets (`rw_compare --panel LABEL=frames:ROOT@VALID`) and
+    # the radar-heating adapter read.  Without this row the cut built it,
+    # probed nothing and threw it away, so a wheel install had no way to
+    # put a NetCDF nowcast on a StormScope | WOOF | HRRR | MRMS sheet.
+    # Environment variable spelled to match
+    # gpuwm.rustwx_lanes.NOWCAST_FRAMES_ENV; a test binds the two.
+    BundledArtifact(
+        "rw_nowcast_frames", "executable", bridges.RUSTWX_CRATE_RELATIVE,
+        "GPUWM_RW_NOWCAST_FRAMES",
+        "NetCDF nowcasts as frames roots for the comparison sheets "
+        "(rw_nowcast_frames from-netcdf)"),
     # The ML dataset exporter.  Every array operation `gpuwm ml-export`
     # performs happens in it (the history read, the vertical interpolation,
     # the regrid, the Zarr and ZIP writing), so a bundle without it is an
@@ -608,6 +653,8 @@ LIBRARY_ABI: dict[str, tuple[str, int]] = {
     "obs_score": ("gpuwm_obsscore_abi_version", 1),
     # Matches gpuwm.isobaric_bridge.ISOBARIC_ABI; a test binds them.
     "rw_isobaric": ("gpuwm_isobaric_abi_version", 1),
+    # Matches gpuwm.obs.superob_bridge.SUPEROB_ABI; a test binds them.
+    "rw_superob": ("gpuwm_superob_abi_version", 1),
 }
 
 
@@ -1034,7 +1081,7 @@ def verify_source_revision(payload: bytes, *, expected: str,
 #: What it is for.  A release cut reuses a binary built at an earlier
 #: commit when every path listed for its crate is byte-identical (the
 #: same git object) at the commit being released, so a release that
-#: changed one Python file does not recompile thirty-seven unchanged
+#: changed one Python file does not recompile forty-two unchanged
 #: binaries.  A path missing from this table is a binary that could be
 #: reused while carrying a stale copy of that file, so
 #: ``tests/test_native_build_inputs.py`` re-derives the outside inputs
@@ -1043,13 +1090,23 @@ def verify_source_revision(payload: bytes, *, expected: str,
 NATIVE_BUILD_INPUTS: dict[str, tuple[str, ...]] = {
     "tools/grib1_bridge": ("tools/grib1_bridge", "tools/preparation_resources.rs"),
     "tools/rustwx": ("tools/rustwx", "tools/grib1_bridge/vendor/grib-core",
-                     "tools/preparation_resources.rs"),
+                     "tools/preparation_resources.rs",
+                     # static-fields' SFIRE debug controls include the
+                     # native oracle fixtures (sfire_debug.rs).
+                     "tools/sfire_wrf471_oracle/fixtures/debug",
+                     # rw-superob links the region-global solver by path;
+                     # rw_wps and the Zarr bridge reach it through this
+                     # workspace, so they list it too (the inputs test
+                     # walks the closure).
+                     "tools/region_global_dealias"),
     # The shared NetCDF reader (netcrust and its HDF5 reader) lives under
     # tools/rustwx/vendor since the array-ceiling work; rw_wps and the Zarr
     # bridge build against it by path.
     "tools/rw_wps": ("tools/rw_wps", "tools/grib1_bridge/vendor/grib-core",
                      "tools/preparation_resources.rs",
-                     "tools/rustwx/vendor/netcrust"),
+                     "tools/rustwx/vendor/netcrust",
+                     "tools/sfire_wrf471_oracle/fixtures/debug",
+                     "tools/region_global_dealias"),
     "tools/region_global_dealias": ("tools/region_global_dealias",),
     "tools/arwen-tui": (
         "tools/arwen-tui", "tools/arwen-ui-vendor", "gpuwm/tui_worker.py",
@@ -1059,7 +1116,9 @@ NATIVE_BUILD_INPUTS: dict[str, tuple[str, ...]] = {
         "tools/zarr_bridge", "tools/rustwx/crates/netcdf-writer",
         "tools/rw_wps", "tools/grib1_bridge/vendor/grib-core",
         "tools/preparation_resources.rs",
-        "tools/rustwx/vendor/netcrust"),
+        "tools/rustwx/vendor/netcrust",
+        "tools/sfire_wrf471_oracle/fixtures/debug",
+        "tools/region_global_dealias"),
 }
 
 

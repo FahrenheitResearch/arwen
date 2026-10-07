@@ -39,14 +39,41 @@ just a wrong value, at a known place, and wrong values propagate at the same
 finite speed as right ones.
 
     A spurious boundary application touches at most the outermost
-    ``B = max(spec_zone, relax_zone)`` cells of the compute window.
-    Over one step that contamination reaches at most ``B + R`` cells in,
-    where ``R = harness.halo_radius(cfg)``.  A halo of ``R + B`` therefore
+    ``S`` cells of the compute window, where ``S`` is what the boundary
+    kernels still write on a seam side (:func:`seam_fiction_width`).
+    Over one step that contamination reaches at most ``S + R`` cells in,
+    where ``R = harness.halo_radius(cfg)``.  A halo of ``R + S`` therefore
     leaves every tile interior untouched by it.
 
+``S`` used to be the whole frame, ``max(spec_zone, relax_zone)``: the
+relaxation kernel treated all four window edges as domain edges.  Since
+``gpuwm.ingest.lateral_bc`` masks the relaxation band per side
+(``LateralBoundaries.seam_sides``, set by ``streaming.window_boundaries``
+and ``TileBoundaryTables`` for every tile and slab), a seam relaxes
+nothing, and the only perimeter write left on a seam is the specified
+zone itself (``state_specified_relaxation``'s ``boundary_index`` branch
+and the end-of-step install): rows ``0 .. spec_zone - 1``, which is
+``spec_zone`` cells.  So ``S = spec_zone``, and at WRF's standard
+``spec_zone=1`` the forced halo is the dependency radius plus one cell.
+Not ``spec_zone - 1``: fiction installed at row ``spec_zone - 1`` reaches
+row ``spec_zone - 1 + R`` within the step and the first owned row is row
+``halo``, so ``halo = R + spec_zone - 1`` lets it land on an owned cell
+by the proof's own counting and holds only on the slack inside
+``halo_radius`` (its 16 covers a measured 14 at ``ns = 4``).  ``R + S``
+keeps that slack where it was measured.  MEASURED, not assumed: a 3 km
+specified crop (499 x 567 x 50, ``spec_zone=1, relax_zone=9``,
+time_step_sound at the adaptive ceiling, ``R = 19``) split 2x1 over two
+RTX 5090s ran 12 h with halo 28 (``R + 9``, the old rule), 22, 20
+(``R + 1``, this rule) and 19 (``R``), and every hourly history file is
+byte-identical across the four and to the one-card run.  The dycore's
+own edge narrowing (advection order, diff6 strip) corrupts a seam only
+DURING the step, so what it leaves to propagate is strictly inside ``R``
+(see ``harness.tile_config``).
+
 :func:`halo_for` is that arithmetic and nothing else.  At ArWen's
-``time_step_sound=4`` and WRF's standard ``spec_zone=1, relax_zone=4`` it is
-``16 + 4 = 20``.  Nothing here is tuned: both terms are read off the config.
+``time_step_sound=4`` and WRF's standard ``spec_zone=1`` it is
+``16 + 1 = 17``.  Nothing here is tuned: both terms are read off the
+config.
 
 Two consequences, and both are essential:
 
@@ -107,6 +134,7 @@ __all__ = [
     "halo_for",
     "plan",
     "prepare",
+    "seam_fiction_width",
     "surface_snapshot",
     "tile_boundaries",
     "tile_boundary_binder",
@@ -122,29 +150,56 @@ class RealCaseError(RuntimeError):
 # --------------------------------------------------------------------------
 
 def boundary_width(cfg) -> int:
-    """Cells a specified-boundary application can touch, from the edge in.
+    """Cells a specified-boundary application touches on a TRUE domain edge,
+    from the edge in: ``max(spec_zone, relax_zone)``, the width
+    ``lateral_bc._launch_state_relaxation`` enumerates as ``active_width``.
 
-    ``lateral_bc._launch_state_relaxation`` computes
-    ``active_width = max(spec_zone, relax_zone)`` and writes the perimeter
-    frame of exactly that width.  Read from the config, never assumed: a case
-    that widens ``relax_zone`` widens the quarantine with it.
+    Not the seam figure.  On a seam side the relaxation band is masked
+    (``LateralBoundaries.seam_sides``) and only the specified zone is
+    written, so the halo pays :func:`seam_fiction_width`, not this.  This
+    is the whole frame a domain edge carries; nothing on the halo road
+    reads it any more (the stranded-zone refusal in
+    ``streaming.tile_seam_sides`` computes the same band itself).  Kept as
+    the public name of that width.
     """
     return max(int(getattr(cfg, "spec_zone", 1)),
                int(getattr(cfg, "relax_zone", 4)))
 
 
+def seam_fiction_width(cfg) -> int:
+    """Cells the boundary kernels still write on a SEAM side, from the edge
+    in, before a step starts to propagate: ``spec_zone``.
+
+    The relaxation band is masked per side (``lateral_bc._relax_side_mask``
+    reads ``LateralBoundaries.seam_sides``), so a seam relaxes nothing.
+    What remains unmasked is the specified zone: ``state_specified_relaxation``
+    writes rows ``0 .. spec_zone - 1`` of every side's tendency at each RK
+    stage (``boundary_index`` tests every side, seam or not), and
+    ``install_mu_boundary`` / ``finalize_state_field`` install the same
+    rows at the end of the step.  That is ``spec_zone`` cells of fiction,
+    and the halo pays exactly that beyond the radius; the module docstring
+    says why not one less.  At WRF's standard ``spec_zone=1`` that is one
+    cell, which the 2x1 split of a 3 km specified crop confirmed byte for
+    byte over 12 h at halo ``R + 1`` (and at ``R``, on the radius's own
+    slack).  :func:`boundary_width` is the whole frame a true domain edge
+    carries; it no longer sizes the halo.
+    """
+    return int(getattr(cfg, "spec_zone", 1))
+
+
 def halo_for(cfg) -> int:
-    """The halo a SPECIFIED domain needs: dependency radius + boundary width.
+    """The halo a SPECIFIED domain needs: dependency radius + seam fiction.
 
     See the module docstring.  ``harness.halo_radius(cfg)`` alone is correct
     only when every compute-window edge is either a true domain edge or a
     faithful periodic neighbour; on a specified domain an interior tile's
-    window edge is neither, and the boundary kernel writes ``B`` cells of
-    fiction into it before the step even starts to propagate.
+    window edge is neither, and the specified-zone write puts
+    :func:`seam_fiction_width` cells of fiction into it before the step
+    even starts to propagate.
     """
     from tilestream import harness
 
-    return int(harness.halo_radius(cfg)) + boundary_width(cfg)
+    return int(harness.halo_radius(cfg)) + seam_fiction_width(cfg)
 
 
 def plan(cfg, tile_nx: int, tile_ny: int, halo: int | None = None):

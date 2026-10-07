@@ -45,6 +45,7 @@ OBS_KINDS = (
     "clear_air_reflectivity",
     "surface",
     "cloud_water_path",
+    "conventional",
 )
 
 #: What a caller says it turned on, mapped to the kind that proves it.

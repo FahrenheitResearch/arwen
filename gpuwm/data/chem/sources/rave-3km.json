@@ -1,0 +1,489 @@
+{
+  "schema": "gpuwm.chem.source.v1",
+  "name": "rave-3km",
+  "kind": "emission",
+  "route": "rave-3km",
+  "credential": null,
+  "format": "netcdf",
+  "grid": {
+    "type": "regular_latlon",
+    "latitude": "grid_latt",
+    "longitude": "grid_lont",
+    "time_coordinate": "time",
+    "listing": {
+      "url": "https://www.ospo.noaa.gov/pub/Blended/RAVE/RAVE-HrlyEmiss-3km/%Y/%m/",
+      "pattern": "RAVE-HrlyEmiss-3km_v2r0_blend_s(?P<hour>\\d{10})00000_e\\d{15}_c(?P<creation>\\d{15})\\.nc",
+      "hour_format": "%Y%m%d%H",
+      "cache_s": 300
+    },
+    "spacing_deg": 0.03
+  },
+  "variables": {
+    "PM25": {
+      "selector": "PM25",
+      "units": "kg",
+      "fire": {
+        "frp": "FRP_MEAN",
+        "diagnostic": true,
+        "provenance": "The fire process (gpuwm.core.chem_fire) injects this field with the plume of the FRP_MEAN field of the same hour; diagnostic: this field and its FRP fill the EBU_IN and FRP_MEAN outputs."
+      },
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    },
+    "PM25_scaled": {
+      "selector": "PM25_scaled",
+      "units": "kg",
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    },
+    "OC": {
+      "selector": "OC",
+      "units": "kg",
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    },
+    "OC_scaled": {
+      "selector": "OC_scaled",
+      "units": "kg",
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    },
+    "BC": {
+      "selector": "BC",
+      "units": "kg",
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    },
+    "BC_scaled": {
+      "selector": "BC_scaled",
+      "units": "kg",
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    },
+    "SO2": {
+      "selector": "SO2",
+      "units": "kg",
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    },
+    "SO2_scaled": {
+      "selector": "SO2_scaled",
+      "units": "kg",
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    },
+    "CO": {
+      "selector": "CO",
+      "units": "kg",
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    },
+    "CO_scaled": {
+      "selector": "CO_scaled",
+      "units": "kg",
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    },
+    "NOx": {
+      "selector": "NOx",
+      "units": "kg",
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    },
+    "NOx_scaled": {
+      "selector": "NOx_scaled",
+      "units": "kg",
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    },
+    "NH3": {
+      "selector": "NH3",
+      "units": "kg",
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    },
+    "NH3_scaled": {
+      "selector": "NH3_scaled",
+      "units": "kg",
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    },
+    "CO2": {
+      "selector": "CO2",
+      "units": "kg",
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    },
+    "CO2_scaled": {
+      "selector": "CO2_scaled",
+      "units": "kg",
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    },
+    "CH4": {
+      "selector": "CH4",
+      "units": "kg",
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    },
+    "CH4_scaled": {
+      "selector": "CH4_scaled",
+      "units": "kg",
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    },
+    "VOCs": {
+      "selector": "VOCs",
+      "units": "kg",
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    },
+    "VOCs_scaled": {
+      "selector": "VOCs_scaled",
+      "units": "kg",
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    },
+    "TPM": {
+      "selector": "TPM",
+      "units": "kg",
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    },
+    "TPM_scaled": {
+      "selector": "TPM_scaled",
+      "units": "kg",
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    },
+    "FRP_MEAN": {
+      "selector": "FRP_MEAN",
+      "units": "MW",
+      "aggregation": "touch",
+      "aggregation_provenance": "Fire radiative power sizes the fire the Freitas plume sees (GSL module_smoke_plumerise.F90 burnt area = 0.7/1.3 * 0.0006 * FRP), so every model cell a RAVE pixel reaches gets the pixel's whole FRP (gpuwm.obs_regrid_bridge.SUM_AGGREGATIONS 'touch'); a 1/n^2 share would turn one 3 km fire into n^2 small fires on a finer grid and lower every plume. The emitted MASS rows stay 'partition'.",
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    },
+    "FRP_SD": {
+      "selector": "FRP_SD",
+      "units": "MW",
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    },
+    "FRE": {
+      "selector": "FRE",
+      "units": "MJ",
+      "no_fire_sentinel": -1,
+      "masks": [
+        {
+          "selector": "QA",
+          "minimum": 2,
+          "maximum": 3,
+          "nonzero_only": true
+        }
+      ],
+      "prediction_flag_policy": {
+        "selector": "Prediction_Flag",
+        "action": "retain",
+        "provenance": "https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224"
+      }
+    }
+  },
+  "time": {
+    "cadence_s": 3600,
+    "latency_s": 7348.0,
+    "persistence": "trailing_24h_with_diurnal_cycle"
+  },
+  "remap": "cell_sum_split",
+  "licence": "Public domain unless specifically annotated otherwise: https://www.ospo.noaa.gov/Organization/About/linking.html",
+  "attribution": "NOAA/NESDIS/OSPO Regional ABI-VIIRS Emissions Version 2: https://www.ospo.noaa.gov/products/land/rave/",
+  "provenance": "Checked 2025-01-08 06Z source file on 2026-09-30. PM25 is a direct extensive-mass choice, not the RRFS-SD FRE-derived smoke recipe. Public preprocessing https://github.com/ufs-community/ufs-srweather-app/blob/2ad2bc5731819cdc5aef95372a8b27ffe417bf40/ush/smoke_dust/core/regrid/processor.py#L204-L224 excludes QA < 2 only in HIGH mode and does not mask Prediction_Flag. This row selects HIGH, retains predicted detections, and interprets the -1 no-retrieval sentinel as zero emissions, matching its FRP normalization. Creation lag is measured from hour start over 2025-01-08 00Z through 11Z; posting can be later."
+}

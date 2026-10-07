@@ -362,7 +362,8 @@ RESTART_TOLERATED_EXPERIMENT_FIELDS = (
 RESTART_TOLERATED_DOMAIN_FIELDS = (
     "history_interval_s", "history_begin_s", "history_end_s")
 RESTART_TOLERATED_RUN_FIELDS = (
-    "run_seconds", "output_interval_s", "restart_interval_s")
+    "run_seconds", "output_interval_s", "restart_interval_s",
+    "surface_energy_diag")
 
 #: ``mp_physics`` -> the RunConfig fields ONLY that scheme reads.  A domain
 #: running some other scheme drops them from its identity entirely rather
@@ -507,6 +508,15 @@ def restart_identity_payload(exp) -> dict:
     # another trajectory and must refuse.
     if experiment.get("physics_params") is None:
         experiment.pop("physics_params", None)
+    # [radar_heating]: absent stays absent (experiment_config_document drops
+    # an OFF table, so every pre-feature fingerprint is unchanged).  Present
+    # it binds, so a checkpoint written heated cannot resume under other
+    # heating or none -- except the windows ROOT, which says where the files
+    # are and not what they hold; the windows are held to the run's grid
+    # identity and their own digests when they are read.
+    heating = experiment.get("radar_heating")
+    if isinstance(heating, dict):
+        heating.pop("windows", None)
     # Same convention for the declared constant downward longwave: ABSENT
     # stays absent, so every experiment written before the field existed
     # keeps its exact fingerprint and its checkpoints keep resuming.  A
@@ -813,6 +823,19 @@ def restart_identity_payload(exp) -> dict:
         # Off, post-PBL scalar diffusion preserves pre-option fingerprints.
         if not run.get("scalar_pblmix", 0):
             run.pop("scalar_pblmix", None)
+        # The chem block, on the adaptive block's OFF argument: with
+        # chem_sets empty no chem key is read by anything (gpuwm.config.
+        # validate_chem_config), so dropping the block keeps every chem-off
+        # fingerprint and checkpoint identity what it was before the block
+        # existed.  A chem run binds the whole block value for value.
+        if not run.get("chem_sets"):
+            from gpuwm.config import CHEM_RUN_FIELDS
+            for name in CHEM_RUN_FIELDS:
+                run.pop(name, None)
+        # The fire block on the same rule (gpuwm.config.inert_fire_fields).
+        from gpuwm.config import inert_fire_fields
+        for name in inert_fire_fields(run):
+            run.pop(name, None)
         # The terrain-clock mode: "measured" is the derivation every
         # fingerprint written before the field ran under, so it drops
         # out; "pinned" binds, because the same configured clock then
@@ -1621,6 +1644,11 @@ def execute_experiment(
     original integer executor directly.
     """
     experiment = _bind_execution_physics_params(model, experiment)
+    # A [radar_heating] table is honored by the route that attached it or
+    # refused here; a route that never attaches it would integrate an
+    # unheated forecast under the name of a heated one.
+    from gpuwm.da.forecast_heating import require_routed
+    require_routed(model, experiment)
     from gpuwm.core.restart_request import RestartRequest
     restart_request = RestartRequest()
     requested_restart = [False]
@@ -1942,6 +1970,30 @@ def execute_experiment(
     #: pair `step_observer` reports, never a device synchronise.
     step_wall_by_domain: dict[int, float] = {}
 
+    # Scheme health status words (microphysics, YSU, KF, RRTMGP, ...) are
+    # recorded on the device during the step and read ONCE when the step
+    # returns, through gpuwm.core.health_ledger, instead of one blocking
+    # device-to-host read per scheme in the middle of the step.  Each of those
+    # reads drained the launch queue: the host waited for the card, then the
+    # card waited for the host's next launches.  Measured on a 6 h Boston
+    # 250 m run (2.8.5, one RTX PRO 6000): the microphysics read alone held
+    # the main thread 9.4 ms per domain step with the card about 50% busy.
+    # Healthy runs change in nothing but wall time (the reads are error-only;
+    # see health_ledger).  A sick step still raises the same exception, from
+    # the same step, before step_health, output, feedback or a checkpoint can
+    # observe its state.  A ledger lives on one device, so a run that sees
+    # more than one keeps the immediate reads, as does --health-debug, whose
+    # point is the immediate report.
+    step_ledger = None
+    if not health_debug:
+        try:
+            import cupy as _cp
+            if int(_cp.cuda.runtime.getDeviceCount()) == 1:
+                from gpuwm.core.health_ledger import HealthLedger
+                step_ledger = HealthLedger(label="forecast step")
+        except Exception:  # noqa: BLE001 - no CUDA: immediate reads, as before
+            step_ledger = None
+
     def on_step(grid_id, clock) -> None:
         # WRF prints one `Timing for main:` line per model time step per
         # domain, and THIS is the only place that number exists: the
@@ -1983,15 +2035,23 @@ def execute_experiment(
             streamed_here = _streamed(grid_id)
             if streamed_here is not None:
                 streamed_here.impose_clock(node.state.elapsed_seconds)
-            steppers.get(grid_id, step)(
-                node.state, node.cfg.run,
-                # REFL_10CM is a one-frame producer/consumer handoff. A
-                # headless forecast still advances history alarms in the
-                # clock report, but has no output consumer, so it must not
-                # stage a field that can never be consumed.
-                refl_10cm_due=(
-                    history_handler is not None
-                    and clock.history_rings_within_step()))
+            from gpuwm.core import health_ledger as _health_ledger
+            with _health_ledger.deferring(step_ledger):
+                steppers.get(grid_id, step)(
+                    node.state, node.cfg.run,
+                    # REFL_10CM is a one-frame producer/consumer handoff. A
+                    # headless forecast still advances history alarms in the
+                    # clock report, but has no output consumer, so it must not
+                    # stage a field that can never be consumed.
+                    refl_10cm_due=(
+                        history_handler is not None
+                        and clock.history_rings_within_step()),
+                    **({"fire_history_due": clock.history_rings_within_step()}
+                       if node.cfg.run.ifire == 2 else {}))
+            if step_ledger is not None:
+                # One read for every scheme site of this step; raises the
+                # first site's own refusal.  Before anything downstream.
+                step_ledger.drain()
             refresh_model_time(node.state, clock, after_step=True)
             if spectral_seam is not None:
                 # THE Level-2 slow-large-step hook seam.  The RK slow-mode
@@ -2174,12 +2234,21 @@ def execute_experiment(
             status.pending_d2h = int(io_manager.pending)
 
     def on_restart(ticks) -> None:
-        if io_manager is not None:
+        # A handler that orders its checkpoint after the history frames
+        # itself (the prepared single-domain door's background checkpoint
+        # writer) is not made to wait here for frames still being written.
+        if io_manager is not None and not getattr(
+                restart_handler, "orders_history_itself", False):
             io_manager.drain()
             status.pending_d2h = int(io_manager.pending)
         if restart_handler is not None:
             restart_handler(model, ticks)
             if requested_restart[0]:
+                # A worker's request is acknowledged only once the
+                # checkpoint it asked for is durable.
+                wait = getattr(restart_handler, "wait_durable", None)
+                if wait is not None:
+                    wait()
                 restart_request.acknowledge()
                 requested_restart[0] = False
 

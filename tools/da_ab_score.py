@@ -70,9 +70,9 @@ from pathlib import Path
 
 import numpy as np
 
-from gpuwm.verify.field_metrics import fss_distance
 from tools.da_sweep_score import (load_composite, member_names,
-                                  metric_constants, score_leg)
+                                  metric_constants, observed_coverage,
+                                  score_leg, scored_fss)
 
 #: Neighborhood half-widths, in cells, the FSS curve is evaluated at.
 #: 4 is the published one at 3 km (a 9-cell, 27 km box across) and is in
@@ -105,26 +105,34 @@ def observed_fields(obs_path: Path, fill_dbz: float):
         valid = dataset.getncattr("valid_time")
         z0mask = (np.asarray(dataset["z0_mask"][:]).astype(bool)
                   if "z0_mask" in dataset.variables else None)
+        coverage, _source = observed_coverage(dataset)
 
     echo2d = zmask.any(axis=0)
     comp = np.where(zmask, z, -np.inf).max(axis=0)
     comp = np.where(np.isfinite(comp), comp, fill_dbz)
     clear2d = None if z0mask is None else z0mask.any(axis=0)
-    return comp, echo2d, clear2d, valid
+    return comp, echo2d, clear2d, valid, coverage
 
 
 def contingency(forecast: np.ndarray, truth: np.ndarray,
-                threshold: float) -> dict:
-    """2x2 table at ``threshold``, over the whole domain.
+                threshold: float, coverage: np.ndarray | None = None) -> dict:
+    """2x2 table at ``threshold``, over the observed columns.
 
-    Whole-domain rather than in-echo: a false alarm is by definition a
-    core where the observation has none, so restricting the count to
-    cells the observation called echo would remove exactly the events
-    this table exists to count.
+    Every observed column rather than in-echo: a false alarm is by
+    definition a core where the observation has none, so restricting the
+    count to cells the observation called echo would remove exactly the
+    events this table exists to count.  But only OBSERVED columns
+    (``coverage``, :data:`tools.da_sweep_score.COVERAGE_RULE`): a core
+    where no radar looked is neither a hit nor a false alarm, and a quiet
+    cell there is not a correct negative.  ``None`` scores the whole grid,
+    for a file with no clear-air census.
     """
 
     f = forecast >= threshold
     o = truth >= threshold
+    if coverage is not None:
+        f = f[coverage]
+        o = o[coverage]
     hits = int((f & o).sum())
     misses = int((~f & o).sum())
     false_alarms = int((f & ~o).sum())
@@ -150,16 +158,16 @@ def contingency(forecast: np.ndarray, truth: np.ndarray,
 
 
 def fss_curve(field: np.ndarray, truth: np.ndarray, *, threshold: float,
-              half_widths, dx_km: float) -> list[dict]:
+              half_widths, dx_km: float,
+              coverage: np.ndarray | None = None) -> list[dict]:
     curve = []
     for half_width in half_widths:
         curve.append({
             "half_width_cells": int(half_width),
             "box_cells_across": 2 * int(half_width) + 1,
             "box_km_across": round((2 * int(half_width) + 1) * dx_km, 3),
-            "fss": round(1.0 - fss_distance(
-                field, truth, threshold=threshold,
-                half_width=int(half_width)), 4),
+            "fss": scored_fss(field, truth, threshold=threshold,
+                              half_width=int(half_width), coverage=coverage),
         })
     return curve
 
@@ -181,7 +189,7 @@ def score_leg_extended(*, composites: Path, obs_path: Path, leg: int,
                        dx_km: float, const: dict, half_widths) -> dict:
     published = score_leg(composites=composites, obs_path=obs_path, leg=leg,
                           dx_km=dx_km, const=const)
-    truth, echo2d, clear2d, _valid = observed_fields(
+    truth, echo2d, clear2d, _valid, coverage = observed_fields(
         obs_path, const["MISSING_OBS_FILL_DBZ"])
 
     names = member_names(composites, leg)
@@ -192,9 +200,9 @@ def score_leg_extended(*, composites: Path, obs_path: Path, leg: int,
     threshold = const["FSS_THRESHOLD_DBZ"]
     published_half_width = published["fss_half_width_cells"]
 
-    member_fss = [round(1.0 - fss_distance(
-        member, truth, threshold=threshold,
-        half_width=published_half_width), 4) for member in members]
+    member_fss = [scored_fss(member, truth, threshold=threshold,
+                             half_width=published_half_width,
+                             coverage=coverage) for member in members]
     member_cores = [int((member >= CORE_THRESHOLD_DBZ).sum())
                     for member in members]
     member_cores_outside = [
@@ -229,21 +237,23 @@ def score_leg_extended(*, composites: Path, obs_path: Path, leg: int,
             "member_outside_echo_stats":
                 describe([float(v) for v in member_cores_outside]),
         },
-        "contingency_mean_field": contingency(mean_field, truth, core),
-        "contingency_control": contingency(control, truth, core),
+        "contingency_mean_field": contingency(mean_field, truth, core,
+                                              coverage),
+        "contingency_control": contingency(control, truth, core, coverage),
         "contingency_member_mean": {
-            key: (None if any(contingency(m, truth, core)[key] is None
-                              for m in members)
-                  else round(float(np.mean([contingency(m, truth, core)[key]
-                                            for m in members])), 4))
+            key: (None if any(contingency(m, truth, core, coverage)[key]
+                              is None for m in members)
+                  else round(float(np.mean([
+                      contingency(m, truth, core, coverage)[key]
+                      for m in members])), 4))
             for key in ("pod", "far", "csi", "frequency_bias")
         },
         "fss_curve_mean_field": fss_curve(
             mean_field, truth, threshold=threshold,
-            half_widths=half_widths, dx_km=dx_km),
+            half_widths=half_widths, dx_km=dx_km, coverage=coverage),
         "fss_curve_control": fss_curve(
             control, truth, threshold=threshold,
-            half_widths=half_widths, dx_km=dx_km),
+            half_widths=half_widths, dx_km=dx_km, coverage=coverage),
     }
 
     # Suppression's own view: cores standing where the radar established

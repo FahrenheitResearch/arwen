@@ -1354,11 +1354,19 @@ rs = numpy.random.RandomState(0)
 b = rs.standard_normal((8, 6, 6))
 a = b @ b.transpose(0, 2, 1) + 6.0 * numpy.eye(6)
 a = 0.5 * (a + a.transpose(0, 2, 1))
+# The second batch is above 64, the global-work tier an ensemble of more
+# than 64 members takes; both tiers must solve for the default to be whole.
+c = rs.standard_normal((2, 66, 66))
+c = c @ c.transpose(0, 2, 1) + 66.0 * numpy.eye(66)
+c = 0.5 * (c + c.transpose(0, 2, 1))
 try:
     from gpuwm.core.jacobi_eigh import batched_eigh
-    w, v = batched_eigh(cupy.asarray(a))
-    got = cupy.asnumpy(v @ (w[:, :, None] * v.transpose(0, 2, 1)))
-    residual = float(numpy.abs(got - a).max() / numpy.abs(a).max())
+    residual = 0.0
+    for m in (a, c):
+        w, v = batched_eigh(cupy.asarray(m))
+        got = cupy.asnumpy(v @ (w[:, :, None] * v.transpose(0, 2, 1)))
+        residual = max(residual,
+                       float(numpy.abs(got - m).max() / numpy.abs(m).max()))
     out["jacobi"] = "ok" if residual < 1e-12 else f"residual {residual:.2e}"
 except Exception as error:
     out["jacobi"] = f"{type(error).__name__}: {error}"
@@ -2695,6 +2703,7 @@ _CHECKED_ARTIFACTS = {
     "rw_mrms": "the `obs front door` lines",
     "rw_stage4": "the `obs front door` lines",
     "rw_asos": "the `obs front door` lines",
+    "rw_airnow": "the `obs front door` lines",
     "rw_goes": "the `obs front door` lines",
     "rw_opera": "the `obs front door` lines",
     "rw_netcdf": "the `NetCDF decoder` line",
@@ -2705,6 +2714,7 @@ _CHECKED_ARTIFACTS = {
     "obs_regrid": "the `observation remap` line",
     "obs_score": "the `observation scoring` line",
     "rw_isobaric": "the `isobaric height reader` line",
+    "rw_superob": "the `radar superob` line",
     "rw_mpas_mesh": "the `MPAS binary` lines",
     "rw_mpas_init": "the `MPAS binary` lines",
     "rw_mpas_geometry": "the `MPAS binary` lines",
@@ -2712,8 +2722,11 @@ _CHECKED_ARTIFACTS = {
     "rw_mpas_convert": "the `MPAS binary` lines",
     "rw_mpas_lbc": "the `MPAS binary` lines",
     "rw_mlexport": "the `ML dataset exporter` line",
+    "rw_grib2export": "the `GRIB2 exporter` line",
     "rw_verify": "the `observation verification engine` line",
     "rw_compare": "the `comparison engine` line",
+    "rw_ensbatch": "the `ensemble reducer` line",
+    "rw_nowcast_frames": "the `nowcast frames converter` line",
     "arwen-tui": "the `terminal workspace` line",
 }
 
@@ -3095,6 +3108,7 @@ def _obs_front_door_checks() -> list[Check]:
                        "tools.obs_fetch_stage4)",
              "asos": "gpuwm obs asos (and python -m tools.obs_fetch_asos)",
              "goes": "gpuwm obs goes",
+             "airnow": "gpuwm obs airnow",
              "opera": "gpuwm obs opera",
              "odim": "gpuwm obs odim, and every `gpuwm obs radar` "
                      "subcommand"}
@@ -3564,6 +3578,50 @@ def _verification_engine_check() -> Check:
         missing_severity=SEVERITY_DEGRADED)
 
 
+def _probe_ensemble_reducer(path) -> tuple[bool, str]:
+    """The refusal :func:`gpuwm.rustwx.require_ensemble_diagnostic_reducer`
+    applies before any ensemble member starts, as a door probe."""
+
+    import subprocess
+
+    from gpuwm import rustwx
+
+    try:
+        rustwx.require_ensemble_diagnostic_reducer(path)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+        return False, str(error)
+    return True, ("--ensemble-diagnostic-reduce-abi "
+                  + rustwx.CPU_ENSEMBLE_REDUCTION_ABI)
+
+
+def _ensemble_reducer_check() -> Check:
+    """``rw_ensbatch``, the native ensemble diagnostic reducer.
+
+    The bundle carries it (gpuwm.bridge_assets, GPUWM_ENSEMBLE_RENDERER)
+    and the ensemble route refuses before its members start when it is
+    missing or older than the reduction contract; with no line here a box
+    whose copy was stale showed a green estate until an ensemble run was
+    already queued.  Degraded rather than unreachable: single forecasts do
+    not use it.
+    """
+
+    from gpuwm import rustwx
+
+    filename = bridges.executable_name("rw_ensbatch")
+    return _rustwx_door_check(
+        label="ensemble reducer (rw_ensbatch)",
+        env_var="GPUWM_ENSEMBLE_RENDERER",
+        find=lambda: rustwx.find_ensemble_product_renderer(None),
+        remedy=bridges.artifact_remedy(
+            env_var="GPUWM_ENSEMBLE_RENDERER", filename=filename,
+            subject="the ensemble reducer",
+            crate_relative=bridges.RUSTWX_CRATE_RELATIVE,
+            one_liner=bridges.rustwx_build_hint(), artifact="rw_ensbatch"),
+        doors=(("ensemble diagnostic reduction and aggregate product "
+                "rendering", _probe_ensemble_reducer),),
+        missing_severity=SEVERITY_DEGRADED)
+
+
 def _comparison_engine_check() -> Check:
     """``rw_compare``, the reference-model comparison engine.
 
@@ -3585,6 +3643,50 @@ def _comparison_engine_check() -> Check:
         doors=(("gpuwm render --compare", rustwx_lanes.probe_compare_bin),
                ("the reference verification panels",
                 rustwx_lanes.probe_compare_reference_bin)))
+
+
+def _grib2_export_check() -> Check:
+    """``rw_grib2export``, the binary behind ``gpuwm export-grib2``.
+
+    Held out of 2.8.6 with its binary (30dda9aeb dropped this line then);
+    2.8.7 bundles the clean-room exporter again, so the line returns.
+    Without it the native GRIB2 history export, and the live GRIB2 output a
+    run writes as frames land, cannot run; nothing else is touched.  Judged
+    by the exporter's own ``--abi`` probe, the one its door refuses by.
+    """
+
+    from gpuwm import grib2_export
+
+    binary = grib2_export.BINARY
+    return _rustwx_door_check(
+        label=f"GRIB2 exporter ({binary.name})",
+        env_var=binary.env_var, find=binary.find, remedy=binary.remedy(),
+        doors=(("gpuwm export-grib2 and a run's live --grib2 output",
+                binary.probe),))
+
+
+def _nowcast_frames_check() -> Check:
+    """``rw_nowcast_frames``, the NetCDF nowcast to frames-root converter.
+
+    One door, ``rw_nowcast_frames from-netcdf``, judged by
+    :func:`gpuwm.rustwx_lanes.probe_nowcast_frames_bin` (the ``--abi``
+    line), the probe :func:`gpuwm.rustwx_lanes.require_nowcast_frames_bin`
+    refuses by.  Degraded rather than unreachable when absent: forecasts,
+    renders and the in-tree nowcast runner (which writes the frames
+    contract itself) are untouched; only a NetCDF nowcast cannot reach a
+    comparison sheet.
+    """
+
+    from gpuwm import rustwx_lanes
+
+    return _rustwx_door_check(
+        label=f"nowcast frames converter ({rustwx_lanes.NOWCAST_FRAMES_NAME})",
+        env_var=rustwx_lanes.NOWCAST_FRAMES_ENV,
+        find=rustwx_lanes.find_nowcast_frames_bin,
+        remedy=rustwx_lanes.nowcast_frames_remedy(),
+        doors=(("rw_nowcast_frames from-netcdf (NetCDF nowcasts onto the "
+                "comparison sheets)", rustwx_lanes.probe_nowcast_frames_bin),),
+        missing_severity=SEVERITY_DEGRADED)
 
 
 def _simulated_radar_check() -> Check:
@@ -4159,6 +4261,55 @@ def _isobaric_reader_check() -> Check:
                  brief="staged", group=_GROUP_ENGINES)
 
 
+def _radar_superob_check() -> Check:
+    """The radar superob the default radar observation build calls.
+
+    ``missing``, because the stage refuses without it rather than falling
+    back: the numpy module runs only on the stated opt-out
+    ``GPUWM_SUPEROB_PYTHON=1``, so an absent library stops every radar
+    observation build (and with it every radar DA cycle) by name.
+    """
+
+    name = "radar superob (rw-superob)"
+    degrades = ("every radar observation build refuses its superob stage, "
+                "so radar DA cycles stop at observation prep")
+    try:
+        from gpuwm.obs import superob_bridge
+    except ImportError as error:                 # pragma: no cover - partial
+        return Check(name, "missing",
+                     f"gpuwm.obs.superob_bridge is not importable ({error}) "
+                     f"-- {degrades}",
+                     "# reinstall so the superob seam imports:\n"
+                     "  pip install --force-reinstall gpuwm",
+                     brief="superob_bridge not importable",
+                     group=_GROUP_ENGINES)
+    remedy = bridges.artifact_remedy(
+        env_var=superob_bridge.SUPEROB_BRIDGE_ENV,
+        filename=superob_bridge.library_name(),
+        subject="the radar superob",
+        crate_relative=bridges.RUSTWX_CRATE_RELATIVE) + (
+        "\n  # GPUWM_SUPEROB_PYTHON=1 runs the numpy reference as an\n"
+        "  # explicit workaround")
+    try:
+        path = superob_bridge.resolve_superob_bridge()
+    except (superob_bridge.SuperobBridgeMissing, FileNotFoundError) as error:
+        return Check(
+            name, "missing", f"{error} -- {degrades}", remedy,
+            action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+            brief="not staged; radar observation builds refuse",
+            group=_GROUP_ENGINES)
+    reason = superob_bridge.unavailable_reason()
+    if reason is not None:
+        return Check(
+            name, "missing", f"{path} -- {reason} -- {degrades}", remedy,
+            action=_build_action(bridges.RUSTWX_CRATE_RELATIVE),
+            brief="not loadable; radar observation builds refuse",
+            group=_GROUP_ENGINES)
+    return Check(name, "verified",
+                 f"{path} -- ABI {superob_bridge.SUPEROB_ABI}",
+                 brief="staged", group=_GROUP_ENGINES)
+
+
 def _region_dealias_check() -> Check:
     """The region-global dealiasing engine, which the default now needs.
 
@@ -4517,10 +4668,12 @@ def _cpu_library_check() -> Check:
     path, abi = backend.path, backend.abi_version
     indexed = backend.indexed_donor_interp
     from gpuwm.ingest.cpu_backend import (
-        MASKED_NEAREST_ENTRY, MASKED_STENCIL_ENTRY, WPS_MASKED_CHAIN_ENTRY)
+        MASKED_NEAREST_ENTRY, MASKED_STENCIL_ENTRY, WPS_MASKED_CHAIN_ENTRY,
+        WPS_MASKED_REACH_ENTRY)
 
     lacking = [name for name, present in (
         (WPS_MASKED_CHAIN_ENTRY, backend.wps_masked_chain_entry),
+        (WPS_MASKED_REACH_ENTRY, backend.wps_masked_chain_entry),
         (MASKED_STENCIL_ENTRY, backend.masked_stencil_entry),
     ) if not present]
     lacking.extend(getattr(backend, "water_blend_missing", ()))
@@ -4990,9 +5143,9 @@ def _geog_tree_checks(geog: Path, *,
 
     from gpuwm.geog_assets import (
         GEOG_CONSUMER_MESH, GEOG_CONSUMER_WRF, GEOG_CONSUMERS,
-        datasets_required_by)
+        datasets_required_by, default_geog_consumers, archive_for)
 
-    wanted = GEOG_CONSUMERS if consumers is None else consumers
+    wanted = default_geog_consumers() if consumers is None else consumers
 
     # The WRF door's own column, not the whole fetchable inventory: this
     # tree also carries datasets that builder never opens, and reporting
@@ -5041,6 +5194,23 @@ def _geog_tree_checks(geog: Path, *,
 
     if GEOG_CONSUMER_MESH in wanted:
         checks.extend(_mesh_geog_checks(geog))
+    # Optional doors are checked only when requested. Index locations and
+    # membership come from pins, including any future multi-dataset archive.
+    for consumer in wanted:
+        if consumer in (GEOG_CONSUMER_WRF, GEOG_CONSUMER_MESH):
+            continue
+        missing = []
+        for name in datasets_required_by(consumer):
+            pin = archive_for(name)
+            for child in pin.index_subdirs or ("",):
+                if not (geog / name / child / "index").is_file():
+                    missing.append(str(Path(name) / child))
+        action = f"gpuwm fetch-geog --datasets {consumer}"
+        checks.append(Check(
+            f"WPS_GEOG {consumer}", "missing" if missing else "verified",
+            f"{geog}: missing indexed datasets: {', '.join(missing)}" if missing
+            else f"{geog}: all {consumer} datasets indexed",
+            action if missing else "", action=action if missing else None))
     return checks
 
 
@@ -6095,8 +6265,11 @@ def _collect_checks(sources: tuple[str, ...] | None = None,
     # The five MPAS binaries no bundle carried and no check reported.
     checks.extend(_mpas_bridge_checks())
     checks.append(_ml_export_check())
+    checks.append(_grib2_export_check())
     checks.append(_verification_engine_check())
     checks.append(_comparison_engine_check())
+    checks.append(_ensemble_reducer_check())
+    checks.append(_nowcast_frames_check())
     checks.append(_simulated_radar_check())
     checks.append(_netcdf_decoder_check())
     checks.append(_mapped_engine_check())
@@ -6106,6 +6279,7 @@ def _collect_checks(sources: tuple[str, ...] | None = None,
     checks.append(_obs_score_check())
     checks.append(_noah_init_check())
     checks.append(_isobaric_reader_check())
+    checks.append(_radar_superob_check())
     checks.append(_region_dealias_check())
     checks.extend(_bridge_checks())
     # ABOUT the report, not about an artifact: does every artifact the

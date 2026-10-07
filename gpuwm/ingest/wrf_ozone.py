@@ -357,12 +357,18 @@ def _ozone_time_weights(julian):
 
 
 def ozn_latitude_time_int(julday, julian, xlat,
-                         climo: OzoneClimatology | None = None) -> np.ndarray:
+                         climo: OzoneClimatology | None = None, *,
+                         out: np.ndarray | None = None) -> np.ndarray:
     """The exact latitude then time chain, computing only its two months.
 
     Return float32 ``xlat.shape + (59,)``. The native route rounds each
     latitude statement before the two separate products and monthly sum.
     An older bridge or unusual external climatology takes the original chain.
+
+    ``out``, a C-contiguous float32 array of the result's shape, is filled
+    and returned by the native route instead of a fresh array: a radiation
+    adapter reuses one buffer every call, so a 1 km rank does not fault in
+    ~200 MB of new host memory at every radiation step (A3).
     """
     del julday  # WRF accepts and ignores it.
     if climo is None:
@@ -376,7 +382,10 @@ def ozn_latitude_time_int(julday, julian, xlat,
             from gpuwm.core import portable_math
             latitude, ozone = inputs
             nm, np_, fact1, fact2 = _ozone_time_weights(julian)
-            out = np.empty(y.shape + (LEVSIZ,), dtype=np.float32)
+            shape = y.shape + (LEVSIZ,)
+            if (out is None or out.shape != shape or out.dtype != np.float32
+                    or not out.flags.c_contiguous):
+                out = np.empty(shape, dtype=np.float32)
             status = entries[2](values.ctypes.data, values.size,
                                 latitude.ctypes.data, latitude.size,
                                 ozone.ctypes.data, LEVSIZ, 12, nm, np_, fact1, fact2,

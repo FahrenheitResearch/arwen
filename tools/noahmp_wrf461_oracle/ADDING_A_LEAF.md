@@ -20,7 +20,7 @@ FP32 bit patterns so a CPU/CUDA port can be held to `max_ulp 0`.
 | Fixture validator | `tools/noahmp_wrf461_oracle/validate_leaf_oracle.py` |
 | Whole-module inertness proof | `tools/noahmp_wrf461_oracle/build_visibility_crosscheck.sh` |
 | Object-code differ | `tools/noahmp_wrf461_oracle/compare_object_code.py` |
-| Fixtures | `gpuwm/data/noahmp/oracle/noahmp-leaves*.csv` |
+| Fixtures | `tests/data/oracles/noahmp/noahmp-leaves*.csv` |
 | Harness negative controls | `tests/test_noahmp_oracle_harness.py` |
 | Port-side tests | `tests/test_noahmp_oracle.py` |
 
@@ -55,7 +55,7 @@ frozen-fraction loop into glibc's libmvec `_ZGVbN4v_expf`, which is a
 different function from scalar `expf` and which no port can reproduce; `nm -u`
 shows it is the only libmvec reference in the whole compiled module. Its
 fixture is `-O0` and the `-O2` divergence is recorded, bounded at 1 ULP on two
-columns, in `gpuwm/data/noahmp/oracle/PROVENANCE-soilwater.md`. If you add a
+columns, in `tests/data/oracles/noahmp/PROVENANCE-soilwater.md`. If you add a
 leaf that calls `EXP`/`LOG`/`**` inside a soil- or snow-layer loop, check
 `nm -u` on your build before trusting the fixture.
 
@@ -245,13 +245,13 @@ On success copy the two CSVs into the repo and re-pin them:
 ```bash
 cp /tmp/nmp-leaves/noahmp-leaves.csv \
    /tmp/nmp-leaves/noahmp-leaves-discrimination.csv \
-   gpuwm/data/noahmp/oracle/
-sha256sum gpuwm/data/noahmp/oracle/noahmp-leaves*.csv
+   tests/data/oracles/noahmp/
+sha256sum tests/data/oracles/noahmp/noahmp-leaves*.csv
 ```
 
 Update the digests in `PINNED_LEAF_ASSETS` (`tests/test_noahmp_oracle.py`),
 the `nvalues` total in `test_leaf_fixture_still_discriminates`, and the tables
-in `gpuwm/data/noahmp/oracle/README.md`.
+in `tests/data/oracles/noahmp/README.md`.
 
 ## 7. Re-run the whole-module inertness proof
 

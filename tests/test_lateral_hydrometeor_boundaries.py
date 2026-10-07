@@ -37,14 +37,17 @@ def _cfg(**changes):
 
 # ---------------------------------------------------------------- table fact
 
-@pytest.mark.parametrize("source", ["hrrr", "hrrr-prs", "icon-d2"])
+@pytest.mark.parametrize("source", ["hrrr", "hrrr-prs", "icon-d2", "gdas"])
 def test_rows_that_publish_hydrometeors_declare_all_five(source):
+    """GDAS/GFS pgrb2.0p25 writes the five masses on 22 of its 33 isobaric
+    levels; its packaged mapping declares them on those levels
+    (``published_levels``), so its boundary carries them."""
     assert BOUNDARY_HYDROMETEOR_MASSES == FIVE
     assert source_boundary_species(source) == FIVE
 
 
 @pytest.mark.parametrize("source", [
-    "gfs", "gdas", "era5", "ecmwf", "icon-eu", "icon", "gem", "rap",
+    "gfs", "era5", "ecmwf", "icon-eu", "icon", "gem", "rap",
     "rrfs", "aifs", "gefs", "not-a-source", "", None])
 def test_rows_that_publish_none_keep_water_vapour_only(source):
     assert source_boundary_species(source) == ()
@@ -241,35 +244,145 @@ def test_mp28_admits_the_aerosol_pair_beside_the_hydrometeors():
     assert not admissible_boundary_inventory(cfg, ("qv", "nwfa"))
 
 
-def _announced(monkeypatch, metadata, fields):
+def _refusal(published, fields, *, mp=28, source="hrrr", analysed=FIVE):
     from gpuwm import prepared_single_domain_forecast as runner
 
-    lines = []
-    monkeypatch.setattr(runner, "warn", lambda text, *a, **k: lines.append(text))
-    runner._announce_vapour_only_boundaries(metadata, [{"fields": fields}])
-    return lines
+    cfg = _cfg(mp_physics=mp, mp28_aerosol_source="synthetic")
+    metadata = {
+        "lbc": {"intervals": [{"fields": fields}] * 2},
+        "hydrometeor_initialization": {"initialized_state_species": {
+            name: {"nonzero_count": 4 if name in analysed else 0}
+            for name in FIVE}}}
+    try:
+        runner._refuse_stale_boundary(
+            cfg, metadata, published=published, source=source,
+            prepared_root=None)
+    except ValueError as error:
+        return str(error)
+    return None
 
 
-def test_a_cache_sealed_before_the_hydrometeor_boundary_runs_with_one_line(
-        monkeypatch):
-    dynamics = ["mu", "phi", "qv", "theta", "u", "v"]
-    old = {"hydrometeor_initialization": {"initialized_state_species": {
-        "qc": {"nonzero_count": 4}, "qs": {"nonzero_count": 9},
-        "qg": {"nonzero_count": 0}}}}
-    lines = _announced(monkeypatch, old, dynamics)
-    assert len(lines) == 1
-    assert "water vapour only" in lines[0] and "qc, qs" in lines[0]
-    assert "prepare it again" in lines[0]
-    # A zero-filled source (its mapping declares no hydrometeors), a new
-    # cache that carries them, and a GFS cache with no receipt: silent.
-    zero = {"hydrometeor_initialization": {"initialized_state_species": {
-        "qc": {"nonzero_count": 0}}}}
-    new = {"hydrometeor_initialization": {
-        "lateral_boundary_species": ["qc"],
-        "initialized_state_species": {"qc": {"nonzero_count": 4}}}}
-    assert _announced(monkeypatch, zero, dynamics) == []
-    assert _announced(monkeypatch, new, sorted([*dynamics, "qc"])) == []
-    assert _announced(monkeypatch, {}, dynamics) == []
+DYNAMICS = ["mu", "phi", "qv", "theta", "u", "v"]
+
+
+def test_a_cache_sealed_before_the_hydrometeor_boundary_is_refused():
+    """The warning it ran with is retired: a stale boundary is refused.
+
+    Run, a water-vapour-only boundary drains the analysed cloud and snow
+    out of the edges, so the refusal names that and the re-preparation.
+    """
+    message = _refusal(FIVE, DYNAMICS)
+    assert message is not None
+    assert "sealed before its lateral boundary carried the hydrometeors "         "hrrr publishes" in message
+    assert "qc, qr, qi, qs, qg" in message
+    assert "drain out of the domain edges" in message
+    assert "gpuwm prep --source hrrr" in message and "--output-root" in message
+    # One mass short is still stale, and is named alone.
+    held = sorted([*DYNAMICS, "qc", "qr", "qi", "qs", "nc", "nr", "ni"])
+    assert "(qg)" in _refusal(FIVE, held)
+    # Only what the start state holds can drain: two analysed masses.
+    assert "(qc, qs)" in _refusal(FIVE, DYNAMICS, analysed=("qc", "qs"))
+
+
+def test_a_cache_a_fresh_preparation_would_write_is_admitted():
+    """A source that publishes none, a cache that carries what it
+    publishes, a scheme that carries none of it, and a start state with
+    nothing analysed to drain: no refusal and no warning.  The GFS and
+    ERA5 caches whose boundaries did not change are not touched."""
+    assert _refusal((), DYNAMICS, source="gfs") is None
+    assert _refusal(FIVE, sorted(
+        [*DYNAMICS, *FIVE, "nc", "nr", "ni"])) is None
+    # Kessler carries qc and qr only; a cache with exactly those is fresh.
+    assert _refusal(FIVE, sorted([*DYNAMICS, "qc", "qr"]), mp=1) is None
+    assert "(qc, qr)" in _refusal(FIVE, DYNAMICS, mp=1)
+    assert _refusal(FIVE, DYNAMICS, analysed=()) is None
+    # A cache with no initialization receipt names nothing analysed.
+    from gpuwm import prepared_single_domain_forecast as runner
+    runner._refuse_stale_boundary(
+        _cfg(mp_physics=28, mp28_aerosol_source="synthetic"),
+        {"lbc": {"intervals": [{"fields": DYNAMICS}]}},
+        published=FIVE, source="hrrr", prepared_root=None)
+
+
+def _gdas_documents():
+    import json
+
+    from gpuwm.source_authorities import (packaged_authorities,
+                                          packaged_authority_sha256)
+
+    pins = packaged_authority_sha256("gdas-pgrb2-0p25-grib2-v1")
+    current = json.loads(packaged_authorities(
+        "gdas-pgrb2-0p25-grib2-v1")["mapping"].read_text(encoding="utf-8"))
+    earlier = json.loads(json.dumps(current))
+    names = ("cloud_water_mixing_ratio", "rain_water_mixing_ratio",
+             "cloud_ice_mixing_ratio", "snow_mixing_ratio",
+             "graupel_or_hail_mixing_ratio")
+    for name in names:
+        del earlier["fields"][name]
+        earlier["target"]["initialization_policies"][name] = (
+            "explicit_zero_with_adapter_validation")
+    earlier["target"]["required_fields"] = [
+        row for row in earlier["target"]["required_fields"]
+        if row["name"] not in names]
+    return pins, current, earlier
+
+
+def test_a_gdas_preparation_from_before_its_mapping_declared_them_is_named(
+        tmp_path):
+    """The packaged GDAS profile's door names the stale boundary.
+
+    The bound mapping of an earlier preparation no longer matches the
+    pin; the door says why that matters rather than only that the
+    digests differ, under the profile's own name and when the stage door
+    hands the same root in as a caller's ``mapped`` preparation.
+    """
+    import json
+
+    from gpuwm import prepared_single_domain_forecast as runner
+
+    pins, current, earlier = _gdas_documents()
+    stale = json.dumps(earlier).encode()
+    for source, profile in (("gdas", "gdas-pgrb2-0p25-grib2-v1"),
+                            ("mapped", None)):
+        message = runner._stale_profile_mapping_refusal(
+            source=source, profile_id=profile, mapping_bytes=stale,
+            composition_sha256=pins["composition"], prepared_root=tmp_path)
+        assert message is not None, source
+        assert "gdas publishes" in message
+        assert "qc, qr, qi, qs, qg" in message
+        assert "gpuwm prep --source gdas" in message
+    fresh = json.dumps(current).encode()
+    assert runner._stale_profile_mapping_refusal(
+        source="gdas", profile_id="gdas-pgrb2-0p25-grib2-v1",
+        mapping_bytes=fresh, composition_sha256=pins["composition"],
+        prepared_root=tmp_path) is None
+    # A caller's own mapping is its own: another name, or another
+    # composition, is not the profile's stale preparation.
+    renamed = dict(earlier, name="my-own-gfs-mapping")
+    assert runner._stale_profile_mapping_refusal(
+        source="mapped", profile_id=None,
+        mapping_bytes=json.dumps(renamed).encode(),
+        composition_sha256=pins["composition"], prepared_root=tmp_path) is None
+    assert runner._stale_profile_mapping_refusal(
+        source="mapped", profile_id=None, mapping_bytes=stale,
+        composition_sha256="0" * 64, prepared_root=tmp_path) is None
+
+
+def test_a_mapped_root_publishes_what_its_bound_mapping_declares(tmp_path):
+    import json
+
+    from gpuwm import prepared_single_domain_forecast as runner
+
+    _pins, current, earlier = _gdas_documents()
+    path = tmp_path / "mapping.json"
+    path.write_text(json.dumps(current), encoding="utf-8")
+    assert runner._boundary_publication(
+        "mapped", {"mapped_mapping": path}) == FIVE
+    path.write_text(json.dumps(earlier), encoding="utf-8")
+    assert runner._boundary_publication(
+        "mapped", {"mapped_mapping": path}) == ()
+    assert runner._boundary_publication("hrrr", {}) == FIVE
+    assert runner._boundary_publication("gfs", {}) == ()
 
 
 # -------------------------------------------------------------------- price

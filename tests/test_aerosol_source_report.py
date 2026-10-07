@@ -284,12 +284,11 @@ def test_every_report_writer_that_carries_the_key_uses_the_shared_builder():
 def test_the_three_late_wired_routes_take_the_one_shared_resolver():
     """TASK TWO's standing claim, as a gate rather than a commit message.
 
-    Two of the three initialization routes that were never wired now pass
+    The three initialization routes that were never wired now pass
     ``grid=`` -- the same single front door the production real routes
-    use, which is what makes ``resolve_wif_climatology`` the one resolver.
-    The third is deliberately NOT wired and carries its reason inline; the
-    thing that must never happen there is a SECOND resolver appearing to
-    compensate.
+    use, which is what makes ``resolve_wif_climatology`` the one resolver
+    (the HRRR boundary strips last, with their own geodesy).  The thing
+    that must never happen is a SECOND resolver appearing beside it.
     """
     from pathlib import Path
 
@@ -308,8 +307,10 @@ def test_the_three_late_wired_routes_take_the_one_shared_resolver():
         encoding="utf-8")
     # The full-domain state IS wired.
     assert 'met, dc.run, coord, static["HGT_M"], grid=grid,' in benchmark
-    # The boundary-strip construction is not, and says so by name.
-    assert "NO ``grid=`` HERE, AND THAT IS THE DECISION" in benchmark
+    # The boundary strips take the same door with their own rectangle of
+    # the mass-point geodesy: an mp=28 strip under the WIF climatology
+    # refused in every boundary worker before (no lat/lon to honour it).
+    assert '**({} if strip_geodesy is None else {"grid": strip_geodesy})' in benchmark
     # And nothing anywhere reintroduces the retired second resolver.
     for name in ("gpuwm/verify/cases/real74_d01.py",
                  "tools/hrrr_state_proof.py",

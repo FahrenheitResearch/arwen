@@ -181,11 +181,17 @@ def test_the_batched_state_is_recognised_by_the_method_the_refusal_reads():
 
 def test_the_forcing_is_in_no_state_or_restart_inventory():
     """External data: an inventory row would make a restart carry one
-    leg's observations into the next."""
+    leg's observations into the next.  It is classified INFRA, which every
+    manifest skips, so a checkpoint written while a forcing is attached is
+    legal and carries none of it (the RestartManifestError this test used to
+    expect is retired with that classification).  The other half of the
+    rule, refusing a resume inside a forced period, is the door's
+    (gpuwm.da.forecast_heating.resume_plan)."""
     from gpuwm.io import restart
 
-    with pytest.raises(restart.RestartManifestError):
-        restart.classify_state_attr(radar_tten.STATE_ATTRIBUTE)
+    assert restart.classify_state_attr(radar_tten.STATE_ATTRIBUTE) == "infra"
+    assert radar_tten.STATE_ATTRIBUTE not in restart.STATE_SERIALIZED_ATTRS
+    assert radar_tten.STATE_ATTRIBUTE not in restart.CHECKPOINT_ONLY_STATE
 
 
 def test_the_cycle_admission_prices_the_forcing():

@@ -1238,6 +1238,13 @@ impl DownloadClient {
         Ok(data)
     }
 
+    /// The object's total length as the origin states it in the
+    /// `Content-Range` of a one-byte range answer, or `None` when the
+    /// origin answers without a total (not 206, or `*`).
+    pub fn object_length(&self, url: &str) -> crate::error::Result<Option<u64>> {
+        self.probe_range_total_length(url)
+    }
+
     fn probe_range_total_length(&self, url: &str) -> crate::error::Result<Option<u64>> {
         let response = self.get_response_following_redirects(url, Some("bytes=0-0"))?;
         if response.status().as_u16() != 206 {

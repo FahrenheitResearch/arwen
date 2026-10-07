@@ -63,7 +63,8 @@ def _metadata(path):
 def resolve_metem_run(directory, *, rrtmg_variant=None):
     from gpuwm.experiment import build_experiment
     from gpuwm.namelist_import import import_namelists, parse_namelist
-    from gpuwm.wrfinput_door import synthesize_wps_namelist, require_preserved_wrf_selectors
+    from gpuwm.wrfinput_door import (refuse_latlon_files, synthesize_wps_namelist,
+                                     require_preserved_wrf_selectors)
     import tomllib
 
     directory = Path(directory).resolve()
@@ -78,6 +79,7 @@ def resolve_metem_run(directory, *, rrtmg_variant=None):
         raise ValueError('met_em domain files must include d01 and every consecutive child domain')
     paths = {gid:met_em_series(directory, f'd{gid:02d}') for gid in sorted(ids)}
     metadata = {gid:_metadata(files[0]) for gid,files in paths.items()}
+    refuse_latlon_files(metadata)
     root_attrs = metadata[1].global_attributes
     for gid, item in metadata.items():
         for key in ('MMINLU', 'NUM_LAND_CAT'):

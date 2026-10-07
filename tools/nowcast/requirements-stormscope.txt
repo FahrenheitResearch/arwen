@@ -1,0 +1,24 @@
+# The StormScope runner's own virtual environment (Linux x86_64, Python 3.12).
+# The engine venv never imports any of this.  setup_venv.sh installs it and
+# records `pip freeze` beside the venv; the runner writes these versions into
+# every receipt.
+#
+# Pins chosen 2026-10-06:
+#   earth2studio 0.19.0 is the newest release; its StormScope, GOES, MRMS and
+#   GLM source files are byte-identical to main on that date, and it pins the
+#   weights revision 62f0fd2fa52c3cff67c931daac18cdc0d9f58d2a.
+#   torch 2.13.0 + CUDA 13.0 wheels cover Blackwell (sm_100, sm_120); NATTEN
+#   publishes a matching prebuilt wheel (natten 0.21.7+torch2130cu130), so
+#   nothing is compiled on the box.  The box driver must support CUDA 13.0.
+#   nvidia-physicsnemo 2.2.2 is the newest release and needs torch >= 2.10.
+
+--extra-index-url https://download.pytorch.org/whl/cu130
+--find-links https://whl.natten.org
+
+torch==2.13.0+cu130
+torchvision==0.28.0+cu130
+natten==0.21.7+torch2130cu130
+nvidia-physicsnemo==2.2.2
+earth2studio[data,stormscope]==0.19.0
+nvtx==0.2.16
+omegaconf==2.3.1

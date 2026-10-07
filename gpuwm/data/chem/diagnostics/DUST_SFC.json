@@ -1,0 +1,23 @@
+{
+  "schema": "gpuwm.chem.diagnostic.v1",
+  "output_name": "DUST_SFC",
+  "units": "ug m-3",
+  "description": "DUST_SFC table diagnostic",
+  "kind": "term_sum_surface",
+  "terms": [
+    {
+      "species": [
+        "dust_1",
+        "dust_2",
+        "dust_3",
+        "dust_4",
+        "dust_5"
+      ],
+      "ops": [],
+      "from": "WRF chem/module_gocart_aerosols.F:not WRF; DESIGN section 8"
+    }
+  ],
+  "divide_by_alt": true,
+  "column_scale": 1,
+  "provenance": "WRF v4.7.1 sum_pm_gocart and DESIGN section 8"
+}

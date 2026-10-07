@@ -30,7 +30,16 @@
 //! rw_mrms decode  --file F.grib2.gz --out F.obspack [--bbox W,S,E,N]
 //! rw_mrms grid    --file F.grib2.gz --out grid.obspack [--bbox W,S,E,N]
 //! rw_mrms verify  --pack F.obspack
+//! rw_mrms frames  --issue 2026-10-01T18:00:00Z --start ... --end ... --step-minutes 10 --out DIR
 //! ```
+//!
+//! `frames` writes the composite at a list of window ends as
+//! `gpuwm-obs.nowcast-frames.v1` (the radar latent heating plug point that
+//! `rw_nexrad grid-composite` reads): the nearest archived object within
+//! 120 s of each time, its own stamp recorded, `-999` as NaN (no coverage)
+//! and `-99` kept as `-99` (observed no echo).  A frame stamped after
+//! `--issue` makes the receipt `causal: false`, so it can only be used as an
+//! oracle.
 
 use std::error::Error;
 use std::path::{Component, Path, PathBuf};
@@ -199,6 +208,12 @@ const FETCH_SCHEMA: &str = "gpuwm-obs.mrms-fetch.v1";
 const DECODE_SCHEMA: &str = "gpuwm-obs.mrms-decode.v1";
 const GRIDCMD_SCHEMA: &str = "gpuwm-obs.mrms-grid.v1";
 const VERIFY_SCHEMA: &str = "gpuwm-obs.mrms-verify.v1";
+/// The 2D reflectivity frames contract (`docs/nowcast-frames.md`).
+const NOWCAST_FRAMES_SCHEMA: &str = "gpuwm-obs.nowcast-frames.v1";
+const INPUTS_SCHEMA: &str = "gpuwm-obs.nowcast-inputs.v1";
+/// How far an archived object may sit from the time a frame is asked for.
+/// The archive's cadence is about two minutes with off-cadence seconds.
+const FRAME_TOLERANCE_SECONDS: i64 = 120;
 
 /// The exact `--abi` line the Python bridge pins, so a bin that drifted out
 /// from under a pinned wrapper is caught at probe time rather than at parse
@@ -208,7 +223,7 @@ sha256\tgpuwm-obs.obs-grid.v1\tcomposite_reflectivity\tdBZ\t\
 precipitation_accumulation\tmm\taccumulation_seconds";
 
 const USAGE: &str = "\
-usage: rw_mrms <list|nearest|fetch|decode|grid|verify> [OPTIONS]
+usage: rw_mrms <list|nearest|fetch|decode|grid|verify|frames> [OPTIONS]
        rw_mrms --version | --help | --abi | --list-products
 
   list     report the MRMS objects a window resolves to, moving no payload
@@ -217,6 +232,7 @@ usage: rw_mrms <list|nearest|fetch|decode|grid|verify> [OPTIONS]
   decode   turn one archived object into a `gpuwm-obs.obs-grid.v1` pack
   grid     write the pack's latitude/longitude once, as a `gpuwm-obs.obs-geo.v1`
   verify   re-read a pack and re-prove its header, index and payload digest
+  frames   write the composite at each window end as gpuwm-obs.nowcast-frames.v1
 
 archive options
   --bucket NAME           default: noaa-mrms-pds (anonymous list+get, probed
@@ -245,6 +261,19 @@ decode options
 
 verify options
   --pack FILE             the pack to re-prove (--file and --out accepted too)
+
+frames options (the composite only; --product must stay the default)
+  --issue TIME            the forecast start the frames are judged against:
+                          any frame stamped after it makes the receipt
+                          causal: false (an oracle, never a forecast)
+  --start TIME            first frame time (a window end)
+  --end TIME              last frame time (inclusive)
+  --step-minutes N        frame spacing. Each frame is the nearest archived
+                          object within 120 s, its own stamp recorded
+  --files DIR             read archived objects from this directory instead of
+                          the bucket (names as the archive spells them)
+  --bbox W,S,E,N          keep only this box of the 0.01 degree lattice
+  --out DIR               frames root: nowcast.json, inputs.json, <stamp>/refc.f32
 ";
 
 fn main() -> ExitCode {
@@ -293,6 +322,7 @@ fn run(args: &[String]) -> Result<String, Box<dyn Error>> {
         "decode" => cmd_decode(&options),
         "grid" => cmd_grid(&options),
         "verify" => cmd_verify(&options),
+        "frames" => cmd_frames(&options),
         other => Err(err(format!("unknown subcommand {other:?}\n\n{USAGE}"))),
     }
 }
@@ -316,6 +346,9 @@ struct Options {
     pack: Option<PathBuf>,
     bbox: Option<BoundingBox>,
     no_echo_dbz: Option<f64>,
+    issue: Option<String>,
+    step_minutes: Option<i64>,
+    files: Option<PathBuf>,
 }
 
 impl Options {
@@ -359,6 +392,18 @@ impl Options {
                 "--out" => options.out = Some(PathBuf::from(value()?)),
                 "--file" => options.file = Some(PathBuf::from(value()?)),
                 "--pack" => options.pack = Some(PathBuf::from(value()?)),
+                "--issue" => options.issue = Some(value()?),
+                "--files" => options.files = Some(PathBuf::from(value()?)),
+                "--step-minutes" => {
+                    let raw = value()?;
+                    let minutes: i64 = raw
+                        .parse()
+                        .map_err(|_| err(format!("--step-minutes expects a count, got {raw:?}")))?;
+                    if minutes <= 0 {
+                        return Err(err("--step-minutes must be positive"));
+                    }
+                    options.step_minutes = Some(minutes);
+                }
                 "--bbox" => options.bbox = Some(BoundingBox::parse(&value()?)?),
                 "--no-echo-dbz" => {
                     let raw = value()?;
@@ -771,6 +816,12 @@ fn load_field(
     no_echo_dbz: f64,
     spec: &ProductDecodeSpec,
 ) -> Result<Field, Box<dyn Error>> {
+    canonical_field(decode_raw(raw, spec)?, bbox, no_echo_dbz, spec)
+}
+
+/// The archive object decoded, values still in the archive's own
+/// conventions (sentinels untouched), with its native coordinates.
+fn decode_raw(raw: &[u8], spec: &ProductDecodeSpec) -> Result<DecodedField, Box<dyn Error>> {
     let (stream, _was_gzipped) = gunzip_if_wrapped(raw, "MRMS archive object")?;
     let mut field: DecodedField = if let Some(parameter) = spec.native_parameter {
         decode_native_product(&stream, parameter, spec.units)?
@@ -792,7 +843,7 @@ fn load_field(
             field.native_coordinates = Some((lat, lon));
         }
     }
-    canonical_field(field, bbox, no_echo_dbz, spec)
+    Ok(field)
 }
 
 struct DecodedField {
@@ -1453,6 +1504,292 @@ fn cmd_verify(options: &Options) -> Result<String, Box<dyn Error>> {
     Ok(format!("{}\n", serde_json::to_string_pretty(&record)?))
 }
 
+// ------------------------------------------------------------- frames
+
+/// One archived object a frame may be cut from.
+struct FrameCandidate {
+    valid_time: DateTime<Utc>,
+    name: String,
+    /// The bucket listing row, or a file under `--files`.
+    archived: Option<Frame>,
+    path: Option<PathBuf>,
+}
+
+/// The candidate nearest `target` within the tolerance; the earlier on a tie.
+fn nearest_candidate(candidates: &[FrameCandidate], target: DateTime<Utc>) -> Option<&FrameCandidate> {
+    candidates
+        .iter()
+        .filter(|c| (c.valid_time - target).num_seconds().abs() <= FRAME_TOLERANCE_SECONDS)
+        .min_by_key(|c| ((c.valid_time - target).num_seconds().abs(), c.valid_time, c.name.clone()))
+}
+
+/// The four values a frame needs from one archived composite.
+struct CompositeFrame {
+    /// NaN where the archive says no coverage (-999, or a masked cell),
+    /// -99 where it says no echo, dBZ elsewhere; row-major in the archive's
+    /// own row order.
+    values: Vec<f32>,
+    lattice: serde_json::Value,
+    /// (ny, nx)
+    shape: (usize, usize),
+    /// echo, no echo, no coverage
+    census: [usize; 3],
+}
+
+fn composite_frame(raw: &[u8], bbox: Option<BoundingBox>) -> Result<CompositeFrame, Box<dyn Error>> {
+    let spec = decode_spec(DEFAULT_PRODUCT)?;
+    let field = decode_raw(raw, &spec)?;
+    if !spec.accepted_units.iter().any(|(units, _)| *units == field.units) {
+        return Err(err(format!("MRMS composite arrived in units {:?}, not dBZ", field.units)));
+    }
+    let (snx, sny) = (field.grid.shape.nx, field.grid.shape.ny);
+    let cells = snx * sny;
+    if field.values.len() != cells || snx < 2 || sny < 2 {
+        return Err(err("MRMS composite grid is not a 2D lattice of its stated shape"));
+    }
+    let (lat, lon): (Vec<f64>, Vec<f64>) = match &field.native_coordinates {
+        Some((lat, lon)) if lat.len() == cells && lon.len() == cells => (lat.clone(), lon.clone()),
+        _ => (
+            field.grid.lat_deg.iter().map(|v| f64::from(*v)).collect(),
+            field.grid.lon_deg.iter().map(|v| f64::from(*v)).collect(),
+        ),
+    };
+    let (i0, i1, j0, j1) = match bbox {
+        None => (0, snx, 0, sny),
+        Some(b) => {
+            let is: Vec<usize> = (0..snx)
+                .filter(|&i| {
+                    let x = wrap_longitude(lon[i]);
+                    x >= b.west && x <= b.east
+                })
+                .collect();
+            let js: Vec<usize> = (0..sny)
+                .filter(|&j| lat[j * snx] >= b.south && lat[j * snx] <= b.north)
+                .collect();
+            match (is.first(), is.last(), js.first(), js.last()) {
+                (Some(a), Some(z), Some(c), Some(d)) if z > a && d > c => (*a, z + 1, *c, d + 1),
+                _ => return Err(err("--bbox keeps fewer than 2 x 2 cells of the MRMS lattice")),
+            }
+        }
+    };
+    let (nx, ny) = (i1 - i0, j1 - j0);
+    let at = |j: usize, i: usize| (j0 + j) * snx + i0 + i;
+    // The lattice as the coordinates state it: spacing from the first to
+    // the last row and column, so rounding in one cell does not set it.
+    let lat0 = lat[at(0, 0)];
+    let dlat = (lat[at(ny - 1, 0)] - lat0) / (ny - 1) as f64;
+    let lon0 = wrap_longitude(lon[at(0, 0)]);
+    let span = (wrap_longitude(lon[at(0, nx - 1)]) - lon0).rem_euclid(360.0);
+    let dlon = span / (nx - 1) as f64;
+    if !(dlat.is_finite() && dlat != 0.0 && dlon.is_finite() && dlon > 0.0) {
+        return Err(err(format!("MRMS lattice spacing dlat={dlat} dlon={dlon} is not a regular lattice")));
+    }
+    // Keyed as the frames contract keys them (docs/nowcast-frames.md).
+    let corner = |j: usize, i: usize| serde_json::json!([lat[at(j, i)], wrap_longitude(lon[at(j, i)])]);
+    let lattice = serde_json::json!({
+        "kind": "latlon",
+        "lat0": lat0, "lon0": lon0, "dlat": dlat, "dlon": dlon,
+        "nx": nx, "ny": ny,
+        "row_order": if dlat > 0.0 { "south_to_north" } else { "north_to_south" },
+        "corners_latlon": {
+            "j0_i0": corner(0, 0), "j0_in": corner(0, nx - 1),
+            "jn_i0": corner(ny - 1, 0), "jn_in": corner(ny - 1, nx - 1),
+        },
+        "subset": {"source_nx": snx, "source_ny": sny, "i_start": i0, "j_start": j0},
+    });
+    let mut census = [0usize; 3];
+    let mut values = Vec::with_capacity(nx * ny);
+    for j in 0..ny {
+        for i in 0..nx {
+            let raw_value = f64::from(field.values[at(j, i)]);
+            values.push(if !raw_value.is_finite() || raw_value <= NO_COVERAGE_CEILING_DBZ {
+                census[2] += 1;
+                f32::NAN
+            } else if raw_value <= NO_ECHO_CEILING_DBZ {
+                census[1] += 1;
+                -99.0
+            } else {
+                census[0] += 1;
+                raw_value as f32
+            });
+        }
+    }
+    Ok(CompositeFrame { values, lattice, shape: (ny, nx), census })
+}
+
+fn write_file_atomic(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let temporary = path.with_extension(format!("tmp{}", std::process::id()));
+    std::fs::write(&temporary, bytes)?;
+    std::fs::rename(&temporary, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temporary);
+    })?;
+    Ok(())
+}
+
+fn zulu(when: DateTime<Utc>) -> String {
+    format!("{}Z", seam_time(when))
+}
+
+fn cmd_frames(options: &Options) -> Result<String, Box<dyn Error>> {
+    let started = std::time::Instant::now();
+    if options.product()? != DEFAULT_PRODUCT {
+        return Err(err(format!(
+            "frames writes the composite {DEFAULT_PRODUCT} only; the heating windows read a \
+             column maximum, and another product under that name would be heated as one"
+        )));
+    }
+    let issue = parse_time(options.issue.as_deref().ok_or_else(|| err("--issue is required"))?)?;
+    let (start, end) = options.window()?;
+    let step = options.step_minutes.ok_or_else(|| err("--step-minutes is required"))?;
+    let out = options.out.clone().ok_or_else(|| err("--out is required (the frames root)"))?;
+    let mut targets = Vec::new();
+    let mut when = start;
+    while when <= end {
+        targets.push(when);
+        when += chrono::Duration::minutes(step);
+    }
+    let tolerance = chrono::Duration::seconds(FRAME_TOLERANCE_SECONDS);
+    let agent = build_agent();
+    let mut candidates: Vec<FrameCandidate> = Vec::new();
+    match &options.files {
+        Some(dir) => {
+            for entry in std::fs::read_dir(dir)
+                .map_err(|e| err(format!("cannot read --files {}: {e}", dir.display())))?
+            {
+                let path = entry?.path();
+                let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                if let Some((valid_time, _)) = parse_frame_name(&name, DEFAULT_PRODUCT) {
+                    candidates.push(FrameCandidate { valid_time, name, archived: None, path: Some(path) });
+                }
+            }
+        }
+        None => {
+            for frame in list_frames(&agent, options.bucket(), options.region()?, DEFAULT_PRODUCT,
+                                     start - tolerance, end + tolerance)? {
+                let name = frame.object.key.rsplit('/').next().unwrap_or("").to_string();
+                candidates.push(FrameCandidate {
+                    valid_time: frame.valid_time, name, archived: Some(frame), path: None,
+                });
+            }
+        }
+    }
+    // Every frame is found before anything is fetched or written.
+    let chosen: Vec<&FrameCandidate> = targets
+        .iter()
+        .map(|target| {
+            nearest_candidate(&candidates, *target).ok_or_else(|| {
+                err(format!(
+                    "no MRMS composite within {FRAME_TOLERANCE_SECONDS} s of {}; a window \
+                     without its frame would run on the model while the record says forced",
+                    zulu(*target)
+                ))
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    std::fs::create_dir_all(&out)?;
+    let cache_dir = options.cache_dir();
+    let mut frames = Vec::new();
+    let mut inputs = Vec::new();
+    let mut slots = Vec::new();
+    let mut lattice: Option<serde_json::Value> = None;
+    let mut latest = None::<DateTime<Utc>>;
+    for (target, candidate) in targets.iter().zip(&chosen) {
+        let (raw, sha256, bucket, key) = match (&candidate.archived, &candidate.path) {
+            (Some(frame), _) => {
+                let got = download(&agent, options.bucket(), &cache_dir, frame, !options.no_cache)?;
+                (std::fs::read(&got.path)?, got.sha256, Some(options.bucket().to_string()),
+                 frame.object.key.clone())
+            }
+            (None, Some(path)) => {
+                let raw = std::fs::read(path)?;
+                let digest = hex_sha256(&raw);
+                (raw, digest, None, rw_obs::absolute_uri(path))
+            }
+            _ => unreachable!("a candidate is listed or local"),
+        };
+        let frame = composite_frame(&raw, options.bbox)?;
+        match &lattice {
+            None => lattice = Some(frame.lattice.clone()),
+            Some(first) if *first != frame.lattice => {
+                return Err(err(format!(
+                    "the composite at {} sits on another lattice than the first frame's; the \
+                     frames contract states one lattice for every frame",
+                    zulu(candidate.valid_time)
+                )))
+            }
+            Some(_) => {}
+        }
+        latest = Some(latest.map_or(candidate.valid_time, |l| l.max(candidate.valid_time)));
+        let bytes: Vec<u8> = frame.values.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let directory = target.format("%Y%m%dT%H%MZ").to_string();
+        let file = format!("{directory}/refc.f32");
+        write_file_atomic(&out.join(&file), &bytes)?;
+        let stamp = zulu(candidate.valid_time);
+        frames.push(serde_json::json!({
+            "valid": stamp,
+            "stamp": stamp,
+            "nominal": zulu(*target),
+            "offset_seconds": (candidate.valid_time - *target).num_seconds(),
+            "lead_minutes": (*target - issue).num_seconds() as f64 / 60.0,
+            "file": file,
+            "shape": [1, frame.shape.0, frame.shape.1],
+            "dtype": "float32-le",
+            "sha256": hex_sha256(&bytes),
+            "cells": {"echo": frame.census[0], "no_echo": frame.census[1],
+                      "no_coverage": frame.census[2]},
+        }));
+        inputs.push(serde_json::json!({
+            "stream": "mrms-composite", "bucket": bucket, "key": key,
+            "name": candidate.name, "stamp": stamp, "slot": zulu(*target),
+            "sha256": sha256, "bytes": raw.len(),
+            "after_issue": candidate.valid_time > issue,
+        }));
+        slots.push(serde_json::json!({
+            "stream": "mrms-composite", "slot": zulu(*target), "stamp": stamp,
+            "offset_seconds": (candidate.valid_time - *target).num_seconds(),
+        }));
+    }
+    let causal = chosen.iter().all(|c| c.valid_time <= issue);
+    let inputs_doc = serde_json::json!({"schema": INPUTS_SCHEMA, "objects": inputs, "slots": slots});
+    let inputs_text = format!("{}\n", serde_json::to_string_pretty(&inputs_doc)?);
+    write_file_atomic(&out.join("inputs.json"), inputs_text.as_bytes())?;
+    let receipt = serde_json::json!({
+        "schema": NOWCAST_FRAMES_SCHEMA,
+        "status": "READY",
+        "source": {
+            "kind": "observed",
+            "id": "mrms-composite",
+            "package": "rw_mrms",
+            "revision": VERSION,
+            "code": {"rw_mrms": VERSION},
+            "product": DEFAULT_PRODUCT,
+        },
+        "issue_time": zulu(issue),
+        "latest_input_time": latest.map(zulu),
+        "causal": causal,
+        "causal_rule": "true only when every frame's own stamp is at or before issue_time",
+        "variable": "refc",
+        "units": "dBZ",
+        "members": 1,
+        "conventions": {
+            "no_coverage": "NaN (archive -999 or masked)",
+            "observed_no_echo": -99.0,
+            "tolerance_seconds": FRAME_TOLERANCE_SECONDS,
+        },
+        "lattice": lattice,
+        "inputs": {"file": "inputs.json", "sha256": hex_sha256(inputs_text.as_bytes())},
+        "frames": frames,
+        "timing": {"seconds": (started.elapsed().as_secs_f64() * 1000.0).round() / 1000.0},
+        "peak_device_bytes": null,
+    });
+    let text = format!("{}\n", serde_json::to_string_pretty(&receipt)?);
+    write_file_atomic(&out.join("nowcast.json"), text.as_bytes())?;
+    Ok(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1537,7 +1874,7 @@ mod tests {
     fn help_version_and_abi_are_stable_surfaces() {
         assert!(run(&[]).unwrap().contains("usage: rw_mrms"));
         let help = run(&["--help".to_string()]).unwrap();
-        for subcommand in ["list", "nearest", "fetch", "decode", "grid", "verify"] {
+        for subcommand in ["list", "nearest", "fetch", "decode", "grid", "verify", "frames"] {
             assert!(help.contains(subcommand), "usage must document {subcommand}");
         }
         assert!(run(&["--version".to_string()]).unwrap().starts_with("rw_mrms "));

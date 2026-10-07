@@ -131,7 +131,8 @@ def launch_aa_cold_network(
         ice_deposition_partition, ice_to_snow_mass, ice_to_snow_number,
         rain_snow_tables, rain_graupel_tables, rain_freezing_tables,
         rain_cloud_efficiency, cloud_freezing_tables,
-        dt: float) -> None:
+        dt: float, *, qcten=None, qrten=None, nrten=None, qiten=None,
+        niten=None) -> None:
     """Apply the complete aerosol-aware sub-freezing source group.
 
     Every array is float32, C-contiguous and of one common shape.  The
@@ -147,8 +148,14 @@ def launch_aa_cold_network(
     ``ng1d``; ``snow_velocity_boost`` is WRF's ``vts_boost`` and is reset to
     1.0 for **every** cell, including warm and hydrometeor-free ones,
     because the later column sedimentation kernel consumes the whole field.
+
+    ``qcten`` (keyword, optional) is WRF's per-kilogram-per-second cloud
+    water accumulator.  Given, ``qc`` is the read-only entry cloud and the
+    stage's cloud tendency is ADDED to ``qcten``, to be applied once with
+    every other cloud tendency (:3975); the production adapter passes it.
+    Left ``None``, the tendency is applied to ``qc`` in place.
     """
-    shape, size = validate_fields({
+    fields = {
         "qi": qi,
         "ni": ni,
         "qs": qs,
@@ -167,7 +174,21 @@ def launch_aa_cold_network(
         "nifaten": nifaten,
         "graupel_number_shadow": graupel_number_shadow,
         "snow_velocity_boost": snow_velocity_boost,
-    })
+    }
+    if qcten is not None:
+        fields["qcten"] = qcten
+    rain_ice = {"qrten": qrten, "nrten": nrten, "qiten": qiten,
+                "niten": niten}
+    given = [name for name, value in rain_ice.items() if value is not None]
+    if given and len(given) != 4:
+        raise ValueError("qrten, nrten, qiten and niten are given together "
+                         f"or not at all (got {given})")
+    if given:
+        # WRF's rain and ice accumulators: qr/nr/qi/ni are then the
+        # read-only entry state and the :3033-3055 / :3070-3091 balances run
+        # in tendency form (thompson_aerosol_cold.cu).
+        fields.update(rain_ice)
+    shape, size = validate_fields(fields)
     del shape
 
     validate_fp64_fortran_table(
@@ -222,6 +243,7 @@ def launch_aa_cold_network(
          *resolved["rain_freezing_tables"],
          rain_cloud_efficiency,
          *resolved["cloud_freezing_tables"],
+         qcten, qrten, nrten, qiten, niten,
          np.float32(dt), np.int32(size)))
 
 
@@ -230,7 +252,8 @@ def launch_aa_cold_network_from_owner(
         nc_entry, nwfa_entry, nifa_entry,
         ncten, nwfaten, nifaten,
         graupel_number_shadow, snow_velocity_boost,
-        classic_table_owner, dt: float) -> None:
+        classic_table_owner, dt: float, *, qcten=None, qrten=None,
+        nrten=None, qiten=None, niten=None) -> None:
     """Launch the cold network from one verified classic table owner.
 
     Every coefficient this kernel needs already exists in the mp=8 table
@@ -265,6 +288,7 @@ def launch_aa_cold_network_from_owner(
         tables.rain_cloud_efficiency,
         tables.cloud_freezing_tables,
         dt,
+        qcten=qcten, qrten=qrten, nrten=nrten, qiten=qiten, niten=niten,
     )
 
 

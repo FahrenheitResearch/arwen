@@ -1,0 +1,59 @@
+{
+  "schema": "gpuwm.chem.species.v1",
+  "owner": "aq-smoke",
+  "description": "HRRR-Smoke's smoke: one transported aerosol mass mixing ratio, emitted by satellite-observed fires with Freitas plume rise, taken in from HRRR at the boundaries, mixed, deposited and washed out.",
+  "rows": [
+    {
+      "name": "smoke",
+      "output_name": "smoke",
+      "long_name": "smoke (fire PM2.5) mass mixing ratio per dry air",
+      "units": "ug kg-1",
+      "phase": "aerosol",
+      "family": "smoke",
+      "wrf_array": "tracer",
+      "sets": [
+        "smoke"
+      ],
+      "transported": true,
+      "floor": 1e-16,
+      "default_inflow": 0.0,
+      "molar_mass_g_mol": null,
+      "processes": [
+        "plumerise.freitas",
+        "emission.fire",
+        "mixing.vertmx",
+        "wetdep.ls"
+      ],
+      "emissions": [
+        {
+          "source": "rave-3km",
+          "field": "PM25",
+          "weight": 1.0,
+          "vertical": "plumerise",
+          "provenance": "RAVE's own hourly fire PM2.5 emission (kg per cell per hour) is the smoke source mass, as DESIGN 5.2 chose; RRFS-SD instead forms it from FRE with a vegetation emission-factor map (see the rave-3km source row); weight 1 because smoke is PM2.5 mass."
+        }
+      ],
+      "boundary": [
+        {
+          "source": "hrrr-native-smoke",
+          "fields": [
+            "MASSDEN"
+          ],
+          "weights": [
+            1.0
+          ],
+          "conversion": "kg_m3_to_ug_kg_dry",
+          "provenance": "HRRR-Smoke's own smoke on its 50 hybrid levels (wrfnat MASSDEN, 0/20/0, level type 105), turned back into ug/kg with the density UPP multiplied by (see the hrrr-native-smoke source row)."
+        }
+      ],
+      "drydep": null,
+      "settling": null,
+      "wetdep_ls_alpha": 0.5,
+      "aging": null,
+      "optics": null,
+      "mp_coupling": null,
+      "exclusive_group": "rave-3km-pm25:smoke",
+      "provenance": "WRF Registry/registry.chem:2120 (state smoke in the tracer array, package tracer_smoke tracer_opt==1 at :4177); units ug kg-1 per dry air as HRRR-Smoke carries it (UPP inverts MASSDEN from it). floor = WRF epsilc 1.E-16. default_inflow 0: with no boundary source enabled no smoke enters, and the run receipt says smoke from outside the domain is absent (DESIGN 5.1). wetdep_ls_alpha 0.5 is GSL's wetdep_ls_alpha default (gsl-ccpp-physics/physics/smoke_dust/rrfs_smoke_config.F90:40), a data choice. Dry deposition joins the row ({scheme: gocart_aerosol} with the process drydep.gocart) when the aq-gocart lane's module is in the build."
+    }
+  ]
+}

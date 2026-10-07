@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import fields, replace
 import os
+import time
 from queue import Queue
 import sys
 from threading import Thread
@@ -135,7 +136,7 @@ class RankedRun(multigpu.MultiGPUDomain):
                  clock=None, seam="zeros", boundaries=None,
                  check_geography=True, step_mode="threads", halo=None,
                  nest_hook=None, snapshot_limits=None, mynn_column_chunks=None,
-                 _unsafe_short_halo=False):
+                 _unsafe_short_halo=False, global_keys=()):
         from gpuwm.core.devices import validate_ranked_physics
         validate_ranked_physics(cfg)
         import cupy as cp
@@ -203,7 +204,16 @@ class RankedRun(multigpu.MultiGPUDomain):
         self._card_nodes = {row["card"]: row["numa_node"] for row in self.placements}
         self._paths = choose_transports(self.devices, self.transport, peers,
                                         nodes=self._card_nodes)
-        self.inventory_fn = streaming.streamed_store_inventory()
+        original_inventory = streaming.streamed_store_inventory()
+        self.global_keys = tuple(global_keys)
+        if self.global_keys:
+            from tilestream.global_inventory import global_keys as domain_global_keys
+            if set(self.global_keys) != set(domain_global_keys(store)):
+                raise RankedRunError("ranked global carriers must match their single domain owners")
+        def rank_inventory(state, names=None):
+            return {key: value for key, value in original_inventory(state, names).items()
+                    if key not in self.global_keys}
+        self.inventory_fn = rank_inventory
         self.volatile_inventory = True
         self._home = store
         self.scalars = scalars
@@ -230,13 +240,19 @@ class RankedRun(multigpu.MultiGPUDomain):
         self._nest_hook = nest_hook
         self._nest_attached = [False] * len(self.devices)
         flags = driver.geography_scalars(geography)
+        # Where the time before step 1 goes, per rank: the buffer build and
+        # the two gathers.  The lane/pi-startup-idle profile had 84-92 s of
+        # idle cards here on HRRR's lattice and could not say in what.
+        self.build_report = []
         for rank, dev in enumerate(self.devices):
             try:
                 with cp.cuda.Device(dev):
+                    t_build = time.perf_counter()
                     factory = streaming.prepared_tile_state_factory(
                         template, cfg, tables0=None if tables is None else tables[rank])
                     tile = factory(self.sub_cfgs[rank])
                     self.tiles.append(tile)
+                    t_build = time.perf_counter() - t_build
                     if int(cfg.bl_pbl_physics) == 5:
                         from gpuwm.core.mynn_pbl_scratch import (
                             bind_mynn_rank_chunk, resolve_mynn_tile_column_chunk)
@@ -251,6 +267,7 @@ class RankedRun(multigpu.MultiGPUDomain):
                     self.unpack_streams.append(cp.cuda.Stream(non_blocking=True))
                     # Constructor setup uploads on the default stream.
                     cp.cuda.runtime.deviceSynchronize()
+                    t_gather = time.perf_counter()
                     driver._pin_scheme_geography(tile)
                     with compute:
                         gather.gather_tile(geography, tile, self.specs[rank], compute,
@@ -263,8 +280,16 @@ class RankedRun(multigpu.MultiGPUDomain):
                             hook(tile, self.specs[rank], rank, compute)
                         gather.gather_tile(store, tile, self.specs[rank], compute,
                                            inventory_fn=self.inventory_fn, nz=self.nz)
+                        from tilestream.sfire import configure_tile
+                        configure_tile(tile, self.specs[rank])
                         physics.set_carrier_scalars(tile, self._clock)
                     compute.synchronize()
+                    t_gather = time.perf_counter() - t_gather
+                    self.build_report.append(dict(
+                        rank=rank, card=int(dev), buffer_seconds=round(t_build, 2),
+                        gather_seconds=round(t_gather, 2)))
+                    print(f"[devices] rank {rank} card {dev}: buffer built in "
+                          f"{t_build:.1f} s, gathered in {t_gather:.1f} s")
             except BaseException as exc:
                 self._drain_after_error()
                 raise RankedRunError(
@@ -272,9 +297,10 @@ class RankedRun(multigpu.MultiGPUDomain):
         self.arrays = [self.inventory_fn(tile) for tile in self.tiles]
         self.names = list(self.arrays[0])
         for rank, arrays in enumerate(self.arrays):
-            if set(arrays) != set(store):
+            expected_names = set(store) - set(self.global_keys)
+            if set(arrays) != expected_names:
                 raise RankedRunError(f"rank {rank} inventory differs from host store: "
-                                     f"{sorted(set(arrays) ^ set(store))}")
+                                     f"{sorted(set(arrays) ^ expected_names)}")
             if any(a.device.id != self.devices[rank] for a in arrays.values()):
                 raise RankedRunError(f"rank {rank} allocated carriers on the wrong card")
         # Template vertical setup may use CuPy's cross-device copy path,
@@ -295,7 +321,9 @@ class RankedRun(multigpu.MultiGPUDomain):
                     except cp.cuda.runtime.CUDARuntimeError as exc:
                         if exc.status != 704:  # cudaErrorPeerAccessAlreadyEnabled
                             raise
-        self.exchange_names = list(self.names)
+        self.fire_names = tuple(name for name in self.names
+                               if name.startswith(("fire/", "driver/fire_tendencies/")))
+        self.exchange_names = [name for name in self.names if name not in self.fire_names]
         self._build_channels()
         self._streams = self.compute_streams
         self.observer = None
@@ -306,6 +334,10 @@ class RankedRun(multigpu.MultiGPUDomain):
         # streams it runs on, the callables that release borrowed views of
         # the store before anything writes it again, and the receipt.
         self._fresh = set()
+        # Members a frame download copied this generation.  The history
+        # writer may still borrow their store views; nothing else can, once
+        # this generation's first download has run the store guards.
+        self._downloaded = set()
         self._downloads = []
         self._generation = 0
         self._guarded_generation = -1
@@ -378,6 +410,7 @@ class RankedRun(multigpu.MultiGPUDomain):
     def devices_report(self):
         return dict(ranks=self.ngpu, grid=list(self.grid), devices=list(self.devices),
                     halo=self.halo, rank_shapes=[[s.cny, s.cnx] for s in self.specs],
+                    build=[dict(row) for row in getattr(self, "build_report", ())],
                     mynn_column_chunks=list(self._mynn_column_chunks),
                     host_threads=dict(self.host_threads,
                                       gil_enabled_now=_gil_enabled_now()),
@@ -419,7 +452,7 @@ class RankedRun(multigpu.MultiGPUDomain):
             boundaries.interval_at(float(elapsed if clock is None
                                          else clock.elapsed_seconds))
 
-    def _step_rank(self, rank, kwargs, control):
+    def _step_rank(self, rank, kwargs, control, step_function=None):
         import cupy as cp
         from gpuwm.core import dycore
         with cp.cuda.Device(self.devices[rank]), self.compute_streams[rank]:
@@ -435,7 +468,8 @@ class RankedRun(multigpu.MultiGPUDomain):
                 stochastic.bind_window(tile, self.sub_cfgs[rank], self.specs[rank], rank,
                                        stream=self.compute_streams[rank])
             dycore.set_wrf_cfl_tile_window(self.cfg.grid_id, self.specs[rank])
-            dycore.step(tile, self.sub_cfgs[rank], **kwargs)
+            function = dycore.step if step_function is None else step_function
+            function(tile, self.sub_cfgs[rank], **kwargs)
             dycore.finish_wrf_cfl_tile(self.cfg.grid_id)
             if self.observer is not None:
                 self.observer(tile, self.specs[rank], rank, self.compute_streams[rank])
@@ -454,6 +488,66 @@ class RankedRun(multigpu.MultiGPUDomain):
         self._require_open()
         self.drain()
         return self._home
+
+    def checkpoint_store(self):
+        """This generation's store, for a checkpoint that only READS it.
+
+        :attr:`store` drains, and a drain first waits for every store guard,
+        because it then hands the store out for WRITING.  At an hourly
+        checkpoint the guard it waits for is the history frame of the same
+        hour, still being written from borrowed store views: about 8 to 12 s
+        of a 1 km run's checkpoint stall, measured on the 2026-10-04 CONUS
+        run (8 x RTX 5090).  A checkpoint does not write the store, so when
+        this generation's first frame download has already run the guards
+        (the only views still borrowed are of members downloaded this
+        generation) it needs no wait:
+
+        * members already fresh this generation are in the store as is;
+        * every other member is copied slab to store by the plan
+          :meth:`drain` and :meth:`download` use, so the bytes are a drain's;
+        * a downloaded member the slabs changed after its download (the
+          history-interval ``UP_HELI_MAX`` reset) is borrowed by the frame
+          and stale, so it is copied into a pinned array of its own and the
+          store's copy is left to the frame.
+
+        Returns ``{member: host array}``.  The slabs are not touched and the
+        store is not handed out for writing, so the next sweep does not
+        gather it back.  Every other case is :attr:`store`, unchanged.
+        """
+        import cupy as cp
+        self._require_open()
+        if (self._exposed or not self._ahead
+                or self._guarded_generation != self._generation):
+            return self.store
+        self._await_download()
+        self.sync_all()
+        self.refresh_arrays()
+        stale = [k for k in self._home if k in self._downloaded
+                 and k not in self._fresh]
+        rest = [k for k in self._home if k not in self._fresh
+                and k not in self._downloaded]
+        side = {k: gather.pinned_empty_like(self._home[k]) for k in stale}
+        start = perf_counter()
+        for rank, dev in enumerate(self.devices):
+            with cp.cuda.Device(dev):
+                for names, dst_store in ((rest, self._home), (stale, side)):
+                    if not names:
+                        continue
+                    src = self.inventory_fn(self.tiles[rank], names)
+                    dst = {name: dst_store[name] for name in names}
+                    plan = gather.make_plan(src, dst, self.specs[rank],
+                                            "scatter", nz=self.nz)
+                    plan.execute(src, dst, self.compute_streams[rank])
+        self.sync_compute()
+        self._fresh.update(rest)
+        if not stale:
+            self._ahead = False
+        report = self.output_report
+        report["checkpoint_snapshots"] = report.get("checkpoint_snapshots", 0) + 1
+        report["checkpoint_snapshot_seconds"] = (
+            report.get("checkpoint_snapshot_seconds", 0.0)
+            + perf_counter() - start)
+        return {**self._home, **side}
 
     def store_keys(self):
         """The host store's member names, WITHOUT draining it.
@@ -548,7 +642,8 @@ class RankedRun(multigpu.MultiGPUDomain):
         import cupy as cp
         self._require_open()
         start = perf_counter()
-        names = [n for n in dict.fromkeys(names) if n in self._home]
+        names = [n for n in dict.fromkeys(names)
+                 if n in self._home and n not in self.global_keys]
         if self._exposed or not self._ahead:
             # The store already holds this generation (a drain landed it, or
             # nothing stepped since), and an exposed store may carry a
@@ -643,6 +738,7 @@ class RankedRun(multigpu.MultiGPUDomain):
                 events.append((dev, done))
         self._downloads.append({"events": events, "names": tuple(names)})
         self._fresh.update(names)
+        self._downloaded.update(names)
         report = self.output_report
         report["frame_downloads"] += 1
         report["frame_download_bytes"] += moved
@@ -735,10 +831,40 @@ class RankedRun(multigpu.MultiGPUDomain):
             return
         for rank, dev in enumerate(self.devices):
             with cp.cuda.Device(dev), self.compute_streams[rank]:
+                from tilestream.sfire import configure_tile
+                configure_tile(self.tiles[rank], self.specs[rank])
                 gather.gather_tile(self._home, self.tiles[rank], self.specs[rank],
                     self.compute_streams[rank], inventory_fn=self.inventory_fn, nz=self.nz)
         self._exposed = False
         self.output_report["full_gathers"] += 1
+
+    def _exchange_fire(self):
+        """Join owned native fire cells, then refill physical refined windows.
+
+        Fire refinement and its continuation cells have their own transfer
+        geometry. Atmospheric seam bands cannot represent them or the
+        terminal native wind faces. The pinned store joins these exact
+        windows after all ranks finish, before another fire step reads them.
+        """
+        if not self.fire_names:
+            return
+        import cupy as cp
+        self._await_download()
+        self._guard_store()
+        self.sync_compute()
+        self.refresh_arrays()
+        for rank, dev in enumerate(self.devices):
+            with cp.cuda.Device(dev):
+                gather.scatter_tile(self.tiles[rank], self._home, self.specs[rank],
+                    self.compute_streams[rank], names=self.fire_names,
+                    inventory_fn=self.inventory_fn, nz=self.nz)
+        self.sync_compute()
+        for rank, dev in enumerate(self.devices):
+            with cp.cuda.Device(dev):
+                gather.gather_tile(self._home, self.tiles[rank], self.specs[rank],
+                    self.compute_streams[rank], names=self.fire_names,
+                    inventory_fn=self.inventory_fn, nz=self.nz)
+        self.sync_compute()
 
     def drain(self):
         import cupy as cp
@@ -797,7 +923,10 @@ class RankedRun(multigpu.MultiGPUDomain):
         if structural:
             raise RankedRunError(f"a ranked domain cannot change {sorted(structural)} "
                                  "between steps; rebuild its ranks to prevent stale setup")
-        required = multigpu.forced_halo(incoming) if incoming.specified else harness.halo_radius(incoming)
+        # The same seam fiction the constructor paid (streaming.ranked_halo):
+        # a specified or nested slab's seam still writes the specified zone.
+        forced = bool(incoming.specified) or bool(getattr(incoming, "nested", False))
+        required = multigpu.forced_halo(incoming) if forced else harness.halo_radius(incoming)
         if required > self.halo:
             raise RankedRunError(f"live time_step_sound={incoming.time_step_sound} needs "
                 f"halo {required}, but ranks allocated halo {self.halo}; construct with "
@@ -808,7 +937,7 @@ class RankedRun(multigpu.MultiGPUDomain):
         self.tile_cfg = self.sub_cfgs[0]
 
     def sweep(self, nsteps=1, *, step_kwargs=None, report=None, progress=None,
-              live_config=None, physics_control=None):
+              live_config=None, physics_control=None, step_function=None):
         from gpuwm.core import dycore
         self._require_open()
         kwargs = dict(step_kwargs or {})
@@ -837,7 +966,7 @@ class RankedRun(multigpu.MultiGPUDomain):
                 schedule = None
                 if self.step_mode == "threads":
                     for jobs in self._jobs:
-                        jobs.put((kwargs, physics_control))
+                        jobs.put((kwargs, physics_control, step_function))
                     # A timed sweep keeps the whole exchange after the step
                     # so the two durations stay separable.  So does a run
                     # whose exchange_events was replaced on the instance: the
@@ -866,7 +995,7 @@ class RankedRun(multigpu.MultiGPUDomain):
                 else:
                     for rank in range(len(self.tiles)):
                         try:
-                            self._step_rank(rank, kwargs, physics_control)
+                            self._step_rank(rank, kwargs, physics_control, step_function)
                         except BaseException as exc:
                             self._drain_after_error()
                             raise RankedRunError(f"rank {rank} card {self.devices[rank]} failed: {exc}") from exc
@@ -882,14 +1011,22 @@ class RankedRun(multigpu.MultiGPUDomain):
                     self.exchange_events()
                 else:
                     schedule.finish()
+                self._exchange_fire()
                 if timing:
                     self.sync_all()
                     exchange_seconds += perf_counter() - middle
-                self._clock = driver._advance_clock(self._clock, self.tiles, len(self.tiles)-1, physics)
+                from tilestream.sfire import GRID_DIAGNOSTICS
+                fire_records = [{key: getattr(tile.physics.fire.grid, key) for key in GRID_DIAGNOSTICS}
+                    for tile in self.tiles if getattr(getattr(tile, "physics", None), "fire", None) is not None]
+                self._clock = driver._advance_clock(self._clock, self.tiles, len(self.tiles)-1,
+                    physics, fire_records=fire_records)
                 self.scalars.clear()
                 self.scalars.update(self._clock)
                 self._ahead = True
                 self._fresh.clear()
+                self._downloaded.clear()
+                self._fresh.update(self.fire_names)
+                self._fresh.update(self.global_keys)
                 self._generation += 1
                 steps.append(dict(dt=float(self.cfg.dt), time_step_sound=int(self.cfg.time_step_sound)))
                 if progress is not None:

@@ -713,6 +713,28 @@ def dealias_sweep_region(velocity: np.ndarray, azimuth_deg: np.ndarray,
         raise ValueError(
             f"dealias_sweep_region needs a (radial, gate) plane, got shape "
             f"{velocity.shape}")
+
+    # The default route: the whole sweep -- including the per-sector solve
+    # and reconciliation of a mixed-Nyquist sweep below -- runs natively in
+    # rw-superob, which links this same solver.  What follows in this
+    # function is the parity reference (GPUWM_SUPEROB_PYTHON=1).
+    from gpuwm.obs import superob_bridge                  # noqa: PLC0415
+
+    lib = superob_bridge.route()
+    if lib is not None:
+        output, state, reason, fold_plane, stats = (
+            superob_bridge.dealias_region(
+                lib, velocity, azimuth_deg, nyquist, params,
+                first_gate_m=first_gate_m, gate_spacing_m=gate_spacing_m,
+                nyquist_by_radial=nyquist_by_radial,
+                nyquist_radials_disagree=nyquist_radials_disagree))
+        for native in [stats.get("native"), *stats.get("native_sectors", ())]:
+            if isinstance(native, dict) and "skipped" not in native:
+                native["library"] = str(lib.path)
+                native["upstream_commit"] = UPSTREAM_COMMIT
+        return SweepDealiasResult(
+            output, state, reason, fold_plane,
+            np.full(velocity.shape, np.nan, dtype=np.float64), stats)
     rows, gates = velocity.shape
     state = np.zeros(velocity.shape, dtype=np.int8)
     reason = np.full(velocity.shape, REASON_NONFINITE, dtype=np.int8)
@@ -734,6 +756,30 @@ def dealias_sweep_region(velocity: np.ndarray, azimuth_deg: np.ndarray,
                       "bands_valid": 0},
         "nyquist_ms": None if nyquist is None else float(nyquist),
     }
+
+    # ---- a nonuniform sweep: one solve per constant-Nyquist sector --------
+    # The breakage this replaces, named: a nonuniform sweep was refused
+    # outright, and WSR-88D VCPs mix Nyquist within a cut often enough that
+    # a whole case (the da-tune 2026-09-06 case) failed to build its
+    # observations.  The native solver decides folds in one interval, so it
+    # is run once per sector of radials sharing one Nyquist value, with
+    # every other radial masked to no-data: no region, and so no fold
+    # decision, ever spans two intervals, and every correction is an exact
+    # multiple of that radial's own 2*Vn.  The VAD-referenced engine already
+    # fits one sector at a time for the same reason.
+    if nyquist_by_radial is not None:
+        row_nyquist = np.asarray(nyquist_by_radial, dtype=np.float64).ravel()
+        if row_nyquist.size == rows:
+            believable_all = np.isfinite(row_nyquist) & (row_nyquist > 0.0)
+            sectors = np.unique(row_nyquist[believable_all])
+            if sectors.size > 1:
+                return _dealias_by_sector(
+                    velocity, azimuth_deg, row_nyquist, believable_all,
+                    sectors, params, first_gate_m=first_gate_m,
+                    gate_spacing_m=gate_spacing_m, library=library,
+                    stats=stats, state=state, reason=reason,
+                    fold_plane=fold_plane, output=output,
+                    reference_plane=reference_plane)
 
     # Raises before any work when this sweep is not one this engine can
     # solve; otherwise tells us which radials carry a believable value.
@@ -872,6 +918,161 @@ def dealias_sweep_region(velocity: np.ndarray, azimuth_deg: np.ndarray,
                                    for v, c in zip(values, counts)}
     return SweepDealiasResult(output, state, reason, fold_plane,
                               reference_plane, stats)
+
+
+def _dealias_by_sector(velocity, azimuth_deg, row_nyquist, believable,
+                       sectors, params, *, first_gate_m, gate_spacing_m,
+                       library, stats, state, reason, fold_plane, output,
+                       reference_plane):
+    """A nonuniform sweep unfolded sector by sector (see the caller)."""
+    from gpuwm.obs.dealias import (REASON_NO_NYQUIST,  # noqa: PLC0415
+                                   SweepDealiasResult)
+
+    rows = velocity.shape[0]
+    finite = np.isfinite(velocity)
+    stats["nyquist_by_radial"] = True
+    stats["nyquist_distinct"] = [float(v) for v in sectors]
+    stats["nyquist_radials_no_value"] = int((~believable).sum())
+    stats["nyquist_sectors"] = []
+    stats["nyquist_ms"] = float(sectors.min())
+    unknown = finite & ~believable[:, None]
+    reason[unknown] = REASON_NO_NYQUIST
+    stats["rejected"]["no_nyquist"] = int(unknown.sum())
+    totals = {"gates_unchanged": 0, "gates_unfolded": 0, "gates_rejected":
+              int(unknown.sum())}
+    histogram: dict[int, int] = {}
+    for value in sectors:
+        sel = believable & (row_nyquist == value)
+        masked = np.where(sel[:, None], velocity, np.nan)
+        part = dealias_sweep_region(
+            masked, azimuth_deg, float(value), params,
+            first_gate_m=first_gate_m, gate_spacing_m=gate_spacing_m,
+            nyquist_by_radial=np.where(sel, float(value), np.nan),
+            nyquist_radials_disagree=False, library=library)
+        rows_sel = np.flatnonzero(sel)
+        output[rows_sel] = part.velocity[rows_sel]
+        state[rows_sel] = part.state[rows_sel]
+        reason[rows_sel] = part.reason[rows_sel]
+        fold_plane[rows_sel] = part.fold[rows_sel]
+        pst = part.stats
+        for key in totals:
+            if key == "gates_rejected":
+                # the masked radials are not this sector's refusals
+                totals[key] += int(pst["gates_rejected"]) - int(
+                    pst["rejected"].get("no_nyquist", 0))
+            else:
+                totals[key] += int(pst[key])
+        for name, count in pst["rejected"].items():
+            if name != "no_nyquist":
+                stats["rejected"][name] = stats["rejected"].get(name, 0) + int(count)
+        for fold, count in pst.get("fold_histogram", {}).items():
+            histogram[int(fold)] = histogram.get(int(fold), 0) + int(count)
+        stats["nyquist_sectors"].append({
+            "nyquist_ms": float(value), "radials": int(rows_sel.size),
+            "gates_unfolded": int(pst["gates_unfolded"])})
+        stats["max_speed_ms"] = pst.get("max_speed_ms")
+        stats.setdefault("native_sectors", []).append(pst.get("native"))
+    # ---- one sweep, not N independent ones --------------------------------
+    # A sector solved alone has no anchor for its absolute fold: measured on
+    # a 25.51/32.0 m/s half-and-half cut, one half came back a whole
+    # 51.02 m/s fold off while every correction still sat on its own
+    # lattice.  Sectors are therefore shifted by whole multiples of their
+    # own interval to agree with their azimuthal neighbours across each
+    # sector boundary, and the reference sector's own shift is chosen so the
+    # whole sweep's mean radial velocity is closest to zero (the VAD
+    # condition: a horizontally uniform wind averages to zero round the
+    # circle).  Shifted gates pass the same physical bound again.
+    shifts = _reconcile_sectors(output, azimuth_deg, row_nyquist, believable,
+                                sectors)
+    from gpuwm.obs.dealias import (REASON_SPEED, STATE_REJECTED,  # noqa: PLC0415
+                                   STATE_UNCHANGED, STATE_UNFOLDED)
+    for value, k in shifts.items():
+        if k == 0:
+            continue
+        rows_sel = believable & (row_nyquist == value)
+        live = rows_sel[:, None] & (state != STATE_REJECTED)
+        output[live] += k * 2.0 * value
+        fold_plane[live] += k
+        state[live] = np.where(fold_plane[live] != 0, STATE_UNFOLDED,
+                               STATE_UNCHANGED)
+    max_speed = float(getattr(params, "max_speed_ms", np.inf))
+    beyond = (state != STATE_REJECTED) & (np.abs(output) > max_speed)
+    if beyond.any():
+        output[beyond] = np.nan
+        fold_plane[beyond] = 0
+        state[beyond] = STATE_REJECTED
+        reason[beyond] = REASON_SPEED
+    stats["sector_shifts"] = {str(float(v)): int(k) for v, k in shifts.items()}
+    finite_offered = finite & believable[:, None]
+    fs = state[finite_offered]
+    totals["gates_unchanged"] = int((fs == STATE_UNCHANGED).sum())
+    totals["gates_unfolded"] = int((fs == STATE_UNFOLDED).sum())
+    totals["gates_rejected"] = (int((fs == STATE_REJECTED).sum())
+                                + int(unknown.sum()))
+    from gpuwm.obs.dealias import REASON_NAMES  # noqa: PLC0415
+    stats["rejected"][REASON_NAMES[REASON_SPEED]] = int(
+        ((reason == REASON_SPEED) & finite).sum())
+    applied = fold_plane[finite_offered & (state != STATE_REJECTED)]
+    histogram = {}
+    if applied.size:
+        values, counts = np.unique(applied, return_counts=True)
+        histogram = {int(v): int(c) for v, c in zip(values, counts)}
+    stats.update(totals)
+    stats["fold_histogram"] = dict(sorted(histogram.items()))
+    return SweepDealiasResult(output, state, reason, fold_plane,
+                              reference_plane, stats)
+
+
+def _reconcile_sectors(output, azimuth_deg, row_nyquist, believable, sectors):
+    """``{nyquist: integer shift}`` making the sectors one consistent sweep."""
+    azimuth = np.asarray(azimuth_deg, dtype=np.float64).ravel()
+    order = np.argsort(azimuth, kind="stable")
+    order = order[believable[order]]
+    sector_of = {}
+    for row in order:
+        sector_of[int(row)] = float(row_nyquist[row])
+    # boundary radial pairs, azimuthal neighbours in different sectors
+    pairs = []
+    n = order.size
+    for i in range(n):
+        a, b = int(order[i]), int(order[(i + 1) % n])
+        if sector_of[a] != sector_of[b]:
+            pairs.append((a, b))
+    keys = [float(v) for v in sectors]
+    sizes = {v: int(np.count_nonzero(believable & (row_nyquist == v)))
+             for v in keys}
+    reference = max(keys, key=lambda v: (sizes[v], -v))
+
+    def propagate(ref_shift):
+        shift = {reference: ref_shift}
+        for _ in range(len(keys)):
+            for a, b in pairs + [(q, p) for p, q in pairs]:
+                sa, sb = sector_of[a], sector_of[b]
+                if sa in shift and sb not in shift:
+                    va = output[a] + shift[sa] * 2.0 * sa
+                    vb = output[b]
+                    ok = np.isfinite(va) & np.isfinite(vb)
+                    if ok.sum() < 3:
+                        continue
+                    k = int(np.rint(np.median(va[ok] - vb[ok]) / (2.0 * sb)))
+                    shift[sb] = k
+        for v in keys:
+            shift.setdefault(v, 0)
+        return shift
+
+    def sweep_mean(shift):
+        total, count = 0.0, 0
+        for v, k in shift.items():
+            block = output[believable & (row_nyquist == v)]
+            ok = np.isfinite(block)
+            total += float((block[ok] + k * 2.0 * v).sum())
+            count += int(ok.sum())
+        return abs(total / count) if count else 0.0
+
+    covered = np.unique(np.floor(azimuth[believable] / 10.0)).size
+    candidates = (-2, -1, 0, 1, 2) if covered >= 27 else (0,)
+    best = min((propagate(k) for k in candidates), key=sweep_mean)
+    return best
 
 
 __all__ = [

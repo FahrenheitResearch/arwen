@@ -1137,8 +1137,9 @@ def microphysics_zero_out(state: DomainState, cfg: RunConfig) -> None:
 
     v4.6.1 runs both on the moist array, and on the scalar array as well
     when ``mp_zero_out_all = 1``; the fork always runs them on every array
-    (v4.6.1's 1).  gpuwm carries no chem or tracer arrays, so the moist
-    and scalar arrays are the whole call set here.  Applied after the
+    (v4.6.1's 1). Active chemical rows declare their chem or tracer group
+    in the species table. Each group starts at Registry index 2 after
+    dummy index 1, and compares that index with P_QV = 2. Applied after the
     fused moist_physics_finish, which reads theta only, so the order
     against it does not change a prognostic value.
     """
@@ -1163,6 +1164,16 @@ def microphysics_zero_out(state: DomainState, cfg: RunConfig) -> None:
                     "vapour's rule cannot be named (WRF_FIRST_SCALAR_"
                     "SPECIES)")
             arrays.append((scalars, first))
+        chem = getattr(state, "chem", None)
+        if chem is not None:
+            # WRF calls the operator separately for chem and tracer. The
+            # first real row of EACH array has the numeric P_QV index;
+            # it is not selected by gas/aerosol family or species name.
+            for group in ("chem", "tracer"):
+                members = [row.state_attr for row in chem.transported
+                           if row.wrf_array == group]
+                if members:
+                    arrays.append((members, members[0]))
     thresh = np.float32(cfg.mp_zero_out_thresh)
     sz = int(cfg.spec_zone) if _boundary_forced(cfg) else 0
     for species, first in arrays:

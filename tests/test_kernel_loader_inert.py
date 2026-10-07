@@ -56,12 +56,25 @@ _EXPECTED_HEADERS = {
     # New order-five scalar eta entry, qualified against the native fork.
     # No existing translation unit gains a header through this grant.
     "pd_vertical_sl": ("pd_advection.cu",),
+    # The SFIRE port (lane/ec-sfire): native ideal initialization and the
+    # geographic coupling take glibc words, and the ideal fire state takes
+    # the CORE-MATH tanhf of sfire_libm.cuh; new units, no existing grant.
+    "sfire_coupling": ("glibc_trig_flt32.cuh",),
+    "sfire_ideal": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh", "sfire_libm.cuh"),
+    "sfire_ideal_atmos": ("glibc_flt32.cuh", "glibc_trig_flt32.cuh"),
     "noah_init": ("noah.cu",),
     "horizontal": ("portable_libm64.cuh",),
     # Test-only bit grading, with the same shared header future callers use.
     "portable_libm64_grade": ("portable_libm64.cuh",),
     "vert_interp": ("glibc_flt32.cuh",),
     "thompson_cold_start": ("glibc_flt32.cuh", "portable_libm64.cuh"),
+    "chem_prep": ("glibc_flt32.cuh",),
+    # The GOCART ports (lane/aq-gocart) take WRF-Chem's float32 exp/log/pow
+    # from the same header; each is held by its own oracle parity tests at
+    # 0 ULP (tests/test_chem_*_wrf471_parity.py), not by source identity.
+    **{name: ("glibc_flt32.cuh",) for name in (
+        "chem_dust", "chem_seasalt", "chem_rrtmgp_aerosol", "chem_sulfur",
+        "chem_ageing", "chem_settling", "chem_drydep_gocart", "chem_optics")},
     **{name: ("thompson_aerosol_common.cuh",)
        for name in _ALLOWED_AEROSOL_MODULES},
     "rrtmgp_rte": ("rrtmgp_planck_common.cuh",),
@@ -95,6 +108,9 @@ _EXPECTED_HEADERS = {
     # use the shared WRF-oracle float32 functions.
     "ruc": ("glibc_flt32.cuh",),
     "lake": ("glibc_flt32.cuh", "lake_support.cuh", "lake_wrf.cuh"),
+    "chem_fire": ("glibc_flt32.cuh",),
+    "chem_plumerise": ("glibc_flt32.cuh",),
+    "chem_drydep_wesely": ("glibc_flt32.cuh",),
 }
 
 

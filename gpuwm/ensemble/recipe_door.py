@@ -741,16 +741,31 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
     raw = tomllib.loads(config.read_text(encoding="utf-8-sig"))
     experiment = load_experiment(config)
     recipe = plan_recipe(request, raw, experiment)
-    wps = getattr(args, "wps_namelist", None) or config.with_name(config.stem + ".namelist.wps")
-    if not Path(wps).is_file():
+    named_wps = getattr(args, "wps_namelist", None)
+    if named_wps is not None and not Path(named_wps).is_file():
         raise RecipeRefusal(
-            f"{Path(wps).name} is not beside {config.name}; each member is prepared "
-            "from the WPS namelist the domain door wrote there. Next: gpuwm domain --help")
+            f"--wps-namelist {named_wps} does not exist; each member is prepared "
+            "from that WPS namelist. Next: name an existing file, or omit the flag")
+
+    def companion_wps(into: Path) -> Path:
+        # The namelist a door wrote beside the configuration, or the one
+        # rendered from its own grid into ``into`` (a shipped recipe has
+        # none beside it); the staged chain asks the same function.
+        if named_wps is not None:
+            return Path(named_wps)
+        from gpuwm.companion_domains import configuration_wps_namelist
+
+        try:
+            return configuration_wps_namelist(config, experiment, raw=raw, into=into)
+        except ValueError as error:
+            raise RecipeRefusal(str(error)) from None
+
     geog_root = getattr(args, "geog_root", None)
     geog_root = Path(geog_root).resolve() if geog_root is not None else default_geog_root()
     case_root = Path(args.outdir) if getattr(args, "outdir", None) is not None else (
         config.parent / f"{config.stem}-go")
     with tempfile.TemporaryDirectory(prefix="gpuwm-recipe-") as scratch:
+        wps = companion_wps(Path(scratch) / "route-inputs")
         plans = review_members(raw, config, wps, recipe, scratch=scratch, options=options)
         _say(f"{recipe.kind} recipe, {len(recipe.members)} members, valid "
              f"{recipe.start:%Y-%m-%dT%H:%M}Z to {recipe.end:%Y-%m-%dT%H:%M}Z")
@@ -764,6 +779,7 @@ def run_recipe_ensemble(args, request, *, observer=None, options=None) -> int:
     root = run_stamp.resolve(case_root, init=str(raw["fetch"]["cycle"]),
                              enabled=run_stamp.run_stamp_enabled(args), create=True)
     root = Path(root)
+    wps = companion_wps(root / "route-inputs")
     receipt = {"schema": RECEIPT_SCHEMA, "status": "preparing", "config": str(config),
                "recipe": recipe.describe(), "recipe_sha256": recipe.sha256,
                "request": request.receipt(), "members": []}

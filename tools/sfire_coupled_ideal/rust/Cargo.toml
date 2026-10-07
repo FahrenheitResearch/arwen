@@ -1,0 +1,19 @@
+[package]
+name = "sfire-ideal-compare"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+netcrust = { path = "../../rustwx/vendor/netcrust" }
+rustwx-contour = { path = "../../rustwx/crates/rustwx-contour" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[patch.crates-io]
+hdf5-reader = { path = "../../rustwx/vendor/netcrust/vendor/hdf5-reader" }
+
+[profile.release]
+codegen-units = 1

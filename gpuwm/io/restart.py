@@ -86,6 +86,7 @@ import json
 import math
 import os
 import re
+import threading
 import uuid
 import zipfile
 from collections.abc import Mapping
@@ -151,6 +152,10 @@ from gpuwm.state_serialization_contract import (
     ADVECTIVE_FORCING_STATE,
     BUILT_END_FRAME_PREFIX_SCHEMA,
     CHECKPOINT_ONLY_STATE,
+    CHEM_DIAG_PREFIX,
+    CHEM_STATE_PREFIX,
+    CHEM_TIME_PREFIX,
+    CHEM_WORK_PREFIX,
     LATERAL_BOUNDARY_PREFIX_SCHEMAS,
     REBUILT_END_FRAME_PREFIX_SCHEMAS,
     STATE_SERIALIZED_ATTRS,
@@ -158,6 +163,7 @@ from gpuwm.state_serialization_contract import (
     STATE_SETUP_ARRAYS,
     STATE_SETUP_SCALARS,
     lateral_boundary_prefix_identity as _lateral_boundary_prefix_identity,
+    serialized_state_attrs,
     setup_core_fingerprint as _shared_setup_core_fingerprint,
     setup_fingerprint as _shared_setup_fingerprint,
 )
@@ -563,6 +569,21 @@ STATE_INFRA_ATTRS = frozenset({
     # The resident rank's admitted MYNN workspace width. It affects only
     # column batching and allocation, never forecast or checkpoint bits.
     "_mynn_rank_column_chunk",
+    # gpuwm.da.radar_tten.STATE_ATTRIBUTE: a radar latent heating forcing
+    # attached for a forced period (gpuwm.da.forecast_heating, the DA leg
+    # driver).  INFRA, like boundary tables: external data rebuilt from its
+    # windows by whoever attaches it, never a value the model integrated.
+    # The concrete breakage its absence caused: classify_state_attr refused
+    # the attribute, so a checkpoint written while the forcing was attached
+    # raised RestartManifestError.  The other half of the rule lives in the
+    # door: resuming INSIDE the forced period is refused there
+    # (forecast_heating.resume_plan), because the slot clock restarts at
+    # zero on attach and would read window 1 at minute 70.
+    "radar_tten_forcing",
+    # gpuwm.da.radar_tten.SLAB_ATTRIBUTE: the (j0, i0) of the ranked slab a
+    # resident rank holds, set by the door when it attaches a slab forcing.
+    # INFRA: placement of a card's slab, never a forecast value.
+    "_radar_tten_slab",
 })
 
 # --------------------------------------------------------------------------
@@ -724,8 +745,12 @@ REBUILT_SCRATCH_SLOTS = frozenset({
     "mp_thompson_aero_nifa_entry_m3",
     "mp_thompson_aero_tau1_density",
     "mp_thompson_aero_nwfa_work_m3",
-    "mp_thompson_aero_qc_entry",
+    "mp_thompson_aero_qcten",
     "mp_thompson_aero_ni_entry",
+    "mp_thompson_aero_qrten",
+    "mp_thompson_aero_nrten",
+    "mp_thompson_aero_qiten",
+    "mp_thompson_aero_niten",
     "mp_thompson_aero_rc_entry",
     "mp_thompson_aero_nc_entry_m3",
     "mp_thompson_aero_nu_c_entry",
@@ -793,6 +818,11 @@ REBUILT_SCRATCH_PREFIXES = (
     "rk_", "adv_", "smag_", "diff_", "diff6_", "acoustic_", "openbc_",
     "moist_", "pd_", "morr_", "wsm6_", "wdm6_", "refl_", "physics_", "lbc_",
     "integration_health_", "nest_",
+    # The monotonic chem stage's workspace (gpuwm/core/chem_context.py
+    # MONO_SCRATCH_SLOTS, rewritten by every launch before it is read) and
+    # its zero implicit vertical flux (MONO_IMPLICIT_SLOT, allocated zero
+    # and never written, so a rebuilt one is the same zeros).
+    "chem_mono_",
     # UP_HELI_MAX per-step work planes (column UH + use_column flags),
     # overwritten by every launch; the accumulator itself is the exact
     # serialized name above, deliberately NOT under this prefix.
@@ -841,6 +871,7 @@ REBUILT_SCRATCH_PREFIXES = (
 #: restored rates at restore time is not bitwise identical (audit).
 DRIVER_TENDENCY_ATTRS = ("pbl_tendencies", "radiation_tendencies",
                          "cumulus_tendencies")
+OPTIONAL_DRIVER_TENDENCY_ATTRS = ("fire_tendencies",)
 TENDENCY_COMPONENTS = ("ru", "rv", "rtheta", "rqv", "rqc", "rqr", "rqi",
                        "rqs", "rw")
 TENDENCY_REQUIRED_COMPONENTS = ("ru", "rv", "rtheta", "rqv", "rqc")
@@ -857,6 +888,7 @@ DRIVER_SERIALIZED_ATTRS = frozenset({
     "gf_rthblten", "gf_rqvblten", "pbl_raw_rates",
     "microphysics_updates", "call_counts", "ysu_nan_guard_fires",
     "fields",
+    "fire", "fire_tendencies",
     # THE SURFACE-RADIATION CARRIER CONTRACT
     # (gpuwm/core/radiation_carriers.py).  Serialized, not rebuilt, and
     # the distinction is the whole point: the carrier FIELDS ride the
@@ -929,7 +961,15 @@ DRIVER_SERIALIZED_ATTRS = frozenset({
 #: publishes zeros because WRF's does (``misc``, zero-initialised, and
 #: the time-0 write precedes the first radiation call).  A restart is not
 #: the first call of a run; it is the middle of one.
-DRIVER_CHECKPOINT_ONLY_ATTRS = frozenset({"olr"})
+#:
+#: ``cldfra`` joins it on the same measured terms: the radiation cloud
+#: fraction is written on radiation's cadence, published into every
+#: history frame, and WRF flags its own CLDFRA row ``irh``
+#: (Registry.EM_COMMON:1699), restart AND history.  Without the carry a
+#: resumed run would publish an all-clear CLDFRA until its first
+#: post-restart radiation call.  Absent-tolerant on restore, so every
+#: checkpoint written before it existed stays restorable.
+DRIVER_CHECKPOINT_ONLY_ATTRS = frozenset({"olr", "cldfra"})
 
 #: Raw PBL rates read by GF and New Tiedtke between producer calls.
 #: WRF Registry RTHBLTEN/RQVBLTEN are restart-carried for the same reason.
@@ -1054,7 +1094,7 @@ DRIVER_REBUILT_ATTRS = frozenset({
     # the config the DA refresh hands it.  The rural snapshot and the BEP
     # PBL terms are rewritten by every surface call before anything reads
     # them.
-    "urban", "urban_coupler", "_urban_cfg",
+    "urban", "urban_coupler", "_urban_cfg", "surface_energy_diag",
     # Whether the last radiation call handed over SWDDIR/SWDDIF itself
     # (option 3).  Rewritten by every radiation call; between calls the
     # split rides the checkpoint in fields, so a resume needs no record of
@@ -1114,8 +1154,13 @@ RADIATION_CALLABLE_ARRAYS = frozenset({
     # and a child domain's first post-restore radiation call consumes
     # the parent's retained o33d BEFORE the parent's next radiation
     # cadence tick, so rebuild-on-resume would orphan it (and break
-    # resumed-vs-uninterrupted bit equality).
-    "_o33d_grid"})
+    # resumed-vs-uninterrupted bit equality).  ``_o33d_host`` and
+    # ``_o33d_device`` are that one field's storage behind the
+    # ``_o33d_grid`` property (host copy made on first read).
+    "_o33d_grid", "_o33d_host", "_o33d_device",
+    # Per-call scratch: the reused host buffer the CAM ozone time
+    # interpolation fills at every radiation call, rebuilt by the next one.
+    "_ozmixt_buf"})
 #: Containers CLASSIFIED as acceptable, deliberately (review F2 â€” no
 #: silent blind spots): the RRTMGP gas/cloud table objects are
 #: rebuild-on-load (module-level ``lru_cache`` loads of packaged
@@ -1697,6 +1742,20 @@ def classify_state_attr(name: str) -> str:
         # call that installs it, and carrying no information of its own.
         return "derived_setup"
     if name in STATE_INFRA_ATTRS:
+        return "infra"
+    # Chem species (gpuwm/core/chem_state.py), named from the chem table
+    # rather than listed here: ``chem_<row>`` is the species field WRF carries
+    # in its restart stream; ``chem0_<row>`` is its RK time-t copy, rewritten
+    # by dycore._save_time_t before any read, exactly like ``qv0``; ``chem``
+    # is the ChemState object (arena and table), rebuilt with the state.
+    # ``chemdiag_<name>`` is a process array or ledger total a checkpoint
+    # must carry (declared ``serialize`` by its process); ``chemwork_<name>``
+    # is rewritten before every read.
+    if name.startswith(CHEM_STATE_PREFIX) or name.startswith(CHEM_DIAG_PREFIX):
+        return "serialize"
+    if name.startswith(CHEM_TIME_PREFIX) or name.startswith(CHEM_WORK_PREFIX):
+        return "rebuild"
+    if name == "chem":
         return "infra"
     raise RestartManifestError(
         f"DomainState attribute {name!r} is not classified in the restart "
@@ -2361,7 +2420,7 @@ def _packed_parameters_identity(params, *, label: str,
 #: bytes it always had.  Either way the digest cannot tell two values of
 #: the switch apart, which is all the restart walk needs.
 _DIGEST_DROPPED_DIAGNOSTIC_FIELDS = frozenset(
-    {"nwp_diagnostics", "tke_budget", "sase_flux_diag"})
+    {"nwp_diagnostics", "tke_budget", "sase_flux_diag", "surface_energy_diag"})
 
 
 #: WRF's slope_rad / topo_shading / shadlen (gpuwm.core.topo_radiation),
@@ -2422,6 +2481,20 @@ def _mosaic_checkpoint_config(config: Mapping) -> dict:
     return values
 
 
+def _drop_default_fork_run_keys(values: dict) -> None:
+    """Use the writer's omission rules when comparing fork settings too."""
+    if values.get("diff_6th_form", "wrf_461") == "wrf_461":
+        values.pop("diff_6th_form", None)
+    if values.get("diff_6th_factor2", None) is None:
+        values.pop("diff_6th_factor2", None)
+    if values.get("upper_wind_limiter_form", "wrf_461") == "wrf_461":
+        values.pop("upper_wind_limiter_form", None)
+    if not values.get("mp_zero_out", 0):
+        values.pop("mp_zero_out", None)
+        values.pop("mp_zero_out_thresh", None)
+        values.pop("mp_zero_out_all", None)
+
+
 def _drop_default_off_run_keys(values: dict) -> None:
     """Drop every default-off RunConfig key that older headers omit.
 
@@ -2433,11 +2506,15 @@ def _drop_default_off_run_keys(values: dict) -> None:
     so every writer drops each key the same way.  A new default-off field
     joins this list, naming the commit that added it.
     """
+    _drop_inert_chem_block(values)
+    _drop_inert_fire_block(values)
     # No prescribed smoke is the source forcing every earlier header ran.
     if not values.get("rrtmg_smoke_manifest", ""):
         values.pop("rrtmg_smoke_manifest", None)
         values.pop("rrtmg_smoke_manifest_identity", None)
     # scalar_pblmix: off preserves checkpoints predating scalar diffusion.
+    if not values.get("surface_energy_diag", False):
+        values.pop("surface_energy_diag", None)
     if not values.get("scalar_pblmix", 0):
         values.pop("scalar_pblmix", None)
     # use_rap_aero_icbc: off is the aerosol start every earlier header ran.
@@ -2483,16 +2560,7 @@ def _drop_default_off_run_keys(values: dict) -> None:
     # the WRF v4.6.1 form), and mp_zero_out with its threshold and array
     # switch (off), are omitted at their defaults: every earlier header
     # ran the v4.6.1 filter and no zero-out pass.
-    if values.get("diff_6th_form", "wrf_461") == "wrf_461":
-        values.pop("diff_6th_form", None)
-    if values.get("diff_6th_factor2", None) is None:
-        values.pop("diff_6th_factor2", None)
-    if values.get("upper_wind_limiter_form", "wrf_461") == "wrf_461":
-        values.pop("upper_wind_limiter_form", None)
-    if not values.get("mp_zero_out", 0):
-        values.pop("mp_zero_out", None)
-        values.pop("mp_zero_out_thresh", None)
-        values.pop("mp_zero_out_all", None)
+    _drop_default_fork_run_keys(values)
     # The generic RUC irrigation rule: wrf_461 is omitted at its default.
     if values.get("ruc_irrigation", "wrf_461") == "wrf_461":
         values.pop("ruc_irrigation", None)
@@ -2562,6 +2630,36 @@ def configuration_echo(cfg) -> dict:
     from gpuwm.core.rrtmg_smoke_identity import bind_smoke_source_identity
     bind_smoke_source_identity(values)
     return values
+
+
+def _drop_inert_chem_block(values: dict) -> None:
+    """Remove the chem block from a config echo while chem is off, in place.
+
+    With ``chem_sets`` empty every chem key is read by nothing
+    (gpuwm.config.validate_chem_config), so a chem-off checkpoint's header
+    and configuration digest are the bytes they were before the block
+    existed; :func:`_require_config_match` reads the absent keys at their
+    defaults.  A chem run echoes the whole block and is compared key by
+    key.
+    """
+    if values.get("chem_sets"):
+        return
+    from gpuwm.config import CHEM_RUN_FIELDS
+    for key in CHEM_RUN_FIELDS:
+        values.pop(key, None)
+
+
+def _drop_inert_fire_block(values: dict) -> None:
+    """Remove the fire (SFIRE) block from a config echo while fire is off.
+
+    With ``ifire`` 0 no fire key is read (the FireCoupler and the fire
+    static are built only at ``ifire`` 2), so a fire-off checkpoint's
+    header and configuration digest are the bytes they were before the
+    block existed.  A fire run echoes the whole block and binds key by key.
+    """
+    from gpuwm.config import inert_fire_fields
+    for key in inert_fire_fields(values):
+        values.pop(key, None)
 
 
 def _configuration_digest_values(config: Mapping) -> dict:
@@ -3048,6 +3146,9 @@ def physics_setup_identity(state, cfg) -> dict:
                 "latitude": _array_setup_identity(owner.latitude_deg),
                 "longitude": _array_setup_identity(owner.longitude_deg),
             }
+        fire = getattr(driver, "fire", None)
+        if fire is not None:
+            driver_identity["fire"] = _json_value(fire.setup_identity(), "SFIRE setup identity")
 
     identity = {
         "schema_version": PHYSICS_SETUP_SCHEMA_VERSION,
@@ -3385,7 +3486,8 @@ def _driver_manifest(driver) -> dict[str, object]:
             manifest[f"held/{name}"] = value
     manifest.update(pbl_raw_manifest(driver))
     manifest.update(pbl_diagnostic_manifest(driver))
-    for tend_name in DRIVER_TENDENCY_ATTRS:
+    manifest.update(_fire_manifest(driver))
+    for tend_name in _live_driver_tendency_attrs(driver):
         tend = getattr(driver, tend_name)
         _require_dataclass_components(
             tend, TENDENCY_COMPONENTS, f"{tend_name} (PhysicsTendencies)")
@@ -3461,6 +3563,76 @@ def _driver_manifest(driver) -> dict[str, object]:
     return manifest
 
 
+def _live_driver_tendency_attrs(driver):
+    return (*DRIVER_TENDENCY_ATTRS, *(name for name in OPTIONAL_DRIVER_TENDENCY_ATTRS
+             if getattr(driver, name, None) is not None))
+
+
+def _fire_manifest(driver):
+    """All native fire state, including halos, stages and moisture clocks."""
+    fire = getattr(driver, "fire", None)
+    if fire is None:
+        return {}
+    arrays = fire.arrays()
+    if not isinstance(arrays, Mapping) or not arrays:
+        raise RestartManifestError("SFIRE checkpoint has no fire arrays; resuming would lose the evolving fire")
+    result = {}
+    for name, value in arrays.items():
+        if not isinstance(name, str) or "/" in name or not name:
+            raise RestartManifestError("SFIRE restart field names must be nonempty flat identifiers")
+        if not _is_array_like(value) or np.dtype(value.dtype) not in (np.dtype(np.float32),np.dtype(np.int32)):
+            raise RestartManifestError(f"SFIRE restart field {name!r} must carry native float32 or int32 words")
+        result[f"fire/{name}"] = value
+    return result
+
+
+def _fire_header(driver):
+    fire = getattr(driver, "fire", None)
+    if fire is None:
+        return {}
+    identity = _json_value(fire.setup_identity(), "SFIRE setup identity")
+    metadata = _json_value(fire.metadata(), "SFIRE continuation metadata")
+    if not isinstance(identity, dict) or not isinstance(metadata, dict):
+        raise RestartManifestError("SFIRE restart setup and continuation metadata must be mappings")
+    return {"fire": metadata, "fire_setup_identity": identity,
+            "fire_setup_fingerprint": _json_sha256(identity)}
+
+
+def _validate_fire_payload(stored, header, driver):
+    """Check complete fire inventory and static setup before any mutation."""
+    fire = getattr(driver, "fire", None)
+    incoming = {key: value for key, value in stored.items() if key.startswith("fire/")}
+    driver_header = header.get("driver")
+    driver_header = driver_header if isinstance(driver_header, dict) else {}
+    metadata = driver_header.get("fire")
+    if fire is None:
+        if incoming or metadata is not None:
+            raise RestartMismatchError("restart carries SFIRE state but the resuming driver has no coupled fire model")
+        return
+    expected = _fire_manifest(driver)
+    if set(incoming) != set(expected):
+        raise RestartMismatchError(
+            "restart fire-state inventory differs from the resuming model "
+            f"(missing {sorted(set(expected)-set(incoming))}, extra {sorted(set(incoming)-set(expected))}); "
+            "missing fire stages or moisture fields change the resumed spread")
+    for key, target in expected.items():
+        _check_array(incoming[key], target, key)
+    if not isinstance(metadata, dict):
+        raise RestartMismatchError("restart is missing SFIRE continuation metadata and clocks")
+    identity = driver_header.get("fire_setup_identity")
+    fingerprint = driver_header.get("fire_setup_fingerprint")
+    live = _json_value(fire.setup_identity(), "SFIRE setup identity")
+    if (not isinstance(identity, dict) or fingerprint != _json_sha256(identity)
+            or identity != live):
+        raise RestartMismatchError("restart SFIRE static data, refinement, fuel table or ignition setup differs; resuming would change the fire trajectory")
+    validator = getattr(fire, "validate_restart", None)
+    if validator is not None:
+        try:
+            validator({key[5:]: value for key, value in incoming.items()}, metadata)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RestartMismatchError("restart SFIRE continuation metadata is malformed") from exc
+
+
 def root_external_lbc_clock_identity(state, cfg) -> str | None:
     """The root external-LBC clock semantic active on this state.
 
@@ -3507,11 +3679,61 @@ def write_restart(path, state, cfg, *, run_trackers=None,
             preserved_forcing_prefix=preserved_forcing_prefix)
 
 
+def prepare_restart(path, state, cfg, *, run_trackers=None,
+                    tree_header: dict | None = None,
+                    extra_scratch_slots=(),
+                    sealed_forcing_extension: bool = False,
+                    preserved_forcing_prefix: bool = False):
+    """Snapshot what :func:`write_restart` would write; publish it later.
+
+    Every validation, the header and the host copy of every array happen
+    HERE, on the caller's thread, exactly as :func:`write_restart` does
+    them.  The returned callable performs only the publication (``np.savez``
+    to a unique temporary, ``fsync``, atomic rename, directory ``fsync``)
+    and returns the path, so a checkpoint writer thread can run it while
+    the model steps on.  The snapshot OWNS its arrays: a device array is
+    copied to the host (as the synchronous writer always did) and a host
+    array is copied too, so a later step cannot change what is written.
+    The file is the one :func:`write_restart` writes, byte for byte, apart
+    from the ``created`` stamp both writers take from the wall clock.
+    """
+    with perf_timing.stage("io.restart.prepare_restart"):
+        path, payload = _restart_payload(
+            path, state, cfg, run_trackers=run_trackers,
+            tree_header=tree_header,
+            extra_scratch_slots=extra_scratch_slots,
+            sealed_forcing_extension=sealed_forcing_extension,
+            preserved_forcing_prefix=preserved_forcing_prefix,
+            owned=True)
+    return lambda: _publish_restart_payload(path, payload)
+
+
 def _write_restart(path, state, cfg, *, run_trackers=None,
                    tree_header: dict | None = None,
                    extra_scratch_slots=(),
                    sealed_forcing_extension: bool = False,
                    preserved_forcing_prefix: bool = False) -> Path:
+    path, payload = _restart_payload(
+        path, state, cfg, run_trackers=run_trackers,
+        tree_header=tree_header, extra_scratch_slots=extra_scratch_slots,
+        sealed_forcing_extension=sealed_forcing_extension,
+        preserved_forcing_prefix=preserved_forcing_prefix)
+    return _publish_restart_payload(path, payload)
+
+
+def _owned_host(value) -> np.ndarray:
+    """A host array no later model step can change: a copy, always."""
+    if hasattr(value, "get"):
+        return np.asarray(value.get())
+    return np.array(value, copy=True)
+
+
+def _restart_payload(path, state, cfg, *, run_trackers=None,
+                     tree_header: dict | None = None,
+                     extra_scratch_slots=(),
+                     sealed_forcing_extension: bool = False,
+                     preserved_forcing_prefix: bool = False,
+                     owned: bool = False):
     if cfg.diff_opt == 1:
         from gpuwm.core.dycore import initialize_coordinate_reference
         initialize_coordinate_reference(state, cfg)
@@ -3563,13 +3785,15 @@ def _write_restart(path, state, cfg, *, run_trackers=None,
             "carriers": driver.carriers.state(),
             "surface_radiation_policy": driver.carriers.policy,
         }
+        driver_header.update(_fire_header(driver))
     physics_setup = physics_setup_identity(state, cfg)
     physics_setup_sha256 = _json_sha256(physics_setup)
 
     arrays = {}
     array_manifest = {}
+    to_host = _owned_host if owned else _host
     for key in sorted(manifest):
-        host = _host(manifest[key])
+        host = to_host(manifest[key])
         arrays[key] = host
         array_manifest[key] = {"shape": list(host.shape),
                                "dtype": str(host.dtype)}
@@ -3632,6 +3856,11 @@ def _write_restart(path, state, cfg, *, run_trackers=None,
         json.dumps(header, allow_nan=False).encode("utf-8"),
         dtype=np.uint8)}
     payload.update(arrays)
+    return path, payload
+
+
+def _publish_restart_payload(path: Path, payload: dict) -> Path:
+    """Write one prepared restart archive and make it durable."""
     path.parent.mkdir(parents=True, exist_ok=True)
     # Atomic publish: a crash mid-write must not leave a truncated file
     # under the valid gpuwmrst name (review F4).
@@ -3701,9 +3930,29 @@ def _run_config_default(key: str):
     return object()
 
 
+def _json_default(key: str):
+    """:func:`_run_config_default` in the header's JSON spelling."""
+    value = _run_config_default(key)
+    return list(value) if isinstance(value, tuple) else value
+
+
+def _chem_run_fields() -> frozenset:
+    from gpuwm.config import CHEM_RUN_FIELDS
+    return frozenset(CHEM_RUN_FIELDS)
+
+
 def _require_config_match(stored_config: dict, cfg, path) -> None:
+    CHEM_RUN_FIELDS = _chem_run_fields()
     stored_config = _mosaic_checkpoint_config(stored_config)
     live_config = _mosaic_checkpoint_config(dataclasses.asdict(cfg))
+    _drop_inert_chem_block(stored_config)
+    _drop_inert_chem_block(live_config)
+    _drop_inert_fire_block(stored_config)
+    _drop_inert_fire_block(live_config)
+    # The writer omits these defaults, so its own new header must compare
+    # under the same rule. Active settings remain and bind value for value.
+    _drop_default_fork_run_keys(stored_config)
+    _drop_default_fork_run_keys(live_config)
     from gpuwm.core.rrtmg_smoke_identity import bind_smoke_source_identity
     bind_smoke_source_identity(live_config)
     absent = object()
@@ -3932,6 +4181,20 @@ def _require_config_match(stored_config: dict, cfg, path) -> None:
             # mismatches the live config stays fail-closed below --
             # never infer legacy, never widen.
             stored = RRTMG_VARIANT_RTE_RRTMGP
+        if isinstance(live, tuple):
+            # The header is JSON, which carries a tuple field back as a
+            # list (chem_sets, chem_sources, eta_levels); compare in that
+            # spelling or a tuple-valued field could never match itself.
+            live = list(live)
+        if (stored is absent and key in CHEM_RUN_FIELDS
+                and live == _json_default(key)):
+            # The chem block (gpuwm/config.py after adaptive_nest_lattice):
+            # a checkpoint written before it existed ran with chem off,
+            # which is exactly what a live config holding the defaults
+            # describes -- every other chem key is read by nothing while
+            # chem_sets is empty.  A live config that turns chem ON against
+            # such a checkpoint still refuses here (chem_sets differs).
+            continue
         if stored is absent and key == "eta_levels" and live is None:
             # ABSENT STAYS ABSENT: ``eta_levels = None`` means "inherit the
             # source's ladder", which is exactly and only what every
@@ -4200,7 +4463,7 @@ RESTART_MEMBER_NAMESPACES = (
     "diag/", "held/", "pbl/", "radiation/",
     # The dedicated stochastic validator checks the exact spectrum inventory,
     # member, recipe and process metadata before this namespace closure.
-    "stochastic/",
+    "stochastic/", "fire/",
 )
 
 
@@ -4216,6 +4479,8 @@ def _validate_member_namespaces(stored, state, driver, path, format_version) -> 
                 f"restart file {path} carries member {key!r} under no member "
                 "namespace this build knows how to restore; resume with the "
                 "build that wrote it or start from prepared state")
+        if key.startswith("fire/") and driver is None:
+            raise RestartMismatchError("restart carries SFIRE state but the resuming state has no PhysicsDriver")
     for prefix, names, owner, description in (
             ("acoustic/", CHECKPOINT_ONLY_STATE, state, "checkpoint-only state"),
             ("diag/", DRIVER_CHECKPOINT_ONLY_ATTRS, driver, "a checkpoint-only driver"),
@@ -4231,7 +4496,7 @@ def _validate_member_namespaces(stored, state, driver, path, format_version) -> 
                 _check_array(stored[key], target, key)
     allowed_driver = {
         "driver/rthratenlw", "driver/rthratensw", "driver/pending_rainbl",
-        *(f"driver/{group}/{component}" for group in DRIVER_TENDENCY_ATTRS
+        *(f"driver/{group}/{component}" for group in (*DRIVER_TENDENCY_ATTRS, *OPTIONAL_DRIVER_TENDENCY_ATTRS)
           for component in TENDENCY_COMPONENTS),
     }
     if format_version == 2:
@@ -4274,7 +4539,7 @@ def _validate_nssl2_stored_restart_state(
             "canonical Registry and scratch names are accepted")
 
     expected_state = {
-        f"state/{name}" for name in STATE_SERIALIZED_ATTRS
+        f"state/{name}" for name in serialized_state_attrs(state)
         if getattr(state, name, None) is not None
     }
     stored_state = {key for key in stored if key.startswith("state/")}
@@ -4399,8 +4664,17 @@ class _ValidatedRestart:
     elapsed: float
 
 
-def require_tree_checkpoint_legal(model) -> tuple[int, int]:
-    """Enforce the binding PERIOD_BEGIN tree checkpoint contract."""
+def require_tree_checkpoint_legal(model, *,
+                                  history_ordered: bool = False
+                                  ) -> tuple[int, int]:
+    """Enforce the binding PERIOD_BEGIN tree checkpoint contract.
+
+    ``history_ordered=True`` admits history frames still in flight (D2H):
+    the caller snapshots now and publishes only after every frame queued
+    before the snapshot is durable
+    (``PerDomainWrfoutWriters.durability_barrier``), which is what this
+    count protects -- a checkpoint on disk ahead of a frame that is not.
+    """
     from gpuwm.core.model import PERIOD_BEGIN
 
     status = getattr(model, "_runtime_status", None)
@@ -4420,6 +4694,8 @@ def require_tree_checkpoint_legal(model) -> tuple[int, int]:
     io_manager = getattr(model, "_io_manager", None)
     if io_manager is not None:
         pending["D2H"] = max(pending["D2H"], int(io_manager.pending))
+    if history_ordered:
+        pending.pop("D2H")
     active = {name: count for name, count in pending.items() if count}
     if active:
         raise RestartMismatchError(
@@ -5194,11 +5470,75 @@ def _node_placement(node):
         return None
 
 
+class PendingTreeCheckpoint:
+    """One checkpoint generation, snapshotted and not yet on disk.
+
+    Built by ``write_tree_restart(..., defer_publish=True)``.  Every member
+    was validated and its header and arrays fixed on the stepping thread;
+    :meth:`publish` writes the members in the synchronous writer's order
+    (children first, the root commit marker last), removes the generation's
+    members on any failure, then records the root on the model and retires
+    superseded sets, exactly as the synchronous writer does.
+
+    ``deferrable`` says whether :meth:`publish` may run while the model
+    steps on.  A resident member owns host copies of its arrays, and a
+    member of a ranked domain borrows the domain's host store, which only a
+    drain or a frame download writes; both of those wait for this
+    generation first (:meth:`tilestream.ranks.RankedRun.add_store_guard`).
+    Any other streamed member borrows a store the next sweep writes, so a
+    generation holding one must be published before stepping resumes.
+    """
+
+    def __init__(self, *, directory: Path, model, root_id: int, members,
+                 lenders=(), deferrable: bool = True):
+        self.directory = Path(directory)
+        self._model = model
+        self._root_id = int(root_id)
+        self._members = list(members)
+        self.deferrable = bool(deferrable)
+        self._released = threading.Event()
+        for streamed in lenders:
+            streamed.add_store_guard(self._released.wait)
+
+    def publish(self) -> Path:
+        published: list[Path] = []
+        paths: dict[int, Path] = {}
+        try:
+            for gid, member in self._members:
+                paths[gid] = Path(member())
+                published.append(paths[gid])
+        except BaseException:
+            for path in published:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise
+        finally:
+            # The borrowed store views are dropped and their guard released
+            # whether or not the write succeeded: a failed checkpoint must
+            # not hold the next frame download forever.
+            self.abandon()
+        self._model._last_checkpoint = paths[self._root_id]
+        from gpuwm.resume import retire_superseded_checkpoints
+        retire_superseded_checkpoints(self.directory)
+        return paths[self._root_id]
+
+    def abandon(self) -> None:
+        """Release the borrowed store without writing anything."""
+        self._members = []
+        self._released.set()
+
+
 def write_tree_restart(directory, model, valid_time: datetime, *,
                        run_trackers_by_grid_id=None,
                        sealed_forcing_extension: bool = False,
-                       auto_epssm=None) -> Path:
+                       auto_epssm=None, defer_publish: bool = False):
     """Publish one immutable generation per domain, with d01 last.
+
+    ``defer_publish=True`` takes the same snapshot and returns a
+    :class:`PendingTreeCheckpoint` instead of writing it; the caller
+    publishes it (a checkpoint writer thread, or at once).
 
     ``auto_epssm`` is the grid_ids whose ``epssm`` the model chose
     (:data:`AUTO_EPSSM_HEADER_KEY`); ``None`` reads them off the tree's
@@ -5221,7 +5561,11 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
     """
     from gpuwm.core.model import PERIOD_BEGIN
 
-    ticks, tick_den = require_tree_checkpoint_legal(model)
+    # A deferred generation is published by a caller that orders it after
+    # the history frames queued before it (the prepared door's checkpoint
+    # writer waits on PerDomainWrfoutWriters.durability_barrier).
+    ticks, tick_den = require_tree_checkpoint_legal(
+        model, history_ordered=defer_publish)
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     nodes = tuple(model.walk_parent_first())
@@ -5361,6 +5705,9 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
                 elapsed=sealed_elapsed)
     checkpoint_set_id = uuid.uuid4().hex
     published: list[Path] = []
+    members: list = []
+    lenders: list = []
+    deferrable = True
     try:
         # Children first, root commit marker last.
         for node in reversed(nodes):
@@ -5461,6 +5808,26 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
                 f"{base.stem}__{checkpoint_set_id}{base.suffix}")
             path = directory / member
             streamed = getattr(node.state, "_streamed_domain", None)
+            if defer_publish:
+                if streamed is not None and not sealed_forcing_extension:
+                    streamed.impose_clock(ticks / tick_den)
+                    publish, lends = streamed.prepare_restart(
+                        path, node.cfg.run, run_trackers=trackers.get(gid),
+                        tree_header=tree_header,
+                        extra_scratch_slots=window_slots_by_gid.get(gid, ()))
+                    members.append(
+                        (gid, lambda publish=publish: publish().path))
+                    if lends:
+                        lenders.append(streamed)
+                    else:
+                        deferrable = False
+                else:
+                    members.append((gid, prepare_restart(
+                        path, node.state, node.cfg.run,
+                        run_trackers=trackers.get(gid), tree_header=tree_header,
+                        extra_scratch_slots=window_slots_by_gid.get(gid, ()),
+                        sealed_forcing_extension=sealed_forcing_extension)))
+                continue
             if streamed is not None and not sealed_forcing_extension:
                 # Publish the canonical store, without refreshing a full GPU
                 # state. Bind the exact domain time, not the tile FP32 sum.
@@ -5488,6 +5855,10 @@ def write_tree_restart(directory, model, valid_time: datetime, *,
                 pass
         raise
     root_id = int(model.root.cfg.grid_id)
+    if defer_publish:
+        return PendingTreeCheckpoint(
+            directory=directory, model=model, root_id=root_id,
+            members=members, lenders=lenders, deferrable=deferrable)
     model._last_checkpoint = paths[root_id]
     # Only after the whole new set is published: the sets it supersedes
     # go when the run's retention says so (gpuwm.resume), never before.
@@ -5873,6 +6244,14 @@ def _validate_scratch_target(state, slot: str, host: np.ndarray,
 def _validate_driver_payload(stored, header, state, driver, elapsed,
                              format_version: int) -> None:
     """Hoist every PhysicsDriver refusal without mutating the driver."""
+    _validate_fire_payload(stored, header, driver)
+    expected_optional = {f"driver/{name}/{component}" for name in OPTIONAL_DRIVER_TENDENCY_ATTRS
+                         if getattr(driver, name, None) is not None for component in TENDENCY_COMPONENTS
+                         if getattr(getattr(driver, name), component) is not None}
+    stored_optional = {key for key in stored if any(key.startswith(f"driver/{name}/")
+                       for name in OPTIONAL_DRIVER_TENDENCY_ATTRS)}
+    if expected_optional != stored_optional:
+        raise RestartMismatchError("restart held fire-tendency inventory differs; the next atmospheric step would lose coupled heating or moisture")
     expected_held = {f"held/{name}" for name in DRIVER_HELD_FORCING_ATTRS
                      if getattr(driver, name, None) is not None}
     stored_held = {key for key in stored if key.startswith("held/")}
@@ -5920,7 +6299,7 @@ def _validate_driver_payload(stored, header, state, driver, elapsed,
             raise RestartMismatchError(f"restart is missing {key}")
         _check_array(stored[key], target, key)
 
-    for tend_name in DRIVER_TENDENCY_ATTRS:
+    for tend_name in _live_driver_tendency_attrs(driver):
         missing = [comp for comp in TENDENCY_REQUIRED_COMPONENTS
                    if f"driver/{tend_name}/{comp}" not in stored]
         if missing:
@@ -6545,7 +6924,10 @@ def _validate_restart(path, state, cfg, *,
     stored_state = {key[len("state/"):]: value
                     for key, value in stored.items()
                     if key.startswith("state/")}
-    expected_state = {name for name in STATE_SERIALIZED_ATTRS
+    # The chem species fields ride beside the fixed inventory, named by the
+    # chem table this run loaded (gpuwm/core/chem_state.py); a chem-off
+    # state adds none, so every existing checkpoint's key set is unchanged.
+    expected_state = {name for name in serialized_state_attrs(state)
                       if getattr(state, name, None) is not None}
     if set(stored_state) != expected_state:
         missing = expected_state - set(stored_state)
@@ -6832,7 +7214,11 @@ def _restore_driver(stored, header, state, driver, elapsed, asarray,
     # Held tendencies: rebind with the stored COUPLED arrays (no
     # recoupling â€” see the manifest argument).  compute() recomposes the
     # working sum from these components before the next consumption.
-    for tend_name in DRIVER_TENDENCY_ATTRS:
+    fire = getattr(driver, "fire", None)
+    if fire is not None:
+        fire.restore({key[5:]: asarray(value) for key, value in stored.items() if key.startswith("fire/")},
+                     header["driver"]["fire"])
+    for tend_name in _live_driver_tendency_attrs(driver):
         components = {}
         live_tendency = getattr(driver, tend_name)
         for comp in TENDENCY_COMPONENTS:
@@ -6865,9 +7251,12 @@ def _restore_driver(stored, header, state, driver, elapsed, asarray,
     reuse_pbl = bool(config.get("bl_pbl_physics")
                      and config.get("bldt") == 0.0
                      and (driver.radiation_active or driver.cu_physics))
-    if not (driver.radiation_active or driver.cu_physics) or reuse_pbl:
+    if (getattr(driver, "fire_tendencies", None) is None
+            and (not (driver.radiation_active or driver.cu_physics) or reuse_pbl)):
         # Preserve both proven identity paths and release the constructor's
-        # superseded initial PBL buffers immediately on restore.
+        # superseded initial PBL buffers immediately on restore. Fire needs
+        # a distinct composed target: += fire would otherwise mutate held
+        # PBL tendencies and replay the source on subsequent steps.
         driver.tendencies = driver.pbl_tendencies
 
     from gpuwm.core.physics import microphysics_scratch_slots

@@ -31,7 +31,7 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::cell::RefCell;
 
 use crate::wps_intermediate;
 use crate::{worker_ranges, ERR_DIMENSION, ERR_NONFINITE, ERR_NULL, ERR_PANIC, OK};
@@ -50,19 +50,16 @@ pub const WPS_META_STRIDE: usize = 8;
 /// Fixed byte stride of `names_out`: the format's own `field*9`.
 pub const WPS_NAME_STRIDE: usize = 9;
 
-fn last_error() -> &'static Mutex<String> {
-    static SLOT: OnceLock<Mutex<String>> = OnceLock::new();
-    SLOT.get_or_init(|| Mutex::new(String::new()))
+thread_local! {
+    static LAST_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
 }
 
-fn set_last_error(message: String) {
-    if let Ok(mut slot) = last_error().lock() {
-        *slot = message;
-    }
+pub(crate) fn set_last_error(message: String) {
+    LAST_ERROR.with(|slot| *slot.borrow_mut() = message);
 }
 
 /// Copy the message behind the most recent nonzero return of a
-/// `gpuwm_wps_intermediate_*` call into `buffer`, returning the byte count
+/// bridge call on this calling thread into `buffer`, returning the byte count
 /// written (never more than `capacity`).
 ///
 /// An integer code cannot say WHICH version a rejected file declared or
@@ -77,10 +74,7 @@ pub unsafe extern "C" fn gpuwm_bridge_last_error(buffer: *mut u8, capacity: usiz
     if buffer.is_null() || capacity == 0 {
         return 0;
     }
-    let message = match last_error().lock() {
-        Ok(slot) => slot.clone(),
-        Err(_) => String::new(),
-    };
+    let message = LAST_ERROR.with(|slot| slot.borrow().clone());
     let bytes = message.as_bytes();
     let count = bytes.len().min(capacity);
     std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer, count);
@@ -399,4 +393,27 @@ pub unsafe extern "C" fn gpuwm_regular_cyclic_bilinear_f32(
         }
     }))
     .unwrap_or(ERR_PANIC)
+}
+
+#[cfg(test)]
+mod error_slot_tests {
+    use super::{gpuwm_bridge_last_error, set_last_error};
+    use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn concurrent_callers_keep_their_own_diagnostic() {
+        let ready = Arc::new(Barrier::new(2));
+        let workers: Vec<_> = ["first native input refusal", "second native input refusal"]
+            .into_iter().map(|expected| {
+                let ready = ready.clone();
+                std::thread::spawn(move || {
+                    set_last_error(expected.to_string());
+                    ready.wait();
+                    let mut bytes = [0_u8; 128];
+                    let count = unsafe { gpuwm_bridge_last_error(bytes.as_mut_ptr(), bytes.len()) };
+                    assert_eq!(&bytes[..count], expected.as_bytes());
+                })
+            }).collect();
+        for worker in workers { worker.join().unwrap(); }
+    }
 }

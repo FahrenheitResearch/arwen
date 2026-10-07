@@ -5,6 +5,7 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -25,6 +26,39 @@ def _sha(path):
     return h.hexdigest()
 
 
+def source_revision(root=ROOT):
+    """Bind a source export or this exact checkout, without ambient Git lookup."""
+    root = Path(root).resolve()
+    marker_path = root / ".engine-export-sha"
+    marker = None
+    if marker_path.exists():
+        if marker_path.is_symlink() or not marker_path.is_file():
+            raise ValueError("engine export SHA marker must be an ordinary file")
+        try:
+            marker = marker_path.read_text(encoding="ascii").strip()
+        except UnicodeError as error:
+            raise ValueError("engine export SHA marker must contain one 40-hex revision") from error
+        if not re.fullmatch(r"[0-9a-fA-F]{40}", marker):
+            raise ValueError("engine export SHA marker must contain one 40-hex revision")
+        marker = marker.lower()
+    if not (root / ".git").exists():
+        return marker
+    try:
+        location = subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+                                  check=True, text=True, capture_output=True).stdout.strip()
+        if Path(location).resolve() != root:
+            raise ValueError("scorer source root differs from the Git checkout root")
+        head = subprocess.run(["git", "-C", str(root), "rev-parse", "--verify", "HEAD"],
+                              check=True, text=True, capture_output=True).stdout.strip().lower()
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ValueError("scorer checkout has no verifiable Git HEAD") from error
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise ValueError("scorer Git HEAD must be a complete 40-hex revision")
+    if marker is not None and marker != head:
+        raise ValueError("engine export SHA marker differs from scorer Git HEAD")
+    return head
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--forecast", type=Path, required=True, help="regional-rain/input.v1 forecast manifest")
@@ -43,6 +77,7 @@ def main(argv=None):
             raise ValueError("--analysis-end must include UTC time zone")
         if analysis.utcoffset().total_seconds() != 0:
             raise ValueError("--analysis-end must be UTC")
+        head = source_revision()
         load()
         forecast, fp = load_series(args.forecast, analysis_end=args.analysis_end)
         truth, tp = load_series(args.truth, analysis_end=args.analysis_end)
@@ -65,10 +100,6 @@ def main(argv=None):
                     if not same:
                         row["paired_reason"] = "baseline and DA have different complete neighborhood support"
             diagnostics["baseline"] = baseline_diagnostics
-        try:
-            head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], check=True, text=True, capture_output=True).stdout.strip()
-        except (OSError, subprocess.CalledProcessError):
-            head = None
         for row in rows:
             # The spec's status refers to the campaign gate. A measured single
             # event is a screening row until event-blocked bounds exist.

@@ -68,7 +68,8 @@ REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from tools.da_sweep_score import metric_constants                # noqa: E402
+from tools.da_sweep_score import (metric_constants,              # noqa: E402
+                                  observed_coverage, scored_fss)
 
 SCHEMA = "gpuwm-da.background-ab-score.v1"
 
@@ -92,8 +93,9 @@ def observed(path: Path, fill_dbz: float) -> tuple[np.ndarray, np.ndarray]:
         z_obs = np.asarray(handle.variables["z_obs"][:], np.float64)
         z_mask = np.asarray(handle.variables["z_mask"][:]).astype(bool)
         valid = handle.getncattr("valid_time")
+        coverage, _source = observed_coverage(handle)
     filled = np.where(z_mask, z_obs, fill_dbz)
-    return filled.max(axis=0), z_mask.any(axis=0), valid
+    return filled.max(axis=0), z_mask.any(axis=0), valid, coverage
 
 
 def member_names(composites: Path, leg: int) -> list[str]:
@@ -112,15 +114,16 @@ def composite(composites: Path, leg: int, name: str) -> np.ndarray:
         return np.asarray(handle["refl_colmax"], np.float64)
 
 
-def ladder(field, truth, *, threshold: float, dx_km: float) -> list[dict]:
-    from gpuwm.verify.field_metrics import fss_distance
+def ladder(field, truth, *, threshold: float, dx_km: float,
+           coverage=None) -> list[dict]:
+    """FSS ladder over the observed columns (tools.da_sweep_score)."""
 
     return [{
         "half_width": half_width,
         "neighborhood_km": round((2 * half_width + 1) * dx_km, 1),
         "published_rung": half_width == PUBLISHED_HALF_WIDTH,
-        "fss": round(1.0 - fss_distance(field, truth, threshold=threshold,
-                                        half_width=half_width), 4),
+        "fss": scored_fss(field, truth, threshold=threshold,
+                          half_width=half_width, coverage=coverage),
     } for half_width in HALF_WIDTHS]
 
 
@@ -131,8 +134,8 @@ def score_arm(*, name: str, cycle_out: Path, obs_paths: list[Path],
     frames = []
     for offset, obs_path in enumerate(obs_paths):
         leg = first_free_leg + offset
-        truth, echo, valid = observed(obs_path,
-                                      const["MISSING_OBS_FILL_DBZ"])
+        truth, echo, valid, coverage = observed(
+            obs_path, const["MISSING_OBS_FILL_DBZ"])
         names = member_names(composites, leg)
         if not names:
             raise SystemExit(f"{name}: no member composites for leg {leg}")
@@ -145,7 +148,8 @@ def score_arm(*, name: str, cycle_out: Path, obs_paths: list[Path],
         mean = stack.mean(axis=0)
         control = composite(composites, leg, "control")
         per_member = [ladder(member, truth, threshold=threshold,
-                             dx_km=dx_km) for member in stack]
+                             dx_km=dx_km, coverage=coverage)
+                      for member in stack]
         published = HALF_WIDTHS.index(PUBLISHED_HALF_WIDTH)
         member_published = [rungs[published]["fss"] for rungs in per_member]
         frames.append({
@@ -158,9 +162,9 @@ def score_arm(*, name: str, cycle_out: Path, obs_paths: list[Path],
                 "control": int((control >= COLUMN_THRESHOLD_DBZ)[echo].sum()),
             },
             "ensemble_mean": ladder(mean, truth, threshold=threshold,
-                                    dx_km=dx_km),
+                                    dx_km=dx_km, coverage=coverage),
             "control": ladder(control, truth, threshold=threshold,
-                              dx_km=dx_km),
+                              dx_km=dx_km, coverage=coverage),
             # Reported BESIDE the ensemble mean, never instead of it: the
             # published figure is the mean, and a per-member number that
             # replaced it would not land on the same axis.

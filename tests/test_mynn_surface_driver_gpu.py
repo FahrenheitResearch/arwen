@@ -21,7 +21,7 @@ from _toolchain_rows import toolchain_row
 from gpuwm.core.fp32_ulp import fp32_ulp_distance
 
 
-ORACLE_DIR = Path(__file__).parents[1] / "gpuwm" / "data" / "mynn" / "oracle"
+ORACLE_DIR = Path(__file__).parents[1] / "tests" / "data" / "oracles" / "mynn"
 WIDE_ORACLE = ORACLE_DIR / "surface-layer-wide.csv"
 WRAPPER_ORACLE = ORACLE_DIR / "surface-layer-wrapper.csv"
 
@@ -193,6 +193,16 @@ SEEDED_ULP_BY_TOOLCHAIN = {
 #: integrate/2.8 9dbb4a2db.
 SEEDED_ULP_BY_TOOLCHAIN[("120", (12, 9))] = (
     SEEDED_ULP_BY_TOOLCHAIN[("120", (13, 4))])
+#: sm_89 reads the sm_120 row.  Since the cross-architecture rounding pins
+#: (xnode-identity, ecbd106a9 and the A146 __fdiv_rn spellings) the RTX 4090
+#: returns the RTX 5090's words for every output these gates compare:
+#: 16,518 words, zero differing, NVRTC 13.4, 2026-10-05.  The default row,
+#: recorded before those pins, no longer describes it: it failed 31 gates
+#: on the RTX 4090 with no kernel change.  MEASURED on node-1's RTX 4090
+#: under NVRTC 12.9, 13.3 and 13.4: every gate passes on the sm_120 row.
+SEEDED_ULP_BY_TOOLCHAIN[("89", (12, 9))] = SEEDED_ULP_BY_TOOLCHAIN[("120", (13, 4))]
+SEEDED_ULP_BY_TOOLCHAIN[("89", (13, 3))] = SEEDED_ULP_BY_TOOLCHAIN[("120", (13, 4))]
+SEEDED_ULP_BY_TOOLCHAIN[("89", (13, 4))] = SEEDED_ULP_BY_TOOLCHAIN[("120", (13, 4))]
 
 
 #: ``CHAINED_ULP`` per compiler where a compiler reads it differently, keyed
@@ -227,6 +237,10 @@ CHAINED_ULP_BY_TOOLCHAIN = {
 #: A167: as for SEEDED_ULP_BY_TOOLCHAIN above.
 CHAINED_ULP_BY_TOOLCHAIN[("120", (12, 9))] = (
     CHAINED_ULP_BY_TOOLCHAIN[("120", (13, 4))])
+#: sm_89: as for SEEDED_ULP_BY_TOOLCHAIN above.
+CHAINED_ULP_BY_TOOLCHAIN[("89", (12, 9))] = CHAINED_ULP_BY_TOOLCHAIN[("120", (13, 4))]
+CHAINED_ULP_BY_TOOLCHAIN[("89", (13, 3))] = CHAINED_ULP_BY_TOOLCHAIN[("120", (13, 4))]
+CHAINED_ULP_BY_TOOLCHAIN[("89", (13, 4))] = CHAINED_ULP_BY_TOOLCHAIN[("120", (13, 4))]
 
 
 CARRIED_ULP = {
@@ -253,6 +267,10 @@ CARRIED_ULP_BY_TOOLCHAIN = {
 #: A167: as for SEEDED_ULP_BY_TOOLCHAIN above.
 CARRIED_ULP_BY_TOOLCHAIN[("120", (12, 9))] = (
     CARRIED_ULP_BY_TOOLCHAIN[("120", (13, 4))])
+#: sm_89: as for SEEDED_ULP_BY_TOOLCHAIN above.
+CARRIED_ULP_BY_TOOLCHAIN[("89", (12, 9))] = CARRIED_ULP_BY_TOOLCHAIN[("120", (13, 4))]
+CARRIED_ULP_BY_TOOLCHAIN[("89", (13, 3))] = CARRIED_ULP_BY_TOOLCHAIN[("120", (13, 4))]
+CARRIED_ULP_BY_TOOLCHAIN[("89", (13, 4))] = CARRIED_ULP_BY_TOOLCHAIN[("120", (13, 4))]
 
 
 INPUT_ALIASES = {

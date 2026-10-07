@@ -114,12 +114,19 @@ RTPS -- relaxation to prior spread, Whitaker and Hamill (2012) eq. 6:
 applied pointwise, per analysis field, after the transform and before the
 increment is formed.  ``alpha = 0`` disables it.  The relaxed spread is
 ``alpha*sigma_b + (1-alpha)*sigma_a``, so ``alpha = 1`` restores the prior
-spread exactly and ``alpha`` outside [0, 1] is refused.
+spread exactly.  Any finite non-negative RTPS ``alpha`` is allowed, including
+over-relaxation beyond the prior spread.  If posterior spread exceeds prior
+spread, over-relaxation can ask for a negative target spread.  That target
+is clamped to zero: a standard deviation cannot be negative, and changing
+the sign of all perturbations would reverse their cross-covariances rather
+than restore their amplitude.  This floor applies at inactive points too.
 
 **RTPP** (relaxation to prior perturbation, Zhang et al. 2004) is now
 available beside it as ``LetkfConfig.relaxation = "rtpp"``:
 
     Xa <- (1 - alpha) Xa + alpha Xb
+
+Its ``alpha`` remains in [0, 1], so it is a convex perturbation mixture.
 
 It needs no spread diagnostics and it relaxes the analysis *covariance
 structure*, not just its amplitude, which is the reason to prefer it when
@@ -133,7 +140,7 @@ question, so this module ships both and records in
 :class:`LetkfDiagnostics` which one ran, next to the prior and posterior
 spread it produced.
 
-One alternative is documented but NOT built here:
+One alternative is built OUTSIDE this module, by design:
 
 * **Additive inflation** (Mitchell and Houtekamer 2000): add scaled random
   draws to the analysis perturbations.  This is the only one of the three
@@ -145,7 +152,10 @@ One alternative is documented but NOT built here:
   drawn on the model grid and added to a state, which is
   :mod:`gpuwm.da.perturb`'s job and a caller's cycle policy.  A version
   that drew white noise here instead would inject exactly the
-  small-scale imbalance the model then has to reject.
+  small-scale imbalance the model then has to reject.  It is
+  :func:`gpuwm.da.perturb.additive_inflation` (smooth draws, rim-tapered,
+  ensemble mean removed), on by default in ``tools/da_cycle_prepared.py``
+  after every analysis.
 
 Multiplicative prior inflation is available as ``LetkfConfig.prior_inflation``
 (the ``rho`` of step 5) since it costs one scalar in the batched solve.
@@ -153,7 +163,9 @@ Multiplicative prior inflation is available as ``LetkfConfig.prior_inflation``
 Both relaxations leave the inactive-point closed form unchanged, which is
 not a coincidence: at a gridpoint with no localised observation
 ``Xa = sqrt(rho) Xb``, so RTPS gives ``[(1-alpha) sqrt(rho) + alpha] Xb``
-and RTPP gives ``[(1-alpha) sqrt(rho) + alpha] Xb`` -- the same scalar.
+and RTPP gives ``[(1-alpha) sqrt(rho) + alpha] Xb``.  These are the same
+scalar for alpha in [0, 1]; RTPS alone permits larger alpha and floors the
+scalar at zero if over-relaxation would otherwise reverse its sign.
 The bitwise-zero guarantee beyond the cutoff at ``rho = 1`` therefore
 holds for both.
 
@@ -186,6 +198,9 @@ __all__ = [
     "Localization",
     "GridGeometry",
     "GriddedObs",
+    "PointSet",
+    "PointSimulated",
+    "point_batch",
     "LetkfConfig",
     "LetkfDiagnostics",
     "gaspari_cohn",
@@ -641,6 +656,110 @@ class GriddedObs:
     #: silently unassimilated, so :func:`analyze` refuses rather than
     #: trimming.
     window: tuple[int, int, int, int] | None = None
+    #: Optional :class:`PointSet`: the same observations as ``values``,
+    #: ``errors``, ``mask`` and ``simulated`` hold, stated only where they
+    #: exist.  A continental point network (aircraft, sondes, motion
+    #: vectors, mesonet) is a few thousand cells of a ten-million-cell grid,
+    #: and its dense ``simulated`` is ``(R, nz, ny, nx)`` float64: 2.6 GB per
+    #: batch at 9 km CONUS with 32 members, for about 0.1 percent of it
+    #: holding a number.  The observation-sparse device route reads the
+    #: points directly; every other reader still sees the dense arrays (the
+    #: dense ``simulated`` of a point batch is built on demand by
+    #: :class:`PointSimulated`).
+    points: "PointSet | None" = None
+
+
+@dataclass(frozen=True)
+class PointSet:
+    """A batch's observations at the gridpoints that hold one.
+
+    ``flat_index`` is ``(n,)`` int64 into the ``(nz, ny, nx)`` grid in C
+    order, strictly increasing (one observation per gridpoint per batch,
+    the dense contract).  ``values`` and ``errors`` are ``(n,)``, errors a
+    standard deviation; ``simulated`` is ``(R, n)``, H(x_k) per member.
+    """
+
+    flat_index: object
+    values: object
+    errors: object
+    simulated: object
+
+
+class PointSimulated:
+    """The dense ``(R, nz, ny, nx)`` view of a :class:`PointSet`'s H(x).
+
+    Carries ``shape`` without allocating, so every shape check reads it for
+    free; ``numpy.asarray`` builds the dense array (zeros off the points)
+    only for a reader that asks for it.
+    """
+
+    def __init__(self, points: PointSet, shape):
+        self._points = points
+        self.shape = (int(np.shape(points.simulated)[0]),) + tuple(
+            int(v) for v in shape)
+        self.ndim = len(self.shape)
+        self.dtype = np.dtype(np.float64)
+
+    def __array__(self, dtype=None, copy=None):
+        out = np.zeros(self.shape, dtype=np.float64)
+        flat = out.reshape(self.shape[0], -1)
+        flat[:, np.asarray(self._points.flat_index, np.int64)] = np.asarray(
+            self._points.simulated, np.float64)
+        return out if dtype is None else out.astype(dtype)
+
+    def __getitem__(self, key):
+        return np.asarray(self)[key]
+
+
+def point_batch(name: str, shape, points: PointSet,
+                localization: "Localization | None" = None) -> GriddedObs:
+    """A :class:`GriddedObs` built from points, its dense arrays derived.
+
+    ``values``, ``errors`` and ``mask`` are dense (8 + 8 + 1 bytes per
+    gridpoint); ``simulated`` is a :class:`PointSimulated`.
+    """
+    shape = tuple(int(v) for v in shape)
+    index = np.asarray(points.flat_index, np.int64)
+    n = int(index.size)
+    if index.ndim != 1 or (n and (index[0] < 0 or index[-1] >= int(np.prod(shape))
+                                  or np.any(np.diff(index) <= 0))):
+        raise LetkfError(
+            f"point batch {name!r}: flat_index must be strictly increasing "
+            "gridpoint indices inside the grid (one observation per "
+            "gridpoint per batch)")
+    for label, arr, want in (("values", points.values, (n,)),
+                             ("errors", points.errors, (n,))):
+        if tuple(np.shape(arr)) != want:
+            raise LetkfError(f"point batch {name!r}: {label} is "
+                             f"{tuple(np.shape(arr))}, expected {want}")
+    sim_shape = tuple(np.shape(points.simulated))
+    if len(sim_shape) != 2 or sim_shape[1] != n:
+        raise LetkfError(f"point batch {name!r}: simulated is {sim_shape}, "
+                         f"expected (members, {n})")
+    values = np.zeros(shape, np.float64)
+    errors = np.ones(shape, np.float64)
+    mask = np.zeros(shape, bool)
+    values.reshape(-1)[index] = np.asarray(points.values, np.float64)
+    errors.reshape(-1)[index] = np.asarray(points.errors, np.float64)
+    mask.reshape(-1)[index] = True
+    canonical = PointSet(flat_index=index,
+                         values=np.asarray(points.values, np.float64),
+                         errors=np.asarray(points.errors, np.float64),
+                         simulated=np.asarray(points.simulated, np.float64))
+    return GriddedObs(name=name, values=values, errors=errors,
+                      simulated=PointSimulated(canonical, shape), mask=mask,
+                      localization=localization, points=canonical)
+
+
+#: ``"index"`` (the default) builds the observation-to-gridpoint roster
+#: ONCE per analysis by walking observations x stencil offsets
+#: (:mod:`gpuwm.da.neighbor_index`) in the solve's namespace, and packs each
+#: chunk from it there.  ``"forward"`` is the earlier per-chunk host walk of
+#: gridpoints x stencil offsets.  Both produce the same neighbours in the same
+#: order with the same weights, so the packed transform inputs, and the
+#: increments, are byte-identical; ``"forward"`` is kept as the reference
+#: the identity tests compare against.
+NEIGHBOR_SEARCH_MODES = ("index", "forward")
 
 
 @dataclass(frozen=True)
@@ -653,7 +772,8 @@ class LetkfConfig:
         so that a caller can hand in a full state and update a subset --
         hydrometeors in particular are frequently withheld.
     rtps_alpha
-        Relaxation to prior spread, in [0, 1].  REQUIRED, and deliberately:
+        Relaxation to prior spread, finite and non-negative for RTPS and in
+        [0, 1] for RTPP.  REQUIRED, and deliberately:
         there is no defensible default.  ``0.0`` disables the relaxation
         entirely, and a cycling ensemble run without any posterior
         relaxation loses spread until it stops responding to observations
@@ -757,8 +877,27 @@ class LetkfConfig:
     #: See :data:`MATMUL_MODES`.  Last in the field list so no positional
     #: caller of this dataclass moves.
     matmul: str = "fixed-order"
+    #: Worker processes for the HOST solve (numpy, host-staged).  ``None``
+    #: is automatic: the CPUs this process may run on, capped at
+    #: :data:`HOST_WORKERS_AUTO_CAP` and by the number of chunks, and
+    #: overridden by the ``GPUWM_DA_HOST_WORKERS`` environment variable.
+    #: ``1`` is the single-process loop.  Every worker count produces the
+    #: same bytes (see :mod:`gpuwm.da.letkf_host_parallel`); the setting
+    #: only decides how many cores share the chunks.  Ignored on a device
+    #: solve.  Last in the field list so no positional caller moves.
+    host_workers: int | None = None
+    #: How the bounded host-staged route finds each gridpoint's localised
+    #: observations; see :data:`NEIGHBOR_SEARCH_MODES`.
+    neighbor_search: str = "index"
 
     def __post_init__(self) -> None:
+        if self.host_workers is not None and int(self.host_workers) < 1:
+            raise LetkfError(
+                f"host_workers must be >= 1 or None, got {self.host_workers!r}.")
+        if self.neighbor_search not in NEIGHBOR_SEARCH_MODES:
+            raise LetkfError(
+                f"neighbor_search must be one of {NEIGHBOR_SEARCH_MODES},"
+                f" got {self.neighbor_search!r}.")
         if self.matmul not in MATMUL_MODES:
             raise LetkfError(
                 f"matmul must be one of {MATMUL_MODES}, got {self.matmul!r}.")
@@ -789,11 +928,17 @@ class LetkfConfig:
                 f" {rho!r}."
             )
         a = float(self.rtps_alpha)
-        if not math.isfinite(a) or not (0.0 <= a <= 1.0):
+        if not math.isfinite(a) or a < 0.0:
             raise LetkfError(
-                f"rtps_alpha must lie in [0, 1], got {a!r}.  Values above 1"
-                " inflate past the prior spread and diverge; negative values"
-                " deflate an already over-confident analysis."
+                f"rtps_alpha must be finite and non-negative, got {a!r}."
+                " Non-finite relaxation cannot define a spread and negative"
+                " relaxation deflates an already over-confident analysis."
+            )
+        if self.relaxation == "rtpp" and a > 1.0:
+            raise LetkfError(
+                f"rtps_alpha for RTPP must lie in [0, 1], got {a!r}."
+                " A value above 1 makes the posterior weight negative and"
+                " reverses its contribution to the perturbation mixture."
             )
         if self.chunk_points is not None and int(self.chunk_points) < 1:
             raise LetkfError(
@@ -841,6 +986,11 @@ class LetkfDiagnostics:
     #: when the analysis ran on the host.  Recorded because the two device
     #: routes agree to rounding, not bitwise.
     matmul: str = ""
+    #: Which neighbour search ran (see :data:`NEIGHBOR_SEARCH_MODES`), and
+    #: the index receipt when it was the index: observations, neighbours,
+    #: bytes and build seconds.
+    neighbor_search: str = ""
+    neighbor_index: dict = field(default_factory=dict)
     #: Sweeps the project kernel needed on its worst matrix, or 0 when the
     #: library solver ran.  A number climbing toward
     #: ``gpuwm.core.jacobi_eigh.SWEEP_CAP`` is the early warning that the
@@ -849,9 +999,10 @@ class LetkfDiagnostics:
     #: Gridpoints with at least one observation inside the cutoff.  Every
     #: other gridpoint never entered a solve and carries the closed-form
     #: inactive-point transform ``(s - 1) x'`` with
-    #: ``s = (1 - rtps_alpha) sqrt(prior_inflation) + rtps_alpha`` -- which
-    #: is exactly zero at the default ``prior_inflation = 1`` and is NOT
-    #: zero otherwise.  Reading ``active_points`` as "everywhere else the
+    #: ``s = (1 - rtps_alpha) sqrt(prior_inflation) + rtps_alpha`` (floored
+    #: at zero for RTPS over-relaxation).  The increment is
+    #: exactly zero at the default ``prior_inflation = 1``; otherwise it
+    #: follows that formula.  Reading ``active_points`` as "everywhere else the
     #: increment is zero" is only true for that default; the general
     #: statement is the one :func:`analyze` returns.
     active_points: int = 0
@@ -915,8 +1066,9 @@ class LetkfDiagnostics:
     #: An A/B between solve devices that cannot see that split cannot say
     #: what it moved.
     #:
-    #: ``setup_seconds`` covers validation, the stencils and the chunk
-    #: sizing; ``solve_seconds`` is the chunk loop, DEVICE-SYNCHRONISED at
+    #: ``setup_seconds`` covers validation, the stencils, the neighbour
+    #: roster (also read alone as ``neighbor_index["build_seconds"]``) and
+    #: the chunk sizing; ``solve_seconds`` is the chunk loop, DEVICE-SYNCHRONISED at
     #: its end so an asynchronous namespace does not bill its own work to
     #: whatever runs next; ``finish_seconds`` is the spread and increment
     #: statistics.  They do not sum to the caller's wall: the caller's
@@ -968,6 +1120,19 @@ class LetkfDiagnostics:
     #: per-row sizing estimate and was halved before allocating.  Cheap
     #: (host arithmetic, no dead attempt), unlike ``chunk_oom_shrinks``.
     reach_span_splits: int = 0
+    #: The host-parallel solve (:mod:`gpuwm.da.letkf_host_parallel`).
+    #: ``host_workers`` is the process count that ran the chunk loop (1 is
+    #: the single-process loop); ``host_workers_reason`` says why that
+    #: count.  ``host_row_blocks`` and ``host_transform_pieces`` count the
+    #: bounded pieces the workers split chunks into; both are 0 on the
+    #: single-process loop, which never splits.  ``weights_seconds`` and
+    #: ``transform_seconds`` stay sums over chunks, so under several
+    #: workers they are CPU seconds, and ``solve_seconds`` is the wall.
+    host_workers: int = 1
+    host_workers_reason: str = ""
+    host_worker_budget_bytes: int = 0
+    host_row_blocks: int = 0
+    host_transform_pieces: int = 0
     #: Per field, the RMS of the ensemble-mean increment.
     mean_increment_rms: dict = field(default_factory=dict)
     #: Per field, the domain-mean prior and posterior ensemble spread.
@@ -1667,6 +1832,21 @@ def _as_grid(xp, a, shape, what):
     return arr
 
 
+def _host_field_map(xp, fn, fields):
+    """``[fn(f) for f in fields]``, the fields on threads for a host array.
+
+    numpy releases the GIL inside each whole-field operation, so a 14-field
+    analysis runs its per-field passes over the prior side by side instead
+    of one after another.  Each field's operations are unchanged, so the
+    results are the same bytes.  The device namespace keeps the loop: its
+    calls only enqueue work.  See :mod:`gpuwm.da.letkf_host_parallel`.
+    """
+    from gpuwm.da.letkf_host_parallel import field_threads, map_ordered
+
+    threads = field_threads(len(fields)) if xp is np else 1
+    return map_ordered(fn, list(fields), threads)
+
+
 def _validate_prior(xp, prior, fields, work_dtype):
     """Shapes, finiteness, and the "this is not an ensemble" check."""
     missing = [f for f in fields if f not in prior]
@@ -1693,10 +1873,13 @@ def _validate_prior(xp, prior, fields, work_dtype):
             f"LETKF needs at least 2 ensemble members, got {members}."
             "  A one-member 'ensemble' has no covariance to update with."
         )
-    out = {}
-    for f in fields:
+    def _checked(f):
         arr = xp.asarray(prior[f], dtype=work_dtype)
-        if not bool(xp.all(xp.isfinite(arr))):
+        return arr, bool(xp.all(xp.isfinite(arr)))
+
+    out = {}
+    for f, (arr, finite) in zip(fields, _host_field_map(xp, _checked, fields)):
+        if not finite:
             raise LetkfError(
                 f"prior field {f!r} contains non-finite values; the filter"
                 " will not launder them into an analysis."
@@ -1705,7 +1888,7 @@ def _validate_prior(xp, prior, fields, work_dtype):
     return out, members, shape[1:]
 
 
-def _validate_obs(xp, obs, members, shape, work_dtype):
+def _validate_obs(xp, obs, members, shape, work_dtype, *, densify=True):
     checked = []
     nz, ny, nx = shape
     for k, o in enumerate(obs):
@@ -1772,10 +1955,13 @@ def _validate_obs(xp, obs, members, shape, work_dtype):
             )
         # Masked slots participate in a rectangular gather and are zeroed by
         # weight, but 0 * NaN is NaN.  Substituting a finite placeholder here
-        # is cheaper and safer than a where() in the inner loop.
-        values = xp.where(mask, values, xp.zeros_like(values))
-        err = xp.where(mask, err, xp.ones_like(err))
-        sim = xp.where(mask[None], sim, xp.zeros_like(sim))
+        # is cheaper and safer than a where() in the inner loop.  The
+        # neighbour roster (gpuwm.da.neighbor_index) reads observed points
+        # only, so with densify=False it is spared three whole-batch copies.
+        if densify:
+            values = xp.where(mask, values, xp.zeros_like(values))
+            err = xp.where(mask, err, xp.ones_like(err))
+            sim = xp.where(mask[None], sim, xp.zeros_like(sim))
         checked.append((o.name, values, err, sim, mask, loc, window))
     return checked
 
@@ -1793,20 +1979,27 @@ def _finish(xp, fields, pri, increments, members, diagnostics):
     is inactive and every gridpoint is inflated -- so it cannot fill these
     in from constants.
     """
-    for f in fields:
+    def _field_finish(f):
         inc = increments[f]
         if not bool(xp.all(xp.isfinite(inc))):
+            return None
+        rms = float(xp.sqrt((inc.mean(axis=0) ** 2).mean()))
+        post = pri[f] + inc
+        pm = post.mean(axis=0, keepdims=True)
+        spread = float(
+            xp.sqrt(((post - pm) ** 2).sum(axis=0) / (members - 1)).mean())
+        return rms, spread
+
+    # Fields side by side on the host; the refusal is still the first
+    # field in order, as a field-at-a-time loop would raise it.
+    for f, row in zip(fields, _host_field_map(xp, _field_finish, fields)):
+        if row is None:
             raise LetkfError(
                 f"analysis increment for {f!r} is non-finite.  Every"
                 " specific guard passed, so this is a genuine numerical"
                 " failure in the transform -- do not apply this analysis."
             )
-        diagnostics.mean_increment_rms[f] = float(
-            xp.sqrt((inc.mean(axis=0) ** 2).mean()))
-        post = pri[f] + inc
-        pm = post.mean(axis=0, keepdims=True)
-        diagnostics.posterior_spread[f] = float(
-            xp.sqrt(((post - pm) ** 2).sum(axis=0) / (members - 1)).mean())
+        diagnostics.mean_increment_rms[f], diagnostics.posterior_spread[f] = row
 
 
 def analyze(
@@ -1913,7 +2106,11 @@ def analyze(
             f"prior is on a ({ny}, {nx}) horizontal grid but"
             f" GridGeometry.lat_deg is {tuple(grid.lat_deg.shape)}."
         )
-    checked = _validate_obs(xp, obs, members, shape, work_dtype)
+    # The roster route (see the stencils below) reads observed points only.
+    roster_route = (config.neighbor_search == "index"
+                    and (host_staging or solve_xp is not np))
+    checked = _validate_obs(xp, obs, members, shape, work_dtype,
+                            densify=not roster_route)
 
     diagnostics.members = members
     diagnostics.grid_shape = (nz, ny, nx)
@@ -1949,22 +2146,30 @@ def analyze(
 
     # Prior mean and perturbations, once, for the whole domain.  Xb is what
     # step 9 multiplies; nothing downstream needs the members again.
-    xb = {}
-    for f in fields:
+    # Per field, and the fields side by side on a host prior: every array
+    # operation is the one a field-at-a-time loop performs, so the bytes are
+    # the same; only whole fields run concurrently (letkf_host_parallel).
+    def _perturbations(f):
         m = pri[f].mean(axis=0, keepdims=True)
-        xb[f] = pri[f] - m
-    sigma_b = {
-        f: xp.sqrt((xb[f] ** 2).sum(axis=0) / (members - 1)) for f in fields
-    }
-    for f in fields:
+        x = pri[f] - m
+        return x, xp.sqrt((x ** 2).sum(axis=0) / (members - 1))
+
+    xb, sigma_b = {}, {}
+    for f, (x, s) in zip(fields, _host_field_map(xp, _perturbations, fields)):
+        xb[f], sigma_b[f] = x, s
+
+    def _spread_scales(f):
+        return (float(xp.abs(pri[f]).max()), float(sigma_b[f].max()),
+                float(sigma_b[f].mean()))
+
+    for f, (scale, widest, spread) in zip(
+            fields, _host_field_map(xp, _spread_scales, fields)):
         # Testing ``spread == 0`` exactly is the obvious check and the wrong
         # one.  Subtracting the mean of R identical floats does not give
         # exactly zero -- ``sum/R`` rounds -- so a genuinely constant
         # ensemble arrives here with a spread around 1e-16 and sails
         # straight through an exact test.  The accurate question is whether
         # the spread is negligible against the field's own magnitude.
-        scale = float(xp.abs(pri[f]).max())
-        widest = float(sigma_b[f].max())
         if widest <= 1e-12 * scale:
             raise LetkfError(
                 f"prior field {f!r} has no usable ensemble spread anywhere"
@@ -1976,7 +2181,7 @@ def analyze(
                 " a zero increment.  If the field is deliberately constant,"
                 " drop it from analysis_fields."
             )
-        diagnostics.prior_spread[f] = float(sigma_b[f].mean())
+        diagnostics.prior_spread[f] = spread
 
     # ---- the inactive-point transform, in closed form ------------------
     # A gridpoint with no localised observation has an empty Yb, so Hunt's
@@ -1998,6 +2203,11 @@ def analyze(
     inactive_scale = 1.0 if rho == 1.0 else (
         (1.0 - float(config.rtps_alpha)) * math.sqrt(rho)
         + float(config.rtps_alpha))
+    if config.relaxation == "rtps":
+        # Over-relaxation of an inflated posterior can request negative
+        # spread.  A zero spread is the physical lower bound; a negative
+        # scale would instead reverse cross-covariances with other fields.
+        inactive_scale = max(0.0, inactive_scale)
     if inactive_scale == 1.0:
         increments = {f: xp.zeros_like(pri[f]) for f in fields}
     else:
@@ -2134,6 +2344,13 @@ def analyze(
     # plus geometric scratch for each distinct physical stencil.
     host_per_point = 64*total_slots + 182*geometry_slots
     diagnostics.host_geometry_bytes_per_point = host_per_point if host_staging else 0
+    # The roster route (gpuwm.da.neighbor_index) serves both storages: the
+    # transform then packs only positive neighbours, so its chunks are
+    # sized like the bounded route's on either one.
+    # The plain host namespace without staging keeps the dense transform:
+    # it is the reference every staged and device route is tested against.
+    use_index = roster_route
+    packed_route = host_staging or use_index
     if config.chunk_points is not None:
         chunk = int(config.chunk_points)
     else:
@@ -2168,7 +2385,7 @@ def analyze(
                                " may be promised to the solve)")
         device_budget = ceiling
         device_limiter = limiter
-        if host_staging:
+        if packed_route:
             chunk = min(npts, max(1, budget // max(1, host_per_point)))
         else:
             chunk = chunk_points_for_budget(
@@ -2205,6 +2422,75 @@ def analyze(
     weights_seconds = 0.0
     transform_seconds = 0.0
 
+    # ---- the neighbour roster, once (host-staged route) -----------------
+    # Built AFTER the chunk sizing above so the sizing reads the same card
+    # the forward walk did; the roster then replaces that walk chunk by
+    # chunk without changing a single chunk boundary.
+    index = None
+    diagnostics.neighbor_search = (
+        config.neighbor_search if packed_route else "dense")
+    if use_index:
+        from gpuwm.da.neighbor_index import build_neighbor_index
+        # The roster's metric is evaluated on the HOST whichever storage
+        # runs, with the expressions the bounded forward walk uses, so both
+        # storages read one roster.
+        host_z = np.asarray(grid.height_field(ny, nx),
+                            dtype=np.float64).reshape(-1)
+        if grid.geodesic:
+            host_lat = np.radians(grid.lat_deg).reshape(-1).astype(np.float64)
+            host_lon = np.radians(grid.lon_deg).reshape(-1).astype(np.float64)
+
+            def _host_distance(col_a, col_b):
+                return _geodesic_m(host_lat[col_a], host_lon[col_a],
+                                   host_lat[col_b], host_lon[col_b],
+                                   float(grid.earth_radius_m))
+        else:
+            host_cols = np.arange(ny * nx, dtype=np.float64)
+            host_x = (host_cols % nx) * float(grid.dx_m)
+            host_y = (host_cols // nx) * float(grid.dy_m)
+
+            def _host_distance(col_a, col_b):
+                return np.hypot(host_x[col_b] - host_x[col_a],
+                                host_y[col_b] - host_y[col_a])
+        roster_workers = []
+
+        def _roster_parallel(levels, pairs):
+            # The host build splits by level on the same workers the chunk
+            # loop uses (letkf_host_parallel); same bytes at any count.
+            from gpuwm.da.letkf_host_parallel import resolve_host_workers
+            count, _why = resolve_host_workers(
+                config.host_workers, tasks=levels, pairs=pairs)
+            roster_workers.append(count)
+            return count
+
+        index = build_neighbor_index(
+            stencils, shape=(nz, ny, nx), zflat=host_z,
+            horizontal_distance=_host_distance, members=members,
+            solve_dtype=solve_dtype, xp=solve_xp,
+            gaspari_cohn=gaspari_cohn,
+            parallel=_roster_parallel if solve_xp is np else None,
+            # On a card the build works inside the scratch the admission
+            # priced, as the chunk loop does (gpuwm.da.neighbor_index).
+            transient_bytes=None if solve_xp is np else device_budget)
+        diagnostics.neighbor_index = dict(
+            index.receipt, workers=roster_workers[0] if roster_workers else 1)
+        diagnostics.sparse_neighbor_peak_bytes = index.nbytes
+        if solve_xp is not np and not index.host_resident:
+            # The roster stays on the card through the solve, so the packed
+            # chunks share the priced scratch with it rather than adding to
+            # it.  A roster that leaves no room for one packed row is the
+            # chunk loop's own named capacity refusal.
+            device_budget = max(0, int(device_budget) - int(index.nbytes))
+        # The roster's one-time upload is staging like any chunk's.
+        diagnostics.staging_bytes += index.build_upload_bytes
+        # The build runs here, before the solve clock starts, so it is in
+        # setup_seconds and in neighbor_index["build_seconds"].  It is not
+        # added to weights_seconds: e13abf285 did, which billed setup time
+        # to a phase of the solve and let the two phases sum past
+        # solve_seconds by the build's length (the phase split of
+        # tests/test_da_solve_ab.py read 0.006 s of phases inside a
+        # 0.004 s solve on a 5070 Ti host).
+
     def _transform_chunk(gpts, gidx, wloc, stencils, local_max, sparse=None):
         nonlocal transform_seconds
         xp = solve_xp
@@ -2212,7 +2498,25 @@ def analyze(
         t_transform = time.perf_counter()
         # ---- phase 2: the batched transform ---------------------------
         # yb: (G, P, R); d: (G, P); winv: (G, P) = localisation / error^2.
-        if host_staging:
+        if index is not None:
+            # The same packed arrays the host loop below builds, gathered
+            # in the solve namespace from the roster; on the bounded route
+            # only the prior perturbations cross from the host.
+            s, values, err2, wloc = index.pack(
+                gpts, local_max, members, solve_dtype)
+            if host_staging:
+                host_xb = np.stack([xb_flat[f][:, gpts] for f in fields]).astype(solve_dtype)
+                staged_bytes = int(host_xb.nbytes) + index.last_pack_upload_bytes
+                diagnostics.staging_bytes += staged_bytes
+                diagnostics.staging_peak_bytes = max(diagnostics.staging_peak_bytes, staged_bytes)
+                chunk_xb = xp.asarray(host_xb)
+            else:
+                gpts = xp.asarray(gpts)
+                chunk_xb = xp.stack([xb_flat[f][:, gpts] for f in fields]).astype(solve_dtype)
+            sbar = s.mean(axis=0)
+            yb = xp.moveaxis(s-sbar[None], 0, 2)
+            dvec = values-sbar
+        elif host_staging:
             # Remove only exactly zero-weight slots, retaining batch/slot
             # order and every positive neighbour. Zero tails keep the batch
             # rectangular without transferring a full stencil member cube.
@@ -2332,7 +2636,7 @@ def analyze(
         alpha = solve_dtype.type(config.rtps_alpha)
         chunk_results = []
         for field_index, f in enumerate(fields):
-            xbg = chunk_xb[field_index] if host_staging else xb_flat[f][:, gpts].astype(solve_dtype)   # (R, G)
+            xbg = chunk_xb[field_index] if packed_route else xb_flat[f][:, gpts].astype(solve_dtype)   # (R, G)
             dbar = _es("mg,gm->g", xbg, wbar)               # mean increment
             xa = _es("mg,gmk->kg", xbg, wa)                 # (R, G)
             if config.rtps_alpha > 0.0:
@@ -2353,6 +2657,10 @@ def analyze(
                     # downstream.
                     relax = xp.where(sa > 0, alpha * (sb - sa) / xp.where(
                         sa > 0, sa, 1) + 1, 1)
+                    # For alpha > 1 and sa > sb, the extrapolated target
+                    # spread can be negative.  Its physical lower bound is
+                    # zero; never turn a negative target into a sign flip.
+                    relax = xp.maximum(relax, 0)
                     xa = xa * relax[None, :]
             result = (dbar[None, :] + xa - xbg).astype(work_dtype)
             if host_staging:
@@ -2369,6 +2677,10 @@ def analyze(
             _sync_namespace(xp)
         transform_seconds += time.perf_counter() - t_transform
         return ng, local_max, int(sweeps)
+
+    # Set only by the host-parallel solve, before its workers fork; None on
+    # every other path keeps the single-process arithmetic exactly as is.
+    host_split = {"row_block": None, "piece_bytes": None}
 
     def _solve_chunk(start, stop, stencils):
         """One chunk's analysis: ``(active_points, max_local_obs, sweeps)``.
@@ -2406,100 +2718,141 @@ def analyze(
         """
         nonlocal weights_seconds, transform_seconds
         t_weights = time.perf_counter()
+        if index is not None:
+            # The roster already holds every positive neighbour of every
+            # gridpoint; a span's counts are a slice of it.
+            nvalid = index.counts[start:stop]
+            active = np.nonzero(nvalid > 0)[0]
+            weights_seconds += time.perf_counter() - t_weights
+            if int(active.size) == 0:
+                return 0, 0, 0
+            return _packed_subchunks(np.arange(start, stop)[active], active,
+                                     nvalid, int(nvalid.max()), (), [])
         xp = np if host_staging else solve_xp
-        pts = xp.arange(start, stop)
-        kk = pts // (ny * nx)
-        rem = pts - kk * (ny * nx)
-        jj = rem // nx
-        ii = rem - jj * nx
 
-        # ---- phase 1: weights only, no member axis --------------------
-        # Cheap enough to throw away: (G, P) versus the (R, G, P) gather it
-        # decides whether to do at all.  In a radar-sparse domain most
-        # gridpoints have no observation within the cutoff and this phase
-        # eliminates them before they cost anything.
-        #
-        # Both weights are evaluated from the coordinates of the two
-        # gridpoints being related, not from the offset between their
-        # indices.  Horizontally that is one distance per (analysis column,
-        # stencil column) pair; vertically it is one per full slot, because
-        # on terrain the height at a given model level is a property of the
-        # column.  A precomputed offset -> weight table is cheaper and is
-        # what this used to do, but it can only express a metric in which
-        # every column is identical, which is exactly the claim a
-        # terrain-following projected grid does not support.
-        ccol = jj * nx + ii                         # (G,) analysis column
-        w_parts = []
-        idx_parts = []
-        sparse_parts = []
-        nvalid = np.zeros(stop-start, dtype=np.int64) if host_staging else None
-        geometry = {}
-        for st in stencils:
-            key = st["geometry_key"]
-            if key not in geometry:
-                k2 = kk[:, None] + st["dk"][None, :]
-                inside_k = (k2 >= 0) & (k2 < nz)
-                k2 = xp.clip(k2, 0, nz - 1)
-                j2 = jj[:, None] + st["dj"][None, :]
-                i2 = ii[:, None] + st["di"][None, :]
-                inside_h = (j2 >= 0) & (j2 < ny) & (i2 >= 0) & (i2 < nx)
-                j2 = xp.clip(j2, 0, ny - 1)
-                i2 = xp.clip(i2, 0, nx - 1)
-                col = j2 * nx + i2                      # (G, n_h)
-                flat = (k2[:, :, None] * ny + j2[:, None, :]) * nx \
-                    + i2[:, None, :]
-                shape3 = flat.shape
-                flat = flat.reshape(shape3[0], -1)
-                wh = gaspari_cohn(
-                    _horizontal_distance(ccol[:, None], col), st["hcut"])
-                dz = xp.abs(zflat[flat] - zflat[pts][:, None])
-                geometric = (xp.asarray(gaspari_cohn(dz, st["vcut"])).reshape(shape3)
-                             * xp.asarray(wh)[:, None, :]).reshape(flat.shape)
-                geometry[key] = (k2, j2, i2, inside_k, inside_h, flat, geometric)
-                diagnostics.geometry_evaluations += 1
-            else:
-                diagnostics.geometry_reuses += 1
-            k2, j2, i2, inside_k, inside_h, flat, geometric = geometry[key]
-            # Two index spaces from here, and keeping them apart is the
-            # whole correctness question.  ``flat`` addresses the GRID and
-            # is what the terrain heights below are read with -- a column's
-            # height is a property of the column, not of any batch's
-            # window.  ``local`` addresses THIS BATCH'S arrays, which for a
-            # windowed batch cover only its window.
-            if st["windowed"]:
-                jw = j2 - st["j0"]
-                iw = i2 - st["i0"]
-                # A stencil neighbour outside this batch's window holds no
-                # observation by construction -- the window covers the mask
-                # -- so it is treated exactly like a neighbour outside the
-                # grid: excluded from `inside`, and its index clamped to a
-                # valid slot that the zero weight then discards.  Clamping
-                # rather than branching keeps the gather rectangular.
-                inside_h = (inside_h & (jw >= 0) & (jw < st["nj"])
-                            & (iw >= 0) & (iw < st["ni"]))
-                jw = xp.clip(jw, 0, st["nj"] - 1)
-                iw = xp.clip(iw, 0, st["ni"] - 1)
-                local = ((k2[:, :, None] * st["nj"] + jw[:, None, :])
-                         * st["ni"] + iw[:, None, :]).reshape(flat.shape)
-            else:
-                local = flat
-            inside = (inside_k[:, :, None] & inside_h[:, None, :]).reshape(
-                flat.shape)
-            if host_staging:
-                rows, cols = np.nonzero(inside & st["mask"][local] & (geometric > 0))
-                weights = geometric[rows, cols].astype(solve_dtype)
-                # The old count followed conversion to solve precision.
-                # Preserve that rule if a positive double underflows there.
-                positive = weights > 0
-                rows = rows[positive]
-                indices = local[rows, cols[positive]]
-                weights = weights[positive]
-                sparse_parts.append((rows, indices, weights))
-                nvalid += np.bincount(rows, minlength=stop-start)
-            else:
-                w = xp.where(inside & st["mask"][local], geometric, 0)
-                w_parts.append(w.astype(solve_dtype))
-                idx_parts.append(local)
+        def _weights(lo, hi):
+            """Phase 1 for the gridpoints ``lo..hi``: weights, no member axis.
+
+            Every quantity here is evaluated per (gridpoint, slot) pair and
+            the host roster is read off in row-major order, so the rows of
+            ``lo..hi`` come out the same whether they are evaluated alone or
+            inside a wider span -- which is what lets the host-parallel solve
+            walk a chunk in bounded row blocks (letkf_host_parallel).
+            """
+            pts = xp.arange(lo, hi)
+            kk = pts // (ny * nx)
+            rem = pts - kk * (ny * nx)
+            jj = rem // nx
+            ii = rem - jj * nx
+
+            # ---- phase 1: weights only, no member axis --------------------
+            # Cheap enough to throw away: (G, P) versus the (R, G, P) gather it
+            # decides whether to do at all.  In a radar-sparse domain most
+            # gridpoints have no observation within the cutoff and this phase
+            # eliminates them before they cost anything.
+            #
+            # Both weights are evaluated from the coordinates of the two
+            # gridpoints being related, not from the offset between their
+            # indices.  Horizontally that is one distance per (analysis column,
+            # stencil column) pair; vertically it is one per full slot, because
+            # on terrain the height at a given model level is a property of the
+            # column.  A precomputed offset -> weight table is cheaper and is
+            # what this used to do, but it can only express a metric in which
+            # every column is identical, which is exactly the claim a
+            # terrain-following projected grid does not support.
+            ccol = jj * nx + ii                         # (G,) analysis column
+            w_parts = []
+            idx_parts = []
+            sparse_parts = []
+            nvalid = np.zeros(hi-lo, dtype=np.int64) if host_staging else None
+            geometry = {}
+            for st in stencils:
+                key = st["geometry_key"]
+                if key not in geometry:
+                    k2 = kk[:, None] + st["dk"][None, :]
+                    inside_k = (k2 >= 0) & (k2 < nz)
+                    k2 = xp.clip(k2, 0, nz - 1)
+                    j2 = jj[:, None] + st["dj"][None, :]
+                    i2 = ii[:, None] + st["di"][None, :]
+                    inside_h = (j2 >= 0) & (j2 < ny) & (i2 >= 0) & (i2 < nx)
+                    j2 = xp.clip(j2, 0, ny - 1)
+                    i2 = xp.clip(i2, 0, nx - 1)
+                    col = j2 * nx + i2                      # (G, n_h)
+                    flat = (k2[:, :, None] * ny + j2[:, None, :]) * nx \
+                        + i2[:, None, :]
+                    shape3 = flat.shape
+                    flat = flat.reshape(shape3[0], -1)
+                    wh = gaspari_cohn(
+                        _horizontal_distance(ccol[:, None], col), st["hcut"])
+                    dz = xp.abs(zflat[flat] - zflat[pts][:, None])
+                    geometric = (xp.asarray(gaspari_cohn(dz, st["vcut"])).reshape(shape3)
+                                 * xp.asarray(wh)[:, None, :]).reshape(flat.shape)
+                    geometry[key] = (k2, j2, i2, inside_k, inside_h, flat, geometric)
+                    diagnostics.geometry_evaluations += 1
+                else:
+                    diagnostics.geometry_reuses += 1
+                k2, j2, i2, inside_k, inside_h, flat, geometric = geometry[key]
+                # Two index spaces from here, and keeping them apart is the
+                # whole correctness question.  ``flat`` addresses the GRID and
+                # is what the terrain heights below are read with -- a column's
+                # height is a property of the column, not of any batch's
+                # window.  ``local`` addresses THIS BATCH'S arrays, which for a
+                # windowed batch cover only its window.
+                if st["windowed"]:
+                    jw = j2 - st["j0"]
+                    iw = i2 - st["i0"]
+                    # A stencil neighbour outside this batch's window holds no
+                    # observation by construction -- the window covers the mask
+                    # -- so it is treated exactly like a neighbour outside the
+                    # grid: excluded from `inside`, and its index clamped to a
+                    # valid slot that the zero weight then discards.  Clamping
+                    # rather than branching keeps the gather rectangular.
+                    inside_h = (inside_h & (jw >= 0) & (jw < st["nj"])
+                                & (iw >= 0) & (iw < st["ni"]))
+                    jw = xp.clip(jw, 0, st["nj"] - 1)
+                    iw = xp.clip(iw, 0, st["ni"] - 1)
+                    local = ((k2[:, :, None] * st["nj"] + jw[:, None, :])
+                             * st["ni"] + iw[:, None, :]).reshape(flat.shape)
+                else:
+                    local = flat
+                inside = (inside_k[:, :, None] & inside_h[:, None, :]).reshape(
+                    flat.shape)
+                if host_staging:
+                    rows, cols = np.nonzero(inside & st["mask"][local] & (geometric > 0))
+                    weights = geometric[rows, cols].astype(solve_dtype)
+                    # The old count followed conversion to solve precision.
+                    # Preserve that rule if a positive double underflows there.
+                    positive = weights > 0
+                    rows = rows[positive]
+                    indices = local[rows, cols[positive]]
+                    weights = weights[positive]
+                    sparse_parts.append((rows, indices, weights))
+                    nvalid += np.bincount(rows, minlength=hi-lo)
+                else:
+                    w = xp.where(inside & st["mask"][local], geometric, 0)
+                    w_parts.append(w.astype(solve_dtype))
+                    idx_parts.append(local)
+            return pts, w_parts, idx_parts, sparse_parts, nvalid
+
+        block = host_split["row_block"] if host_staging else None
+        if block is None or stop - start <= block:
+            pts, w_parts, idx_parts, sparse_parts, nvalid = _weights(start, stop)
+        else:
+            # Bounded row blocks of one chunk, concatenated in row order:
+            # the same rosters, indices and weights the whole span gives.
+            pts = np.arange(start, stop)
+            blocks = [(lo, _weights(lo, min(stop, lo + block)))
+                      for lo in range(start, stop, block)]
+            diagnostics.host_row_blocks += len(blocks)
+            nvalid = np.concatenate([b[4] for _lo, b in blocks])
+            sparse_parts = []
+            for s in range(len(stencils)):
+                sparse_parts.append((
+                    np.concatenate([b[3][s][0] + (lo - start) for lo, b in blocks]),
+                    np.concatenate([b[3][s][1] for _lo, b in blocks]),
+                    np.concatenate([b[3][s][2] for _lo, b in blocks])))
+            del blocks
+            w_parts = idx_parts = None
 
         if host_staging:
             diagnostics.sparse_neighbor_peak_bytes = max(
@@ -2530,6 +2883,13 @@ def analyze(
 
         if not host_staging:
             return _transform_chunk(gpts, gidx, wloc, stencils, local_max)
+        return _packed_subchunks(gpts, active, nvalid, local_max, stencils,
+                                 sparse_parts)
+
+    def _packed_subchunks(gpts, active, nvalid, local_max, stencils,
+                          sparse_parts):
+        """Device chunks sized by the span's actual positive neighbours."""
+        ng = int(gpts.size)
         # Geometry is a bounded host tile. Device chunks depend on the
         # actual positive neighbour roster, never the empty stencil slots.
         offset = 0
@@ -2549,9 +2909,25 @@ def analyze(
                     + remedy)
             end = offset + count
             width = int(nvalid[active[offset:end]].max())
-            _n, _p, used_sweeps = _transform_chunk(
-                gpts[offset:end], active[offset:end], nvalid[active[offset:end]],
-                stencils, width, sparse=sparse_parts)
+            # The host-parallel solve may walk one packed solve in pieces of
+            # whole rows at the SAME width: every row's packed arrays, and
+            # so its arithmetic, are what the whole solve gives it.  A piece
+            # is never a single row unless the solve is (letkf_host_parallel).
+            cuts = [offset, end]
+            piece_bytes = host_split["piece_bytes"]
+            if piece_bytes is not None:
+                per_piece = max(2, int(piece_bytes) // _packed_bytes_per_point(
+                    width, members, solve_dtype.itemsize, len(fields)))
+                cuts = list(range(offset, end, per_piece)) + [end]
+                if len(cuts) > 2 and cuts[-1] - cuts[-2] < 2:
+                    del cuts[-2]
+                diagnostics.host_transform_pieces += len(cuts) - 1
+            used_sweeps = 0
+            for lo, hi in zip(cuts[:-1], cuts[1:]):
+                _n, _p, piece_sweeps = _transform_chunk(
+                    gpts[lo:hi], active[lo:hi], nvalid[active[lo:hi]],
+                    stencils, width, sparse=sparse_parts)
+                used_sweeps = max(used_sweeps, piece_sweeps)
             sweeps = max(sweeps, used_sweeps)
             diagnostics.device_chunks += 1
             offset = end
@@ -2579,7 +2955,7 @@ def analyze(
     if solve_xp is not np:
         try:
             pool = solve_xp.get_default_memory_pool()
-            pool_cap = pool.used_bytes() + (device_budget if host_staging else per_point * chunk)
+            pool_cap = pool.used_bytes() + (device_budget if packed_route else per_point * chunk)
         except Exception:
             pool = None
     def _reaching(lo: int, hi: int):
@@ -2587,6 +2963,141 @@ def analyze(
         box = _chunk_index_box(lo, hi, ny, nx)
         return [st for st in stencils
                 if _index_box_overlaps(st["reach"], box)]
+
+    def _host_parallel_loop():
+        """Run the host chunk loop on worker processes; ``(start, chunks)``.
+
+        Returns ``(0, 0)`` without doing anything when one process is the
+        answer, so the single-process loop below runs unchanged.  Otherwise
+        the chunk plan is the single-process loop's own (same span splits,
+        same reach rejection; the host never shrinks a chunk on its own),
+        the workers run the unchanged ``_solve_chunk`` on whole chunks, and
+        the return is ``(npts, chunks)`` so that loop is skipped.
+        """
+        nonlocal nactive, nbatch, max_local, max_sweeps
+        nonlocal weights_seconds, transform_seconds
+        from gpuwm.da import letkf_host_parallel as hp
+
+        tasks = []
+        counters = dict(reach_span_splits=0, reach_chunks_skipped=0,
+                        reach_batches_evaluated=0, reach_batches_skipped=0)
+        position = {id(st): index for index, st in enumerate(stencils)}
+        lo = 0
+        while lo < npts:
+            hi = min(lo + chunk, npts)
+            span = _reaching(lo, hi)
+            budget_pairs = chunk * max(1, sizing_slots)
+            while (hi - lo > 1
+                   and (hi - lo) * sum(st["nslots"] for st in span)
+                   > budget_pairs):
+                hi = lo + max(1, (hi - lo) // 2)
+                span = _reaching(lo, hi)
+                counters["reach_span_splits"] += 1
+            if not span:
+                counters["reach_chunks_skipped"] += 1
+            else:
+                counters["reach_batches_evaluated"] += len(span)
+                counters["reach_batches_skipped"] += len(stencils) - len(span)
+                tasks.append((lo, hi, tuple(position[id(st)] for st in span)))
+            lo = hi
+        pairs = sum((hi_ - lo_) * sum(stencils[j]["nslots"] for j in picked)
+                    for lo_, hi_, picked in tasks)
+        workers, reason = hp.resolve_host_workers(
+            config.host_workers, tasks=len(tasks), pairs=pairs)
+        diagnostics.host_workers = workers
+        diagnostics.host_workers_reason = reason
+        if workers <= 1:
+            return 0, 0
+        summed = ("geometry_evaluations", "geometry_reuses", "device_chunks",
+                  "staging_bytes", "host_row_blocks", "host_transform_pieces")
+        peaks = ("sparse_neighbor_peak_bytes", "staging_peak_bytes")
+        # What a lost worker rolls back to: the single-process loop below
+        # then runs from the first chunk with its own memory retry, writing
+        # into the untouched private increments.
+        rollback = dict(
+            diagnostics={name: getattr(diagnostics, name) for name in
+                         (*counters, *summed, *peaks)},
+            totals=(nactive, nbatch, max_local, max_sweeps,
+                    weights_seconds, transform_seconds),
+            increments=dict(increments))
+        for name, value in counters.items():
+            setattr(diagnostics, name, getattr(diagnostics, name) + value)
+        n_chunks = len(tasks) + counters["reach_chunks_skipped"]
+
+        # The workers share the scratch promise the single-process loop made.
+        per_worker = max(1, int(device_budget) // workers)
+        diagnostics.host_worker_budget_bytes = per_worker
+        host_split["row_block"] = max(
+            1, hp.block_bytes(per_worker) // max(1, host_per_point))
+        host_split["piece_bytes"] = hp.piece_bytes(per_worker)
+        for f in fields:
+            increments[f] = hp.shared_copy(increments[f])
+            incr_flat[f] = increments[f].reshape(members, -1)
+
+
+        def task(index):
+            nonlocal weights_seconds, transform_seconds
+            lo_, hi_, picked = tasks[index]
+            before = {name: getattr(diagnostics, name) for name in summed}
+            for name in peaks:
+                setattr(diagnostics, name, 0)
+            w0, t0 = weights_seconds, transform_seconds
+            ng_, local_max_, sweeps_ = _solve_chunk(
+                lo_, hi_, [stencils[j] for j in picked])
+            return dict(
+                index=index, points=hi_ - lo_, ng=ng_, local_max=local_max_,
+                sweeps=sweeps_, weights_seconds=weights_seconds - w0,
+                transform_seconds=transform_seconds - t0,
+                summed={name: getattr(diagnostics, name) - before[name]
+                        for name in summed},
+                peaks={name: getattr(diagnostics, name) for name in peaks})
+
+        # Longest first (by the slots the span reaches, times its points),
+        # so the last chunks to start are short ones and no core idles long.
+        order = sorted(range(len(tasks)), key=lambda i: -(
+            (tasks[i][1] - tasks[i][0])
+            * sum(stencils[j]["nslots"] for j in tasks[i][2])))
+        done_points = npts - sum(hi_ - lo_ for lo_, hi_, _ in tasks)
+        finished = counters["reach_chunks_skipped"]
+        try:
+            for result in hp.run(task, order, workers):
+                for name, value in result["summed"].items():
+                    setattr(diagnostics, name,
+                            getattr(diagnostics, name) + value)
+                for name, value in result["peaks"].items():
+                    setattr(diagnostics, name,
+                            max(getattr(diagnostics, name), value))
+                weights_seconds += result["weights_seconds"]
+                transform_seconds += result["transform_seconds"]
+                if result["ng"]:
+                    nactive += result["ng"]
+                    nbatch += 1
+                    max_local = max(max_local, result["local_max"])
+                    max_sweeps = max(max_sweeps, result["sweeps"])
+                done_points += result["points"]
+                finished += 1
+                report_progress(done_points, finished, nactive)
+        except (hp.HostWorkerLost, MemoryError) as exc:
+            # A worker was killed (OOM killer) or ran out of host memory.
+            # Before this, a lost worker hung the cycle forever and a
+            # worker MemoryError skipped the chunk loop's halve-and-retry.
+            for name, value in rollback["diagnostics"].items():
+                setattr(diagnostics, name, value)
+            (nactive, nbatch, max_local, max_sweeps,
+             weights_seconds, transform_seconds) = rollback["totals"]
+            for f in fields:
+                increments[f] = rollback["increments"][f]
+                incr_flat[f] = increments[f].reshape(members, -1)
+            diagnostics.host_workers = 1
+            diagnostics.host_workers_reason = (
+                f"{reason}; {type(exc).__name__} in the worker pool "
+                f"({str(exc)[:200]}), so the single-process loop reran "
+                "the solve")
+            return 0, 0
+        finally:
+            host_split["row_block"] = None
+            host_split["piece_bytes"] = None
+        return npts, n_chunks
 
     # After the reachability helper is built, so setup_seconds covers the
     # whole of setup and the solve clock starts where the solve does.
@@ -2596,6 +3107,9 @@ def analyze(
     start = 0
     completed_chunks = 0
     report_progress(0, 0, 0, force=True)
+    if host_staging and solve_xp is np:
+        # The host solve: the same chunks on many cores, same bytes.
+        start, completed_chunks = _host_parallel_loop()
     while start < npts:
         if pool_cap is not None and pool.total_bytes() > pool_cap:
             pool.free_all_blocks()
@@ -2672,7 +3186,7 @@ def analyze(
                 # shrink -- loosening the one control that is supposed to
                 # tighten, exactly when the card has said it is out of
                 # room.
-                pool_cap = pool.used_bytes() + (device_budget if host_staging else per_point * chunk)
+                pool_cap = pool.used_bytes() + (device_budget if packed_route else per_point * chunk)
             continue
         if ng:
             nactive += ng

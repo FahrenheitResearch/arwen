@@ -207,6 +207,7 @@ def rrtmgp_call_memory_inventory(cfg, *, members, ny, nx, p_top, column_chunk,
     # than hiding them in a per-member multiplier.
     extra = {"returned/rthratenlw": ((nz, cells), 4),
              "returned/rthratensw": ((nz, cells), 4),
+             "returned/cldfra": ((nz, cells), 4),
              **{f"returned/{name}": ((cells,), 4) for name in
                 ("swdown", "glw", "gsw", "coszen", "olr", "swddir", "swddif")},
              "shortwave/daylight_indices": ((cells,), 8),

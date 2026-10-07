@@ -346,8 +346,10 @@ def layout(plan):
 
 
 # Refused against the fit target until A175, inside the budget all along (read
-# at 0.05 GiB steps from 4.6 to 5.05 at the 1.13 margin: 4.75 through 4.95).
-@pytest.mark.parametrize("budget_gib", [4.75, 4.85, 4.95])
+# at 0.05 GiB steps from 4.6 to 5.05 at the 1.13 margin: 4.75 through 4.95;
+# 4.8 through 5.0 once the driver's held CLDFRA buffer is priced, RULINGS 1,
+# 2.8.7, read again at 0.05 GiB steps from 4.7 to 5.25).
+@pytest.mark.parametrize("budget_gib", [4.8, 4.9, 5.0])
 def test_a_floor_inside_its_budget_is_the_preset_and_not_a_refusal(budget_gib):
     narrowed, bound = tc._budget_sizing(CARD, budget_gib)
     assert bound == "request"
@@ -507,8 +509,10 @@ def test_the_request_bound_flag_and_the_flagless_door_give_one_answer(
 # 5,152 B, which charged this tree 8,355,840 B more.  It sat at 5.025
 # through 5.045, admitting at 5.05, on the plan's 1.15 margin; A163 measured
 # the forecast margin at 1.13 of the subtotal, read again at 0.005 GiB steps
-# from 4.85 to 5.07.)
-TILE_BAND = [4.99, 4.995, 5.0, 5.005]
+# from 4.85 to 5.07.  The held CLDFRA buffer, RULINGS 1, 2.8.7, moved it to
+# 5.005 through 5.025, admitting at 5.03, read at 0.005 GiB steps from 4.98
+# to 5.10.)
+TILE_BAND = [5.005, 5.01, 5.02, 5.025]
 
 
 @pytest.mark.parametrize("budget_gib", TILE_BAND)
@@ -537,7 +541,7 @@ def test_the_tile_roads_band_ends_where_its_own_budget_clears_the_price():
     """And it ends there rather than where the flat road's budget or the fit
     target does, which is the whole reason neither can be the number quoted."""
     plan = tc.plan_cyclone(cycle=CYCLE, point=POINT, sizing=CARD, hours=3,
-                           tiles="auto", nest_budget_gib=5.01)
+                           tiles="auto", nest_budget_gib=5.03)
     assert plan["nest"]["dimensions"] == list(tc.CHILD_DIMS)
 
 

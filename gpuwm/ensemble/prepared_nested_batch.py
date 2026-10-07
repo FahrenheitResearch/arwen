@@ -155,6 +155,8 @@ def _same_words(xp, left, right):
 def _domain_bank_plan(nodes, *, shared_fields, array_module, field_names=None):
     nodes = tuple(nodes)
     cfg, xp = nodes[0].cfg.run, array_module
+    if any(node.cfg.run.chem_sets for node in nodes):
+        raise BatchStateUnsupported("active chemistry keeps its original member species arrays, source-hour caches and mass ledger; component banks lack their typed state ownership and producer handoff")
     specs = state_array_specs(cfg, shared_fields=shared_fields)
     if field_names is not None:
         names = frozenset(field_names)

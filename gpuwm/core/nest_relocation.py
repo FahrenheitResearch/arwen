@@ -767,17 +767,37 @@ def check_admissible(plan: RelocationPlan, bounds) -> dict[str, object]:
 # The transplant
 # ---------------------------------------------------------------------------
 
-def relocatable_attrs() -> tuple[str, ...]:
+def relocatable_attrs(state=None) -> tuple[str, ...]:
     """The state inventory a relocation carries across the move.
 
     The restart layer's serialised-state contract, and nothing invented
     beside it: whatever a checkpoint must carry to resume a domain is
     exactly what a relocation must carry to keep it.  Using one list means
     a field added to the model reaches both paths at once.
-    """
-    from gpuwm.state_serialization_contract import STATE_SERIALIZED_ATTRS
 
-    return tuple(STATE_SERIALIZED_ATTRS)
+    Chemical species and serialized process fields follow the overlap.
+    Domain ledger vectors keep the complete accounting history; the next
+    chemistry step books the changed footprint's mass under transport.
+    Geography-derived chemistry statics belong to the rebuilt footprint.
+    """
+    from gpuwm.state_serialization_contract import (CHEM_DIAG_PREFIX,
+                                                    CHEM_STATE_PREFIX,
+                                                    STATE_SERIALIZED_ATTRS)
+
+    # By attribute name, not through ``state.chem``: a host snapshot of a
+    # moving child (HostStateSnapshot) carries the fields without the
+    # ChemState object and lists them in ``field_names``.
+    names = (state.field_names if isinstance(state, HostStateSnapshot)
+             else (getattr(state, "__dict__", None) or {}))
+    chem = tuple(sorted(name for name in names
+                        if name.startswith((CHEM_STATE_PREFIX, CHEM_DIAG_PREFIX))))
+    if any(name.startswith(CHEM_DIAG_PREFIX) for name in chem):
+        from gpuwm.core.chem_statics import (DUST_STATIC_ALLOCATIONS,
+                                              SOLAR_ALLOCATIONS)
+        rebuilt = {CHEM_DIAG_PREFIX + alloc.name
+                   for alloc in (*DUST_STATIC_ALLOCATIONS, *SOLAR_ALLOCATIONS)}
+        chem = tuple(name for name in chem if name not in rebuilt)
+    return tuple(STATE_SERIALIZED_ATTRS) + chem
 
 
 def _bit_mismatches(actual, expected) -> int:
@@ -811,7 +831,8 @@ def transplant_overlap(*, source_state, target_state, plan: RelocationPlan,
     the null move provably the identity, because at zero shift the stamp
     covers the entire field.
     """
-    attrs = relocatable_attrs() if attrs is None else tuple(attrs)
+    attrs = (relocatable_attrs(source_state) if attrs is None
+             else tuple(attrs))
     stamped: dict[str, object] = {}
     skipped: dict[str, str] = {}
     for name in attrs:
@@ -828,6 +849,18 @@ def transplant_overlap(*, source_state, target_state, plan: RelocationPlan,
                 f"field {name!r} has shape {tuple(source.shape)} on the "
                 f"outgoing child and {tuple(target.shape)} on the incoming "
                 "one; a relocation changes position, never extent")
+        if name.startswith("chemdiag_ledger_"):
+            value = source
+            if (hasattr(target, "__cuda_array_interface__")
+                    and isinstance(value, np.ndarray)):
+                import cupy as cp
+
+                value = cp.asarray(np.ascontiguousarray(value))
+            target[...] = value
+            stamped[name] = {"shape": list(int(n) for n in source.shape),
+                             "stamped_cells": 0, "scope": "domain",
+                             "elements": int(source.size)}
+            continue
         window = plan.window(source.shape)
         if window is None:
             skipped[name] = "old and new footprints are disjoint"
@@ -897,7 +930,8 @@ def overlap_prognostic_mismatches(source_state, target_state, plan,
     Returns the same shape as its statics sibling so a caller can log or
     refuse on either identically.
     """
-    attrs = relocatable_attrs() if attrs is None else tuple(attrs)
+    attrs = (relocatable_attrs(source_state) if attrs is None
+             else tuple(attrs))
     fields: dict[str, int] = {}
     absent: list[str] = []
     compared_cells = 0
@@ -912,6 +946,10 @@ def overlap_prognostic_mismatches(source_state, target_state, plan,
         target = np.asarray(_host(target))
         if source.shape != target.shape:
             fields[name] = max(int(source.size), int(target.size), 1)
+            continue
+        if name.startswith("chemdiag_ledger_"):
+            fields[name] = _bit_mismatches(target, source)
+            compared_cells += int(source.size)
             continue
         window = plan.window(source.shape)
         if window is None:
@@ -1130,6 +1168,25 @@ def release_state_arrays(state) -> dict[str, object]:
         elif isinstance(value, np.ndarray):
             host_arrays += 1
             setattr(state, name, None)
+    if getattr(state, "chem", None) is not None:
+        # The species attributes are arena views. Dropping those views
+        # alone leaves the arena, prescribed composition and cached
+        # chemistry workspaces alive through their owner during a
+        # host-staged rebuild. The snapshot already holds the carried
+        # fields, and the incoming state constructs its own valid owner.
+        chem = state.chem
+        from gpuwm.core.chem_context import CHEM_PREP_FIELDS
+        arrays = [value for value in vars(chem).values()
+                  if hasattr(value, "__cuda_array_interface__")]
+        prep = getattr(chem, "prep", None)
+        if prep is not None:
+            arrays.extend(prep.get(name) for name in CHEM_PREP_FIELDS)
+        for value in arrays:
+            if (hasattr(value, "__cuda_array_interface__")
+                    and getattr(value, "base", None) is None):
+                owned_device_bytes += int(value.nbytes)
+                owned_device_arrays += 1
+        state.chem = None
     cumulus_workspace_bytes = 0
     if getattr(state, "physics", None) is not None:
         # DROPPING state.physics IS NOT ENOUGH ON ITS OWN.  The driver
@@ -1319,7 +1376,9 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
     that carries nothing still gets a cold child, and its receipt says
     so (``accumulators_reinitialized``).
     """
-    from gpuwm.ingest.nest_init import parent_only_init, seed_rk_time_t_copies
+    from gpuwm.ingest.nest_init import (parent_only_init,
+                                        require_parent_chem_fields,
+                                        seed_rk_time_t_copies)
 
     if initializer is None:
         initializer = parent_only_init
@@ -1375,6 +1434,11 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
             f"synchronized clocks; parent leads child by {lead} ticks. "
             "Relocate between legs, not mid-step")
 
+    # Validate chemistry donors while the outgoing arena is still intact.
+    # The child's rows may be a subset of the parent's, but a missing row
+    # would leave no source for its fresh strip or subsequent nest forcing.
+    require_parent_chem_fields(child_node.state, parent_node.state)
+
     old_dc = child_node.cfg
     placement_from = placement_of(
         old_dc, generation=(0 if segment is None else segment.generation))
@@ -1426,7 +1490,8 @@ def relocate_child(child_node, *, i_parent_start: int, j_parent_start: int,
         _prevalidate_placement(new_dc, parent_node)
         source_state = (snapshot_state_to_host(
             child_node.state,
-            tuple(relocatable_attrs()) + _DONOR_ALIGNMENT_FIELDS)
+            tuple(relocatable_attrs(child_node.state))
+            + _DONOR_ALIGNMENT_FIELDS)
             if reconstruction is None else reconstruction.capture_source(child_node))
         if on_before_release is not None:
             on_before_release()

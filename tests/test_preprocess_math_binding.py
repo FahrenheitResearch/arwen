@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from gpuwm.core import portable_math as pm
-from gpuwm.ingest import cpu_backend, preprocess_backend
+from gpuwm.ingest import cpu_backend, preparation_workers, preprocess_backend
 ORIGINAL_RESOLVE_CPU_BRIDGE = cpu_backend.resolve_cpu_bridge
 
 
@@ -56,6 +56,13 @@ def libraries(tmp_path, monkeypatch):
     monkeypatch.setattr(pm, "_warned", False)
     monkeypatch.setattr(pm, "_scoped_warned", set())
     monkeypatch.delenv(cpu_backend.CPU_BRIDGE_ENV, raising=False)
+    # The preprocessing receipt's parallelism block carries
+    # memory_worker_limit, a live reading of host headroom in 32 MiB steps.
+    # Unpinned, a busy host moved it between two receipt() calls and
+    # test_explicit_host_math_receipt_is_owned_and_implicit_receipt_words_unchanged
+    # failed in full Stage 1 runs while passing alone (AUDIT-287 B6).
+    monkeypatch.setattr(preparation_workers, "host_available_bytes",
+                        lambda *args, **kwargs: 64 * preparation_workers.WORKER_SCRATCH_BYTES)
     return paths, resolved, records
 
 

@@ -385,6 +385,31 @@ pub struct FieldMapping {
     #[serde(default)]
     pub staggering: Staggering,
     pub missing: MissingPolicy,
+    /// The declared ladder levels the publisher writes this field on; on
+    /// the other declared levels the field is `absent` (zero) when a file
+    /// leaves it out (`gpuwm.mapped_source._validate_published_levels`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_levels: Option<PublishedLevels>,
+}
+
+/// `fields.<name>.published_levels`: a field a publisher writes on part of
+/// the ladder its state carries (NCEP's GFS pgrb2.0p25 hydrometeors are on
+/// 22 of its 33 isobaric levels).  Without it the whole mapping would drop
+/// to that subset, because one ladder is chosen for every stacked field.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PublishedLevels {
+    pub levels: Vec<f64>,
+    pub absent: AbsentLevelValue,
+}
+
+/// The value a `published_levels` field takes on a level it is not
+/// published on.  Zero is the only one: it is what an unwritten
+/// hydrometeor mass is.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AbsentLevelValue {
+    Zero,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -819,6 +844,9 @@ pub fn validate_mapping(mapping: &NativeMapping) -> ValidationReport {
                     .to_owned(),
             );
         }
+        if let Some(published) = &field.published_levels {
+            validate_published_levels(mapping, name, field, published, &mut error);
+        }
     }
 
     for item in &mapping.derivations {
@@ -1250,6 +1278,82 @@ fn derivation_cycle(
         }
     }
     None
+}
+
+/// `fields.<name>.published_levels` (`mapped_source._validate_published_levels`).
+fn validate_published_levels(
+    mapping: &NativeMapping,
+    name: &str,
+    field: &FieldMapping,
+    published: &PublishedLevels,
+    error: &mut impl FnMut(&str, Option<&str>, String),
+) {
+    let vertical = [AxisRole::Vertical, AxisRole::Y, AxisRole::X];
+    if !PUBLISHED_LEVELS_ZERO_FIELDS.contains(&name) {
+        error(
+            "published_levels_field",
+            Some(name),
+            "published_levels is restricted to the hydrometeor mass mixing ratios: their zero              is what a mass the publisher does not write out at a level is, and on any other              field a zero inside the column is a wrong value rather than an absent one"
+                .to_owned(),
+        );
+    }
+    if mapping.format == SourceFormat::Netcdf {
+        error(
+            "published_levels_unread",
+            Some(name),
+            "published_levels is read by the GRIB decoders only; the NetCDF decoder selects              vertical.levels by coordinate value"
+                .to_owned(),
+        );
+    }
+    if field.selectors.is_empty()
+        || field.source_axes != vertical
+        || field.target_axes != vertical
+    {
+        error(
+            "published_levels_shape",
+            Some(name),
+            "published_levels needs a directly selected (vertical, y, x) field".to_owned(),
+        );
+    }
+    if field.missing != MissingPolicy::Reject || field.units.offset != 0.0 {
+        error(
+            "published_levels_policy",
+            Some(name),
+            "published_levels keeps the reject missing policy and a zero unit offset: a              missing cell on a published level is still a defect, and the declared zero              must stay zero through the unit conversion"
+                .to_owned(),
+        );
+    }
+    let declared: BTreeSet<u64> = mapping
+        .coordinates
+        .vertical
+        .levels
+        .iter()
+        .map(|level| level.to_bits())
+        .collect();
+    let levels: BTreeSet<u64> = published.levels.iter().map(|level| level.to_bits()).collect();
+    if published.levels.is_empty()
+        || levels.len() != published.levels.len()
+        || published.levels.iter().any(|level| !level.is_finite())
+    {
+        error(
+            "invalid_published_levels",
+            Some(name),
+            "published_levels.levels must be a non-empty unique finite list".to_owned(),
+        );
+    } else if !levels.is_subset(&declared) {
+        error(
+            "invalid_published_levels",
+            Some(name),
+            "published_levels.levels names levels vertical.levels does not declare".to_owned(),
+        );
+    } else if levels == declared {
+        error(
+            "invalid_published_levels",
+            Some(name),
+            "published_levels.levels names every declared level, so the declaration would              change nothing"
+                .to_owned(),
+        );
+    }
 }
 
 fn validate_coordinate_selectors(
@@ -2330,6 +2434,18 @@ pub const MASKED_WATER_STATE_FIELDS: [&str; 5] = [
     "sea_surface_temperature",
 ];
 
+/// `gpuwm.mapped_source.PUBLISHED_LEVELS_ZERO_FIELDS`: the canonical
+/// fields `published_levels` may declare, the five hydrometeor mass mixing
+/// ratios, whose zero is what a mass the publisher does not write out at a
+/// level is.  On any other field a zero inside the column is a wrong value.
+pub const PUBLISHED_LEVELS_ZERO_FIELDS: [&str; 5] = [
+    "cloud_water_mixing_ratio",
+    "rain_water_mixing_ratio",
+    "cloud_ice_mixing_ratio",
+    "snow_mixing_ratio",
+    "graupel_or_hail_mixing_ratio",
+];
+
 /// Number fields retain their source mask until the metgrid horizontal
 /// interpolation chain tries its finite neighboring donors before filling zero.
 /// Kept equal to `gpuwm.ingest.analyzed_numbers.CANONICAL_NUMBER_FIELDS`.
@@ -2467,6 +2583,7 @@ pub fn mapping_template(format: SourceFormat) -> NativeMapping {
             location: GridLocation::Mass,
             staggering: Staggering::None,
             missing: MissingPolicy::Reject,
+            published_levels: None,
         },
     );
     fields.insert(
@@ -2494,6 +2611,7 @@ pub fn mapping_template(format: SourceFormat) -> NativeMapping {
             location: GridLocation::Mass,
             staggering: Staggering::None,
             missing: MissingPolicy::Reject,
+            published_levels: None,
         },
     );
     NativeMapping {
@@ -2975,6 +3093,62 @@ Param| Type |Level1|Level2| Name     | Units    | Description             |Discp
             .errors
             .iter()
             .any(|item| item.code == "era_ladders_without_levels"));
+    }
+
+    #[test]
+    fn published_levels_round_trip_and_are_held_to_hydrometeor_subsets() {
+        let mut mapping = mapping_template(SourceFormat::Grib2);
+        mapping.coordinates.vertical.levels = vec![1000.0, 5000.0, 10000.0];
+        let mut cloud = mapping.fields["air_temperature"].clone();
+        cloud.units = UnitTransform {
+            source: "kg kg-1".to_owned(),
+            target: "kg kg-1".to_owned(),
+            scale: 1.0,
+            offset: 0.0,
+        };
+        cloud.published_levels = Some(PublishedLevels {
+            levels: vec![5000.0, 10000.0],
+            absent: AbsentLevelValue::Zero,
+        });
+        mapping
+            .fields
+            .insert("cloud_water_mixing_ratio".to_owned(), cloud.clone());
+        let text = serde_json::to_string(&mapping).unwrap();
+        assert!(text.contains(r#""published_levels":{"levels":[5000.0,10000.0],"absent":"zero"}"#));
+        let read: NativeMapping = serde_json::from_str(&text).unwrap();
+        assert_eq!(read.fields["cloud_water_mixing_ratio"], cloud);
+        // A field without the declaration serializes as it always did.
+        assert!(!serde_json::to_string(&mapping.fields["air_temperature"])
+            .unwrap()
+            .contains("published_levels"));
+        let codes = |mapping: &NativeMapping| {
+            validate_mapping(mapping)
+                .errors
+                .iter()
+                .filter(|item| item.code.contains("published_levels"))
+                .map(|item| item.code.clone())
+                .collect::<Vec<_>>()
+        };
+        assert!(codes(&mapping).is_empty(), "{:?}", codes(&mapping));
+        let mut stray = mapping.clone();
+        stray.fields.get_mut("cloud_water_mixing_ratio").unwrap().published_levels =
+            Some(PublishedLevels { levels: vec![7.0], absent: AbsentLevelValue::Zero });
+        assert_eq!(codes(&stray), vec!["invalid_published_levels"]);
+        let mut whole = mapping.clone();
+        whole.fields.get_mut("cloud_water_mixing_ratio").unwrap().published_levels =
+            Some(PublishedLevels {
+                levels: vec![1000.0, 5000.0, 10000.0],
+                absent: AbsentLevelValue::Zero,
+            });
+        assert_eq!(codes(&whole), vec!["invalid_published_levels"]);
+        let mut temperature = mapping.clone();
+        temperature.fields.get_mut("air_temperature").unwrap().published_levels =
+            Some(PublishedLevels { levels: vec![5000.0], absent: AbsentLevelValue::Zero });
+        assert_eq!(codes(&temperature), vec!["published_levels_field"]);
+        assert!(serde_json::from_str::<PublishedLevels>(
+            r#"{"levels": [5000.0], "absent": "nan"}"#
+        )
+        .is_err());
     }
 
     #[test]

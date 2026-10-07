@@ -127,6 +127,7 @@ _TERRAIN_SOURCE_CHOICES = ("auto",) + tuple(sorted(TERRAIN_SOURCES))
 #: ``landcover_source`` choices: "auto" is
 #: :data:`~gpuwm.static.highres_fetch.DEFAULT_LANDCOVER_SOURCE` everywhere.
 _LANDCOVER_SOURCE_CHOICES = ("auto",) + tuple(sorted(LANDCOVER_SOURCES))
+_SOIL_SOURCE_CHOICES = ("soilgrids", "wps-geog")
 
 #: Fields each mode replaces.
 _REPLACED_FIELDS_TERRAIN = ("HGT_M",)
@@ -212,6 +213,8 @@ class HighresStaticConfig:
     #: The published static file this configuration takes its geography
     #: from ([static] source; gpuwm.static.external_source), or None.
     static_source: object = None
+    #: SoilGrids overlay, or selected WPS geography below terrain/land cover.
+    soil_source: str = "soilgrids"
 
     def smoothing_for(self, domain_id):
         """This carrier's terrain smoothing for one domain."""
@@ -228,12 +231,20 @@ class HighresStaticConfig:
         }
         if self.max_dx_m is not None:
             echoed["max_dx_m"] = float(self.max_dx_m)
+        if self.soil_source != "soilgrids":
+            echoed["soil_source"] = self.soil_source
         if self.terrain_smoothing:
             echoed["terrain_smoothing"] = [list(row)
                                            for row in self.terrain_smoothing]
         if self.sf_urban_physics > 0:
             echoed["urban_legend"] = "urban"
             echoed["use_wudapt_lcz"] = self.use_wudapt_lcz
+        if self.sf_urban_physics == 1 and self.fields != "terrain":
+            from .urban_fraction import (NLCD_FRACTION_ALGORITHM,
+                                         URBAN_FRACTION_ALGORITHM)
+            echoed["urban_fraction"] = (
+                NLCD_FRACTION_ALGORITHM if self.landcover_source == "annual-nlcd"
+                else URBAN_FRACTION_ALGORITHM)
         if self.static_source is not None:
             echoed["static_source"] = self.static_source.echo()
         return echoed
@@ -476,7 +487,7 @@ def parse_static_table(raw, *, source: str, base_dir
             f"[static.highres] of {source} must be a table, got {table!r}.")
 
     known = ("enabled", "cache_root", "on_refuse", "terrain_source",
-             "fields", "landcover_source", "max_dx_m")
+             "fields", "landcover_source", "soil_source", "max_dx_m")
     unknown = sorted(set(table) - set(known))
     if unknown:
         named = ", ".join(
@@ -546,6 +557,15 @@ def parse_static_table(raw, *, source: str, base_dir
             "United States collection for the year nearest the case and "
             "refuses a domain wholly outside the United States.")
 
+    soil_source = table.get("soil_source", "soilgrids")
+    if soil_source not in _SOIL_SOURCE_CHOICES:
+        raise ValueError(
+            f"soil_source in [static.highres] of {source} must be one of "
+            f"{list(_SOIL_SOURCE_CHOICES)}, got {soil_source!r}. 'wps-geog' "
+            "keeps the selected WPS soil maps beneath high-resolution "
+            "terrain and land cover, with soil water categories reconciled "
+            "to the resulting land mask in Rust.")
+
     max_dx_m = table.get("max_dx_m")
     if max_dx_m is not None:
         if (isinstance(max_dx_m, bool)
@@ -563,6 +583,7 @@ def parse_static_table(raw, *, source: str, base_dir
                                terrain_source=str(terrain_source),
                                fields=str(fields),
                                landcover_source=str(landcover),
+                               soil_source=str(soil_source),
                                max_dx_m=max_dx_m,
                                static_source=static_source)
 
@@ -770,7 +791,8 @@ def _fetch_terrain(bbox: FootprintBBox, cache_root: Path, coverage, *,
 
 def _fetch_and_bind(bbox: FootprintBBox, cache_root: Path, case_date: date,
                     *, coverage, grid=None, baseline=None, urlopen=None,
-                    landcover_source: LandcoverSource | None = None):
+                    landcover_source: LandcoverSource | None = None,
+                    soil_source: str = "soilgrids"):
     """Fetch/cache everything one footprint needs; return bound sources.
 
     ``landcover_source`` is the selected row of
@@ -805,7 +827,8 @@ def _fetch_and_bind(bbox: FootprintBBox, cache_root: Path, case_date: date,
             nominal_resolution=source.coverage.nominal_resolution,
             reference_year=year, nodata_override=source.nodata)
 
-    soil_fetched = fetch_soilgrids(bbox, cache_root, urlopen=urlopen)
+    soil_fetched = (fetch_soilgrids(bbox, cache_root, urlopen=urlopen)
+                    if soil_source == "soilgrids" else {})
     soil_sources = {
         key: _bound(
             item, source_id="soilgrids-v2",
@@ -826,9 +849,8 @@ def _fetch_and_bind(bbox: FootprintBBox, cache_root: Path, case_date: date,
         "landcover_window_audit": window_audit,
         "landcover_window_outside_raster": landcover_outside,
         "soilgrids_windows": {
-            f"{component}_{depth}": soil_fetched[(component, depth)].receipt()
-            for component in SOILGRIDS_COMPONENTS
-            for depth in SOILGRIDS_DEPTHS
+            f"{component}_{depth}": item.receipt()
+            for (component, depth), item in soil_fetched.items()
         },
         "bytes_fetched": (
             terrain_manifest["terrain_bytes_fetched"]
@@ -1112,7 +1134,8 @@ def apply_highres_statics(baseline, grid, *, config, domain_id: int,
         else:
             scope = (f"terrain {terrain_id}, land use "
                      f"{detail['landcover']['source_id']}, soil "
-                     "soilgrids-v2")
+                     + ("soilgrids-v2" if config.soil_source == "soilgrids"
+                        else "selected WPS geography"))
         print(f"[static.highres] d{int(domain_id):02d}: APPLIED "
               f"({scope}; cells replaced: "
               f"{detail['cells_replaced']['total']} of "
@@ -1363,11 +1386,13 @@ def _apply(baseline, grid, *, config: HighresStaticConfig,
                                    urlopen=urlopen, landcover=landcover_row,
                                    **smoothing_kw)
 
+    soil_kw = ({} if config.soil_source == "soilgrids"
+               else {"soil_source": config.soil_source})
     try:
         terrain, landcover, soil_sources, fetch_manifest = _fetch_and_bind(
             bbox, config.cache_root, case_date, coverage=coverage, grid=grid,
             baseline=baseline, urlopen=urlopen,
-            landcover_source=landcover_row)
+            landcover_source=landcover_row, **soil_kw)
     except CoverageError as error:
         raise HighresRefusal("missing-source-coverage", str(error)) \
             from error
@@ -1391,7 +1416,7 @@ def _apply(baseline, grid, *, config: HighresStaticConfig,
         landcover_mapping=mapping, category_count=category_count,
         baseline_ocean=baseline_ocean, halo=HALO, baseline=baseline,
         landcover_water=landcover_row.water,
-        terrain_smoothing=terrain_smoothing)
+        terrain_smoothing=terrain_smoothing, **soil_kw)
     merged, merge_audit = merge_highres_overrides(baseline, overrides)
     field_coverage = source_audit.pop("coverage")
 
@@ -1452,6 +1477,14 @@ def _apply(baseline, grid, *, config: HighresStaticConfig,
         },
         "tmn": "recomputed from merged SOILTEMP/HGT_M over the new mask",
     }
+    if config.soil_source == "wps-geog":
+        detail["soil_source"] = "selected WPS geography"
+        detail["scope_statement"] = (
+            "Terrain and land use replaced from high-resolution sources; "
+            "soil fractions use the selected WPS geography, with water "
+            "categories reconciled to the resulting land mask in Rust. "
+            "Unchanged land cells retain the selected soil fractions exactly.")
+        detail["attributions"]["soil"] = "selected WPS geography"
     if "anachronism" in landcover_record:
         detail["anachronism"] = landcover_record["anachronism"]
     return merged, detail
@@ -1654,6 +1687,7 @@ def parse_sealed_static_highres(echo, *, source: str, base_dir,
     table = dict(echo)
     rows = table.pop("terrain_smoothing", None)
     source_echo = table.pop("static_source", None)
+    fraction_algorithm = table.pop("urban_fraction", None)
     table.pop("urban_legend", None)
     table.pop("use_wudapt_lcz", None)
     config = parse_static_table({"highres": table}, source=source,
@@ -1670,6 +1704,12 @@ def parse_sealed_static_highres(echo, *, source: str, base_dir,
                                or 0))
     elif urban:
         config = replace(config, sf_urban_physics=1, use_wudapt_lcz=lcz)
+    if fraction_algorithm is not None and (
+            fraction_algorithm != config.echo().get("urban_fraction")):
+        raise ValueError(
+            f"the urban fraction algorithm of {source} is {fraction_algorithm!r}, "
+            f"but this source rebuilds with {config.echo().get('urban_fraction')!r}: "
+            "rebuilding would replace the sealed built area with a different estimate")
     if source_echo is not None:
         from .external_source import setting_from_echo
         config = replace(config, static_source=setting_from_echo(

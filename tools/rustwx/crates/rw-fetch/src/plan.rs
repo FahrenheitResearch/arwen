@@ -293,7 +293,9 @@ pub fn decide(request: ModeRequest, facts: &ProbeFacts, patterns: usize) -> Deci
                 ),
                 None => Decision::Refuse(
                     "--mode idx-subset: index coverage could not be proven against the \
-                     object; re-run with --mode full-file"
+                     object: the origin stated no object length and did not answer the \
+                     past-the-end probe, so a subset could silently drop records the \
+                     index does not list; re-run with --mode full-file"
                         .to_string(),
                 ),
             }

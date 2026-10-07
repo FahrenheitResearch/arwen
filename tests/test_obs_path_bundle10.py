@@ -28,8 +28,9 @@ region_only = pytest.mark.skipif(not region_engine_available(),
 # arm that carries an interval per radial into the solve.  These gates name
 # that engine rather than riding the shipped default, which is
 # "region-global" since 2026-08-12 and which decides every fold in ONE
-# interval -- see test_region_global_refuses_a_nonuniform_sweep for what it
-# does instead, and why that is the correct thing for it to do.
+# interval per solve -- see
+# test_region_global_unfolds_a_nonuniform_sweep_sector_by_sector for how it
+# runs a mixed cut (one solve per constant-Nyquist sector).
 
 
 def _wind_sweep(nyquist_by_radial, *, speed=39.0, direction_deg=250.0,
@@ -169,29 +170,39 @@ def test_a_radial_with_no_nyquist_is_refused_not_borrowed():
 # the default arm does with the same evidence.
 
 @region_only
-def test_region_global_refuses_a_nonuniform_sweep():
-    """The default engine fails closed rather than quietly mis-correcting.
+def test_region_global_unfolds_a_nonuniform_sweep_sector_by_sector():
+    """The default engine unfolds a mixed-Nyquist cut instead of refusing it.
 
-    Its native solver reduces the per-ray Nyquist array to the FIRST usable
-    element and decides every cross-ray fold in that one interval, then
-    applies the chosen integer at each ray's own interval.  On a 25.51/32.0
-    cut that puts every corrected gate on the 32.0 half 12.98 m/s out per
-    fold and rounds multi-fold seams to the wrong integer outright, while
-    still reporting a clean integer fold.  There is no version of that this
-    stage may ship, so the sweep is refused and the message names the arm
-    that can run it.
+    Breakage this replaces, named: the sweep used to be refused, and
+    WSR-88D VCPs mix Nyquist within a cut often enough that the da-tune
+    2026-09-06 case could not build its observations.  The native solver
+    decides folds in one interval, so it runs once per constant-Nyquist
+    sector with the other radials masked: no fold decision spans two
+    intervals, every correction is an exact multiple of that radial's own
+    2*Vn, and the folded wind is recovered.
     """
 
     params = DealiasParams(engine=ENGINE_REGION_GLOBAL)
     radials = 60
     nyq = np.where(np.arange(radials) < radials // 2, 25.51, 32.0)
-    folded, _truth, _ = _wind_sweep(nyq, radials=radials, gates=16)
+    folded, truth, _ = _wind_sweep(nyq, radials=radials, gates=16)
     azimuth = np.linspace(0.0, 354.0, radials)
 
-    with pytest.raises(DealiasParamsError, match="vad-region"):
-        dealias_sweep(folded, azimuth, float(nyq.min()), params,
-                      first_gate_m=2125.0, gate_spacing_m=250.0,
-                      nyquist_by_radial=nyq)
+    result = dealias_sweep(folded, azimuth, float(nyq.min()), params,
+                           first_gate_m=2125.0, gate_spacing_m=250.0,
+                           nyquist_by_radial=nyq)
+    kept = result.state != STATE_REJECTED
+    assert kept.mean() > 0.9
+    interval = (2.0 * nyq)[:, None]
+    correction = np.where(kept, result.velocity - folded, 0.0)
+    ratio = np.where(kept, correction / interval, 0.0)
+    assert np.all(np.abs(ratio - np.rint(ratio)) < 1e-5)   # own lattice
+    # float32 native solver: recovered to rounding
+    assert np.max(np.abs(np.where(kept, result.velocity - truth, 0.0))) < 1e-4
+    assert result.stats["nyquist_distinct"] == [25.51, 32.0]
+    assert len(result.stats["nyquist_sectors"]) == 2
+    assert (result.stats["gates_unchanged"] + result.stats["gates_unfolded"]
+            + result.stats["gates_rejected"]) == result.stats["gates_finite"]
 
 
 @region_only

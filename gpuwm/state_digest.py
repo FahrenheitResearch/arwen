@@ -108,6 +108,24 @@ _CANONICAL_NEST_SLOTS = frozenset({
       for component in ("ci", "ip", "cj", "jp", "xig", "xjg")
       for stagger in ("m", "x", "y")),
 })
+#: A nest's rolling value/tendency frames of a chem row
+#: (gpuwm/core/nest_fields.py appends every transported ``chem_<row>``):
+#: the same eight sides as the fixed kinds above, but the kinds are the
+#: chem table's rows, so they are matched by shape rather than listed.
+_NEST_FRAME_SUFFIXES = tuple(f"_{prefix}{side}" for prefix in ("b", "bt")
+                             for side in ("xs", "xe", "ys", "ye"))
+
+
+def _is_chem_nest_slot(slot: str | None) -> bool:
+    from gpuwm.state_serialization_contract import CHEM_STATE_PREFIX
+
+    head = "nest_" + CHEM_STATE_PREFIX
+    if slot is None or not slot.startswith(head):
+        return False
+    return any(slot.endswith(suffix) and len(slot) > len(head) + len(suffix)
+               for suffix in _NEST_FRAME_SUFFIXES)
+
+
 _CANONICAL_LBC_SLOTS = frozenset({"lbc_weights_0"})
 _CANONICAL_REFL_SLOTS = frozenset({"refl_10cm"})
 _CANONICAL_EXTRA_PREFIXES = ("nest_", "lbc_weights_", "refl_")
@@ -138,7 +156,8 @@ def lazy_inventory_member_class(name: str) -> str | None:
     scratch_slot = (
         name.removeprefix("scratch/") if name.startswith("scratch/") else None
     )
-    if scratch_slot in _CANONICAL_NEST_SLOTS:
+    if scratch_slot in _CANONICAL_NEST_SLOTS or _is_chem_nest_slot(
+            scratch_slot):
         return CANONICAL_LAZY_MEMBER_CLASSES[0]
     if scratch_slot in _CANONICAL_LBC_SLOTS:
         return CANONICAL_LAZY_MEMBER_CLASSES[1]

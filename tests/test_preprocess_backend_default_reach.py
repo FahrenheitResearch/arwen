@@ -90,8 +90,6 @@ def test_the_hrrr_root_receipt_keeps_why_auto_chose_the_cpu(
     caller" -- on a bare run where nobody named anything and auto had
     fallen to the CPU because cupy was absent.
     """
-
-    import os
     from types import SimpleNamespace
 
     from tools import hrrr_single_domain_benchmark as benchmark
@@ -109,7 +107,8 @@ def test_the_hrrr_root_receipt_keeps_why_auto_chose_the_cpu(
     bare = SimpleNamespace(preprocess_backend="auto",
                            preprocess_workers=None, cpu_preprocess_bridge=None)
     chosen, workers = benchmark._budgeted_preprocess_backend(bare)
-    assert workers == int(os.cpu_count() or 1)
+    from gpuwm.ingest.cpu_backend import automatic_workers
+    assert workers == automatic_workers()
     assert chosen.workers == workers
     assert chosen.selection["requested"] == "auto"
     assert chosen.selection["backend"] == "cpu"
@@ -354,3 +353,31 @@ def test_the_certification_is_the_table_not_a_restated_literal():
     resolver = source.split("def resolve_preprocess_backend", 1)[1]
     assert "CUDA_RUNTIME_RANGE" not in resolver
     assert CUDA_RUNTIME_RANGE == (12_000, 13_000)
+
+
+def test_the_hrrr_root_budget_is_the_count_the_cpu_backend_runs(monkeypatch):
+    """A cgroup that grants fewer CPUs than the host has cores.
+
+    The root budget was os.cpu_count() (256 on a box whose cgroup grants
+    245) while the CPU backend runs effective_workers(), so every CPU
+    preparation there refused itself at f00: "f00 mapping used 245 native
+    workers; expected 256".
+    """
+    from types import SimpleNamespace
+
+    from gpuwm.ingest import preparation_workers
+    from tools import hrrr_single_domain_benchmark as benchmark
+
+    monkeypatch.delenv(preparation_workers.PREPARATION_THREADS_ENV, raising=False)
+    monkeypatch.setattr(preparation_workers, "cpu_budget", lambda: {
+        "affinity_cpus": 256, "cgroup_cpus": 245, "available_cpus": 245})
+    monkeypatch.setattr(preparation_workers, "memory_worker_limit", lambda: None)
+    named = SimpleNamespace(preprocess_backend="cpu",
+                            preprocess_workers=None, cpu_preprocess_bridge=None)
+    chosen, workers = benchmark._budgeted_preprocess_backend(named)
+    assert workers == 245
+    assert chosen.workers == workers
+    explicit = SimpleNamespace(preprocess_backend="cpu",
+                               preprocess_workers=300, cpu_preprocess_bridge=None)
+    chosen, workers = benchmark._budgeted_preprocess_backend(explicit)
+    assert workers == chosen.workers == 245

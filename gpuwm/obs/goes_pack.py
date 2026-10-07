@@ -62,7 +62,8 @@ CLOUDTOP_SCHEMA = CLOUDTOP_SCHEMA_V1
 
 #: Every family this reader knows.  A pack declaring anything else is
 #: refused by name rather than by whichever field happens to be missing.
-KNOWN_SCHEMAS = CWP_SCHEMAS + CLOUDTOP_SCHEMAS
+AOD_SCHEMA = "gpuwm-obs.goes-aod.v1"
+KNOWN_SCHEMAS = CWP_SCHEMAS + CLOUDTOP_SCHEMAS + (AOD_SCHEMA,)
 
 _MAGIC = b"GPWMGOES"
 _VERSION = 1
@@ -128,6 +129,8 @@ class GoesPack:
     def family(self) -> str:
         """``"cwp"`` or ``"cloudtop"``, whatever the version."""
 
+        if self.schema == AOD_SCHEMA:
+            return "aod"
         return "cwp" if self.schema in CWP_SCHEMAS else "cloudtop"
 
     @property

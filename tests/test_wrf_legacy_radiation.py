@@ -282,11 +282,14 @@ def test_dudhia_adapter_enters_production_driver_radiation_seam(
         elapsed_seconds=0.0, p=np.zeros(shape, np.float32))
     cfg = _cfg(ra_lw_physics=0, ra_sw_physics=1, radt_minutes=12.0)
     driver = object.__new__(physics.PhysicsDriver)
+    driver.swint = None
     driver.radiation_callable = adapter
     # Dudhia is shortwave-only, so it never declares publishes_olr and a
     # real driver leaves the OLR slot empty.  Stated explicitly because a
     # hand-built driver has to declare every slot the seam reads.
     driver.olr = None
+    # Dudhia computes no cloud fraction, so no CLDFRA buffer (RULINGS 1).
+    driver.cldfra = None
     # The fixture leaves swint_opt disabled, as the real driver's optional slot.
     driver.swint = None
     driver.fields = {

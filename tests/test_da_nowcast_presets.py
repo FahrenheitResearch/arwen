@@ -32,7 +32,9 @@ class TestFullPreset:
                      "--sfc-t2-sigma-k", "2.0", "--goes-cwp", str(cwp))
         resolve_da_preset(args)
         assert args.hydrometeors is True
-        assert args.positivity_policy == "clip"
+        # The preset takes the default policy: mean-preserving keeps the
+        # ensemble mean where the clip added mass at every analysis.
+        assert args.positivity_policy == "mean-preserving"
         assert args.reflectivity_analysis is True
         assert args.clear_air_analysis is True
         assert args.dealias is True

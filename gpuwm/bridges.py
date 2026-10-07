@@ -106,9 +106,26 @@ CRATE_RELATIVE = "tools/grib1_bridge"
 #: literal that spells the contract out (the series grammar, the usage
 #: line naming the argument vector), never a version number, which a
 #: rebuild bumps whether or not anything changed.
+# Optional contracts are probed by their caller. They must not make a
+# library with a working base contract unusable for its existing entry points.
+BRIDGE_OPTIONAL_ABI_MARKERS = {
+    "static_fields": {"extra_continuous": b"gpuwm_static_extra_continuous_v1"},
+}
+
 BRIDGE_ABI_MARKERS = {
+    "rw_ensbatch": (
+        b"gpuwm-ensemble-diagnostic-reduce.v1\tf32-words\tf64-two-pass\t"
+        b"member-order\tsha256"),
     "rw_verify": b"gpuwm.verify-visuals.request.v1",
     "rw_compare": b"gpuwm.reference-input.v1",
+    # The nowcast frames converter's ``--abi`` line, which its main()
+    # prints from the one constant it compiles in.  Spelled to match
+    # gpuwm.rustwx_lanes.NOWCAST_FRAMES_ABI_MARKER; a test binds the two
+    # and both to the Rust source.
+    "rw_nowcast_frames": (
+        b"gpuwm-rw-nowcast-frames-v1\tfrom-netcdf\t--netcdf\t--out\t"
+        b"--source-id\t--lattice\t--variable\t--lat\t--lon\t--issue\t"
+        b"--causal\t--receipt\t--source-kind\t--package\t--revision"),
     "rw_simradar": (b"rw_simradar --request REQUEST.json "
                    b"schema=simulated-radar.request/v1 manifest=simulated-radar.manifest/v1 "
                    b"volume_paths=v1 scene_shapes=v1"),
@@ -228,6 +245,13 @@ BRIDGE_ABI_MARKERS = {
     # Spelled to match gpuwm.isobaric_bridge.ABI_MARKER; a test binds the
     # two.
     "rw_isobaric": b"gpuwm_isobaric_heights",
+    # The radar superob cdylib (tools/rustwx/crates/rw-superob), behind
+    # the DEFAULT superob stage of every radar observation build (gate
+    # placement, QC, the alias masks, the multi-radar merge and the
+    # region-global dealias of each sweep).  A library, so the literal is
+    # an exported symbol name.  Spelled to match
+    # gpuwm.obs.superob_bridge.ABI_MARKER; a test binds the two.
+    "rw_superob": b"gpuwm_superob_call",
     # The MPAS mesh generator behind `gpuwm mesh`.  The marker is its
     # ARGUMENT VECTOR, spelled out, because that is the literal which
     # changes exactly when the request contract changes: a binary built
@@ -295,6 +319,20 @@ BRIDGE_ABI_MARKERS = {
     "rw_mlexport": (
         b"rw_mlexport --request REQUEST.json schema=ml-export.request/v1 "
         b"modes=run,append,finalize progress=jsonl"),
+    # The clean-room GRIB2 exporter (2.8.7) behind `export-grib2`, `go
+    # --grib2`, run_options.grib2 and `render --grib2-out`.  The marker
+    # names the request schema, the WOOF catalog, the post device choice
+    # and the restored options (renderer definitions, extrema windows,
+    # composite level): a pre-2.8.7 build (the held-out UPP-derived
+    # exporter, catalog upp-post-products) or a 2.8.7 build without the
+    # options does not carry it and is refused.  Spelled to match
+    # gpuwm.grib2_export.ABI_MARKER and rw_grib2export::ABI; tests bind them.
+    "rw_grib2export": (
+        b"rw_grib2export --request REQUEST.json schema=grib2-export.request/v1 "
+        b"modes=run,append,finalize progress=jsonl default_definitions=woof "
+        b"grid_geometry=wrf-native-locations/v1 surface_catalog=woof-post/v1 "
+        b"post_device=auto,gpu,cpu definitions=woof,renderer extrema_window=seconds "
+        b"composite_level=200,10 gust=auto,similarity,tke"),
 }
 
 #: True when the shell a remedy will be pasted into is Windows

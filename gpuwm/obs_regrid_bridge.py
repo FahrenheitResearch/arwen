@@ -77,8 +77,123 @@ OBSREGRID_PYTHON_ENV: Final[str] = "GPUWM_OBSREGRID_PYTHON"
 #: produce a single remap.
 ABI_MARKER: Final[bytes] = b"gpuwm_obsregrid_build_plan"
 
-#: Method codes, matching ``plan::Method::from_code`` in the crate.
-METHOD_CODES: Final[dict[str, int]] = {"nearest": 0, "cell_average": 1}
+#: Observation codes use the ABI-1 symbols; sums use optional new symbols.
+METHOD_CODES: Final[dict[str, int]] = {
+    "nearest": 0, "cell_average": 1, "cell_sum": 2, "cell_sum_split": 3}
+
+
+def _sum_library():
+    """Bind optional sum symbols only for emission callers, preserving ABI 1."""
+    library = load()
+    names = ("gpuwm_obsregrid_build_sum_plan", "gpuwm_obsregrid_apply_sum_plan",
+             "gpuwm_obsregrid_apply_touch_plan",
+             "gpuwm_obsregrid_mask_range", "gpuwm_obsregrid_emission_sentinel",
+             "gpuwm_obsregrid_emission_split")
+    if any(not hasattr(library, name) for name in names):
+        raise ObsRegridBridgeError(
+            "this obs-regrid build predates the cell-sum remap; rebuild tools/rustwx; "
+            "the older observation methods cannot conserve emission cell masses")
+    size = ctypes.c_size_t
+    f64p = ctypes.POINTER(ctypes.c_double)
+    i64p = ctypes.POINTER(ctypes.c_int64)
+    u8p = ctypes.POINTER(ctypes.c_uint8)
+    library.gpuwm_obsregrid_build_sum_plan.argtypes = [
+        ctypes.c_uint32, size, f64p, f64p, size, size, f64p, f64p, size, size,
+        ctypes.c_double, i64p, u8p, f64p]
+    library.gpuwm_obsregrid_apply_sum_plan.argtypes = [
+        size, i64p, size, size, f64p, u8p, f64p, u8p, f64p]
+    library.gpuwm_obsregrid_apply_touch_plan.argtypes = [
+        size, i64p, size, size, f64p, u8p, f64p, u8p, f64p]
+    library.gpuwm_obsregrid_mask_range.argtypes = [f64p, size, ctypes.c_double,
+                                                  ctypes.c_double, u8p, f64p, ctypes.c_uint8]
+    library.gpuwm_obsregrid_emission_sentinel.argtypes = [f64p, size, ctypes.c_double]
+    library.gpuwm_obsregrid_emission_split.argtypes = [f64p, f64p, size, size, ctypes.c_double,
+                                                       f64p, size, ctypes.POINTER(size)]
+    for name in names:
+        getattr(library, name).restype = ctypes.c_int32
+    return library
+
+
+def emission_values(values, sentinel=None):
+    """Normalize only a table-declared no-fire sentinel in Rust."""
+    values = np.array(values, dtype=np.float64, order="C", copy=True)
+    if sentinel is not None:
+        library = _sum_library()
+        if library.gpuwm_obsregrid_emission_sentinel(_f64p(values), values.size, sentinel):
+            raise ObsRegridBridgeError(last_error(library))
+    return values
+
+
+def emission_split(source_latitude, source_longitude, dx_m, map_factors):
+    library = _sum_library()
+    factors = _contiguous(map_factors, np.float64)
+    latitude = _contiguous(source_latitude, np.float64)
+    longitude = _contiguous(source_longitude, np.float64)
+    if latitude.ndim != 2 or longitude.shape != latitude.shape:
+        raise ObsRegridBridgeError("emission coordinates must fill matching 2-D grids; spacing cannot be determined from mismatched cells")
+    result = ctypes.c_size_t()
+    if library.gpuwm_obsregrid_emission_split(_f64p(latitude), _f64p(longitude), *latitude.shape, dx_m, _f64p(factors),
+                                              factors.size, ctypes.byref(result)):
+        raise ObsRegridBridgeError(last_error(library))
+    return result.value
+
+
+def mask_ranges(values, rules):
+    """Rust applies inclusive table ranges; Python supplies decoded buffers."""
+    library = _sum_library()
+    values = _contiguous(values, np.float64)
+    valid = np.ones(values.shape, dtype=np.uint8)
+    for field, minimum, maximum, nonzero_only in [(values, 0.0, np.inf, False), *rules]:
+        field = _contiguous(field, np.float64)
+        if field.shape != values.shape:
+            raise ObsRegridBridgeError("emission mask shape differs from its field; cells would be masked at wrong indices")
+        status = library.gpuwm_obsregrid_mask_range(
+            _f64p(field), field.size, minimum, maximum, _u8p(valid), _f64p(values), nonzero_only)
+        if status:
+            raise ObsRegridBridgeError(last_error(library))
+    return valid.astype(bool)
+
+
+#: How a cell-sum plan aggregates a field.  ``partition``: each sub-point
+#: carries 1/n^2 of its source cell (extensive mass, conserved).  ``touch``:
+#: each destination a source cell's sub-points reach gets the cell's whole
+#: value once (fire radiative power, which sizes the fire the plume model
+#: sees; see ``plan::apply_touch_sum``).  Identical when n = 1.
+SUM_AGGREGATIONS: Final[tuple[str, ...]] = ("partition", "touch")
+
+
+def apply_sum_plan(*, source_index, values, valid, destination_shape, split_n=1,
+                   aggregation="partition"):
+    """Return masses, validity, and source/remapped/unreachable/masked totals.
+
+    With ``aggregation="touch"`` the second total is the touched total, which
+    exceeds the source total whenever a source cell reaches several cells.
+    """
+    if isinstance(split_n, bool) or not isinstance(split_n, int) or split_n < 1:
+        raise ObsRegridBridgeError("cell-sum split_n must be a positive integer; otherwise partition weights are undefined")
+    if aggregation not in SUM_AGGREGATIONS:
+        raise ObsRegridBridgeError(
+            f"cell-sum aggregation {aggregation!r} is not one of {SUM_AGGREGATIONS}; "
+            "an unknown rule would neither conserve mass nor keep fire size")
+    library = _sum_library()
+    index = _contiguous(source_index, np.int64)
+    values = _contiguous(values, np.float64)
+    valid = _contiguous(valid, np.uint8)
+    if valid.shape != values.shape or index.size != values.size * split_n**2:
+        raise ObsRegridBridgeError("cell-sum source, validity and sub-point counts differ; refusing out-of-bounds buffer reads")
+    out = np.zeros(destination_shape, dtype=np.float64)
+    out_valid = np.zeros(destination_shape, dtype=np.uint8)
+    totals = np.zeros(4, dtype=np.float64)
+    apply = (library.gpuwm_obsregrid_apply_touch_plan if aggregation == "touch"
+             else library.gpuwm_obsregrid_apply_sum_plan)
+    status = apply(
+        split_n, _i64p(index), values.size, out.size, _f64p(values),
+        _u8p(valid), _f64p(out), _u8p(out_valid), _f64p(totals))
+    if status:
+        raise ObsRegridBridgeError(last_error(library))
+    return out, out_valid.astype(bool), dict(zip(
+        ("total_source_mass", "total_remapped_mass", "unreachable_mass", "masked_mass"),
+        map(float, totals)))
 
 
 class ObsRegridBridgeError(RuntimeError):
@@ -276,18 +391,29 @@ def _u8p(array: np.ndarray):
 def build_plan(*, method: str, source_latitude: np.ndarray,
                source_longitude: np.ndarray,
                destination_latitude: np.ndarray,
-               destination_longitude: np.ndarray, max_distance_m: float
+               destination_longitude: np.ndarray, max_distance_m: float, split_n: int = 1
                ) -> tuple[np.ndarray, np.ndarray, float]:
     """``(source_index, reachable, max_used_distance_m)`` from the crate.
 
     Shapes follow the Python module's contract exactly: ``source_index``
     is per destination cell for ``nearest`` and per source cell for
-    ``cell_average``; ``reachable`` is the destination mask in both.
+    ``cell_average`` and ``cell_sum``. Split indices have trailing (n,n)
+    axes, row-major within each source cell. ``reachable`` records geometric
+    contributors; sum output validity is computed separately on apply.
     """
-    library = load()
-    code = METHOD_CODES[method]
+    is_sum = method in ("cell_sum", "cell_sum_split")
+    if is_sum and (isinstance(split_n, bool) or not isinstance(split_n, int) or split_n < 1):
+        raise ObsRegridBridgeError("cell-sum split_n must be a positive integer; otherwise partition weights are undefined")
+    if method == "cell_sum":
+        split_n = 1
+    library = _sum_library() if is_sum else load()
+    code = 2 if is_sum else METHOD_CODES[method]
     source_shape = np.asarray(source_latitude).shape
     destination_shape = np.asarray(destination_latitude).shape
+    if (len(source_shape) != 2 or len(destination_shape) != 2
+            or np.asarray(source_longitude).shape != source_shape
+            or np.asarray(destination_longitude).shape != destination_shape):
+        raise ObsRegridBridgeError("remap coordinates must be matching 2-D grids; mismatched shapes cause out-of-bounds bridge reads")
 
     source_lat = _contiguous(source_latitude, np.float64)
     source_lon = _contiguous(source_longitude, np.float64)
@@ -295,12 +421,19 @@ def build_plan(*, method: str, source_latitude: np.ndarray,
     destination_lon = _contiguous(destination_longitude, np.float64)
 
     index_shape = destination_shape if code == 0 else source_shape
+    if is_sum and split_n > 1:
+        index_shape = (*source_shape, split_n, split_n)
+    if is_sum and int(source_shape[0])*int(source_shape[1])*split_n**2*8 > 4*1024**3:
+        raise ObsRegridBridgeError("cell-sum destination indices exceed 4 GiB per buffer; caller and Rust copies would exhaust the supported host-memory budget")
     index = np.zeros(index_shape, dtype=np.int64)
     reachable = np.zeros(destination_shape, dtype=np.uint8)
     used = ctypes.c_double(0.0)
 
-    status = library.gpuwm_obsregrid_build_plan(
-        ctypes.c_uint32(code),
+    builder = library.gpuwm_obsregrid_build_sum_plan if is_sum else library.gpuwm_obsregrid_build_plan
+    method_args = (ctypes.c_uint32(3 if method == "cell_sum_split" else 2),
+                   ctypes.c_size_t(split_n)) if is_sum else (ctypes.c_uint32(code),)
+    status = builder(
+        *method_args,
         _f64p(source_lat), _f64p(source_lon),
         ctypes.c_size_t(int(source_shape[0])),
         ctypes.c_size_t(int(source_shape[1])),
@@ -319,6 +452,12 @@ def apply_plan(*, method: str, source_index: np.ndarray,
                destination_shape: tuple[int, int], values: np.ndarray,
                valid: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """``(values, valid)`` on the destination grid, from the crate."""
+    if method in ("cell_sum", "cell_sum_split"):
+        n = source_index.shape[-1] if source_index.ndim == 4 else 1
+        out, mask, _ = apply_sum_plan(source_index=source_index, values=values,
+                                      valid=valid, destination_shape=destination_shape,
+                                      split_n=n)
+        return out, mask
     library = load()
     code = METHOD_CODES[method]
 
@@ -344,7 +483,9 @@ def apply_plan(*, method: str, source_index: np.ndarray,
 
 __all__ = [
     "ABI_MARKER", "METHOD_CODES", "OBSREGRID_ABI", "OBSREGRID_BRIDGE_ENV",
-    "OBSREGRID_PYTHON_ENV", "ObsRegridBridgeError", "apply_plan",
+    "OBSREGRID_PYTHON_ENV", "ObsRegridBridgeError", "SUM_AGGREGATIONS",
+    "apply_plan", "apply_sum_plan",
+    "emission_split", "emission_values", "mask_ranges",
     "build_plan", "last_error", "library_candidates", "library_names",
     "load", "python_fallback_requested", "report_workaround",
     "resolve_obsregrid_bridge", "route", "unavailable_reason",

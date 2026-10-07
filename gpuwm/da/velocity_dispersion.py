@@ -114,8 +114,19 @@ class DispersionGate:
     batch: str
     fields: tuple[str, ...]
     columns: object
+    #: Fraction of the joint solve kept in the gated columns: the gated
+    #: fields there are ``keep * joint + (1 - keep) * withheld``.  0, the
+    #: default, withholds the batch entirely.  Every gate holding at one
+    #: column must state the same keep (one blend of two solves).
+    keep: float = 0.0
 
     def __post_init__(self) -> None:
+        keep = float(self.keep)
+        if not np.isfinite(keep) or not 0.0 <= keep < 1.0:
+            raise DispersionGateError(
+                f"{self.batch}: keep is a fraction in [0, 1), got "
+                f"{self.keep!r}; 1 would keep the joint solve, which is no "
+                "gate at all")
         if not isinstance(self.fields, tuple) or not self.fields:
             raise DispersionGateError(
                 f"{self.batch}: a dispersion gate withholds a non-empty "
@@ -126,8 +137,22 @@ class DispersionGate:
                 f"got shape {np.shape(self.columns)}")
 
     def payload(self) -> dict:
-        return {"batch": self.batch, "fields": list(self.fields),
-                "columns": int(np.count_nonzero(np.asarray(self.columns)))}
+        out = {"batch": self.batch, "fields": list(self.fields),
+               "columns": int(np.count_nonzero(np.asarray(self.columns)))}
+        if float(self.keep):
+            out["keep"] = float(self.keep)
+        return out
+
+
+def _zone_keep(withheld) -> float:
+    """The one keep of a zone's gates, or a refusal when they differ."""
+    keeps = {float(gate.keep) for gate in withheld}
+    if len(keeps) != 1:
+        raise DispersionGateError(
+            f"gates {sorted(gate.batch for gate in withheld)} hold at the "
+            f"same columns with different keeps {sorted(keeps)}; a zone "
+            "blends one joint and one withheld solve, so one keep")
+    return keeps.pop()
 
 
 def _host(array):
@@ -435,8 +460,14 @@ def _local_batches(batches, where, geometry, localization, stencils):
         if not count:
             dropped += 1
             continue
-        kept.append(batch if count == int(np.count_nonzero(mask))
-                    else replace(batch, mask=local))
+        if count == int(np.count_nonzero(mask)):
+            kept.append(batch)
+        elif getattr(batch, "points", None) is not None:
+            # A point batch's PointSet must shrink with its mask, or the
+            # observation-sparse route would assimilate the dropped points.
+            kept.append(_point_subset(batch, local, mask.shape, (0, 0)))
+        else:
+            kept.append(replace(batch, mask=local))
     if not box:
         rows = np.flatnonzero(where.any(axis=1))
         cols = np.flatnonzero(where.any(axis=0))
@@ -445,6 +476,30 @@ def _local_batches(batches, where, geometry, localization, stencils):
     edges = np.array(list(box.values()))
     return kept, dropped, (int(edges[:, 0].min()), int(edges[:, 1].max()),
                            int(edges[:, 2].min()), int(edges[:, 3].max()))
+
+
+def _point_subset(batch, keep, full_shape, origin, *, shape=None):
+    """``batch``'s points where ``keep`` (a ``full_shape`` boolean) holds,
+    as a new point batch on ``shape`` (default ``full_shape``) whose cells
+    are offset by ``origin = (j0, i0)``.  Values, errors and H(x) are the
+    same numbers; only the indexing changes."""
+
+    from gpuwm.da.letkf import PointSet, point_batch
+
+    pts = batch.points
+    flat = np.asarray(pts.flat_index, np.int64)
+    k, j, i = np.unravel_index(flat, tuple(int(v) for v in full_shape))
+    sel = np.asarray(keep, dtype=bool)[k, j, i]
+    shape = tuple(int(v) for v in (shape or full_shape))
+    local = np.ravel_multi_index(
+        (k[sel], j[sel] - int(origin[0]), i[sel] - int(origin[1])), shape)
+    subset = PointSet(
+        flat_index=local,
+        values=np.asarray(pts.values, np.float64)[sel],
+        errors=np.asarray(pts.errors, np.float64)[sel],
+        simulated=np.asarray(pts.simulated, np.float64)[:, sel])
+    return point_batch(batch.name, shape, subset,
+                       localization=batch.localization)
 
 
 def _crop(prior, batches, geometry, box):
@@ -467,6 +522,20 @@ def _crop(prior, batches, geometry, box):
     sub_batches = []
     for batch in batches:
         mask_shape = np.shape(batch.mask)
+        if getattr(batch, "points", None) is not None and batch.window is None:
+            # A point batch is whole-grid flat indices.  Restating it with a
+            # window (the dense cut below) handed the device solver a point
+            # batch with a window, which it refuses because the indices would
+            # land in the wrong cells: every conventional/surface point batch
+            # in a dispersion-gated zone stopped the cycle (Iowa da-obs-iau,
+            # 2026-10-06).  Re-index the points into the box instead.
+            nz = mask_shape[0]
+            cut = np.zeros(mask_shape, dtype=bool)
+            cut[:, j0:j1 + 1, i0:i1 + 1] = True
+            sub_batches.append(_point_subset(
+                batch, cut, mask_shape, (j0, i0),
+                shape=(nz, j1 - j0 + 1, i1 - i0 + 1)))
+            continue
         wj0, wj1, wi0, wi1 = (tuple(int(v) for v in batch.window)
                               if batch.window is not None else
                               (0, mask_shape[-2] - 1, 0, mask_shape[-1] - 1))
@@ -531,7 +600,12 @@ def withhold(solve: Callable[[Mapping, list, tuple, object], Mapping], prior,
     codes, inverse, gated = _zones(gates, ny, nx)
     order = np.argsort(inverse, kind="stable")
     bounds = np.searchsorted(inverse[order], np.arange(codes.shape[1] + 1))
-    out = {name: np.array(_host(value), copy=True)
+    # Only the fields a gate rewrites are copied; every other field's
+    # increment is passed through as the same array.  Copying all of them
+    # held a second whole-ensemble float64 copy of every analysed field on
+    # the host for the length of the gated solves.
+    out = {name: (np.array(_host(value), copy=True) if name in fields
+                  else value)
            for name, value in increments.items()}
     stencils = {}
     for zone in range(codes.shape[1]):
@@ -558,11 +632,17 @@ def withhold(solve: Callable[[Mapping, list, tuple, object], Mapping], prior,
             {name: prior[name] for name in these}, kept, geometry, box)
         solved = solve(sub_prior, sub_batches, these, sub_geometry)
         inside = where[j0:j1 + 1, i0:i1 + 1]
+        keep = _zone_keep(withheld)
         for name in these:
-            out[name][..., where] = _host(solved[name])[..., inside]
+            value = _host(solved[name])[..., inside]
+            if keep:
+                # keep * joint + (1 - keep) * withheld, the device's order.
+                value = keep * out[name][..., where] + (1.0 - keep) * value
+            out[name][..., where] = value
         receipt["solves"].append({
             "withheld": sorted(names), "fields": list(these),
             "columns": int(flat.size),
+            "keep": keep,
             "box": [int(v) for v in box],
             "batches_kept": len(kept),
             "batches_out_of_reach": dropped,
@@ -570,8 +650,52 @@ def withhold(solve: Callable[[Mapping, list, tuple, object], Mapping], prior,
     return out, receipt
 
 
+def column_plan(gates: Sequence[DispersionGate], analysis_fields):
+    """``(fields, column_zone, zones, receipt)`` for withholding the gates in
+    the filter's own pass, or ``None`` when :func:`withhold` must do it.
+
+    The zones are :func:`withhold`'s (:func:`_zones`): one per distinct set
+    of gates holding at a column.  ``column_zone`` is ``(ny * nx,)`` int32,
+    each column's zone or -1; ``zones[z]`` the batch names zone ``z``
+    withholds.  At a point of a zoned column, a solve that skips exactly
+    those batches is the whole-domain solve without them -- the solve
+    :func:`withhold` cuts to the zone's box and reach -- because a batch the
+    point does not read adds no term to anything the point computes.
+
+    ``None`` when no gate rewrites an analysed field, or when the gates
+    name different field sets (one pass re-solves one field set).
+    """
+
+    if not gates:
+        return None
+    fields = tuple(name for name in analysis_fields
+                   if any(name in gate.fields for gate in gates))
+    if not fields:
+        return None
+    if len({tuple(gate.fields) for gate in gates}) != 1:
+        return None
+    ny, nx = np.shape(gates[0].columns)
+    codes, inverse, gated = _zones(gates, ny, nx)
+    column_zone = np.full(ny * nx, -1, dtype=np.int32)
+    column_zone[gated] = inverse.astype(np.int32)
+    zones, receipt = [], []
+    counts = np.bincount(inverse, minlength=codes.shape[1])
+    for zone in range(codes.shape[1]):
+        held = np.unpackbits(codes[:, zone], count=len(gates)).astype(bool)
+        names = tuple(sorted({gate.batch for gate, on in zip(gates, held)
+                              if on}))
+        zones.append(names)
+        entry = {"withheld": list(names), "fields": list(fields),
+                 "columns": int(counts[zone]),
+                 "keep": _zone_keep([gate for gate, on in zip(gates, held)
+                                     if on])}
+        receipt.append(entry)
+    return fields, column_zone, tuple(zones), receipt
+
+
 __all__ = ["DEFAULT_VELOCITY_DISPERSION_BATCH_RATIO",
            "DEFAULT_VELOCITY_DISPERSION_RATIO", "DISPERSION_RATIO_LADDER",
            "DISPERSION_SCHEMA", "DispersionGate", "DispersionGateError",
-           "VELOCITY_DISPERSION_FIELDS", "check_ratio", "is_velocity_batch",
+           "VELOCITY_DISPERSION_FIELDS", "check_ratio", "column_plan",
+           "is_velocity_batch",
            "velocity_dispersion", "withhold"]

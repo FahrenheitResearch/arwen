@@ -37,14 +37,18 @@ from gpuwm.io.classic_tape import (ClassicDim, ClassicTape, ClassicVariable,
                                    classic_attr_value)
 from gpuwm.io.wrf_output_schema import (
     HISTORY_FIELDS_BY_NETCDF_NAME, PHYSICS_SELECTOR_GLOBALS,
+    RADIATION_CLDFRA_ATTRIBUTES,
     REGISTRY_VAR_META, SCHEME_OUTPUT_FIELDS, WRF_FIELD_TYPE_INTEGER,
     WRF_FIELD_TYPE_REAL,
 )
+from gpuwm.io.sfire_schema import (SFIRE_FINE_FIELDS, SFIRE_CLASS_FIELDS,
+                                   SFIRE_REGISTRY_FIELDS, SFIRE_PARTICLE_FIELDS)
 from gpuwm.supervisor import (_fsync_directory, fsync_file, quarantine_file,
                               replace_file_with_retry, unique_temp_path,
                               writing_progress)
 
 from gpuwm.io.history_layout import (
+    CHEM_VAR_META as _CHEM_VAR_META,
     CORE_DIRECT_STATE_FIELDS, MOISTURE_STATE_FIELDS,
     _Z_STAGGERED_MASS_FIELDS,
     live_state_history_fields as _live_state_history_fields,
@@ -151,6 +155,10 @@ def _stringify_and_clear_exception_tracebacks(exc: BaseException) -> str:
 #: supervisor, netCDF4 and runtime behind it.  Kept bound here under
 #: the name the writer has always used.
 _VAR_META = REGISTRY_VAR_META
+#: Description and units of the chem outputs a frame has carried, filled by
+#: :func:`_live_state_history_fields` from the chem table (the rows'
+#: long_name/units, the diagnostics' description/units).  Empty in every
+#: chem-off process, so no default variable's attributes can move.
 
 #: Staggered dimension -> WRF ``stagger`` attribute value.  WRF appends
 #: ``_stag`` to a dimension's dataset name exactly when the field is staggered
@@ -468,6 +476,10 @@ def wrf_global_attrs(
         attrs["ETAC"] = np.float32(etac)
     if run is not None:
         attrs.update(wrf_physics_selector_attrs(run))
+        attrs["IFIRE"] = np.int32(getattr(run, "ifire", 0))
+        if int(getattr(run, "ifire", 0)) == 2:
+            attrs.update(IFIRE=np.int32(2), SR_X=np.int32(run.sr_x),
+                         SR_Y=np.int32(run.sr_y))
     return attrs
 
 
@@ -1198,6 +1210,33 @@ class WrfoutWriter:
 
     def _dims_for(self, name, shape):
         nz, ny, nx = self.nz, self.ny, self.nx
+        if name in SFIRE_PARTICLE_FIELDS:
+            if len(shape)!=1 or shape[0]<1:
+                raise ValueError(f"firebrand history field {name} must contain its native particle allocation")
+            self._ensure_dimension("fs_maxsize",int(shape[0]))
+            return ("Time","fs_maxsize")
+        if name in SFIRE_FINE_FIELDS:
+            if len(shape) != 2:
+                raise ValueError(f"fine fire history field {name} must have two horizontal dimensions")
+            fy, fx = map(int, shape)
+            if fx < nx or fy < ny or fx % nx or fy % ny:
+                raise ValueError(f"fine fire history field {name} must refine every atmospheric mass cell")
+            self._ensure_dimension("west_east_subgrid", fx)
+            self._ensure_dimension("south_north_subgrid", fy)
+            self.ds.setncattr("SR_X", np.int32(fx // nx))
+            self.ds.setncattr("SR_Y", np.int32(fy // ny))
+            return ("Time", "south_north_subgrid", "west_east_subgrid")
+        if name in SFIRE_CLASS_FIELDS or name == "FMEP":
+            if len(shape) != 3 or tuple(shape[1:]) != (ny, nx) or shape[0] < 1:
+                raise ValueError(f"fire moisture history field {name} must be a class stack over the atmospheric mass grid")
+            axis = "fuel_moisture_extended_paramete" if name == "FMEP" else "fuel_moisture_classes_stag"
+            self._ensure_dimension(axis, shape[0])
+            return ("Time", axis, "south_north", "west_east")
+        if name == "LFN_TIME":
+            if tuple(shape) != (1,):
+                raise ValueError("fire level-function history time must contain one ignition time")
+            self._ensure_dimension("i_lfn_history", 1)
+            return ("Time", "i_lfn_history")
         if name in _SNOW_LAYER_FIELDS or name in _SNSO_LAYER_FIELDS:
             snow_layers = int(tuple(shape)[0]) if name in _SNOW_LAYER_FIELDS \
                 else int(tuple(shape)[0]) - self.soil_layers
@@ -1256,14 +1295,27 @@ class WrfoutWriter:
             dtype = "i4" if name == "ITIMESTEP" else "f4"
             field_type = (WRF_FIELD_TYPE_INTEGER if name == "ITIMESTEP"
                           else WRF_FIELD_TYPE_REAL)
-            desc, units = _VAR_META.get(name, ("", ""))
+            desc, units = _VAR_META.get(
+                name, _CHEM_VAR_META.get(name, ("", "")))
         stagger = next((s for d, s in _STAGGER.items() if d in dims), "")
+        # Native fire Registry z applies to refined and class grids, and
+        # even its 2-D flux diagnostics retain Z without a vertical axis.
+        if name in SFIRE_REGISTRY_FIELDS:
+            stagger = SFIRE_REGISTRY_FIELDS[name][1]
         if schema is not None and schema.stagger != stagger:
             raise ValueError(
                 f"wrfout variable {name} lands on dimensions {dims}, whose "
                 f"stagger is {stagger!r}, but WRF v4.6.1 declares it "
                 f"{schema.stagger!r} ({schema.registry})")
         var = self.ds.createVariable(name, dtype, dims)
+        fire_coordinates = str(getattr(self.ds, "FIRE_COORDINATE_MODE", "geographic"))
+        if name in ("FXLAT", "FXLONG"):
+            if fire_coordinates not in ("metric", "geographic"):
+                raise ValueError("fire history coordinates must declare metric or geographic mode so readers can locate the fine grid")
+            if fire_coordinates == "metric":
+                desc = "y coordinate of midpoints of fire cells" if name == "FXLAT" else "x coordinate of midpoints of fire cells"
+                units = "m"
+                var.standard_name = "projection_y_coordinate" if name == "FXLAT" else "projection_x_coordinate"
         if name == "XTIME":
             origin = str(getattr(self.ds, "START_DATE", "")).replace(
                 "_", " ", 1)
@@ -1278,13 +1330,20 @@ class WrfoutWriter:
         var.description = desc
         var.units = units
         var.stagger = stagger
+        if name == "CLDFRA":
+            # Radiation's cadence is coarser than history's: say what a
+            # between-calls frame and the initial frame carry.
+            for key, value in RADIATION_CLDFRA_ATTRIBUTES.items():
+                var.setncattr(key, value)
         spatial = any(d in dims for d in (
             "west_east", "west_east_stag", "south_north",
-            "south_north_stag"))
+            "south_north_stag", "west_east_subgrid", "south_north_subgrid"))
         if spatial:
             time_link = (" XTIME" if hasattr(self.ds, "START_DATE")
                          and hasattr(self.ds, "DT") else "")
-            if name in ("XLAT_U", "XLONG_U"):
+            if name in SFIRE_FINE_FIELDS:
+                var.coordinates = "FXLONG FXLAT" + time_link
+            elif name in ("XLAT_U", "XLONG_U"):
                 var.coordinates = "XLONG_U XLAT_U"
             elif name in ("XLAT_V", "XLONG_V"):
                 var.coordinates = "XLONG_V XLAT_V"
@@ -1628,6 +1687,16 @@ def _frame_nbytes(fields) -> int:
                for value in (fields or {}).values())
 
 
+def _contiguous_preserving_shape(value, xp=np):
+    """Contiguous storage on the original axis, including a zero-D scalar.
+
+    NumPy and CuPy's ascontiguousarray promote zero-D values to (1,).
+    History scalar dimensions must survive staging just like vector axes.
+    """
+    array = xp.asarray(value)
+    return xp.ascontiguousarray(array).reshape(array.shape)
+
+
 class _AsyncTicketQueue(queue.Queue):
     """Bounded queue that records ticket admission under its mutex."""
 
@@ -1688,6 +1757,11 @@ class AsyncDomainWrfoutWriter:
     _pending_bytes = 0
     _identity_bytes = 0
     _device = None
+    #: Frames this writer has made durable, ever.  Monotonic (a history
+    #: rewind edits ``paths`` but never this), so a checkpoint writer on
+    #: another thread can wait for "every frame queued before me" without
+    #: draining frames queued after it (:meth:`durability_target`).
+    _landed_total = 0
 
     @staticmethod
     def _new_ticket_queue() -> queue.Queue:
@@ -1917,6 +1991,11 @@ class AsyncDomainWrfoutWriter:
                 raise RuntimeError("cannot submit to a closed wrfout writer")
             self._raise_failure()
             producer = cp.cuda.get_current_stream()
+            if state is not None:
+                fire_attrs = fire_history_attrs(getattr(state, "physics", None))
+                if fire_attrs:
+                    base = self.global_attrs if global_attrs is None else global_attrs
+                    global_attrs = {**base, **fire_attrs}
             try:
                 if frame is not None:
                     if state is not None:
@@ -1961,7 +2040,7 @@ class AsyncDomainWrfoutWriter:
                             host_fields[name] = np.array(
                                 value, copy=True, order="C", subok=False)
                             continue
-                        array = cp.ascontiguousarray(value)
+                        array = _contiguous_preserving_shape(value, cp)
                         memory = cp.cuda.alloc_pinned_memory(int(array.nbytes))
                         host = np.frombuffer(memory, dtype=array.dtype,
                                              count=array.size).reshape(array.shape)
@@ -1973,7 +2052,7 @@ class AsyncDomainWrfoutWriter:
                         # Prognostic/state-derived fields win (notably child HGT,
                         # which is blended while static HGT_M remains unblended).
                         if name not in host_fields and name in keep:
-                            host_fields[name] = np.ascontiguousarray(value)
+                            host_fields[name] = _contiguous_preserving_shape(value)
                     done = cp.cuda.Event()
                     done.record(self.stream)
                 # The next mutation on the producing stream waits for the snapshot,
@@ -2049,7 +2128,7 @@ class AsyncDomainWrfoutWriter:
             if refl_field is not None and "REFL_10CM" in keep:
                 refl = self._host_or_staged(
                     refl_field, device_refs, pinned_refs)
-            extra = {name: np.ascontiguousarray(value)
+            extra = {name: _contiguous_preserving_shape(value)
                      for name, value in (extra_fields or {}).items()
                      if name in keep}
             if deferred is None:
@@ -2081,7 +2160,7 @@ class AsyncDomainWrfoutWriter:
             # unsafe call safe, which is the wrong direction for a defect
             # that is otherwise invisible.
             return value
-        array = cp.ascontiguousarray(value)
+        array = _contiguous_preserving_shape(value, cp)
         memory = cp.cuda.alloc_pinned_memory(int(array.nbytes))
         host = np.frombuffer(memory, dtype=array.dtype,
                              count=array.size).reshape(array.shape)
@@ -2105,6 +2184,7 @@ class AsyncDomainWrfoutWriter:
                 self._queue.task_done()
                 return
             staging_consumed = False
+            landed = False
             writer = None
             ticket_bytes = int(getattr(ticket, "nbytes", 0) or 0)
             try:
@@ -2169,6 +2249,7 @@ class AsyncDomainWrfoutWriter:
                     with self._condition:
                         self._completed_records.append(proof)
                 self.paths.append(ticket.path)
+                landed = True
                 # The file is durable HERE and nowhere earlier: the
                 # WrfoutWriter context above has exited, so its close()
                 # completed the fsync, the self-validation and the
@@ -2211,6 +2292,8 @@ class AsyncDomainWrfoutWriter:
                 # completed frame or any of its arrays.
                 ticket = None
                 with self._condition:
+                    if landed:
+                        self._landed_total += 1
                     if staging_consumed:
                         self._identity_pending = False
                         self._identity_bytes = 0
@@ -2231,6 +2314,35 @@ class AsyncDomainWrfoutWriter:
         """
         self.drain()
         self.global_attrs = dict(global_attrs)
+
+    def durability_target(self) -> int:
+        """The landed count at which every frame queued so far is durable."""
+        with self._condition:
+            return (self._landed_total + self._pending
+                    + int(self._identity_pending))
+
+    def wait_landed(self, target: int) -> None:
+        """Block until :meth:`durability_target`'s frames are durable.
+
+        Safe from any thread.  Raises the writer's failure, or names the
+        breakage when a frame queued before ``target`` was taken settled
+        without becoming durable (an abort, or a refused admission), so a
+        waiting checkpoint can never be published over a missing frame.
+        """
+        while True:
+            with self._condition:
+                if self._landed_total >= target:
+                    return
+                settled = not self._pending and not self._identity_pending
+                if (self._failure is None and self._thread.is_alive()
+                        and not settled):
+                    self._condition.wait(timeout=_ASYNC_WRITER_POLL_SECONDS)
+                    continue
+            self._raise_failure()
+            raise RuntimeError(
+                "a history frame queued before this checkpoint never became "
+                "durable, so the checkpoint is not published: a restart "
+                "from it would resume past a frame that does not exist")
 
     def drain(self) -> None:
         """Wait for durable files and their completed output identities."""
@@ -2292,16 +2404,23 @@ def carrier_provenance_attrs(physics) -> dict:
     stamped provenance is the provenance of the frames in that file, not
     of the driver at construction.
 
-    Returns ``{}`` for a state with no driver or no contract (an
-    initial-condition write, a pre-physics smoke): absent keys read as
-    "no land-surface consumer existed", which is true for those files.
+    Fire coordinate identity accompanies these per-frame attributes when
+    the driver owns a coupled fire grid. A state with neither carrier nor
+    fire model returns an empty mapping.
     ``..._LAST_UPDATE`` is the producer's model second, ``-1.0`` for a
     source that is constant by declaration and has no age.
     """
     carriers = getattr(physics, "carriers", None)
     if carriers is None:
-        return {}
-    return _carrier_attrs(str(carriers.policy), carriers.report())
+        return fire_history_attrs(physics)
+    return {**_carrier_attrs(str(carriers.policy), carriers.report()),
+            **fire_history_attrs(physics)}
+
+
+def fire_history_attrs(physics) -> dict:
+    """Fine-grid coordinate identity carried by this frame's fire model."""
+    fire = getattr(physics, "fire", None)
+    return {} if fire is None else dict(fire.output_attributes())
 
 
 def streamed_carrier_provenance_attrs(streamed) -> dict:
@@ -2354,6 +2473,11 @@ class PerDomainWrfoutWriters:
 
     _simulated_radar = None
     _output_observer = None
+    #: ``progress_callback.frame_submitted``, when it has one: told the
+    #: moment each frame is handed over, so the landing it later reports is
+    #: timed from the frame's own valid time and not from whatever step the
+    #: model has reached by then (:meth:`gpuwm.progress_log.StepLog.frame_submitted`).
+    _frame_submitted = None
 
     #: The tree-wide ``[output]`` history selection this writer set was
     #: built with (``ExperimentConfig.output``), or ``None`` for the FULL
@@ -2501,6 +2625,7 @@ class PerDomainWrfoutWriters:
                 "history period, or pass progress_callback to the "
                 "constructor.")
         self._output_observer = getattr(progress_callback, "output_committed", None)
+        self._frame_submitted = getattr(progress_callback, "frame_submitted", None)
         observer = (self._notify_output if getattr(self, "_simulated_radar", None) is not None
                     else self._output_observer)
         for writer in self._writers.values():
@@ -2711,6 +2836,12 @@ class PerDomainWrfoutWriters:
                 "frame. (A frame left by a PREVIOUS run at this path is "
                 "replaced as it always has been.)")
         self._published_paths.add(path)
+        if self._frame_submitted is not None:
+            try:
+                self._frame_submitted(domain=int(node.cfg.grid_id),
+                                      valid_time=valid_time)
+            except Exception:  # noqa: BLE001 - telemetry never fails a run
+                pass
         from gpuwm.ensemble.runtime_context import current_capture
         capture = current_capture()
         if capture is not None:
@@ -2803,6 +2934,35 @@ class PerDomainWrfoutWriters:
                 refl_field=refl_field,
                 global_attrs=frame_attrs,
                 completed_observer=committed)
+
+    def durability_barrier(self):
+        """A callable that waits, on any thread, for every frame queued now.
+
+        Taken on the stepping thread at a checkpoint and run on the
+        checkpoint writer's, so the checkpoint is still published only
+        after every history frame up to its valid time is durable -- the
+        order :meth:`drain` gave it -- without the model waiting for the
+        write.  Frames queued after the barrier are not waited for.
+        ``None`` where the order cannot be expressed that way (simulated
+        radar volumes are drained only through :meth:`drain`, and a writer
+        shell without the counters); the caller then drains as before.
+        """
+        if getattr(self, "_simulated_radar", None) is not None:
+            return None
+        targets = []
+        for gid in sorted(self._writers):
+            writer = self._writers[gid]
+            if not hasattr(writer, "wait_landed"):
+                return None
+            targets.append((writer, writer.durability_target()))
+
+        def wait() -> None:
+            for writer, target in targets:
+                writer.wait_landed(target)
+                if writer.paths:
+                    self.last_durable_wrfout = writer.paths[-1]
+
+        return wait
 
     def drain(self, *, before_domain=None) -> None:
         """Wait for every domain's durable files and output identities.

@@ -8,7 +8,7 @@ from test_mynn_gsd41 import requires_gpu
 
 
 def _fields():
-    path = Path(__file__).resolve().parents[1] / 'gpuwm/data/mynn/oracle/transport-cloud-gsd41.csv'
+    path = Path(__file__).resolve().parents[1] / 'tests/data/oracles/mynn/transport-cloud-gsd41.csv'
     with path.open(newline='', encoding='ascii') as stream:
         rows = list(csv.DictReader(stream))
     assert len(rows) == 12 * 12

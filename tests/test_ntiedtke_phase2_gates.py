@@ -395,7 +395,7 @@ def test_the_prepared_cache_identity_needs_no_scheme_entry():
     """Full domain serialization binds the scheme and every other run field."""
     from dataclasses import asdict, replace
     from datetime import datetime, timedelta
-    from gpuwm.config import RunConfig
+    from gpuwm.config import CHEM_RUN_FIELDS, RunConfig
     from gpuwm.experiment import DomainConfig
     from gpuwm.ingest import prepared_cache
 
@@ -409,14 +409,22 @@ def test_the_prepared_cache_identity_needs_no_scheme_entry():
     compare = prepared_cache.compare_prepared_domain_config
     cached = identity(domain)
     expected_run = asdict(run)
-    # Neutral source and radiation forms are omitted for older cache compatibility.
-    # Every other run field remains bound, including the cumulus switch.
-    for field in ("ruc_irrigation", "ruc_qvg_cold_start",
-                  "ruc_2m_diagnostic", "ruc_snow",
-                  "swint_opt", "aer_opt", "alb_sol",
-                  "thompson_version", "thompson_fork_snow_fall",
-                  "rrtmg_cloud_optics_form", "rrtmg_smoke_manifest"):
-        expected_run.pop(field)
+    assert run.chem_sets == ""
+    for name in CHEM_RUN_FIELDS:
+        expected_run.pop(name)
+    # The fire block is omitted from an inactive domain's identity
+    # (lane/ec-sfire), by the same rule the document applies.
+    from gpuwm.config import inert_fire_fields
+    for name in inert_fire_fields(run):
+        expected_run.pop(name)
+    neutral = {"surface_energy_diag": False,
+               "ruc_irrigation": "wrf_461", "ruc_qvg_cold_start": "wrf",
+               "ruc_2m_diagnostic": "flux", "ruc_snow": "wrf_461",
+               "swint_opt": 0, "aer_opt": 0, "alb_sol": 0,
+               "thompson_version": "wrf_461", "thompson_fork_snow_fall": "blend",
+               "rrtmg_cloud_optics_form": "wrf_461", "rrtmg_smoke_manifest": ""}
+    for name, default in neutral.items():
+        assert expected_run.pop(name) == default
     assert cached["run"] == expected_run
     assert cached["start_time"] == start.isoformat()
     assert compare(cached, identity(domain)) == ([], [])

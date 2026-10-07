@@ -4051,13 +4051,26 @@ fn derive_relative_humidity_percent(
         .collect())
 }
 
+/// Vapour pressure (Pa) from a water-vapour MIXING RATIO `w` (kg per kg of
+/// dry air) and pressure (Pa): `e = w p / (0.622 + w)`.
+///
+/// WRF's `Q2` and `QVAPOR` are mixing ratios, so every wrfout humidity
+/// diagnostic in this import goes through this one helper. The 2 m dewpoint
+/// and RH used to apply the specific-humidity form `q p / (0.622 + 0.378 q)`
+/// to `Q2`, which read Td2 about 0.1 K moist over dry land and up to 0.25 K
+/// over the warm Gulf (lane/dewpoint-mixing-ratio). A specific humidity `q`
+/// (GRIB SPFH) must be converted with `w = q / (1 - q)` before it gets here.
+fn vapour_pressure_pa_from_mixing_ratio(w: f64, p_pa: f64) -> f64 {
+    w * p_pa / (0.622 + w)
+}
+
 fn dewpoint_from_q_psfc(q: f32, p_pa: f32) -> f32 {
     if !q.is_finite() || !p_pa.is_finite() || q <= 0.0 || p_pa <= 0.0 {
         return f32::NAN;
     }
     let q = q as f64;
     let p = p_pa as f64;
-    let e = (q * p / (0.622 + 0.378 * q)).max(1.0);
+    let e = vapour_pressure_pa_from_mixing_ratio(q, p).max(1.0);
     let ln = (e / 611.2).ln();
     let td_c = 243.5 * ln / (17.67 - ln);
     (td_c + 273.15) as f32
@@ -4067,10 +4080,115 @@ fn relative_humidity_from_t_q_psfc(t_k: f32, q: f32, p_pa: f32) -> f32 {
     if !t_k.is_finite() || !q.is_finite() || !p_pa.is_finite() || t_k <= 0.0 {
         return f32::NAN;
     }
-    let e = q as f64 * p_pa as f64 / (0.622 + 0.378 * q as f64);
+    let e = vapour_pressure_pa_from_mixing_ratio(q as f64, p_pa as f64);
     let t_c = t_k as f64 - 273.15;
     let es = 611.2 * (17.67 * t_c / (t_c + 243.5)).exp();
     (100.0 * e / es).clamp(0.0, 100.0) as f32
+}
+
+#[cfg(test)]
+mod mixing_ratio_humidity_tests {
+    use super::*;
+
+    fn bolton_dewpoint_k(e_pa: f64) -> f64 {
+        let ln = (e_pa / 611.2).ln();
+        243.5 * ln / (17.67 - ln) + 273.15
+    }
+
+    /// Specific-humidity vapour pressure, the form HRRR's own DPT is
+    /// consistent with when fed its 2 m SPFH.
+    fn vapour_pressure_pa_from_specific_humidity(q: f64, p_pa: f64) -> f64 {
+        q * p_pa / (0.622 + 0.378 * q)
+    }
+
+    /// (specific humidity, pressure Pa, dewpoint K) worked independently
+    /// (Python, Bolton over water, e from q p / (0.622 + 0.378 q)).
+    const SPECIFIC_CASES: [(f64, f64, f64); 3] = [
+        (0.0150, 100_000.0, 293.5113271127926),
+        (0.0040, 85_000.0, 271.58785978403705),
+        (0.0200, 101_500.0, 298.449408723055),
+    ];
+
+    #[test]
+    fn specific_humidity_and_its_mixing_ratio_give_one_dewpoint() {
+        for (q, p, td_ref) in SPECIFIC_CASES {
+            let td_sh = bolton_dewpoint_k(vapour_pressure_pa_from_specific_humidity(q, p));
+            assert!((td_sh - td_ref).abs() < 0.02, "SPFH path {td_sh} vs {td_ref}");
+            // The same air as a mixing ratio, through the import's helper.
+            let w = q / (1.0 - q);
+            let td_w = bolton_dewpoint_k(vapour_pressure_pa_from_mixing_ratio(w, p));
+            assert!((td_w - td_sh).abs() < 1e-9, "f64 mixing-ratio path {td_w} vs {td_sh}");
+            // And through the f32 Q2/PSFC product function (f32 in and out).
+            let td_product = dewpoint_from_q_psfc(w as f32, p as f32) as f64;
+            assert!((td_product - td_ref).abs() < 1e-3, "Td2 product {td_product} vs {td_ref}");
+        }
+    }
+
+    /// Real HRRR rows (hrrr.20260802 t18z wrfsfcf01, six random CONUS
+    /// cells): 2 m SPFH (kg/kg), surface PRES (Pa), 2 m DPT (K), exactly as
+    /// decoded. HRRR packs DPT in steps of 1/16 K and SPFH in steps of 1e-5,
+    /// so a single cell can only agree to within one DPT packing step; over
+    /// the whole grid Bolton on the specific-humidity form reproduces DPT to
+    /// a mean of -0.010 K (the mixing-ratio form on SPFH: -0.20 K).
+    const HRRR_ROWS: [(f64, f64, f64); 6] = [
+        (0.02012, 101_770.0, 298.63739013671875),
+        (0.01919, 101_930.0, 297.82489013671875),
+        (0.0046, 72_630.0, 271.32489013671875),
+        (0.00869, 102_830.0, 285.44989013671875),
+        (0.01471, 94_890.0, 292.38739013671875),
+        (0.01902, 99_860.0, 297.38739013671875),
+    ];
+
+    #[test]
+    fn hrrr_spfh_reproduces_hrrr_dpt_and_q2_path_agrees() {
+        let mut signed = 0.0;
+        for (q, p, dpt) in HRRR_ROWS {
+            let td_sh = bolton_dewpoint_k(vapour_pressure_pa_from_specific_humidity(q, p));
+            assert!((td_sh - dpt).abs() < 1.0 / 16.0, "HRRR SPFH {q} -> {td_sh} vs DPT {dpt}");
+            signed += td_sh - dpt;
+            // The same air handed over as a WRF Q2 (mixing ratio) gives the
+            // same dewpoint through the product function.
+            let w = q / (1.0 - q);
+            let td_q2 = dewpoint_from_q_psfc(w as f32, p as f32) as f64;
+            assert!((td_q2 - td_sh).abs() < 1e-3, "Q2 path {td_q2} vs SPFH path {td_sh}");
+        }
+        let mean = signed / HRRR_ROWS.len() as f64;
+        assert!(mean.abs() < 0.02, "mean HRRR SPFH->DPT error {mean}");
+    }
+
+    #[test]
+    fn specific_humidity_form_on_q2_reads_measurably_moist() {
+        // The defect this lane fixes: Q2 = 0.015 kg/kg at 1000 hPa.
+        let (w, p) = (0.015_f64, 100_000.0_f64);
+        let old = bolton_dewpoint_k(vapour_pressure_pa_from_specific_humidity(w, p));
+        let new = dewpoint_from_q_psfc(w as f32, p as f32) as f64;
+        assert!(old - new > 0.2, "old {old} new {new}");
+        assert!((new - bolton_dewpoint_k(w * p / (0.622 + w))).abs() < 1e-3);
+    }
+
+    #[test]
+    fn relative_humidity_uses_the_mixing_ratio_vapour_pressure() {
+        let (t_k, w, p) = (303.15_f32, 0.015_f32, 100_000.0_f32);
+        let e = (w as f64) * (p as f64) / (0.622 + w as f64);
+        let t_c = t_k as f64 - 273.15;
+        let es = 611.2 * (17.67 * t_c / (t_c + 243.5)).exp();
+        let expected = (100.0 * e / es) as f32;
+        assert_eq!(relative_humidity_from_t_q_psfc(t_k, w, p), expected);
+        let old = (100.0 * vapour_pressure_pa_from_specific_humidity(w as f64, p as f64) / es) as f32;
+        assert!(old - expected > 0.5, "old {old} new {expected}");
+    }
+
+    #[test]
+    fn three_d_dewpoint_shares_the_helper_bit_for_bit() {
+        for (q, p) in [(0.012_f64, 92_000.0_f64), (1.0e-5, 20_000.0)] {
+            let direct = {
+                let e = (q * p / (0.622 + q)).max(1.0);
+                let ln = (e / 611.2).ln();
+                243.5 * ln / (17.67 - ln) + 273.15
+            };
+            assert_eq!(dewpoint_k_from_q_p(q, p).to_bits(), direct.to_bits());
+        }
+    }
 }
 
 fn ensure_same_grid(a: &Plane2D, b: &Plane2D) -> Result<(), ImportError> {
@@ -5119,7 +5237,7 @@ fn dewpoint_k_from_q_p(q: f64, p_pa: f64) -> f64 {
     if !q.is_finite() || !p_pa.is_finite() || q <= 0.0 || p_pa <= 0.0 {
         return f64::NAN;
     }
-    let e = (q * p_pa / (0.622 + q)).max(1.0);
+    let e = vapour_pressure_pa_from_mixing_ratio(q, p_pa).max(1.0);
     let ln = (e / 611.2).ln();
     let td_c = 243.5 * ln / (17.67 - ln);
     td_c + 273.15
@@ -6693,8 +6811,10 @@ mod tests {
     }
 
     fn temp_dir(name: &str) -> PathBuf {
+        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let unique = now_unix();
-        std::env::temp_dir().join(format!("rw-local-import-{name}-{unique}"))
+        std::env::temp_dir().join(format!("rw-local-import-{name}-{unique}-{}", NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed)))
     }
 
     fn write_valid_test_run(store_root: &Path, model: &str, run: &str, value: f32) {
@@ -7612,10 +7732,13 @@ mod source_time_fixture_tests {
     /// A copy of `source` under `file_name` in a fresh folder, because the
     /// file name is what these tests are about.
     fn named_copy(source: &str, tag: &str, file_name: &str) -> (PathBuf, PathBuf) {
+        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let folder = std::env::temp_dir().join(format!(
-            "rw-time-axis-{tag}-{}-{}",
+            "rw-time-axis-{tag}-{}-{}-{}",
             std::process::id(),
-            now_unix()
+            now_unix(),
+            NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ));
         std::fs::create_dir_all(&folder).unwrap();
         let path = folder.join(file_name);
@@ -7754,10 +7877,13 @@ mod delayed_nest_time_tests {
     const FRAMES: [&str; 2] = ["2026-09-29_13:00:00", "2026-09-29_14:00:00"];
 
     fn write_nest(start_date: &str, tag: &str) -> (PathBuf, PathBuf) {
+        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let folder = std::env::temp_dir().join(format!(
-            "rw-delayed-nest-{tag}-{}-{}",
+            "rw-delayed-nest-{tag}-{}-{}-{}",
             std::process::id(),
-            now_unix()
+            now_unix(),
+            NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ));
         std::fs::create_dir_all(&folder).unwrap();
         let path = folder.join(format!("wrfout_d03_{}", FRAMES[0].replace(':', "_")));
@@ -7927,10 +8053,13 @@ mod model_label_reader_tests {
 
     /// `engine` stamps the attribute every WOOF history file carries.
     fn write_frame_from(label: Option<&str>, engine: bool, tag: &str) -> (PathBuf, PathBuf) {
+        // Parallel tests read one clock tick on the 2.8.6 windows-2025 runner and collided on this name; the counter keeps each call distinct.
+        static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let folder = std::env::temp_dir().join(format!(
-            "rw-model-label-{tag}-{}-{}",
+            "rw-model-label-{tag}-{}-{}-{}",
             std::process::id(),
-            now_unix()
+            now_unix(),
+            NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ));
         std::fs::create_dir_all(&folder).unwrap();
         let path = folder.join(format!("wrfout_d01_{}", FRAME.replace(':', "_")));

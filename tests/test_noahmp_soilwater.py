@@ -1,6 +1,6 @@
 """Bitwise gate for the Noah-MP soil-water port.
 
-Replays ``gpuwm/data/noahmp/oracle/noahmp-soilwater.csv`` through
+Replays ``tests/data/oracles/noahmp/noahmp-soilwater.csv`` through
 :mod:`gpuwm.core.noahmp_soilwater` and requires ``max_ulp 0`` on every emitted
 column of every case, then re-runs the fixture's own structural validator so
 the CSV cannot drift underneath the port.
@@ -27,8 +27,8 @@ from gpuwm.core.noahmp_soilwater import (
 )
 
 REPO = Path(__file__).resolve().parent.parent
-FIXTURE = REPO / "gpuwm" / "data" / "noahmp" / "oracle" / "noahmp-soilwater.csv"
-PROBE = REPO / "gpuwm" / "data" / "noahmp" / "oracle" / "noahmp-soilwater-libm.csv"
+FIXTURE = REPO / "tests" / "data" / "oracles" / "noahmp" / "noahmp-soilwater.csv"
+PROBE = REPO / "tests" / "data" / "oracles" / "noahmp" / "noahmp-soilwater-libm.csv"
 VALIDATOR = (REPO / "tools" / "noahmp_wrf461_oracle"
              / "validate_soilwater_oracle.py")
 

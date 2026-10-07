@@ -206,6 +206,36 @@
     "kind": "reject"
    }
   },
+  "pressure_vertical_velocity": {
+   "selectors": [
+    {
+     "format": "grib2",
+     "discipline": 0,
+     "category": 2,
+     "parameter": 8,
+     "level_type": 105
+    }
+   ],
+   "units": {
+    "source": "Pa s-1",
+    "target": "Pa s-1"
+   },
+   "source_axes": [
+    "vertical",
+    "y",
+    "x"
+   ],
+   "target_axes": [
+    "vertical",
+    "y",
+    "x"
+   ],
+   "location": "mass",
+   "staggering": "none",
+   "missing": {
+    "kind": "reject"
+   }
+  },
   "geopotential_height": {
    "selectors": [
     {
@@ -1440,7 +1470,7 @@
    "sea_ice_fraction"
   ],
   "initialization_policies": {
-   "vertical_velocity": "explicit_zero_with_adapter_validation"
+   "vertical_velocity": "carried-from-pressure-vertical-velocity: the source publishes omega (Pa s-1) on every model level under pressure_vertical_velocity; the initializer converts it to geometric W on the target levels, so W is not zeroed"
   }
  }
 }

@@ -34,6 +34,7 @@ def inventory():
             raise ValueError(f"{directory.name}: registry checksum differs from the lock")
         packages.append({"name": item["name"], "version": item["version"], "package_sha256": item["checksum"],
                          "license": package.get("license"), "license_file": package.get("license-file")})
+    packages.sort(key=lambda item: (item["name"], item["version"]))
     return {"schema": "arwen.zarr-vendor.v1", "lock_sha256": sha(lock),
             "command": "cd tools/zarr_bridge && cargo vendor --locked --offline --versioned-dirs vendor/crates-io",
             "packages": packages}

@@ -669,6 +669,95 @@ extern "C" __global__ void thompson_aa_state_finalize_with_columns(
 
 
 // ---------------------------------------------------------------------------
+// 3b. THE TERMINAL RAIN AND ICE APPLY -- module_mp_thompson.F:4023-4053.
+// ---------------------------------------------------------------------------
+//
+// The v4.6.1 accumulator path's single application of qiten/niten and
+// qrten/nrten, and the size bounds WRF puts here, after the :3943-3966 phase
+// cleanup.  rho is the terminal density (see 3 above); a column WRF left at
+// :2020 keeps its entry state.  WRF re-forms ni1d and nr1d from the slope at
+// every level that keeps its mass, bounded or not, so this does too.
+extern "C" __global__ void thompson_aa_terminal_rain_ice(
+    float* __restrict__ qr,
+    float* __restrict__ nr,
+    float* __restrict__ qi,
+    float* __restrict__ ni,
+    const float* __restrict__ qrten,
+    const float* __restrict__ nrten,
+    const float* __restrict__ qiten,
+    const float* __restrict__ niten,
+    const float* __restrict__ rho,
+    const float* __restrict__ micro_columns,
+    float dt, int ncol, int n)
+{
+    const int idx = blockDim.x * blockIdx.x + threadIdx.x;
+    if (idx >= n) return;
+    if (micro_columns[idx % ncol] == 0.0f) return;
+    const float rho_local = rho[idx];
+
+    // :4023-4039.
+    const float qi_new = thompson_aa_add(qi[idx],
+                                         thompson_aa_mul(qiten[idx], dt));
+    float ni_new = fmaxf(thompson_aa_div(THOMPSON_AA_R2, rho_local),
+        thompson_aa_add(ni[idx], thompson_aa_mul(niten[idx], dt)));
+    if (qi_new <= THOMPSON_AA_R1) {
+        qi[idx] = 0.0f;
+        ni[idx] = 0.0f;
+    } else {
+        double lami = (double)thompson_aa_powf_cr(
+            thompson_aa_div(thompson_aa_mul(thompson_aa_mul(
+                thompson_aa_mul(THOMPSON_AA_AM_I, THOMPSON_AA_CIG2),
+                THOMPSON_AA_OIG1), ni_new), qi_new),
+            THOMPSON_AA_OBMI);
+        const double ilami = 1.0 / lami;
+        const float xdi = (float)(4.0 * ilami);
+        if (xdi < 5.0e-6f) {
+            lami = (double)thompson_aa_div(4.0f, 5.0e-6f);
+        } else if (xdi > 300.0e-6f) {
+            lami = (double)thompson_aa_div(4.0f, 300.0e-6f);
+        }
+        ni_new = (float)fmin(
+            (double)thompson_aa_div(
+                thompson_aa_mul(thompson_aa_mul(1.0f, 1.0f / 6.0f), qi_new),
+                THOMPSON_AA_AM_I) * pow(lami, 3.0),
+            999.0e3 / (double)rho_local);
+        qi[idx] = qi_new;
+        ni[idx] = ni_new;
+    }
+
+    // :4040-4053.
+    const float qr_new = thompson_aa_add(qr[idx],
+                                         thompson_aa_mul(qrten[idx], dt));
+    float nr_new = fmaxf(thompson_aa_div(THOMPSON_AA_R2, rho_local),
+        thompson_aa_add(nr[idx], thompson_aa_mul(nrten[idx], dt)));
+    if (qr_new <= THOMPSON_AA_R1) {
+        qr[idx] = 0.0f;
+        nr[idx] = 0.0f;
+    } else {
+        double lamr = (double)thompson_aa_powf_cr(
+            thompson_aa_div(thompson_aa_mul(thompson_aa_mul(
+                thompson_aa_mul(THOMPSON_AA_AM_R, 6.0f), 1.0f), nr_new),
+                qr_new),
+            THOMPSON_AA_OBMR);
+        const float mvd_num = thompson_aa_add(
+            thompson_aa_add(3.0f, 0.0f), 0.672f);
+        float mvd_r = (float)((double)mvd_num / lamr);
+        if (mvd_r > 2.5e-3f) {
+            mvd_r = 2.5e-3f;
+        } else if (mvd_r < thompson_aa_mul(THOMPSON_AA_D0R, 0.75f)) {
+            mvd_r = thompson_aa_mul(THOMPSON_AA_D0R, 0.75f);
+        }
+        lamr = (double)thompson_aa_div(mvd_num, mvd_r);
+        nr_new = (float)(
+            (double)thompson_aa_mul(thompson_aa_mul(1.0f, 1.0f / 6.0f), qr_new)
+            * pow(lamr, 3.0) / (double)THOMPSON_AA_AM_R);
+        qr[idx] = qr_new;
+        nr[idx] = nr_new;
+    }
+}
+
+
+// ---------------------------------------------------------------------------
 // 4.  SURFACE AEROSOL EMISSION -- mp_gt_driver:1310-1327.
 // ---------------------------------------------------------------------------
 //

@@ -666,12 +666,17 @@ def run_arm(bundle: Path, device: str, *, out_json: Path,
             "import": round(t_import, 3),
             "load_and_verify": round(t_load, 3),
             "assimilate": round(t_assimilate, 3),
-            "letkf_setup": round(float(diagnostics.setup_seconds), 3),
-            "letkf_solve": round(float(diagnostics.solve_seconds), 3),
-            "letkf_finish": round(float(diagnostics.finish_seconds), 3),
-            "letkf_weights": round(float(diagnostics.weights_seconds), 3),
+            # The filter's own phases at microseconds.  At milliseconds a
+            # small analysis's phases (a few ms) carried up to 1.5 ms of
+            # rounding against the 1 ms slack of the phase-split check, and
+            # the roster route's phase 1, a slice of the neighbour roster,
+            # rounded to a zero that reads as an unmeasured phase.
+            "letkf_setup": round(float(diagnostics.setup_seconds), 6),
+            "letkf_solve": round(float(diagnostics.solve_seconds), 6),
+            "letkf_finish": round(float(diagnostics.finish_seconds), 6),
+            "letkf_weights": round(float(diagnostics.weights_seconds), 6),
             "letkf_transform": round(
-                float(diagnostics.transform_seconds), 3),
+                float(diagnostics.transform_seconds), 6),
             "stage_to_device": provenance.get("solve_stage_seconds", 0.0),
             "unstage_from_device":
                 provenance.get("solve_unstage_seconds", 0.0),

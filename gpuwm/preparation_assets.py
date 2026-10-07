@@ -5,6 +5,41 @@ import os
 from pathlib import Path
 
 
+def analyzed_aerosol_domains(experiment) -> tuple[int, ...]:
+    """Domains whose preparation reads the source's analyzed aerosol numbers.
+
+    An mp=28 domain asking for the analyzed aerosol: ``use_rap_aero_icbc``
+    or ``mp28_aerosol_source = 'analysis'``, the same selection
+    gpuwm.ingest.real resolves to ``analysis``.  A fetch that selects
+    records (the HRRR index subset) asks for QNWFA/QNIFA for these, and
+    for no one else, so every other subset keeps its bytes.
+    """
+
+    return tuple(
+        int(domain.grid_id) for domain in experiment.domains
+        if int(domain.run.mp_physics) == 28
+        and (bool(domain.run.use_rap_aero_icbc)
+             or str(domain.run.mp28_aerosol_source) == "analysis"))
+
+
+def analyzed_aerosol_fetch_hints(experiment, fetch_hints):
+    """``fetch_hints`` with the analyzed-aerosol selection the preparation needs.
+
+    Only for a source whose own selection is the native HRRR subset
+    (its route chain is ``prepared:hrrr``); whole-file and list-driven
+    acquisitions already carry what they publish.
+    """
+
+    if not fetch_hints or not fetch_hints.get("source"):
+        return fetch_hints
+    from gpuwm.source_drivability import candidate_route_chain
+
+    if (candidate_route_chain(fetch_hints["source"]) != "prepared:hrrr"
+            or not analyzed_aerosol_domains(experiment)):
+        return fetch_hints
+    return {**fetch_hints, "analyzed_aerosol": True}
+
+
 def wif_fetch_domains(experiment, fetch_hints) -> tuple[int, ...]:
     """Domains whose fetch can supply the default monthly aerosol dataset.
 

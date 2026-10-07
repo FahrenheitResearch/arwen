@@ -103,7 +103,13 @@ PHYSICS_CHANGES_SINCE_280 = {
         "new analyzed-aerosol controls are forbidden under this package; "
         "exact prior option declarations remain compatible at admitted old settings")
        for option in ("thompson-mp8", "milbrandt2mom-mp9", "morrison-mp10",
-                      "nssl2-mp18", "p3-mp50")},
+                      "nssl2-mp18")},
+    "components.microphysics.options.p3-mp50": (
+        "new analyzed-aerosol controls are forbidden under this package; "
+        "exact prior option declarations remain compatible at admitted old "
+        "settings. Its radar_da consumer row also changed: P3 gained a "
+        "scheme-diagnostic reflectivity operator and one clear-air value "
+        "(acb8faf25, audit S14), so a 2.8.0 P3 receipt is refused for it"),
     "parameters.aer_init_opt": (
         "first-guess aerosol source value 2 is admitted with explicit analyzed "
         "selection; prior values retain their parameter-declaration identity"),
@@ -329,6 +335,7 @@ EXPECTED_280_REFUSALS: dict[tuple[str, str], list[str]] = {
         *([f"registry physics of components.microphysics.options.{option} "
            "(changed)"] if (option := {
                1: "kessler-mp1", 6: "wsm6-mp6", 16: "wdm6-mp16",
+               50: "p3-mp50",
            }.get(row["switches"]["mp_physics"])) else []),
         *(["registry physics of templates.p3-mp50-ysu-mm5-noah-rrtmg-legacy-v1 "
            "(changed)"] if spelling == "named" and
@@ -447,10 +454,10 @@ def _move_citation(text: str, old: str, new: str) -> str:
     (("components", "pbl", "options", "shinhong", "warnings", 1),
      "kernels/shinhong.cu:1429", "kernels/shinhong.cu:1371"),
     (("components", "turbulence", "options", "tke-1.5-order", "warnings", 0),
-     "gpuwm/core/dycore.py:1267", "gpuwm/core/dycore.py:1041"),
+     "gpuwm/core/dycore.py:1284", "gpuwm/core/dycore.py:1041"),
     (("components", "turbulence", "options", "smagorinsky-3d", "warnings",
       0),
-     "gpuwm/core/dycore.py:1361", "gpuwm/core/dycore.py:1131"),
+     "gpuwm/core/dycore.py:1378", "gpuwm/core/dycore.py:1131"),
 ])
 def test_a_citation_edit_keeps_the_physics_identity(path, old, new):
     registry = physics_registry()

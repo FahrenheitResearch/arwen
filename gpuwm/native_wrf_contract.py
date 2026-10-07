@@ -38,6 +38,11 @@ NATIVE_STATIC_REQUIRED = frozenset({
     "SOILTEMP", "TMN",
 })
 
+# Optional Rust-sampled dust statics travel with a chemistry-enabled prepared
+# footprint. They are one inventory: a partial set cannot rebuild its process
+# state after relocation. An ordinary cache retains exactly its old fields.
+NATIVE_CHEM_STATIC_PLANES = {"EROD": 3, "CLAYFRAC": 1, "SANDFRAC": 1}
+
 # The portable native-static contract is deliberately constrained to the
 # 21-category MODIS/Noah land-use table and the 16-category Noah soil table.
 # These values are the WRF table identities implied by the exact category
@@ -416,12 +421,19 @@ def validate_native_static_fields(
     if missing:
         raise KeyError(f"native static fields are missing {missing}")
     from gpuwm.static.orographic import OROGRAPHIC_ROWS
+    chem_fields = set(NATIVE_CHEM_STATIC_PLANES) & set(fields)
+    if chem_fields and chem_fields != set(NATIVE_CHEM_STATIC_PLANES):
+        raise ValueError(
+            "native static chemistry fields are incomplete: missing "
+            f"{sorted(set(NATIVE_CHEM_STATIC_PLANES) - chem_fields)}")
     # The sub-grid orographic statistics ride the same cache when a domain's
     # terrain-drag options asked the build for them (gpuwm.static.orographic);
     # a cache without them is every other domain's, unchanged.
     retained = (NATIVE_STATIC_REQUIRED
                 | (_NATIVE_STATIC_GEOMETRY & set(fields))
                 | ({"LAKE_DEPTH", "LAKEMASK", "SLOPECAT"} & set(fields))
+                | chem_fields
+                | ({"FRC_URB2D"} & set(fields))
                 | (set(OROGRAPHIC_ROWS) & set(fields)))
     result = {
         name: np.asarray(fields[name], dtype=np.float64)
@@ -447,6 +459,10 @@ def validate_native_static_fields(
         "LAKE_DEPTH": (ny, nx),
         "LAKEMASK": (ny, nx),
         "SLOPECAT": (ny, nx),
+        "EROD": (3, ny, nx),
+        "CLAYFRAC": (ny, nx),
+        "SANDFRAC": (ny, nx),
+        "FRC_URB2D": (ny, nx),
     }
     for name, value in result.items():
         expected = expected_shapes[name]
@@ -458,6 +474,10 @@ def validate_native_static_fields(
             raise ValueError(f"static field {name} contains non-finite values")
     if not np.isin(result["LANDMASK"], (0.0, 1.0)).all():
         raise ValueError("static field LANDMASK must be exactly binary")
+    if "FRC_URB2D" in result and (
+            result["FRC_URB2D"].min() < 0.0
+            or result["FRC_URB2D"].max() > 1.0):
+        raise ValueError("static field FRC_URB2D is outside 0..1")
     for name, upper in (("LU_INDEX", landuse_categories), ("SCT_DOM", 16),
                         ("SCB_DOM", 16)):
         value = result[name]
@@ -531,18 +551,15 @@ def verify_native_static_receipt(
     return receipt
 
 
-def validate_native_lambert_contracts(
-    exp, wps_namelist: Path, *, source_name: str,
-    source_top_pressure_pa: float | None = None,
-):
-    """Return every domain grid after exact geometry/eta validation.
+def validate_wps_geometry(exp, wps_namelist: Path, *, source_name: str):
+    """Return every domain grid once the WPS namelist IS the experiment's geometry.
 
-    The returned tuple is parent-before-child in the same order as
-    ``exp.domains``.  Geometry is compared against the standard WPS namelist
-    one domain at a time; a missing, extra, reordered, or numerically drifting
-    domain is a hard error.  All domains currently share the experiment's one
-    explicit vertical coordinate, matching :class:`ExperimentConfig`'s
-    fail-closed vertical-refinement policy.
+    The geometry half of :func:`validate_native_lambert_contracts`, on its
+    own: projection, domain count, identity, parent slots and every grid
+    number, compared exactly.  It says nothing about the vertical ladder,
+    so a door that renders a ``namelist.wps`` from a configuration can hold
+    the bytes to the forecast stage's own geometry comparison without
+    refusing for a ladder the namelist does not carry.
     """
 
     label = source_name.upper()
@@ -605,7 +622,26 @@ def validate_native_lambert_contracts(
             drift[f"d{domain.grid_id:02d}"] = domain_drift
     if drift:
         raise ValueError(f"WPS/experiment domain geometry mismatch: {drift}")
+    return expected_grids
 
+
+def validate_native_lambert_contracts(
+    exp, wps_namelist: Path, *, source_name: str,
+    source_top_pressure_pa: float | None = None,
+):
+    """Return every domain grid after exact geometry/eta validation.
+
+    The returned tuple is parent-before-child in the same order as
+    ``exp.domains``.  Geometry is compared against the standard WPS namelist
+    one domain at a time; a missing, extra, reordered, or numerically drifting
+    domain is a hard error.  All domains currently share the experiment's one
+    explicit vertical coordinate, matching :class:`ExperimentConfig`'s
+    fail-closed vertical-refinement policy.
+    """
+
+    expected_grids = validate_wps_geometry(exp, wps_namelist,
+                                           source_name=source_name)
+    label = source_name.upper()
     vertical = exp.vertical
     if vertical.hybrid_opt != 2:
         raise ValueError(

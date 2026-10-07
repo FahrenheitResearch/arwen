@@ -11,6 +11,10 @@ So this module owns one question and answers it from a frozen table:
 
     networks_for_bbox(west, south, east, north) -> ("DE__ASOS", "CZ__ASOS", ...)
 
+and :func:`networks_for_domain` is the default every engine path takes when
+a caller names no networks: the same screen over the domain grown by a small
+margin, refused by name when nothing reaches it.
+
 **The extent is a candidate screen, not the filter.** Each row carries the
 bounding box the archive publishes for that network, and that box is the
 archive's own claim, padded and sometimes stale -- one European network
@@ -427,6 +431,82 @@ def networks_for_bbox(west: float, south: float, east: float, north: float, *,
     return matched
 
 
+#: Degrees a domain box is grown on every side before the extent screen when
+#: the surface networks are defaulted from the domain. The table's extents
+#: are already padded by its own ``edge_pad_deg``; this is the caller-side
+#: half of the same never-under-include rule, so a domain edge lying just
+#: short of a state line still offers that state's network to the
+#: station-level ``--bbox`` filter, which decides with real coordinates and
+#: drops the stations that are outside. An extra network costs one metadata
+#: request; a missing one costs its stations, silently.
+DOMAIN_MARGIN_DEG = 0.5
+
+
+def _grown(west: float, south: float, east: float, north: float,
+           margin_deg: float) -> tuple[float, float, float, float]:
+    """The checked domain box grown by ``margin_deg``, still a legal box.
+
+    Latitudes are clamped to the globe. A box whose grown span reaches the
+    whole band becomes :data:`_WHOLE_BAND`; otherwise the canonical pair is
+    widened and, if the west edge passed -180, both edges are carried onto
+    the ``[0, 360]`` spelling, which :func:`_check_box` reads as the same
+    meridians.
+    """
+
+    west, south, east, north = _check_box(west, south, east, north)
+    south = max(-90.0, south - margin_deg)
+    north = min(90.0, north + margin_deg)
+    if (east - west) + 2.0 * margin_deg >= 360.0:
+        return (_WHOLE_BAND[0], south, _WHOLE_BAND[1], north)
+    west, east = west - margin_deg, east + margin_deg
+    if west < -180.0:
+        west, east = west + 360.0, east + 360.0
+    return (west, south, east, north)
+
+
+def networks_for_domain(west: float, south: float, east: float,
+                        north: float, *,
+                        margin_deg: float = DOMAIN_MARGIN_DEG,
+                        table: SurfaceNetworkTable | None = None,
+                        ) -> tuple[str, ...]:
+    """The default surface networks for a domain box, from the table alone.
+
+    This is the one answer every engine path gives when a caller names no
+    networks: every network in the frozen table whose extent meets the
+    domain grown by ``margin_deg`` on each side, sorted by id. Which states,
+    provinces or countries that is comes out of the data; nothing here or in
+    any caller names a region.
+
+    A domain no network reaches is refused by name rather than handed an
+    empty or substitute list: a case that fell back to some other region's
+    stations would fetch successfully, keep none of them inside its box, and
+    fail later as "no station survived" or -- worse -- score on whatever
+    partial set happened to overlap.
+    """
+
+    margin = float(margin_deg)
+    if not (margin == margin and 0.0 <= margin < 90.0):
+        raise SurfaceNetworkError(
+            f"domain margin {margin_deg!r} is not a width in degrees in "
+            f"[0, 90)")
+    box = _check_box(west, south, east, north)
+    grown = _grown(*box, margin)
+    table = table or load_table()
+    matched = tuple(
+        network.id for network in table.networks
+        if network.intersects(*grown))
+    if not matched:
+        raise SurfaceNetworkError(
+            f"no ASOS network intersects the domain "
+            f"({box[0]:g}, {box[1]:g}, {box[2]:g}, {box[3]:g}) (W, S, E, N) "
+            f"grown by {margin:g} deg: none of the {len(table)} networks in "
+            f"the surface table reaches it, so the domain has no surface "
+            f"observations from this archive. Refusing rather than "
+            f"defaulting to another region's networks; name the networks "
+            f"explicitly if another source covers this domain")
+    return matched
+
+
 def describe(networks: tuple[str, ...] | list[str], *,
              table: SurfaceNetworkTable | None = None) -> tuple[str, ...]:
     """``("DE__ASOS (Germany ASOS)", ...)`` for a receipt or a log line."""
@@ -438,6 +518,6 @@ def describe(networks: tuple[str, ...] | list[str], *,
         for network in networks)
 
 
-__all__ = ["SurfaceNetwork", "SurfaceNetworkError", "SurfaceNetworkTable",
-           "TABLE_PATH", "TABLE_SCHEMA", "describe", "load_table",
-           "networks_for_bbox"]
+__all__ = ["DOMAIN_MARGIN_DEG", "SurfaceNetwork", "SurfaceNetworkError",
+           "SurfaceNetworkTable", "TABLE_PATH", "TABLE_SCHEMA", "describe",
+           "load_table", "networks_for_bbox", "networks_for_domain"]
